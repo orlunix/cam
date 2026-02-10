@@ -1,0 +1,561 @@
+#!/bin/bash
+# Coding Manager - 统一的编码工具管理系统
+# Version: 0.1.0
+
+set -e
+
+CM_DATA="$HOME/.cm"
+CM_BIN="$(dirname "$(readlink -f "$0")")"
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# 帮助信息
+show_help() {
+    cat <<EOF
+Coding Manager (cm) - 统一的编码工具管理系统
+
+用法:
+    cm <command> [options]
+
+Context 管理:
+    cm ctx add <name> <path> [--tags tag1,tag2]    添加工作目录
+    cm ctx list                                     列出所有 context
+    cm ctx show <name>                              查看 context 详情
+    cm ctx remove <name>                            删除 context
+
+Session 管理:
+    cm start <tool> "<task>" --ctx <name>          启动编码任务
+        --full-auto     Codex 自动批准模式
+        --yolo          Codex 无沙箱模式（最快）
+        --background    后台运行（默认）
+    
+    cm status [session-id]                          查看状态
+    cm logs <session-id> [--follow]                 查看日志
+    cm input <session-id> "<text>"                  发送输入
+    cm kill <session-id>                            终止任务
+
+历史记录:
+    cm history [--date YYYY-MM-DD] [--ctx name]     查看历史
+    cm report --ctx <name>                          生成报告
+
+配置:
+    cm config                                       查看配置
+    cm init                                         初始化（首次运行）
+
+示例:
+    cm ctx add myapp ~/Projects/myapp --tags web,api
+    cm start codex "添加错误处理" --ctx myapp --full-auto
+    cm status sess-001
+    cm logs sess-001 --follow
+
+EOF
+}
+
+# 初始化
+cm_init() {
+    echo "初始化 Coding Manager..."
+    mkdir -p "$CM_DATA"/{contexts,sessions/{active,archive},history/{by-date,by-context},hooks}
+    
+    # 创建默认配置
+    if [ ! -f "$CM_DATA/config.json" ]; then
+        cat > "$CM_DATA/config.json" <<EOF
+{
+  "version": 1,
+  "defaultTool": "codex",
+  "autoConfirm": true,
+  "logRetentionDays": 30,
+  "tools": {
+    "codex": {
+      "defaultOptions": ["--full-auto"]
+    },
+    "claude": {
+      "defaultOptions": []
+    }
+  }
+}
+EOF
+    fi
+    
+    echo -e "${GREEN}✓${NC} 初始化完成: $CM_DATA"
+}
+
+# Context 管理
+cm_ctx_add() {
+    name=$1
+    path=$2
+    tags=$3
+    
+    if [ -z "$name" ] || [ -z "$path" ]; then
+        echo -e "${RED}错误:${NC} 需要 name 和 path"
+        exit 1
+    fi
+    
+    # 展开路径
+    path=$(eval echo "$path")
+    path=$(readlink -f "$path" 2>/dev/null || echo "$path")
+    
+    if [ ! -d "$path" ]; then
+        echo -e "${YELLOW}警告:${NC} 目录不存在: $path"
+        read -p "是否创建? (y/N) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            mkdir -p "$path"
+        else
+            exit 1
+        fi
+    fi
+    
+    timestamp=$(date -Iseconds)
+    
+    cat > "$CM_DATA/contexts/$name.md" <<EOF
+---
+name: $name
+path: $path
+machine: local
+created: $timestamp
+lastUsed: $timestamp
+tags: $tags
+---
+
+# Context: $name
+
+**Path:** \`$path\`  
+**Machine:** local  
+**Created:** $timestamp  
+**Tags:** $tags
+
+## Description
+
+$(basename "$path") project workspace.
+
+## Statistics
+
+- Total Sessions: 0
+- Success Rate: N/A
+- Last 7 Days: 0 sessions
+
+## Recent Sessions
+
+_None yet_
+
+## Notes
+
+Add your notes here.
+
+---
+
+_Last updated: $timestamp_
+EOF
+    
+    echo -e "${GREEN}✓${NC} Context 已添加: $name → $path"
+}
+
+cm_ctx_list() {
+    echo "Contexts:"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    
+    if [ ! -d "$CM_DATA/contexts" ]; then
+        echo "  (未找到 contexts，运行 'cm init' 初始化)"
+        return
+    fi
+    
+    for ctx_file in "$CM_DATA/contexts"/*.md; do
+        [ -e "$ctx_file" ] || continue
+        
+        name=$(basename "$ctx_file" .md)
+        
+        # 提取 YAML front matter
+        path=$(awk '/^---$/,/^---$/ {if ($1 == "path:") {$1=""; print; exit}}' "$ctx_file" | xargs)
+        tags=$(awk '/^---$/,/^---$/ {if ($1 == "tags:") {$1=""; print; exit}}' "$ctx_file" | xargs)
+        lastUsed=$(awk '/^---$/,/^---$/ {if ($1 == "lastUsed:") {$1=""; print; exit}}' "$ctx_file" | xargs)
+        
+        printf "  ${BLUE}%-15s${NC} %s\n" "$name" "$path"
+        if [ -n "$tags" ]; then
+            printf "                  Tags: %s\n" "$tags"
+        fi
+    done
+}
+
+cm_ctx_show() {
+    name=$1
+    ctx_file="$CM_DATA/contexts/$name.md"
+    
+    if [ ! -f "$ctx_file" ]; then
+        echo -e "${RED}错误:${NC} Context 不存在: $name"
+        exit 1
+    fi
+    
+    cat "$ctx_file"
+}
+
+# Session 启动
+cm_start() {
+    tool=$1
+    task=$2
+    ctx_name=""
+    tool_opts=""
+    
+    shift 2
+    
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --ctx)
+                ctx_name="$2"
+                shift 2
+                ;;
+            --full-auto)
+                tool_opts="$tool_opts --full-auto"
+                shift
+                ;;
+            --yolo)
+                tool_opts="$tool_opts --yolo"
+                shift
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
+    
+    if [ -z "$ctx_name" ]; then
+        echo -e "${RED}错误:${NC} 需要指定 --ctx <name>"
+        exit 1
+    fi
+    
+    ctx_file="$CM_DATA/contexts/$ctx_name.md"
+    if [ ! -f "$ctx_file" ]; then
+        echo -e "${RED}错误:${NC} Context 不存在: $ctx_name"
+        exit 1
+    fi
+    
+    # 读取 context path
+    ctx_path=$(grep "^path:" "$ctx_file" | head -1 | cut -d' ' -f2-)
+    
+    if [ ! -d "$ctx_path" ]; then
+        echo -e "${RED}错误:${NC} 目录不存在: $ctx_path"
+        exit 1
+    fi
+    
+    # 生成 session ID
+    session_id="sess-$(date +%s)"
+    timestamp=$(date -Iseconds)
+    
+    echo -e "${BLUE}启动 $tool 任务:${NC}"
+    echo "  Context: $ctx_name ($ctx_path)"
+    echo "  Task: $task"
+    echo "  Options: $tool_opts"
+    echo "  Session: $session_id"
+    echo ""
+    
+    # 创建 session MD 文件
+    cat > "$CM_DATA/sessions/active/$session_id.md" <<EOF
+---
+id: $session_id
+context: $ctx_name
+context_path: $ctx_path
+tool: $tool
+status: starting
+state: initializing
+created: $timestamp
+updated: $timestamp
+process_id: 
+auto_confirm: true
+---
+
+# Session $session_id
+
+## Task
+
+$task
+
+## Status
+
+🟡 **Starting**
+
+**Duration:** 0s  
+**Tool:** $tool $tool_opts  
+**Machine:** local
+
+## Timeline
+
+| Time     | Event          | Details                    |
+|----------|----------------|----------------------------|
+| $(date +%H:%M:%S) | started  | Session created            |
+
+## Files Changed
+
+_None yet_
+
+## Output Highlights
+
+\`\`\`
+_Starting..._
+\`\`\`
+
+---
+
+_Last updated: $timestamp_
+EOF
+
+    # 构建优化的 prompt
+    enhanced_task=$("$CM_BIN/cm-prompt-builder.sh" "$tool" "$task")
+    
+    # 构建命令 - 不同工具的命令格式
+    case "$tool" in
+        claude)
+            # 使用 claude-auto 包装器，自动处理权限
+            cmd="$CM_BIN/claude-auto.sh '$enhanced_task'"
+            ;;
+        codex)
+            cmd="codex exec $tool_opts '$enhanced_task'"
+            ;;
+        cursor)
+            cmd="cursor '$enhanced_task'"
+            ;;
+        *)
+            cmd="$tool '$enhanced_task'"
+            ;;
+    esac
+    
+    echo -e "${YELLOW}运行:${NC} $cmd"
+    echo -e "${YELLOW}工作目录:${NC} $ctx_path"
+    echo ""
+    
+    # 保存启动信息，实际执行交给 OpenClaw
+    echo "$cmd" > "$CM_DATA/sessions/active/$session_id.cmd"
+    echo "$ctx_path" > "$CM_DATA/sessions/active/$session_id.workdir"
+    
+    echo -e "${GREEN}✓${NC} Session 已创建: $session_id"
+    echo ""
+    echo "下一步:"
+    echo "  1. 让 OpenClaw agent 使用 exec 工具启动这个任务"
+    echo "  2. 监控 process log"
+    echo "  3. 解析输出并更新状态"
+    echo ""
+    echo "示例 (需要 OpenClaw agent 执行):"
+    echo "  exec pty:true background:true workdir:\"$ctx_path\" command:\"$cmd\""
+}
+
+# Session 状态
+cm_status() {
+    session_id=$1
+    
+    if [ -z "$session_id" ]; then
+        # 列出所有活动 session
+        echo "Active Sessions:"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        
+        for sess_file in "$CM_DATA/sessions/active"/*.md; do
+            [ -e "$sess_file" ] || continue
+            
+            sid=$(basename "$sess_file" .md)
+            status=$(grep "^status:" "$sess_file" | cut -d' ' -f2-)
+            tool=$(grep "^tool:" "$sess_file" | cut -d' ' -f2-)
+            context=$(grep "^context:" "$sess_file" | cut -d' ' -f2-)
+            state=$(grep "^state:" "$sess_file" | cut -d' ' -f2-)
+            
+            case "$status" in
+                running)
+                    icon="🟢"
+                    ;;
+                completed)
+                    icon="✅"
+                    ;;
+                failed)
+                    icon="❌"
+                    ;;
+                killed)
+                    icon="⛔"
+                    ;;
+                *)
+                    icon="🟡"
+                    ;;
+            esac
+            
+            printf "  ${icon} %-18s %-8s %-12s %-12s %s\n" "$sid" "$tool" "$context" "$status" "$state"
+        done
+    else
+        # 显示特定 session
+        sess_file="$CM_DATA/sessions/active/$session_id.md"
+        
+        if [ ! -f "$sess_file" ]; then
+            echo -e "${RED}错误:${NC} Session 不存在: $session_id"
+            exit 1
+        fi
+        
+        cat "$sess_file"
+    fi
+}
+
+# 执行 session
+cm_exec() {
+    session_id=$1
+    
+    if [ -z "$session_id" ]; then
+        echo -e "${RED}错误:${NC} 需要指定 session-id"
+        exit 1
+    fi
+    
+    sess_file="$CM_DATA/sessions/active/$session_id.md"
+    if [ ! -f "$sess_file" ]; then
+        echo -e "${RED}错误:${NC} Session 不存在: $session_id"
+        exit 1
+    fi
+    
+    echo -e "${BLUE}执行 session: $session_id${NC}"
+    
+    # 调用 executor
+    "$CM_BIN/cm-executor.sh" "$session_id"
+}
+
+# 查看日志
+cm_logs() {
+    session_id=$1
+    follow=false
+    
+    if [ "$2" = "--follow" ] || [ "$2" = "-f" ]; then
+        follow=true
+    fi
+    
+    if [ -z "$session_id" ]; then
+        echo -e "${RED}错误:${NC} 需要指定 session-id"
+        exit 1
+    fi
+    
+    log_file="$CM_DATA/sessions/active/$session_id.log"
+    
+    if [ ! -f "$log_file" ]; then
+        echo -e "${YELLOW}警告:${NC} 日志文件不存在: $session_id"
+        echo "Session 可能还未执行或已归档"
+        exit 1
+    fi
+    
+    if [ "$follow" = true ]; then
+        tail -f "$log_file"
+    else
+        cat "$log_file"
+    fi
+}
+
+# 发送输入
+cm_input() {
+    session_id=$1
+    input=$2
+    
+    if [ -z "$session_id" ] || [ -z "$input" ]; then
+        echo -e "${RED}错误:${NC} 需要指定 session-id 和输入内容"
+        exit 1
+    fi
+    
+    pid_file="$CM_DATA/sessions/active/$session_id.pid"
+    
+    if [ ! -f "$pid_file" ]; then
+        echo -e "${RED}错误:${NC} Session 未运行或 PID 文件不存在"
+        exit 1
+    fi
+    
+    pid=$(cat "$pid_file")
+    
+    # 发送输入到进程 (需要 process 在前台或有管道)
+    echo -e "${YELLOW}警告:${NC} 直接发送输入到进程的功能尚未实现"
+    echo "建议使用 OpenClaw process submit 命令"
+}
+
+# 终止 session
+cm_kill() {
+    session_id=$1
+    
+    if [ -z "$session_id" ]; then
+        echo -e "${RED}错误:${NC} 需要指定 session-id"
+        exit 1
+    fi
+    
+    pid_file="$CM_DATA/sessions/active/$session_id.pid"
+    sess_file="$CM_DATA/sessions/active/$session_id.md"
+    
+    if [ ! -f "$sess_file" ]; then
+        echo -e "${RED}错误:${NC} Session 不存在: $session_id"
+        exit 1
+    fi
+    
+    if [ -f "$pid_file" ]; then
+        pid=$(cat "$pid_file")
+        echo -e "${YELLOW}终止进程 PID: $pid${NC}"
+        kill "$pid" 2>/dev/null || echo -e "${YELLOW}进程已不存在${NC}"
+        rm -f "$pid_file"
+    fi
+    
+    # 更新状态
+    sed -i "s/^status:.*/status: killed/" "$sess_file"
+    sed -i "s/^updated:.*/updated: $(date -Iseconds)/" "$sess_file"
+    
+    echo -e "${GREEN}✓${NC} Session 已终止: $session_id"
+}
+
+# 主入口
+main() {
+    # 确保初始化
+    if [ ! -d "$CM_DATA" ] && [ "$1" != "init" ] && [ "$1" != "help" ]; then
+        echo -e "${YELLOW}首次运行，正在初始化...${NC}"
+        cm_init
+        echo ""
+    fi
+    
+    case "$1" in
+        init)
+            cm_init
+            ;;
+        ctx)
+            case "$2" in
+                add)
+                    cm_ctx_add "$3" "$4" "$5"
+                    ;;
+                list|ls)
+                    cm_ctx_list
+                    ;;
+                show)
+                    cm_ctx_show "$3"
+                    ;;
+                *)
+                    echo "用法: cm ctx {add|list|show}"
+                    exit 1
+                    ;;
+            esac
+            ;;
+        start)
+            cm_start "$2" "$3" "${@:4}"
+            ;;
+        exec)
+            cm_exec "$2"
+            ;;
+        status)
+            cm_status "$2"
+            ;;
+        logs)
+            cm_logs "$2" "$3"
+            ;;
+        input)
+            cm_input "$2" "$3"
+            ;;
+        kill)
+            cm_kill "$2"
+            ;;
+        extract)
+            "$CM_BIN/cm-extract-code.sh" "$2"
+            ;;
+        help|--help|-h)
+            show_help
+            ;;
+        *)
+            show_help
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
