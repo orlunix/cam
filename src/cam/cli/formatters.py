@@ -272,6 +272,16 @@ def print_agent_detail(agent: Agent) -> None:
         if agent.tmux_socket:
             lines.append(f"[bold]Tmux Socket:[/bold] {agent.tmux_socket}")
 
+    # Monitor PID (background monitor subprocess)
+    from cam.constants import PID_DIR
+    monitor_pid_path = PID_DIR / f"{agent.id}.pid"
+    if monitor_pid_path.exists():
+        try:
+            monitor_pid = int(monitor_pid_path.read_text().strip())
+            lines.append(f"[bold]Monitor PID:[/bold] {monitor_pid} [dim](background)[/dim]")
+        except (ValueError, OSError):
+            pass
+
     # PID
     if agent.pid:
         lines.append(f"[bold]PID:[/bold] {agent.pid}")
