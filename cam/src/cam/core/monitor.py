@@ -69,6 +69,8 @@ class AgentMonitor:
         self._last_health_check: float = 0.0
         self._last_confirm_time: float = 0.0  # Cooldown to avoid re-sending
         self._poll_count: int = 0
+        self._has_worked: bool = False  # True once agent enters a working state
+        self._prompt_disappeared: bool = False  # True once input prompt is gone
 
     # ------------------------------------------------------------------
     # Public API
@@ -191,6 +193,8 @@ class AgentMonitor:
                 # --------------------------------------------------
                 new_state = self._adapter.detect_state(output)
                 if new_state is not None and new_state != self._agent.state:
+                    if new_state != AgentState.INITIALIZING:
+                        self._has_worked = True
                     old_state = self._agent.state
                     self._agent.state = new_state
                     self._agent_store.update_status(
@@ -228,6 +232,28 @@ class AgentMonitor:
 
                     reason = "completed" if completion_status == AgentStatus.COMPLETED else "failed"
                     return self._finalize(completion_status, reason)
+
+                # --------------------------------------------------
+                # 8b. Detect completion via input prompt return
+                # --------------------------------------------------
+                # For interactive tools (e.g. Claude), completion is
+                # detected when the tool returns to its input prompt
+                # after having done work. We require the prompt to have
+                # disappeared first (Claude was actively working) to
+                # avoid false positives from the startup screen.
+                if self._adapter.needs_prompt_after_launch():
+                    prompt_visible = self._adapter.is_ready_for_input(output)
+                    if not prompt_visible and self._has_worked:
+                        self._prompt_disappeared = True
+                    if (
+                        prompt_visible
+                        and self._has_worked
+                        and self._prompt_disappeared
+                    ):
+                        self._logger.write("prompt_return_completion", data={
+                            "state": self._agent.state.value,
+                        })
+                        return self._finalize(AgentStatus.COMPLETED, "Tool returned to input prompt")
 
                 # --------------------------------------------------
                 # 9. Sleep until next poll
