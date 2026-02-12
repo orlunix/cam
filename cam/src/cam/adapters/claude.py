@@ -145,9 +145,23 @@ class ClaudeAdapter(ToolAdapter):
         """
         return None
 
+    # Claude's input prompt: "❯" at the start of a line (between ──── borders).
+    # May have placeholder text like "Try "fix lint errors"" or be empty.
+    _READY_PATTERN = re.compile(r"^❯", re.MULTILINE)
+
+    def is_ready_for_input(self, output: str) -> bool:
+        """Check if Claude's TUI shows the input prompt (❯).
+
+        The input prompt appears as a line starting with ❯ between
+        horizontal rule borders (────). This indicates Claude has
+        finished loading and is ready to accept input.
+        """
+        clean = strip_ansi(output)
+        return bool(self._READY_PATTERN.search(clean))
+
     def get_startup_wait(self) -> float:
-        """Wait for Claude's welcome screen / trust prompt to appear."""
-        return 5.0
+        """Maximum seconds to wait for Claude's TUI to become ready."""
+        return 30.0
 
     def needs_prompt_after_launch(self) -> bool:
         """Prompt must be sent via stdin after Claude is ready."""
