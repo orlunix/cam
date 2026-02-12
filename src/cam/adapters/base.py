@@ -112,11 +112,27 @@ class ToolAdapter(ABC):
         """
         return []
 
-    def get_startup_wait(self) -> float:
-        """Get seconds to wait after launch before sending the task prompt.
+    def is_ready_for_input(self, output: str) -> bool:
+        """Check if the tool's TUI is ready to accept the task prompt.
+
+        Used during startup to avoid sending the prompt before the tool's
+        input field is active. Override in subclasses to check for tool-specific
+        readiness indicators (e.g. a prompt character like '❯').
+
+        Args:
+            output: Recent TMUX output
 
         Returns:
-            Wait time in seconds (default 2.0)
+            True if the tool is ready for input, False otherwise.
+            Default returns True (assume ready).
+        """
+        return True
+
+    def get_startup_wait(self) -> float:
+        """Maximum seconds to wait for tool readiness before sending the prompt.
+
+        Returns:
+            Max wait time in seconds (default 2.0)
         """
         return 2.0
 

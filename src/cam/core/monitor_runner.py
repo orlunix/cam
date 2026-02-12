@@ -196,11 +196,12 @@ async def run_monitor(agent_id: str) -> None:
                         agent_store.save(agent)
                         return
 
-                    # Send prompt if needed
+                    # Wait for readiness and send prompt
                     if adapter.needs_prompt_after_launch():
-                        startup_wait = adapter.get_startup_wait()
+                        max_wait = adapter.get_startup_wait()
                         elapsed = 0.0
-                        while elapsed < startup_wait:
+                        ready = False
+                        while elapsed < max_wait:
                             await asyncio.sleep(1.0)
                             elapsed += 1.0
                             output = await transport.capture_output(session_name)
@@ -215,6 +216,15 @@ async def run_monitor(agent_id: str) -> None:
                                 )
                                 await asyncio.sleep(3.0)
                                 elapsed += 3.0
+                                continue
+                            if adapter.is_ready_for_input(output):
+                                ready = True
+                                break
+                        if not ready:
+                            logger.warning(
+                                "Readiness not detected for %s after %.1fs",
+                                session_name, elapsed,
+                            )
                         await transport.send_input(
                             session_name, agent.task.prompt, send_enter=True
                         )

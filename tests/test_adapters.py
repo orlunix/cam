@@ -150,6 +150,30 @@ class TestClaudeAdapter:
         adapter = ClaudeAdapter()
         assert adapter.detect_completion("anything") is None
 
+    def test_is_ready_for_input_with_prompt(self):
+        adapter = ClaudeAdapter()
+        output = "Welcome back!\n❯ \n"
+        assert adapter.is_ready_for_input(output) is True
+
+    def test_is_ready_for_input_without_prompt(self):
+        adapter = ClaudeAdapter()
+        output = "Loading Claude Code...\n"
+        assert adapter.is_ready_for_input(output) is False
+
+    def test_is_ready_for_input_with_ansi(self):
+        adapter = ClaudeAdapter()
+        output = "\x1b[32mReady\x1b[0m\n❯ \n"
+        assert adapter.is_ready_for_input(output) is True
+
+    def test_is_ready_for_input_with_placeholder(self):
+        adapter = ClaudeAdapter()
+        output = '────\n❯\xa0Try "fix lint errors"\n────\n'
+        assert adapter.is_ready_for_input(output) is True
+
+    def test_startup_wait_is_30s(self):
+        adapter = ClaudeAdapter()
+        assert adapter.get_startup_wait() == 30.0
+
 
 class TestCodexAdapter:
     def test_launch_command(self, task, context):
