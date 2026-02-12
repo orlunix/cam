@@ -1,0 +1,254 @@
+"""SSH transport implementation for CAM.
+
+Executes TMUX sessions on remote machines via SSH with ControlMaster
+connection pooling for reduced latency on repeated operations.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import shlex
+import time
+from pathlib import Path
+
+from cam.constants import SOCKET_DIR
+from cam.transport.base import Transport
+
+logger = logging.getLogger(__name__)
+
+
+class SSHTransport(Transport):
+    """SSH-based transport with ControlMaster connection pooling.
+
+    All TMUX operations are tunneled through SSH. A persistent ControlMaster
+    connection is used to avoid re-authenticating on every command.
+
+    Args:
+        host: Remote hostname or IP address.
+        user: SSH username (defaults to current user).
+        port: SSH port (defaults to 22).
+        key_file: Path to SSH private key file (optional).
+    """
+
+    def __init__(
+        self,
+        host: str | None = None,
+        user: str | None = None,
+        port: int | None = None,
+        key_file: str | None = None,
+    ) -> None:
+        if not host:
+            raise ValueError("SSH transport requires a host")
+        self._host = host
+        self._user = user
+        self._port = port or 22
+        self._key_file = key_file
+
+        # ControlMaster socket path
+        self._control_dir = SOCKET_DIR / "ssh"
+        self._control_dir.mkdir(parents=True, exist_ok=True)
+        self._control_path = self._control_dir / f"{self._user or 'default'}@{self._host}:{self._port}"
+
+    def _ssh_base_args(self) -> list[str]:
+        """Build base SSH command arguments with ControlMaster options."""
+        args = [
+            "ssh",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "ConnectTimeout=10",
+            "-o", f"ControlPath={self._control_path}",
+            "-o", "ControlMaster=auto",
+            "-o", "ControlPersist=600",
+        ]
+        if self._port != 22:
+            args.extend(["-p", str(self._port)])
+        if self._key_file:
+            args.extend(["-i", self._key_file])
+        if self._user:
+            args.append(f"{self._user}@{self._host}")
+        else:
+            args.append(self._host)
+        return args
+
+    async def _run_ssh(self, remote_cmd: str, check: bool = True) -> tuple[bool, str]:
+        """Execute a command on the remote host via SSH.
+
+        Args:
+            remote_cmd: Command string to execute on the remote host.
+            check: Whether to treat non-zero exit as failure.
+
+        Returns:
+            Tuple of (success, output).
+        """
+        ssh_args = self._ssh_base_args() + ["--", remote_cmd]
+        logger.debug("SSH: %s", " ".join(shlex.quote(a) for a in ssh_args))
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *ssh_args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+
+            success = proc.returncode == 0
+            output = stdout.decode("utf-8", errors="replace")
+
+            if not success and check:
+                error = stderr.decode("utf-8", errors="replace")
+                logger.warning("SSH command failed (exit %d): %s", proc.returncode, error)
+                return False, error
+
+            return success, output
+
+        except asyncio.TimeoutError:
+            logger.error("SSH command timed out: %s", remote_cmd[:80])
+            return False, "SSH command timed out"
+        except Exception as e:
+            logger.error("SSH execution failed: %s", e)
+            return False, str(e)
+
+    def _remote_tmux_cmd(self, session_id: str, tmux_args: list[str]) -> str:
+        """Build a remote tmux command string.
+
+        The session socket is stored on the remote host under /tmp/cam-sockets/.
+
+        Args:
+            session_id: TMUX session ID.
+            tmux_args: Arguments for the tmux command.
+
+        Returns:
+            Shell-safe command string for remote execution.
+        """
+        socket = f"/tmp/cam-sockets/{session_id}.sock"
+        parts = ["tmux", "-S", shlex.quote(socket)] + [shlex.quote(a) for a in tmux_args]
+        return " ".join(parts)
+
+    async def create_session(self, session_id: str, command: list[str], workdir: str) -> bool:
+        """Create a TMUX session on the remote host.
+
+        Ensures the remote socket directory exists, creates a detached session,
+        then sends the command as literal keys.
+        """
+        # Ensure remote socket directory exists
+        ok, _ = await self._run_ssh("mkdir -p /tmp/cam-sockets", check=False)
+        if not ok:
+            logger.warning("Could not create remote socket dir (may already exist)")
+
+        # Create detached session
+        create_cmd = self._remote_tmux_cmd(session_id, [
+            "new-session", "-d", "-s", session_id, "-c", workdir,
+        ])
+        success, error = await self._run_ssh(create_cmd)
+        if not success:
+            logger.error("Failed to create remote session %s: %s", session_id, error)
+            return False
+
+        logger.info("Created remote session %s on %s in %s", session_id, self._host, workdir)
+
+        # Send the command
+        command_str = " ".join(shlex.quote(arg) for arg in command)
+        if not await self.send_input(session_id, command_str, send_enter=True):
+            logger.error("Failed to send command to remote session %s", session_id)
+            await self.kill_session(session_id)
+            return False
+
+        return True
+
+    async def send_input(self, session_id: str, text: str, send_enter: bool = True) -> bool:
+        """Send text input to a remote TMUX session."""
+        target = f"{session_id}:0.0"
+
+        # Send text literally
+        send_cmd = self._remote_tmux_cmd(session_id, [
+            "send-keys", "-t", target, "-l", "--", text,
+        ])
+        success, _ = await self._run_ssh(send_cmd)
+        if not success:
+            return False
+
+        if send_enter:
+            enter_cmd = self._remote_tmux_cmd(session_id, [
+                "send-keys", "-t", target, "Enter",
+            ])
+            success, _ = await self._run_ssh(enter_cmd)
+
+        return success
+
+    async def capture_output(self, session_id: str, lines: int = 50) -> str:
+        """Capture output from a remote TMUX session."""
+        target = f"{session_id}:0.0"
+        capture_cmd = self._remote_tmux_cmd(session_id, [
+            "capture-pane", "-p", "-J", "-t", target, "-S", f"-{lines}",
+        ])
+        success, output = await self._run_ssh(capture_cmd, check=False)
+        if not success:
+            logger.warning("Failed to capture output from remote session %s", session_id)
+            return ""
+        return output
+
+    async def session_exists(self, session_id: str) -> bool:
+        """Check if a remote TMUX session is alive."""
+        has_cmd = self._remote_tmux_cmd(session_id, [
+            "has-session", "-t", session_id,
+        ])
+        success, _ = await self._run_ssh(has_cmd, check=False)
+        return success
+
+    async def kill_session(self, session_id: str) -> bool:
+        """Kill a remote TMUX session and clean up socket."""
+        kill_cmd = self._remote_tmux_cmd(session_id, [
+            "kill-session", "-t", session_id,
+        ])
+        success, _ = await self._run_ssh(kill_cmd, check=False)
+
+        # Clean up remote socket
+        socket = f"/tmp/cam-sockets/{session_id}.sock"
+        await self._run_ssh(f"rm -f {shlex.quote(socket)}", check=False)
+
+        if success:
+            logger.info("Killed remote session %s on %s", session_id, self._host)
+        return success
+
+    async def test_connection(self) -> tuple[bool, str]:
+        """Test SSH connectivity and verify tmux is available on remote."""
+        # Test basic SSH connectivity
+        success, output = await self._run_ssh("echo ok && tmux -V", check=False)
+        if not success:
+            return False, f"Cannot connect to {self._user or ''}@{self._host}:{self._port}"
+
+        lines = output.strip().splitlines()
+        if len(lines) >= 2 and lines[0].strip() == "ok":
+            tmux_version = lines[1].strip()
+            return True, f"SSH connected to {self._host}: {tmux_version}"
+        elif lines and lines[0].strip() == "ok":
+            return False, f"SSH connected to {self._host} but tmux not found"
+        else:
+            return False, f"Unexpected response from {self._host}: {output[:100]}"
+
+    async def get_latency(self) -> float:
+        """Measure SSH round-trip latency in milliseconds."""
+        start = time.monotonic()
+        await self._run_ssh("true", check=False)
+        elapsed = (time.monotonic() - start) * 1000
+        return round(elapsed, 1)
+
+    def get_attach_command(self, session_id: str) -> str:
+        """Return command for user to attach to a remote TMUX session."""
+        socket = f"/tmp/cam-sockets/{session_id}.sock"
+
+        ssh_parts = ["ssh"]
+        if self._port != 22:
+            ssh_parts.extend(["-p", str(self._port)])
+        if self._key_file:
+            ssh_parts.extend(["-i", self._key_file])
+        ssh_parts.extend([
+            "-t",  # Force pseudo-terminal for interactive tmux
+        ])
+        if self._user:
+            ssh_parts.append(f"{self._user}@{self._host}")
+        else:
+            ssh_parts.append(self._host)
+
+        ssh_parts.append(f"tmux -S {shlex.quote(socket)} attach -t {shlex.quote(session_id)}")
+        return " ".join(shlex.quote(p) if " " in p else p for p in ssh_parts)
