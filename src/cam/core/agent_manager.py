@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import signal
+import subprocess
+import sys
 from datetime import datetime
 from uuid import uuid4
 
 from cam.adapters.base import ToolAdapter
 from cam.adapters.registry import AdapterRegistry
-from cam.constants import SOCKET_DIR
+from cam.constants import PID_DIR, SOCKET_DIR
 from cam.core.config import CamConfig
 from cam.core.events import EventBus
 from cam.core.models import (
@@ -199,8 +203,10 @@ class AgentManager:
             await self._run_monitor_with_retries(
                 agent, transport, adapter, follow=True
             )
-        # In detach mode, no monitor runs — TMUX session is independent.
-        # Auto-confirm only works in follow mode.
+        else:
+            # Spawn a background monitor subprocess that survives CLI exit.
+            # This enables auto-confirm, state tracking, and timeouts in detach mode.
+            self._spawn_background_monitor(agent)
 
         return agent
 
@@ -225,7 +231,7 @@ class AgentManager:
             logger.info("Agent %s is already in terminal state %s", agent_id, agent.status.value)
             return
 
-        # Cancel background monitor task if one exists
+        # Cancel in-process background monitor task if one exists
         monitor_task = self._monitor_tasks.pop(agent_id, None)
         if monitor_task and not monitor_task.done():
             monitor_task.cancel()
@@ -233,6 +239,17 @@ class AgentManager:
                 await monitor_task
             except asyncio.CancelledError:
                 pass
+
+        # Kill background monitor subprocess if running (detach mode)
+        pid_path = PID_DIR / f"{agent_id}.pid"
+        if pid_path.exists():
+            try:
+                pid = int(pid_path.read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+                logger.info("Killed background monitor pid=%d for agent %s", pid, agent_id)
+            except (ProcessLookupError, ValueError, OSError):
+                pass
+            pid_path.unlink(missing_ok=True)
 
         # Kill TMUX session
         if agent.tmux_session:
@@ -417,6 +434,32 @@ class AgentManager:
                 elapsed += 3.0
 
         await transport.send_input(session_name, prompt, send_enter=True)
+
+    def _spawn_background_monitor(self, agent: Agent) -> None:
+        """Spawn a detached subprocess to monitor the agent.
+
+        The subprocess runs cam.core.monitor_runner which handles auto-confirm,
+        state detection, timeouts, and completion tracking independently of the
+        CLI process. Uses start_new_session=True to survive parent exit.
+
+        Args:
+            agent: The agent to monitor.
+        """
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "cam.core.monitor_runner", str(agent.id)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            logger.info(
+                "Spawned background monitor for agent %s (pid=%d)",
+                agent.id, proc.pid,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to spawn background monitor for agent %s", agent.id
+            )
 
     def _create_transport(self, context: Context) -> Transport:
         """Create a transport for the given context.
