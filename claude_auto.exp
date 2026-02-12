@@ -1,0 +1,127 @@
+#!/usr/bin/expect -f
+#
+# Coding Agent Wrapper - Production Version
+# 
+# Usage: ./claude_auto.exp <workdir> <task>
+#
+# Example:
+#   ./claude_auto.exp /tmp/myproject "Create a REST API"
+
+log_user 1
+set timeout -1
+
+if {$argc < 2} {
+    puts "Usage: $argv0 <workdir> <task>"
+    puts ""
+    puts "Example:"
+    puts "  $argv0 /tmp/project \"Create hello.py with print('Hi')\""
+    exit 1
+}
+
+set workdir [lindex $argv 0]
+set task [lindex $argv 1]
+
+# 检查目录
+if {![file isdirectory $workdir]} {
+    puts "Error: $workdir is not a directory"
+    exit 1
+}
+
+# 日志文件
+set timestamp [clock format [clock seconds] -format "%Y%m%d-%H%M%S"]
+set output_file "$workdir/.claude-wrapper-$timestamp.log"
+log_file -noappend $output_file
+
+puts "🚀 Coding Agent Wrapper"
+puts "="
+puts "📁 Workdir: $workdir"
+puts "📝 Task: $task"
+puts "📋 Log: $output_file"
+puts "="
+
+cd $workdir
+
+# 启动 Claude Code
+spawn claude $task
+
+# 检查确认提示
+proc check_for_prompt {filepath} {
+    if {![file exists $filepath]} {
+        return 0
+    }
+    
+    set result [catch {
+        exec tail -n 100 $filepath \
+            | sed -r {s/\x1B\[[0-9;?]*[ -/]*[@-~]//g} \
+            | egrep -q {(1\..*Yes|Do.*you.*want|Permission.*requires)}
+    }]
+    
+    return [expr {$result == 0}]
+}
+
+# 检查完成
+proc check_for_done {filepath} {
+    if {![file exists $filepath]} {
+        return 0
+    }
+    
+    set result [catch {
+        exec tail -n 50 $filepath \
+            | sed -r {s/\x1B\[[0-9;?]*[ -/]*[@-~]//g} \
+            | grep -q {(esc.*interrupt|\? for shortcuts)}
+    }]
+    
+    return [expr {$result == 0}]
+}
+
+# 主循环
+set auto_confirm_count 0
+set idle_count 0
+set max_idle 20
+
+while {1} {
+    interact {
+        -o
+        timeout 3 {
+            # 检查确认提示
+            if {[check_for_prompt $output_file]} {
+                if {$auto_confirm_count < 50} {
+                    send "1"
+                    incr auto_confirm_count
+                    puts "\n✅ Auto-confirmed (#$auto_confirm_count)"
+                    set idle_count 0
+                } else {
+                    puts "\n⚠️ Too many confirmations, stopping"
+                    break
+                }
+            } else {
+                incr idle_count
+                
+                # 检查是否完成
+                if {$idle_count > 3 && [check_for_done $output_file]} {
+                    puts "\n✅ Task completed!"
+                    break
+                }
+                
+                # 超时保护
+                if {$idle_count > $max_idle} {
+                    puts "\n⏰ Idle timeout (${idle_count}x3 = [expr {$idle_count * 3}] seconds)"
+                    break
+                }
+            }
+        }
+        eof {
+            puts "\n✅ Process ended"
+            break
+        }
+    }
+}
+
+puts "="
+puts "📊 Statistics:"
+puts "  - Auto-confirmations: $auto_confirm_count"
+puts "  - Idle cycles: $idle_count"
+puts "📋 Full log: $output_file"
+puts "="
+
+wait

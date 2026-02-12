@@ -1,0 +1,119 @@
+#!/usr/bin/expect -f
+#
+# Coding Agent Wrapper - expect 版本
+# 自动化 Claude Code 的交互
+#
+# Usage: ./claude_wrapper.exp "Your task description"
+
+log_user 1
+set timeout -1
+
+# 清除环境变量
+unset -nocomplain env(ANTHROPIC_AUTH_TOKEN)
+unset -nocomplain env(ANTHROPIC_BASE_URL)
+
+# 日志文件
+set output_file "/tmp/claude-wrapper-[pid].log"
+log_file -noappend $output_file
+
+# 从参数获取任务
+if {$argc == 0} {
+    puts "Usage: $argv0 <task description>"
+    exit 1
+}
+set task [lindex $argv 0]
+
+puts "🚀 Starting Claude Code with task: $task"
+puts "📋 Log file: $output_file"
+puts "="
+
+# 启动 Claude Code
+spawn claude $task
+
+# 检查日志文件中是否有确认提示
+proc check_for_prompt {filepath} {
+    if {![file exists $filepath]} {
+        return 0
+    }
+    
+    # 检查是否有确认提示
+    set result [catch {
+        exec tail -n 100 $filepath \
+            | sed -r {s/\x1B\[[0-9;?]*[ -/]*[@-~]//g} \
+            | grep -q {1\..*Yes}
+    }]
+    
+    return [expr {$result == 0}]
+}
+
+# 检查是否完成
+proc check_for_done {filepath} {
+    if {![file exists $filepath]} {
+        return 0
+    }
+    
+    # 检查完成信号
+    set result [catch {
+        exec tail -n 50 $filepath \
+            | sed -r {s/\x1B\[[0-9;?]*[ -/]*[@-~]//g} \
+            | grep -q {esc.*interrupt}
+    }]
+    
+    return [expr {$result == 0}]
+}
+
+# 主循环
+set auto_send_count 0
+set last_check_time [clock seconds]
+
+while {1} {
+    interact {
+        -o
+        # 直接匹配提示
+        -re {Do.*you.*want.*to.*proceed} {
+            puts "\n✅ Detected prompt directly"
+            send "1"
+            incr auto_send_count
+        }
+        # 定期检查日志
+        timeout 3 {
+            set now [clock seconds]
+            
+            # 检查是否有确认提示
+            if {[check_for_prompt $output_file]} {
+                puts "\n✅ Detected prompt from log (auto-send #$auto_send_count)"
+                send "1"
+                incr auto_send_count
+            }
+            
+            # 检查是否完成（超过 10 秒空闲）
+            if {$now - $last_check_time > 10} {
+                if {[check_for_done $output_file]} {
+                    puts "\n✅ Task appears complete"
+                    break
+                }
+            }
+            
+            set last_check_time $now
+        }
+        eof {
+            puts "\n✅ Process ended"
+            break
+        }
+    }
+    
+    # 超时保护（5 分钟）
+    if {$auto_send_count > 0 && [clock seconds] - $last_check_time > 300} {
+        puts "\n⏰ Timeout after 5 minutes"
+        break
+    }
+}
+
+puts "\n="
+puts "📊 Total auto-sends: $auto_send_count"
+puts "📋 Full log: $output_file"
+
+# 不要删除日志，方便检查
+# file delete -force $output_file
+
+wait
