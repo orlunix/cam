@@ -131,18 +131,24 @@ class ClaudeAdapter(ToolAdapter):
         return None
 
     def detect_completion(self, output: str) -> AgentStatus | None:
-        """Detect if Claude Code has completed execution.
+        """Detect if Claude Code has completed its task.
 
-        In interactive mode, Claude doesn't auto-exit. Completion is detected
-        by the monitor via session_exists() when the session ends, or via
-        idle timeout. This method returns None to avoid false positives.
+        Claude's TUI shows '❯ <user prompt>' when the task is sent, then
+        displays work output, then returns to '❯' (with placeholder text)
+        when done. Two or more lines starting with ❯ means Claude has
+        finished the task and is waiting for the next prompt.
 
         Args:
             output: Recent TMUX output
 
         Returns:
-            None — completion is detected by session exit, not output parsing
+            AgentStatus.COMPLETED if Claude is back at its input prompt,
+            None if still working.
         """
+        clean = strip_ansi(output)
+        prompt_count = len(self._READY_PATTERN.findall(clean))
+        if prompt_count >= 2:
+            return AgentStatus.COMPLETED
         return None
 
     # Claude's input prompt: "❯" at the start of a line (between ──── borders).

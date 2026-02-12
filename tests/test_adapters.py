@@ -146,9 +146,20 @@ class TestClaudeAdapter:
         assert result.response == "1"
         assert result.send_enter is False
 
-    def test_completion_returns_none(self):
+    def test_completion_returns_none_for_single_prompt(self):
+        adapter = ClaudeAdapter()
+        # Single ❯ = still working (initial prompt sent)
+        assert adapter.detect_completion("❯ Do something\nWorking...") is None
+
+    def test_completion_returns_none_for_no_prompt(self):
         adapter = ClaudeAdapter()
         assert adapter.detect_completion("anything") is None
+
+    def test_completion_detected_with_two_prompts(self):
+        adapter = ClaudeAdapter()
+        # Two ❯ = task prompt + return to input = completed
+        output = '❯ Do something\n● Write(file.py)\n────\n❯\xa0Try "fix lint"\n────'
+        assert adapter.detect_completion(output) == AgentStatus.COMPLETED
 
     def test_is_ready_for_input_with_prompt(self):
         adapter = ClaudeAdapter()

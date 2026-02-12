@@ -208,9 +208,14 @@ class AgentMonitor:
                     })
 
                 # --------------------------------------------------
-                # 8. Detect completion
+                # 8. Detect completion (only when output has stabilized)
                 # --------------------------------------------------
-                completion_status = self._adapter.detect_completion(output)
+                idle_for = now - self._last_change_time
+                completion_status = (
+                    self._adapter.detect_completion(output)
+                    if not output_changed and idle_for >= 3.0
+                    else None
+                )
                 if completion_status is not None:
                     # Extract cost and file info from final output
                     cost = self._adapter.estimate_cost(output)
