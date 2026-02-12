@@ -13,6 +13,7 @@ DATA_DIR = Path(os.environ.get("CAM_DATA_DIR", "~/.local/share/cam")).expanduser
 CONFIG_DIR = Path(os.environ.get("CAM_CONFIG_DIR", "~/.config/cam")).expanduser()
 LOG_DIR = DATA_DIR / "logs"
 SOCKET_DIR = DATA_DIR / "sockets"
+PID_DIR = DATA_DIR / "pids"
 ADAPTER_DIR = DATA_DIR / "adapters"
 
 # Database
