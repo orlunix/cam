@@ -551,6 +551,7 @@ def _find_orphan_files(agent_store) -> list[str]:
     from cam.constants import LOG_DIR, PID_DIR, SOCKET_DIR
 
     known_ids = agent_store.all_ids()
+    known_sessions = agent_store.all_session_names()
     orphans: list[str] = []
 
     # Orphan logs
@@ -573,7 +574,9 @@ def _find_orphan_files(agent_store) -> list[str]:
     if SOCKET_DIR.exists():
         for f in SOCKET_DIR.iterdir():
             if f.suffix == ".sock":
-                orphans.append(str(f))
+                session_name = f.stem
+                if session_name not in known_sessions:
+                    orphans.append(str(f))
 
     return orphans
 

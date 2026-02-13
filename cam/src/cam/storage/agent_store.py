@@ -306,6 +306,13 @@ class AgentStore:
         rows = self.db.fetchall("SELECT id FROM agents")
         return {row["id"] for row in rows}
 
+    def all_session_names(self) -> set[str]:
+        """Return all tmux session names in the database."""
+        rows = self.db.fetchall(
+            "SELECT tmux_session FROM agents WHERE tmux_session IS NOT NULL"
+        )
+        return {row["tmux_session"] for row in rows}
+
     def delete(self, agent_id: str) -> bool:
         """Delete an agent and its events.
 
