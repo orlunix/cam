@@ -25,23 +25,23 @@ class ClaudeAdapter(ToolAdapter):
     name = "claude"
     display_name = "Claude Code"
 
-    # Compile regex patterns for efficiency
+    # State detection patterns using Claude Code TUI tool-call markers
+    # (● ToolName(...)) for reliable detection.
     _STATE_PATTERNS = {
         AgentState.PLANNING: re.compile(
-            r"(Thinking|Analyzing|Planning|Reading|Searching)",
-            re.IGNORECASE
+            r"(● Read\(|● Glob\(|● Grep\(|● WebFetch\(|● WebSearch\(|Thinking|Analyzing)",
+            re.IGNORECASE,
         ),
         AgentState.EDITING: re.compile(
-            r"(Editing|Writing|Creating|Modifying|Updated)",
-            re.IGNORECASE
+            r"(● Edit\(|● Write\(|● NotebookEdit\()",
         ),
         AgentState.TESTING: re.compile(
-            r"(Running tests|Testing|Executing|pytest|npm test)",
-            re.IGNORECASE
+            r"(● Bash\(|Running tests|pytest|npm test|npm run)",
+            re.IGNORECASE,
         ),
         AgentState.COMMITTING: re.compile(
-            r"(Committing|Pushing|Creating PR|git commit)",
-            re.IGNORECASE
+            r"(git commit|git push|gh pr create)",
+            re.IGNORECASE,
         ),
     }
 
@@ -92,7 +92,8 @@ class ClaudeAdapter(ToolAdapter):
     def detect_state(self, output: str) -> AgentState | None:
         """Detect agent state from recent output.
 
-        Strips ANSI codes before checking patterns.
+        Strips ANSI codes, then finds the last matching pattern in the
+        output so the most recent activity wins.
 
         Args:
             output: Recent TMUX output
@@ -103,11 +104,15 @@ class ClaudeAdapter(ToolAdapter):
         recent = output[-2000:] if len(output) > 2000 else output
         clean = strip_ansi(recent)
 
+        last_pos = -1
+        last_state: AgentState | None = None
         for state, pattern in self._STATE_PATTERNS.items():
-            if pattern.search(clean):
-                return state
+            for m in pattern.finditer(clean):
+                if m.start() > last_pos:
+                    last_pos = m.start()
+                    last_state = state
 
-        return None
+        return last_state
 
     def should_auto_confirm(self, output: str) -> ConfirmAction | None:
         """Check if output contains a Claude permission prompt.

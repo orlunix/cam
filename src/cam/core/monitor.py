@@ -311,6 +311,7 @@ class AgentMonitor:
             The status that was set (same as the input).
         """
         self._agent.status = status
+        self._agent.state = AgentState.IDLE
         self._agent.completed_at = datetime.utcnow()
         self._agent.exit_reason = reason
 
@@ -319,6 +320,7 @@ class AgentMonitor:
             self._agent_store.update_status(
                 str(self._agent.id),
                 status,
+                state=AgentState.IDLE,
                 exit_reason=reason,
             )
         except Exception:
