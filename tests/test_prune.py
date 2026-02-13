@@ -219,6 +219,39 @@ class TestFindOrphanFiles:
             c.PID_DIR = orig_pid
             c.SOCKET_DIR = orig_sock
 
+    def test_socket_orphan_vs_known(self, tmp_path, agent_store):
+        """Sockets linked to a known agent's tmux session are NOT orphans."""
+        from cam.cli.agent_cmd import _find_orphan_files
+        import cam.constants as c
+
+        orig_log = c.LOG_DIR
+        orig_pid = c.PID_DIR
+        orig_sock = c.SOCKET_DIR
+        c.LOG_DIR = tmp_path / "logs"
+        c.PID_DIR = tmp_path / "pids"
+        c.SOCKET_DIR = tmp_path / "sockets"
+        c.LOG_DIR.mkdir()
+        c.PID_DIR.mkdir()
+        c.SOCKET_DIR.mkdir()
+
+        try:
+            a = _make_agent()
+            a.tmux_session = "cam-abc123"
+            agent_store.save(a)
+
+            # Known session socket — NOT an orphan
+            (c.SOCKET_DIR / "cam-abc123.sock").write_text("")
+            # Unknown session socket — IS an orphan
+            (c.SOCKET_DIR / "cam-unknown99.sock").write_text("")
+
+            orphans = _find_orphan_files(agent_store)
+            assert len(orphans) == 1
+            assert "cam-unknown99.sock" in orphans[0]
+        finally:
+            c.LOG_DIR = orig_log
+            c.PID_DIR = orig_pid
+            c.SOCKET_DIR = orig_sock
+
 
 class TestParseBefore:
     def test_relative_days(self):
