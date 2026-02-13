@@ -38,6 +38,7 @@ class SSHTransport(Transport):
         user: str | None = None,
         port: int | None = None,
         key_file: str | None = None,
+        env_setup: str | None = None,
     ) -> None:
         if not host:
             raise ValueError("SSH transport requires a host")
@@ -45,6 +46,7 @@ class SSHTransport(Transport):
         self._user = user
         self._port = port or 22
         self._key_file = key_file
+        self._env_setup = env_setup
 
         # ControlMaster socket path — kept short to avoid exceeding the
         # 108-char Unix socket limit (SSH appends a ~25-char random suffix).
@@ -143,6 +145,10 @@ class SSHTransport(Transport):
 
         # Build shell command string (passed as positional arg to new-session)
         command_str = " ".join(shlex.quote(arg) for arg in command)
+
+        # Wrap with env_setup if configured (e.g. PATH setup for remote tools)
+        if self._env_setup:
+            command_str = f"bash -c {shlex.quote(self._env_setup + ' && exec ' + command_str)}"
 
         # Create detached session with command as initial program.
         # Session dies when process exits (same as LocalTransport).

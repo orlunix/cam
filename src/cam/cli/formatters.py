@@ -162,6 +162,10 @@ def print_context_detail(context: Context) -> None:
     if machine_info:
         lines.append(f"[bold]Machine:[/bold] {machine_info}")
 
+    # Env setup
+    if context.machine.env_setup:
+        lines.append(f"[bold]Env Setup:[/bold] {context.machine.env_setup}")
+
     # Tags
     if context.tags:
         lines.append(f"[bold]Tags:[/bold] {', '.join(context.tags)}")

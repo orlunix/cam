@@ -146,6 +146,41 @@ class TestCreateSession:
         assert "--allowed-tools" in create_cmd
 
     @pytest.mark.asyncio
+    async def test_create_session_with_env_setup(self, tmp_path, monkeypatch):
+        """create_session wraps command with env_setup when configured."""
+        import cam.constants as c
+
+        orig = c.SOCKET_DIR
+        c.SOCKET_DIR = tmp_path / "sockets"
+        c.SOCKET_DIR.mkdir()
+        try:
+            t = SSHTransport(
+                host="h", user="u",
+                env_setup="export PATH=/opt/tools/bin:$PATH",
+            )
+            calls = []
+
+            async def mock_run_ssh(remote_cmd, check=True):
+                calls.append(remote_cmd)
+                return True, ""
+
+            t._run_ssh = mock_run_ssh
+
+            result = await t.create_session(
+                "cam-abc123", ["claude", "--allowed-tools", "Bash"], "/home/dev"
+            )
+
+            assert result is True
+            create_cmd = calls[1]
+            # Should wrap with bash -c "env_setup && exec command"
+            assert "bash -c" in create_cmd
+            assert "export PATH=/opt/tools/bin:$PATH" in create_cmd
+            assert "exec" in create_cmd
+            assert "claude" in create_cmd
+        finally:
+            c.SOCKET_DIR = orig
+
+    @pytest.mark.asyncio
     async def test_create_session_failure(self, ssh_transport):
         call_count = 0
 
