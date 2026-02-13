@@ -61,6 +61,7 @@ class MachineConfig(BaseModel):
     auth_token: Optional[str] = None
     image: Optional[str] = None
     volumes: Optional[dict[str, str]] = None
+    env_setup: Optional[str] = None  # Shell commands to run before agent (e.g. PATH setup)
 
     model_config = {
         "json_schema_extra": {
@@ -73,7 +74,8 @@ class MachineConfig(BaseModel):
                     "host": "remote.example.com",
                     "user": "developer",
                     "port": 22,
-                    "key_file": "~/.ssh/id_rsa"
+                    "key_file": "~/.ssh/id_rsa",
+                    "env_setup": "source /opt/tools/env.sh"
                 },
                 {
                     "type": "DOCKER",

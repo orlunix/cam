@@ -143,6 +143,11 @@ class ClaudeAdapter(ToolAdapter):
         when done. Two or more lines starting with ❯ means Claude has
         finished the task and is waiting for the next prompt.
 
+        For long outputs (especially over SSH with limited capture windows),
+        the first ❯ may scroll past the capture buffer. In that case, a
+        single ❯ combined with a "Crunched for" summary line (Claude's
+        task-complete marker) is also treated as completion.
+
         Args:
             output: Recent TMUX output
 
@@ -154,11 +159,25 @@ class ClaudeAdapter(ToolAdapter):
         prompt_count = len(self._READY_PATTERN.findall(clean))
         if prompt_count >= 2:
             return AgentStatus.COMPLETED
+
+        # Fallback: single ❯ + task summary = completion
+        # This handles long outputs where the first ❯ scrolled past
+        # the capture window (common with SSH's 50-line capture).
+        # Claude's summary uses rotating verbs: "Crunched for", "Sautéed for",
+        # "Whisked for", etc. — match the "✻ <verb> for <time>" pattern.
+        if prompt_count == 1 and self._TASK_SUMMARY_PATTERN.search(clean):
+            return AgentStatus.COMPLETED
+
         return None
 
     # Claude's input prompt: "❯" at the start of a line (between ──── borders).
     # May have placeholder text like "Try "fix lint errors"" or be empty.
     _READY_PATTERN = re.compile(r"^❯", re.MULTILINE)
+
+    # Claude's task summary: "✻ <cooking verb> for <time>" (e.g. "✻ Crunched for 1m 11s")
+    # Claude rotates verbs (Crunched, Sautéed, Whisked, etc.) but the
+    # "✻ ... for \d+" pattern is stable.
+    _TASK_SUMMARY_PATTERN = re.compile(r"✻ .+ for \d+")
 
     def is_ready_for_input(self, output: str) -> bool:
         """Check if Claude's TUI shows the input prompt (❯).
