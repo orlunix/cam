@@ -7,6 +7,7 @@ connection pooling for reduced latency on repeated operations.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import shlex
 import time
@@ -45,10 +46,12 @@ class SSHTransport(Transport):
         self._port = port or 22
         self._key_file = key_file
 
-        # ControlMaster socket path
-        self._control_dir = SOCKET_DIR / "ssh"
-        self._control_dir.mkdir(parents=True, exist_ok=True)
-        self._control_path = self._control_dir / f"{self._user or 'default'}@{self._host}:{self._port}"
+        # ControlMaster socket path — kept short to avoid exceeding the
+        # 108-char Unix socket limit (SSH appends a ~25-char random suffix).
+        # Use /tmp with a hash of connection details for a stable, short path.
+        conn_key = f"{self._user or 'default'}@{self._host}:{self._port}"
+        conn_hash = hashlib.sha256(conn_key.encode()).hexdigest()[:12]
+        self._control_path = Path(f"/tmp/cam-ssh-{conn_hash}")
 
     def _ssh_base_args(self) -> list[str]:
         """Build base SSH command arguments with ControlMaster options."""
