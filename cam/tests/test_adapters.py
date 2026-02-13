@@ -74,30 +74,52 @@ class TestClaudeAdapter:
         assert "Edit" in tools_arg
         assert "Write" in tools_arg
 
-    def test_detect_state_planning(self):
+    def test_detect_state_planning_thinking(self):
         adapter = ClaudeAdapter()
-        state = adapter.detect_state("Thinking about the approach...")
-        assert state == AgentState.PLANNING
+        assert adapter.detect_state("Thinking about the approach...") == AgentState.PLANNING
 
-    def test_detect_state_editing(self):
+    def test_detect_state_planning_tool_marker(self):
         adapter = ClaudeAdapter()
-        state = adapter.detect_state("Editing src/main.py...")
-        assert state == AgentState.EDITING
+        assert adapter.detect_state("● Read(src/main.py)") == AgentState.PLANNING
 
-    def test_detect_state_testing(self):
+    def test_detect_state_editing_tool_marker(self):
         adapter = ClaudeAdapter()
-        state = adapter.detect_state("Running tests with pytest...")
-        assert state == AgentState.TESTING
+        assert adapter.detect_state("● Edit(src/main.py)") == AgentState.EDITING
+
+    def test_detect_state_editing_write_marker(self):
+        adapter = ClaudeAdapter()
+        assert adapter.detect_state("● Write(new_file.py)") == AgentState.EDITING
+
+    def test_detect_state_testing_bash_marker(self):
+        adapter = ClaudeAdapter()
+        assert adapter.detect_state("● Bash(pytest tests/)") == AgentState.TESTING
+
+    def test_detect_state_testing_keyword(self):
+        adapter = ClaudeAdapter()
+        assert adapter.detect_state("Running tests with pytest...") == AgentState.TESTING
+
+    def test_detect_state_committing(self):
+        adapter = ClaudeAdapter()
+        assert adapter.detect_state("git commit -m 'fix bug'") == AgentState.COMMITTING
 
     def test_detect_no_state(self):
         adapter = ClaudeAdapter()
-        state = adapter.detect_state("Some random output")
-        assert state is None
+        assert adapter.detect_state("Some random output") is None
 
     def test_detect_state_strips_ansi(self):
         adapter = ClaudeAdapter()
-        state = adapter.detect_state("\x1B[1;32mThinking\x1B[0m about the approach...")
-        assert state == AgentState.PLANNING
+        assert adapter.detect_state("\x1B[1;32mThinking\x1B[0m about the approach...") == AgentState.PLANNING
+
+    def test_detect_state_last_match_wins(self):
+        """When multiple patterns match, the last occurrence in output wins."""
+        adapter = ClaudeAdapter()
+        output = "● Read(config.py)\nAnalyzing...\n● Edit(config.py)\nDone"
+        assert adapter.detect_state(output) == AgentState.EDITING
+
+    def test_detect_state_last_match_testing_after_editing(self):
+        adapter = ClaudeAdapter()
+        output = "● Edit(main.py)\nUpdated file\n● Bash(pytest tests/)"
+        assert adapter.detect_state(output) == AgentState.TESTING
 
     def test_auto_confirm_proceed(self):
         adapter = ClaudeAdapter()
