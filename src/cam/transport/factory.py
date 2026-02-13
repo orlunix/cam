@@ -51,6 +51,7 @@ class TransportFactory:
                 user=config.user,
                 port=config.port,
                 key_file=config.key_file,
+                env_setup=config.env_setup,
             )
 
         elif config.type == TransportType.DOCKER:

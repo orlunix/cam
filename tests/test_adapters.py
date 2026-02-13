@@ -183,6 +183,30 @@ class TestClaudeAdapter:
         output = '❯ Do something\n● Write(file.py)\n────\n❯\xa0Try "fix lint"\n────'
         assert adapter.detect_completion(output) == AgentStatus.COMPLETED
 
+    def test_completion_fallback_crunched_with_single_prompt(self):
+        adapter = ClaudeAdapter()
+        # Single ❯ + "Crunched for" = completion (first ❯ scrolled past capture window)
+        output = "✻ Crunched for 1m 11s\n────\n❯ try it out\n────"
+        assert adapter.detect_completion(output) == AgentStatus.COMPLETED
+
+    def test_completion_fallback_sauteed_with_single_prompt(self):
+        adapter = ClaudeAdapter()
+        # Claude rotates verbs: "Sautéed for" should also work
+        output = "✻ Sautéed for 41s\n────\n❯ try it out\n────"
+        assert adapter.detect_completion(output) == AgentStatus.COMPLETED
+
+    def test_completion_no_fallback_without_prompt(self):
+        adapter = ClaudeAdapter()
+        # Task summary but no ❯ = not yet complete (still rendering)
+        output = "✻ Crunched for 45s\nSome more output"
+        assert adapter.detect_completion(output) is None
+
+    def test_completion_no_fallback_summary_only(self):
+        adapter = ClaudeAdapter()
+        # Single ❯ without task summary = still working (initial prompt)
+        output = "❯ Do something\n● Edit(file.py)\nModifying..."
+        assert adapter.detect_completion(output) is None
+
     def test_is_ready_for_input_with_prompt(self):
         adapter = ClaudeAdapter()
         output = "Welcome back!\n❯ \n"

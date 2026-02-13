@@ -37,6 +37,7 @@ def context_add(
     agent_port: int = typer.Option(9876, "--agent-port", help="Agent server port"),
     token: Optional[str] = typer.Option(None, "--token", help="Auth token"),
     docker: Optional[str] = typer.Option(None, "--docker", help="Docker image"),
+    env_setup: Optional[str] = typer.Option(None, "--env-setup", help="Shell commands to run before agent (e.g. PATH setup)"),
     tag: Optional[list[str]] = typer.Option(None, "--tag", help="Tags (repeatable)"),
 ) -> None:
     """Add a new work context.
@@ -44,6 +45,7 @@ def context_add(
     Examples:
         cam context add myproject /path/to/project
         cam context add remote /remote/path --host server.com --user dev
+        cam context add remote /path --host srv --env-setup "source /opt/env.sh"
         cam context add agent-ctx /path --agent --host localhost
         cam context add container /app --docker python:3.11
     """
@@ -81,6 +83,7 @@ def context_add(
             agent_port=agent_port if agent else None,
             auth_token=token,
             image=docker,
+            env_setup=env_setup,
         )
     except ValueError as e:
         print_error(f"Invalid machine configuration: {e}")
@@ -258,6 +261,7 @@ def context_remove(
 def context_update(
     name_or_id: str = typer.Argument(..., help="Context name or ID"),
     path: Optional[str] = typer.Option(None, "--path", help="Update working directory path"),
+    env_setup: Optional[str] = typer.Option(None, "--env-setup", help="Shell commands to run before agent"),
     add_tag: Optional[list[str]] = typer.Option(None, "--add-tag", help="Add tags (repeatable)"),
     remove_tag: Optional[list[str]] = typer.Option(None, "--remove-tag", help="Remove tags (repeatable)"),
 ) -> None:
@@ -265,6 +269,7 @@ def context_update(
 
     Examples:
         cam context update myproject --path /new/path
+        cam context update myproject --env-setup "source /opt/env.sh"
         cam context update myproject --add-tag python --add-tag web
         cam context update myproject --remove-tag old-tag
     """
@@ -287,6 +292,12 @@ def context_update(
         ctx.path = path
         changed = True
         print_info(f"Updated path to: {path}")
+
+    # Update env_setup
+    if env_setup is not None:
+        ctx.machine.env_setup = env_setup if env_setup else None
+        changed = True
+        print_info(f"Updated env_setup to: {env_setup or '(cleared)'}")
 
     # Add tags
     if add_tag:
