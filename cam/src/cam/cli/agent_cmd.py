@@ -364,8 +364,253 @@ def retry(
 
 
 # ---------------------------------------------------------------------------
+# prune
+# ---------------------------------------------------------------------------
+
+
+def prune(
+    status: Optional[str] = typer.Option(
+        None, "--status", "-s",
+        help="Delete agents with these statuses (comma-separated: killed,timeout,failed)",
+    ),
+    before: Optional[str] = typer.Option(
+        None, "--before",
+        help="Delete agents older than this (e.g. '7d', '30d', '2025-01-01')",
+    ),
+    ctx: Optional[str] = typer.Option(None, "--ctx", help="Only agents from this context"),
+    all_terminal: bool = typer.Option(
+        False, "--all",
+        help="Delete ALL terminal agents (completed, failed, timeout, killed)",
+    ),
+    orphans: bool = typer.Option(
+        False, "--orphans",
+        help="Clean orphaned files (sockets, PIDs, logs) not linked to any agent",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be deleted"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+) -> None:
+    """Remove old agents and clean up stale files."""
+    from cam.cli.app import state
+    from cam.cli.formatters import print_error, print_info, print_success, print_warning
+
+    if not status and not before and not ctx and not all_terminal and not orphans:
+        print_error("Specify at least one filter: --status, --before, --ctx, --all, or --orphans")
+        raise typer.Exit(1)
+
+    agent_ids: list[str] = []
+    session_names: list[str | None] = []
+    orphan_files: list[str] = []
+
+    # --- Build agent filter ---
+    if all_terminal or status or before or ctx:
+        statuses: list[str] | None = None
+        if all_terminal:
+            statuses = ["completed", "failed", "timeout", "killed"]
+        elif status:
+            statuses = [s.strip() for s in status.split(",")]
+
+        before_dt: str | None = None
+        if before:
+            before_dt = _parse_before(before)
+
+        context_id: str | None = None
+        if ctx:
+            ctx_obj = state.context_store.get(ctx)
+            if not ctx_obj:
+                print_error(f"Context not found: {ctx}")
+                raise typer.Exit(1)
+            context_id = str(ctx_obj.id)
+
+        results = state.agent_store.list_ids_by_filter(
+            statuses=statuses, before=before_dt, context_id=context_id,
+        )
+        agent_ids = [r[0] for r in results]
+        session_names = [r[1] for r in results]
+
+    # --- Find orphans ---
+    if orphans:
+        orphan_files = _find_orphan_files(state.agent_store)
+
+    # --- Summary ---
+    if not agent_ids and not orphan_files:
+        print_info("Nothing to prune.")
+        return
+
+    if agent_ids:
+        log_bytes = _sum_log_bytes(agent_ids)
+        print_info(f"Agents to delete: {len(agent_ids)}")
+        if log_bytes > 0:
+            print_info(f"Log files to remove: {_fmt_bytes(log_bytes)}")
+
+    if orphan_files:
+        print_info(f"Orphaned files to remove: {len(orphan_files)}")
+        for f in orphan_files[:10]:
+            print_info(f"  {f}")
+        if len(orphan_files) > 10:
+            print_info(f"  ... and {len(orphan_files) - 10} more")
+
+    if dry_run:
+        print_info("")
+        print_success("Dry run — nothing was deleted")
+        return
+
+    # --- Confirm ---
+    if not force:
+        confirm = typer.confirm("Proceed with deletion?")
+        if not confirm:
+            print_info("Cancelled.")
+            return
+
+    # --- Delete ---
+    deleted_agents = 0
+    if agent_ids:
+        file_counts = _clean_agent_files(agent_ids, session_names)
+        deleted_agents = state.agent_store.delete_batch(agent_ids)
+        print_success(
+            f"Deleted {deleted_agents} agents, "
+            f"{file_counts['logs']} logs, "
+            f"{file_counts['sockets']} sockets, "
+            f"{file_counts['pids']} PIDs"
+        )
+
+    if orphan_files:
+        removed = _remove_files(orphan_files)
+        print_success(f"Removed {removed} orphaned files")
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _parse_before(value: str) -> str:
+    """Parse --before value into ISO datetime string."""
+    from datetime import datetime, timedelta, timezone
+
+    from cam.core.config import parse_duration
+
+    # Try as relative duration (7d, 30d, 2h)
+    try:
+        seconds = parse_duration(value)
+        if seconds is not None:
+            cutoff = datetime.now(timezone.utc) - timedelta(seconds=seconds)
+            return cutoff.isoformat()
+    except ValueError:
+        pass
+
+    # Try as ISO date
+    try:
+        dt = datetime.fromisoformat(value)
+        return dt.isoformat()
+    except ValueError:
+        pass
+
+    # Try as YYYY-MM-DD
+    try:
+        dt = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+    except ValueError:
+        raise typer.BadParameter(f"Cannot parse date: {value}")
+
+
+def _clean_agent_files(
+    agent_ids: list[str], session_names: list[str | None]
+) -> dict[str, int]:
+    """Delete log files, sockets, and PIDs for given agents."""
+    from cam.constants import LOG_DIR, PID_DIR, SOCKET_DIR
+
+    counts = {"logs": 0, "sockets": 0, "pids": 0}
+
+    for agent_id in agent_ids:
+        # Log file
+        log_path = LOG_DIR / f"{agent_id}.jsonl"
+        if log_path.exists():
+            log_path.unlink()
+            counts["logs"] += 1
+
+        # PID file
+        pid_path = PID_DIR / f"{agent_id}.pid"
+        if pid_path.exists():
+            pid_path.unlink()
+            counts["pids"] += 1
+
+    # Socket files (named by session, not agent ID)
+    for session_name in session_names:
+        if not session_name:
+            continue
+        sock_path = SOCKET_DIR / f"{session_name}.sock"
+        if sock_path.exists():
+            sock_path.unlink()
+            counts["sockets"] += 1
+
+    return counts
+
+
+def _find_orphan_files(agent_store) -> list[str]:
+    """Find files in data dirs not linked to any agent in the DB."""
+    from cam.constants import LOG_DIR, PID_DIR, SOCKET_DIR
+
+    known_ids = agent_store.all_ids()
+    orphans: list[str] = []
+
+    # Orphan logs
+    if LOG_DIR.exists():
+        for f in LOG_DIR.iterdir():
+            if f.suffix == ".jsonl":
+                agent_id = f.stem
+                if agent_id not in known_ids:
+                    orphans.append(str(f))
+
+    # Orphan PIDs
+    if PID_DIR.exists():
+        for f in PID_DIR.iterdir():
+            if f.suffix == ".pid":
+                agent_id = f.stem
+                if agent_id not in known_ids:
+                    orphans.append(str(f))
+
+    # Orphan sockets
+    if SOCKET_DIR.exists():
+        for f in SOCKET_DIR.iterdir():
+            if f.suffix == ".sock":
+                orphans.append(str(f))
+
+    return orphans
+
+
+def _sum_log_bytes(agent_ids: list[str]) -> int:
+    """Sum log file sizes for the given agent IDs."""
+    from cam.constants import LOG_DIR
+
+    total = 0
+    for agent_id in agent_ids:
+        log_path = LOG_DIR / f"{agent_id}.jsonl"
+        if log_path.exists():
+            total += log_path.stat().st_size
+    return total
+
+
+def _fmt_bytes(n: int) -> str:
+    """Format byte count as human-readable string."""
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n / (1024 * 1024):.1f} MB"
+
+
+def _remove_files(paths: list[str]) -> int:
+    """Remove a list of file paths, return count of successfully removed."""
+    from pathlib import Path
+
+    removed = 0
+    for p in paths:
+        try:
+            Path(p).unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 def _print_log_entry(entry: dict) -> None:
