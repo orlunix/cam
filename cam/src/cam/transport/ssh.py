@@ -127,17 +127,24 @@ class SSHTransport(Transport):
     async def create_session(self, session_id: str, command: list[str], workdir: str) -> bool:
         """Create a TMUX session on the remote host.
 
-        Ensures the remote socket directory exists, creates a detached session,
-        then sends the command as literal keys.
+        Ensures the remote socket directory exists, then creates a detached
+        session with the command as the initial program. When the command
+        exits, the TMUX session terminates automatically — matching the
+        LocalTransport behavior so the monitor can detect completion via
+        session_exists().
         """
         # Ensure remote socket directory exists
         ok, _ = await self._run_ssh("mkdir -p /tmp/cam-sockets", check=False)
         if not ok:
             logger.warning("Could not create remote socket dir (may already exist)")
 
-        # Create detached session
+        # Build shell command string (passed as positional arg to new-session)
+        command_str = " ".join(shlex.quote(arg) for arg in command)
+
+        # Create detached session with command as initial program.
+        # Session dies when process exits (same as LocalTransport).
         create_cmd = self._remote_tmux_cmd(session_id, [
-            "new-session", "-d", "-s", session_id, "-c", workdir,
+            "new-session", "-d", "-s", session_id, "-c", workdir, command_str,
         ])
         success, error = await self._run_ssh(create_cmd)
         if not success:
@@ -145,14 +152,6 @@ class SSHTransport(Transport):
             return False
 
         logger.info("Created remote session %s on %s in %s", session_id, self._host, workdir)
-
-        # Send the command
-        command_str = " ".join(shlex.quote(arg) for arg in command)
-        if not await self.send_input(session_id, command_str, send_enter=True):
-            logger.error("Failed to send command to remote session %s", session_id)
-            await self.kill_session(session_id)
-            return False
-
         return True
 
     async def send_input(self, session_id: str, text: str, send_enter: bool = True) -> bool:
@@ -176,15 +175,29 @@ class SSHTransport(Transport):
         return success
 
     async def capture_output(self, session_id: str, lines: int = 50) -> str:
-        """Capture output from a remote TMUX session."""
+        """Capture output from a remote TMUX session.
+
+        If the primary capture returns near-empty content (e.g. during
+        Claude's alternate screen buffer), falls back to the -a flag.
+        """
         target = f"{session_id}:0.0"
         capture_cmd = self._remote_tmux_cmd(session_id, [
             "capture-pane", "-p", "-J", "-t", target, "-S", f"-{lines}",
         ])
         success, output = await self._run_ssh(capture_cmd, check=False)
         if not success:
-            logger.warning("Failed to capture output from remote session %s", session_id)
+            logger.debug("Failed to capture output from remote session %s", session_id)
             return ""
+
+        # If primary capture is near-empty, try alternate screen
+        if len(output.strip()) < 20:
+            alt_cmd = self._remote_tmux_cmd(session_id, [
+                "capture-pane", "-p", "-J", "-a", "-t", target, "-S", f"-{lines}",
+            ])
+            alt_success, alt_output = await self._run_ssh(alt_cmd, check=False)
+            if alt_success and len(alt_output.strip()) > len(output.strip()):
+                output = alt_output
+
         return output
 
     async def session_exists(self, session_id: str) -> bool:
