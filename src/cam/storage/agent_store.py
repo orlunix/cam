@@ -241,6 +241,71 @@ class AgentStore:
         )
         return [self._row_to_event(row) for row in rows]
 
+    def list_ids_by_filter(
+        self,
+        statuses: list[str] | None = None,
+        before: str | None = None,
+        context_id: str | None = None,
+    ) -> list[tuple[str, str | None]]:
+        """List agent (id, tmux_session) pairs matching filter criteria.
+
+        Args:
+            statuses: Filter by status values (e.g. ["killed", "timeout"]).
+            before: ISO datetime string — only agents started before this time.
+            context_id: Filter by context ID.
+
+        Returns:
+            List of (agent_id, tmux_session) tuples.
+        """
+        query = "SELECT id, tmux_session FROM agents WHERE 1=1"
+        params: list[str] = []
+
+        if statuses:
+            placeholders = ",".join("?" for _ in statuses)
+            query += f" AND status IN ({placeholders})"
+            params.extend(statuses)
+
+        if before:
+            query += " AND started_at < ?"
+            params.append(before)
+
+        if context_id:
+            query += " AND context_id = ?"
+            params.append(context_id)
+
+        rows = self.db.fetchall(query, tuple(params))
+        return [(row["id"], row["tmux_session"]) for row in rows]
+
+    def delete_batch(self, agent_ids: list[str]) -> int:
+        """Delete multiple agents and their events in batch.
+
+        Args:
+            agent_ids: List of agent IDs to delete.
+
+        Returns:
+            Number of agents deleted.
+        """
+        if not agent_ids:
+            return 0
+        try:
+            placeholders = ",".join("?" for _ in agent_ids)
+            self.db.execute(
+                f"DELETE FROM agent_events WHERE agent_id IN ({placeholders})",
+                tuple(agent_ids),
+            )
+            cursor = self.db.execute(
+                f"DELETE FROM agents WHERE id IN ({placeholders})",
+                tuple(agent_ids),
+            )
+            return cursor.rowcount
+        except sqlite3.Error as e:
+            raise AgentStoreError(f"Failed to delete agents: {e}") from e
+
+    def all_ids(self) -> set[str]:
+        """Return all agent IDs in the database."""
+        rows = self.db.fetchall("SELECT id FROM agents")
+        return {row["id"] for row in rows}
+
     def delete(self, agent_id: str) -> bool:
         """Delete an agent and its events.
 
