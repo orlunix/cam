@@ -114,6 +114,21 @@ class LocalTransport(Transport):
         logger.info(f"Created session {session_id} in {workdir}: {command_str}")
         return True
 
+    async def start_logging(self, session_id: str, log_path: str) -> bool:
+        """Pipe all TMUX pane output to a log file via pipe-pane."""
+        socket = self._get_socket_path(session_id)
+        target = f"{session_id}:0.0"
+        pipe_args = [
+            "pipe-pane", "-t", target,
+            f"cat >> {shlex.quote(log_path)}",
+        ]
+        success, _ = await self._run_tmux(pipe_args, socket, check=False)
+        if success:
+            logger.info(f"Logging output to {log_path} for {session_id}")
+        else:
+            logger.warning(f"Failed to start pipe-pane for {session_id}")
+        return success
+
     async def send_input(self, session_id: str, text: str, send_enter: bool = True) -> bool:
         """Send text input to a running TMUX session using literal mode.
 
