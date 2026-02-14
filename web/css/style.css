@@ -534,6 +534,19 @@ select.form-input {
 
 .btn-full { width: 100%; }
 
+.btn-delete-card {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.btn-delete-card:hover { color: var(--red); background: rgba(248, 81, 73, 0.15); }
+
 /* === Contexts === */
 .context-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
 

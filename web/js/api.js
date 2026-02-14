@@ -264,8 +264,10 @@ export class CamApi {
   getAgent(id) { return this.request('GET', `/api/agents/${id}`); }
   startAgent(body) { return this.request('POST', '/api/agents', body); }
   stopAgent(id, force = false) { return this.request('DELETE', `/api/agents/${id}?force=${force}`); }
+  deleteAgentHistory(id) { return this.request('DELETE', `/api/agents/${id}/history`); }
   agentLogs(id, tail = 100) { return this.request('GET', `/api/agents/${id}/logs?tail=${tail}`); }
   agentOutput(id, lines = 80) { return this.request('GET', `/api/agents/${id}/output?lines=${lines}`); }
+  agentFullOutput(id, offset = 0) { return this.request('GET', `/api/agents/${id}/fulloutput?offset=${offset}`); }
   sendInput(id, text, sendEnter = true) { return this.request('POST', `/api/agents/${id}/input`, { text, send_enter: sendEnter }); }
   listContexts() { return this.request('GET', '/api/contexts'); }
   getContext(nameOrId) { return this.request('GET', `/api/contexts/${nameOrId}`); }

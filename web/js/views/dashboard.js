@@ -37,15 +37,19 @@ function renderStats(agents) {
   `;
 }
 
+const TERMINAL = ['completed', 'failed', 'timeout', 'killed'];
+
 function renderAgentCard(agent) {
   const prompt = (agent.prompt || '').slice(0, 80);
   const time = timeSince(agent.started_at);
+  const canDelete = TERMINAL.includes(agent.status);
   return `
     <div class="agent-card" data-id="${agent.id}">
       <div class="agent-card-header">
         ${statusIcon(agent.status)}
         <span class="agent-name">${agent.task_name || agent.id.slice(0, 8)}</span>
         <span class="badge badge-${agent.status}">${agent.status}</span>
+        ${canDelete ? `<button class="btn-delete-card" data-delete-id="${agent.id}" title="Delete">&times;</button>` : ''}
       </div>
       <div class="agent-card-meta">
         <span class="agent-tool">${agent.tool}</span>
@@ -108,6 +112,19 @@ export function renderDashboard(container) {
       el.addEventListener('click', () => navigate(`/agent/${el.dataset.id}`));
     });
 
+    container.querySelectorAll('.btn-delete-card').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!confirm('Delete this agent from history?')) return;
+        try {
+          await api.deleteAgentHistory(btn.dataset.deleteId);
+          state.toast('Agent deleted', 'success');
+          const resp = await api.listAgents({ limit: 50 });
+          state.set('agents', resp.agents || []);
+        } catch (err) { state.toast(err.message, 'error'); }
+      });
+    });
+
     const statusSel = container.querySelector('#filter-status');
     const toolSel = container.querySelector('#filter-tool');
     if (statusSel) statusSel.addEventListener('change', () => {
@@ -121,9 +138,6 @@ export function renderDashboard(container) {
   render();
   const unsub = state.subscribe(render);
 
-  // Cleanup when navigating away
-  const observer = new MutationObserver(() => {
-    if (!container.isConnected) { unsub(); observer.disconnect(); }
-  });
-  observer.observe(document.getElementById('content'), { childList: true });
+  // Return cleanup function for router
+  return () => { unsub(); };
 }

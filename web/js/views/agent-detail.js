@@ -2,6 +2,8 @@ import { api, state, navigate } from '../app.js';
 
 export function renderAgentDetail(container, agentId) {
   let outputTimer = null;
+  let outputOffset = 0;
+  let useFullOutput = true; // default to full output mode
   let agent = (state.get('agents') || []).find(a => a.id === agentId);
 
   const render = async () => {
@@ -53,7 +55,11 @@ export function renderAgentDetail(container, agentId) {
       <div class="detail-section">
         <div class="section-header">
           <span class="section-label">Output</span>
-          <button class="btn-sm" id="refresh-output">Refresh</button>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button class="btn-sm ${useFullOutput ? 'btn-primary' : ''}" id="toggle-full">Full</button>
+            <button class="btn-sm ${!useFullOutput ? 'btn-primary' : ''}" id="toggle-live">Live</button>
+            <button class="btn-sm" id="refresh-output">↻</button>
+          </div>
         </div>
         <pre class="output-pane" id="output-pane">Loading...</pre>
       </div>
@@ -68,7 +74,9 @@ export function renderAgentDetail(container, agentId) {
         ${isActive ? `
           <button class="btn-danger" id="stop-btn">Stop</button>
           <button class="btn-danger" id="kill-btn">Kill</button>
-        ` : ''}
+        ` : `
+          <button class="btn-danger" id="delete-btn">Delete</button>
+        `}
       </div>
 
       <div class="detail-section">
@@ -81,7 +89,27 @@ export function renderAgentDetail(container, agentId) {
     container.querySelector('#back-btn').addEventListener('click', () => navigate('/'));
 
     const refreshBtn = container.querySelector('#refresh-output');
-    if (refreshBtn) refreshBtn.addEventListener('click', loadOutput);
+    if (refreshBtn) refreshBtn.addEventListener('click', () => {
+      outputOffset = 0;
+      const pane = container.querySelector('#output-pane');
+      if (pane) pane.textContent = '';
+      loadOutput();
+    });
+
+    container.querySelector('#toggle-full').addEventListener('click', () => {
+      if (useFullOutput) return;
+      useFullOutput = true;
+      outputOffset = 0;
+      const pane = container.querySelector('#output-pane');
+      if (pane) pane.textContent = '';
+      render();
+    });
+
+    container.querySelector('#toggle-live').addEventListener('click', () => {
+      if (!useFullOutput) return;
+      useFullOutput = false;
+      render();
+    });
 
     const stopBtn = container.querySelector('#stop-btn');
     if (stopBtn) stopBtn.addEventListener('click', async () => {
@@ -93,6 +121,18 @@ export function renderAgentDetail(container, agentId) {
     if (killBtn) killBtn.addEventListener('click', async () => {
       try { await api.stopAgent(agentId, true); state.toast('Agent killed', 'success'); }
       catch (e) { state.toast(e.message, 'error'); }
+    });
+
+    const deleteBtn = container.querySelector('#delete-btn');
+    if (deleteBtn) deleteBtn.addEventListener('click', async () => {
+      if (!confirm('Delete this agent from history?')) return;
+      try {
+        await api.deleteAgentHistory(agentId);
+        state.toast('Agent deleted', 'success');
+        const resp = await api.listAgents({ limit: 50 });
+        state.set('agents', resp.agents || []);
+        navigate('/');
+      } catch (e) { state.toast(e.message, 'error'); }
     });
 
     const inputText = container.querySelector('#input-text');
@@ -118,12 +158,34 @@ export function renderAgentDetail(container, agentId) {
   async function loadOutput() {
     const pane = container.querySelector('#output-pane');
     if (!pane) return;
-    try {
-      const data = await api.agentOutput(agentId, 80);
-      pane.textContent = data.output || '(no output)';
-      pane.scrollTop = pane.scrollHeight;
-    } catch {
-      pane.textContent = '(output unavailable)';
+
+    if (useFullOutput) {
+      // Incremental full output — append new data
+      try {
+        const data = await api.agentFullOutput(agentId, outputOffset);
+        if (data.output) {
+          if (outputOffset === 0) {
+            pane.textContent = data.output;
+          } else {
+            pane.textContent += data.output;
+          }
+          pane.scrollTop = pane.scrollHeight;
+        } else if (outputOffset === 0) {
+          pane.textContent = '(no output yet)';
+        }
+        outputOffset = data.next_offset || outputOffset;
+      } catch {
+        if (outputOffset === 0) pane.textContent = '(output unavailable)';
+      }
+    } else {
+      // Live mode — last N lines from capture-pane
+      try {
+        const data = await api.agentOutput(agentId, 80);
+        pane.textContent = data.output || '(no output)';
+        pane.scrollTop = pane.scrollHeight;
+      } catch {
+        pane.textContent = '(output unavailable)';
+      }
     }
   }
 
@@ -163,15 +225,8 @@ export function renderAgentDetail(container, agentId) {
     }
   });
 
-  // Cleanup
-  const observer = new MutationObserver(() => {
-    if (!container.isConnected) {
-      clearInterval(outputTimer);
-      unsub();
-      observer.disconnect();
-    }
-  });
-  observer.observe(document.getElementById('content'), { childList: true });
+  // Return cleanup function for router
+  return () => { clearInterval(outputTimer); unsub(); };
 }
 
 function escapeHtml(s) {
