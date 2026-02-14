@@ -137,6 +137,13 @@ def create_app(overrides: dict | None = None) -> FastAPI:
     app.include_router(system_router, prefix="/api")
     app.include_router(ws_router, prefix="/api")
 
+    # Serve web client (PWA) — mount AFTER API routes
+    web_dir = Path(__file__).parent.parent.parent.parent / "web"
+    if web_dir.exists():
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")
+
     return app
 
 

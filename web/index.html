@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#111111">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>CAM</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/assets/icon-192.png">
+  <link rel="apple-touch-icon" href="/assets/icon-192.png">
+  <link rel="stylesheet" href="/css/style.css?v=3">
+</head>
+<body>
+  <div id="app">
+    <header id="header">
+      <div class="header-left">
+        <span class="logo">CAM</span>
+        <span id="conn-label" style="font-size:11px;color:#888;margin-left:4px"></span>
+      </div>
+      <div class="header-right">
+        <span id="conn-status" class="conn-dot disconnected"></span>
+      </div>
+    </header>
+    <main id="content"></main>
+    <nav id="bottom-nav">
+      <a href="#/" class="nav-item" data-route="/">
+        <span class="nav-icon">&#9632;</span>
+        <span class="nav-label">Agents</span>
+      </a>
+      <a href="#/start" class="nav-item" data-route="/start">
+        <span class="nav-icon">+</span>
+        <span class="nav-label">New</span>
+      </a>
+      <a href="#/contexts" class="nav-item" data-route="/contexts">
+        <span class="nav-icon">&#9776;</span>
+        <span class="nav-label">Contexts</span>
+      </a>
+      <a href="#/settings" class="nav-item" data-route="/settings">
+        <span class="nav-icon">&#9881;</span>
+        <span class="nav-label">Settings</span>
+      </a>
+    </nav>
+  </div>
+
+  <script type="module" src="/js/app.js?v=3"></script>
+</body>
+</html>

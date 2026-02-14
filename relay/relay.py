@@ -27,7 +27,7 @@ import sys
 from urllib.parse import parse_qs, urlparse
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S",
 )
