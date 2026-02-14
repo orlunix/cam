@@ -22,9 +22,12 @@ import asyncio
 import base64
 import hashlib
 import logging
+import mimetypes
+import os
 import struct
 import sys
-from urllib.parse import parse_qs, urlparse
+from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
 
 logging.basicConfig(
     level=logging.INFO,
@@ -102,11 +105,11 @@ def make_frame(opcode: int, payload: bytes, mask: bool = False) -> bytes:
 # ── HTTP Upgrade handshake ──────────────────────────────────────────
 
 
-async def do_handshake(
+async def read_http_request(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
-) -> tuple[str, dict[str, list[str]]] | None:
-    """Perform WebSocket HTTP upgrade. Returns (path, query_params) or None."""
+) -> tuple[str, str, dict[str, str], dict[str, list[str]]] | None:
+    """Read HTTP request. Returns (method, path, headers, query) or None."""
     try:
         request_line = await asyncio.wait_for(reader.readline(), timeout=10)
     except (asyncio.TimeoutError, ConnectionError):
@@ -119,6 +122,7 @@ async def do_handshake(
     if len(parts) < 2:
         return None
 
+    method = parts[0].upper()
     parsed = urlparse(parts[1])
     path = parsed.path
     query = parse_qs(parsed.query)
@@ -133,18 +137,18 @@ async def do_handshake(
             key, _, val = line.decode(errors="replace").partition(":")
             headers[key.strip().lower()] = val.strip()
 
-    ws_key = headers.get("sec-websocket-key", "")
-    if not ws_key:
-        writer.write(b"HTTP/1.1 400 Bad Request\r\n\r\n")
-        await writer.drain()
-        return None
+    return method, path, headers, query
 
-    # Compute accept key
+
+async def do_ws_upgrade(
+    writer: asyncio.StreamWriter,
+    ws_key: str,
+) -> None:
+    """Complete WebSocket upgrade handshake."""
     accept = base64.b64encode(
         hashlib.sha1((ws_key + WS_MAGIC.decode()).encode()).digest()
     ).decode()
 
-    # Send 101 response
     response = (
         "HTTP/1.1 101 Switching Protocols\r\n"
         "Upgrade: websocket\r\n"
@@ -155,8 +159,6 @@ async def do_handshake(
     writer.write(response.encode())
     await writer.drain()
 
-    return path, query
-
 
 # ── Relay logic ─────────────────────────────────────────────────────
 
@@ -164,12 +166,13 @@ async def do_handshake(
 class Relay:
     """Stateless WebSocket relay between one server and many clients."""
 
-    def __init__(self, token: str | None = None) -> None:
+    def __init__(self, token: str | None = None, web_root: str | None = None) -> None:
         self._token = token
         self._server_writer: asyncio.StreamWriter | None = None
         self._server_reader: asyncio.StreamReader | None = None
         self._clients: dict[int, asyncio.StreamWriter] = {}
         self._client_id = 0
+        self._web_root = Path(web_root) if web_root else None
 
     def _check_token(self, query: dict[str, list[str]]) -> bool:
         if not self._token:
@@ -183,27 +186,94 @@ class Relay:
         writer: asyncio.StreamWriter,
     ) -> None:
         peer = writer.get_extra_info("peername")
-        result = await do_handshake(reader, writer)
+        result = await read_http_request(reader, writer)
         if result is None:
             writer.close()
             return
 
-        path, query = result
+        method, path, headers, query = result
 
-        if not self._check_token(query):
-            log.warning("Auth failed from %s", peer)
-            close_frame = make_frame(OP_CLOSE, b"")
-            writer.write(close_frame)
+        # WebSocket upgrade?
+        ws_key = headers.get("sec-websocket-key", "")
+        if ws_key:
+            if not self._check_token(query):
+                log.warning("Auth failed from %s", peer)
+                close_frame = make_frame(OP_CLOSE, b"")
+                writer.write(close_frame)
+                await writer.drain()
+                writer.close()
+                return
+
+            await do_ws_upgrade(writer, ws_key)
+
+            if path == "/server":
+                await self._handle_server(reader, writer, peer)
+            elif path == "/client":
+                await self._handle_client(reader, writer, peer)
+            else:
+                log.warning("Unknown WS path %s from %s", path, peer)
+                writer.close()
+            return
+
+        # Regular HTTP — serve static files
+        log.info("HTTP %s %s from %s", method, path, peer)
+        await self._serve_static(writer, method, path)
+
+    async def _serve_static(self, writer: asyncio.StreamWriter, method: str, path: str) -> None:
+        """Serve a static file from web_root."""
+        if not self._web_root:
+            writer.write(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
             await writer.drain()
             writer.close()
             return
 
-        if path == "/server":
-            await self._handle_server(reader, writer, peer)
-        elif path == "/client":
-            await self._handle_client(reader, writer, peer)
-        else:
-            log.warning("Unknown path %s from %s", path, peer)
+        # Sanitize path
+        clean = unquote(path).lstrip("/")
+        if not clean or clean.endswith("/"):
+            clean += "index.html"
+
+        file_path = (self._web_root / clean).resolve()
+
+        # Prevent directory traversal
+        try:
+            file_path.relative_to(self._web_root.resolve())
+        except ValueError:
+            writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+            await writer.drain()
+            writer.close()
+            return
+
+        if not file_path.is_file():
+            # SPA fallback: serve index.html for non-file paths
+            index = self._web_root / "index.html"
+            if index.is_file() and "." not in clean.split("/")[-1]:
+                file_path = index
+            else:
+                writer.write(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                await writer.drain()
+                writer.close()
+                return
+
+        content_type, _ = mimetypes.guess_type(str(file_path))
+        if not content_type:
+            content_type = "application/octet-stream"
+
+        try:
+            data = file_path.read_bytes()
+            header = (
+                f"HTTP/1.1 200 OK\r\n"
+                f"Content-Type: {content_type}\r\n"
+                f"Content-Length: {len(data)}\r\n"
+                f"Cache-Control: no-cache\r\n"
+                f"\r\n"
+            )
+            writer.write(header.encode() + data)
+            await writer.drain()
+        except Exception as e:
+            log.warning("Error serving %s: %s", file_path, e)
+            writer.write(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n")
+            await writer.drain()
+        finally:
             writer.close()
 
     async def _handle_server(self, reader, writer, peer) -> None:
@@ -307,15 +377,22 @@ class Relay:
 # ── Entry point ─────────────────────────────────────────────────────
 
 
-async def run_relay(host: str, port: int, token: str | None) -> None:
-    relay = Relay(token=token)
-    server = await asyncio.start_server(relay.handle_connection, host, port)
+async def run_relay(host: str, port: int, token: str | None, web_root: str | None = None) -> None:
+    relay = Relay(token=token, web_root=web_root)
+    # family=AF_INET avoids dual-stack issues in some Docker environments
+    import socket
+    server = await asyncio.start_server(
+        relay.handle_connection, host, port,
+        family=socket.AF_INET,
+    )
     addrs = ", ".join(str(s.getsockname()) for s in server.sockets)
     log.info("CAM Relay listening on %s", addrs)
     if token:
         log.info("Auth token: %s...%s", token[:4], token[-4:])
     else:
         log.warning("No auth token — relay is open!")
+    if web_root:
+        log.info("Serving static files from %s", web_root)
 
     async with server:
         await server.serve_forever()
@@ -326,10 +403,11 @@ def main():
     parser.add_argument("--host", default="0.0.0.0", help="Bind address")
     parser.add_argument("--port", type=int, default=8443, help="Listen port")
     parser.add_argument("--token", default=None, help="Auth token")
+    parser.add_argument("--web-root", default=None, help="Directory to serve static files from")
     args = parser.parse_args()
 
     try:
-        asyncio.run(run_relay(args.host, args.port, args.token))
+        asyncio.run(run_relay(args.host, args.port, args.token, args.web_root))
     except KeyboardInterrupt:
         log.info("Relay stopped")
 

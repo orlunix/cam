@@ -1,10 +1,10 @@
-import { api } from './api.js?v=6';
-import { state } from './state.js?v=6';
-import { renderDashboard } from './views/dashboard.js?v=6';
-import { renderAgentDetail } from './views/agent-detail.js?v=6';
-import { renderStartAgent } from './views/start-agent.js?v=6';
-import { renderContexts } from './views/contexts.js?v=6';
-import { renderSettings } from './views/settings.js?v=6';
+import { api } from './api.js?v=7';
+import { state } from './state.js?v=7';
+import { renderDashboard } from './views/dashboard.js?v=7';
+import { renderAgentDetail } from './views/agent-detail.js?v=7';
+import { renderStartAgent } from './views/start-agent.js?v=7';
+import { renderContexts } from './views/contexts.js?v=7';
+import { renderSettings } from './views/settings.js?v=7';
 
 // --- Router ---
 
@@ -66,15 +66,14 @@ async function init() {
     relayToken: localStorage.getItem('cam_relay_token') || '',
   };
 
-  // Auto-detect server URL if not configured (same origin)
+  // Auto-detect server URL if not configured (same origin for direct mode)
   if (!cfg.serverUrl) {
     cfg.serverUrl = location.origin;
-    localStorage.setItem('cam_server_url', cfg.serverUrl);
   }
 
   api.configure(cfg);
 
-  // Connect
+  // Connect (tries direct first, then relay)
   const mode = await api.connect();
   state.set('connectionMode', mode);
   updateConnectionDot(mode);
@@ -82,8 +81,8 @@ async function init() {
   if (mode !== 'disconnected') {
     await loadData();
     if (mode === 'relay') api._requestRelayEventStream();
-  } else if (!cfg.token) {
-    // No token configured — send user to Settings
+  } else if (!cfg.token && !cfg.relayToken) {
+    // Nothing configured — send user to Settings
     location.hash = '#/settings';
   }
 
