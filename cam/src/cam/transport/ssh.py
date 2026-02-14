@@ -163,6 +163,25 @@ class SSHTransport(Transport):
         logger.info("Created remote session %s on %s in %s", session_id, self._host, workdir)
         return True
 
+    async def start_logging(self, session_id: str, log_path: str) -> bool:
+        """Pipe all remote TMUX pane output to a log file via pipe-pane."""
+        target = f"{session_id}:0.0"
+        # Ensure remote log directory exists
+        remote_dir = "/tmp/cam-logs"
+        await self._run_ssh(f"mkdir -p {remote_dir}", check=False)
+        # Use remote path for SSH
+        remote_log = f"{remote_dir}/{session_id}.output.log"
+        pipe_cmd = self._remote_tmux_cmd(session_id, [
+            "pipe-pane", "-t", target,
+            f"cat >> {remote_log}",
+        ])
+        success, _ = await self._run_ssh(pipe_cmd, check=False)
+        if success:
+            logger.info("Logging remote output to %s for %s", remote_log, session_id)
+        else:
+            logger.warning("Failed to start pipe-pane for remote session %s", session_id)
+        return success
+
     async def send_input(self, session_id: str, text: str, send_enter: bool = True) -> bool:
         """Send text input to a remote TMUX session."""
         target = f"{session_id}:0.0"

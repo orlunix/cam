@@ -175,9 +175,6 @@ export function renderContexts(container) {
     } catch (e) { state.toast(e.message, 'error'); }
   });
 
-  // Cleanup when navigated away
-  const observer = new MutationObserver(() => {
-    if (!container.isConnected) { unsub(); observer.disconnect(); }
-  });
-  observer.observe(document.getElementById('content'), { childList: true });
+  // Return cleanup function for router
+  return () => { unsub(); };
 }

@@ -130,6 +130,28 @@ async def stop_agent(agent_id: str, request: Request, force: bool = False):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/agents/{agent_id}/history")
+async def delete_agent_history(agent_id: str, request: Request):
+    """Delete an agent record from history (only terminal agents)."""
+    state = await _require_auth(request)
+
+    agent = await state.agent_manager.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(
+            status_code=404, detail=f"Agent not found: {agent_id}"
+        )
+
+    if not agent.is_terminal():
+        raise HTTPException(
+            status_code=400, detail="Cannot delete a running agent. Stop it first."
+        )
+
+    deleted = state.agent_store.delete(str(agent.id))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return {"ok": True, "agent_id": str(agent.id)}
+
+
 @router.get("/agents/{agent_id}/logs")
 async def get_logs(agent_id: str, request: Request, tail: int = 50):
     """Read JSONL logs for an agent."""
@@ -174,6 +196,54 @@ async def get_output(agent_id: str, request: Request, lines: int = 50):
         return {"agent_id": str(agent.id), "output": output, "active": True}
     except Exception:
         return {"agent_id": str(agent.id), "output": "", "active": False}
+
+
+@router.get("/agents/{agent_id}/fulloutput")
+async def get_full_output(
+    agent_id: str, request: Request, offset: int = 0
+):
+    """Read full output log for an agent, supports incremental fetching.
+
+    Returns output from byte offset onwards. Client should track the
+    returned next_offset and pass it on subsequent calls to get only new data.
+    """
+    state = await _require_auth(request)
+
+    agent = await state.agent_manager.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(
+            status_code=404, detail=f"Agent not found: {agent_id}"
+        )
+
+    from cam.constants import LOG_DIR
+
+    log_path = LOG_DIR / "output" / f"{agent.id}.log"
+    if not log_path.exists():
+        return {
+            "agent_id": str(agent.id),
+            "output": "",
+            "next_offset": 0,
+            "active": not agent.is_terminal(),
+        }
+
+    try:
+        with open(log_path, "r", errors="replace") as f:
+            f.seek(offset)
+            data = f.read(256_000)  # max 256KB per request
+            next_offset = f.tell()
+        return {
+            "agent_id": str(agent.id),
+            "output": data,
+            "next_offset": next_offset,
+            "active": not agent.is_terminal(),
+        }
+    except Exception:
+        return {
+            "agent_id": str(agent.id),
+            "output": "",
+            "next_offset": offset,
+            "active": not agent.is_terminal(),
+        }
 
 
 @router.post("/agents/{agent_id}/input")

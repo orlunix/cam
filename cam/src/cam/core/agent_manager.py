@@ -18,7 +18,7 @@ from uuid import uuid4
 
 from cam.adapters.base import ToolAdapter
 from cam.adapters.registry import AdapterRegistry
-from cam.constants import PID_DIR, SOCKET_DIR
+from cam.constants import LOG_DIR, PID_DIR, SOCKET_DIR
 from cam.core.config import CamConfig
 from cam.core.events import EventBus
 from cam.core.models import (
@@ -175,6 +175,13 @@ class AgentManager:
             agent.exit_reason = reason
             self._agent_store.save(agent)
             raise AgentManagerError(reason)
+
+        # 8b. Start pipe-pane to capture full output to log file
+        output_log_dir = LOG_DIR / "output"
+        output_log_dir.mkdir(parents=True, exist_ok=True)
+        output_log_path = str(output_log_dir / f"{agent_id}.log")
+        if hasattr(transport, 'start_logging'):
+            await transport.start_logging(session_name, output_log_path)
 
         # 9. If adapter needs prompt after launch, handle startup prompts then send task
         if adapter.needs_prompt_after_launch():

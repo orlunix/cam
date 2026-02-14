@@ -1,10 +1,10 @@
-import { api } from './api.js?v=3';
-import { state } from './state.js?v=3';
-import { renderDashboard } from './views/dashboard.js?v=3';
-import { renderAgentDetail } from './views/agent-detail.js?v=3';
-import { renderStartAgent } from './views/start-agent.js?v=3';
-import { renderContexts } from './views/contexts.js?v=3';
-import { renderSettings } from './views/settings.js?v=3';
+import { api } from './api.js?v=6';
+import { state } from './state.js?v=6';
+import { renderDashboard } from './views/dashboard.js?v=6';
+import { renderAgentDetail } from './views/agent-detail.js?v=6';
+import { renderStartAgent } from './views/start-agent.js?v=6';
+import { renderContexts } from './views/contexts.js?v=6';
+import { renderSettings } from './views/settings.js?v=6';
 
 // --- Router ---
 
@@ -16,6 +16,8 @@ const routes = [
   { pattern: /^\/settings$/,       view: renderSettings,     nav: '/settings' },
 ];
 
+let currentCleanup = null;
+
 function getPath() {
   return location.hash.slice(1) || '/';
 }
@@ -24,11 +26,14 @@ function route() {
   const path = getPath();
   const content = document.getElementById('content');
 
+  // Cleanup previous view
+  if (currentCleanup) { currentCleanup(); currentCleanup = null; }
+
   for (const r of routes) {
     const m = path.match(r.pattern);
     if (m) {
       content.innerHTML = '';
-      r.view(content, ...m.slice(1));
+      currentCleanup = r.view(content, ...m.slice(1)) || null;
       updateNav(r.nav || path);
       return;
     }
@@ -36,7 +41,7 @@ function route() {
 
   // Fallback: dashboard
   content.innerHTML = '';
-  renderDashboard(content);
+  currentCleanup = renderDashboard(content) || null;
   updateNav('/');
 }
 
