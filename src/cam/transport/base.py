@@ -40,6 +40,22 @@ class Transport(ABC):
         ...
 
     @abstractmethod
+    async def send_key(self, session_id: str, key: str) -> bool:
+        """Send a tmux special key to a TMUX session (without literal mode).
+
+        Unlike send_input which uses the -l flag for literal text, this sends
+        tmux key names like 'BSpace', 'Enter', 'Escape', etc.
+
+        Args:
+            session_id: Target TMUX session identifier
+            key: Tmux key name (e.g. 'BSpace', 'Enter', 'Escape')
+
+        Returns:
+            True if key was sent successfully, False otherwise
+        """
+        ...
+
+    @abstractmethod
     async def capture_output(self, session_id: str, lines: int = 50) -> str:
         """Capture the last N lines of TMUX pane output.
 
