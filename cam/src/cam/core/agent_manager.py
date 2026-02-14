@@ -159,15 +159,22 @@ class AgentManager:
         launch_command = adapter.get_launch_command(task, context)
 
         # 8. Create TMUX session via transport
-        session_created = await transport.create_session(
-            session_name, launch_command, context.path
-        )
+        try:
+            session_created = await transport.create_session(
+                session_name, launch_command, context.path
+            )
+        except Exception as transport_err:
+            session_created = False
+            transport_detail = str(transport_err)
+        else:
+            transport_detail = ""
         if not session_created:
+            reason = transport_detail or "Failed to create TMUX session"
             agent.status = AgentStatus.FAILED
             agent.completed_at = datetime.utcnow()
-            agent.exit_reason = "Failed to create TMUX session"
+            agent.exit_reason = reason
             self._agent_store.save(agent)
-            raise AgentManagerError(f"Failed to create TMUX session for agent {agent_id}")
+            raise AgentManagerError(reason)
 
         # 9. If adapter needs prompt after launch, handle startup prompts then send task
         if adapter.needs_prompt_after_launch():

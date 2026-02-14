@@ -23,8 +23,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import traceback
-
 logger = logging.getLogger(__name__)
 
 
@@ -94,7 +92,6 @@ async def relay_loop(
             return
         except Exception as e:
             logger.warning("Relay connection error: %s (reconnecting in %.0fs)", e, delay)
-            logger.warning("Relay traceback:\n%s", traceback.format_exc())
 
         await asyncio.sleep(delay)
         delay = min(delay * 2, max_delay)

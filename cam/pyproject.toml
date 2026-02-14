@@ -8,11 +8,12 @@ version = "0.1.0"
 description = "Coding Agent Manager — PM2 for AI coding agents"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "typer>=0.9.0",
     "rich>=13.0.0",
     "pydantic>=2.0.0",
+    "tomli>=2.0; python_version<'3.11'",
 ]
 
 [project.optional-dependencies]

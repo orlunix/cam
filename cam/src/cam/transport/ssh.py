@@ -158,7 +158,7 @@ class SSHTransport(Transport):
         success, error = await self._run_ssh(create_cmd)
         if not success:
             logger.error("Failed to create remote session %s: %s", session_id, error)
-            return False
+            raise RuntimeError(f"SSH session creation failed on {self._host}: {error}")
 
         logger.info("Created remote session %s on %s in %s", session_id, self._host, workdir)
         return True

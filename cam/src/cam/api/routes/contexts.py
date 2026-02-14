@@ -80,6 +80,44 @@ async def get_context(name_or_id: str, request: Request):
     return context.model_dump(mode="json")
 
 
+@router.put("/contexts/{name_or_id}")
+async def update_context(name_or_id: str, body: CreateContextRequest, request: Request):
+    """Update an existing context."""
+    state = await _require_auth(request)
+
+    existing = state.context_store.get(name_or_id)
+    if not existing:
+        raise HTTPException(
+            status_code=404, detail=f"Context not found: {name_or_id}"
+        )
+
+    from cam.core.models import MachineConfig, TransportType
+
+    transport_type = TransportType.SSH if body.host else TransportType.LOCAL
+    try:
+        machine = MachineConfig(
+            type=transport_type,
+            host=body.host,
+            user=body.user,
+            port=body.port,
+            key_file=body.key_file,
+            env_setup=body.env_setup,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    existing.name = body.name
+    existing.path = body.path
+    existing.machine = machine
+    existing.tags = body.tags
+
+    try:
+        state.context_store.update(existing)
+        return existing.model_dump(mode="json")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.delete("/contexts/{name_or_id}")
 async def delete_context(name_or_id: str, request: Request):
     """Remove a context."""
