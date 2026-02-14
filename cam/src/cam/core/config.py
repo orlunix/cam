@@ -24,6 +24,10 @@ from cam.constants import (
     DEFAULT_HEALTH_CHECK_INTERVAL,
     DEFAULT_IDLE_TIMEOUT,
     DEFAULT_POLL_INTERVAL,
+    DEFAULT_PROBE_COOLDOWN,
+    DEFAULT_PROBE_STABLE_SECONDS,
+    DEFAULT_SERVER_HOST,
+    DEFAULT_SERVER_PORT,
     GLOBAL_CONFIG,
     LOG_DIR,
     PROJECT_CONFIG,
@@ -45,6 +49,9 @@ class MonitorConfig(BaseModel):
     poll_interval: int = DEFAULT_POLL_INTERVAL
     idle_timeout: int = DEFAULT_IDLE_TIMEOUT
     health_check_interval: int = DEFAULT_HEALTH_CHECK_INTERVAL
+    probe_detection: bool = True
+    probe_stable_seconds: int = DEFAULT_PROBE_STABLE_SECONDS
+    probe_cooldown: int = DEFAULT_PROBE_COOLDOWN
 
 
 class RetryConfig(BaseModel):
@@ -77,6 +84,17 @@ class PathsConfig(BaseModel):
     log_dir: str = str(LOG_DIR)
 
 
+class ServerConfig(BaseModel):
+    """API server settings."""
+
+    host: str = DEFAULT_SERVER_HOST
+    port: int = DEFAULT_SERVER_PORT
+    auth_token: str | None = None
+    log_level: str = "info"
+    relay_url: str | None = None
+    relay_token: str | None = None
+
+
 class ToolConfig(BaseModel):
     """Per-tool configuration."""
 
@@ -93,6 +111,7 @@ class CamConfig(BaseModel):
     display: DisplayConfig = Field(default_factory=DisplayConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
+    server: ServerConfig = Field(default_factory=ServerConfig)
     tools: dict[str, ToolConfig] = Field(default_factory=dict)
 
 
@@ -239,6 +258,9 @@ def _apply_env_vars(config: dict) -> dict:
         "CAM_POLL_INTERVAL": ("monitor", "poll_interval"),
         "CAM_IDLE_TIMEOUT": ("monitor", "idle_timeout"),
         "CAM_HEALTH_CHECK_INTERVAL": ("monitor", "health_check_interval"),
+        "CAM_PROBE_DETECTION": ("monitor", "probe_detection"),
+        "CAM_PROBE_STABLE_SECONDS": ("monitor", "probe_stable_seconds"),
+        "CAM_PROBE_COOLDOWN": ("monitor", "probe_cooldown"),
         # Retry settings
         "CAM_MAX_RETRIES": ("retry", "max_retries"),
         "CAM_BACKOFF_BASE": ("retry", "backoff_base"),
@@ -253,6 +275,13 @@ def _apply_env_vars(config: dict) -> dict:
         # Path settings
         "CAM_DATA_DIR": ("paths", "data_dir"),
         "CAM_LOG_DIR": ("paths", "log_dir"),
+        # Server settings
+        "CAM_SERVER_HOST": ("server", "host"),
+        "CAM_SERVER_PORT": ("server", "port"),
+        "CAM_SERVER_AUTH_TOKEN": ("server", "auth_token"),
+        "CAM_SERVER_LOG_LEVEL": ("server", "log_level"),
+        "CAM_RELAY_URL": ("server", "relay_url"),
+        "CAM_RELAY_TOKEN": ("server", "relay_token"),
     }
 
     for env_var, (section, key) in env_mappings.items():
@@ -263,10 +292,10 @@ def _apply_env_vars(config: dict) -> dict:
                 result[section] = {}
 
             # Parse value based on type
-            if key in ("auto_confirm", "color", "unicode", "compact", "encrypt_tokens", "sandbox"):
+            if key in ("auto_confirm", "color", "unicode", "compact", "encrypt_tokens", "sandbox", "probe_detection"):
                 # Boolean values
                 value = value.lower() in ("true", "1", "yes", "on")
-            elif key in ("poll_interval", "idle_timeout", "health_check_interval", "max_retries"):
+            elif key in ("poll_interval", "idle_timeout", "health_check_interval", "max_retries", "probe_stable_seconds", "probe_cooldown", "port"):
                 # Integer values
                 value = int(value)
             elif key in ("backoff_base", "backoff_max"):

@@ -629,10 +629,28 @@ def _print_log_entry(entry: dict) -> None:
     if event_type == "output" and output:
         console.print(f"[dim]{ts}[/dim] {output}")
     elif event_type == "state_change":
-        state_val = data.get("state", "")
-        console.print(f"[dim]{ts}[/dim] [bold cyan]State -> {state_val}[/bold cyan]")
+        from_state = data.get("from", "")
+        to_state = data.get("to", data.get("state", ""))
+        label = f"{from_state} → {to_state}" if from_state else to_state
+        console.print(f"[dim]{ts}[/dim] [bold cyan]State: {label}[/bold cyan]")
     elif event_type == "auto_confirm":
         console.print(f"[dim]{ts}[/dim] [yellow]Auto-confirmed[/yellow]")
+    elif event_type == "probe":
+        result = data.get("result", "unknown")
+        count = data.get("probe_count", 0)
+        consec = data.get("consecutive_completed", 0)
+        style_map = {
+            "completed": "[green]COMPLETED[/green]",
+            "busy": "[blue]BUSY[/blue]",
+            "confirmed": "[yellow]CONFIRMED[/yellow]",
+            "session_dead": "[red]SESSION_DEAD[/red]",
+            "error": "[red]ERROR[/red]",
+        }
+        styled = style_map.get(result, result)
+        extra = f" (#{count})" if count else ""
+        if consec > 0:
+            extra += f" [dim]streak={consec}[/dim]"
+        console.print(f"[dim]{ts}[/dim] [magenta]Probe[/magenta] → {styled}{extra}")
     elif event_type == "agent_finished":
         status_val = data.get("status", "")
         console.print(f"[dim]{ts}[/dim] [bold]Finished: {status_val}[/bold]")

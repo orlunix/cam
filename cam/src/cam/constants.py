@@ -31,6 +31,14 @@ DEFAULT_POLL_INTERVAL = 2  # seconds
 DEFAULT_IDLE_TIMEOUT = 300  # seconds (0 = disabled)
 DEFAULT_HEALTH_CHECK_INTERVAL = 30  # seconds
 
+# Probe detection defaults
+DEFAULT_PROBE_STABLE_SECONDS = 10  # idle time before first probe
+DEFAULT_PROBE_COOLDOWN = 20  # seconds between probes
+
+# API Server defaults
+DEFAULT_SERVER_HOST = "127.0.0.1"
+DEFAULT_SERVER_PORT = 8420
+
 # Exit codes
 EXIT_OK = 0
 EXIT_ERROR = 1

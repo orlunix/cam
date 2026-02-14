@@ -183,6 +183,14 @@ class SSHTransport(Transport):
 
         return success
 
+    async def send_key(self, session_id: str, key: str) -> bool:
+        """Send a tmux special key to a remote TMUX session (without literal mode)."""
+        cmd = self._remote_tmux_cmd(session_id, [
+            "send-keys", "-t", f"{session_id}:0.0", key,
+        ])
+        success, _ = await self._run_ssh(cmd)
+        return success
+
     async def capture_output(self, session_id: str, lines: int = 50) -> str:
         """Capture output from a remote TMUX session.
 

@@ -148,6 +148,21 @@ class LocalTransport(Transport):
 
         return success
 
+    async def send_key(self, session_id: str, key: str) -> bool:
+        """Send a tmux special key to a TMUX session (without literal mode).
+
+        Args:
+            session_id: Target TMUX session identifier
+            key: Tmux key name (e.g. 'BSpace', 'Enter', 'Escape')
+
+        Returns:
+            True if key was sent successfully, False otherwise
+        """
+        socket = self._get_socket_path(session_id)
+        target = f"{session_id}:0.0"
+        success, _ = await self._run_tmux(["send-keys", "-t", target, key], socket)
+        return success
+
     async def capture_output(self, session_id: str, lines: int = 100) -> str:
         """Capture the last N lines of TMUX pane output.
 

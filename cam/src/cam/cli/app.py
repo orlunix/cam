@@ -223,6 +223,58 @@ app.command(name="doctor")(system_cmd.doctor)
 app.command(name="init")(system_cmd.init)
 
 
+# Server command — starts the API server
+@app.command(name="serve")
+def serve(
+    host: str | None = typer.Option(None, "--host", help="Bind address"),
+    port: int | None = typer.Option(None, "--port", help="Listen port"),
+    token: str | None = typer.Option(
+        None, "--token", help="Auth token (auto-generated if not set)"
+    ),
+    relay: str | None = typer.Option(
+        None, "--relay", help="Relay URL (e.g. ws://relay:8443)"
+    ),
+    relay_token: str | None = typer.Option(
+        None, "--relay-token", help="Relay auth token"
+    ),
+) -> None:
+    """Start the CAM API server."""
+    try:
+        import uvicorn  # noqa: F401
+    except ImportError:
+        from rich import print as rprint
+
+        rprint("[red]API server requires:[/red] pip install cam[server]")
+        raise typer.Exit(1)
+
+    from cam.api.server import create_app
+    from cam.core.config import load_config
+
+    overrides: dict = {}
+    if host:
+        overrides.setdefault("server", {})["host"] = host
+    if port:
+        overrides.setdefault("server", {})["port"] = port
+    if token:
+        overrides.setdefault("server", {})["auth_token"] = token
+    if relay:
+        overrides.setdefault("server", {})["relay_url"] = relay
+    if relay_token:
+        overrides.setdefault("server", {})["relay_token"] = relay_token
+
+    config = load_config(**overrides)
+    app_instance = create_app(overrides=overrides)
+
+    import uvicorn
+
+    uvicorn.run(
+        app_instance,
+        host=config.server.host,
+        port=config.server.port,
+        log_level=config.server.log_level,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
