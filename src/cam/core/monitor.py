@@ -15,6 +15,7 @@ from cam.adapters.base import ConfirmAction, ToolAdapter
 from cam.core.config import CamConfig
 from cam.core.events import EventBus
 from cam.core.models import Agent, AgentEvent, AgentState, AgentStatus
+from cam.core.probe import ProbeResult, probe_session
 from cam.storage.agent_store import AgentStore
 from cam.transport.base import Transport
 from cam.utils.logging import AgentLogger
@@ -71,6 +72,10 @@ class AgentMonitor:
         self._poll_count: int = 0
         self._has_worked: bool = False  # True once agent enters a working state
         self._prompt_disappeared: bool = False  # True once input prompt is gone
+        # Probe detection state
+        self._last_probe_time: float = 0.0
+        self._probe_count: int = 0
+        self._consecutive_probe_completed: int = 0
 
     # ------------------------------------------------------------------
     # Public API
@@ -254,6 +259,54 @@ class AgentMonitor:
                             "state": self._agent.state.value,
                         })
                         return self._finalize(AgentStatus.COMPLETED, "Tool returned to input prompt")
+
+                # --------------------------------------------------
+                # 8c. Probe-based completion detection (Path 4)
+                # --------------------------------------------------
+                # When output has been idle long enough and probe is enabled,
+                # send a probe character to test terminal echo state.
+                # TUI apps disable echo (raw mode) while working.
+                if self._config.monitor.probe_detection and self._has_worked:
+                    probe_stable = self._config.monitor.probe_stable_seconds
+                    probe_cooldown = self._config.monitor.probe_cooldown
+                    if (
+                        idle_for >= probe_stable
+                        and now - self._last_probe_time >= probe_cooldown
+                    ):
+                        self._last_probe_time = now
+                        self._probe_count += 1
+                        probe_result = await probe_session(
+                            self._transport, session_id
+                        )
+                        probe_data = {
+                            "result": probe_result.value,
+                            "probe_count": self._probe_count,
+                            "consecutive_completed": self._consecutive_probe_completed,
+                        }
+                        self._logger.write("probe", data=probe_data)
+                        self._publish_event("probe", probe_data)
+
+                        if probe_result == ProbeResult.COMPLETED:
+                            self._consecutive_probe_completed += 1
+                            if self._consecutive_probe_completed >= 2:
+                                return self._finalize(
+                                    AgentStatus.COMPLETED,
+                                    "Probe detected agent at prompt (echo mode)",
+                                )
+                        elif probe_result == ProbeResult.BUSY:
+                            # Agent IS working — reset idle timer
+                            self._last_change_time = now
+                            self._consecutive_probe_completed = 0
+                        elif probe_result == ProbeResult.CONFIRMED:
+                            # Probe was consumed (e.g. as confirmation input)
+                            self._last_change_time = now
+                            self._consecutive_probe_completed = 0
+                        elif probe_result == ProbeResult.SESSION_DEAD:
+                            self._consecutive_probe_completed = 0
+                            # Let the health check handle it
+                        else:
+                            # ERROR — reset consecutive counter
+                            self._consecutive_probe_completed = 0
 
                 # --------------------------------------------------
                 # 9. Sleep until next poll
