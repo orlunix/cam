@@ -79,6 +79,27 @@ class ContextStore:
         except sqlite3.Error as e:
             raise ContextStoreError(f"Failed to update context: {e}") from e
 
+    def update(self, context: Context) -> None:
+        """Update an existing context."""
+        try:
+            cursor = self.db.execute(
+                """
+                UPDATE contexts SET name=?, path=?, machine_config=?, tags=?
+                WHERE id=?
+                """,
+                (
+                    context.name,
+                    str(context.path),
+                    json.dumps(context.machine.model_dump(mode="json")),
+                    json.dumps(context.tags),
+                    str(context.id),
+                ),
+            )
+            if cursor.rowcount == 0:
+                raise ContextStoreError(f"Context '{context.id}' not found")
+        except sqlite3.Error as e:
+            raise ContextStoreError(f"Failed to update context: {e}") from e
+
     def remove(self, name_or_id: str) -> bool:
         """Remove a context by name or ID."""
         try:
