@@ -187,12 +187,26 @@ class SSHTransport(Transport):
         target = f"{session_id}:0.0"
 
         # Send text literally
-        send_cmd = self._remote_tmux_cmd(session_id, [
-            "send-keys", "-t", target, "-l", "--", text,
-        ])
-        success, _ = await self._run_ssh(send_cmd)
-        if not success:
-            return False
+        if text:
+            # Non-ASCII text (e.g. CJK) gets corrupted by SSH shell
+            # interpretation on POSIX-locale remotes. Use base64 encoding
+            # to transport the bytes safely and decode on the remote side.
+            if text.isascii():
+                send_cmd = self._remote_tmux_cmd(session_id, [
+                    "send-keys", "-t", target, "-l", "--", text,
+                ])
+            else:
+                import base64
+                b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+                socket = f"/tmp/cam-sockets/{session_id}.sock"
+                send_cmd = (
+                    f"bash -c 'tmux -S {shlex.quote(socket)}"
+                    f" send-keys -t {shlex.quote(target)}"
+                    f" -l -- \"$(echo {b64} | base64 -d)\"'"
+                )
+            success, _ = await self._run_ssh(send_cmd)
+            if not success:
+                return False
 
         if send_enter:
             enter_cmd = self._remote_tmux_cmd(session_id, [

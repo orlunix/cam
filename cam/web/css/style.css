@@ -393,20 +393,40 @@ a { color: var(--accent); text-decoration: none; }
   display: flex;
   gap: 6px;
   margin-bottom: 6px;
+  flex-wrap: wrap;
 }
+.quick-actions-extra {
+  margin-bottom: 6px;
+}
+.quick-actions-extra.hidden { display: none; }
+.quick-row {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 5px;
+}
+.quick-row:last-child { margin-bottom: 0; }
 .btn-quick {
   background: var(--bg-card);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 4px 14px;
-  font-size: 13px;
+  padding: 4px 10px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  min-height: 32px;
+  min-height: 30px;
+  flex: 1;
+  text-align: center;
   transition: background 0.15s, border-color 0.15s;
 }
 .btn-quick:active { background: var(--bg-hover); border-color: var(--accent); }
+.btn-quick-expand {
+  background: var(--bg-input);
+  color: var(--text-dim);
+  letter-spacing: 2px;
+  flex: 0 0 auto;
+  padding: 4px 12px;
+}
 .input-bar-sticky {
   display: flex;
   gap: 8px;

@@ -34,7 +34,7 @@ class TransportFactory:
         logger.debug(f"Creating transport for {config.type}")
 
         if config.type == TransportType.LOCAL:
-            return LocalTransport()
+            return LocalTransport(env_setup=config.env_setup)
 
         elif config.type == TransportType.SSH:
             # Lazy import to avoid circular dependencies and optional SSH deps

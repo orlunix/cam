@@ -92,14 +92,6 @@ class AgentManager:
     ) -> Agent:
         """Create, start, and optionally monitor an agent.
 
-        This is the primary entry point for launching work. It:
-        1. Resolves the tool adapter from the registry.
-        2. Creates a transport for the target machine.
-        3. Builds and persists a new Agent model.
-        4. Creates a TMUX session and sends the launch command.
-        5. Starts the monitoring loop (foreground or background).
-        6. Handles retry logic when the monitor reports failure.
-
         Args:
             task: Task definition including prompt, tool name, and timeouts.
             context: Context describing the workspace and machine.
@@ -409,19 +401,7 @@ class AgentManager:
         prompt: str,
         auto_confirm: bool | None = None,
     ) -> None:
-        """Wait for interactive tool readiness, handle pre-prompt confirmations, then send the task prompt.
-
-        Polls the TMUX output until the adapter reports readiness (e.g. Claude
-        shows its input prompt). During the wait, auto-confirms any
-        trust/permission prompts. Falls back to sending the prompt after
-        max_wait seconds even if readiness is not detected.
-
-        Args:
-            transport: Transport for TMUX communication.
-            adapter: Tool adapter (used for is_ready_for_input, should_auto_confirm).
-            session_name: TMUX session identifier.
-            prompt: Task prompt to send.
-        """
+        """Wait for interactive tool readiness, then send the task prompt."""
         max_wait = adapter.get_startup_wait()
         poll_interval = 1.0
         elapsed = 0.0
@@ -439,8 +419,8 @@ class AgentManager:
             ac = auto_confirm if auto_confirm is not None else True
             confirm_action = adapter.should_auto_confirm(output) if ac else None
             if confirm_action is not None:
-                logger.info("Pre-prompt auto-confirm in %s: sending '%s'",
-                            session_name, confirm_action.response)
+                logger.info("Pre-prompt auto-confirm in %s: sending '%s' (enter=%s)",
+                            session_name, confirm_action.response, confirm_action.send_enter)
                 await transport.send_input(
                     session_name,
                     confirm_action.response,

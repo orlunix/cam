@@ -11,6 +11,7 @@ from cam.api.schemas import (
     AgentResponse,
     RunAgentRequest,
     SendInputRequest,
+    SendKeyRequest,
     agent_to_response,
 )
 
@@ -271,4 +272,29 @@ async def send_input(agent_id: str, body: SendInputRequest, request: Request):
     ok = await transport.send_input(
         agent.tmux_session, body.text, send_enter=body.send_enter
     )
+    return {"ok": ok}
+
+
+@router.post("/agents/{agent_id}/key")
+async def send_key(agent_id: str, body: SendKeyRequest, request: Request):
+    """Send a TMUX special key to a running agent."""
+    state = await _require_auth(request)
+
+    agent = await state.agent_manager.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(
+            status_code=404, detail=f"Agent not found: {agent_id}"
+        )
+
+    if not agent.tmux_session or agent.is_terminal():
+        raise HTTPException(status_code=400, detail="Agent is not running")
+
+    context = state.context_store.get(str(agent.context_id))
+    if not context:
+        raise HTTPException(status_code=400, detail="Agent context not found")
+
+    from cam.transport.factory import TransportFactory
+
+    transport = TransportFactory.create(context.machine)
+    ok = await transport.send_key(agent.tmux_session, body.key)
     return {"ok": ok}
