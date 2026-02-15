@@ -307,6 +307,7 @@ export class CamApi {
   agentOutput(id, lines = 80) { return this.request('GET', `/api/agents/${id}/output?lines=${lines}`); }
   agentFullOutput(id, offset = 0) { return this.request('GET', `/api/agents/${id}/fulloutput?offset=${offset}`); }
   sendInput(id, text, sendEnter = true) { return this.request('POST', `/api/agents/${id}/input`, { text, send_enter: sendEnter }); }
+  sendKey(id, key) { return this.request('POST', `/api/agents/${id}/key`, { key }); }
   listContexts() { return this.request('GET', '/api/contexts'); }
   getContext(nameOrId) { return this.request('GET', `/api/contexts/${nameOrId}`); }
   createContext(body) { return this.request('POST', '/api/contexts', body); }

@@ -20,8 +20,9 @@ logger = logging.getLogger(__name__)
 class LocalTransport(Transport):
     """Local TMUX-based transport with isolated socket per session."""
 
-    def __init__(self) -> None:
+    def __init__(self, env_setup: str | None = None) -> None:
         """Initialize local transport."""
+        self._env_setup = env_setup
         self._ensure_socket_dir()
 
     def _ensure_socket_dir(self) -> None:
@@ -95,7 +96,13 @@ class LocalTransport(Transport):
 
         # Build a safe shell command string for TMUX to execute.
         # When this command exits, the TMUX session exits too.
-        command_str = " ".join(shlex.quote(arg) for arg in command)
+        # Wrap with `env -u CLAUDECODE` to prevent nested-session detection
+        # when CAM itself runs inside a Claude Code session.
+        inner_cmd = " ".join(shlex.quote(arg) for arg in command)
+        if self._env_setup:
+            command_str = f"env -u CLAUDECODE bash -c {shlex.quote(self._env_setup + ' && exec ' + inner_cmd)}"
+        else:
+            command_str = f"env -u CLAUDECODE {inner_cmd}"
 
         # Set remain-on-exit OFF so session dies when process exits
         create_args = [
@@ -106,7 +113,22 @@ class LocalTransport(Transport):
             command_str,       # shell command to run (positional arg)
         ]
 
-        success, _ = await self._run_tmux(create_args, socket)
+        # Use DEVNULL instead of PIPE for new-session: tmux forks a server
+        # that inherits stdout/stderr pipes, blocking communicate() forever.
+        cmd = ["tmux", "-S", str(socket)] + create_args
+        logger.debug(f"Running: {' '.join(shlex.quote(arg) for arg in cmd)}")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+            success = proc.returncode == 0
+        except Exception as e:
+            logger.error(f"Failed to create session {session_id}: {e}")
+            return False
+
         if not success:
             logger.error(f"Failed to create session {session_id}")
             return False
@@ -143,18 +165,19 @@ class LocalTransport(Transport):
         socket = self._get_socket_path(session_id)
         target = f"{session_id}:0.0"
 
-        # Send text literally with -l flag
-        send_args = [
-            "send-keys",
-            "-t", target,
-            "-l",  # literal mode - no special key interpretation
-            "--",  # end of options
-            text,
-        ]
+        # Send text literally with -l flag (handles UTF-8 correctly)
+        if text:
+            send_args = [
+                "send-keys",
+                "-t", target,
+                "-l",  # literal mode - no special key interpretation
+                "--",  # end of options
+                text,
+            ]
 
-        success, _ = await self._run_tmux(send_args, socket)
-        if not success:
-            return False
+            success, _ = await self._run_tmux(send_args, socket)
+            if not success:
+                return False
 
         # Send Enter key separately if requested
         if send_enter:
