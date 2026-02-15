@@ -24,6 +24,7 @@ export function renderAgentDetail(container, agentId) {
     if (agent.context_name) parts.push(agent.context_name);
     parts.push(agent.status);
     if (agent.started_at) parts.push(timeSince(agent.started_at));
+    if (agent.auto_confirm === false) parts.push('manual');
     if (agent.exit_reason) parts.push(agent.exit_reason);
     return parts.join(' · ');
   }
