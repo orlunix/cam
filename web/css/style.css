@@ -255,7 +255,7 @@ a { color: var(--accent); text-decoration: none; }
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
 }
 .back-btn {
   background: none;
@@ -284,24 +284,199 @@ a { color: var(--accent); text-decoration: none; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.detail-actions-inline {
+  flex-shrink: 0;
+}
 
-.detail-meta {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 8px 12px;
+/* Compact meta line */
+.detail-meta-compact {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+  padding: 0 4px;
+}
+
+/* Output section */
+.output-section {
   margin-bottom: 12px;
 }
-.meta-row {
+.output-toolbar {
   display: flex;
   justify-content: space-between;
-  padding: 4px 0;
-  font-size: 13px;
+  align-items: center;
+  margin-bottom: 6px;
 }
-.meta-row + .meta-row { border-top: 1px solid var(--border); }
-.meta-label { color: var(--text-dim); }
-.meta-value { font-weight: 500; }
+.output-mode-btns {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.output-wrap {
+  position: relative;
+}
 
+/* Output Pane */
+.output-pane {
+  background: #0d1117;
+  color: #c9d1d9;
+  font-family: "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  max-height: 50vh;
+  overflow-y: auto;
+  overflow-x: auto;
+  white-space: pre;
+  word-break: break-all;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Fullscreen output */
+.output-fullscreen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 150;
+  background: var(--bg);
+  margin: 0;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+}
+.output-fullscreen .output-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.output-pane-fullscreen {
+  max-height: none !important;
+  flex: 1;
+  border-radius: var(--radius-sm);
+}
+
+/* Jump to bottom button */
+.jump-bottom-btn {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 16px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  z-index: 10;
+  opacity: 0.9;
+  transition: opacity 0.15s;
+}
+.jump-bottom-btn:hover { opacity: 1; }
+.jump-bottom-btn.hidden { display: none; }
+
+/* Sticky input section */
+.input-section-sticky {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+  padding: 8px 0 4px;
+  margin-bottom: 8px;
+  z-index: 10;
+  border-top: 1px solid var(--border);
+}
+.quick-actions {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.btn-quick {
+  background: var(--bg-card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  min-height: 32px;
+  transition: background 0.15s, border-color 0.15s;
+}
+.btn-quick:active { background: var(--bg-hover); border-color: var(--accent); }
+.input-bar-sticky {
+  display: flex;
+  gap: 8px;
+}
+.input-field {
+  flex: 1;
+  background: var(--bg-input);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-size: 14px;
+}
+.input-field:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Collapsible sections */
+.detail-collapse {
+  margin-bottom: 10px;
+}
+.collapse-summary {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 6px 0;
+  user-select: none;
+  list-style: none;
+}
+.collapse-summary::-webkit-details-marker { display: none; }
+.collapse-summary::before {
+  content: '▸ ';
+  font-size: 10px;
+}
+details[open] > .collapse-summary::before {
+  content: '▾ ';
+}
+
+.prompt-text {
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin-top: 6px;
+}
+
+/* Detail bottom actions */
+.detail-actions-bottom {
+  margin-top: 16px;
+  margin-bottom: 12px;
+}
+
+/* Running badge pulse */
+.badge-running {
+  animation: badge-pulse 2s ease-in-out infinite;
+}
+@keyframes badge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* Legacy support */
 .detail-section { margin-bottom: 12px; }
 .section-label {
   font-size: 12px;
@@ -319,57 +494,15 @@ a { color: var(--accent); text-decoration: none; }
 }
 .section-header .section-label { margin-bottom: 0; }
 
-.prompt-text {
-  font-size: 13px;
-  color: var(--text);
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 8px 12px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-/* Output Pane */
-.output-pane {
-  background: #0d1117;
-  color: #c9d1d9;
-  font-family: "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", monospace;
-  font-size: 12px;
-  line-height: 1.45;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 10px 12px;
-  max-height: 400px;
-  overflow-y: auto;
-  overflow-x: auto;
-  white-space: pre;
-  word-break: break-all;
-  -webkit-overflow-scrolling: touch;
-}
-
-/* Input Bar */
-.input-bar {
+/* Detail Actions (legacy) */
+.detail-actions {
   display: flex;
   gap: 8px;
   margin-bottom: 12px;
 }
-.input-field {
-  flex: 1;
-  background: var(--bg-input);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 8px 12px;
-  font-size: 14px;
-}
-.input-field:focus {
-  outline: none;
-  border-color: var(--accent);
-}
 
-/* Detail Actions */
-.detail-actions {
+/* Input Bar (legacy) */
+.input-bar {
   display: flex;
   gap: 8px;
   margin-bottom: 12px;
@@ -668,5 +801,5 @@ select.form-input {
     gap: 8px;
   }
 
-  .output-pane { max-height: 600px; }
+  .output-pane { max-height: 60vh; }
 }
