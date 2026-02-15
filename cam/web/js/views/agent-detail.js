@@ -2,12 +2,32 @@ import { api, state, navigate } from '../app.js';
 
 export function renderAgentDetail(container, agentId) {
   let outputTimer = null;
+  let elapsedTimer = null;
   let outputOffset = 0;
-  let useFullOutput = true; // default to full output mode
+  let useFullOutput = true;
+  let isFullscreen = false;
+  let autoScroll = true;
   let agent = (state.get('agents') || []).find(a => a.id === agentId);
 
+  function timeSince(dateStr) {
+    if (!dateStr) return '';
+    const s = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+    return `${Math.floor(s / 86400)}d`;
+  }
+
+  function renderMeta() {
+    const parts = [agent.tool];
+    if (agent.context_name) parts.push(agent.context_name);
+    parts.push(agent.status);
+    if (agent.started_at) parts.push(timeSince(agent.started_at));
+    if (agent.exit_reason) parts.push(agent.exit_reason);
+    return parts.join(' · ');
+  }
+
   const render = async () => {
-    // Refresh agent data
     try {
       agent = await api.getAgent(agentId);
     } catch (e) {
@@ -16,80 +36,86 @@ export function renderAgentDetail(container, agentId) {
     }
 
     const isActive = ['running', 'starting', 'pending'].includes(agent.status);
+    const prompt = agent.prompt || '';
 
     container.innerHTML = `
       <div class="detail-header">
         <button class="back-btn" id="back-btn">&larr;</button>
         <div class="detail-title">
-          <h2>${agent.task_name || agent.id.slice(0, 8)}</h2>
+          <h2>${escapeHtml(agent.task_name || agent.id.slice(0, 8))}</h2>
           <span class="badge badge-${agent.status}">${agent.status}</span>
         </div>
+        <div class="detail-actions-inline">
+          ${isActive ? `
+            <button class="btn-sm btn-danger" id="stop-btn">Stop</button>
+          ` : `
+            <button class="btn-sm btn-danger" id="delete-btn">&times;</button>
+          `}
+        </div>
       </div>
 
-      <div class="detail-meta">
-        <div class="meta-row">
-          <span class="meta-label">Tool</span>
-          <span class="meta-value">${agent.tool}</span>
-        </div>
-        <div class="meta-row">
-          <span class="meta-label">Context</span>
-          <span class="meta-value">${agent.context_name || 'none'}</span>
-        </div>
-        <div class="meta-row">
-          <span class="meta-label">State</span>
-          <span class="meta-value">${agent.state || '-'}</span>
-        </div>
-        ${agent.exit_reason ? `
-        <div class="meta-row">
-          <span class="meta-label">Exit</span>
-          <span class="meta-value">${agent.exit_reason}</span>
-        </div>` : ''}
-      </div>
+      <div class="detail-meta-compact" id="meta-line">${renderMeta()}</div>
 
-      ${agent.prompt ? `
-      <div class="detail-section">
-        <div class="section-label">Prompt</div>
-        <div class="prompt-text">${escapeHtml(agent.prompt)}</div>
-      </div>` : ''}
-
-      <div class="detail-section">
-        <div class="section-header">
-          <span class="section-label">Output</span>
-          <div style="display:flex;gap:6px;align-items:center">
+      <div class="output-section ${isFullscreen ? 'output-fullscreen' : ''}" id="output-section">
+        <div class="output-toolbar">
+          <div class="output-mode-btns">
             <button class="btn-sm ${useFullOutput ? 'btn-primary' : ''}" id="toggle-full">Full</button>
             <button class="btn-sm ${!useFullOutput ? 'btn-primary' : ''}" id="toggle-live">Live</button>
+          </div>
+          <div class="output-mode-btns">
             <button class="btn-sm" id="refresh-output">↻</button>
+            <button class="btn-sm" id="toggle-fullscreen">${isFullscreen ? '✕' : '⛶'}</button>
           </div>
         </div>
-        <pre class="output-pane" id="output-pane">Loading...</pre>
+        <div class="output-wrap">
+          <pre class="output-pane ${isFullscreen ? 'output-pane-fullscreen' : ''}" id="output-pane">Loading...</pre>
+          <button class="jump-bottom-btn hidden" id="jump-bottom">↓ Bottom</button>
+        </div>
       </div>
 
       ${isActive ? `
-      <div class="input-bar">
-        <input type="text" id="input-text" class="input-field" placeholder="Send input to agent...">
-        <button class="btn-primary btn-sm" id="send-btn">Send</button>
+      <div class="input-section-sticky" id="input-section">
+        <div class="quick-actions">
+          <button class="btn-quick" data-input="y">y</button>
+          <button class="btn-quick" data-input="n">n</button>
+          <button class="btn-quick" data-input="1">1</button>
+          <button class="btn-quick" data-input="2">2</button>
+          <button class="btn-quick" data-input="3">3</button>
+        </div>
+        <div class="input-bar-sticky">
+          <input type="text" id="input-text" class="input-field" placeholder="Send input...">
+          <button class="btn-primary btn-sm" id="send-btn">Send</button>
+        </div>
       </div>` : ''}
 
-      <div class="detail-actions">
-        ${isActive ? `
-          <button class="btn-danger" id="stop-btn">Stop</button>
-          <button class="btn-danger" id="kill-btn">Kill</button>
-        ` : `
-          <button class="btn-danger" id="delete-btn">Delete</button>
-        `}
-      </div>
+      ${prompt ? `
+      <details class="detail-collapse">
+        <summary class="collapse-summary">Prompt</summary>
+        <div class="prompt-text">${escapeHtml(prompt)}</div>
+      </details>` : ''}
 
-      <div class="detail-section">
-        <div class="section-label">Logs</div>
+      <details class="detail-collapse" id="logs-section">
+        <summary class="collapse-summary" id="logs-summary">Logs</summary>
         <div class="log-entries" id="log-entries">Loading...</div>
-      </div>
+      </details>
+
+      ${!isActive ? `
+      <div class="detail-actions-bottom">
+        <button class="btn-danger btn-full" id="delete-btn-bottom">Delete from history</button>
+      </div>` : ''}
     `;
 
-    // Wire events
+    wireEvents(isActive);
+    loadOutput();
+    loadLogs();
+    startElapsedTimer(isActive);
+  };
+
+  function wireEvents(isActive) {
     container.querySelector('#back-btn').addEventListener('click', () => navigate('/'));
 
-    const refreshBtn = container.querySelector('#refresh-output');
-    if (refreshBtn) refreshBtn.addEventListener('click', () => {
+    // Output controls
+    container.querySelector('#refresh-output').addEventListener('click', () => {
       outputOffset = 0;
       const pane = container.querySelector('#output-pane');
       if (pane) pane.textContent = '';
@@ -100,41 +126,71 @@ export function renderAgentDetail(container, agentId) {
       if (useFullOutput) return;
       useFullOutput = true;
       outputOffset = 0;
-      const pane = container.querySelector('#output-pane');
-      if (pane) pane.textContent = '';
+      autoScroll = true;
       render();
     });
 
     container.querySelector('#toggle-live').addEventListener('click', () => {
       if (!useFullOutput) return;
       useFullOutput = false;
+      autoScroll = true;
       render();
     });
 
+    container.querySelector('#toggle-fullscreen').addEventListener('click', () => {
+      isFullscreen = !isFullscreen;
+      const section = container.querySelector('#output-section');
+      const pane = container.querySelector('#output-pane');
+      const btn = container.querySelector('#toggle-fullscreen');
+      if (section) section.classList.toggle('output-fullscreen', isFullscreen);
+      if (pane) pane.classList.toggle('output-pane-fullscreen', isFullscreen);
+      if (btn) btn.textContent = isFullscreen ? '✕' : '⛶';
+      if (pane) pane.scrollTop = pane.scrollHeight;
+    });
+
+    // Auto-scroll lock
+    const pane = container.querySelector('#output-pane');
+    if (pane) {
+      pane.addEventListener('scroll', () => {
+        const atBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 30;
+        autoScroll = atBottom;
+        const jumpBtn = container.querySelector('#jump-bottom');
+        if (jumpBtn) jumpBtn.classList.toggle('hidden', atBottom);
+      });
+    }
+
+    const jumpBtn = container.querySelector('#jump-bottom');
+    if (jumpBtn) {
+      jumpBtn.addEventListener('click', () => {
+        autoScroll = true;
+        jumpBtn.classList.add('hidden');
+        if (pane) pane.scrollTop = pane.scrollHeight;
+      });
+    }
+
+    // Stop / Kill
     const stopBtn = container.querySelector('#stop-btn');
     if (stopBtn) stopBtn.addEventListener('click', async () => {
       try { await api.stopAgent(agentId); state.toast('Agent stopped', 'success'); }
       catch (e) { state.toast(e.message, 'error'); }
     });
 
-    const killBtn = container.querySelector('#kill-btn');
-    if (killBtn) killBtn.addEventListener('click', async () => {
-      try { await api.stopAgent(agentId, true); state.toast('Agent killed', 'success'); }
-      catch (e) { state.toast(e.message, 'error'); }
-    });
+    // Delete buttons (inline header + bottom)
+    for (const sel of ['#delete-btn', '#delete-btn-bottom']) {
+      const btn = container.querySelector(sel);
+      if (btn) btn.addEventListener('click', async () => {
+        if (!confirm('Delete this agent from history?')) return;
+        try {
+          await api.deleteAgentHistory(agentId);
+          state.toast('Agent deleted', 'success');
+          const resp = await api.listAgents({ limit: 50 });
+          state.set('agents', resp.agents || []);
+          navigate('/');
+        } catch (e) { state.toast(e.message, 'error'); }
+      });
+    }
 
-    const deleteBtn = container.querySelector('#delete-btn');
-    if (deleteBtn) deleteBtn.addEventListener('click', async () => {
-      if (!confirm('Delete this agent from history?')) return;
-      try {
-        await api.deleteAgentHistory(agentId);
-        state.toast('Agent deleted', 'success');
-        const resp = await api.listAgents({ limit: 50 });
-        state.set('agents', resp.agents || []);
-        navigate('/');
-      } catch (e) { state.toast(e.message, 'error'); }
-    });
-
+    // Input
     const inputText = container.querySelector('#input-text');
     const sendBtn = container.querySelector('#send-btn');
     if (sendBtn && inputText) {
@@ -150,17 +206,30 @@ export function renderAgentDetail(container, agentId) {
       inputText.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSend(); });
     }
 
-    // Load output and logs
-    loadOutput();
-    loadLogs();
-  };
+    // Quick action buttons
+    container.querySelectorAll('.btn-quick').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        try {
+          await api.sendInput(agentId, btn.dataset.input);
+        } catch (e) { state.toast(e.message, 'error'); }
+      });
+    });
+  }
+
+  function startElapsedTimer(isActive) {
+    clearInterval(elapsedTimer);
+    if (!isActive || !agent.started_at) return;
+    elapsedTimer = setInterval(() => {
+      const el = container.querySelector('#meta-line');
+      if (el) el.textContent = renderMeta();
+    }, 1000);
+  }
 
   async function loadOutput() {
     const pane = container.querySelector('#output-pane');
     if (!pane) return;
 
     if (useFullOutput) {
-      // Incremental full output — append new data
       try {
         const data = await api.agentFullOutput(agentId, outputOffset);
         if (data.output) {
@@ -169,7 +238,7 @@ export function renderAgentDetail(container, agentId) {
           } else {
             pane.textContent += data.output;
           }
-          pane.scrollTop = pane.scrollHeight;
+          if (autoScroll) pane.scrollTop = pane.scrollHeight;
         } else if (outputOffset === 0) {
           pane.textContent = '(no output yet)';
         }
@@ -178,11 +247,10 @@ export function renderAgentDetail(container, agentId) {
         if (outputOffset === 0) pane.textContent = '(output unavailable)';
       }
     } else {
-      // Live mode — last N lines from capture-pane
       try {
         const data = await api.agentOutput(agentId, 80);
         pane.textContent = data.output || '(no output)';
-        pane.scrollTop = pane.scrollHeight;
+        if (autoScroll) pane.scrollTop = pane.scrollHeight;
       } catch {
         pane.textContent = '(output unavailable)';
       }
@@ -191,10 +259,12 @@ export function renderAgentDetail(container, agentId) {
 
   async function loadLogs() {
     const el = container.querySelector('#log-entries');
+    const summary = container.querySelector('#logs-summary');
     if (!el) return;
     try {
       const data = await api.agentLogs(agentId, 50);
       const entries = data.entries || [];
+      if (summary) summary.textContent = `Logs (${entries.length})`;
       if (entries.length === 0) {
         el.innerHTML = '<div class="empty-state">No logs yet</div>';
         return;
@@ -209,7 +279,7 @@ export function renderAgentDetail(container, agentId) {
     }
   }
 
-  // Auto-refresh output for active agents
+  // Initial render + auto-refresh
   render().then(() => {
     if (['running', 'starting', 'pending'].includes(agent?.status)) {
       outputTimer = setInterval(loadOutput, 3000);
@@ -225,8 +295,11 @@ export function renderAgentDetail(container, agentId) {
     }
   });
 
-  // Return cleanup function for router
-  return () => { clearInterval(outputTimer); unsub(); };
+  return () => {
+    clearInterval(outputTimer);
+    clearInterval(elapsedTimer);
+    unsub();
+  };
 }
 
 function escapeHtml(s) {

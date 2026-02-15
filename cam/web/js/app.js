@@ -1,10 +1,10 @@
-import { api } from './api.js?v=8';
-import { state } from './state.js?v=8';
-import { renderDashboard } from './views/dashboard.js?v=8';
-import { renderAgentDetail } from './views/agent-detail.js?v=8';
-import { renderStartAgent } from './views/start-agent.js?v=8';
-import { renderContexts } from './views/contexts.js?v=8';
-import { renderSettings } from './views/settings.js?v=8';
+import { api } from './api.js?v=9';
+import { state } from './state.js?v=9';
+import { renderDashboard } from './views/dashboard.js?v=9';
+import { renderAgentDetail } from './views/agent-detail.js?v=9';
+import { renderStartAgent } from './views/start-agent.js?v=9';
+import { renderContexts } from './views/contexts.js?v=9';
+import { renderSettings } from './views/settings.js?v=9';
 
 // --- Router ---
 
