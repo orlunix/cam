@@ -31,6 +31,26 @@ export function renderStartAgent(container) {
           placeholder="Describe the task for the agent..."></textarea>
       </div>
 
+      <div class="section-divider"></div>
+
+      <div class="form-group">
+        <label class="toggle-row">
+          <span>Interactive</span>
+          <input type="checkbox" id="interactive" class="toggle-input">
+          <span class="toggle-slider"></span>
+        </label>
+        <div class="form-hint">Watch output and manually confirm prompts</div>
+      </div>
+
+      <div class="form-group" id="autoconfirm-group" style="display:none">
+        <label class="toggle-row">
+          <span>Auto-confirm</span>
+          <input type="checkbox" id="autoconfirm" class="toggle-input" checked>
+          <span class="toggle-slider"></span>
+        </label>
+        <div class="form-hint">Automatically respond to permission prompts</div>
+      </div>
+
       <details class="form-advanced">
         <summary>Advanced options</summary>
         <div class="form-group">
@@ -51,6 +71,15 @@ export function renderStartAgent(container) {
     </form>
   `;
 
+  // Toggle auto-confirm visibility + prompt required when interactive changes
+  const interactiveEl = container.querySelector('#interactive');
+  const autoconfirmGroup = container.querySelector('#autoconfirm-group');
+  const promptEl = container.querySelector('#prompt');
+  interactiveEl.addEventListener('change', () => {
+    autoconfirmGroup.style.display = interactiveEl.checked ? '' : 'none';
+    promptEl.required = !interactiveEl.checked;
+  });
+
   container.querySelector('#start-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = container.querySelector('#submit-btn');
@@ -60,12 +89,17 @@ export function renderStartAgent(container) {
     const body = {
       tool: container.querySelector('#tool').value,
       context: container.querySelector('#context').value,
-      prompt: container.querySelector('#prompt').value,
+      prompt: container.querySelector('#prompt').value || ' ',
       timeout: container.querySelector('#timeout').value,
       retry: parseInt(container.querySelector('#retry').value) || 0,
     };
     const name = container.querySelector('#name').value.trim();
     if (name) body.name = name;
+
+    // Interactive mode: send explicit auto_confirm value
+    if (interactiveEl.checked) {
+      body.auto_confirm = container.querySelector('#autoconfirm').checked;
+    }
 
     try {
       console.log('Starting agent with body:', JSON.stringify(body));
