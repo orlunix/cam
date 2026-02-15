@@ -46,15 +46,17 @@ class ClaudeAdapter(ToolAdapter):
     }
 
     # Auto-confirm patterns for Claude's numbered menu UI.
-    # Claude shows: "1. Yes  2. Yes, don't ask again  3. No"
-    # or "1. Yes, I trust this folder  2. No, exit"
-    # We send "1" without Enter (Claude reads single keypresses).
+    # Claude v2.1+ uses Ink select menus for trust/permission dialogs:
+    #   "❯ 1. Yes, I trust this folder" + "Enter to confirm"
+    # These require pressing Enter (cursor already on the right option).
+    # Older/inline prompts still use "1. Yes  2. No" where typing "1" works.
+    # Order matters: more specific patterns first.
     _AUTO_CONFIRM_PATTERNS = [
+        # Trust folder select menu (v2.1+): cursor already on "Yes", press Enter
+        (re.compile(r"Enter to confirm.*Esc to cancel", re.IGNORECASE | re.DOTALL),
+         ConfirmAction(response="", send_enter=True)),
         # Direct permission prompt
         (re.compile(r"Do\s+you\s+want\s+to\s+proceed", re.IGNORECASE),
-         ConfirmAction(response="1", send_enter=False)),
-        # Trust folder prompt
-        (re.compile(r"1\.\s*Yes,?\s*I?\s*trust", re.IGNORECASE),
          ConfirmAction(response="1", send_enter=False)),
         # Numbered menu with "1. Yes" or "1. Allow" visible
         (re.compile(r"1\.\s*(Yes|Allow)", re.IGNORECASE),

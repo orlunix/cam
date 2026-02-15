@@ -89,9 +89,44 @@ export function renderAgentDetail(container, agentId) {
           <button class="btn-quick" data-input="1">1</button>
           <button class="btn-quick" data-input="2">2</button>
           <button class="btn-quick" data-input="3">3</button>
+          <button class="btn-quick btn-quick-expand" id="expand-keys">···</button>
+        </div>
+        <div class="quick-actions-extra hidden" id="extra-keys">
+          <div class="quick-row">
+            <button class="btn-quick" data-key="Tab">Tab</button>
+            <button class="btn-quick" data-key="BTab">S-Tab</button>
+            <button class="btn-quick" data-key="Escape">Esc</button>
+            <button class="btn-quick" data-key="Enter">Enter</button>
+            <button class="btn-quick" data-input="/">/</button>
+            <button class="btn-quick" data-key="C-c">Ctrl-C</button>
+          </div>
+          <div class="quick-row">
+            <button class="btn-quick" data-key="Left">&larr;</button>
+            <button class="btn-quick" data-key="Up">&uarr;</button>
+            <button class="btn-quick" data-key="Down">&darr;</button>
+            <button class="btn-quick" data-key="Right">&rarr;</button>
+            <button class="btn-quick" data-key="Home">Home</button>
+            <button class="btn-quick" data-key="End">End</button>
+          </div>
+          <div class="quick-row">
+            <button class="btn-quick" data-key="PPage">PgUp</button>
+            <button class="btn-quick" data-key="NPage">PgDn</button>
+            <button class="btn-quick" data-key="IC">Ins</button>
+            <button class="btn-quick" data-key="DC">Del</button>
+            <button class="btn-quick" data-input="~">~</button>
+            <button class="btn-quick" data-input="@">@</button>
+          </div>
+          <div class="quick-row">
+            <button class="btn-quick" data-input="$">$</button>
+            <button class="btn-quick" data-input="*">*</button>
+            <button class="btn-quick" data-input="{">{</button>
+            <button class="btn-quick" data-input="}">}</button>
+            <button class="btn-quick" data-input="[">[</button>
+            <button class="btn-quick" data-input="]">]</button>
+          </div>
         </div>
         <div class="input-bar-sticky">
-          <input type="text" id="input-text" class="input-field" placeholder="Send input...">
+          <input type="text" id="input-text" class="input-field" placeholder="Send input..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send">
           <button class="btn-primary btn-sm" id="send-btn">Send</button>
         </div>
       </div>` : ''}
@@ -208,27 +243,47 @@ export function renderAgentDetail(container, agentId) {
       });
     }
 
-    // Input
+    // Input (composing guard for CJK IME)
     const inputText = container.querySelector('#input-text');
     const sendBtn = container.querySelector('#send-btn');
     if (sendBtn && inputText) {
+      let composing = false;
+      inputText.addEventListener('compositionstart', () => { composing = true; });
+      inputText.addEventListener('compositionend', () => { composing = false; });
       const doSend = async () => {
-        const text = inputText.value.trim();
+        const text = inputText.value;
         if (!text) return;
-        try {
-          await api.sendInput(agentId, text);
-          inputText.value = '';
-        } catch (e) { state.toast(e.message, 'error'); }
+        try { await api.sendInput(agentId, text); inputText.value = ''; }
+        catch (e) { state.toast(e.message, 'error'); }
       };
-      sendBtn.addEventListener('click', doSend);
-      inputText.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSend(); });
+      sendBtn.addEventListener('click', () => setTimeout(doSend, 50));
+      inputText.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !composing) { e.preventDefault(); setTimeout(doSend, 50); }
+      });
     }
 
-    // Quick action buttons
-    container.querySelectorAll('.btn-quick').forEach(btn => {
+    // Expand/collapse extra keys
+    const expandBtn = container.querySelector('#expand-keys');
+    const extraKeys = container.querySelector('#extra-keys');
+    if (expandBtn && extraKeys) {
+      expandBtn.addEventListener('click', () => {
+        const show = extraKeys.classList.toggle('hidden');
+        expandBtn.textContent = show ? '···' : '×';
+      });
+    }
+
+    // Quick action buttons (data-input = literal text without Enter, data-key = TMUX key)
+    container.querySelectorAll('.btn-quick[data-input]').forEach(btn => {
       btn.addEventListener('click', async () => {
         try {
-          await api.sendInput(agentId, btn.dataset.input);
+          await api.sendInput(agentId, btn.dataset.input, false);
+        } catch (e) { state.toast(e.message, 'error'); }
+      });
+    });
+    container.querySelectorAll('.btn-quick[data-key]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        try {
+          await api.sendKey(agentId, btn.dataset.key);
         } catch (e) { state.toast(e.message, 'error'); }
       });
     });
