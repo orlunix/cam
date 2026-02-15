@@ -7,6 +7,7 @@ export function renderAgentDetail(container, agentId) {
   let useFullOutput = true;
   let isFullscreen = false;
   let autoScroll = true;
+  let cachedOutput = '';  // preserve output across re-renders
   let agent = (state.get('agents') || []).find(a => a.id === agentId);
 
   function timeSince(dateStr) {
@@ -33,6 +34,12 @@ export function renderAgentDetail(container, agentId) {
     } catch (e) {
       container.innerHTML = `<div class="error-state">Agent not found</div>`;
       return;
+    }
+
+    // Save current output before DOM rebuild
+    const existingPane = container.querySelector('#output-pane');
+    if (existingPane && existingPane.textContent !== 'Loading...') {
+      cachedOutput = existingPane.textContent;
     }
 
     const isActive = ['running', 'starting', 'pending'].includes(agent.status);
@@ -68,7 +75,7 @@ export function renderAgentDetail(container, agentId) {
           </div>
         </div>
         <div class="output-wrap">
-          <pre class="output-pane ${isFullscreen ? 'output-pane-fullscreen' : ''}" id="output-pane">Loading...</pre>
+          <pre class="output-pane ${isFullscreen ? 'output-pane-fullscreen' : ''}" id="output-pane"></pre>
           <button class="jump-bottom-btn hidden" id="jump-bottom">↓ Bottom</button>
         </div>
       </div>
@@ -105,6 +112,13 @@ export function renderAgentDetail(container, agentId) {
       </div>` : ''}
     `;
 
+    // Restore cached output immediately (no flash)
+    const pane = container.querySelector('#output-pane');
+    if (pane && cachedOutput) {
+      pane.textContent = cachedOutput;
+      if (autoScroll) pane.scrollTop = pane.scrollHeight;
+    }
+
     wireEvents(isActive);
     loadOutput();
     loadLogs();
@@ -117,6 +131,7 @@ export function renderAgentDetail(container, agentId) {
     // Output controls
     container.querySelector('#refresh-output').addEventListener('click', () => {
       outputOffset = 0;
+      cachedOutput = '';
       const pane = container.querySelector('#output-pane');
       if (pane) pane.textContent = '';
       loadOutput();
@@ -126,6 +141,7 @@ export function renderAgentDetail(container, agentId) {
       if (useFullOutput) return;
       useFullOutput = true;
       outputOffset = 0;
+      cachedOutput = '';
       autoScroll = true;
       render();
     });
@@ -133,6 +149,7 @@ export function renderAgentDetail(container, agentId) {
     container.querySelector('#toggle-live').addEventListener('click', () => {
       if (!useFullOutput) return;
       useFullOutput = false;
+      cachedOutput = '';
       autoScroll = true;
       render();
     });
@@ -238,21 +255,25 @@ export function renderAgentDetail(container, agentId) {
           } else {
             pane.textContent += data.output;
           }
+          cachedOutput = pane.textContent;
           if (autoScroll) pane.scrollTop = pane.scrollHeight;
-        } else if (outputOffset === 0) {
-          pane.textContent = '(no output yet)';
+          outputOffset = data.next_offset || outputOffset;
         }
-        outputOffset = data.next_offset || outputOffset;
+        // If no data.output, keep existing content (don't flash)
       } catch {
-        if (outputOffset === 0) pane.textContent = '(output unavailable)';
+        // Keep existing content on error
       }
     } else {
       try {
         const data = await api.agentOutput(agentId, 80);
-        pane.textContent = data.output || '(no output)';
-        if (autoScroll) pane.scrollTop = pane.scrollHeight;
+        if (data.output) {
+          pane.textContent = data.output;
+          cachedOutput = data.output;
+          if (autoScroll) pane.scrollTop = pane.scrollHeight;
+        }
+        // If no output, keep existing content
       } catch {
-        pane.textContent = '(output unavailable)';
+        // Keep existing content on error
       }
     }
   }
@@ -286,7 +307,7 @@ export function renderAgentDetail(container, agentId) {
     }
   });
 
-  // Re-render on status changes
+  // Re-render on status changes only
   const unsub = state.subscribe((data) => {
     const updated = (data.agents || []).find(a => a.id === agentId);
     if (updated && updated.status !== agent?.status) {
