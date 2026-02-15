@@ -185,6 +185,7 @@ class TaskDefinition(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     depends_on: list[str] = Field(default_factory=list)
     on_complete: Optional[str] = None
+    auto_confirm: Optional[bool] = None
 
     model_config = {
         "json_schema_extra": {

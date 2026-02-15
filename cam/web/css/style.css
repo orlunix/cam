@@ -615,6 +615,48 @@ select.form-input {
   margin: 16px 0;
 }
 
+/* Toggle switch */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+}
+.toggle-input { display: none; }
+.toggle-slider {
+  width: 42px;
+  height: 24px;
+  background: var(--border);
+  border-radius: 12px;
+  position: relative;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+.toggle-slider::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform 0.2s;
+}
+.toggle-input:checked + .toggle-slider {
+  background: var(--accent);
+}
+.toggle-input:checked + .toggle-slider::after {
+  transform: translateX(18px);
+}
+.form-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
 /* === Buttons === */
 .btn-primary {
   background: var(--accent);

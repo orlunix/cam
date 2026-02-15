@@ -207,7 +207,8 @@ async def run_monitor(agent_id: str) -> None:
                             output = await transport.capture_output(session_name)
                             if not output.strip():
                                 continue
-                            confirm_action = adapter.should_auto_confirm(output)
+                            _ac = agent.task.auto_confirm if agent.task.auto_confirm is not None else True
+                            confirm_action = adapter.should_auto_confirm(output) if _ac else None
                             if confirm_action is not None:
                                 await transport.send_input(
                                     session_name,
@@ -225,9 +226,10 @@ async def run_monitor(agent_id: str) -> None:
                                 "Readiness not detected for %s after %.1fs",
                                 session_name, elapsed,
                             )
-                        await transport.send_input(
-                            session_name, agent.task.prompt, send_enter=True
-                        )
+                        if agent.task.prompt.strip():
+                            await transport.send_input(
+                                session_name, agent.task.prompt, send_enter=True
+                            )
 
                     agent.status = AgentStatus.RUNNING
                     agent.state = AgentState.INITIALIZING
