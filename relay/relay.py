@@ -175,6 +175,7 @@ class Relay:
         self._web_root = Path(web_root) if web_root else None
         self._proxy_counter = 0
         self._proxy_pending: dict[str, asyncio.Future] = {}
+        self._api_ws_clients: dict[str, asyncio.StreamWriter] = {}  # ws_id → writer
 
     def _check_token(self, query: dict[str, list[str]]) -> bool:
         if not self._token:
@@ -198,6 +199,12 @@ class Relay:
         # WebSocket upgrade?
         ws_key = headers.get("sec-websocket-key", "")
         if ws_key:
+            # /api/ws — proxy WebSocket event stream to server
+            if path.startswith("/api/ws"):
+                await do_ws_upgrade(writer, ws_key)
+                await self._handle_api_ws(reader, writer, peer, path, headers)
+                return
+
             if not self._check_token(query):
                 log.warning("Auth failed from %s", peer)
                 close_frame = make_frame(OP_CLOSE, b"")
@@ -386,16 +393,30 @@ class Relay:
                     log.debug("Server PONG received")
                     continue
 
-                # Check if this is a response to an HTTP proxy request
-                if opcode == OP_TEXT and self._proxy_pending:
+                # Check if this is a response to an HTTP proxy or API-WS request
+                if opcode == OP_TEXT and (self._proxy_pending or self._api_ws_clients):
                     import json as _json
                     try:
                         msg = _json.loads(payload)
                         req_id = msg.get("id", "")
+
+                        # HTTP proxy response
                         if req_id in self._proxy_pending:
                             future = self._proxy_pending.pop(req_id)
                             if not future.done():
                                 future.set_result(msg)
+                            continue
+
+                        # API WebSocket event — forward inner event to phone
+                        if req_id in self._api_ws_clients:
+                            event = msg.get("event")
+                            if event:
+                                cw = self._api_ws_clients[req_id]
+                                try:
+                                    cw.write(make_frame(OP_TEXT, _json.dumps(event).encode()))
+                                    await cw.drain()
+                                except Exception:
+                                    self._api_ws_clients.pop(req_id, None)
                             continue
                     except (ValueError, TypeError):
                         pass
@@ -461,6 +482,88 @@ class Relay:
         finally:
             self._clients.pop(cid, None)
             log.info("Client %d disconnected (%d remaining)", cid, len(self._clients))
+            writer.close()
+
+    async def _handle_api_ws(self, reader, writer, peer, path: str, headers: dict) -> None:
+        """Proxy a /api/ws WebSocket connection through to the CAM server.
+
+        The phone opens ws://relay/api/ws?token=... expecting raw event JSON.
+        We send a WS request frame to the server via its relay connection,
+        and forward events back to the phone.
+        """
+        import json as _json
+
+        if self._server_writer is None:
+            log.warning("API-WS from %s but no server connected", peer)
+            writer.write(make_frame(OP_CLOSE, b""))
+            await writer.drain()
+            writer.close()
+            return
+
+        # Register this WS client for event forwarding
+        self._proxy_counter += 1
+        ws_id = f"api-ws-{self._proxy_counter}"
+        self._api_ws_clients[ws_id] = writer
+        log.info("API-WS %s connected from %s (path=%s)", ws_id, peer, path)
+
+        # Tell the server to start streaming events for this client
+        frame = _json.dumps({
+            "id": ws_id,
+            "method": "WS",
+            "path": path,
+            "headers": {k: v for k, v in headers.items() if k.startswith("authorization")},
+        })
+        try:
+            self._server_writer.write(make_frame(OP_TEXT, frame.encode()))
+            await self._server_writer.drain()
+        except Exception:
+            log.warning("API-WS %s: failed to send WS request to server", ws_id)
+            self._api_ws_clients.pop(ws_id, None)
+            writer.close()
+            return
+
+        # Run frame reader and ping sender concurrently
+        async def _read_loop():
+            while True:
+                result = await read_frame(reader)
+                if result is None:
+                    log.info("API-WS %s: read_frame returned None (EOF)", ws_id)
+                    return
+                opcode, payload = result
+                if opcode == OP_CLOSE:
+                    log.info("API-WS %s: client sent CLOSE", ws_id)
+                    return
+                elif opcode == OP_PING:
+                    writer.write(make_frame(OP_PONG, payload))
+                    await writer.drain()
+                elif opcode == OP_PONG:
+                    log.debug("API-WS %s: PONG received", ws_id)
+
+        async def _ping_loop():
+            await asyncio.sleep(3)
+            while True:
+                try:
+                    writer.write(make_frame(OP_PING, b""))
+                    await writer.drain()
+                    log.debug("API-WS %s: PING sent", ws_id)
+                except Exception as e:
+                    log.info("API-WS %s: ping failed: %s", ws_id, e)
+                    return
+                await asyncio.sleep(20)
+
+        try:
+            read_task = asyncio.create_task(_read_loop())
+            ping_task = asyncio.create_task(_ping_loop())
+            done, pending = await asyncio.wait(
+                [read_task, ping_task], return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+        except Exception as e:
+            log.info("API-WS %s error: %s", ws_id, e)
+        finally:
+            self._api_ws_clients.pop(ws_id, None)
+            log.info("API-WS %s disconnected", ws_id)
             writer.close()
 
 
