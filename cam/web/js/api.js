@@ -218,7 +218,10 @@ export class CamApi {
 
   _connectEventStream() {
     if (this.mode !== 'direct') return;
-    if (this._eventWs) { try { this._eventWs.close(); } catch {} }
+    if (this._eventWs) { try { this._eventWs.close(); } catch {} this._eventWs = null; }
+
+    // Don't open WS if page is hidden (mobile background)
+    if (document.hidden) return;
 
     const wsUrl = `${this.serverUrl.replace(/^http/, 'ws')}/api/ws?token=${encodeURIComponent(this.token)}`;
     const ws = new WebSocket(wsUrl);
@@ -231,12 +234,23 @@ export class CamApi {
     };
 
     ws.onclose = () => {
-      if (this.mode === 'direct') {
-        setTimeout(() => this._connectEventStream(), 5000);
+      this._eventWs = null;
+      if (this.mode === 'direct' && !document.hidden) {
+        setTimeout(() => this._connectEventStream(), 10000);
       }
     };
 
     this._eventWs = ws;
+
+    // Reconnect on visibility change (mobile foreground/background)
+    if (!this._visHandler) {
+      this._visHandler = () => {
+        if (!document.hidden && this.mode === 'direct' && !this._eventWs) {
+          this._connectEventStream();
+        }
+      };
+      document.addEventListener('visibilitychange', this._visHandler);
+    }
   }
 
   _requestRelayEventStream() {
