@@ -223,8 +223,17 @@ export class CamApi {
     // Don't open WS if page is hidden (mobile background)
     if (document.hidden) return;
 
+    // Back off after repeated failures (max 3 attempts, then stop)
+    if (this._wsFailCount >= 3) return;
+
     const wsUrl = `${this.serverUrl.replace(/^http/, 'ws')}/api/ws?token=${encodeURIComponent(this.token)}`;
     const ws = new WebSocket(wsUrl);
+    const openedAt = Date.now();
+
+    ws.onopen = () => {
+      // Reset fail count on successful long-lived connection (>30s)
+      this._wsStableTimer = setTimeout(() => { this._wsFailCount = 0; }, 30000);
+    };
 
     ws.onmessage = (evt) => {
       try {
@@ -235,8 +244,21 @@ export class CamApi {
 
     ws.onclose = () => {
       this._eventWs = null;
+      clearTimeout(this._wsStableTimer);
+
+      // If connection died within 15s, count as failure
+      if (Date.now() - openedAt < 15000) {
+        this._wsFailCount = (this._wsFailCount || 0) + 1;
+      }
+
+      if (this._wsFailCount >= 3) {
+        console.warn('WebSocket unstable, falling back to HTTP polling');
+        return;
+      }
+
       if (this.mode === 'direct' && !document.hidden) {
-        setTimeout(() => this._connectEventStream(), 10000);
+        const delay = Math.min(10000 * Math.pow(2, this._wsFailCount || 0), 60000);
+        setTimeout(() => this._connectEventStream(), delay);
       }
     };
 
@@ -245,7 +267,9 @@ export class CamApi {
     // Reconnect on visibility change (mobile foreground/background)
     if (!this._visHandler) {
       this._visHandler = () => {
-        if (!document.hidden && this.mode === 'direct' && !this._eventWs) {
+        if (document.hidden) return;
+        if (this.mode === 'direct' && !this._eventWs) {
+          this._wsFailCount = 0; // Reset on foreground — user is active
           this._connectEventStream();
         }
       };
