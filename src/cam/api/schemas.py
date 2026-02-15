@@ -70,6 +70,12 @@ class SendInputRequest(BaseModel):
     send_enter: bool = True
 
 
+class SendKeyRequest(BaseModel):
+    """POST /api/agents/{id}/key request body."""
+
+    key: str = Field(min_length=1)
+
+
 class HealthResponse(BaseModel):
     """GET /api/system/health response."""
 
