@@ -53,6 +53,7 @@ async def run_agent(body: RunAgentRequest, request: Request):
         timeout=timeout_seconds,
         retry=RetryPolicy(max_retries=body.retry),
         env=body.env,
+        auto_confirm=body.auto_confirm,
     )
 
     try:

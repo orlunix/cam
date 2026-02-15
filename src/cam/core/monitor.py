@@ -169,7 +169,10 @@ class AgentMonitor:
                 # --------------------------------------------------
                 # 6. Auto-confirm check (only when output changed, with cooldown)
                 # --------------------------------------------------
-                if output_changed and self._config.general.auto_confirm:
+                ac = self._agent.task.auto_confirm
+                if ac is None:
+                    ac = self._config.general.auto_confirm
+                if output_changed and ac:
                     # 5-second cooldown prevents re-sending when same prompt persists
                     now_confirm = datetime.utcnow().timestamp()
                     if now_confirm - self._last_confirm_time >= 5.0:
@@ -218,11 +221,13 @@ class AgentMonitor:
 
                 # --------------------------------------------------
                 # 8. Detect completion (only when output has stabilized)
+                #    Skip in interactive mode — user must manually stop.
                 # --------------------------------------------------
+                interactive = self._agent.task.auto_confirm is not None
                 idle_for = now - self._last_change_time
                 completion_status = (
                     self._adapter.detect_completion(output)
-                    if not output_changed and idle_for >= 3.0
+                    if not interactive and not output_changed and idle_for >= 3.0
                     else None
                 )
                 if completion_status is not None:
@@ -266,7 +271,7 @@ class AgentMonitor:
                 # When output has been idle long enough and probe is enabled,
                 # send a probe character to test terminal echo state.
                 # TUI apps disable echo (raw mode) while working.
-                if self._config.monitor.probe_detection and self._has_worked:
+                if self._config.monitor.probe_detection and self._has_worked and not interactive:
                     probe_stable = self._config.monitor.probe_stable_seconds
                     probe_cooldown = self._config.monitor.probe_cooldown
                     if (

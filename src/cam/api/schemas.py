@@ -21,6 +21,7 @@ class RunAgentRequest(BaseModel):
     timeout: str | None = None
     retry: int = Field(default=0, ge=0)
     env: dict[str, str] = Field(default_factory=dict)
+    auto_confirm: bool | None = None
 
 
 class AgentResponse(BaseModel):
@@ -39,6 +40,7 @@ class AgentResponse(BaseModel):
     retry_count: int
     cost_estimate: float | None
     files_changed: list[str]
+    auto_confirm: bool | None = None
 
 
 class AgentListResponse(BaseModel):
@@ -93,4 +95,5 @@ def agent_to_response(agent: Agent) -> AgentResponse:
         retry_count=agent.retry_count,
         cost_estimate=agent.cost_estimate,
         files_changed=agent.files_changed,
+        auto_confirm=agent.task.auto_confirm,
     )

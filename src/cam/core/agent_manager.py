@@ -186,7 +186,7 @@ class AgentManager:
         # 9. If adapter needs prompt after launch, handle startup prompts then send task
         if adapter.needs_prompt_after_launch():
             await self._wait_and_send_prompt(
-                transport, adapter, session_name, task.prompt
+                transport, adapter, session_name, task.prompt, task.auto_confirm
             )
 
         # 10. Update status to RUNNING
@@ -407,6 +407,7 @@ class AgentManager:
         adapter: ToolAdapter,
         session_name: str,
         prompt: str,
+        auto_confirm: bool | None = None,
     ) -> None:
         """Wait for interactive tool readiness, handle pre-prompt confirmations, then send the task prompt.
 
@@ -435,7 +436,8 @@ class AgentManager:
                 continue
 
             # Handle trust/permission prompts that appear before readiness
-            confirm_action = adapter.should_auto_confirm(output)
+            ac = auto_confirm if auto_confirm is not None else True
+            confirm_action = adapter.should_auto_confirm(output) if ac else None
             if confirm_action is not None:
                 logger.info("Pre-prompt auto-confirm in %s: sending '%s'",
                             session_name, confirm_action.response)
@@ -460,7 +462,8 @@ class AgentManager:
                 session_name, elapsed,
             )
 
-        await transport.send_input(session_name, prompt, send_enter=True)
+        if prompt.strip():
+            await transport.send_input(session_name, prompt, send_enter=True)
 
     def _spawn_background_monitor(self, agent: Agent) -> None:
         """Spawn a detached subprocess to monitor the agent.
@@ -629,7 +632,8 @@ class AgentManager:
                     # Send prompt if needed
                     if adapter.needs_prompt_after_launch():
                         await self._wait_and_send_prompt(
-                            transport, adapter, session_name, agent.task.prompt
+                            transport, adapter, session_name, agent.task.prompt,
+                            agent.task.auto_confirm,
                         )
 
                     agent.status = AgentStatus.RUNNING
