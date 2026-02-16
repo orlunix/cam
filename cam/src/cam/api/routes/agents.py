@@ -220,32 +220,49 @@ async def get_full_output(
     from cam.constants import LOG_DIR
 
     log_path = LOG_DIR / "output" / f"{agent.id}.log"
-    if not log_path.exists():
-        return {
-            "agent_id": str(agent.id),
-            "output": "",
-            "next_offset": 0,
-            "active": not agent.is_terminal(),
-        }
 
-    try:
-        with open(log_path, "r", errors="replace") as f:
-            f.seek(offset)
-            data = f.read(256_000)  # max 256KB per request
-            next_offset = f.tell()
-        return {
-            "agent_id": str(agent.id),
-            "output": data,
-            "next_offset": next_offset,
-            "active": not agent.is_terminal(),
-        }
-    except Exception:
-        return {
-            "agent_id": str(agent.id),
-            "output": "",
-            "next_offset": offset,
-            "active": not agent.is_terminal(),
-        }
+    # Try local log file first (works for local transport)
+    if log_path.exists():
+        try:
+            with open(log_path, "r", errors="replace") as f:
+                f.seek(offset)
+                data = f.read(256_000)  # max 256KB per request
+                next_offset = f.tell()
+            return {
+                "agent_id": str(agent.id),
+                "output": data,
+                "next_offset": next_offset,
+                "active": not agent.is_terminal(),
+            }
+        except Exception:
+            pass
+
+    # Fallback: read from transport (e.g. SSH remote log)
+    context = state.context_store.get(str(agent.context_id))
+    if context and agent.tmux_session:
+        from cam.transport.factory import TransportFactory
+
+        transport = TransportFactory.create(context.machine)
+        try:
+            data, next_offset = await transport.read_output_log(
+                agent.tmux_session, offset
+            )
+            if data:
+                return {
+                    "agent_id": str(agent.id),
+                    "output": data,
+                    "next_offset": next_offset,
+                    "active": not agent.is_terminal(),
+                }
+        except Exception:
+            pass
+
+    return {
+        "agent_id": str(agent.id),
+        "output": "",
+        "next_offset": offset,
+        "active": not agent.is_terminal(),
+    }
 
 
 @router.post("/agents/{agent_id}/input")

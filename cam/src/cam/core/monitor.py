@@ -106,15 +106,18 @@ class AgentMonitor:
         })
         self._publish_event("monitor_start")
 
+        # Interactive agents must run indefinitely — skip timeouts
+        interactive = self._agent.task.auto_confirm is not None
+
         try:
             while True:
                 self._poll_count += 1
                 now = datetime.utcnow().timestamp()
 
                 # --------------------------------------------------
-                # 1. Total timeout check
+                # 1. Total timeout check (skip for interactive agents)
                 # --------------------------------------------------
-                if total_timeout and self._agent.started_at:
+                if total_timeout and self._agent.started_at and not interactive:
                     elapsed = (datetime.utcnow() - self._agent.started_at).total_seconds()
                     if elapsed >= total_timeout:
                         self._logger.write("timeout", data={"elapsed": elapsed, "limit": total_timeout})
@@ -122,9 +125,9 @@ class AgentMonitor:
                         return self._finalize(AgentStatus.TIMEOUT, f"Total timeout after {elapsed:.0f}s")
 
                 # --------------------------------------------------
-                # 2. Idle timeout check
+                # 2. Idle timeout check (skip for interactive agents)
                 # --------------------------------------------------
-                if idle_timeout > 0:
+                if idle_timeout > 0 and not interactive:
                     idle_seconds = now - self._last_change_time
                     if idle_seconds >= idle_timeout:
                         self._logger.write("idle_timeout", data={"idle_seconds": idle_seconds, "limit": idle_timeout})
@@ -223,7 +226,6 @@ class AgentMonitor:
                 # 8. Detect completion (only when output has stabilized)
                 #    Skip in interactive mode — user must manually stop.
                 # --------------------------------------------------
-                interactive = self._agent.task.auto_confirm is not None
                 idle_for = now - self._last_change_time
                 completion_status = (
                     self._adapter.detect_completion(output)
@@ -245,13 +247,10 @@ class AgentMonitor:
 
                 # --------------------------------------------------
                 # 8b. Detect completion via input prompt return
+                #     Skip in interactive mode — agent stays alive
+                #     for continued user interaction.
                 # --------------------------------------------------
-                # For interactive tools (e.g. Claude), completion is
-                # detected when the tool returns to its input prompt
-                # after having done work. We require the prompt to have
-                # disappeared first (Claude was actively working) to
-                # avoid false positives from the startup screen.
-                if self._adapter.needs_prompt_after_launch():
+                if not interactive and self._adapter.needs_prompt_after_launch():
                     prompt_visible = self._adapter.is_ready_for_input(output)
                     if not prompt_visible and self._has_worked:
                         self._prompt_disappeared = True
