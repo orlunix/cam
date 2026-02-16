@@ -110,10 +110,11 @@ export class CamApi {
         return;
       }
       const id = `req-${++this._reqCounter}`;
+      const timeout = path.includes('/upload') ? 60000 : 15000;
       const timer = setTimeout(() => {
         this._requestMap.delete(id);
         reject(new Error('Relay request timeout'));
-      }, 15000);
+      }, timeout);
 
       this._requestMap.set(id, { resolve, reject, timer });
 

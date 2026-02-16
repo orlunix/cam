@@ -2,8 +2,10 @@ package com.cam.app;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
@@ -12,6 +14,7 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.ConsoleMessage;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -22,7 +25,9 @@ import android.widget.LinearLayout;
 public class MainActivity extends Activity {
 
     private static final String TAG = "CAM";
+    private static final int FILE_CHOOSER_REQUEST = 1001;
     private WebView webView;
+    private ValueCallback<Uri[]> fileUploadCallback;
     private static final String PREFS = "cam_prefs";
     private static final String KEY_URL = "server_url";
 
@@ -85,6 +90,24 @@ public class MainActivity extends Activity {
             @Override
             public boolean onConsoleMessage(ConsoleMessage cm) {
                 Log.d(TAG, cm.message() + " [" + cm.sourceId() + ":" + cm.lineNumber() + "]");
+                return true;
+            }
+
+            @Override
+            public boolean onShowFileChooser(WebView view,
+                    ValueCallback<Uri[]> callback,
+                    FileChooserParams params) {
+                if (fileUploadCallback != null) {
+                    fileUploadCallback.onReceiveValue(null);
+                }
+                fileUploadCallback = callback;
+                Intent intent = params.createIntent();
+                try {
+                    startActivityForResult(intent, FILE_CHOOSER_REQUEST);
+                } catch (Exception e) {
+                    fileUploadCallback = null;
+                    return false;
+                }
                 return true;
             }
         });
@@ -159,6 +182,22 @@ public class MainActivity extends Activity {
             webView.goBack();
         } else {
             super.onBackPressed();
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == FILE_CHOOSER_REQUEST) {
+            if (fileUploadCallback != null) {
+                Uri[] results = null;
+                if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                    results = new Uri[]{data.getData()};
+                }
+                fileUploadCallback.onReceiveValue(results);
+                fileUploadCallback = null;
+            }
+        } else {
+            super.onActivityResult(requestCode, resultCode, data);
         }
     }
 
