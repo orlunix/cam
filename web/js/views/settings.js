@@ -72,7 +72,13 @@ export function renderSettings(container) {
     localStorage.setItem('cam_relay_token', relayToken);
 
     api.configure({ serverUrl, token, relayUrl, relayToken });
-    const mode = await api.connect();
+    let mode;
+    try {
+      mode = await api.connect();
+    } catch (err) {
+      state.toast(`Connect error: ${err.message}`, 'error');
+      mode = 'disconnected';
+    }
     state.set('connectionMode', mode);
 
     if (mode !== 'disconnected') {
@@ -85,10 +91,12 @@ export function renderSettings(container) {
         ]);
         state.set('agents', agentsResp.agents || []);
         state.set('contexts', ctxResp.contexts || []);
-      } catch {}
+      } catch (err) {
+        state.toast(`Data load error: ${err.message}`, 'error');
+      }
       if (mode === 'relay') api._requestRelayEventStream();
     } else {
-      state.toast('Connection failed', 'error');
+      state.toast('Connection failed — check URL and token', 'error');
     }
 
     renderSettings(container); // Re-render with new status
@@ -104,12 +112,17 @@ export function renderSettings(container) {
     }
 
     try {
-      const r = await fetch(`${serverUrl}/api/system/health`, {
-        signal: AbortSignal.timeout(5000),
+      // Test with auth to verify token works
+      const headers = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const r = await fetch(`${serverUrl}/api/contexts`, {
+        headers,
+        signal: AbortSignal.timeout(10000),
       });
       if (r.ok) {
-        const data = await r.json();
-        state.toast(`Server OK: ${data.agents_running} agents running`, 'success');
+        state.toast('Server OK — token valid', 'success');
+      } else if (r.status === 401) {
+        state.toast('Server reachable but token rejected', 'error');
       } else {
         state.toast(`Server returned ${r.status}`, 'error');
       }
