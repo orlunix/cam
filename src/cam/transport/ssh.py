@@ -182,6 +182,17 @@ class SSHTransport(Transport):
             logger.warning("Failed to start pipe-pane for remote session %s", session_id)
         return success
 
+    async def read_output_log(self, session_id: str, offset: int = 0, max_bytes: int = 256_000) -> tuple[str, int]:
+        """Read the pipe-pane output log from the remote host."""
+        remote_log = f"/tmp/cam-logs/{session_id}.output.log"
+        # Use dd to read from offset, limited to max_bytes
+        cmd = f"dd if={shlex.quote(remote_log)} bs=1 skip={offset} count={max_bytes} 2>/dev/null"
+        success, output = await self._run_ssh(cmd, check=False)
+        if not success or not output:
+            return "", offset
+        next_offset = offset + len(output.encode("utf-8", errors="replace"))
+        return output, next_offset
+
     async def send_input(self, session_id: str, text: str, send_enter: bool = True) -> bool:
         """Send text input to a remote TMUX session."""
         target = f"{session_id}:0.0"
