@@ -10,40 +10,48 @@
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" href="/assets/icon-192.png">
   <link rel="apple-touch-icon" href="/assets/icon-192.png">
-  <link rel="stylesheet" href="/css/style.css?v=21">
+  <link rel="stylesheet" href="/css/style.css?v=26">
 </head>
 <body>
   <div id="app">
     <header id="header">
       <div class="header-left">
+        <button class="header-menu-btn" id="header-menu-btn"
+          onclick="document.getElementById('header-menu').classList.toggle('hidden')">&#9776;</button>
+        <nav class="header-menu hidden" id="header-menu">
+          <a href="#/" class="header-menu-item nav-item" data-route="/">
+            <span class="hm-icon">&#9632;</span> Agents
+          </a>
+          <a href="#/start" class="header-menu-item nav-item" data-route="/start">
+            <span class="hm-icon">+</span> New Agent
+          </a>
+          <a href="#/contexts" class="header-menu-item nav-item" data-route="/contexts">
+            <span class="hm-icon">&#9776;</span> Contexts
+          </a>
+          <a href="#/settings" class="header-menu-item nav-item" data-route="/settings">
+            <span class="hm-icon">&#9881;</span> Settings
+          </a>
+        </nav>
         <span class="logo">CAM</span>
-        <span id="conn-label" style="font-size:11px;color:#888;margin-left:4px"></span>
       </div>
       <div class="header-right">
+        <span id="conn-label" style="font-size:11px;color:#888"></span>
         <span id="conn-status" class="conn-dot disconnected"></span>
       </div>
     </header>
     <main id="content"></main>
-    <nav id="bottom-nav">
-      <a href="#/" class="nav-item" data-route="/">
-        <span class="nav-icon">&#9632;</span>
-        <span class="nav-label">Agents</span>
-      </a>
-      <a href="#/start" class="nav-item" data-route="/start">
-        <span class="nav-icon">+</span>
-        <span class="nav-label">New</span>
-      </a>
-      <a href="#/contexts" class="nav-item" data-route="/contexts">
-        <span class="nav-icon">&#9776;</span>
-        <span class="nav-label">Contexts</span>
-      </a>
-      <a href="#/settings" class="nav-item" data-route="/settings">
-        <span class="nav-icon">&#9881;</span>
-        <span class="nav-label">Settings</span>
-      </a>
-    </nav>
   </div>
 
-  <script type="module" src="/js/app.js?v=21"></script>
+  <script>
+    // Close menu when clicking outside (inline — runs before module loads)
+    document.addEventListener('click', function(e) {
+      var menu = document.getElementById('header-menu');
+      var btn = document.getElementById('header-menu-btn');
+      if (menu && btn && !menu.contains(e.target) && !btn.contains(e.target)) {
+        menu.classList.add('hidden');
+      }
+    });
+  </script>
+  <script type="module" src="/js/app.js?v=26"></script>
 </body>
 </html>

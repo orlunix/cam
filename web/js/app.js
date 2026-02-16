@@ -1,10 +1,10 @@
-import { api } from './api.js?v=20';
-import { state } from './state.js?v=20';
-import { renderDashboard } from './views/dashboard.js?v=20';
-import { renderAgentDetail } from './views/agent-detail.js?v=20';
-import { renderStartAgent } from './views/start-agent.js?v=20';
-import { renderContexts } from './views/contexts.js?v=20';
-import { renderSettings } from './views/settings.js?v=20';
+import { api } from './api.js?v=26';
+import { state } from './state.js?v=26';
+import { renderDashboard } from './views/dashboard.js?v=26';
+import { renderAgentDetail } from './views/agent-detail.js?v=26';
+import { renderStartAgent } from './views/start-agent.js?v=26';
+import { renderContexts } from './views/contexts.js?v=26';
+import { renderSettings } from './views/settings.js?v=26';
 
 // --- Router ---
 
@@ -46,7 +46,7 @@ function route() {
 }
 
 function updateNav(activePath) {
-  document.querySelectorAll('#bottom-nav .nav-item').forEach(el => {
+  document.querySelectorAll('#header-menu .nav-item').forEach(el => {
     el.classList.toggle('active', el.dataset.route === activePath);
   });
 }
@@ -58,6 +58,28 @@ export function navigate(path) {
 // --- Init ---
 
 async function init() {
+  // Header menu: close on nav item click (toggle + outside-close handled by inline scripts in HTML)
+  const headerMenu = document.getElementById('header-menu');
+  if (headerMenu) {
+    headerMenu.querySelectorAll('.header-menu-item').forEach(item => {
+      item.addEventListener('click', () => headerMenu.classList.add('hidden'));
+    });
+  }
+
+  // Wire state listener and router FIRST — UI must render immediately
+  api.onEvent(handleEvent);
+  state.subscribe(() => {
+    updateConnectionDot(state.get('connectionMode'));
+    updateToast();
+  });
+  window.addEventListener('hashchange', route);
+  route();
+
+  // Service worker
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+
   // Load config from localStorage
   const cfg = {
     serverUrl: localStorage.getItem('cam_server_url') || '',
@@ -74,38 +96,23 @@ async function init() {
   api.configure(cfg);
 
   // Connect (tries direct first, then relay)
-  const mode = await api.connect();
-  state.set('connectionMode', mode);
-  updateConnectionDot(mode);
+  try {
+    const mode = await api.connect();
+    state.set('connectionMode', mode);
+    updateConnectionDot(mode);
 
-  if (mode !== 'disconnected') {
-    await loadData();
-    if (mode === 'relay') api._requestRelayEventStream();
-  } else if (!cfg.token && !cfg.relayToken) {
-    // Nothing configured — send user to Settings
-    location.hash = '#/settings';
+    if (mode !== 'disconnected') {
+      await loadData();
+      if (mode === 'relay') api._requestRelayEventStream();
+    } else if (!cfg.token && !cfg.relayToken) {
+      location.hash = '#/settings';
+    }
+  } catch (e) {
+    console.error('Init connect error:', e);
   }
-
-  // Wire events
-  api.onEvent(handleEvent);
-
-  // State changes re-render current view
-  state.subscribe(() => {
-    updateConnectionDot(state.get('connectionMode'));
-    updateToast();
-  });
-
-  // Router
-  window.addEventListener('hashchange', route);
-  route();
 
   // Periodic refresh
   setInterval(refreshAgents, 10000);
-
-  // Service worker
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
-  }
 }
 
 async function loadData() {
