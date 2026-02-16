@@ -35,7 +35,7 @@ export class CamApi {
         // Use an authenticated endpoint to verify token works
         const r = await fetch(`${this.serverUrl}/api/contexts`, {
           headers: { 'Authorization': `Bearer ${this.token}` },
-          signal: AbortSignal.timeout(3000),
+          signal: AbortSignal.timeout(10000),
         });
         if (r.ok || r.status === 200) {
           this.mode = 'direct';

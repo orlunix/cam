@@ -7,8 +7,9 @@ export function renderAgentDetail(container, agentId) {
   let useFullOutput = true;
   let isFullscreen = false;
   let autoScroll = true;
-  let cachedOutput = '';  // preserve output across re-renders
+  let cachedOutput = '';
   let agent = (state.get('agents') || []).find(a => a.id === agentId);
+  let fsOverlay = null; // fullscreen overlay element
 
   function timeSince(dateStr) {
     if (!dateStr) return '';
@@ -26,18 +27,68 @@ export function renderAgentDetail(container, agentId) {
     if (agent.started_at) parts.push(timeSince(agent.started_at));
     if (agent.auto_confirm === false) parts.push('manual');
     if (agent.exit_reason) parts.push(agent.exit_reason);
-    return parts.join(' · ');
+    return parts.join(' \u00b7 ');
+  }
+
+  function inputHTML() {
+    return `
+      <div class="quick-actions">
+        <button class="btn-quick" data-input="y">y</button>
+        <button class="btn-quick" data-input="n">n</button>
+        <button class="btn-quick" data-input="1">1</button>
+        <button class="btn-quick" data-key="Enter">\u21b5</button>
+        <button class="btn-quick" data-key="Escape">Esc</button>
+        <button class="btn-quick" data-key="C-c">^C</button>
+        <button class="btn-quick" data-key="BSpace">\u232b</button>
+        <button class="btn-quick btn-quick-expand" id="expand-keys">\u00b7\u00b7\u00b7</button>
+      </div>
+      <div class="quick-actions-extra hidden" id="extra-keys">
+        <div class="quick-row">
+          <button class="btn-quick" data-input="2">2</button>
+          <button class="btn-quick" data-input="3">3</button>
+          <button class="btn-quick" data-key="Tab">Tab</button>
+          <button class="btn-quick" data-key="BTab">S-Tab</button>
+          <button class="btn-quick" data-key="DC">Del</button>
+        </div>
+        <div class="quick-row">
+          <button class="btn-quick" data-key="Left">\u2190</button>
+          <button class="btn-quick" data-key="Up">\u2191</button>
+          <button class="btn-quick" data-key="Down">\u2193</button>
+          <button class="btn-quick" data-key="Right">\u2192</button>
+          <button class="btn-quick" data-key="Home">Home</button>
+          <button class="btn-quick" data-key="End">End</button>
+        </div>
+        <div class="quick-row">
+          <button class="btn-quick" data-key="PPage">PgUp</button>
+          <button class="btn-quick" data-key="NPage">PgDn</button>
+          <button class="btn-quick" data-input="/">/</button>
+          <button class="btn-quick" data-input="~">~</button>
+          <button class="btn-quick" data-input="@">@</button>
+          <button class="btn-quick" data-input="*">*</button>
+        </div>
+        <div class="quick-row">
+          <button class="btn-quick" data-input="$">$</button>
+          <button class="btn-quick" data-input="{">{</button>
+          <button class="btn-quick" data-input="}">}</button>
+          <button class="btn-quick" data-input="[">[</button>
+          <button class="btn-quick" data-input="]">]</button>
+          <button class="btn-quick" data-input="|">|</button>
+        </div>
+      </div>
+      <div class="input-bar-sticky">
+        <input type="text" id="input-text" class="input-field" placeholder="Send input..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send">
+        <button class="btn-primary btn-sm" id="send-btn">Send</button>
+      </div>`;
   }
 
   const render = async () => {
     try {
       agent = await api.getAgent(agentId);
     } catch (e) {
-      container.innerHTML = `<div class="error-state">Agent not found</div>`;
+      container.innerHTML = '<div class="error-state">Agent not found</div>';
       return;
     }
 
-    // Save current output before DOM rebuild
     const existingPane = container.querySelector('#output-pane');
     if (existingPane && existingPane.textContent !== 'Loading...') {
       cachedOutput = existingPane.textContent;
@@ -64,72 +115,26 @@ export function renderAgentDetail(container, agentId) {
 
       <div class="detail-meta-compact" id="meta-line">${renderMeta()}</div>
 
-      <div class="output-section ${isFullscreen ? 'output-fullscreen' : ''}" id="output-section">
+      <div class="output-section" id="output-section">
         <div class="output-toolbar">
           <div class="output-mode-btns">
             <button class="btn-sm ${useFullOutput ? 'btn-primary' : ''}" id="toggle-full">Full</button>
             <button class="btn-sm ${!useFullOutput ? 'btn-primary' : ''}" id="toggle-live">Live</button>
           </div>
           <div class="output-mode-btns">
-            <button class="btn-sm" id="refresh-output">↻</button>
-            <button class="btn-sm" id="toggle-fullscreen">${isFullscreen ? '✕' : '⛶'}</button>
+            <button class="btn-sm" id="refresh-output">\u21bb</button>
+            <button class="btn-sm" id="toggle-fullscreen">\u26f6</button>
           </div>
         </div>
         <div class="output-wrap">
-          <pre class="output-pane ${isFullscreen ? 'output-pane-fullscreen' : ''}" id="output-pane"></pre>
-          <button class="jump-bottom-btn hidden" id="jump-bottom">↓ Bottom</button>
+          <pre class="output-pane" id="output-pane"></pre>
+          <button class="jump-bottom-btn hidden" id="jump-bottom">\u2193 Bottom</button>
         </div>
       </div>
 
       ${isActive ? `
       <div class="input-section-fixed" id="input-section">
-        <div class="quick-actions">
-          <button class="btn-quick" data-input="y">y</button>
-          <button class="btn-quick" data-input="n">n</button>
-          <button class="btn-quick" data-input="1">1</button>
-          <button class="btn-quick" data-key="Enter">↵</button>
-          <button class="btn-quick" data-key="Escape">Esc</button>
-          <button class="btn-quick" data-key="C-c">^C</button>
-          <button class="btn-quick" data-key="BSpace">⌫</button>
-          <button class="btn-quick btn-quick-expand" id="expand-keys">···</button>
-        </div>
-        <div class="quick-actions-extra hidden" id="extra-keys">
-          <div class="quick-row">
-            <button class="btn-quick" data-input="2">2</button>
-            <button class="btn-quick" data-input="3">3</button>
-            <button class="btn-quick" data-key="Tab">Tab</button>
-            <button class="btn-quick" data-key="BTab">S-Tab</button>
-            <button class="btn-quick" data-key="DC">Del</button>
-          </div>
-          <div class="quick-row">
-            <button class="btn-quick" data-key="Left">←</button>
-            <button class="btn-quick" data-key="Up">↑</button>
-            <button class="btn-quick" data-key="Down">↓</button>
-            <button class="btn-quick" data-key="Right">→</button>
-            <button class="btn-quick" data-key="Home">Home</button>
-            <button class="btn-quick" data-key="End">End</button>
-          </div>
-          <div class="quick-row">
-            <button class="btn-quick" data-key="PPage">PgUp</button>
-            <button class="btn-quick" data-key="NPage">PgDn</button>
-            <button class="btn-quick" data-input="/">/</button>
-            <button class="btn-quick" data-input="~">~</button>
-            <button class="btn-quick" data-input="@">@</button>
-            <button class="btn-quick" data-input="*">*</button>
-          </div>
-          <div class="quick-row">
-            <button class="btn-quick" data-input="$">$</button>
-            <button class="btn-quick" data-input="{">{</button>
-            <button class="btn-quick" data-input="}">}</button>
-            <button class="btn-quick" data-input="[">[</button>
-            <button class="btn-quick" data-input="]">]</button>
-            <button class="btn-quick" data-input="|">|</button>
-          </div>
-        </div>
-        <div class="input-bar-sticky">
-          <input type="text" id="input-text" class="input-field" placeholder="Send input..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send">
-          <button class="btn-primary btn-sm" id="send-btn">Send</button>
-        </div>
+        ${inputHTML()}
       </div>` : ''}
 
       ${prompt ? `
@@ -149,7 +154,6 @@ export function renderAgentDetail(container, agentId) {
       </div>` : ''}
     `;
 
-    // Restore cached output immediately (no flash)
     const pane = container.querySelector('#output-pane');
     if (pane && cachedOutput) {
       pane.textContent = cachedOutput;
@@ -162,9 +166,12 @@ export function renderAgentDetail(container, agentId) {
     loadLogs();
     startElapsedTimer(isActive);
 
-    // Add extra padding to content area when input bar is present
-    if (isActive) {
-      container.classList.add('has-input-bar');
+    if (isActive) container.classList.add('has-input-bar');
+
+    // Sync fullscreen overlay if active
+    if (isFullscreen) {
+      closeFullscreen();
+      openFullscreen(isActive);
     }
   };
 
@@ -172,18 +179,151 @@ export function renderAgentDetail(container, agentId) {
     const pane = container.querySelector('#output-pane');
     const inputSection = container.querySelector('#input-section');
     if (!pane) return;
-    // Calculate: viewport - header(48) - meta(~30) - toolbar(~30) - input section - nav(56) - padding
     const inputH = inputSection ? inputSection.offsetHeight : 0;
     const available = window.innerHeight - 48 - 30 - 36 - inputH - 56 - 24;
     pane.style.setProperty('--output-max-h', Math.max(available, 120) + 'px');
-    // Update content padding to account for fixed input bar
     container.style.setProperty('--input-bar-h', inputH + 'px');
   }
 
+  // ======= Fullscreen overlay (IM-style) =======
+  function openFullscreen(isActive) {
+    if (fsOverlay) return;
+
+    const name = escapeHtml(agent.task_name || agent.id.slice(0, 8));
+    const overlay = document.createElement('div');
+    overlay.id = 'fs-overlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;z-index:9999;background:#111;display:flex;flex-direction:column;font-family:inherit;color:#e0e0e0;';
+
+    overlay.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid #333;flex-shrink:0;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-weight:600;font-size:14px;">${name}</span>
+          <span class="badge badge-${agent.status}" style="font-size:10px;">${agent.status}</span>
+        </div>
+        <div style="display:flex;gap:4px;">
+          <button class="btn-sm" id="fs-refresh">\u21bb</button>
+          <button class="btn-sm" id="fs-close">\u2715</button>
+        </div>
+      </div>
+      <div style="flex:1;min-height:0;display:flex;flex-direction:column;position:relative;padding:0 4px;">
+        <pre id="fs-output-pane" style="flex:1;overflow-y:auto;overflow-x:auto;margin:0;padding:8px;background:#0d1117;color:#c9d1d9;font-family:SFMono-Regular,Consolas,Liberation Mono,Menlo,monospace;font-size:12px;line-height:1.45;white-space:pre;word-break:break-all;border-radius:4px;-webkit-overflow-scrolling:touch;"></pre>
+        <button class="jump-bottom-btn hidden" id="fs-jump-bottom" style="position:absolute;bottom:12px;right:16px;">\u2193 Bottom</button>
+      </div>
+      ${isActive ? `<div style="flex-shrink:0;padding:6px 8px;border-top:1px solid #333;">${inputHTML()}</div>` : ''}
+    `;
+
+    document.body.appendChild(overlay);
+    fsOverlay = overlay;
+
+    const pre = overlay.querySelector('#fs-output-pane');
+    pre.textContent = cachedOutput || 'Loading...';
+
+    // Events
+    overlay.querySelector('#fs-close').addEventListener('click', closeFullscreen);
+    overlay.querySelector('#fs-refresh').addEventListener('click', () => {
+      outputOffset = 0; cachedOutput = ''; pre.textContent = ''; loadFsOutput();
+    });
+
+    // Scroll
+    const jumpBtn = overlay.querySelector('#fs-jump-bottom');
+    pre.addEventListener('scroll', () => {
+      const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 30;
+      autoScroll = atBottom;
+      jumpBtn.classList.toggle('hidden', atBottom);
+    });
+    jumpBtn.addEventListener('click', () => {
+      autoScroll = true; jumpBtn.classList.add('hidden'); pre.scrollTop = pre.scrollHeight;
+    });
+
+    if (isActive) wireInputButtons(overlay);
+    loadFsOutput();
+    if (autoScroll) pre.scrollTop = pre.scrollHeight;
+  }
+
+  function closeFullscreen() {
+    isFullscreen = false;
+    if (fsOverlay) {
+      fsOverlay.remove();
+      fsOverlay = null;
+    }
+  }
+
+  async function loadFsOutput() {
+    const pre = fsOverlay ? fsOverlay.querySelector('#fs-output-pane') : null;
+    if (!pre) return;
+
+    if (useFullOutput) {
+      try {
+        const data = await api.agentFullOutput(agentId, outputOffset);
+        if (data.output) {
+          if (outputOffset === 0) {
+            pre.textContent = data.output;
+          } else {
+            pre.textContent += data.output;
+          }
+          cachedOutput = pre.textContent;
+          if (autoScroll) pre.scrollTop = pre.scrollHeight;
+          outputOffset = data.next_offset || outputOffset;
+        }
+      } catch {}
+    } else {
+      try {
+        const data = await api.agentOutput(agentId, 80);
+        if (data.output) {
+          pre.textContent = data.output;
+          cachedOutput = data.output;
+          if (autoScroll) pre.scrollTop = pre.scrollHeight;
+        }
+      } catch {}
+    }
+  }
+
+  function wireInputButtons(root) {
+    const inputText = root.querySelector('#input-text');
+    const sendBtn = root.querySelector('#send-btn');
+    if (sendBtn && inputText) {
+      let composing = false;
+      inputText.addEventListener('compositionstart', () => { composing = true; });
+      inputText.addEventListener('compositionend', () => { composing = false; });
+      const doSend = async () => {
+        const text = inputText.value;
+        if (!text) return;
+        try { await api.sendInput(agentId, text); inputText.value = ''; }
+        catch (e) { state.toast(e.message, 'error'); }
+      };
+      sendBtn.addEventListener('click', () => setTimeout(doSend, 50));
+      inputText.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !composing) { e.preventDefault(); setTimeout(doSend, 50); }
+      });
+    }
+
+    const expandBtn = root.querySelector('#expand-keys');
+    const extraKeys = root.querySelector('#extra-keys');
+    if (expandBtn && extraKeys) {
+      expandBtn.addEventListener('click', () => {
+        const show = extraKeys.classList.toggle('hidden');
+        expandBtn.textContent = show ? '\u00b7\u00b7\u00b7' : '\u00d7';
+      });
+    }
+
+    root.querySelectorAll('.btn-quick[data-input]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        try { await api.sendInput(agentId, btn.dataset.input, false); }
+        catch (e) { state.toast(e.message, 'error'); }
+      });
+    });
+    root.querySelectorAll('.btn-quick[data-key]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        try { await api.sendKey(agentId, btn.dataset.key); }
+        catch (e) { state.toast(e.message, 'error'); }
+      });
+    });
+  }
+
+  // ======= Normal mode event wiring =======
   function wireEvents(isActive) {
     container.querySelector('#back-btn').addEventListener('click', () => navigate('/'));
 
-    // Output controls
     container.querySelector('#refresh-output').addEventListener('click', () => {
       outputOffset = 0;
       cachedOutput = '';
@@ -210,17 +350,10 @@ export function renderAgentDetail(container, agentId) {
     });
 
     container.querySelector('#toggle-fullscreen').addEventListener('click', () => {
-      isFullscreen = !isFullscreen;
-      const section = container.querySelector('#output-section');
-      const pane = container.querySelector('#output-pane');
-      const btn = container.querySelector('#toggle-fullscreen');
-      if (section) section.classList.toggle('output-fullscreen', isFullscreen);
-      if (pane) pane.classList.toggle('output-pane-fullscreen', isFullscreen);
-      if (btn) btn.textContent = isFullscreen ? '✕' : '⛶';
-      if (pane) pane.scrollTop = pane.scrollHeight;
+      isFullscreen = true;
+      openFullscreen(isActive);
     });
 
-    // Auto-scroll lock
     const pane = container.querySelector('#output-pane');
     if (pane) {
       pane.addEventListener('scroll', () => {
@@ -240,14 +373,12 @@ export function renderAgentDetail(container, agentId) {
       });
     }
 
-    // Stop / Kill
     const stopBtn = container.querySelector('#stop-btn');
     if (stopBtn) stopBtn.addEventListener('click', async () => {
       try { await api.stopAgent(agentId); state.toast('Agent stopped', 'success'); }
       catch (e) { state.toast(e.message, 'error'); }
     });
 
-    // Delete buttons (inline header + bottom)
     for (const sel of ['#delete-btn', '#delete-btn-bottom']) {
       const btn = container.querySelector(sel);
       if (btn) btn.addEventListener('click', async () => {
@@ -262,52 +393,8 @@ export function renderAgentDetail(container, agentId) {
       });
     }
 
-    // Input (composing guard for CJK IME)
-    const inputText = container.querySelector('#input-text');
-    const sendBtn = container.querySelector('#send-btn');
-    if (sendBtn && inputText) {
-      let composing = false;
-      inputText.addEventListener('compositionstart', () => { composing = true; });
-      inputText.addEventListener('compositionend', () => { composing = false; });
-      const doSend = async () => {
-        const text = inputText.value;
-        if (!text) return;
-        try { await api.sendInput(agentId, text); inputText.value = ''; }
-        catch (e) { state.toast(e.message, 'error'); }
-      };
-      sendBtn.addEventListener('click', () => setTimeout(doSend, 50));
-      inputText.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !composing) { e.preventDefault(); setTimeout(doSend, 50); }
-      });
-    }
-
-    // Expand/collapse extra keys
-    const expandBtn = container.querySelector('#expand-keys');
-    const extraKeys = container.querySelector('#extra-keys');
-    if (expandBtn && extraKeys) {
-      expandBtn.addEventListener('click', () => {
-        const show = extraKeys.classList.toggle('hidden');
-        expandBtn.textContent = show ? '···' : '×';
-        // Recalculate output height after layout change
-        requestAnimationFrame(recalcOutputHeight);
-      });
-    }
-
-    // Quick action buttons (data-input = literal text without Enter, data-key = TMUX key)
-    container.querySelectorAll('.btn-quick[data-input]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        try {
-          await api.sendInput(agentId, btn.dataset.input, false);
-        } catch (e) { state.toast(e.message, 'error'); }
-      });
-    });
-    container.querySelectorAll('.btn-quick[data-key]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        try {
-          await api.sendKey(agentId, btn.dataset.key);
-        } catch (e) { state.toast(e.message, 'error'); }
-      });
-    });
+    // Wire normal mode input buttons
+    if (isActive) wireInputButtons(container);
   }
 
   function startElapsedTimer(isActive) {
@@ -320,6 +407,11 @@ export function renderAgentDetail(container, agentId) {
   }
 
   async function loadOutput() {
+    // If fullscreen is open, update that pane instead
+    if (fsOverlay) {
+      loadFsOutput();
+      return;
+    }
     const pane = container.querySelector('#output-pane');
     if (!pane) return;
 
@@ -336,10 +428,7 @@ export function renderAgentDetail(container, agentId) {
           if (autoScroll) pane.scrollTop = pane.scrollHeight;
           outputOffset = data.next_offset || outputOffset;
         }
-        // If no data.output, keep existing content (don't flash)
-      } catch {
-        // Keep existing content on error
-      }
+      } catch {}
     } else {
       try {
         const data = await api.agentOutput(agentId, 80);
@@ -348,10 +437,7 @@ export function renderAgentDetail(container, agentId) {
           cachedOutput = data.output;
           if (autoScroll) pane.scrollTop = pane.scrollHeight;
         }
-        // If no output, keep existing content
-      } catch {
-        // Keep existing content on error
-      }
+      } catch {}
     }
   }
 
@@ -384,7 +470,6 @@ export function renderAgentDetail(container, agentId) {
     }
   });
 
-  // Re-render on status changes only
   const unsub = state.subscribe((data) => {
     const updated = (data.agents || []).find(a => a.id === agentId);
     if (updated && updated.status !== agent?.status) {
@@ -398,6 +483,7 @@ export function renderAgentDetail(container, agentId) {
     clearInterval(elapsedTimer);
     container.classList.remove('has-input-bar');
     container.style.removeProperty('--input-bar-h');
+    closeFullscreen();
     unsub();
   };
 }
