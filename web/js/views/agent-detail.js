@@ -82,47 +82,48 @@ export function renderAgentDetail(container, agentId) {
       </div>
 
       ${isActive ? `
-      <div class="input-section-sticky" id="input-section">
+      <div class="input-section-fixed" id="input-section">
         <div class="quick-actions">
           <button class="btn-quick" data-input="y">y</button>
           <button class="btn-quick" data-input="n">n</button>
           <button class="btn-quick" data-input="1">1</button>
-          <button class="btn-quick" data-input="2">2</button>
-          <button class="btn-quick" data-input="3">3</button>
+          <button class="btn-quick" data-key="Enter">↵</button>
+          <button class="btn-quick" data-key="Escape">Esc</button>
+          <button class="btn-quick" data-key="C-c">^C</button>
+          <button class="btn-quick" data-key="BSpace">⌫</button>
           <button class="btn-quick btn-quick-expand" id="expand-keys">···</button>
         </div>
         <div class="quick-actions-extra hidden" id="extra-keys">
           <div class="quick-row">
+            <button class="btn-quick" data-input="2">2</button>
+            <button class="btn-quick" data-input="3">3</button>
             <button class="btn-quick" data-key="Tab">Tab</button>
             <button class="btn-quick" data-key="BTab">S-Tab</button>
-            <button class="btn-quick" data-key="Escape">Esc</button>
-            <button class="btn-quick" data-key="Enter">Enter</button>
-            <button class="btn-quick" data-input="/">/</button>
-            <button class="btn-quick" data-key="C-c">Ctrl-C</button>
+            <button class="btn-quick" data-key="DC">Del</button>
           </div>
           <div class="quick-row">
-            <button class="btn-quick" data-key="Left">&larr;</button>
-            <button class="btn-quick" data-key="Up">&uarr;</button>
-            <button class="btn-quick" data-key="Down">&darr;</button>
-            <button class="btn-quick" data-key="Right">&rarr;</button>
+            <button class="btn-quick" data-key="Left">←</button>
+            <button class="btn-quick" data-key="Up">↑</button>
+            <button class="btn-quick" data-key="Down">↓</button>
+            <button class="btn-quick" data-key="Right">→</button>
             <button class="btn-quick" data-key="Home">Home</button>
             <button class="btn-quick" data-key="End">End</button>
           </div>
           <div class="quick-row">
             <button class="btn-quick" data-key="PPage">PgUp</button>
             <button class="btn-quick" data-key="NPage">PgDn</button>
-            <button class="btn-quick" data-key="IC">Ins</button>
-            <button class="btn-quick" data-key="DC">Del</button>
+            <button class="btn-quick" data-input="/">/</button>
             <button class="btn-quick" data-input="~">~</button>
             <button class="btn-quick" data-input="@">@</button>
+            <button class="btn-quick" data-input="*">*</button>
           </div>
           <div class="quick-row">
             <button class="btn-quick" data-input="$">$</button>
-            <button class="btn-quick" data-input="*">*</button>
             <button class="btn-quick" data-input="{">{</button>
             <button class="btn-quick" data-input="}">}</button>
             <button class="btn-quick" data-input="[">[</button>
             <button class="btn-quick" data-input="]">]</button>
+            <button class="btn-quick" data-input="|">|</button>
           </div>
         </div>
         <div class="input-bar-sticky">
@@ -156,10 +157,28 @@ export function renderAgentDetail(container, agentId) {
     }
 
     wireEvents(isActive);
+    recalcOutputHeight();
     loadOutput();
     loadLogs();
     startElapsedTimer(isActive);
+
+    // Add extra padding to content area when input bar is present
+    if (isActive) {
+      container.classList.add('has-input-bar');
+    }
   };
+
+  function recalcOutputHeight() {
+    const pane = container.querySelector('#output-pane');
+    const inputSection = container.querySelector('#input-section');
+    if (!pane) return;
+    // Calculate: viewport - header(48) - meta(~30) - toolbar(~30) - input section - nav(56) - padding
+    const inputH = inputSection ? inputSection.offsetHeight : 0;
+    const available = window.innerHeight - 48 - 30 - 36 - inputH - 56 - 24;
+    pane.style.setProperty('--output-max-h', Math.max(available, 120) + 'px');
+    // Update content padding to account for fixed input bar
+    container.style.setProperty('--input-bar-h', inputH + 'px');
+  }
 
   function wireEvents(isActive) {
     container.querySelector('#back-btn').addEventListener('click', () => navigate('/'));
@@ -269,6 +288,8 @@ export function renderAgentDetail(container, agentId) {
       expandBtn.addEventListener('click', () => {
         const show = extraKeys.classList.toggle('hidden');
         expandBtn.textContent = show ? '···' : '×';
+        // Recalculate output height after layout change
+        requestAnimationFrame(recalcOutputHeight);
       });
     }
 
@@ -375,6 +396,8 @@ export function renderAgentDetail(container, agentId) {
   return () => {
     clearInterval(outputTimer);
     clearInterval(elapsedTimer);
+    container.classList.remove('has-input-bar');
+    container.style.removeProperty('--input-bar-h');
     unsub();
   };
 }
