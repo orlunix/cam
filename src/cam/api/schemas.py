@@ -70,6 +70,13 @@ class SendInputRequest(BaseModel):
     send_enter: bool = True
 
 
+class UploadFileRequest(BaseModel):
+    """POST /api/agents/{id}/upload request body."""
+
+    filename: str = Field(min_length=1)
+    data: str = Field(min_length=1)  # base64-encoded file content
+
+
 class SendKeyRequest(BaseModel):
     """POST /api/agents/{id}/key request body."""
 

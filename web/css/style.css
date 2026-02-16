@@ -511,6 +511,55 @@ a { color: var(--accent); text-decoration: none; }
   border-color: var(--accent);
 }
 
+/* Upload button */
+.btn-upload {
+  background: var(--bg-card);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  font-size: 16px;
+  cursor: pointer;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: manipulation;
+  transition: background 0.15s, border-color 0.15s;
+}
+.btn-upload:active { background: var(--bg-hover); border-color: var(--accent); }
+
+/* Upload progress */
+.upload-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.upload-progress.hidden { display: none; }
+.upload-progress-bar {
+  width: 40px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+  position: relative;
+}
+.upload-progress-bar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -40px;
+  width: 40px;
+  height: 100%;
+  background: var(--accent);
+  animation: upload-slide 1s linear infinite;
+}
+@keyframes upload-slide {
+  to { left: 40px; }
+}
 
 /* Collapsible sections */
 .detail-collapse {

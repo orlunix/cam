@@ -107,9 +107,15 @@ export function renderAgentDetail(container, agentId) {
           <button class="btn-quick" data-input="|">|</button>
         </div>
       </div>
+      <div class="upload-progress hidden" id="upload-progress">
+        <div class="upload-progress-bar"></div>
+        <span class="upload-progress-text" id="upload-text">Uploading...</span>
+      </div>
       <div class="input-bar-sticky">
         <input type="text" id="input-text" class="input-field" placeholder="Send input..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send">
+        <button class="btn-upload btn-sm" id="upload-btn" title="Send image">\u{1F4CE}</button>
         <button class="btn-primary btn-sm" id="send-btn">Send</button>
+        <input type="file" id="file-input" accept="image/*" style="display:none">
       </div>`;
   }
 
@@ -354,6 +360,48 @@ export function renderAgentDetail(container, agentId) {
         catch (e) { state.toast(e.message, 'error'); }
       });
     });
+
+    // File upload
+    const uploadBtn = root.querySelector('#upload-btn');
+    const fileInput = root.querySelector('#file-input');
+    const progressEl = root.querySelector('#upload-progress');
+    const progressText = root.querySelector('#upload-text');
+    if (uploadBtn && fileInput) {
+      uploadBtn.addEventListener('click', () => fileInput.click());
+      fileInput.addEventListener('change', async () => {
+        const file = fileInput.files[0];
+        if (!file) return;
+        fileInput.value = '';
+
+        // Show progress
+        if (progressEl) { progressEl.classList.remove('hidden'); }
+        if (progressText) { progressText.textContent = `Uploading ${file.name}...`; }
+
+        try {
+          // Read as base64
+          const b64 = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result.split(',')[1]);
+            reader.onerror = () => reject(new Error('Failed to read file'));
+            reader.readAsDataURL(file);
+          });
+
+          // Upload
+          const resp = await api.uploadFile(agentId, file.name, b64);
+
+          // Send path to agent
+          if (resp.path) {
+            await api.sendInput(agentId, resp.path, false);
+          }
+
+          if (progressText) { progressText.textContent = `Sent \u2713`; }
+          setTimeout(() => { if (progressEl) progressEl.classList.add('hidden'); }, 1500);
+        } catch (e) {
+          if (progressText) { progressText.textContent = `Failed: ${e.message}`; }
+          setTimeout(() => { if (progressEl) progressEl.classList.add('hidden'); }, 3000);
+        }
+      });
+    }
   }
 
   // ======= Normal mode event wiring =======

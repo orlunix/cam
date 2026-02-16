@@ -110,6 +110,26 @@ class Transport(ABC):
         """
         ...
 
+    async def write_file(self, remote_path: str, data: bytes) -> bool:
+        """Write binary data to a file on the target machine.
+
+        Creates parent directories if they don't exist.
+
+        Args:
+            remote_path: Absolute path on the target machine.
+            data: File contents as bytes.
+
+        Returns:
+            True if the file was written successfully.
+        """
+        from pathlib import Path
+        try:
+            Path(remote_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(remote_path).write_bytes(data)
+            return True
+        except Exception:
+            return False
+
     async def read_output_log(self, session_id: str, offset: int = 0, max_bytes: int = 256_000) -> tuple[str, int]:
         """Read the pipe-pane output log for incremental fetching.
 

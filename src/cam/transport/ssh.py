@@ -284,6 +284,47 @@ class SSHTransport(Transport):
             logger.info("Killed remote session %s on %s", session_id, self._host)
         return success
 
+    async def write_file(self, remote_path: str, data: bytes) -> bool:
+        """Write binary data to a file on the remote machine via SSH.
+
+        Uses base64 encoding piped through SSH to avoid binary corruption.
+        """
+        safe_path = shlex.quote(remote_path)
+        safe_dir = shlex.quote(str(Path(remote_path).parent))
+
+        # Create parent directory
+        ok, _ = await self._run_ssh(f"mkdir -p {safe_dir}", check=False)
+        if not ok:
+            logger.error("Failed to create remote dir: %s", safe_dir)
+            return False
+
+        # Write file via base64 decode on remote side
+        import base64
+        b64 = base64.b64encode(data).decode("ascii")
+        ssh_args = self._ssh_base_args() + ["--", f"base64 -d > {safe_path}"]
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *ssh_args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(
+                proc.communicate(input=b64.encode("ascii")), timeout=60
+            )
+            if proc.returncode != 0:
+                logger.error("SSH write_file failed: %s", stderr.decode(errors="replace"))
+                return False
+            logger.info("Wrote %d bytes to %s on %s", len(data), remote_path, self._host)
+            return True
+        except asyncio.TimeoutError:
+            logger.error("SSH write_file timed out for %s", remote_path)
+            return False
+        except Exception as e:
+            logger.error("SSH write_file error: %s", e)
+            return False
+
     async def test_connection(self) -> tuple[bool, str]:
         """Test SSH connectivity and verify tmux is available on remote."""
         # Test basic SSH connectivity
