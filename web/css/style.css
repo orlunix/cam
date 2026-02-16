@@ -325,7 +325,8 @@ a { color: var(--accent); text-decoration: none; }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 10px 12px;
-  max-height: 50vh;
+  /* Dynamic height: fill space between header/meta and fixed input bar */
+  max-height: var(--output-max-h, 50vh);
   overflow-y: auto;
   overflow-x: auto;
   white-space: pre;
@@ -379,30 +380,33 @@ a { color: var(--accent); text-decoration: none; }
 .jump-bottom-btn:hover { opacity: 1; }
 .jump-bottom-btn.hidden { display: none; }
 
-/* Sticky input section */
-.input-section-sticky {
-  position: sticky;
-  bottom: 0;
+/* Fixed input section at bottom (above bottom nav) */
+.input-section-fixed {
+  position: fixed;
+  bottom: calc(var(--nav-h) + var(--safe-bottom));
+  left: 0;
+  right: 0;
+  max-width: 600px;
+  margin: 0 auto;
   background: var(--bg);
-  padding: 8px 0 4px;
-  margin-bottom: 8px;
-  z-index: 10;
+  padding: 6px 16px calc(4px + var(--safe-bottom));
+  z-index: 50;
   border-top: 1px solid var(--border);
 }
 .quick-actions {
   display: flex;
-  gap: 6px;
-  margin-bottom: 6px;
+  gap: 4px;
+  margin-bottom: 4px;
   flex-wrap: wrap;
 }
 .quick-actions-extra {
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .quick-actions-extra.hidden { display: none; }
 .quick-row {
   display: flex;
-  gap: 5px;
-  margin-bottom: 5px;
+  gap: 4px;
+  margin-bottom: 4px;
 }
 .quick-row:last-child { margin-bottom: 0; }
 .btn-quick {
@@ -410,11 +414,11 @@ a { color: var(--accent); text-decoration: none; }
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 4px 10px;
+  padding: 3px 6px;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  min-height: 30px;
+  min-height: 28px;
   flex: 1;
   text-align: center;
   transition: background 0.15s, border-color 0.15s;
@@ -425,11 +429,11 @@ a { color: var(--accent); text-decoration: none; }
   color: var(--text-dim);
   letter-spacing: 2px;
   flex: 0 0 auto;
-  padding: 4px 12px;
+  padding: 3px 10px;
 }
 .input-bar-sticky {
   display: flex;
-  gap: 8px;
+  gap: 6px;
 }
 .input-field {
   flex: 1;
@@ -437,12 +441,17 @@ a { color: var(--accent); text-decoration: none; }
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 8px 12px;
+  padding: 6px 10px;
   font-size: 14px;
 }
 .input-field:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+/* Extra bottom padding when fixed input section is visible */
+.has-input-bar {
+  padding-bottom: calc(var(--nav-h) + var(--safe-bottom) + var(--input-bar-h, 100px) + 12px) !important;
 }
 
 /* Collapsible sections */
@@ -850,6 +859,7 @@ select.form-input {
 @media (min-width: 768px) {
   #app { max-width: 720px; }
   #bottom-nav { max-width: 720px; }
+  .input-section-fixed { max-width: 720px; }
 
   .agent-list {
     display: grid;
@@ -862,6 +872,4 @@ select.form-input {
     grid-template-columns: 1fr 1fr;
     gap: 8px;
   }
-
-  .output-pane { max-height: 60vh; }
 }

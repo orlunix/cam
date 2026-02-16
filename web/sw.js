@@ -1,4 +1,4 @@
-const CACHE_NAME = 'cam-v14';
+const CACHE_NAME = 'cam-v15';
 
 self.addEventListener('install', event => {
   self.skipWaiting();

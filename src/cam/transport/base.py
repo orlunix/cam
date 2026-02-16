@@ -110,6 +110,19 @@ class Transport(ABC):
         """
         ...
 
+    async def read_output_log(self, session_id: str, offset: int = 0, max_bytes: int = 256_000) -> tuple[str, int]:
+        """Read the pipe-pane output log for incremental fetching.
+
+        Args:
+            session_id: TMUX session identifier
+            offset: Byte offset to start reading from
+            max_bytes: Maximum bytes to read per call
+
+        Returns:
+            Tuple of (output_data, next_offset). Default returns empty.
+        """
+        return "", offset
+
     @abstractmethod
     def get_attach_command(self, session_id: str) -> str:
         """Return the shell command for a user to attach interactively.

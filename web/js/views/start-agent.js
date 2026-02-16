@@ -86,18 +86,22 @@ export function renderStartAgent(container) {
     btn.disabled = true;
     btn.textContent = 'Starting...';
 
+    const isInteractive = interactiveEl.checked;
     const body = {
       tool: container.querySelector('#tool').value,
       context: container.querySelector('#context').value,
       prompt: container.querySelector('#prompt').value || ' ',
-      timeout: container.querySelector('#timeout').value,
       retry: parseInt(container.querySelector('#retry').value) || 0,
     };
+    // Interactive agents run indefinitely — no timeout
+    if (!isInteractive) {
+      body.timeout = container.querySelector('#timeout').value;
+    }
     const name = container.querySelector('#name').value.trim();
     if (name) body.name = name;
 
     // Interactive mode: send explicit auto_confirm value
-    if (interactiveEl.checked) {
+    if (isInteractive) {
       body.auto_confirm = container.querySelector('#autoconfirm').checked;
     }
 
