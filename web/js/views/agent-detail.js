@@ -4,9 +4,10 @@ export function renderAgentDetail(container, agentId) {
   let outputTimer = null;
   let elapsedTimer = null;
   let outputOffset = 0;
-  let useFullOutput = true;
+  let useFullOutput = false;
   let isFullscreen = false;
   let autoScroll = true;
+  let _scrollByCode = false;
   let cachedOutput = '';
   let agent = (state.get('agents') || []).find(a => a.id === agentId);
   let fsOverlay = null;
@@ -296,12 +297,10 @@ export function renderAgentDetail(container, agentId) {
         const data = await api.agentFullOutput(agentId, outputOffset);
         if (data.output) {
           if (outputOffset === 0) {
-            pre.textContent = data.output;
+            updatePane(pre, data.output);
           } else {
-            pre.textContent += data.output;
+            updatePane(pre, pre.textContent + data.output);
           }
-          cachedOutput = pre.textContent;
-          if (autoScroll) pre.scrollTop = pre.scrollHeight;
           outputOffset = data.next_offset || outputOffset;
         }
       } catch {}
@@ -309,9 +308,7 @@ export function renderAgentDetail(container, agentId) {
       try {
         const data = await api.agentOutput(agentId, 80);
         if (data.output) {
-          pre.textContent = data.output;
-          cachedOutput = data.output;
-          if (autoScroll) pre.scrollTop = pre.scrollHeight;
+          updatePane(pre, data.output);
         }
       } catch {}
     }
@@ -417,8 +414,10 @@ export function renderAgentDetail(container, agentId) {
     const pane = container.querySelector('#output-pane');
     if (pane) {
       pane.addEventListener('scroll', () => {
+        if (_scrollByCode) return;
+        // User manually scrolled — disable auto-scroll, show jump button
         const atBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 30;
-        autoScroll = atBottom;
+        if (!atBottom) autoScroll = false;
         const jumpBtn = container.querySelector('#jump-bottom');
         if (jumpBtn) jumpBtn.classList.toggle('hidden', atBottom);
       });
@@ -429,7 +428,11 @@ export function renderAgentDetail(container, agentId) {
       jumpBtn.addEventListener('click', () => {
         autoScroll = true;
         jumpBtn.classList.add('hidden');
-        if (pane) pane.scrollTop = pane.scrollHeight;
+        if (pane) {
+          _scrollByCode = true;
+          pane.scrollTop = pane.scrollHeight;
+          requestAnimationFrame(() => { _scrollByCode = false; });
+        }
       });
     }
 
@@ -465,6 +468,19 @@ export function renderAgentDetail(container, agentId) {
     }, 1000);
   }
 
+  function updatePane(pane, newText) {
+    // Only touch DOM if content actually changed — avoids scroll glitch
+    const trimmed = newText.replace(/\n+$/, '\n');
+    if (pane.textContent === trimmed) return;
+    _scrollByCode = true;
+    pane.textContent = trimmed;
+    cachedOutput = trimmed;
+    if (autoScroll) {
+      pane.scrollTop = pane.scrollHeight;
+    }
+    requestAnimationFrame(() => { _scrollByCode = false; });
+  }
+
   async function loadOutput() {
     if (fsOverlay) {
       loadFsOutput();
@@ -478,12 +494,10 @@ export function renderAgentDetail(container, agentId) {
         const data = await api.agentFullOutput(agentId, outputOffset);
         if (data.output) {
           if (outputOffset === 0) {
-            pane.textContent = data.output;
+            updatePane(pane, data.output);
           } else {
-            pane.textContent += data.output;
+            updatePane(pane, pane.textContent + data.output);
           }
-          cachedOutput = pane.textContent;
-          if (autoScroll) pane.scrollTop = pane.scrollHeight;
           outputOffset = data.next_offset || outputOffset;
         }
       } catch {}
@@ -491,9 +505,7 @@ export function renderAgentDetail(container, agentId) {
       try {
         const data = await api.agentOutput(agentId, 80);
         if (data.output) {
-          pane.textContent = data.output;
-          cachedOutput = data.output;
-          if (autoScroll) pane.scrollTop = pane.scrollHeight;
+          updatePane(pane, data.output);
         }
       } catch {}
     }

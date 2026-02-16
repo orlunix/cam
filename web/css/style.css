@@ -452,7 +452,7 @@ a { color: var(--accent); text-decoration: none; }
 .input-section {
   flex-shrink: 0;
   background: var(--bg);
-  padding: 6px 0 0;
+  padding: 6px 0 calc(var(--safe-bottom) + 8px);
   border-top: 1px solid var(--border);
 }
 .quick-actions {
