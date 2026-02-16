@@ -54,7 +54,7 @@ async def relay_loop(
     while True:
         try:
             logger.info("Connecting to relay: %s", relay_url)
-            async with websockets.connect(url, compression=None, proxy=None, ping_interval=20, ping_timeout=20, close_timeout=10) as ws:
+            async with websockets.connect(url, compression=None, proxy=None, ping_interval=20, ping_timeout=20, close_timeout=10, max_size=10_000_000) as ws:
                 logger.info("Connected to relay successfully")
                 delay = reconnect_delay  # Reset on successful connect
 

@@ -231,7 +231,7 @@ class Relay:
             body = ""
             content_length = int(headers.get("content-length", 0))
             if content_length > 0:
-                body_bytes = await reader.read(content_length)
+                body_bytes = await reader.readexactly(content_length)
                 body = body_bytes.decode(errors="replace")
             await self._proxy_api(writer, method, path, headers, body)
             return
@@ -276,8 +276,9 @@ class Relay:
             return
 
         # Wait for response from server (with timeout)
+        timeout = 60 if "/upload" in path else 30
         try:
-            resp_data = await asyncio.wait_for(future, timeout=30)
+            resp_data = await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
             self._proxy_pending.pop(req_id, None)
             writer.write(b"HTTP/1.1 504 Gateway Timeout\r\nContent-Length: 0\r\n\r\n")

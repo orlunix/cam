@@ -397,7 +397,8 @@ export function renderAgentDetail(container, agentId) {
           if (progressText) { progressText.textContent = `Sent \u2713`; }
           setTimeout(() => { if (progressEl) progressEl.classList.add('hidden'); }, 1500);
         } catch (e) {
-          if (progressText) { progressText.textContent = `Failed: ${e.message}`; }
+          const msg = e?.message || (typeof e === 'string' ? e : JSON.stringify(e));
+          if (progressText) { progressText.textContent = `Failed: ${msg}`; }
           setTimeout(() => { if (progressEl) progressEl.classList.add('hidden'); }, 3000);
         }
       });
