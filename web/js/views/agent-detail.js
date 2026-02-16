@@ -13,6 +13,34 @@ export function renderAgentDetail(container, agentId) {
 
   // #content is the parent — we toggle flex layout on it
   const contentEl = document.getElementById('content');
+  const appEl = document.getElementById('app');
+
+  // ======= visualViewport: keyboard-aware height =======
+  // On Android WebView with immersive fullscreen, adjustResize doesn't work.
+  // Use visualViewport API to shrink #app when keyboard opens.
+  let _vvCleanup = null;
+  function setupVisualViewport() {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const onResize = () => {
+      const h = vv.height;
+      appEl.style.height = h + 'px';
+      // Also resize fullscreen overlay if open
+      if (fsOverlay) fsOverlay.style.height = h + 'px';
+      // Scroll output to bottom when keyboard opens (height shrinks)
+      const pane = container.querySelector('#output-pane');
+      if (pane && autoScroll) requestAnimationFrame(() => { pane.scrollTop = pane.scrollHeight; });
+      const fsPre = fsOverlay ? fsOverlay.querySelector('#fs-output-pane') : null;
+      if (fsPre && autoScroll) requestAnimationFrame(() => { fsPre.scrollTop = fsPre.scrollHeight; });
+    };
+    vv.addEventListener('resize', onResize);
+    onResize(); // set initial height
+    _vvCleanup = () => {
+      vv.removeEventListener('resize', onResize);
+      appEl.style.height = '';
+    };
+  }
+  setupVisualViewport();
 
   function timeSince(dateStr) {
     if (!dateStr) return '';
@@ -513,6 +541,7 @@ export function renderAgentDetail(container, agentId) {
     clearInterval(elapsedTimer);
     contentEl.classList.remove('agent-detail-active');
     closeFullscreen();
+    if (_vvCleanup) _vvCleanup();
     unsub();
   };
 }
