@@ -140,6 +140,14 @@ def create_app(overrides: dict | None = None) -> FastAPI:
     # Serve web client (PWA) — mount AFTER API routes
     web_dir = Path(__file__).parent.parent.parent.parent / "web"
     if web_dir.exists():
+        # Prevent browser from caching sw.js (otherwise old SW stays forever)
+        @app.middleware("http")
+        async def no_cache_sw(request, call_next):
+            response = await call_next(request)
+            if request.url.path == "/sw.js":
+                response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            return response
+
         from fastapi.staticfiles import StaticFiles
 
         app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")

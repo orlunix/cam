@@ -1,10 +1,10 @@
-import { api } from './api.js?v=15';
-import { state } from './state.js?v=15';
-import { renderDashboard } from './views/dashboard.js?v=15';
-import { renderAgentDetail } from './views/agent-detail.js?v=15';
-import { renderStartAgent } from './views/start-agent.js?v=15';
-import { renderContexts } from './views/contexts.js?v=15';
-import { renderSettings } from './views/settings.js?v=15';
+import { api } from './api.js?v=19';
+import { state } from './state.js?v=19';
+import { renderDashboard } from './views/dashboard.js?v=19';
+import { renderAgentDetail } from './views/agent-detail.js?v=19';
+import { renderStartAgent } from './views/start-agent.js?v=19';
+import { renderContexts } from './views/contexts.js?v=19';
+import { renderSettings } from './views/settings.js?v=19';
 
 // --- Router ---
 
@@ -176,5 +176,9 @@ function updateToast() {
 
 // Expose for views
 export { api, state };
+
+// Expose on window for WebView injection (Android app)
+window.__camApi = api;
+window.__camState = state;
 
 init();
