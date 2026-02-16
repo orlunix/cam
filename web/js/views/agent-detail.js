@@ -8,6 +8,9 @@ export function renderAgentDetail(container, agentId) {
   let isFullscreen = false;
   let autoScroll = true;
   let _scrollByCode = false;
+  let _touching = false;
+  let _deferredUpdate = null;
+  let _directInput = false;
   let cachedOutput = '';
   let agent = (state.get('agents') || []).find(a => a.id === agentId);
   let fsOverlay = null;
@@ -113,6 +116,7 @@ export function renderAgentDetail(container, agentId) {
       </div>
       <div class="input-bar-sticky">
         <input type="text" id="input-text" class="input-field" placeholder="Send input..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send">
+        <button class="btn-direct btn-sm${_directInput ? ' active' : ''}" id="direct-btn" title="Direct input mode">Aa</button>
         <button class="btn-upload btn-sm" id="upload-btn" title="Send image">\u{1F4CE}</button>
         <button class="btn-primary btn-sm" id="send-btn">Send</button>
         <input type="file" id="file-input" accept="image/*" style="display:none">
@@ -254,7 +258,7 @@ export function renderAgentDetail(container, agentId) {
         </div>
       </div>
       <div style="flex:1;min-height:0;display:flex;flex-direction:column;position:relative;padding:0 4px;">
-        <pre id="fs-output-pane" style="flex:1;overflow-y:auto;overflow-x:auto;margin:0;padding:8px;background:#0d1117;color:#c9d1d9;font-family:SFMono-Regular,Consolas,Liberation Mono,Menlo,monospace;font-size:12px;line-height:1.45;white-space:pre;word-break:break-all;border-radius:4px;-webkit-overflow-scrolling:touch;"></pre>
+        <pre id="fs-output-pane" style="flex:1;overflow-y:auto;overflow-x:hidden;margin:0;padding:8px;background:#0d1117;color:#c9d1d9;font-family:SFMono-Regular,Consolas,Liberation Mono,Menlo,monospace;font-size:12px;line-height:1.45;white-space:pre-wrap;word-break:break-all;border-radius:4px;-webkit-overflow-scrolling:touch;"></pre>
         <button class="jump-bottom-btn hidden" id="fs-jump-bottom" style="position:absolute;bottom:12px;right:16px;">\u2193 Bottom</button>
       </div>
       ${isActive ? `<div style="flex-shrink:0;padding:6px 8px;border-top:1px solid #333;">${inputHTML()}</div>` : ''}
@@ -277,6 +281,9 @@ export function renderAgentDetail(container, agentId) {
       autoScroll = atBottom;
       jumpBtn.classList.toggle('hidden', atBottom);
     });
+    pre.addEventListener('touchstart', () => { _touching = true; }, { passive: true });
+    pre.addEventListener('touchend', _onTouchEnd, { passive: true });
+    pre.addEventListener('touchcancel', _onTouchEnd, { passive: true });
     jumpBtn.addEventListener('click', () => {
       autoScroll = true; jumpBtn.classList.add('hidden'); pre.scrollTop = pre.scrollHeight;
     });
@@ -305,7 +312,7 @@ export function renderAgentDetail(container, agentId) {
           if (outputOffset === 0) {
             updatePane(pre, data.output);
           } else {
-            updatePane(pre, pre.textContent + data.output);
+            updatePane(pre, cachedOutput + data.output);
           }
           outputOffset = data.next_offset || outputOffset;
         }
@@ -336,6 +343,35 @@ export function renderAgentDetail(container, agentId) {
       sendBtn.addEventListener('click', () => setTimeout(doSend, 50));
       inputText.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !composing) { e.preventDefault(); setTimeout(doSend, 50); }
+      });
+      // Direct input mode: send each new character immediately without Enter
+      let _prevDirectVal = '';
+      inputText.addEventListener('input', (e) => {
+        if (!_directInput || composing) return;
+        const cur = inputText.value;
+        // Find the newly typed portion
+        const added = cur.startsWith(_prevDirectVal) ? cur.slice(_prevDirectVal.length) : cur;
+        _prevDirectVal = cur;
+        if (!added) return;
+        api.sendInput(agentId, added, false).catch(err => state.toast(err.message, 'error'));
+      });
+    }
+
+    // Direct input toggle
+    const directBtn = root.querySelector('#direct-btn');
+    if (directBtn && inputText) {
+      directBtn.addEventListener('click', () => {
+        _directInput = !_directInput;
+        directBtn.classList.toggle('active', _directInput);
+        if (_directInput) {
+          _prevDirectVal = inputText.value;
+          inputText.placeholder = 'Direct mode: keys sent instantly';
+        } else {
+          inputText.value = '';
+          _prevDirectVal = '';
+          inputText.placeholder = 'Send input...';
+        }
+        inputText.focus();
       });
     }
 
@@ -470,6 +506,11 @@ export function renderAgentDetail(container, agentId) {
         const jumpBtn = container.querySelector('#jump-bottom');
         if (jumpBtn) jumpBtn.classList.toggle('hidden', atBottom);
       });
+      // Track touch state — defer DOM updates while user is dragging
+      pane.addEventListener('touchstart', () => { _touching = true; }, { passive: true });
+      pane.addEventListener('touchend', _onTouchEnd, { passive: true });
+      pane.addEventListener('touchcancel', _onTouchEnd, { passive: true });
+
     }
 
     const jumpBtn = container.querySelector('#jump-bottom');
@@ -517,10 +558,58 @@ export function renderAgentDetail(container, agentId) {
     }, 1000);
   }
 
+  // Shorten box-drawing horizontal lines to fit pane width
+  const _boxCharRe = /[─━═╌╍┄┅┈┉╶╴╸╺]+/g;
+  function _shortenBoxLines(text, pane) {
+    // Measure actual char width using a probe element
+    let charW = 7.2;
+    if (pane) {
+      const probe = document.createElement('span');
+      probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;font:inherit;';
+      probe.textContent = '──────────'; // 10 box chars
+      pane.appendChild(probe);
+      charW = probe.offsetWidth / 10 || 7.2;
+      pane.removeChild(probe);
+    }
+    const contentW = pane ? (pane.clientWidth - 24) : 300; // subtract left+right padding (12+12)
+    const maxCols = Math.floor(contentW / charW);
+    if (maxCols >= 100) return text;
+    return text.split('\n').map(line => {
+      if (line.length <= maxCols) return line;
+      let overflow = line.length - maxCols;
+      if (overflow <= 0) return line;
+      // Shrink box-drawing runs from longest to shortest
+      return line.replace(_boxCharRe, (m) => {
+        if (overflow <= 0 || m.length < 6) return m;
+        const cut = Math.min(m.length - 3, overflow);
+        overflow -= cut;
+        return m.slice(0, m.length - cut);
+      });
+    }).join('\n');
+  }
+
   function updatePane(pane, newText) {
     // Only touch DOM if content actually changed — avoids scroll glitch
-    const trimmed = newText.replace(/\n+$/, '\n');
-    if (pane.textContent === trimmed) return;
+    const trimmed = _shortenBoxLines(newText.replace(/\n([ \t]*\n)*[ \t]*$/, '\n'), pane);
+    if (cachedOutput === trimmed) return;
+    // Defer DOM update while user is actively touching/scrolling
+    if (_touching) {
+      _deferredUpdate = { pane, text: trimmed };
+      return;
+    }
+    _applyPaneUpdate(pane, trimmed);
+  }
+
+  function _onTouchEnd() {
+    _touching = false;
+    if (_deferredUpdate) {
+      const { pane, text } = _deferredUpdate;
+      _deferredUpdate = null;
+      _applyPaneUpdate(pane, text);
+    }
+  }
+
+  function _applyPaneUpdate(pane, trimmed) {
     _scrollByCode = true;
     pane.textContent = trimmed;
     cachedOutput = trimmed;
@@ -545,7 +634,7 @@ export function renderAgentDetail(container, agentId) {
           if (outputOffset === 0) {
             updatePane(pane, data.output);
           } else {
-            updatePane(pane, pane.textContent + data.output);
+            updatePane(pane, cachedOutput + data.output);
           }
           outputOffset = data.next_offset || outputOffset;
         }
