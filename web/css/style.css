@@ -390,10 +390,14 @@ a { color: var(--accent); text-decoration: none; }
   padding: 10px 12px;
   max-height: 50vh;
   overflow-y: auto;
-  overflow-x: auto;
-  white-space: pre;
+  overflow-x: hidden;
+  white-space: pre-wrap;
   word-break: break-all;
   -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pan-y;
+  overscroll-behavior: contain;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 /* === Chat-style layout for active agents === */
@@ -510,6 +514,30 @@ a { color: var(--accent); text-decoration: none; }
   outline: none;
   border-color: var(--accent);
 }
+
+/* Direct input toggle */
+.btn-direct {
+  background: var(--bg-card);
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: manipulation;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.btn-direct.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.btn-direct:active { background: var(--bg-hover); }
 
 /* Upload button */
 .btn-upload {
