@@ -12,6 +12,7 @@ from cam.api.schemas import (
     RunAgentRequest,
     SendInputRequest,
     SendKeyRequest,
+    UploadFileRequest,
     agent_to_response,
 )
 
@@ -315,3 +316,53 @@ async def send_key(agent_id: str, body: SendKeyRequest, request: Request):
     transport = TransportFactory.create(context.machine)
     ok = await transport.send_key(agent.tmux_session, body.key)
     return {"ok": ok}
+
+
+@router.post("/agents/{agent_id}/upload")
+async def upload_file(agent_id: str, body: UploadFileRequest, request: Request):
+    """Upload a file to the agent's context path.
+
+    Accepts base64-encoded file data, writes it to .cam-images/ under the
+    context path, and returns the absolute path for the agent to read.
+    """
+    import base64
+    import re
+    from datetime import datetime
+
+    state = await _require_auth(request)
+
+    agent = await state.agent_manager.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+
+    if not agent.tmux_session or agent.is_terminal():
+        raise HTTPException(status_code=400, detail="Agent is not running")
+
+    context = state.context_store.get(str(agent.context_id))
+    if not context:
+        raise HTTPException(status_code=400, detail="Agent context not found")
+
+    # Decode base64 data
+    try:
+        file_data = base64.b64decode(body.data)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 data")
+
+    # Sanitize filename: keep alphanumeric, dots, hyphens, underscores
+    safe_name = re.sub(r"[^\w.\-]", "_", body.filename)
+    if not safe_name:
+        safe_name = "image.png"
+
+    # Build path: {context_path}/.cam-images/{timestamp}-{filename}
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    dest_path = f"{context.path}/.cam-images/{timestamp}-{safe_name}"
+
+    from cam.transport.factory import TransportFactory
+
+    transport = TransportFactory.create(context.machine)
+    ok = await transport.write_file(dest_path, file_data)
+
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to write file")
+
+    return {"ok": True, "path": dest_path, "size": len(file_data)}
