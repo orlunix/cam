@@ -9,7 +9,10 @@ export function renderAgentDetail(container, agentId) {
   let autoScroll = true;
   let cachedOutput = '';
   let agent = (state.get('agents') || []).find(a => a.id === agentId);
-  let fsOverlay = null; // fullscreen overlay element
+  let fsOverlay = null;
+
+  // #content is the parent — we toggle flex layout on it
+  const contentEl = document.getElementById('content');
 
   function timeSince(dateStr) {
     if (!dateStr) return '';
@@ -97,62 +100,85 @@ export function renderAgentDetail(container, agentId) {
     const isActive = ['running', 'starting', 'pending'].includes(agent.status);
     const prompt = agent.prompt || '';
 
-    container.innerHTML = `
-      <div class="detail-header">
-        <button class="back-btn" id="back-btn">&larr;</button>
-        <div class="detail-title">
-          <h2>${escapeHtml(agent.task_name || agent.id.slice(0, 8))}</h2>
-          <span class="badge badge-${agent.status}">${agent.status}</span>
-        </div>
-        <div class="detail-actions-inline">
-          ${isActive ? `
-            <button class="btn-sm btn-danger" id="stop-btn">Stop</button>
-          ` : `
-            <button class="btn-sm btn-danger" id="delete-btn">&times;</button>
-          `}
-        </div>
-      </div>
-
-      <div class="detail-meta-compact" id="meta-line">${renderMeta()}</div>
-
-      <div class="output-section" id="output-section">
-        <div class="output-toolbar">
-          <div class="output-mode-btns">
-            <button class="btn-sm ${useFullOutput ? 'btn-primary' : ''}" id="toggle-full">Full</button>
-            <button class="btn-sm ${!useFullOutput ? 'btn-primary' : ''}" id="toggle-live">Live</button>
+    // Active: chat-style layout — output fills space, input anchored at bottom
+    // Completed: normal scrolling layout with prompt/logs/delete
+    if (isActive) {
+      container.innerHTML = `
+        <div class="detail-header">
+          <button class="back-btn" id="back-btn">&larr;</button>
+          <div class="detail-title">
+            <h2>${escapeHtml(agent.task_name || agent.id.slice(0, 8))}</h2>
+            <span class="badge badge-${agent.status}">${agent.status}</span>
           </div>
-          <div class="output-mode-btns">
-            <button class="btn-sm" id="refresh-output">\u21bb</button>
-            <button class="btn-sm" id="toggle-fullscreen">\u26f6</button>
+          <div class="detail-actions-inline" style="position:relative;">
+            <button class="overflow-menu-btn" id="menu-btn">\u22ee</button>
+            <div class="overflow-menu hidden" id="overflow-menu">
+              <button class="overflow-menu-item ${useFullOutput ? 'active' : ''}" id="toggle-full">Full output</button>
+              <button class="overflow-menu-item ${!useFullOutput ? 'active' : ''}" id="toggle-live">Live output</button>
+              <button class="overflow-menu-item" id="refresh-output">Refresh</button>
+              <button class="overflow-menu-item" id="toggle-fullscreen">Fullscreen</button>
+              <hr>
+              <button class="overflow-menu-item danger" id="stop-btn">Stop agent</button>
+            </div>
           </div>
         </div>
-        <div class="output-wrap">
-          <pre class="output-pane" id="output-pane"></pre>
-          <button class="jump-bottom-btn hidden" id="jump-bottom">\u2193 Bottom</button>
+
+        <div class="detail-meta-compact" id="meta-line">${renderMeta()}</div>
+
+        <div class="output-section" id="output-section">
+          <div class="output-wrap">
+            <pre class="output-pane" id="output-pane"></pre>
+            <button class="jump-bottom-btn hidden" id="jump-bottom">\u2193 Bottom</button>
+          </div>
+          <div class="input-section" id="input-section">
+            ${inputHTML()}
+          </div>
         </div>
-      </div>
+      `;
+      contentEl.classList.add('agent-detail-active');
+    } else {
+      container.innerHTML = `
+        <div class="detail-header">
+          <button class="back-btn" id="back-btn">&larr;</button>
+          <div class="detail-title">
+            <h2>${escapeHtml(agent.task_name || agent.id.slice(0, 8))}</h2>
+            <span class="badge badge-${agent.status}">${agent.status}</span>
+          </div>
+          <div class="detail-actions-inline" style="position:relative;">
+            <button class="overflow-menu-btn" id="menu-btn">\u22ee</button>
+            <div class="overflow-menu hidden" id="overflow-menu">
+              <button class="overflow-menu-item ${useFullOutput ? 'active' : ''}" id="toggle-full">Full output</button>
+              <button class="overflow-menu-item ${!useFullOutput ? 'active' : ''}" id="toggle-live">Live output</button>
+              <button class="overflow-menu-item" id="refresh-output">Refresh</button>
+              <button class="overflow-menu-item" id="toggle-fullscreen">Fullscreen</button>
+              <hr>
+              <button class="overflow-menu-item danger" id="delete-btn">Delete agent</button>
+            </div>
+          </div>
+        </div>
 
-      ${isActive ? `
-      <div class="input-section-fixed" id="input-section">
-        ${inputHTML()}
-      </div>` : ''}
+        <div class="detail-meta-compact" id="meta-line">${renderMeta()}</div>
 
-      ${prompt ? `
-      <details class="detail-collapse">
-        <summary class="collapse-summary">Prompt</summary>
-        <div class="prompt-text">${escapeHtml(prompt)}</div>
-      </details>` : ''}
+        <div class="output-section" id="output-section">
+          <div class="output-wrap">
+            <pre class="output-pane" id="output-pane"></pre>
+            <button class="jump-bottom-btn hidden" id="jump-bottom">\u2193 Bottom</button>
+          </div>
+        </div>
 
-      <details class="detail-collapse" id="logs-section">
-        <summary class="collapse-summary" id="logs-summary">Logs</summary>
-        <div class="log-entries" id="log-entries">Loading...</div>
-      </details>
+        ${prompt ? `
+        <details class="detail-collapse">
+          <summary class="collapse-summary">Prompt</summary>
+          <div class="prompt-text">${escapeHtml(prompt)}</div>
+        </details>` : ''}
 
-      ${!isActive ? `
-      <div class="detail-actions-bottom">
-        <button class="btn-danger btn-full" id="delete-btn-bottom">Delete from history</button>
-      </div>` : ''}
-    `;
+        <details class="detail-collapse" id="logs-section">
+          <summary class="collapse-summary" id="logs-summary">Logs</summary>
+          <div class="log-entries" id="log-entries">Loading...</div>
+        </details>
+      `;
+      contentEl.classList.remove('agent-detail-active');
+    }
 
     const pane = container.querySelector('#output-pane');
     if (pane && cachedOutput) {
@@ -161,12 +187,9 @@ export function renderAgentDetail(container, agentId) {
     }
 
     wireEvents(isActive);
-    recalcOutputHeight();
     loadOutput();
-    loadLogs();
+    if (!isActive) loadLogs();
     startElapsedTimer(isActive);
-
-    if (isActive) container.classList.add('has-input-bar');
 
     // Sync fullscreen overlay if active
     if (isFullscreen) {
@@ -174,16 +197,6 @@ export function renderAgentDetail(container, agentId) {
       openFullscreen(isActive);
     }
   };
-
-  function recalcOutputHeight() {
-    const pane = container.querySelector('#output-pane');
-    const inputSection = container.querySelector('#input-section');
-    if (!pane) return;
-    const inputH = inputSection ? inputSection.offsetHeight : 0;
-    const available = window.innerHeight - 48 - 30 - 36 - inputH - 56 - 24;
-    pane.style.setProperty('--output-max-h', Math.max(available, 120) + 'px');
-    container.style.setProperty('--input-bar-h', inputH + 'px');
-  }
 
   // ======= Fullscreen overlay (IM-style) =======
   function openFullscreen(isActive) {
@@ -218,13 +231,11 @@ export function renderAgentDetail(container, agentId) {
     const pre = overlay.querySelector('#fs-output-pane');
     pre.textContent = cachedOutput || 'Loading...';
 
-    // Events
     overlay.querySelector('#fs-close').addEventListener('click', closeFullscreen);
     overlay.querySelector('#fs-refresh').addEventListener('click', () => {
       outputOffset = 0; cachedOutput = ''; pre.textContent = ''; loadFsOutput();
     });
 
-    // Scroll
     const jumpBtn = overlay.querySelector('#fs-jump-bottom');
     pre.addEventListener('scroll', () => {
       const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 30;
@@ -324,7 +335,25 @@ export function renderAgentDetail(container, agentId) {
   function wireEvents(isActive) {
     container.querySelector('#back-btn').addEventListener('click', () => navigate('/'));
 
+    // Overflow menu toggle
+    const menuBtn = container.querySelector('#menu-btn');
+    const menu = container.querySelector('#overflow-menu');
+    if (menuBtn && menu) {
+      menuBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        menu.classList.toggle('hidden');
+      });
+      document.addEventListener('click', (e) => {
+        if (!menu.contains(e.target) && e.target !== menuBtn) {
+          menu.classList.add('hidden');
+        }
+      });
+    }
+
+    const closeMenu = () => { if (menu) menu.classList.add('hidden'); };
+
     container.querySelector('#refresh-output').addEventListener('click', () => {
+      closeMenu();
       outputOffset = 0;
       cachedOutput = '';
       const pane = container.querySelector('#output-pane');
@@ -333,6 +362,7 @@ export function renderAgentDetail(container, agentId) {
     });
 
     container.querySelector('#toggle-full').addEventListener('click', () => {
+      closeMenu();
       if (useFullOutput) return;
       useFullOutput = true;
       outputOffset = 0;
@@ -342,6 +372,7 @@ export function renderAgentDetail(container, agentId) {
     });
 
     container.querySelector('#toggle-live').addEventListener('click', () => {
+      closeMenu();
       if (!useFullOutput) return;
       useFullOutput = false;
       cachedOutput = '';
@@ -350,6 +381,7 @@ export function renderAgentDetail(container, agentId) {
     });
 
     container.querySelector('#toggle-fullscreen').addEventListener('click', () => {
+      closeMenu();
       isFullscreen = true;
       openFullscreen(isActive);
     });
@@ -375,25 +407,24 @@ export function renderAgentDetail(container, agentId) {
 
     const stopBtn = container.querySelector('#stop-btn');
     if (stopBtn) stopBtn.addEventListener('click', async () => {
+      closeMenu();
       try { await api.stopAgent(agentId); state.toast('Agent stopped', 'success'); }
       catch (e) { state.toast(e.message, 'error'); }
     });
 
-    for (const sel of ['#delete-btn', '#delete-btn-bottom']) {
-      const btn = container.querySelector(sel);
-      if (btn) btn.addEventListener('click', async () => {
-        if (!confirm('Delete this agent from history?')) return;
-        try {
-          await api.deleteAgentHistory(agentId);
-          state.toast('Agent deleted', 'success');
-          const resp = await api.listAgents({ limit: 50 });
-          state.set('agents', resp.agents || []);
-          navigate('/');
-        } catch (e) { state.toast(e.message, 'error'); }
-      });
-    }
+    const deleteBtn = container.querySelector('#delete-btn');
+    if (deleteBtn) deleteBtn.addEventListener('click', async () => {
+      closeMenu();
+      if (!confirm('Delete this agent from history?')) return;
+      try {
+        await api.deleteAgentHistory(agentId);
+        state.toast('Agent deleted', 'success');
+        const resp = await api.listAgents({ limit: 50 });
+        state.set('agents', resp.agents || []);
+        navigate('/');
+      } catch (e) { state.toast(e.message, 'error'); }
+    });
 
-    // Wire normal mode input buttons
     if (isActive) wireInputButtons(container);
   }
 
@@ -407,7 +438,6 @@ export function renderAgentDetail(container, agentId) {
   }
 
   async function loadOutput() {
-    // If fullscreen is open, update that pane instead
     if (fsOverlay) {
       loadFsOutput();
       return;
@@ -481,8 +511,7 @@ export function renderAgentDetail(container, agentId) {
   return () => {
     clearInterval(outputTimer);
     clearInterval(elapsedTimer);
-    container.classList.remove('has-input-bar');
-    container.style.removeProperty('--input-bar-h');
+    contentEl.classList.remove('agent-detail-active');
     closeFullscreen();
     unsub();
   };

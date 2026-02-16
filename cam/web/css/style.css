@@ -291,6 +291,58 @@ a { color: var(--accent); text-decoration: none; }
 }
 .detail-actions-inline {
   flex-shrink: 0;
+  position: relative;
+}
+
+/* Overflow menu (⋮) */
+.overflow-menu-btn {
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 700;
+  padding: 4px 8px;
+  cursor: pointer;
+  min-width: 44px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  letter-spacing: 1px;
+}
+.overflow-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-width: 160px;
+  padding: 4px 0;
+  z-index: 200;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+.overflow-menu.hidden { display: none; }
+.overflow-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 14px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+.overflow-menu-item:active { background: var(--bg-hover); }
+.overflow-menu-item.active { color: var(--accent); font-weight: 600; }
+.overflow-menu-item.danger { color: var(--red); }
+.overflow-menu hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 0;
 }
 
 /* Compact meta line */
@@ -304,17 +356,6 @@ a { color: var(--accent); text-decoration: none; }
 /* Output section */
 .output-section {
   margin-bottom: 12px;
-}
-.output-toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 6px;
-}
-.output-mode-btns {
-  display: flex;
-  gap: 4px;
-  align-items: center;
 }
 .output-wrap {
   position: relative;
@@ -330,13 +371,42 @@ a { color: var(--accent); text-decoration: none; }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 10px 12px;
-  /* Dynamic height: fill space between header/meta and fixed input bar */
-  max-height: var(--output-max-h, 50vh);
+  max-height: 50vh;
   overflow-y: auto;
   overflow-x: auto;
   white-space: pre;
   word-break: break-all;
   -webkit-overflow-scrolling: touch;
+}
+
+/* === Chat-style layout for active agents === */
+#content.agent-detail-active {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: calc(var(--nav-h) + var(--safe-bottom));
+}
+#content.agent-detail-active .detail-header,
+#content.agent-detail-active .detail-meta-compact {
+  flex-shrink: 0;
+}
+#content.agent-detail-active .output-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  margin-bottom: 0;
+}
+#content.agent-detail-active .output-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+#content.agent-detail-active .output-pane {
+  flex: 1;
+  max-height: none;
 }
 
 /* Fullscreen overlay is styled inline via JS — no CSS needed */
@@ -361,17 +431,11 @@ a { color: var(--accent); text-decoration: none; }
 .jump-bottom-btn:hover { opacity: 1; }
 .jump-bottom-btn.hidden { display: none; }
 
-/* Fixed input section at bottom (above bottom nav) */
-.input-section-fixed {
-  position: fixed;
-  bottom: calc(var(--nav-h) + var(--safe-bottom));
-  left: 0;
-  right: 0;
-  max-width: 600px;
-  margin: 0 auto;
+/* Input section (in-flow, below output pane) */
+.input-section {
+  flex-shrink: 0;
   background: var(--bg);
-  padding: 6px 16px calc(4px + var(--safe-bottom));
-  z-index: 50;
+  padding: 6px 0 0;
   border-top: 1px solid var(--border);
 }
 .quick-actions {
@@ -430,10 +494,6 @@ a { color: var(--accent); text-decoration: none; }
   border-color: var(--accent);
 }
 
-/* Extra bottom padding when fixed input section is visible */
-.has-input-bar {
-  padding-bottom: calc(var(--nav-h) + var(--safe-bottom) + var(--input-bar-h, 100px) + 12px) !important;
-}
 
 /* Collapsible sections */
 .detail-collapse {
@@ -840,7 +900,7 @@ select.form-input {
 @media (min-width: 768px) {
   #app { max-width: 720px; }
   #bottom-nav { max-width: 720px; }
-  .input-section-fixed { max-width: 720px; }
+  .input-section { max-width: 720px; }
 
   .agent-list {
     display: grid;
