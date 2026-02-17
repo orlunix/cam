@@ -170,13 +170,15 @@ class AgentMonitor:
                     continue
 
                 # --------------------------------------------------
-                # 6. Auto-confirm check (only when output changed, with cooldown)
+                # 6. Auto-confirm check (with cooldown)
                 # --------------------------------------------------
+                # Check every poll cycle (not just on output_changed)
+                # to catch prompts that rendered between polls.
+                # 5-second cooldown prevents rapid re-sending.
                 ac = self._agent.task.auto_confirm
                 if ac is None:
                     ac = self._config.general.auto_confirm
-                if output_changed and ac:
-                    # 5-second cooldown prevents re-sending when same prompt persists
+                if ac:
                     now_confirm = datetime.utcnow().timestamp()
                     if now_confirm - self._last_confirm_time >= 5.0:
                         confirm_action = self._adapter.should_auto_confirm(output)
@@ -195,7 +197,6 @@ class AgentMonitor:
                                 confirm_action.response,
                                 send_enter=confirm_action.send_enter,
                             )
-                            # Give the tool a moment to process the confirmation
                             await asyncio.sleep(0.5)
                             continue
 
