@@ -129,11 +129,13 @@ def create_app(overrides: dict | None = None) -> FastAPI:
     # Register routes
     from cam.api.routes.agents import router as agents_router
     from cam.api.routes.contexts import router as contexts_router
+    from cam.api.routes.files import router as files_router
     from cam.api.routes.system import router as system_router
     from cam.api.ws import router as ws_router
 
     app.include_router(agents_router, prefix="/api")
     app.include_router(contexts_router, prefix="/api")
+    app.include_router(files_router, prefix="/api")
     app.include_router(system_router, prefix="/api")
     app.include_router(ws_router, prefix="/api")
 
