@@ -219,22 +219,22 @@ async def get_full_output(
         )
 
     from cam.constants import LOG_DIR
+    from cam.utils.terminal import render_raw_data, render_raw_log
 
     log_path = LOG_DIR / "output" / f"{agent.id}.log"
 
     # Try local log file first (works for local transport)
     if log_path.exists():
         try:
-            with open(log_path, "r", errors="replace") as f:
-                f.seek(offset)
-                data = f.read(256_000)  # max 256KB per request
-                next_offset = f.tell()
-            return {
-                "agent_id": str(agent.id),
-                "output": data,
-                "next_offset": next_offset,
-                "active": not agent.is_terminal(),
-            }
+            file_size = log_path.stat().st_size
+            if file_size > offset:
+                output = render_raw_log(log_path)
+                return {
+                    "agent_id": str(agent.id),
+                    "output": output,
+                    "next_offset": file_size,
+                    "active": not agent.is_terminal(),
+                }
         except Exception:
             pass
 
@@ -244,19 +244,21 @@ async def get_full_output(
         from cam.transport.factory import TransportFactory
 
         transport = TransportFactory.create(context.machine)
-        try:
-            data, next_offset = await transport.read_output_log(
-                agent.tmux_session, offset
-            )
-            if data:
-                return {
-                    "agent_id": str(agent.id),
-                    "output": data,
-                    "next_offset": next_offset,
-                    "active": not agent.is_terminal(),
-                }
-        except Exception:
-            pass
+        if hasattr(transport, 'read_output_log'):
+            try:
+                raw_data, next_offset = await transport.read_output_log(
+                    agent.tmux_session, 0, max_bytes=2_000_000
+                )
+                if raw_data and next_offset > offset:
+                    output = render_raw_data(raw_data)
+                    return {
+                        "agent_id": str(agent.id),
+                        "output": output,
+                        "next_offset": next_offset,
+                        "active": not agent.is_terminal(),
+                    }
+            except Exception:
+                pass
 
     return {
         "agent_id": str(agent.id),
