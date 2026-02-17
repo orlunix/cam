@@ -292,6 +292,79 @@ class SSHTransport(Transport):
             logger.info("Killed remote session %s on %s", session_id, self._host)
         return success
 
+    async def list_files(self, path: str) -> list[dict]:
+        """List files on the remote host via SSH."""
+        safe_path = shlex.quote(path)
+        # Use stat-based format for reliable parsing: type, size, mtime, name
+        # %F=type(regular/directory), %s=size, %Y=mtime epoch, %n=name
+        cmd = f"bash -c {shlex.quote(f'stat --format=\"%F %s %Y %n\" {safe_path}/* 2>/dev/null')}"
+        success, output = await self._run_ssh(cmd, check=False)
+        if not success or not output.strip():
+            return []
+
+        entries = []
+        for line in output.strip().splitlines():
+            # Format: "regular file 1234 1700000000 /path/to/file"
+            # or "directory 4096 1700000000 /path/to/dir"
+            parts = line.split(None, 3)
+            if len(parts) < 4:
+                continue
+            ftype_raw = parts[0]
+            # stat %F gives "regular file", "directory", "symbolic link", etc.
+            # "regular file" is two words, so re-parse
+            if ftype_raw == "regular":
+                # "regular file 1234 1700000000 /path"
+                rest = line[len("regular file "):]
+                parts2 = rest.split(None, 2)
+                if len(parts2) < 3:
+                    continue
+                size_s, mtime_s, fullpath = parts2
+                ftype = "file"
+            elif ftype_raw == "directory":
+                rest = line[len("directory "):]
+                parts2 = rest.split(None, 2)
+                if len(parts2) < 3:
+                    continue
+                size_s, mtime_s, fullpath = parts2
+                ftype = "dir"
+            elif ftype_raw == "symbolic":
+                # "symbolic link ..."
+                rest = line[len("symbolic link "):]
+                parts2 = rest.split(None, 2)
+                if len(parts2) < 3:
+                    continue
+                size_s, mtime_s, fullpath = parts2
+                ftype = "file"
+            else:
+                continue
+
+            try:
+                name = fullpath.rsplit("/", 1)[-1] if "/" in fullpath else fullpath
+                entries.append({
+                    "name": name,
+                    "type": ftype,
+                    "size": int(size_s) if ftype == "file" else 0,
+                    "mtime": int(mtime_s),
+                })
+            except (ValueError, IndexError):
+                continue
+
+        entries.sort(key=lambda e: e["name"])
+        return entries
+
+    async def read_file(self, path: str, max_bytes: int = 512_000) -> bytes:
+        """Read file content from the remote host via SSH with base64 encoding."""
+        import base64
+        safe_path = shlex.quote(path)
+        cmd = f"bash -c {shlex.quote(f'head -c {max_bytes} {safe_path} | base64')}"
+        success, output = await self._run_ssh(cmd, check=False)
+        if not success or not output.strip():
+            return b""
+        try:
+            return base64.b64decode(output.strip())
+        except Exception:
+            return b""
+
     async def write_file(self, remote_path: str, data: bytes) -> bool:
         """Write binary data to a file on the remote machine via SSH.
 
