@@ -135,7 +135,7 @@ class TestCreateSession:
         )
 
         assert result is True
-        assert len(calls) == 2  # mkdir + new-session
+        assert len(calls) == 3  # mkdir + new-session + set history-limit
 
         # The new-session command should contain the command as positional arg
         create_cmd = calls[1]
@@ -192,8 +192,8 @@ class TestCreateSession:
             return False, "tmux error"  # new-session fails
 
         ssh_transport._run_ssh = mock_run_ssh
-        result = await ssh_transport.create_session("cam-x", ["cmd"], "/tmp")
-        assert result is False
+        with pytest.raises(RuntimeError, match="SSH session creation failed"):
+            await ssh_transport.create_session("cam-x", ["cmd"], "/tmp")
 
 
 class TestSendInput:

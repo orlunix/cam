@@ -125,6 +125,12 @@ class LocalTransport(Transport):
             )
             await proc.wait()
             success = proc.returncode == 0
+            # Increase scrollback buffer for longer output history
+            if success:
+                await self._run_tmux(
+                    ["set-option", "-t", session_id, "history-limit", "50000"],
+                    socket, check=False,
+                )
         except Exception as e:
             logger.error(f"Failed to create session {session_id}: {e}")
             return False
