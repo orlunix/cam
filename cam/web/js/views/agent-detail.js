@@ -309,11 +309,7 @@ export function renderAgentDetail(container, agentId) {
       try {
         const data = await api.agentFullOutput(agentId, outputOffset);
         if (data.output) {
-          if (outputOffset === 0) {
-            updatePane(pre, data.output);
-          } else {
-            updatePane(pre, cachedOutput + data.output);
-          }
+          updatePane(pre, data.output);
           outputOffset = data.next_offset || outputOffset;
         }
       } catch {}
@@ -631,11 +627,7 @@ export function renderAgentDetail(container, agentId) {
       try {
         const data = await api.agentFullOutput(agentId, outputOffset);
         if (data.output) {
-          if (outputOffset === 0) {
-            updatePane(pane, data.output);
-          } else {
-            updatePane(pane, cachedOutput + data.output);
-          }
+          updatePane(pane, data.output);
           outputOffset = data.next_offset || outputOffset;
         }
       } catch {}

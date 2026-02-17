@@ -191,8 +191,10 @@ class SSHTransport(Transport):
     async def read_output_log(self, session_id: str, offset: int = 0, max_bytes: int = 256_000) -> tuple[str, int]:
         """Read the pipe-pane output log from the remote host."""
         remote_log = f"/tmp/cam-logs/{session_id}.output.log"
-        # Use dd to read from offset, limited to max_bytes
-        cmd = f"dd if={shlex.quote(remote_log)} bs=1 skip={offset} count={max_bytes} 2>/dev/null"
+        # Use dd to read from offset, limited to max_bytes.
+        # Wrap in bash -c to avoid csh redirect syntax issues (2>/dev/null).
+        inner = f"dd if={shlex.quote(remote_log)} bs=1 skip={offset} count={max_bytes} 2>/dev/null"
+        cmd = f"bash -c {shlex.quote(inner)}"
         success, output = await self._run_ssh(cmd, check=False)
         if not success or not output:
             return "", offset
