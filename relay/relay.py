@@ -125,7 +125,8 @@ async def read_http_request(
     method = parts[0].upper()
     parsed = urlparse(parts[1])
     path = parsed.path
-    query = parse_qs(parsed.query)
+    raw_query = parsed.query
+    query = parse_qs(raw_query)
 
     # Read headers
     headers: dict[str, str] = {}
@@ -137,7 +138,8 @@ async def read_http_request(
             key, _, val = line.decode(errors="replace").partition(":")
             headers[key.strip().lower()] = val.strip()
 
-    return method, path, headers, query
+    full_path = f"{path}?{raw_query}" if raw_query else path
+    return method, path, headers, query, full_path
 
 
 async def do_ws_upgrade(
@@ -188,13 +190,27 @@ class Relay:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
+        try:
+            await self._handle_connection(reader, writer)
+        except Exception as e:
+            log.debug("Connection handler error: %s", e)
+            try:
+                writer.close()
+            except Exception:
+                pass
+
+    async def _handle_connection(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
         peer = writer.get_extra_info("peername")
         result = await read_http_request(reader, writer)
         if result is None:
             writer.close()
             return
 
-        method, path, headers, query = result
+        method, path, headers, query, full_path = result
 
         # WebSocket upgrade?
         ws_key = headers.get("sec-websocket-key", "")
@@ -233,7 +249,7 @@ class Relay:
             if content_length > 0:
                 body_bytes = await reader.readexactly(content_length)
                 body = body_bytes.decode(errors="replace")
-            await self._proxy_api(writer, method, path, headers, body)
+            await self._proxy_api(writer, method, full_path, headers, body)
             return
 
         # Regular HTTP — serve static files
@@ -265,13 +281,18 @@ class Relay:
             "headers": headers,
             "body": body,
         })
+        log.info("Proxy %s: sending to server, path=%s", req_id, path)
         try:
             self._server_writer.write(make_frame(OP_TEXT, frame_data.encode()))
             await self._server_writer.drain()
-        except Exception:
+        except Exception as e:
+            log.error("Proxy %s: failed to send to server: %s", req_id, e)
             self._proxy_pending.pop(req_id, None)
-            writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
-            await writer.drain()
+            try:
+                writer.write(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                await writer.drain()
+            except Exception:
+                pass
             writer.close()
             return
 
@@ -280,11 +301,17 @@ class Relay:
         try:
             resp_data = await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
+            log.error("Proxy %s: timeout waiting for server response", req_id)
             self._proxy_pending.pop(req_id, None)
-            writer.write(b"HTTP/1.1 504 Gateway Timeout\r\nContent-Length: 0\r\n\r\n")
-            await writer.drain()
+            try:
+                writer.write(b"HTTP/1.1 504 Gateway Timeout\r\nContent-Length: 0\r\n\r\n")
+                await writer.drain()
+            except Exception:
+                pass
             writer.close()
             return
+
+        log.info("Proxy %s: got response status=%s body_len=%d", req_id, resp_data.get("status"), len(resp_data.get("body", "")))
 
         # Build HTTP response
         status = resp_data.get("status", 500)
@@ -299,8 +326,11 @@ class Relay:
             f"Access-Control-Allow-Origin: *\r\n"
             f"\r\n"
         )
-        writer.write(http_resp.encode() + resp_body)
-        await writer.drain()
+        try:
+            writer.write(http_resp.encode() + resp_body)
+            await writer.drain()
+        except ConnectionError:
+            log.warning("Proxy %s: client disconnected before response sent", req_id)
         writer.close()
 
     async def _serve_static(self, writer: asyncio.StreamWriter, method: str, path: str) -> None:

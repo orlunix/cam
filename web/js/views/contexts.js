@@ -1,4 +1,4 @@
-import { api, state } from '../app.js';
+import { api, state, navigate } from '../app.js';
 
 // Track which context is being edited (null = creating new)
 let editingId = null;
@@ -69,6 +69,7 @@ export function renderContexts(container) {
             <div class="context-card-header">
               <span class="context-name">${c.name}</span>
               <span>
+                <button class="btn-sm btn-secondary browse-ctx" data-id="${c.id}">Browse</button>
                 <button class="btn-sm btn-secondary edit-ctx" data-id="${c.id}">Edit</button>
                 <button class="btn-sm btn-danger delete-ctx" data-name="${c.name}">Delete</button>
               </span>
@@ -79,6 +80,13 @@ export function renderContexts(container) {
             </div>
           </div>`;
         }).join('')}</div>`;
+
+    // Browse handlers
+    listEl.querySelectorAll('.browse-ctx').forEach(btn => {
+      btn.addEventListener('click', () => {
+        navigate(`#/context/${btn.dataset.id}/files`);
+      });
+    });
 
     // Edit handlers
     listEl.querySelectorAll('.edit-ctx').forEach(btn => {
