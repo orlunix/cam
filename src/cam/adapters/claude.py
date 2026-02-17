@@ -61,6 +61,12 @@ class ClaudeAdapter(ToolAdapter):
         # Numbered menu with "1. Yes" or "1. Allow" visible
         (re.compile(r"1\.\s*(Yes|Allow)", re.IGNORECASE),
          ConfirmAction(response="1", send_enter=False)),
+        # "Allow once" / "Always allow" select menu (Claude 4.x+)
+        (re.compile(r"Allow\s+(once|always)", re.IGNORECASE),
+         ConfirmAction(response="", send_enter=True)),
+        # Permission prompt ending with (y/n) or [Y/n]
+        (re.compile(r"\(y/n\)|\[Y/n\]|\[y/N\]", re.IGNORECASE),
+         ConfirmAction(response="y", send_enter=True)),
     ]
 
     # Claude Code cost/token output pattern

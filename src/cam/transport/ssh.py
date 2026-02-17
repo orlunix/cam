@@ -160,6 +160,12 @@ class SSHTransport(Transport):
             logger.error("Failed to create remote session %s: %s", session_id, error)
             raise RuntimeError(f"SSH session creation failed on {self._host}: {error}")
 
+        # Increase scrollback buffer for longer output history
+        set_cmd = self._remote_tmux_cmd(session_id, [
+            "set-option", "-t", session_id, "history-limit", "50000",
+        ])
+        await self._run_ssh(set_cmd, check=False)
+
         logger.info("Created remote session %s on %s in %s", session_id, self._host, workdir)
         return True
 

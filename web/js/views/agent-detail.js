@@ -319,7 +319,7 @@ export function renderAgentDetail(container, agentId) {
       } catch {}
     } else {
       try {
-        const data = await api.agentOutput(agentId, 80);
+        const data = await api.agentOutput(agentId, 500);
         if (data.output) {
           updatePane(pre, data.output);
         }
@@ -641,7 +641,7 @@ export function renderAgentDetail(container, agentId) {
       } catch {}
     } else {
       try {
-        const data = await api.agentOutput(agentId, 80);
+        const data = await api.agentOutput(agentId, 500);
         if (data.output) {
           updatePane(pane, data.output);
         }
