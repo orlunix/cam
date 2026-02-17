@@ -130,6 +130,39 @@ class Transport(ABC):
         except Exception:
             return False
 
+    async def list_files(self, path: str) -> list[dict]:
+        """List files and directories at the given path.
+
+        Returns a list of dicts with keys: name, type ("dir"|"file"), size, mtime.
+        Default implementation uses local filesystem.
+        """
+        from pathlib import Path as P
+        entries = []
+        p = P(path)
+        if not p.is_dir():
+            return []
+        for item in sorted(p.iterdir()):
+            try:
+                st = item.stat()
+                entries.append({
+                    "name": item.name,
+                    "type": "dir" if item.is_dir() else "file",
+                    "size": st.st_size if item.is_file() else 0,
+                    "mtime": int(st.st_mtime),
+                })
+            except (PermissionError, OSError):
+                continue
+        return entries
+
+    async def read_file(self, path: str, max_bytes: int = 512_000) -> bytes:
+        """Read file content up to max_bytes. Default uses local filesystem."""
+        from pathlib import Path as P
+        p = P(path)
+        if not p.is_file():
+            return b""
+        data = p.read_bytes()
+        return data[:max_bytes]
+
     async def read_output_log(self, session_id: str, offset: int = 0, max_bytes: int = 256_000) -> tuple[str, int]:
         """Read the pipe-pane output log for incremental fetching.
 
