@@ -20,13 +20,22 @@ async def _require_auth(request: Request):
 
 
 def _resolve_path(context_path: str, subpath: str) -> str:
-    """Resolve a subpath relative to the context root, preventing traversal."""
+    """Resolve a subpath relative to the context root, preventing traversal.
+
+    Uses realpath to resolve symlinks, preventing symlink-based escape.
+    """
+    context_path = os.path.normpath(context_path)
     if not subpath or subpath == "/":
         return context_path
     # Normalize and join
     full = os.path.normpath(os.path.join(context_path, subpath.lstrip("/")))
-    # Security: must stay within context root
-    if not full.startswith(context_path.rstrip("/") + "/") and full != context_path:
+    # Security: check logical path first
+    if not full.startswith(context_path + "/") and full != context_path:
+        raise HTTPException(status_code=403, detail="Path outside context root")
+    # Security: resolve symlinks and re-check real path
+    real_root = os.path.realpath(context_path)
+    real_full = os.path.realpath(full)
+    if not real_full.startswith(real_root + "/") and real_full != real_root:
         raise HTTPException(status_code=403, detail="Path outside context root")
     return full
 
@@ -84,8 +93,12 @@ async def read_file(name_or_id: str, request: Request, path: str = ""):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    if not data:
-        raise HTTPException(status_code=404, detail="File not found or empty")
+    if data is None:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Empty file
+    if len(data) == 0:
+        return {"path": path, "binary": False, "size": 0, "content": ""}
 
     # Detect binary content
     is_binary = b"\x00" in data[:8192]

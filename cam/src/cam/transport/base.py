@@ -143,25 +143,31 @@ class Transport(ABC):
             return []
         for item in sorted(p.iterdir()):
             try:
-                st = item.stat()
+                st = item.lstat()  # lstat: don't follow symlinks
+                if item.is_symlink():
+                    ftype = "symlink"
+                elif item.is_dir():
+                    ftype = "dir"
+                else:
+                    ftype = "file"
                 entries.append({
                     "name": item.name,
-                    "type": "dir" if item.is_dir() else "file",
-                    "size": st.st_size if item.is_file() else 0,
+                    "type": ftype,
+                    "size": st.st_size if ftype == "file" else 0,
                     "mtime": int(st.st_mtime),
                 })
             except (PermissionError, OSError):
                 continue
         return entries
 
-    async def read_file(self, path: str, max_bytes: int = 512_000) -> bytes:
-        """Read file content up to max_bytes. Default uses local filesystem."""
+    async def read_file(self, path: str, max_bytes: int = 512_000) -> bytes | None:
+        """Read file content up to max_bytes. Returns None if file doesn't exist."""
         from pathlib import Path as P
         p = P(path)
         if not p.is_file():
-            return b""
-        data = p.read_bytes()
-        return data[:max_bytes]
+            return None
+        with open(p, "rb") as f:
+            return f.read(max_bytes)
 
     async def read_output_log(self, session_id: str, offset: int = 0, max_bytes: int = 256_000) -> tuple[str, int]:
         """Read the pipe-pane output log for incremental fetching.

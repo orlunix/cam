@@ -108,8 +108,8 @@ def make_frame(opcode: int, payload: bytes, mask: bool = False) -> bytes:
 async def read_http_request(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
-) -> tuple[str, str, dict[str, str], dict[str, list[str]]] | None:
-    """Read HTTP request. Returns (method, path, headers, query) or None."""
+) -> tuple[str, str, dict[str, str], dict[str, list[str]], str] | None:
+    """Read HTTP request. Returns (method, path, headers, query, full_path) or None."""
     try:
         request_line = await asyncio.wait_for(reader.readline(), timeout=10)
     except (asyncio.TimeoutError, ConnectionError):
@@ -218,7 +218,7 @@ class Relay:
             # /api/ws — proxy WebSocket event stream to server
             if path.startswith("/api/ws"):
                 await do_ws_upgrade(writer, ws_key)
-                await self._handle_api_ws(reader, writer, peer, path, headers)
+                await self._handle_api_ws(reader, writer, peer, full_path, headers)
                 return
 
             if not self._check_token(query):
