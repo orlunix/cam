@@ -352,18 +352,19 @@ class SSHTransport(Transport):
         entries.sort(key=lambda e: e["name"])
         return entries
 
-    async def read_file(self, path: str, max_bytes: int = 512_000) -> bytes:
+    async def read_file(self, path: str, max_bytes: int = 512_000) -> bytes | None:
         """Read file content from the remote host via SSH with base64 encoding."""
         import base64
         safe_path = shlex.quote(path)
-        cmd = f"bash -c {shlex.quote(f'head -c {max_bytes} {safe_path} | base64')}"
+        # Check existence first, then read
+        cmd = f"bash -c {shlex.quote(f'test -f {safe_path} && head -c {max_bytes} {safe_path} | base64')}"
         success, output = await self._run_ssh(cmd, check=False)
         if not success or not output.strip():
-            return b""
+            return None
         try:
             return base64.b64decode(output.strip())
         except Exception:
-            return b""
+            return None
 
     async def write_file(self, remote_path: str, data: bytes) -> bool:
         """Write binary data to a file on the remote machine via SSH.
