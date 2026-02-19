@@ -1,11 +1,11 @@
-import { api } from './api.js?v=36';
-import { state } from './state.js?v=36';
-import { renderDashboard } from './views/dashboard.js?v=36';
-import { renderAgentDetail } from './views/agent-detail.js?v=36';
-import { renderStartAgent } from './views/start-agent.js?v=36';
-import { renderContexts } from './views/contexts.js?v=36';
-import { renderSettings } from './views/settings.js?v=36';
-import { renderFileBrowser } from './views/file-browser.js?v=36';
+import { api } from './api.js?v=37';
+import { state } from './state.js?v=37';
+import { renderDashboard } from './views/dashboard.js?v=37';
+import { renderAgentDetail } from './views/agent-detail.js?v=37';
+import { renderStartAgent } from './views/start-agent.js?v=37';
+import { renderContexts } from './views/contexts.js?v=37';
+import { renderSettings } from './views/settings.js?v=37';
+import { renderFileBrowser } from './views/file-browser.js?v=37';
 
 // --- Router ---
 
@@ -125,6 +125,10 @@ async function loadData() {
     ]);
     state.set('agents', agentsResp.agents || []);
     state.set('contexts', contextsResp.contexts || []);
+    if (agentsResp._cached || contextsResp._cached) {
+      const ago = Math.round((Date.now() - (agentsResp._cachedAt || contextsResp._cachedAt)) / 1000);
+      state.toast(`Showing cached data (${ago}s ago)`, 'warning', 5000);
+    }
   } catch (e) {
     console.error('Failed to load data:', e);
   }
