@@ -72,12 +72,95 @@ export class CamApi {
     this._requestMap.clear();
   }
 
-  // --- Request dispatch ---
+  // --- Request dispatch (with retry + cache) ---
+
+  // Only cache lightweight list endpoints, not file content
+  _isCacheable(path) {
+    return !path.includes('/files/read') && !path.includes('/upload') && !path.includes('/output') && !path.includes('/fulloutput') && !path.includes('/logs');
+  }
+
+  _pruneCache() {
+    // Evict expired entries, keep max 50
+    const PREFIX = 'cam_cache:';
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(PREFIX)) keys.push(k);
+    }
+    // Remove expired (>5min)
+    const now = Date.now();
+    for (const k of keys) {
+      try {
+        const { ts } = JSON.parse(localStorage.getItem(k));
+        if (now - ts > 300_000) localStorage.removeItem(k);
+      } catch { localStorage.removeItem(k); }
+    }
+    // If still over limit, remove oldest
+    const remaining = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(PREFIX)) {
+        try {
+          const { ts } = JSON.parse(localStorage.getItem(k));
+          remaining.push({ k, ts });
+        } catch { localStorage.removeItem(k); }
+      }
+    }
+    if (remaining.length > 50) {
+      remaining.sort((a, b) => a.ts - b.ts);
+      for (const { k } of remaining.slice(0, remaining.length - 50)) {
+        localStorage.removeItem(k);
+      }
+    }
+  }
 
   async request(method, path, body = null) {
-    if (this.mode === 'direct') return this._directRequest(method, path, body);
-    if (this.mode === 'relay') return this._relayRequest(method, path, body);
-    throw new Error('Not connected');
+    const isGet = method === 'GET';
+    const cacheKey = (isGet && this._isCacheable(path)) ? `cam_cache:${path}` : null;
+
+    // Retry up to 2 times for GET requests, no retry for mutations
+    const maxRetries = isGet ? 2 : 0;
+    let lastError;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        let data;
+        if (this.mode === 'direct') data = await this._directRequest(method, path, body);
+        else if (this.mode === 'relay') data = await this._relayRequest(method, path, body);
+        else throw new Error('Not connected');
+
+        // Cache successful GET responses (lightweight endpoints only)
+        if (cacheKey) {
+          try {
+            this._pruneCache();
+            localStorage.setItem(cacheKey, JSON.stringify({ data, ts: Date.now() }));
+          } catch {}
+        }
+        return data;
+      } catch (e) {
+        lastError = e;
+        // Don't retry on 4xx (client errors) or mutations
+        if (e.status && e.status >= 400 && e.status < 500) throw e;
+        if (attempt < maxRetries) {
+          await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+        }
+      }
+    }
+
+    // All retries failed — try localStorage cache for GET requests
+    if (cacheKey) {
+      try {
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+          const { data, ts } = JSON.parse(cached);
+          if (Date.now() - ts < 300_000) {
+            return Object.assign(Object.create(null), data, { _cached: true, _cachedAt: ts });
+          }
+        }
+      } catch {}
+    }
+
+    throw lastError;
   }
 
   async _directRequest(method, path, body) {
