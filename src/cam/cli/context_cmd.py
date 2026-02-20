@@ -257,6 +257,49 @@ def context_remove(
         raise typer.Exit(1)
 
 
+@app.command("copy")
+def context_copy(
+    source: str = typer.Argument(..., help="Source context name or ID"),
+    new_name: str = typer.Argument(..., help="Name for the new context"),
+) -> None:
+    """Copy a context with all its settings.
+
+    Examples:
+        cam context copy myproject myproject-v2
+        cam context copy remote-server remote-server-staging
+    """
+    from cam.cli.app import state
+    from cam.storage.context_store import ContextStoreError
+
+    src = state.context_store.get(source)
+    if not src:
+        print_error(f"Context not found: {source}")
+        raise typer.Exit(1)
+
+    if state.context_store.exists(new_name):
+        print_error(f"Context '{new_name}' already exists.")
+        raise typer.Exit(1)
+
+    try:
+        new_ctx = Context(
+            id=str(uuid4()),
+            name=new_name,
+            path=src.path,
+            machine=MachineConfig(**src.machine.model_dump()),
+            tags=list(src.tags),
+            created_at=datetime.now(timezone.utc),
+        )
+        state.context_store.add(new_ctx)
+        print_success(f"Context '{source}' copied to '{new_name}'")
+        print_context_detail(new_ctx)
+    except ContextStoreError as e:
+        print_error(str(e))
+        raise typer.Exit(1)
+    except ValueError as e:
+        print_error(f"Invalid context data: {e}")
+        raise typer.Exit(1)
+
+
 @app.command("update")
 def context_update(
     name_or_id: str = typer.Argument(..., help="Context name or ID"),
