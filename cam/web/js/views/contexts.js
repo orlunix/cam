@@ -44,6 +44,13 @@ export function renderContexts(container) {
           </div>
         </div>
       </details>
+      <details class="form-advanced" id="env-details">
+        <summary>Environment Setup</summary>
+        <div class="form-group">
+          <label for="ctx-env-setup">Shell commands (run before agent)</label>
+          <input type="text" id="ctx-env-setup" class="form-input" placeholder="source ~/.bashrc (default for SSH)">
+        </div>
+      </details>
       <div class="form-actions" style="flex-direction:row">
         <button type="submit" class="btn-primary" id="ctx-submit-btn" style="flex:1">Add Context</button>
         <button type="button" class="btn-secondary" id="ctx-cancel-btn" style="display:none">Cancel</button>
@@ -70,6 +77,7 @@ export function renderContexts(container) {
               <span class="context-name">${c.name}</span>
               <span>
                 <button class="btn-sm btn-secondary browse-ctx" data-id="${c.id}">Browse</button>
+                <button class="btn-sm btn-secondary copy-ctx" data-name="${c.name}">Duplicate</button>
                 <button class="btn-sm btn-secondary edit-ctx" data-id="${c.id}">Edit</button>
                 <button class="btn-sm btn-danger delete-ctx" data-name="${c.name}">Delete</button>
               </span>
@@ -96,6 +104,20 @@ export function renderContexts(container) {
       });
     });
 
+    // Copy handlers
+    listEl.querySelectorAll('.copy-ctx').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const newName = prompt(`Duplicate "${btn.dataset.name}" as:`, `${btn.dataset.name}-copy`);
+        if (!newName) return;
+        try {
+          await api.copyContext(btn.dataset.name, newName.trim());
+          state.toast('Context duplicated', 'success');
+          const resp = await api.listContexts();
+          state.set('contexts', resp.contexts || []);
+        } catch (e) { state.toast(e.message, 'error'); }
+      });
+    });
+
     // Delete handlers
     listEl.querySelectorAll('.delete-ctx').forEach(btn => {
       btn.addEventListener('click', async () => {
@@ -119,10 +141,15 @@ export function renderContexts(container) {
     container.querySelector('#ctx-host').value = m.host || '';
     container.querySelector('#ctx-user').value = m.user || '';
     container.querySelector('#ctx-port').value = m.port || 22;
+    container.querySelector('#ctx-env-setup').value = m.env_setup || '';
 
     // Open SSH details if it's an SSH context
     if (m.host) {
       container.querySelector('#ssh-details').open = true;
+    }
+    // Open env details if env_setup is set
+    if (m.env_setup) {
+      container.querySelector('#env-details').open = true;
     }
 
     container.querySelector('#form-title').textContent = 'Edit Context';
@@ -169,6 +196,8 @@ export function renderContexts(container) {
       body.user = container.querySelector('#ctx-user').value.trim() || undefined;
       body.port = parseInt(container.querySelector('#ctx-port').value) || 22;
     }
+    const envSetup = container.querySelector('#ctx-env-setup').value.trim();
+    if (envSetup) body.env_setup = envSetup;
     try {
       if (editingId) {
         await api.updateContext(editingId, body);

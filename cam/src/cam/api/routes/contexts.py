@@ -39,6 +39,9 @@ async def create_context(body: CreateContextRequest, request: Request):
     from cam.core.models import Context, MachineConfig, TransportType
 
     transport_type = TransportType.SSH if body.host else TransportType.LOCAL
+    env_setup = body.env_setup
+    if transport_type == TransportType.SSH and not env_setup:
+        env_setup = "source ~/.bashrc"
 
     try:
         machine = MachineConfig(
@@ -47,7 +50,7 @@ async def create_context(body: CreateContextRequest, request: Request):
             user=body.user,
             port=body.port,
             key_file=body.key_file,
-            env_setup=body.env_setup,
+            env_setup=env_setup,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -114,6 +117,49 @@ async def update_context(name_or_id: str, body: CreateContextRequest, request: R
     try:
         state.context_store.update(existing)
         return existing.model_dump(mode="json")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/contexts/{name_or_id}/copy", status_code=201)
+async def copy_context(name_or_id: str, request: Request, new_name: str = ""):
+    """Copy a context with all its settings."""
+    state = await _require_auth(request)
+
+    source = state.context_store.get(name_or_id)
+    if not source:
+        raise HTTPException(
+            status_code=404, detail=f"Context not found: {name_or_id}"
+        )
+
+    # Accept new_name from query param or JSON body
+    if not new_name:
+        try:
+            body = await request.json()
+            new_name = body.get("name", "")
+        except Exception:
+            pass
+    if not new_name:
+        new_name = f"{source.name}-copy"
+
+    if state.context_store.exists(new_name):
+        raise HTTPException(
+            status_code=400, detail=f"Context '{new_name}' already exists"
+        )
+
+    from cam.core.models import Context, MachineConfig
+
+    try:
+        new_ctx = Context(
+            id=str(uuid4()),
+            name=new_name,
+            path=source.path,
+            machine=MachineConfig(**source.machine.model_dump()),
+            tags=list(source.tags),
+            created_at=datetime.now(timezone.utc),
+        )
+        state.context_store.add(new_ctx)
+        return new_ctx.model_dump(mode="json")
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
