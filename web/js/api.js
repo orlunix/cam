@@ -398,6 +398,7 @@ export class CamApi {
   createContext(body) { return this.request('POST', '/api/contexts', body); }
   updateContext(nameOrId, body) { return this.request('PUT', `/api/contexts/${nameOrId}`, body); }
   deleteContext(nameOrId) { return this.request('DELETE', `/api/contexts/${nameOrId}`); }
+  copyContext(nameOrId, newName) { return this.request('POST', `/api/contexts/${nameOrId}/copy`, { name: newName }); }
   listFiles(contextId, path = '') { return this.request('GET', `/api/contexts/${contextId}/files?path=${encodeURIComponent(path)}`); }
   readFile(contextId, path) { return this.request('GET', `/api/contexts/${contextId}/files/read?path=${encodeURIComponent(path)}`); }
 }
