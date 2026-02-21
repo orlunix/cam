@@ -172,6 +172,12 @@ class AgentMonitor:
                 # --------------------------------------------------
                 # 6. Auto-confirm check (with cooldown)
                 # --------------------------------------------------
+                # Re-read auto_confirm from DB so API changes take
+                # effect on the running monitor without restart.
+                fresh = self._agent_store.get(str(self._agent.id))
+                if fresh and fresh.task.auto_confirm != self._agent.task.auto_confirm:
+                    self._agent.task.auto_confirm = fresh.task.auto_confirm
+
                 # Check every poll cycle (not just on output_changed)
                 # to catch prompts that rendered between polls.
                 # 5-second cooldown prevents rapid re-sending.

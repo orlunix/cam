@@ -78,6 +78,10 @@ export function renderDashboard(container) {
           <label for="agent-edit-name">Name</label>
           <input type="text" id="agent-edit-name" class="form-input" required placeholder="agent label">
         </div>
+        <div class="form-group form-toggle">
+          <label for="agent-edit-autoconfirm">Auto Confirm</label>
+          <input type="checkbox" id="agent-edit-autoconfirm">
+        </div>
         <div class="form-actions" style="flex-direction:row">
           <button type="submit" class="btn-primary" id="agent-edit-submit" style="flex:1">Save Changes</button>
           <button type="button" class="btn-secondary" id="agent-edit-cancel">Cancel</button>
@@ -199,6 +203,7 @@ export function renderDashboard(container) {
     editingId = agent.id;
     const nameInput = container.querySelector('#agent-edit-name');
     nameInput.value = agent.task_name || '';
+    container.querySelector('#agent-edit-autoconfirm').checked = !!agent.auto_confirm;
     container.querySelector('#edit-section').style.display = '';
     container.querySelector('#edit-divider').style.display = '';
     container.querySelector('#edit-title').textContent = `Edit: ${agent.task_name || agent.id.slice(0, 8)}`;
@@ -240,8 +245,9 @@ export function renderDashboard(container) {
     if (!editingId) return;
     const name = container.querySelector('#agent-edit-name').value.trim();
     if (!name) return;
+    const autoConfirm = container.querySelector('#agent-edit-autoconfirm').checked;
     try {
-      await api.renameAgent(editingId, name);
+      await api.updateAgent(editingId, { name, auto_confirm: autoConfirm });
       state.toast('Agent updated', 'success');
       resetForm();
       const resp = await api.listAgents({ limit: 50 });

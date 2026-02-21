@@ -386,7 +386,7 @@ export class CamApi {
   getAgent(id) { return this.request('GET', `/api/agents/${id}`); }
   startAgent(body) { return this.request('POST', '/api/agents', body); }
   stopAgent(id, force = false) { return this.request('DELETE', `/api/agents/${id}?force=${force}`); }
-  renameAgent(id, name) { return this.request('PATCH', `/api/agents/${id}`, { name }); }
+  updateAgent(id, body) { return this.request('PATCH', `/api/agents/${id}`, body); }
   deleteAgentHistory(id) { return this.request('DELETE', `/api/agents/${id}/history`); }
   agentLogs(id, tail = 100) { return this.request('GET', `/api/agents/${id}/logs?tail=${tail}`); }
   agentOutput(id, lines = 80) { return this.request('GET', `/api/agents/${id}/output?lines=${lines}`); }

@@ -711,6 +711,17 @@ details[open] > .collapse-summary::before {
   color: var(--text-dim);
   margin-bottom: 4px;
 }
+.form-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.form-toggle label { margin-bottom: 0; }
+.form-toggle input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+}
 
 .form-input {
   width: 100%;
