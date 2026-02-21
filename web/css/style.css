@@ -234,6 +234,7 @@ a { color: var(--accent); text-decoration: none; }
   transition: background 0.15s, border-color 0.15s;
 }
 .agent-card:active { background: var(--bg-hover); }
+.agent-card.editing { border-color: var(--blue); }
 
 .agent-card-header {
   display: flex;
@@ -874,7 +875,7 @@ select.form-input {
 .btn-full { width: 100%; }
 
 .btn-delete-card {
-  margin-left: auto;
+  margin-left: 4px;
   background: none;
   border: none;
   color: var(--text-muted);
