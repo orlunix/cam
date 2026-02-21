@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 from cam.api.schemas import (
     AgentListResponse,
     AgentResponse,
-    RenameAgentRequest,
+    UpdateAgentRequest,
     RunAgentRequest,
     SendInputRequest,
     SendKeyRequest,
@@ -117,8 +117,8 @@ async def get_agent(agent_id: str, request: Request):
 
 
 @router.patch("/agents/{agent_id}", response_model=AgentResponse)
-async def rename_agent(agent_id: str, body: RenameAgentRequest, request: Request):
-    """Rename an agent (update task_name)."""
+async def update_agent(agent_id: str, body: UpdateAgentRequest, request: Request):
+    """Update agent settings (name, auto_confirm, etc.)."""
     state = await _require_auth(request)
 
     agent = await state.agent_manager.get_agent(agent_id)
@@ -127,7 +127,10 @@ async def rename_agent(agent_id: str, body: RenameAgentRequest, request: Request
             status_code=404, detail=f"Agent not found: {agent_id}"
         )
 
-    agent.task.name = body.name
+    if body.name is not None:
+        agent.task.name = body.name
+    if body.auto_confirm is not None:
+        agent.task.auto_confirm = body.auto_confirm
     state.agent_store.save(agent)
     return agent_to_response(agent)
 
