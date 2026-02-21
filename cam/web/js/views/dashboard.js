@@ -39,28 +39,6 @@ function renderStats(agents) {
 
 const TERMINAL = ['completed', 'failed', 'timeout', 'killed'];
 
-function renderAgentCard(agent) {
-  const prompt = (agent.prompt || '').slice(0, 80);
-  const time = timeSince(agent.started_at);
-  const canDelete = TERMINAL.includes(agent.status);
-  return `
-    <div class="agent-card" data-id="${agent.id}">
-      <div class="agent-card-header">
-        ${statusIcon(agent.status)}
-        <span class="agent-name">${agent.task_name || agent.id.slice(0, 8)}</span>
-        <span class="badge badge-${agent.status}">${agent.status}</span>
-        ${canDelete ? `<button class="btn-delete-card" data-delete-id="${agent.id}" title="Delete">&times;</button>` : ''}
-      </div>
-      <div class="agent-card-meta">
-        <span class="agent-tool">${agent.tool}</span>
-        ${agent.context_name ? `<span class="agent-ctx">${agent.context_name}</span>` : ''}
-        <span class="agent-time">${time}</span>
-      </div>
-      ${prompt ? `<div class="agent-card-prompt">${escapeHtml(prompt)}</div>` : ''}
-    </div>
-  `;
-}
-
 function escapeHtml(s) {
   const d = document.createElement('div');
   d.textContent = s;
@@ -68,13 +46,73 @@ function escapeHtml(s) {
 }
 
 export function renderDashboard(container) {
-  const render = () => {
+  let editingId = null;
+
+  // Static structure: stats + filters + list container + edit form
+  container.innerHTML = `
+    <div id="dash-stats"></div>
+    <div class="filter-bar">
+      <select id="filter-context" class="filter-select">
+        <option value="">All contexts</option>
+      </select>
+      <select id="filter-status" class="filter-select">
+        <option value="">All status</option>
+        <option value="running">Running</option>
+        <option value="completed">Completed</option>
+        <option value="failed">Failed</option>
+        <option value="killed">Killed</option>
+      </select>
+      <select id="filter-tool" class="filter-select">
+        <option value="">All tools</option>
+      </select>
+    </div>
+    <div id="agent-list-container"></div>
+
+    <div class="section-divider" id="edit-divider" style="display:none"></div>
+    <div id="edit-section" style="display:none">
+      <div class="page-header">
+        <h3 id="edit-title">Edit Agent</h3>
+      </div>
+      <form id="agent-edit-form" class="form">
+        <div class="form-group">
+          <label for="agent-edit-name">Name</label>
+          <input type="text" id="agent-edit-name" class="form-input" required placeholder="agent label">
+        </div>
+        <div class="form-actions" style="flex-direction:row">
+          <button type="submit" class="btn-primary" id="agent-edit-submit" style="flex:1">Save Changes</button>
+          <button type="button" class="btn-secondary" id="agent-edit-cancel">Cancel</button>
+        </div>
+      </form>
+    </div>
+  `;
+
+  // Filter elements (static, not rebuilt on refresh)
+  const statusSel = container.querySelector('#filter-status');
+  const toolSel = container.querySelector('#filter-tool');
+  const contextSel = container.querySelector('#filter-context');
+  const filters = state.get('filters');
+  if (filters.status) statusSel.value = filters.status;
+  if (filters.tool) toolSel.value = filters.tool;
+  if (filters.context) contextSel.value = filters.context;
+
+  statusSel.addEventListener('change', () => {
+    state.set('filters', { ...state.get('filters'), status: statusSel.value });
+  });
+  toolSel.addEventListener('change', () => {
+    state.set('filters', { ...state.get('filters'), tool: toolSel.value });
+  });
+  contextSel.addEventListener('change', () => {
+    state.set('filters', { ...state.get('filters'), context: contextSel.value });
+  });
+
+  function renderList() {
     const agents = state.get('agents') || [];
     const filters = state.get('filters');
 
     let filtered = agents;
     if (filters.status) filtered = filtered.filter(a => a.status === filters.status);
     if (filters.tool) filtered = filtered.filter(a => a.tool === filters.tool);
+    if (filters.context) filtered = filtered.filter(a => a.context_name === filters.context);
 
     // Sort: running first, then by started_at desc
     filtered.sort((a, b) => {
@@ -83,36 +121,67 @@ export function renderDashboard(container) {
       return new Date(b.started_at || 0) - new Date(a.started_at || 0);
     });
 
-    const tools = [...new Set(agents.map(a => a.tool))];
+    // Stats
+    container.querySelector('#dash-stats').innerHTML = renderStats(agents);
 
-    container.innerHTML = `
-      ${renderStats(agents)}
-      <div class="filter-bar">
-        <select id="filter-status" class="filter-select">
-          <option value="">All status</option>
-          <option value="running" ${filters.status === 'running' ? 'selected' : ''}>Running</option>
-          <option value="completed" ${filters.status === 'completed' ? 'selected' : ''}>Completed</option>
-          <option value="failed" ${filters.status === 'failed' ? 'selected' : ''}>Failed</option>
-          <option value="killed" ${filters.status === 'killed' ? 'selected' : ''}>Killed</option>
-        </select>
-        <select id="filter-tool" class="filter-select">
-          <option value="">All tools</option>
-          ${tools.map(t => `<option value="${t}" ${filters.tool === t ? 'selected' : ''}>${t}</option>`).join('')}
-        </select>
-      </div>
+    // Update tool/context filter options (preserve selection)
+    const tools = [...new Set(agents.map(a => a.tool))];
+    const curTool = toolSel.value;
+    toolSel.innerHTML = `<option value="">All tools</option>${tools.map(t => `<option value="${t}">${t}</option>`).join('')}`;
+    toolSel.value = curTool;
+
+    const contexts = [...new Set(agents.map(a => a.context_name).filter(Boolean))].sort();
+    const curCtx = contextSel.value;
+    contextSel.innerHTML = `<option value="">All contexts</option>${contexts.map(c => `<option value="${c}">${c}</option>`).join('')}`;
+    contextSel.value = curCtx;
+
+    // Agent list
+    const listEl = container.querySelector('#agent-list-container');
+    listEl.innerHTML = `
       <div class="agent-list">
         ${filtered.length === 0
           ? '<div class="empty-state">No agents yet. Tap + to start one.</div>'
-          : filtered.map(renderAgentCard).join('')}
+          : filtered.map(agent => {
+              const prompt = (agent.prompt || '').slice(0, 80);
+              const time = timeSince(agent.started_at);
+              const canDelete = TERMINAL.includes(agent.status);
+              const isEditing = agent.id === editingId;
+              return `
+              <div class="agent-card${isEditing ? ' editing' : ''}" data-id="${agent.id}">
+                <div class="agent-card-header">
+                  ${statusIcon(agent.status)}
+                  <span class="agent-name">${escapeHtml(agent.task_name || agent.id.slice(0, 8))}</span>
+                  <span class="badge badge-${agent.status}">${agent.status}</span>
+                  <button class="btn-sm btn-secondary edit-agent" data-id="${agent.id}" title="Edit">Edit</button>
+                  ${canDelete ? `<button class="btn-delete-card" data-delete-id="${agent.id}" title="Delete">&times;</button>` : ''}
+                </div>
+                <div class="agent-card-meta">
+                  <span class="agent-tool">${agent.tool}</span>
+                  ${agent.context_name ? `<span class="agent-ctx">${agent.context_name}</span>` : ''}
+                  <span class="agent-time">${time}</span>
+                </div>
+                ${prompt ? `<div class="agent-card-prompt">${escapeHtml(prompt)}</div>` : ''}
+              </div>`;
+            }).join('')}
       </div>
     `;
 
-    // Event handlers
-    container.querySelectorAll('.agent-card').forEach(el => {
+    // Card click → navigate to detail
+    listEl.querySelectorAll('.agent-card').forEach(el => {
       el.addEventListener('click', () => navigate(`/agent/${el.dataset.id}`));
     });
 
-    container.querySelectorAll('.btn-delete-card').forEach(btn => {
+    // Edit button
+    listEl.querySelectorAll('.edit-agent').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const agent = agents.find(a => a.id === btn.dataset.id);
+        if (agent) fillFormForEdit(agent);
+      });
+    });
+
+    // Delete button
+    listEl.querySelectorAll('.btn-delete-card').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
         if (!confirm('Delete this agent from history?')) return;
@@ -124,20 +193,61 @@ export function renderDashboard(container) {
         } catch (err) { state.toast(err.message, 'error'); }
       });
     });
+  }
 
-    const statusSel = container.querySelector('#filter-status');
-    const toolSel = container.querySelector('#filter-tool');
-    if (statusSel) statusSel.addEventListener('change', () => {
-      state.set('filters', { ...state.get('filters'), status: statusSel.value });
-    });
-    if (toolSel) toolSel.addEventListener('change', () => {
-      state.set('filters', { ...state.get('filters'), tool: toolSel.value });
-    });
-  };
+  function fillFormForEdit(agent) {
+    editingId = agent.id;
+    const nameInput = container.querySelector('#agent-edit-name');
+    nameInput.value = agent.task_name || '';
+    container.querySelector('#edit-section').style.display = '';
+    container.querySelector('#edit-divider').style.display = '';
+    container.querySelector('#edit-title').textContent = `Edit: ${agent.task_name || agent.id.slice(0, 8)}`;
+    renderList(); // update card highlight
+    nameInput.focus(); // trigger keyboard
+    setTimeout(() => nameInput.scrollIntoView({ behavior: 'smooth', block: 'center' }), 400);
+  }
 
-  render();
-  const unsub = state.subscribe(render);
+  function resetForm() {
+    editingId = null;
+    container.querySelector('#agent-edit-form').reset();
+    container.querySelector('#edit-section').style.display = 'none';
+    container.querySelector('#edit-divider').style.display = 'none';
+    renderList(); // remove card highlight
+  }
 
-  // Return cleanup function for router
+  // Initial render
+  renderList();
+
+  // Only re-render list when agents/filters change (preserve form state)
+  let prevAgents = state.get('agents');
+  let prevFilters = state.get('filters');
+  const unsub = state.subscribe(() => {
+    const curAgents = state.get('agents');
+    const curFilters = state.get('filters');
+    if (curAgents !== prevAgents || curFilters !== prevFilters) {
+      prevAgents = curAgents;
+      prevFilters = curFilters;
+      renderList();
+    }
+  });
+
+  // Cancel button
+  container.querySelector('#agent-edit-cancel').addEventListener('click', resetForm);
+
+  // Submit handler
+  container.querySelector('#agent-edit-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!editingId) return;
+    const name = container.querySelector('#agent-edit-name').value.trim();
+    if (!name) return;
+    try {
+      await api.renameAgent(editingId, name);
+      state.toast('Agent updated', 'success');
+      resetForm();
+      const resp = await api.listAgents({ limit: 50 });
+      state.set('agents', resp.agents || []);
+    } catch (err) { state.toast(err.message, 'error'); }
+  });
+
   return () => { unsub(); };
 }
