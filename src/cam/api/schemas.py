@@ -77,10 +77,11 @@ class UploadFileRequest(BaseModel):
     data: str = Field(min_length=1)  # base64-encoded file content
 
 
-class RenameAgentRequest(BaseModel):
+class UpdateAgentRequest(BaseModel):
     """PATCH /api/agents/{id} request body."""
 
-    name: str = Field(min_length=1)
+    name: str | None = Field(default=None, min_length=1)
+    auto_confirm: bool | None = None
 
 
 class SendKeyRequest(BaseModel):
