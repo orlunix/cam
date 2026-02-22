@@ -1,7 +1,12 @@
 import { api, state, navigate } from '../app.js';
 
+function escapeHtml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 export function renderStartAgent(container) {
   const contexts = state.get('contexts') || [];
+  const adapters = state.get('adapters') || ['claude', 'codex', 'aider'];
 
   container.innerHTML = `
     <div class="page-header">
@@ -11,9 +16,7 @@ export function renderStartAgent(container) {
       <div class="form-group">
         <label for="tool">Tool</label>
         <select id="tool" class="form-input" required>
-          <option value="claude">Claude</option>
-          <option value="codex">Codex</option>
-          <option value="aider">Aider</option>
+          ${adapters.filter(a => a !== 'generic').map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('')}
         </select>
       </div>
 

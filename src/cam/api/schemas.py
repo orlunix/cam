@@ -97,6 +97,7 @@ class HealthResponse(BaseModel):
     version: str
     uptime_seconds: float
     agents_running: int
+    adapters: list[str] = Field(default_factory=list)
 
 
 def agent_to_response(agent: Agent) -> AgentResponse:

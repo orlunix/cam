@@ -119,12 +119,14 @@ async function init() {
 
 async function loadData() {
   try {
-    const [agentsResp, contextsResp] = await Promise.all([
+    const [agentsResp, contextsResp, healthResp] = await Promise.all([
       api.listAgents({ limit: 50 }),
       api.listContexts(),
+      api.health().catch(() => null),
     ]);
     state.set('agents', agentsResp.agents || []);
     state.set('contexts', contextsResp.contexts || []);
+    if (healthResp?.adapters) state.set('adapters', healthResp.adapters);
     if (agentsResp._cached || contextsResp._cached) {
       const ago = Math.round((Date.now() - (agentsResp._cachedAt || contextsResp._cachedAt)) / 1000);
       state.toast(`Showing cached data (${ago}s ago)`, 'warning', 5000);

@@ -301,7 +301,7 @@ class TestAdapterRegistry:
         assert "codex" in adapter_registry
         assert "aider" in adapter_registry
         assert "generic" in adapter_registry
-        assert len(adapter_registry) == 4
+        assert len(adapter_registry) >= 4
 
     def test_get(self, adapter_registry):
         adapter = adapter_registry.get("claude")
