@@ -2,16 +2,19 @@
 
 This module provides the AdapterRegistry class for discovering, registering,
 and accessing tool adapters. Includes built-in adapters and supports custom
-adapter loading.
+adapter loading (Python files and TOML configs).
 """
 
 from __future__ import annotations
 
 import importlib.util
 import inspect
+import logging
 from pathlib import Path
 
 from cam.adapters.base import ToolAdapter
+
+logger = logging.getLogger(__name__)
 
 
 class AdapterRegistry:
@@ -25,9 +28,10 @@ class AdapterRegistry:
     """
 
     def __init__(self) -> None:
-        """Initialize registry and register built-in adapters."""
+        """Initialize registry and register built-in + TOML adapters."""
         self._adapters: dict[str, ToolAdapter] = {}
         self._register_builtins()
+        self._load_toml_adapters()
 
     def _register_builtins(self) -> None:
         """Register built-in tool adapters."""
@@ -40,6 +44,36 @@ class AdapterRegistry:
         self.register(CodexAdapter())
         self.register(AiderAdapter())
         self.register(GenericAdapter())
+
+    def _load_toml_adapters(self) -> None:
+        """Scan built-in and user TOML directories for adapter configs."""
+        from cam.adapters.configurable import ConfigurableAdapter
+        from cam.constants import ADAPTER_DIR
+
+        builtin_dir = Path(__file__).parent / "configs"
+        user_dir = ADAPTER_DIR
+
+        for d in [builtin_dir, user_dir]:
+            if not d.is_dir():
+                continue
+            is_user_dir = d == user_dir
+            for f in sorted(d.glob("*.toml")):
+                try:
+                    adapter = ConfigurableAdapter.from_toml(f)
+                    if adapter.name in self:
+                        if is_user_dir:
+                            logger.warning(
+                                "User TOML adapter %r from %s skipped (already registered)",
+                                adapter.name, f.name,
+                            )
+                        else:
+                            logger.debug(
+                                "TOML adapter %r skipped (already registered)", adapter.name,
+                            )
+                        continue
+                    self._adapters[adapter.name] = adapter
+                except Exception as e:
+                    logger.warning("Skipping %s: %s", f.name, e)
 
     def register(self, adapter: ToolAdapter) -> None:
         """Register a tool adapter.
