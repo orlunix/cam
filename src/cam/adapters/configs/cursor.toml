@@ -1,0 +1,76 @@
+# Cursor Agent adapter — interactive mode (like Claude adapter).
+#
+# Uses interactive TUI (not -p headless) because:
+# - headless `-p` mode rejects shell commands when --force/--yolo is disabled by admin
+# - interactive mode allows auto-confirming permission prompts via CAM monitor
+#
+# TUI markers observed:
+#   Ready prompt:     → Plan, search, build anything
+#   Tool call:        ⬢ Read /path   ⬢ Edit /path
+#   Shell command:    $ python3 test.py <time> in /dir
+#   Permission:       Run this command? → Run (once) (y)
+#   Completion:       → Add a follow-up  (second → prompt = done)
+
+[adapter]
+name = "cursor-agent"
+display_name = "Cursor Agent"
+
+[launch]
+command = ["agent", "--workspace", "{path}"]
+prompt_after_launch = true
+startup_wait = 15.0
+strip_ansi = true
+
+ready_pattern = "→"
+ready_flags = ["MULTILINE"]
+
+[state]
+strategy = "last"
+recent_chars = 2000
+
+[[state.patterns]]
+state = "planning"
+pattern = "(⬢ Read|⬢ Glob|⬢ Grep|Thinking|Analyzing)"
+
+[[state.patterns]]
+state = "editing"
+pattern = "(⬢ Edit|⬢ Write)"
+
+[[state.patterns]]
+state = "testing"
+pattern = "(\\$ .+in /|Running tests|pytest|npm test)"
+flags = ["IGNORECASE"]
+
+[[state.patterns]]
+state = "committing"
+pattern = "(git commit|git push|gh pr create)"
+flags = ["IGNORECASE"]
+
+[completion]
+strategy = "prompt_count"
+
+prompt_pattern = "→"
+prompt_flags = ["MULTILINE"]
+prompt_count_threshold = 2
+
+# Fallback: single → plus usage percentage = completion
+# Agent shows "Claude 4.6 Opus (Thinking) · 6.7%" after task finishes
+fallback_summary_pattern = "·\\s*\\d+(\\.\\d+)?%"
+
+[[confirm]]
+# Workspace trust dialog: "▶ [a] Trust this workspace" — press Enter (cursor already on it)
+pattern = "Trust this workspace"
+response = ""
+send_enter = true
+
+[[confirm]]
+# Ink select menu for command approval: "→ Run (once) (y)" — press Enter
+pattern = "Run \\(once\\)"
+response = ""
+send_enter = true
+
+[[confirm]]
+# Alternative: "→ Run (always for this command)" — press Enter
+pattern = "Run \\(always"
+response = ""
+send_enter = true

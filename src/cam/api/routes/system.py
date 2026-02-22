@@ -22,6 +22,7 @@ async def health(request: Request):
         version=__version__,
         uptime_seconds=round(time.time() - state.started_at, 1),
         agents_running=len(running),
+        adapters=state.adapter_registry.names(),
     )
 
 

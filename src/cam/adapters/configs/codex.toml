@@ -1,0 +1,68 @@
+# Codex adapter — TOML equivalent of the Python CodexAdapter.
+# NOT loaded by registry (Python version takes priority). Used for testing only.
+
+[adapter]
+name = "codex"
+display_name = "OpenAI Codex"
+
+[launch]
+command = ["codex", "--full-auto", "{prompt}"]
+prompt_after_launch = false
+startup_wait = 0.0
+
+[state]
+strategy = "first"
+recent_chars = 2000
+
+[[state.patterns]]
+state = "planning"
+pattern = "(Thinking|Planning|Analyzing|Reading|Searching|Reviewing)"
+flags = ["IGNORECASE"]
+
+[[state.patterns]]
+state = "editing"
+pattern = "(Editing|Writing|Creating|Modifying|Applying|Patching)"
+flags = ["IGNORECASE"]
+
+[[state.patterns]]
+state = "testing"
+pattern = "(Running|Testing|Executing|Verifying|npm test|pytest|cargo test)"
+flags = ["IGNORECASE"]
+
+[[state.patterns]]
+state = "committing"
+pattern = "(Committing|Pushing|git commit|git push|Creating PR)"
+flags = ["IGNORECASE"]
+
+[completion]
+strategy = "pattern"
+recent_chars = 500
+error_search_full = true
+min_output_length = 100
+
+completion_pattern = "(Done|Completed|Finished|All changes applied)"
+completion_flags = ["IGNORECASE"]
+
+error_pattern = "(Error:|error:|FAILED|fatal:|Exception|command not found)"
+error_flags = ["IGNORECASE"]
+
+shell_prompt_pattern = "(\\$|\\#|>)\\s*$"
+shell_prompt_flags = ["MULTILINE"]
+
+[[confirm]]
+pattern = "(Apply|Accept|Approve|Continue|Proceed).*\\[Y/n\\]"
+flags = ["IGNORECASE"]
+response = "y"
+send_enter = true
+
+[[confirm]]
+pattern = "(Apply|Accept|Approve|Continue|Proceed).*\\[y/N\\]"
+flags = ["IGNORECASE"]
+response = "y"
+send_enter = true
+
+[[confirm]]
+pattern = "Press Enter"
+flags = ["IGNORECASE"]
+response = ""
+send_enter = true
