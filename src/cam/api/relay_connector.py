@@ -78,14 +78,10 @@ async def relay_loop(
                         )
                         continue
 
-                    # HTTP request — dispatch through ASGI
-                    response = await _dispatch_http(app, method, path, headers, body)
-                    response["id"] = req_id
-
-                    try:
-                        await ws.send(json.dumps(response))
-                    except Exception:
-                        break
+                    # HTTP request — dispatch in background (non-blocking)
+                    asyncio.create_task(
+                        _handle_http_request(ws, req_id, app, method, path, headers, body)
+                    )
 
         except asyncio.CancelledError:
             logger.info("Relay connector cancelled")
@@ -95,6 +91,16 @@ async def relay_loop(
 
         await asyncio.sleep(delay)
         delay = min(delay * 2, max_delay)
+
+
+async def _handle_http_request(ws, req_id: str, app, method: str, path: str, headers: dict, body: str) -> None:
+    """Handle a single HTTP request and send the response back via WebSocket."""
+    try:
+        response = await _dispatch_http(app, method, path, headers, body)
+        response["id"] = req_id
+        await ws.send(json.dumps(response))
+    except Exception as e:
+        logger.debug("Failed to handle/send HTTP response for %s: %s", req_id, e)
 
 
 async def _dispatch_http(app, method: str, path: str, headers: dict, body: str) -> dict:
