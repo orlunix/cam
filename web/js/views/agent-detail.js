@@ -12,6 +12,7 @@ export function renderAgentDetail(container, agentId) {
   let _deferredUpdate = null;
   let _directInput = false;
   let cachedOutput = '';
+  let _outputHash = null;
   let agent = (state.get('agents') || []).find(a => a.id === agentId);
   let fsOverlay = null;
 
@@ -315,8 +316,9 @@ export function renderAgentDetail(container, agentId) {
       } catch {}
     } else {
       try {
-        const data = await api.agentOutput(agentId, 500);
-        if (data.output) {
+        const data = await api.agentOutput(agentId, 200, _outputHash);
+        if (data.hash) _outputHash = data.hash;
+        if (!data.unchanged && data.output) {
           updatePane(pre, data.output);
         }
       } catch {}
@@ -633,8 +635,9 @@ export function renderAgentDetail(container, agentId) {
       } catch {}
     } else {
       try {
-        const data = await api.agentOutput(agentId, 500);
-        if (data.output) {
+        const data = await api.agentOutput(agentId, 200, _outputHash);
+        if (data.hash) _outputHash = data.hash;
+        if (!data.unchanged && data.output) {
           updatePane(pane, data.output);
         }
       } catch {}
@@ -666,7 +669,7 @@ export function renderAgentDetail(container, agentId) {
   // Initial render + auto-refresh
   render().then(() => {
     if (['running', 'starting', 'pending'].includes(agent?.status)) {
-      outputTimer = setInterval(loadOutput, 3000);
+      outputTimer = setInterval(loadOutput, 2000);
     }
   });
 

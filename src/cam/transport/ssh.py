@@ -146,9 +146,11 @@ class SSHTransport(Transport):
         # Build shell command string (passed as positional arg to new-session)
         command_str = " ".join(shlex.quote(arg) for arg in command)
 
-        # Wrap with env_setup if configured (e.g. PATH setup for remote tools)
-        if self._env_setup:
-            command_str = f"bash -c {shlex.quote(self._env_setup + ' && exec ' + command_str)}"
+        # Wrap in login shell so the remote user's full environment
+        # (.profile / .bash_profile) is loaded automatically.
+        # env_setup (if any) runs inside this shell for extra overrides.
+        setup = self._env_setup + " && " if self._env_setup else ""
+        command_str = f"bash -l -c {shlex.quote(setup + 'exec ' + command_str)}"
 
         # Create detached session with command as initial program.
         # Session dies when process exits (same as LocalTransport).
