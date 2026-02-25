@@ -172,8 +172,8 @@ class TestCreateSession:
 
             assert result is True
             create_cmd = calls[1]
-            # Should wrap with bash -c "env_setup && exec command"
-            assert "bash -c" in create_cmd
+            # Should wrap with bash -l -c "env_setup && exec command"
+            assert "bash -l -c" in create_cmd
             assert "export PATH=/opt/tools/bin:$PATH" in create_cmd
             assert "exec" in create_cmd
             assert "claude" in create_cmd
