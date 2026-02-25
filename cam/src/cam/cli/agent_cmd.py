@@ -123,7 +123,7 @@ def list(
     status: Optional[str] = typer.Option(None, "--status", help="Filter by status"),
     tool: Optional[str] = typer.Option(None, "--tool", help="Filter by tool"),
     ctx_name: Optional[str] = typer.Option(None, "--ctx", help="Filter by context"),
-    last: int = typer.Option(20, "--last", "-n", help="Show last N agents"),
+    last: int = typer.Option(50, "--last", "-n", help="Show last N agents"),
     watch: bool = typer.Option(False, "--watch", "-w", help="Auto-refresh every 2s"),
 ) -> None:
     """List agents."""
@@ -361,6 +361,44 @@ def retry(
     except Exception as e:
         print_error(f"Failed to retry agent: {e}")
         raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------------------
+# update
+# ---------------------------------------------------------------------------
+
+
+def update(
+    agent_id: str = typer.Argument(..., help="Agent ID (full or short)"),
+    name: Optional[str] = typer.Option(None, "--name", help="Set agent name"),
+    auto_confirm: Optional[bool] = typer.Option(None, "--auto-confirm", help="Enable/disable auto-confirm"),
+) -> None:
+    """Update agent properties."""
+    from cam.cli.app import state
+    from cam.cli.formatters import print_agent_detail, print_error, print_info, print_success
+
+    agent = state.agent_store.get(agent_id)
+    if not agent:
+        print_error(f"Agent not found: {agent_id}")
+        raise typer.Exit(1)
+
+    changed = False
+    if name is not None:
+        agent.task.name = name
+        print_info(f"Updated name to: {name}")
+        changed = True
+    if auto_confirm is not None:
+        agent.task.auto_confirm = auto_confirm
+        print_info(f"Updated auto_confirm to: {auto_confirm}")
+        changed = True
+
+    if not changed:
+        print_error("Nothing to update. Use --name or --auto-confirm.")
+        raise typer.Exit(1)
+
+    state.agent_store.save(agent)
+    print_success(f"Agent {str(agent.id)[:8]} updated")
+    print_agent_detail(agent)
 
 
 # ---------------------------------------------------------------------------

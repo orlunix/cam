@@ -51,7 +51,7 @@ class LocalTransport(Transport):
         Returns:
             Tuple of (success: bool, output: str)
         """
-        cmd = ["tmux", "-S", str(socket)] + args
+        cmd = ["tmux", "-u", "-S", str(socket)] + args
         logger.debug(f"Running: {' '.join(shlex.quote(arg) for arg in cmd)}")
 
         try:
@@ -115,7 +115,7 @@ class LocalTransport(Transport):
 
         # Use DEVNULL instead of PIPE for new-session: tmux forks a server
         # that inherits stdout/stderr pipes, blocking communicate() forever.
-        cmd = ["tmux", "-S", str(socket)] + create_args
+        cmd = ["tmux", "-u", "-S", str(socket)] + create_args
         logger.debug(f"Running: {' '.join(shlex.quote(arg) for arg in cmd)}")
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -338,4 +338,4 @@ class LocalTransport(Transport):
             Shell command string for attaching
         """
         socket = self._get_socket_path(session_id)
-        return f"tmux -S {shlex.quote(str(socket))} attach -t {shlex.quote(session_id)}"
+        return f"tmux -u -S {shlex.quote(str(socket))} attach -t {shlex.quote(session_id)}"

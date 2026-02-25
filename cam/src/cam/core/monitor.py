@@ -148,6 +148,10 @@ class AgentMonitor:
                             completion = self._adapter.detect_completion(self._previous_output)
                             if completion == AgentStatus.COMPLETED:
                                 return self._finalize(AgentStatus.COMPLETED, "Session ended cleanly")
+                        # If the agent never entered a working state, this is
+                        # a crash (e.g. command not found) — mark as FAILED.
+                        if not self._has_worked:
+                            return self._finalize(AgentStatus.FAILED, "TMUX session exited before agent started working")
                         return self._finalize(AgentStatus.COMPLETED, "TMUX session exited")
 
                 # --------------------------------------------------
