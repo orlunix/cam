@@ -197,6 +197,7 @@ app.command(name="attach")(agent_cmd.attach)
 app.command(name="stop")(agent_cmd.stop)
 app.command(name="kill")(agent_cmd.kill)
 app.command(name="retry")(agent_cmd.retry)
+app.command(name="update")(agent_cmd.update)
 app.command(name="prune")(agent_cmd.prune)
 
 # Task command (cam apply -f)

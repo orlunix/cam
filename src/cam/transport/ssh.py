@@ -126,7 +126,7 @@ class SSHTransport(Transport):
             Shell-safe command string for remote execution.
         """
         socket = f"/tmp/cam-sockets/{session_id}.sock"
-        parts = ["tmux", "-S", shlex.quote(socket)] + [shlex.quote(a) for a in tmux_args]
+        parts = ["tmux", "-u", "-S", shlex.quote(socket)] + [shlex.quote(a) for a in tmux_args]
         return " ".join(parts)
 
     async def create_session(self, session_id: str, command: list[str], workdir: str) -> bool:
@@ -219,7 +219,7 @@ class SSHTransport(Transport):
                 b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
                 socket = f"/tmp/cam-sockets/{session_id}.sock"
                 send_cmd = (
-                    f"bash -c 'tmux -S {shlex.quote(socket)}"
+                    f"bash -c 'tmux -u -S {shlex.quote(socket)}"
                     f" send-keys -t {shlex.quote(target)}"
                     f" -l -- \"$(echo {b64} | base64 -d)\"'"
                 )
@@ -447,5 +447,5 @@ class SSHTransport(Transport):
         else:
             ssh_parts.append(self._host)
 
-        ssh_parts.append(f"tmux -S {shlex.quote(socket)} attach -t {shlex.quote(session_id)}")
+        ssh_parts.append(f"tmux -u -S {shlex.quote(socket)} attach -t {shlex.quote(session_id)}")
         return " ".join(shlex.quote(p) if " " in p else p for p in ssh_parts)
