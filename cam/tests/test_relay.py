@@ -18,7 +18,7 @@ RELAY_DIR = Path(__file__).parent.parent / "relay"
 sys.path.insert(0, str(RELAY_DIR))
 
 import websockets
-from relay import Relay, do_handshake, make_frame, read_frame, OP_TEXT, OP_CLOSE, OP_PING
+from relay import Relay, do_ws_upgrade, make_frame, read_frame, OP_TEXT, OP_CLOSE, OP_PING
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -107,32 +107,37 @@ class TestRelayIntegration:
         """Wrong token causes immediate close after connect."""
         relay, server, port = await _start_relay()
         async with server:
-            ws = await websockets.connect(
-                f"ws://127.0.0.1:{port}/server?token=wrong"
-            )
-            # Server sends close frame — recv should raise or return close
             try:
-                msg = await asyncio.wait_for(ws.recv(), timeout=2.0)
-                # If we get here, the connection should be closing
-                assert False, "Should have received close"
-            except (websockets.exceptions.ConnectionClosed, asyncio.TimeoutError):
-                pass  # Expected: connection closed by relay
-            await ws.close()
+                ws = await websockets.connect(
+                    f"ws://127.0.0.1:{port}/server?token=wrong"
+                )
+                # If connect succeeds, recv should fail
+                try:
+                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    assert False, "Should have received close"
+                except (websockets.exceptions.ConnectionClosed, asyncio.TimeoutError):
+                    pass
+                await ws.close()
+            except (websockets.exceptions.InvalidMessage, websockets.exceptions.InvalidStatus):
+                pass  # Relay closed before handshake completed
         server.close()
 
     async def test_no_token_rejected(self):
         """Missing token causes immediate close after connect."""
         relay, server, port = await _start_relay()
         async with server:
-            ws = await websockets.connect(
-                f"ws://127.0.0.1:{port}/server"
-            )
             try:
-                await asyncio.wait_for(ws.recv(), timeout=2.0)
-                assert False, "Should have received close"
-            except (websockets.exceptions.ConnectionClosed, asyncio.TimeoutError):
-                pass
-            await ws.close()
+                ws = await websockets.connect(
+                    f"ws://127.0.0.1:{port}/server"
+                )
+                try:
+                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    assert False, "Should have received close"
+                except (websockets.exceptions.ConnectionClosed, asyncio.TimeoutError):
+                    pass
+                await ws.close()
+            except (websockets.exceptions.InvalidMessage, websockets.exceptions.InvalidStatus):
+                pass  # Relay closed before handshake completed
         server.close()
 
     async def test_server_to_client_forwarding(self):

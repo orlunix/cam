@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import time
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
@@ -18,6 +20,10 @@ from cam.api.schemas import (
 )
 
 router = APIRouter(tags=["agents"])
+
+# Output cache: {(agent_id, lines): (response_dict, timestamp)}
+_output_cache: dict[tuple[str, int], tuple[dict, float]] = {}
+_OUTPUT_CACHE_TTL = 2.0  # seconds
 
 
 async def _require_auth(request: Request):
@@ -194,8 +200,14 @@ async def get_logs(agent_id: str, request: Request, tail: int = 50):
 
 
 @router.get("/agents/{agent_id}/output")
-async def get_output(agent_id: str, request: Request, lines: int = 50):
-    """Capture live TMUX output for an agent."""
+async def get_output(
+    agent_id: str, request: Request, lines: int = 50, hash: str | None = None
+):
+    """Capture live TMUX output for an agent.
+
+    If `hash` is provided and matches the current output, returns
+    `unchanged: true` with no output body (~50 bytes vs ~7KB).
+    """
     state = await _require_auth(request)
 
     agent = await state.agent_manager.get_agent(agent_id)
@@ -205,7 +217,18 @@ async def get_output(agent_id: str, request: Request, lines: int = 50):
         )
 
     if not agent.tmux_session or agent.is_terminal():
+        _output_cache.pop((str(agent.id), lines), None)
         return {"agent_id": str(agent.id), "output": "", "active": False}
+
+    # Check cache — always stores full output + hash
+    cache_key = (str(agent.id), lines)
+    cached = _output_cache.get(cache_key)
+    if cached:
+        cached_resp, cached_ts = cached
+        if time.monotonic() - cached_ts < _OUTPUT_CACHE_TTL:
+            if hash and cached_resp.get("hash") == hash:
+                return {"agent_id": str(agent.id), "unchanged": True, "active": True, "hash": hash}
+            return cached_resp
 
     context = state.context_store.get(str(agent.context_id))
     if not context:
@@ -216,7 +239,12 @@ async def get_output(agent_id: str, request: Request, lines: int = 50):
     transport = TransportFactory.create(context.machine)
     try:
         output = await transport.capture_output(agent.tmux_session, lines=lines)
-        return {"agent_id": str(agent.id), "output": output, "active": True}
+        output_hash = hashlib.md5(output.encode()).hexdigest()[:8]
+        resp = {"agent_id": str(agent.id), "output": output, "active": True, "hash": output_hash}
+        _output_cache[cache_key] = (resp, time.monotonic())
+        if hash and output_hash == hash:
+            return {"agent_id": str(agent.id), "unchanged": True, "active": True, "hash": output_hash}
+        return resp
     except Exception:
         return {"agent_id": str(agent.id), "output": "", "active": False}
 
