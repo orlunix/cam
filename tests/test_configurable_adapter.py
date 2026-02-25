@@ -59,7 +59,7 @@ class TestLoading:
 
     def test_load_cursor_toml(self):
         adapter = ConfigurableAdapter.from_toml(CURSOR_TOML)
-        assert adapter.name == "cursor-agent"
+        assert adapter.name == "cursor"
         assert adapter.display_name == "Cursor Agent"
 
     def test_missing_name_raises(self):
@@ -434,8 +434,8 @@ class TestRegistryIntegration:
     def test_cursor_agent_registered(self):
         from cam.adapters.registry import AdapterRegistry
         reg = AdapterRegistry()
-        assert "cursor-agent" in reg
-        adapter = reg.get("cursor-agent")
+        assert "cursor" in reg
+        adapter = reg.get("cursor")
         assert adapter is not None
         assert adapter.display_name == "Cursor Agent"
 
@@ -456,13 +456,13 @@ class TestRegistryIntegration:
     def test_total_adapter_count(self):
         from cam.adapters.registry import AdapterRegistry
         reg = AdapterRegistry()
-        assert len(reg) == 5  # 4 Python + cursor-agent
+        assert len(reg) == 5  # 4 Python + cursor
 
     def test_names_includes_cursor(self):
         from cam.adapters.registry import AdapterRegistry
         reg = AdapterRegistry()
         names = reg.names()
-        assert "cursor-agent" in names
+        assert "cursor" in names
         assert "claude" in names
         assert "codex" in names
 
