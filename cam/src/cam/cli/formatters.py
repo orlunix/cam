@@ -202,13 +202,13 @@ def print_agent_list(agents: list[Agent]) -> None:
 
     table = Table(title="Agents", title_style="bold green")
     table.add_column("ID", style="dim", no_wrap=True)
+    table.add_column("Name", style="bold")
     table.add_column("Tool", style="bold")
     table.add_column("Status", no_wrap=True)
     table.add_column("State", no_wrap=True)
     table.add_column("Context", style="cyan")
     table.add_column("Transport", style="magenta")
     table.add_column("Duration", justify="right")
-    table.add_column("Task", max_width=40)
 
     for agent in agents:
         status_text = format_status(agent.status)
@@ -216,18 +216,15 @@ def print_agent_list(agents: list[Agent]) -> None:
         duration_text = format_duration(agent.duration_seconds())
         transport_label = TRANSPORT_LABELS.get(agent.transport_type, "?")
 
-        # Truncate task prompt
-        task_preview = agent.task.prompt[:37] + "..." if len(agent.task.prompt) > 40 else agent.task.prompt
-
         table.add_row(
             format_short_id(str(agent.id)),
+            agent.task.name or "",
             agent.task.tool,
             status_text,
             state_text,
             agent.context_name,
             transport_label,
             duration_text,
-            task_preview,
         )
 
     console.print(table)

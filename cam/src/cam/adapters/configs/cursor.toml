@@ -12,7 +12,7 @@
 #   Completion:       → Add a follow-up  (second → prompt = done)
 
 [adapter]
-name = "cursor-agent"
+name = "cursor"
 display_name = "Cursor Agent"
 
 [launch]
