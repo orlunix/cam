@@ -11,8 +11,10 @@ export function renderAgentDetail(container, agentId) {
   let _touching = false;
   let _deferredUpdate = null;
   let _directInput = false;
-  let cachedOutput = '';
-  let _outputHash = null;
+  // Restore last-seen output so the view renders instantly on re-entry
+  const _prevOutput = state.getOutput(agentId);
+  let cachedOutput = _prevOutput?.text || '';
+  let _outputHash = _prevOutput?.hash || null;
   let agent = (state.get('agents') || []).find(a => a.id === agentId);
   let fsOverlay = null;
 
@@ -124,9 +126,9 @@ export function renderAgentDetail(container, agentId) {
       </div>`;
   }
 
-  const render = async () => {
+  const render = async (freshAgent) => {
     try {
-      agent = await api.getAgent(agentId);
+      agent = freshAgent || await api.getAgent(agentId);
     } catch (e) {
       container.innerHTML = '<div class="error-state">Agent not found</div>';
       return;
@@ -222,7 +224,9 @@ export function renderAgentDetail(container, agentId) {
 
     const pane = container.querySelector('#output-pane');
     if (pane && cachedOutput) {
-      pane.textContent = cachedOutput;
+      const shortened = _shortenBoxLines(cachedOutput, pane);
+      pane.textContent = shortened;
+      cachedOutput = shortened;
       if (autoScroll) pane.scrollTop = pane.scrollHeight;
     }
 
@@ -330,13 +334,26 @@ export function renderAgentDetail(container, agentId) {
     const sendBtn = root.querySelector('#send-btn');
     if (sendBtn && inputText) {
       let composing = false;
+      let sending = false;
       inputText.addEventListener('compositionstart', () => { composing = true; });
       inputText.addEventListener('compositionend', () => { composing = false; });
       const doSend = async () => {
         const text = inputText.value;
-        if (!text) return;
-        try { await api.sendInput(agentId, text); inputText.value = ''; }
-        catch (e) { state.toast(e.message, 'error'); }
+        if (!text || sending) return;
+        // Optimistic: clear input and disable button immediately
+        inputText.value = '';
+        sending = true;
+        sendBtn.disabled = true;
+        sendBtn.textContent = '...';
+        try { await api.sendInput(agentId, text); }
+        catch (e) {
+          // Restore text on failure so user can retry
+          inputText.value = text;
+          state.toast(e.message, 'error');
+        }
+        sending = false;
+        sendBtn.disabled = false;
+        sendBtn.textContent = 'Send';
       };
       sendBtn.addEventListener('click', () => setTimeout(doSend, 50));
       inputText.addEventListener('keydown', (e) => {
@@ -382,17 +399,21 @@ export function renderAgentDetail(container, agentId) {
       });
     }
 
-    root.querySelectorAll('.btn-quick[data-input]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        try { await api.sendInput(agentId, btn.dataset.input, false); }
-        catch (e) { state.toast(e.message, 'error'); }
+    // Quick-action buttons: fire-and-forget with brief disable to prevent double-tap
+    function quickSend(btn, fn) {
+      btn.addEventListener('click', () => {
+        if (btn.disabled) return;
+        btn.disabled = true;
+        btn.style.opacity = '0.4';
+        fn().catch(e => state.toast(e.message, 'error'))
+          .finally(() => { btn.disabled = false; btn.style.opacity = ''; });
       });
+    }
+    root.querySelectorAll('.btn-quick[data-input]').forEach(btn => {
+      quickSend(btn, () => api.sendInput(agentId, btn.dataset.input, false));
     });
     root.querySelectorAll('.btn-quick[data-key]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        try { await api.sendKey(agentId, btn.dataset.key); }
-        catch (e) { state.toast(e.message, 'error'); }
-      });
+      quickSend(btn, () => api.sendKey(agentId, btn.dataset.key));
     });
 
     // File upload
@@ -558,17 +579,27 @@ export function renderAgentDetail(container, agentId) {
 
   // Shorten box-drawing horizontal lines to fit pane width
   const _boxCharRe = /[─━═╌╍┄┅┈┉╶╴╸╺]+/g;
+  let _cachedCharW = 0;
+  let _cachedPaneW = 0;
+  function _measureCharW(pane) {
+    if (!pane) return 7.2;
+    const pw = pane.clientWidth;
+    if (_cachedCharW && pw === _cachedPaneW) return _cachedCharW;
+    const probe = document.createElement('span');
+    probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;font:inherit;';
+    probe.textContent = '──────────'; // 10 box chars
+    pane.appendChild(probe);
+    _cachedCharW = probe.offsetWidth / 10 || 7.2;
+    pane.removeChild(probe);
+    _cachedPaneW = pw;
+    return _cachedCharW;
+  }
+  // Invalidate cached charW on window resize
+  const _onResize = () => { _cachedPaneW = 0; };
+  window.addEventListener('resize', _onResize);
+
   function _shortenBoxLines(text, pane) {
-    // Measure actual char width using a probe element
-    let charW = 7.2;
-    if (pane) {
-      const probe = document.createElement('span');
-      probe.style.cssText = 'position:absolute;visibility:hidden;white-space:pre;font:inherit;';
-      probe.textContent = '──────────'; // 10 box chars
-      pane.appendChild(probe);
-      charW = probe.offsetWidth / 10 || 7.2;
-      pane.removeChild(probe);
-    }
+    const charW = _measureCharW(pane);
     const contentW = pane ? (pane.clientWidth - 24) : 300; // subtract left+right padding (12+12)
     const maxCols = Math.floor(contentW / charW);
     if (maxCols >= 100) return text;
@@ -588,7 +619,10 @@ export function renderAgentDetail(container, agentId) {
 
   function updatePane(pane, newText) {
     // Only touch DOM if content actually changed — avoids scroll glitch
-    const trimmed = _shortenBoxLines(newText.replace(/\n([ \t]*\n)*[ \t]*$/, '\n'), pane);
+    const cleaned = newText.replace(/\n([ \t]*\n)*[ \t]*$/, '\n');
+    // Cache raw (unshortenened) output so re-entry can re-shorten for current pane width
+    state.setOutput(agentId, cleaned, _outputHash);
+    const trimmed = _shortenBoxLines(cleaned, pane);
     if (cachedOutput === trimmed) return;
     // Defer DOM update while user is actively touching/scrolling
     if (_touching) {
@@ -667,7 +701,9 @@ export function renderAgentDetail(container, agentId) {
   }
 
   // Initial render + auto-refresh
-  render().then(() => {
+  // Pass cached agent from state to avoid blocking on a network fetch —
+  // the page layout appears instantly, output loads in background.
+  render(agent).then(() => {
     if (['running', 'starting', 'pending'].includes(agent?.status)) {
       outputTimer = setInterval(loadOutput, 2000);
     }
@@ -676,8 +712,7 @@ export function renderAgentDetail(container, agentId) {
   const unsub = state.subscribe((data) => {
     const updated = (data.agents || []).find(a => a.id === agentId);
     if (updated && updated.status !== agent?.status) {
-      agent = updated;
-      render();
+      render(updated);
     }
   });
 
@@ -686,6 +721,7 @@ export function renderAgentDetail(container, agentId) {
     clearInterval(elapsedTimer);
     contentEl.classList.remove('agent-detail-active');
     closeFullscreen();
+    window.removeEventListener('resize', _onResize);
     if (_vvCleanup) _vvCleanup();
     unsub();
   };
