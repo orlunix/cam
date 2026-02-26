@@ -15,6 +15,7 @@ from pathlib import Path
 
 from cam.constants import SOCKET_DIR
 from cam.transport.base import Transport
+from cam.utils.ansi import strip_ansi
 
 logger = logging.getLogger(__name__)
 
@@ -245,11 +246,12 @@ class SSHTransport(Transport):
         success, _ = await self._run_ssh(cmd)
         return success
 
-    async def capture_output(self, session_id: str, lines: int = 50) -> str:
+    async def capture_output(self, session_id: str, lines: int = 100) -> str:
         """Capture output from a remote TMUX session.
 
         If the primary capture returns near-empty content (e.g. during
         Claude's alternate screen buffer), falls back to the -a flag.
+        ANSI escape sequences are stripped at capture level (matches LocalTransport).
         """
         target = f"{session_id}:0.0"
         capture_cmd = self._remote_tmux_cmd(session_id, [
@@ -269,7 +271,7 @@ class SSHTransport(Transport):
             if alt_success and len(alt_output.strip()) > len(output.strip()):
                 output = alt_output
 
-        return output
+        return strip_ansi(output)
 
     async def session_exists(self, session_id: str) -> bool:
         """Check if a remote TMUX session is alive."""

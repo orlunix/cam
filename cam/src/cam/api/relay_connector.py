@@ -105,9 +105,6 @@ async def _handle_http_request(ws, req_id: str, app, method: str, path: str, hea
 
 async def _dispatch_http(app, method: str, path: str, headers: dict, body: str) -> dict:
     """Dispatch an HTTP request through the FastAPI ASGI app and return the response."""
-    from starlette.testclient import TestClient
-    import io
-
     # Use ASGI transport for in-process dispatch
     scope = {
         "type": "http",

@@ -13,7 +13,13 @@ class AppState {
       toast: null,
     };
     this._listeners = [];
+    // Per-agent output cache — survives view navigation, cleared on page reload.
+    // Keyed by agent ID, stores { text, hash } so detail view renders instantly.
+    this._outputCache = new Map();
   }
+
+  getOutput(agentId) { return this._outputCache.get(agentId) || null; }
+  setOutput(agentId, text, hash) { this._outputCache.set(agentId, { text, hash }); }
 
   get(key) {
     return this._data[key];
