@@ -199,10 +199,13 @@ class ConfigurableAdapter(ToolAdapter):
 
     def should_auto_confirm(self, output: str) -> ConfirmAction | None:
         """Check confirm rules in order, return first match."""
-        recent = output[-500:] if len(output) > 500 else output
         if self._strip_ansi:
             from cam.utils.ansi import strip_ansi
-            recent = strip_ansi(recent)
+            output = strip_ansi(output)
+        # Strip trailing whitespace per line (SSH captures pad lines to
+        # terminal width), then take last 500 chars for pattern matching.
+        clean = "\n".join(line.rstrip() for line in output.splitlines()).rstrip()
+        recent = clean[-500:] if len(clean) > 500 else clean
 
         for pattern, action in self._confirm_rules:
             if pattern.search(recent):
