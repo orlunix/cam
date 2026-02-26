@@ -139,64 +139,97 @@ export function renderDashboard(container) {
     contextSel.innerHTML = `<option value="">All contexts</option>${contexts.map(c => `<option value="${c}">${c}</option>`).join('')}`;
     contextSel.value = curCtx;
 
-    // Agent list
+    // Agent list — incremental DOM update to avoid full rebuild flicker
     const listEl = container.querySelector('#agent-list-container');
-    listEl.innerHTML = `
-      <div class="agent-list">
-        ${filtered.length === 0
-          ? '<div class="empty-state">No agents yet. Tap + to start one.</div>'
-          : filtered.map(agent => {
-              const prompt = (agent.prompt || '').slice(0, 80);
-              const time = timeSince(agent.started_at);
-              const canDelete = TERMINAL.includes(agent.status);
-              const isEditing = agent.id === editingId;
-              return `
-              <div class="agent-card${isEditing ? ' editing' : ''}" data-id="${agent.id}">
-                <div class="agent-card-header">
-                  ${statusIcon(agent.status)}
-                  <span class="agent-name">${escapeHtml(agent.task_name || agent.id.slice(0, 8))}</span>
-                  <span class="badge badge-${agent.status}">${agent.status}</span>
-                  <button class="btn-sm btn-secondary edit-agent" data-id="${agent.id}" title="Edit">Edit</button>
-                  ${canDelete ? `<button class="btn-delete-card" data-delete-id="${agent.id}" title="Delete">&times;</button>` : ''}
-                </div>
-                <div class="agent-card-meta">
-                  <span class="agent-tool">${agent.tool}</span>
-                  ${agent.context_name ? `<span class="agent-ctx">${agent.context_name}</span>` : ''}
-                  <span class="agent-time">${time}</span>
-                </div>
-                ${prompt ? `<div class="agent-card-prompt">${escapeHtml(prompt)}</div>` : ''}
-              </div>`;
-            }).join('')}
-      </div>
-    `;
+    const existingList = listEl.querySelector('.agent-list');
+    const existingIds = existingList
+      ? [...existingList.querySelectorAll('.agent-card')].map(el => el.dataset.id)
+      : [];
+    const filteredIds = filtered.map(a => a.id);
 
-    // Card click → navigate to detail
-    listEl.querySelectorAll('.agent-card').forEach(el => {
-      el.addEventListener('click', () => navigate(`/agent/${el.dataset.id}`));
-    });
+    // Check if we can do an incremental update (same set of agent IDs in same order)
+    const canPatch = existingList
+      && existingIds.length === filteredIds.length
+      && existingIds.every((id, i) => id === filteredIds[i]);
 
-    // Edit button
-    listEl.querySelectorAll('.edit-agent').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const agent = agents.find(a => a.id === btn.dataset.id);
-        if (agent) fillFormForEdit(agent);
+    if (canPatch) {
+      // In-place update: patch badge, meta, and time for each card
+      filtered.forEach(agent => {
+        const card = existingList.querySelector(`.agent-card[data-id="${agent.id}"]`);
+        if (!card) return;
+        const badge = card.querySelector('.badge');
+        if (badge && badge.textContent !== agent.status) {
+          badge.textContent = agent.status;
+          badge.className = `badge badge-${agent.status}`;
+        }
+        const dot = card.querySelector('.dot');
+        if (dot && dot.className !== `dot ${agent.status}`) {
+          dot.className = `dot ${agent.status}`;
+        }
+        const timeEl = card.querySelector('.agent-time');
+        if (timeEl) timeEl.textContent = timeSince(agent.started_at);
+        const nameEl = card.querySelector('.agent-name');
+        const name = agent.task_name || agent.id.slice(0, 8);
+        if (nameEl && nameEl.textContent !== name) nameEl.textContent = name;
+        card.classList.toggle('editing', agent.id === editingId);
       });
-    });
+    } else {
+      // Full rebuild when agent count/order changed
+      listEl.innerHTML = `
+        <div class="agent-list">
+          ${filtered.length === 0
+            ? '<div class="empty-state">No agents yet. Tap + to start one.</div>'
+            : filtered.map(agent => {
+                const prompt = (agent.prompt || '').slice(0, 80);
+                const time = timeSince(agent.started_at);
+                const canDelete = TERMINAL.includes(agent.status);
+                const isEditing = agent.id === editingId;
+                return `
+                <div class="agent-card${isEditing ? ' editing' : ''}" data-id="${agent.id}">
+                  <div class="agent-card-header">
+                    ${statusIcon(agent.status)}
+                    <span class="agent-name">${escapeHtml(agent.task_name || agent.id.slice(0, 8))}</span>
+                    <span class="badge badge-${agent.status}">${agent.status}</span>
+                    <button class="btn-sm btn-secondary edit-agent" data-id="${agent.id}" title="Edit">Edit</button>
+                    ${canDelete ? `<button class="btn-delete-card" data-delete-id="${agent.id}" title="Delete">&times;</button>` : ''}
+                  </div>
+                  <div class="agent-card-meta">
+                    <span class="agent-tool">${agent.tool}</span>
+                    ${agent.context_name ? `<span class="agent-ctx">${agent.context_name}</span>` : ''}
+                    <span class="agent-time">${time}</span>
+                  </div>
+                  ${prompt ? `<div class="agent-card-prompt">${escapeHtml(prompt)}</div>` : ''}
+                </div>`;
+              }).join('')}
+        </div>
+      `;
 
-    // Delete button
-    listEl.querySelectorAll('.btn-delete-card').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        if (!confirm('Delete this agent from history?')) return;
-        try {
-          await api.deleteAgentHistory(btn.dataset.deleteId);
-          state.toast('Agent deleted', 'success');
-          const resp = await api.listAgents({ limit: 50 });
-          state.set('agents', resp.agents || []);
-        } catch (err) { state.toast(err.message, 'error'); }
+      // Wire event listeners only on full rebuild
+      listEl.querySelectorAll('.agent-card').forEach(el => {
+        el.addEventListener('click', () => navigate(`/agent/${el.dataset.id}`));
       });
-    });
+
+      listEl.querySelectorAll('.edit-agent').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const agent = agents.find(a => a.id === btn.dataset.id);
+          if (agent) fillFormForEdit(agent);
+        });
+      });
+
+      listEl.querySelectorAll('.btn-delete-card').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          if (!confirm('Delete this agent from history?')) return;
+          try {
+            await api.deleteAgentHistory(btn.dataset.deleteId);
+            state.toast('Agent deleted', 'success');
+            const resp = await api.listAgents({ limit: 50 });
+            state.set('agents', resp.agents || []);
+          } catch (err) { state.toast(err.message, 'error'); }
+        });
+      });
+    }
   }
 
   function fillFormForEdit(agent) {
