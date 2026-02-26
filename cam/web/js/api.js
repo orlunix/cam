@@ -265,6 +265,13 @@ export class CamApi {
 
       ws.onerror = () => { if (!opened) reject(new Error('Relay connect failed')); };
       ws.onclose = () => {
+        // Reject all pending requests — their responses will never arrive
+        this._requestMap.forEach(({ reject: rej, timer }) => {
+          clearTimeout(timer);
+          rej(new Error('Relay connection lost'));
+        });
+        this._requestMap.clear();
+
         if (this.mode === 'relay') {
           this._scheduleReconnect();
         }
