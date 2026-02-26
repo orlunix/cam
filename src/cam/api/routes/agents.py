@@ -221,7 +221,9 @@ async def get_output(
         )
 
     if not agent.tmux_session or agent.is_terminal():
-        _output_cache.pop((str(agent.id), lines), None)
+        cache_key = (str(agent.id), lines)
+        _output_cache.pop(cache_key, None)
+        _output_locks.pop(cache_key, None)
         return {"agent_id": str(agent.id), "output": "", "active": False}
 
     # Check cache — always stores full output + hash
@@ -289,6 +291,9 @@ async def get_full_output(
     log_path = LOG_DIR / "output" / f"{agent.id}.log"
 
     # Try local log file first (works for local transport)
+    # Always render from the start — pyte needs the full terminal byte
+    # stream to correctly reconstruct screen state (cursor, clears, etc.).
+    # The offset is only used to detect whether the file has grown.
     if log_path.exists():
         try:
             file_size = log_path.stat().st_size

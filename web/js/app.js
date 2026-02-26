@@ -97,6 +97,10 @@ async function init() {
 
   api.configure(cfg);
 
+  // Show cached data immediately so the UI is never empty on load.
+  // Network fetch will replace it in the background.
+  _loadFromCache();
+
   // Connect (tries direct first, then relay)
   try {
     const mode = await api.connect();
@@ -115,6 +119,25 @@ async function init() {
 
   // Periodic refresh
   setInterval(refreshAgents, 10000);
+}
+
+function _loadFromCache() {
+  try {
+    const agentsRaw = localStorage.getItem('cam_cache:/api/agents?limit=50');
+    if (agentsRaw) {
+      const { data, ts } = JSON.parse(agentsRaw);
+      if (Date.now() - ts < 300_000 && data?.agents) {
+        state.set('agents', data.agents);
+      }
+    }
+    const ctxRaw = localStorage.getItem('cam_cache:/api/contexts');
+    if (ctxRaw) {
+      const { data, ts } = JSON.parse(ctxRaw);
+      if (Date.now() - ts < 300_000 && data?.contexts) {
+        state.set('contexts', data.contexts);
+      }
+    }
+  } catch {}
 }
 
 async function loadData() {
@@ -136,8 +159,19 @@ async function loadData() {
   }
 }
 
+let _idlePollCount = 0;
 async function refreshAgents() {
   if (state.get('connectionMode') === 'disconnected') return;
+  // When no agents are active, poll less frequently (every 3rd tick = ~30s)
+  // to save bandwidth while still discovering new agents from CLI.
+  const current = state.get('agents') || [];
+  const hasActive = current.length === 0 || current.some(a => ['running', 'starting', 'pending'].includes(a.status));
+  if (!hasActive) {
+    _idlePollCount++;
+    if (_idlePollCount % 3 !== 0) return;
+  } else {
+    _idlePollCount = 0;
+  }
   try {
     // Only fetch running agents — completed/failed agents don't change.
     // This reduces payload from ~39 agents to ~2-3 through the relay tunnel.
