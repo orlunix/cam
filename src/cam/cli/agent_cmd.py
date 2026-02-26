@@ -26,6 +26,7 @@ def run(
     retry: int = typer.Option(0, "--retry", help="Retry count on failure"),
     name: Optional[str] = typer.Option(None, "--name", help="Human-readable name"),
     detach: bool = typer.Option(False, "--detach", help="Don't follow output"),
+    auto_confirm: Optional[bool] = typer.Option(None, "--auto-confirm/--no-auto-confirm", help="Auto-confirm prompts (also enables interactive mode)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show plan without executing"),
 ) -> None:
     """Start a coding agent on a task."""
@@ -75,6 +76,7 @@ def run(
         context=ctx or context.name,
         timeout=timeout_seconds,
         retry=RetryPolicy(max_retries=retry),
+        auto_confirm=auto_confirm,
     )
 
     # Validate tool exists
