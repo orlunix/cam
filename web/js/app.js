@@ -139,8 +139,29 @@ async function loadData() {
 async function refreshAgents() {
   if (state.get('connectionMode') === 'disconnected') return;
   try {
-    const resp = await api.listAgents({ limit: 50 });
-    state.set('agents', resp.agents || []);
+    // Only fetch running agents — completed/failed agents don't change.
+    // This reduces payload from ~39 agents to ~2-3 through the relay tunnel.
+    const resp = await api.listAgents({ status: 'running', limit: 50 });
+    const running = resp.agents || [];
+    const current = state.get('agents') || [];
+
+    // Merge: update running agents in place, add new ones
+    const map = new Map(current.map(a => [a.id, a]));
+    for (const a of running) map.set(a.id, a);
+
+    // If an agent was running in our state but isn't in the running list,
+    // it likely completed — do a full refresh to catch the status change.
+    const stale = current.some(a =>
+      ['running', 'starting', 'pending'].includes(a.status) &&
+      !running.find(r => r.id === a.id)
+    );
+    if (stale) {
+      const full = await api.listAgents({ limit: 50 });
+      state.set('agents', full.agents || []);
+      return;
+    }
+
+    state.set('agents', [...map.values()]);
   } catch {}
 }
 

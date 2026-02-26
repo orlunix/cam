@@ -125,20 +125,25 @@ class ClaudeAdapter(ToolAdapter):
     def should_auto_confirm(self, output: str) -> ConfirmAction | None:
         """Check if output contains a Claude permission prompt.
 
-        Strips ANSI codes before pattern matching. Checks the last ~500
-        characters for numbered menu prompts.
+        Strips ANSI codes and trailing whitespace per line before matching.
+        The rstrip handles SSH captures where each line is padded to terminal
+        width with spaces, which would otherwise push prompt text outside
+        a fixed-size tail window.
 
         Args:
             output: Recent TMUX output
 
         Returns:
-            ConfirmAction(response="1", send_enter=False) or None
+            ConfirmAction with response/send_enter, or None
         """
-        recent = output[-500:] if len(output) > 500 else output
-        clean = strip_ansi(recent)
+        clean = strip_ansi(output)
+        # Strip trailing whitespace per line + trailing blank lines,
+        # then take last 500 chars for pattern matching.
+        clean = "\n".join(line.rstrip() for line in clean.splitlines()).rstrip()
+        recent = clean[-500:] if len(clean) > 500 else clean
 
         for pattern, action in self._AUTO_CONFIRM_PATTERNS:
-            if pattern.search(clean):
+            if pattern.search(recent):
                 return action
 
         return None
