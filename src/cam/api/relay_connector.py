@@ -45,17 +45,23 @@ async def relay_loop(
         max_delay: Maximum reconnect delay
     """
     import websockets
+    from uuid import uuid4
 
     delay = reconnect_delay
-    url = f"{relay_url}/server"
+    connect_count = 0
+    rapid_disconnect_count = 0  # Track rapid disconnects to detect server conflicts
+    sid = str(uuid4())  # Unique session ID — relay uses this to distinguish reconnects from conflicts
+    url = f"{relay_url}/server?sid={sid}"
     if relay_token:
-        url += f"?token={relay_token}"
+        url += f"&token={relay_token}"
 
     while True:
         try:
             logger.info("Connecting to relay: %s", relay_url)
             async with websockets.connect(url, compression=None, proxy=None, ping_interval=30, ping_timeout=60, close_timeout=10, max_size=10_000_000) as ws:
-                logger.info("Connected to relay successfully")
+                connect_count += 1
+                connected_at = asyncio.get_event_loop().time()
+                logger.info("[CONNECT #%d] Connected to relay successfully", connect_count)
                 delay = reconnect_delay  # Reset on successful connect
 
                 async for raw_message in ws:
@@ -83,11 +89,36 @@ async def relay_loop(
                         _handle_http_request(ws, req_id, app, method, path, headers, body)
                     )
 
+                # Connection closed — check if it was rapid (server conflict indicator)
+                uptime = asyncio.get_event_loop().time() - connected_at
+                if uptime < 15:
+                    rapid_disconnect_count += 1
+                    if rapid_disconnect_count >= 3:
+                        logger.error(
+                            "Relay connection keeps dropping within %.0fs — "
+                            "another cam serve instance may be connected to the same relay. "
+                            "Only one server per relay is supported.",
+                            uptime,
+                        )
+                else:
+                    rapid_disconnect_count = 0
+
         except asyncio.CancelledError:
             logger.info("Relay connector cancelled")
             return
         except Exception as e:
-            logger.warning("Relay connection error: %s (reconnecting in %.0fs)", e, delay)
+            reason = getattr(e, 'reason', '') or ''
+            code = getattr(e, 'code', 0) or 0
+            if reason == 'server_slot_occupied' or code == 4409:
+                logger.error(
+                    "Relay rejected connection: another cam serve instance is already connected. "
+                    "Only one server per relay is supported. Will retry in 60s."
+                )
+                delay = 60.0  # Long backoff — don't fight the other instance
+            elif reason:
+                logger.warning("Relay connection closed: %s (reconnecting in %.0fs)", reason, delay)
+            else:
+                logger.warning("Relay connection error: %s (reconnecting in %.0fs)", e, delay)
 
         await asyncio.sleep(delay)
         delay = min(delay * 2, max_delay)
