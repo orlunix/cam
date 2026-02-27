@@ -169,6 +169,20 @@ async def delete_context(name_or_id: str, request: Request):
     """Remove a context."""
     state = await _require_auth(request)
 
+    # Resolve context before deletion so we can clean up agent caches
+    context = state.context_store.get(name_or_id)
+    if not context:
+        raise HTTPException(
+            status_code=404, detail=f"Context not found: {name_or_id}"
+        )
+
+    # Clean caches for all agents belonging to this context
+    from cam.api.routes.agents import cleanup_agent_caches
+
+    agents = state.agent_store.list(context_id=str(context.id))
+    for agent in agents:
+        cleanup_agent_caches(str(agent.id))
+
     removed = state.context_store.remove(name_or_id)
     if not removed:
         raise HTTPException(

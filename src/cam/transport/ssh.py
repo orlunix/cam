@@ -271,7 +271,7 @@ class SSHTransport(Transport):
             if alt_success and len(alt_output.strip()) > len(output.strip()):
                 output = alt_output
 
-        return strip_ansi(output)
+        return strip_ansi(output).rstrip()
 
     async def session_exists(self, session_id: str) -> bool:
         """Check if a remote TMUX session is alive."""

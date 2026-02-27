@@ -30,6 +30,27 @@ _OUTPUT_CACHE_TTL = 2.0  # seconds
 _output_locks: dict[tuple[str, int], asyncio.Lock] = {}
 
 
+def _cleanup_output_caches(agent_id: str) -> None:
+    """Remove output cache and lock entries for a given agent ID."""
+    keys_to_remove = [k for k in _output_cache if k[0] == agent_id]
+    for k in keys_to_remove:
+        _output_cache.pop(k, None)
+        _output_locks.pop(k, None)
+
+
+def cleanup_agent_caches(agent_id: str) -> None:
+    """Remove all cached entries for a given agent ID.
+
+    Use this when an agent is deleted or stopped — not for routine
+    terminal checks, which should use _cleanup_output_caches() instead
+    to avoid clearing the WS status cache prematurely.
+    """
+    from cam.api.ws import _agent_status_cache
+
+    _cleanup_output_caches(agent_id)
+    _agent_status_cache.pop(agent_id, None)
+
+
 async def _require_auth(request: Request):
     """Validate auth token from request headers."""
     state = request.app.state.server
@@ -158,6 +179,7 @@ async def stop_agent(agent_id: str, request: Request, force: bool = False):
 
     try:
         await state.agent_manager.stop_agent(str(agent.id), graceful=not force)
+        cleanup_agent_caches(str(agent.id))
         return {"ok": True, "agent_id": str(agent.id)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -182,6 +204,7 @@ async def delete_agent_history(agent_id: str, request: Request):
     deleted = state.agent_store.delete(str(agent.id))
     if not deleted:
         raise HTTPException(status_code=404, detail="Agent not found")
+    cleanup_agent_caches(str(agent.id))
     return {"ok": True, "agent_id": str(agent.id)}
 
 
@@ -221,9 +244,7 @@ async def get_output(
         )
 
     if not agent.tmux_session or agent.is_terminal():
-        cache_key = (str(agent.id), lines)
-        _output_cache.pop(cache_key, None)
-        _output_locks.pop(cache_key, None)
+        _cleanup_output_caches(str(agent.id))
         return {"agent_id": str(agent.id), "output": "", "active": False}
 
     # Check cache — always stores full output + hash
