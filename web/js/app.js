@@ -1,11 +1,11 @@
-import { api } from './api.js?v=41';
-import { state } from './state.js?v=41';
-import { renderDashboard } from './views/dashboard.js?v=41';
-import { renderAgentDetail } from './views/agent-detail.js?v=41';
-import { renderStartAgent } from './views/start-agent.js?v=41';
-import { renderContexts } from './views/contexts.js?v=41';
-import { renderSettings } from './views/settings.js?v=41';
-import { renderFileBrowser } from './views/file-browser.js?v=41';
+import { api } from './api.js?v=42';
+import { state } from './state.js?v=42';
+import { renderDashboard } from './views/dashboard.js?v=42';
+import { renderAgentDetail } from './views/agent-detail.js?v=42';
+import { renderStartAgent } from './views/start-agent.js?v=42';
+import { renderContexts } from './views/contexts.js?v=42';
+import { renderSettings } from './views/settings.js?v=42';
+import { renderFileBrowser } from './views/file-browser.js?v=42';
 
 // --- Router ---
 
@@ -102,6 +102,19 @@ async function init() {
   _loadFromCache();
 
   // Connect (tries direct first, then relay)
+  await _connectWithRetry(cfg);
+
+  // Periodic refresh — also retries connection if disconnected
+  setInterval(() => {
+    if (state.get('connectionMode') === 'disconnected') {
+      _connectWithRetry(cfg);
+    } else {
+      refreshAgents();
+    }
+  }, 10000);
+}
+
+async function _connectWithRetry(cfg) {
   try {
     const mode = await api.connect();
     state.set('connectionMode', mode);
@@ -114,26 +127,26 @@ async function init() {
       location.hash = '#/settings';
     }
   } catch (e) {
-    console.error('Init connect error:', e);
+    console.error('Connect error:', e);
+    state.set('connectionMode', 'disconnected');
+    updateConnectionDot('disconnected');
   }
-
-  // Periodic refresh
-  setInterval(refreshAgents, 10000);
 }
 
 function _loadFromCache() {
   try {
+    const DISPLAY_TTL = 1_800_000; // 30 min — stale but better than blank
     const agentsRaw = localStorage.getItem('cam_cache:/api/agents?limit=50');
     if (agentsRaw) {
       const { data, ts } = JSON.parse(agentsRaw);
-      if (Date.now() - ts < 300_000 && data?.agents) {
+      if (Date.now() - ts < DISPLAY_TTL && data?.agents) {
         state.set('agents', data.agents);
       }
     }
     const ctxRaw = localStorage.getItem('cam_cache:/api/contexts');
     if (ctxRaw) {
       const { data, ts } = JSON.parse(ctxRaw);
-      if (Date.now() - ts < 300_000 && data?.contexts) {
+      if (Date.now() - ts < DISPLAY_TTL && data?.contexts) {
         state.set('contexts', data.contexts);
       }
     }

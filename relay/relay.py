@@ -172,6 +172,7 @@ class Relay:
         self._token = token
         self._server_writer: asyncio.StreamWriter | None = None
         self._server_reader: asyncio.StreamReader | None = None
+        self._server_sid: str | None = None  # session ID of connected server
         self._clients: dict[int, asyncio.StreamWriter] = {}
         self._client_id = 0
         self._web_root = Path(web_root) if web_root else None
@@ -232,7 +233,8 @@ class Relay:
             await do_ws_upgrade(writer, ws_key)
 
             if path == "/server":
-                await self._handle_server(reader, writer, peer)
+                sid = query.get("sid", [None])[0]
+                await self._handle_server(reader, writer, peer, sid)
             elif path == "/client":
                 await self._handle_client(reader, writer, peer)
             else:
@@ -336,7 +338,7 @@ class Relay:
     async def _serve_static(self, writer: asyncio.StreamWriter, method: str, path: str) -> None:
         """Serve a static file from web_root."""
         if not self._web_root:
-            writer.write(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+            writer.write(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             await writer.drain()
             writer.close()
             return
@@ -352,7 +354,7 @@ class Relay:
         try:
             file_path.relative_to(self._web_root.resolve())
         except ValueError:
-            writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+            writer.write(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             await writer.drain()
             writer.close()
             return
@@ -363,7 +365,7 @@ class Relay:
             if index.is_file() and "." not in clean.split("/")[-1]:
                 file_path = index
             else:
-                writer.write(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                writer.write(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                 await writer.drain()
                 writer.close()
                 return
@@ -372,27 +374,58 @@ class Relay:
         if not content_type:
             content_type = "application/octet-stream"
 
+        # Versioned assets (?v=XX) can be cached long-term; others use no-cache
+        if "?" in path and ("v=" in path or "hash=" in path):
+            cache_control = "public, max-age=86400, immutable"
+        else:
+            cache_control = "no-cache"
+
         try:
             data = file_path.read_bytes()
             header = (
                 f"HTTP/1.1 200 OK\r\n"
                 f"Content-Type: {content_type}\r\n"
                 f"Content-Length: {len(data)}\r\n"
-                f"Cache-Control: no-cache\r\n"
+                f"Cache-Control: {cache_control}\r\n"
+                f"Connection: close\r\n"
                 f"\r\n"
             )
             writer.write(header.encode() + data)
             await writer.drain()
         except Exception as e:
             log.warning("Error serving %s: %s", file_path, e)
-            writer.write(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n")
+            writer.write(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             await writer.drain()
         finally:
             writer.close()
 
-    async def _handle_server(self, reader, writer, peer) -> None:
+    async def _handle_server(self, reader, writer, peer, sid: str | None = None) -> None:
         if self._server_writer is not None:
-            log.warning("Server reconnecting, dropping old connection")
+            # Same sid (or no sid) → reconnect from the same instance, allow replacement
+            # Different sid → different instance, reject the newcomer
+            if sid and self._server_sid and sid != self._server_sid:
+                log.warning(
+                    "Server slot occupied by sid=%s, rejecting new sid=%s from %s",
+                    self._server_sid[:8], sid[:8], peer,
+                )
+                try:
+                    reason = b"server_slot_occupied"
+                    close_payload = struct.pack("!H", 4409) + reason
+                    writer.write(make_frame(OP_CLOSE, close_payload))
+                    await asyncio.wait_for(writer.drain(), timeout=2.0)
+                except Exception:
+                    pass
+                writer.close()
+                return
+
+            log.info("Server reconnecting (same instance), replacing old connection")
+            try:
+                reason = b"replaced by reconnect"
+                close_payload = struct.pack("!H", 1000) + reason
+                self._server_writer.write(make_frame(OP_CLOSE, close_payload))
+                await asyncio.wait_for(self._server_writer.drain(), timeout=2.0)
+            except Exception:
+                pass
             try:
                 self._server_writer.close()
             except Exception:
@@ -400,7 +433,8 @@ class Relay:
 
         self._server_writer = writer
         self._server_reader = reader
-        log.info("Server connected from %s", peer)
+        self._server_sid = sid
+        log.info("Server connected from %s (sid=%s)", peer, sid[:8] if sid else "none")
 
         try:
             while True:
@@ -472,6 +506,7 @@ class Relay:
             if self._server_writer is writer:
                 self._server_writer = None
                 self._server_reader = None
+                self._server_sid = None
             log.info("Server disconnected")
             writer.close()
 

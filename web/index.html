@@ -11,6 +11,14 @@
   <link rel="icon" href="/assets/icon-192.png">
   <link rel="apple-touch-icon" href="/assets/icon-192.png">
   <link rel="stylesheet" href="/css/style.css?v=35">
+  <link rel="modulepreload" href="/js/api.js?v=42">
+  <link rel="modulepreload" href="/js/state.js?v=42">
+  <link rel="modulepreload" href="/js/views/dashboard.js?v=42">
+  <link rel="modulepreload" href="/js/views/agent-detail.js?v=42">
+  <link rel="modulepreload" href="/js/views/start-agent.js?v=42">
+  <link rel="modulepreload" href="/js/views/contexts.js?v=42">
+  <link rel="modulepreload" href="/js/views/settings.js?v=42">
+  <link rel="modulepreload" href="/js/views/file-browser.js?v=42">
 </head>
 <body>
   <div id="app">
@@ -39,7 +47,11 @@
         <span id="conn-status" class="conn-dot disconnected"></span>
       </div>
     </header>
-    <main id="content"></main>
+    <main id="content">
+      <div id="loading-indicator" style="display:flex;align-items:center;justify-content:center;height:60vh;color:#888;font-size:14px">
+        <span>Connecting...</span>
+      </div>
+    </main>
   </div>
 
   <script>
@@ -52,6 +64,6 @@
       }
     });
   </script>
-  <script type="module" src="/js/app.js?v=41"></script>
+  <script type="module" src="/js/app.js?v=42"></script>
 </body>
 </html>
