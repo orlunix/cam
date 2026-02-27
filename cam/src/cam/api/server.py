@@ -75,6 +75,18 @@ async def lifespan(app: FastAPI):
     )
     logger.info("Auth token: %s", server_state.auth_token)
 
+    # Start SSH tunnel if configured
+    ssh_tunnel = None
+    tunnel_spec = server_state.config.server.ssh_tunnel
+    if tunnel_spec:
+        from cam.api.ssh_tunnel import SSHTunnel
+
+        ssh_tunnel = SSHTunnel(tunnel_spec)
+        local_port = await ssh_tunnel.start()
+        # Override relay_url to point through the tunnel
+        server_state.config.server.relay_url = f"ws://127.0.0.1:{local_port}"
+        logger.info("SSH tunnel active: localhost:%d", local_port)
+
     # Start relay connector if configured
     relay_task = None
     relay_url = server_state.config.server.relay_url
@@ -95,6 +107,8 @@ async def lifespan(app: FastAPI):
             await relay_task
         except asyncio.CancelledError:
             pass
+    if ssh_tunnel:
+        await ssh_tunnel.stop()
     logger.info("CAM API Server stopped")
 
 

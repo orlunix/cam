@@ -96,6 +96,7 @@ class ServerConfig(BaseModel):
     log_level: str = "info"
     relay_url: str | None = None
     relay_token: str | None = None
+    ssh_tunnel: str | None = None  # e.g. "hlren.duckdns.org:8001" or "user@host:port"
 
 
 class ToolConfig(BaseModel):

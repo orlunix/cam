@@ -238,6 +238,11 @@ def serve(
     relay_token: str | None = typer.Option(
         None, "--relay-token", help="Relay auth token"
     ),
+    ssh_tunnel: str | None = typer.Option(
+        None, "--ssh-tunnel",
+        help="SSH tunnel to relay (e.g. hlren.duckdns.org:8001 or user@host:port). "
+             "Auto-connects and replaces --relay with the tunnel.",
+    ),
 ) -> None:
     """Start the CAM API server."""
     try:
@@ -262,6 +267,8 @@ def serve(
         overrides.setdefault("server", {})["relay_url"] = relay
     if relay_token:
         overrides.setdefault("server", {})["relay_token"] = relay_token
+    if ssh_tunnel:
+        overrides.setdefault("server", {})["ssh_tunnel"] = ssh_tunnel
 
     config = load_config(**overrides)
     app_instance = create_app(overrides=overrides)
