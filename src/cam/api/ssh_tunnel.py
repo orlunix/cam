@@ -28,6 +28,17 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
+def _port_is_open(port: int) -> bool:
+    """Check if a TCP port is accepting connections on localhost."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        try:
+            s.connect(("127.0.0.1", port))
+            return True
+        except (ConnectionRefusedError, OSError):
+            return False
+
+
 def _parse_tunnel_spec(spec: str) -> tuple[str, str | None, int]:
     """Parse tunnel spec into (host, user, remote_port).
 
@@ -80,13 +91,22 @@ class SSHTunnel:
         return f"ws://127.0.0.1:{self._local_port}"
 
     async def start(self) -> int:
-        """Start the tunnel and return the local port."""
+        """Start the tunnel and return the local port.
+
+        Waits up to 10s for the tunnel to become reachable.
+        """
         self._local_port = _find_free_port()
         self._stopped = False
         self._task = asyncio.create_task(self._run_loop())
 
-        # Wait briefly for tunnel to establish
-        await asyncio.sleep(2)
+        # Wait for tunnel to actually accept connections
+        for _ in range(20):  # 20 * 0.5s = 10s max
+            await asyncio.sleep(0.5)
+            if _port_is_open(self._local_port):
+                logger.info("SSH tunnel ready on localhost:%d", self._local_port)
+                return self._local_port
+
+        logger.warning("SSH tunnel not ready after 10s, proceeding anyway")
         return self._local_port
 
     async def stop(self) -> None:
@@ -132,20 +152,18 @@ class SSHTunnel:
 
                 self._process = await asyncio.create_subprocess_exec(
                     *cmd,
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    start_new_session=True,
                 )
 
                 # Wait a moment then check it's alive
                 await asyncio.sleep(2)
                 if self._process.returncode is not None:
-                    stderr = b""
-                    if self._process.stderr:
-                        stderr = await self._process.stderr.read()
                     logger.warning(
-                        "SSH tunnel failed to start (exit %d): %s",
+                        "SSH tunnel failed to start (exit %d)",
                         self._process.returncode,
-                        stderr.decode(errors="replace").strip(),
                     )
                     await asyncio.sleep(delay)
                     delay = min(delay * 2, self._max_delay)
@@ -180,11 +198,13 @@ class SSHTunnel:
         """Kill the SSH process if running."""
         if self._process and self._process.returncode is None:
             try:
-                self._process.send_signal(signal.SIGTERM)
+                # Send to process group since start_new_session=True
+                import os
+                os.killpg(self._process.pid, signal.SIGTERM)
                 try:
                     await asyncio.wait_for(self._process.wait(), timeout=5)
                 except asyncio.TimeoutError:
-                    self._process.kill()
-            except ProcessLookupError:
+                    os.killpg(self._process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
                 pass
             self._process = None
