@@ -1,7 +1,31 @@
-const CACHE_NAME = 'cam-v34';
+const CACHE_NAME = 'cam-v42';
+
+// Pre-cache key files on install so first load after SW activation is fast
+const PRECACHE = [
+  '/',
+  '/js/app.js?v=42',
+  '/js/api.js?v=42',
+  '/js/state.js?v=42',
+  '/js/views/dashboard.js?v=42',
+  '/js/views/agent-detail.js?v=42',
+  '/js/views/start-agent.js?v=42',
+  '/js/views/contexts.js?v=42',
+  '/js/views/settings.js?v=42',
+  '/js/views/file-browser.js?v=42',
+  '/css/style.css?v=35',
+];
 
 self.addEventListener('install', event => {
-  self.skipWaiting();
+  event.waitUntil(
+    caches.open(CACHE_NAME)
+      .then(cache =>
+        // Use individual adds — don't let one failed file block SW installation
+        Promise.all(PRECACHE.map(url =>
+          cache.add(url).catch(() => {})
+        ))
+      )
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener('activate', event => {
@@ -16,20 +40,25 @@ self.addEventListener('fetch', event => {
   const { request } = event;
 
   // API and WebSocket: network only
-  if (request.url.includes('/api/')) {
+  if (request.url.includes('/api/') || request.url.includes('/ws')) {
     return;
   }
 
-  // All other requests: network-first, fallback to cache
+  // Static assets: cache-first, update in background
+  // Versioned URLs (?v=XX) change when content changes, so cache is always valid
   event.respondWith(
-    fetch(request)
-      .then(resp => {
+    caches.match(request).then(cached => {
+      // Background update: fetch fresh copy and update cache
+      const fetchPromise = fetch(request).then(resp => {
         if (resp.ok) {
           const clone = resp.clone();
           caches.open(CACHE_NAME).then(cache => cache.put(request, clone));
         }
         return resp;
-      })
-      .catch(() => caches.match(request))
+      }).catch(() => null);
+
+      // Return cached immediately if available, otherwise wait for network
+      return cached || fetchPromise;
+    })
   );
 });

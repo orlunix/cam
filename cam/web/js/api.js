@@ -29,38 +29,56 @@ export class CamApi {
   async connect() {
     this.disconnect();
 
-    // Try direct first — require both serverUrl and token
-    if (this.serverUrl && this.token) {
-      try {
-        // Use an authenticated endpoint to verify token works
-        const r = await fetch(`${this.serverUrl}/api/contexts`, {
+    const canDirect = !!(this.serverUrl && this.token);
+    const canRelay = !!(this.relayUrl && this.relayToken);
+
+    // If both available, skip direct when serverUrl points at relay origin
+    // (phone scenario: serverUrl auto-detected to relay host)
+    const directOrigin = canDirect && new URL(this.serverUrl).origin;
+    const relayOrigin = canRelay && new URL(this.relayUrl).origin;
+    const skipDirect = canDirect && canRelay && directOrigin === relayOrigin;
+
+    // Race: try available modes in parallel, prefer direct if both succeed
+    const attempts = [];
+
+    if (canDirect && !skipDirect) {
+      attempts.push(
+        fetch(`${this.serverUrl}/api/contexts`, {
           headers: { 'Authorization': `Bearer ${this.token}` },
-          signal: AbortSignal.timeout(10000),
-        });
-        if (r.ok || r.status === 200) {
-          this.mode = 'direct';
-          this._connectEventStream();
+          signal: AbortSignal.timeout(4000),
+        }).then(r => {
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
           return 'direct';
-        }
-        console.warn('Direct connect: server returned', r.status);
-      } catch (e) {
-        console.warn('Direct connect failed:', e.message);
-      }
+        })
+      );
     }
 
-    // Try relay
-    if (this.relayUrl && this.relayToken) {
-      try {
-        await this._connectRelay();
-        this.mode = 'relay';
-        return 'relay';
-      } catch (e) {
-        console.warn('Relay connect failed:', e.message);
-      }
+    if (canRelay) {
+      attempts.push(
+        this._connectRelay().then(() => 'relay')
+      );
     }
 
-    this.mode = 'disconnected';
-    return 'disconnected';
+    if (attempts.length === 0) {
+      this.mode = 'disconnected';
+      return 'disconnected';
+    }
+
+    // Use Promise.any — first success wins
+    try {
+      const mode = await Promise.any(attempts);
+      this.mode = mode;
+      if (mode === 'direct') {
+        // Close relay WS if it also connected
+        if (this.ws) { try { this.ws.close(); } catch {} this.ws = null; }
+        this._connectEventStream();
+      }
+      return mode;
+    } catch (e) {
+      console.warn('All connect attempts failed:', e);
+      this.mode = 'disconnected';
+      return 'disconnected';
+    }
   }
 
   disconnect() {
@@ -221,8 +239,17 @@ export class CamApi {
       const ws = new WebSocket(url);
       let opened = false;
 
+      // Timeout: reject if WS doesn't open within 8s
+      const connectTimer = setTimeout(() => {
+        if (!opened) {
+          try { ws.close(); } catch {}
+          reject(new Error('Relay connect timeout'));
+        }
+      }, 8000);
+
       ws.onopen = () => {
         opened = true;
+        clearTimeout(connectTimer);
         this.ws = ws;
         resolve();
       };
