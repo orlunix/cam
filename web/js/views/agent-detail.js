@@ -18,6 +18,35 @@ export function renderAgentDetail(container, agentId) {
   let agent = (state.get('agents') || []).find(a => a.id === agentId);
   let fsOverlay = null;
 
+  // Output font size — pinch-to-zoom on output pane adjusts font size
+  const FONT_MIN = 8, FONT_MAX = 24;
+  let _fontSize = parseFloat(localStorage.getItem('cam_output_font_size')) || 12;
+
+  function _applyFontSize() {
+    const sz = _fontSize.toFixed(1) + 'px';
+    document.querySelectorAll('#output-pane, #fs-output-pane').forEach(el => { el.style.fontSize = sz; });
+    localStorage.setItem('cam_output_font_size', _fontSize.toFixed(1));
+  }
+
+  function _wirePinchZoom(pane) {
+    let startDist = 0, startSize = 0;
+    pane.addEventListener('touchstart', e => {
+      if (e.touches.length === 2) {
+        startDist = Math.hypot(e.touches[1].pageX - e.touches[0].pageX, e.touches[1].pageY - e.touches[0].pageY);
+        startSize = _fontSize;
+      }
+    }, { passive: true });
+    pane.addEventListener('touchmove', e => {
+      if (e.touches.length === 2) {
+        e.preventDefault();
+        const dist = Math.hypot(e.touches[1].pageX - e.touches[0].pageX, e.touches[1].pageY - e.touches[0].pageY);
+        const scale = dist / startDist;
+        _fontSize = Math.min(FONT_MAX, Math.max(FONT_MIN, Math.round(startSize * scale * 2) / 2));
+        _applyFontSize();
+      }
+    }, { passive: false });
+  }
+
   // #content is the parent — we toggle flex layout on it
   const contentEl = document.getElementById('content');
   const appEl = document.getElementById('app');
@@ -194,6 +223,7 @@ export function renderAgentDetail(container, agentId) {
               <button class="overflow-menu-item" id="refresh-output">Refresh</button>
               <button class="overflow-menu-item" id="toggle-fullscreen">Fullscreen</button>
               <hr>
+              <button class="overflow-menu-item" id="restart-btn">Restart</button>
               <button class="overflow-menu-item danger" id="delete-btn">Delete agent</button>
             </div>
           </div>
@@ -231,6 +261,7 @@ export function renderAgentDetail(container, agentId) {
     }
 
     wireEvents(isActive);
+    _applyFontSize();
     loadOutput();
     if (!isActive) loadLogs();
     startElapsedTimer(isActive);
@@ -274,6 +305,8 @@ export function renderAgentDetail(container, agentId) {
 
     const pre = overlay.querySelector('#fs-output-pane');
     pre.textContent = cachedOutput || 'Loading...';
+    _applyFontSize();
+    _wirePinchZoom(pre);
 
     overlay.querySelector('#fs-close').addEventListener('click', closeFullscreen);
     overlay.querySelector('#fs-refresh').addEventListener('click', () => {
@@ -517,6 +550,7 @@ export function renderAgentDetail(container, agentId) {
 
     const pane = container.querySelector('#output-pane');
     if (pane) {
+      _wirePinchZoom(pane);
       pane.addEventListener('scroll', () => {
         if (_scrollByCode) return;
         // User manually scrolled — disable auto-scroll, show jump button
@@ -550,6 +584,18 @@ export function renderAgentDetail(container, agentId) {
       closeMenu();
       try { await api.stopAgent(agentId); state.toast('Agent stopped', 'success'); }
       catch (e) { state.toast(e.message, 'error'); }
+    });
+
+    const restartBtn = container.querySelector('#restart-btn');
+    if (restartBtn) restartBtn.addEventListener('click', async () => {
+      closeMenu();
+      try {
+        const newAgent = await api.restartAgent(agentId);
+        state.toast('Agent restarted', 'success');
+        const resp = await api.listAgents({ limit: 50 });
+        state.set('agents', resp.agents || []);
+        navigate(`/agent/${newAgent.id}`);
+      } catch (e) { state.toast(e.message, 'error'); }
     });
 
     const deleteBtn = container.querySelector('#delete-btn');
