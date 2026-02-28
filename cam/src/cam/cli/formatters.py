@@ -201,6 +201,7 @@ def print_agent_list(agents: list[Agent]) -> None:
         return
 
     table = Table(title="Agents", title_style="bold green")
+    table.add_column("#", style="bold yellow", no_wrap=True)
     table.add_column("ID", style="dim", no_wrap=True)
     table.add_column("Name", style="bold")
     table.add_column("Tool", style="bold")
@@ -210,13 +211,14 @@ def print_agent_list(agents: list[Agent]) -> None:
     table.add_column("Transport", style="magenta")
     table.add_column("Duration", justify="right")
 
-    for agent in agents:
+    for idx, agent in enumerate(agents, 1):
         status_text = format_status(agent.status)
         state_text = format_state(agent.state)
         duration_text = format_duration(agent.duration_seconds())
         transport_label = TRANSPORT_LABELS.get(agent.transport_type, "?")
 
         table.add_row(
+            str(idx),
             format_short_id(str(agent.id)),
             agent.task.name or "",
             agent.task.tool,
