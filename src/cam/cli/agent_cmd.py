@@ -227,12 +227,47 @@ def logs(
 
 
 # ---------------------------------------------------------------------------
+# resolve_agent — flexible identifier resolution
+# ---------------------------------------------------------------------------
+
+
+def resolve_agent(identifier: str):
+    """Resolve an agent by number (#N from list), name, or ID prefix.
+
+    Resolution order:
+    1. Numeric → index into agent list (1-based, same order as ``cam list``)
+    2. Name   → first agent whose task.name matches
+    3. ID     → prefix match via agent_store.get()
+    """
+    from cam.cli.app import state
+
+    # 1. Numeric index
+    if identifier.isdigit():
+        idx = int(identifier)
+        if idx < 1:
+            return None
+        agents = state.agent_store.list(limit=100)
+        if 1 <= idx <= len(agents):
+            return agents[idx - 1]
+        return None
+
+    # 2. Name match
+    agents = state.agent_store.list(limit=100)
+    for agent in agents:
+        if agent.task.name == identifier:
+            return agent
+
+    # 3. ID prefix (existing behaviour)
+    return state.agent_store.get(identifier)
+
+
+# ---------------------------------------------------------------------------
 # attach
 # ---------------------------------------------------------------------------
 
 
 def attach(
-    agent_id: str = typer.Argument(..., help="Agent ID"),
+    agent_id: Optional[str] = typer.Argument(None, help="Agent number, name, or ID"),
 ) -> None:
     """Attach to an agent's TMUX session (interactive)."""
     import os
@@ -241,7 +276,11 @@ def attach(
     from cam.cli.formatters import print_error, print_info
     from cam.transport.factory import TransportFactory
 
-    agent = state.agent_store.get(agent_id)
+    # Default to most recent agent
+    if agent_id is None:
+        agent_id = "1"
+
+    agent = resolve_agent(agent_id)
     if not agent:
         print_error(f"Agent not found: {agent_id}")
         raise typer.Exit(1)
