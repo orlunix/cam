@@ -185,6 +185,43 @@ async def stop_agent(agent_id: str, request: Request, force: bool = False):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/agents/{agent_id}/restart", response_model=AgentResponse)
+async def restart_agent(agent_id: str, request: Request):
+    """Restart a terminal agent with the same task/context configuration."""
+    state = await _require_auth(request)
+
+    agent = await state.agent_manager.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(
+            status_code=404, detail=f"Agent not found: {agent_id}"
+        )
+
+    if not agent.is_terminal():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Agent is still {agent.status.value}. Stop it first.",
+        )
+
+    # Resolve context
+    context = (
+        state.context_store.get(agent.context_name)
+        or state.context_store.get(str(agent.context_id))
+    )
+    if not context:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Original context not found: {agent.context_name}",
+        )
+
+    try:
+        new_agent = await state.agent_manager.run_agent(
+            agent.task, context, follow=False
+        )
+        return agent_to_response(new_agent)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.delete("/agents/{agent_id}/history")
 async def delete_agent_history(agent_id: str, request: Request):
     """Delete an agent record from history (only terminal agents)."""
