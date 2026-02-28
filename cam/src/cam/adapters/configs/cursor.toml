@@ -64,13 +64,13 @@ response = ""
 send_enter = true
 
 [[confirm]]
-# Ink select menu for command approval: "→ Run (once) (y)" — press Enter
-pattern = "Run \\(once\\)"
+# Catch-all: any prompt with (y) — covers Proceed (y), Run (once) (y), etc.
+pattern = "\\(y\\)"
 response = ""
 send_enter = true
 
 [[confirm]]
-# Alternative: "→ Run (always for this command)" — press Enter
+# "Run (always for this command)" has no (y) suffix
 pattern = "Run \\(always"
 response = ""
 send_enter = true

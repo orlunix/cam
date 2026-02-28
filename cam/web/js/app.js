@@ -1,11 +1,11 @@
-import { api } from './api.js?v=42';
-import { state } from './state.js?v=42';
-import { renderDashboard } from './views/dashboard.js?v=42';
-import { renderAgentDetail } from './views/agent-detail.js?v=42';
-import { renderStartAgent } from './views/start-agent.js?v=42';
-import { renderContexts } from './views/contexts.js?v=42';
-import { renderSettings } from './views/settings.js?v=42';
-import { renderFileBrowser } from './views/file-browser.js?v=42';
+import { api } from './api.js?v=46';
+import { state } from './state.js?v=46';
+import { renderDashboard } from './views/dashboard.js?v=46';
+import { renderAgentDetail } from './views/agent-detail.js?v=46';
+import { renderStartAgent } from './views/start-agent.js?v=46';
+import { renderContexts } from './views/contexts.js?v=46';
+import { renderSettings } from './views/settings.js?v=46';
+import { renderFileBrowser } from './views/file-browser.js?v=46';
 
 // --- Router ---
 
@@ -67,6 +67,11 @@ async function init() {
       item.addEventListener('click', () => headerMenu.classList.add('hidden'));
     });
   }
+
+  // Prevent pinch-zoom on mobile (viewport meta alone is unreliable on some Android WebViews)
+  document.addEventListener('touchmove', e => {
+    if (e.touches.length > 1) e.preventDefault();
+  }, { passive: false });
 
   // Wire state listener and router FIRST — UI must render immediately
   api.onEvent(handleEvent);

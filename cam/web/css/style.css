@@ -3,6 +3,10 @@
 
 /* === Reset & Base === */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { touch-action: manipulation; }  /* prevent double-tap zoom globally */
+
+/* Prevent mobile browser auto-zoom: inputs/selects/textareas must be >= 16px */
+input, select, textarea { font-size: 16px !important; }
 
 :root {
   --bg: #111111;
