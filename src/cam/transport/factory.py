@@ -54,6 +54,23 @@ class TransportFactory:
                 env_setup=config.env_setup,
             )
 
+        elif config.type == TransportType.AGENT:
+            try:
+                from cam.transport.agent import AgentTransport
+            except ImportError as e:
+                raise ImportError(
+                    f"Agent transport requires additional dependencies: {e}\n"
+                    "Install with: pip install cam[agent]"
+                ) from e
+
+            return AgentTransport(
+                host=config.host,
+                user=config.user,
+                port=config.port,
+                key_file=config.key_file,
+                env_setup=config.env_setup,
+            )
+
         elif config.type == TransportType.DOCKER:
             # Lazy import for Docker support
             try:
