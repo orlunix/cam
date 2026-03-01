@@ -6,7 +6,7 @@ function escapeHtml(str) {
 
 export function renderStartAgent(container) {
   const contexts = state.get('contexts') || [];
-  const adapters = state.get('adapters') || ['claude', 'codex', 'aider'];
+  const adapters = state.get('adapters') || ['claude', 'cursor', 'codex', 'aider'];
 
   container.innerHTML = `
     <div class="page-header">
