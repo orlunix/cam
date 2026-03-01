@@ -78,6 +78,14 @@ cd "$BUILD_DIR/dex"
 zip -u "$BUILD_DIR/app.tmp.apk" classes.dex
 cd "$PROJ_DIR"
 
+# Bundle web app into assets/web/
+echo "  Bundling web assets..."
+mkdir -p "$BUILD_DIR/assets_staging/assets/web"
+rsync -a --exclude='*.apk' "$PROJ_DIR/../web/" "$BUILD_DIR/assets_staging/assets/web/"
+cd "$BUILD_DIR/assets_staging"
+zip -r -u "$BUILD_DIR/app.tmp.apk" assets/
+cd "$PROJ_DIR"
+
 # Zipalign
 "$BUILD_TOOLS/zipalign" -f 4 \
     "$BUILD_DIR/app.tmp.apk" \

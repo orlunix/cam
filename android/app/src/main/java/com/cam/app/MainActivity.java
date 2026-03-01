@@ -1,15 +1,12 @@
 package com.cam.app;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
-import android.view.KeyEvent;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
@@ -19,8 +16,6 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.EditText;
-import android.widget.LinearLayout;
 
 public class MainActivity extends Activity {
 
@@ -28,8 +23,6 @@ public class MainActivity extends Activity {
     private static final int FILE_CHOOSER_REQUEST = 1001;
     private WebView webView;
     private ValueCallback<Uri[]> fileUploadCallback;
-    private static final String PREFS = "cam_prefs";
-    private static final String KEY_URL = "server_url";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -84,6 +77,8 @@ public class MainActivity extends Activity {
         settings.setUseWideViewPort(true);
         settings.setLoadWithOverviewMode(true);
         settings.setDatabaseEnabled(true);
+        settings.setAllowFileAccessFromFileURLs(true);
+        settings.setAllowUniversalAccessFromFileURLs(true);
 
         webView.setWebViewClient(new WebViewClient());
         webView.setWebChromeClient(new WebChromeClient() {
@@ -112,40 +107,7 @@ public class MainActivity extends Activity {
             }
         });
 
-        String url = getPrefs().getString(KEY_URL, null);
-        if (url != null && !url.isEmpty()) {
-            webView.loadUrl(url);
-        } else {
-            showUrlDialog();
-        }
-    }
-
-    private void showUrlDialog() {
-        String current = getPrefs().getString(KEY_URL, "http://");
-
-        EditText input = new EditText(this);
-        input.setText(current);
-        input.setSelectAllOnFocus(true);
-        input.setSingleLine(true);
-
-        LinearLayout container = new LinearLayout(this);
-        container.setPadding(48, 24, 48, 0);
-        container.addView(input);
-
-        new AlertDialog.Builder(this)
-            .setTitle("CAM Server")
-            .setMessage("Enter the server address.\nToken can be set in Settings page.")
-            .setView(container)
-            .setCancelable(false)
-            .setPositiveButton("Go", (dialog, which) -> {
-                String url = input.getText().toString().trim();
-                if (!url.isEmpty()) {
-                    if (!url.startsWith("http")) url = "http://" + url;
-                    getPrefs().edit().putString(KEY_URL, url).apply();
-                    webView.loadUrl(url);
-                }
-            })
-            .show();
+        webView.loadUrl("file:///android_asset/web/index.html");
     }
 
     @Override
@@ -161,19 +123,6 @@ public class MainActivity extends Activity {
                 | View.SYSTEM_UI_FLAG_FULLSCREEN
             );
         }
-    }
-
-    private SharedPreferences getPrefs() {
-        return getSharedPreferences(PREFS, MODE_PRIVATE);
-    }
-
-    @Override
-    public boolean onKeyLongPress(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-            showUrlDialog();
-            return true;
-        }
-        return super.onKeyLongPress(keyCode, event);
     }
 
     @Override

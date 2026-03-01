@@ -82,9 +82,9 @@ async function init() {
   window.addEventListener('hashchange', route);
   route();
 
-  // Service worker
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  // Service worker (not available on file:// protocol)
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
   }
 
   // Load config from localStorage
@@ -95,9 +95,17 @@ async function init() {
     relayToken: localStorage.getItem('cam_relay_token') || '',
   };
 
-  // Auto-detect server URL if not configured (same origin for direct mode)
-  if (!cfg.serverUrl) {
+  // Auto-detect server URL if not configured and running from a real server
+  if (!cfg.serverUrl && location.protocol !== 'file:' && location.origin !== 'null') {
     cfg.serverUrl = location.origin;
+  }
+
+  // No config at all — jump straight to settings (don't wait for connection timeout)
+  if (!cfg.serverUrl && !cfg.relayUrl) {
+    api.configure(cfg);
+    _loadFromCache();
+    location.hash = '#/settings';
+    return;
   }
 
   api.configure(cfg);
