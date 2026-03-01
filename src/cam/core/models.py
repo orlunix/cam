@@ -44,6 +44,7 @@ class TransportType(str, Enum):
 
     LOCAL = "local"
     SSH = "ssh"
+    AGENT = "agent"
     WEBSOCKET = "websocket"
     DOCKER = "docker"
     OPENCLAW = "openclaw"
@@ -94,6 +95,9 @@ class MachineConfig(BaseModel):
                 raise ValueError("SSH transport requires 'host'")
             if not self.user:
                 raise ValueError("SSH transport requires 'user'")
+        elif self.type == TransportType.AGENT:
+            if not self.host:
+                raise ValueError("AGENT transport requires 'host'")
         elif self.type == TransportType.DOCKER:
             if not self.image:
                 raise ValueError("DOCKER transport requires 'image'")
