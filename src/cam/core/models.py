@@ -148,8 +148,9 @@ class Context(BaseModel):
     @field_validator("path")
     @classmethod
     def validate_path(cls, v: str) -> str:
-        """Validate path is absolute."""
-        if not v.startswith("/"):
+        """Validate path is absolute (Unix or Windows)."""
+        # Accept Unix absolute paths (/...) and Windows absolute paths (C:\... or C:/...)
+        if not v.startswith("/") and not (len(v) >= 3 and v[1] == ":" and v[2] in "/\\"):
             raise ValueError("Context path must be absolute")
         return v
 
@@ -182,7 +183,7 @@ class TaskDefinition(BaseModel):
 
     name: Optional[str] = None
     tool: str = Field(min_length=1)
-    prompt: str = Field(min_length=1)
+    prompt: str = Field(default="")
     context: Optional[str] = None
     timeout: Optional[int] = Field(default=None, gt=0)
     retry: RetryPolicy = Field(default_factory=RetryPolicy)

@@ -131,7 +131,7 @@ class DockerTransport(Transport):
         # Create TMUX session inside the container
         ok, _ = await self._exec_in_container(
             container,
-            f"tmux new-session -d -s {shlex.quote(session_id)} -c {shlex.quote(workdir)}",
+            f"tmux new-session -d -x 220 -y 50 -s {shlex.quote(session_id)} -c {shlex.quote(workdir)}",
         )
         if not ok:
             logger.error("Failed to create TMUX session in container %s", container)

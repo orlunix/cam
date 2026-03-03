@@ -202,9 +202,16 @@ class ConfigurableAdapter(ToolAdapter):
         if self._strip_ansi:
             from cam.utils.ansi import strip_ansi
             output = strip_ansi(output)
-        # Strip trailing whitespace per line (SSH captures pad lines to
-        # terminal width), then take last 500 chars for pattern matching.
-        clean = "\n".join(line.rstrip() for line in output.splitlines()).rstrip()
+        # Strip box-drawing border characters (│┌┐└┘─├┤┬┴┼╭╮╰╯) and
+        # whitespace from both ends of each line.  TUI borders inflate
+        # line length (e.g. 279 chars of padding) and push the real
+        # confirm text like (y) out of the 500-char matching window.
+        _BOX = "─│┌┐└┘├┤┬┴┼╭╮╰╯ \t"
+        lines = [line.strip(_BOX) for line in output.splitlines()]
+        # Drop fully-empty lines from the tail
+        while lines and not lines[-1]:
+            lines.pop()
+        clean = "\n".join(lines).rstrip()
         recent = clean[-500:] if len(clean) > 500 else clean
 
         for pattern, action in self._confirm_rules:

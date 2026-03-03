@@ -1,0 +1,98 @@
+# Claude Code adapter — interactive mode with --allowed-tools.
+#
+# Runs in interactive mode (not headless -p) with pre-authorized tools.
+# Permission prompts use numbered menus:
+#   "1. Yes  2. Yes, don't ask again  3. No" — send "1" without Enter.
+# Trust dialogs (v2.1+) use Ink select menus:
+#   "Enter to confirm · Esc to cancel" — just press Enter.
+#
+# TUI markers:
+#   Ready prompt:     ❯ (start of line)
+#   Tool call:        ● Read(...), ● Bash(...)
+#   Task summary:     ✻ Crunched for 1m 11s
+#   Completion:       Two ❯ lines = task done (prompt echo + return to input)
+
+[adapter]
+name = "claude"
+display_name = "Claude Code"
+
+[launch]
+command = ["claude", "--allowed-tools", "Bash,Edit,Read,Write,Glob,Grep,WebFetch,TodoWrite,NotebookEdit"]
+prompt_after_launch = true
+startup_wait = 30.0
+strip_ansi = true
+
+ready_pattern = "^[❯>]"
+ready_flags = ["MULTILINE"]
+
+[state]
+strategy = "last"
+recent_chars = 2000
+
+[[state.patterns]]
+state = "planning"
+pattern = "(● Read\\(|● Glob\\(|● Grep\\(|● WebFetch\\(|● WebSearch\\(|Thinking|Analyzing)"
+flags = ["IGNORECASE"]
+
+[[state.patterns]]
+state = "editing"
+pattern = "(● Edit\\(|● Write\\(|● NotebookEdit\\()"
+
+[[state.patterns]]
+state = "testing"
+pattern = "(● Bash\\(|Running tests|pytest|npm test|npm run)"
+flags = ["IGNORECASE"]
+
+[[state.patterns]]
+state = "committing"
+pattern = "(git commit|git push|gh pr create)"
+flags = ["IGNORECASE"]
+
+[completion]
+strategy = "prompt_count"
+
+prompt_pattern = "^[❯>]"
+prompt_flags = ["MULTILINE"]
+prompt_count_threshold = 2
+
+# Fallback: single ❯ plus task summary (✻ verb for time) = completion
+# Claude rotates verbs (Crunched, Sautéed, Whisked, Baked, etc.)
+fallback_summary_pattern = "✻ .+ for \\d+"
+
+[[confirm]]
+# Ink select menus: trust folder ("Enter to confirm"), plan mode interview
+# ("Enter to select"), and similar. Cursor is already on the right option,
+# just press Enter.
+pattern = "Enter to (confirm|select).*Esc to cancel"
+flags = ["IGNORECASE", "DOTALL"]
+response = ""
+send_enter = true
+
+[[confirm]]
+# Direct permission prompt: "Do you want to proceed?"
+pattern = "Do\\s+you\\s+want\\s+to\\s+proceed"
+flags = ["IGNORECASE"]
+response = ""
+send_enter = true
+
+[[confirm]]
+# Numbered menu with "1. Yes" or "1. Allow" — Ink select menu,
+# cursor (❯) is already on option 1, just press Enter.
+pattern = "1\\.\\s*(Yes|Allow)"
+flags = ["IGNORECASE"]
+response = ""
+send_enter = true
+
+[[confirm]]
+# "Allow once" / "Always allow" select menu (Claude 4.x+)
+pattern = "Allow\\s+(once|always)"
+flags = ["IGNORECASE"]
+response = ""
+send_enter = true
+
+[[confirm]]
+# Permission prompt ending with (y/n) or [Y/n]
+pattern = "\\(y/n\\)|\\[Y/n\\]|\\[y/N\\]"
+flags = ["IGNORECASE"]
+response = "y"
+send_enter = true
