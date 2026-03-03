@@ -104,10 +104,15 @@ class LocalTransport(Transport):
         else:
             command_str = f"env -u CLAUDECODE {inner_cmd}"
 
-        # Set remain-on-exit OFF so session dies when process exits
+        # Set remain-on-exit OFF so session dies when process exits.
+        # Explicit -x/-y so TUI apps (alternate screen) render a larger
+        # viewport — matches the pyte HistoryScreen(220, 50) used for
+        # fulloutput rendering.
         create_args = [
             "new-session",
             "-d",              # detached
+            "-x", "220",       # columns
+            "-y", "50",        # rows
             "-s", session_id,  # session name
             "-c", workdir,     # working directory
             command_str,       # shell command to run (positional arg)

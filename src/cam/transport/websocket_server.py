@@ -148,7 +148,7 @@ class AgentServer:
 
         # Create detached session
         ok, _ = await self._run_tmux(session_id, [
-            "new-session", "-d", "-s", session_id, "-c", workdir,
+            "new-session", "-d", "-x", "220", "-y", "50", "-s", session_id, "-c", workdir,
         ])
         if not ok:
             return {"ok": False, "error": "Failed to create TMUX session"}

@@ -11,6 +11,7 @@ export function renderAgentDetail(container, agentId) {
   let _touching = false;
   let _deferredUpdate = null;
   let _directInput = false;
+  let _errorCount = 0;
   // Restore last-seen output so the view renders instantly on re-entry
   const _prevOutput = state.getOutput(agentId);
   let cachedOutput = _prevOutput?.text || '';
@@ -343,22 +344,24 @@ export function renderAgentDetail(container, agentId) {
     const pre = fsOverlay ? fsOverlay.querySelector('#fs-output-pane') : null;
     if (!pre) return;
 
-    if (useFullOutput) {
-      try {
+    try {
+      if (useFullOutput) {
         const data = await api.agentFullOutput(agentId, outputOffset);
         if (data.output) {
           updatePane(pre, data.output);
           outputOffset = data.next_offset || outputOffset;
         }
-      } catch {}
-    } else {
-      try {
+      } else {
         const data = await api.agentOutput(agentId, 200, _outputHash);
         if (data.hash) _outputHash = data.hash;
         if (!data.unchanged && data.output) {
           updatePane(pre, data.output);
         }
-      } catch {}
+      }
+      _errorCount = 0;
+    } catch {
+      _errorCount++;
+      if (_errorCount >= 3) _outputHash = null;
     }
   }
 
@@ -705,22 +708,26 @@ export function renderAgentDetail(container, agentId) {
     const pane = container.querySelector('#output-pane');
     if (!pane) return;
 
-    if (useFullOutput) {
-      try {
+    try {
+      if (useFullOutput) {
         const data = await api.agentFullOutput(agentId, outputOffset);
         if (data.output) {
           updatePane(pane, data.output);
           outputOffset = data.next_offset || outputOffset;
         }
-      } catch {}
-    } else {
-      try {
+      } else {
         const data = await api.agentOutput(agentId, 200, _outputHash);
         if (data.hash) _outputHash = data.hash;
         if (!data.unchanged && data.output) {
           updatePane(pane, data.output);
         }
-      } catch {}
+      }
+      _errorCount = 0;
+    } catch {
+      _errorCount++;
+      // After 3 consecutive failures, reset hash to force a full refresh
+      // when connection recovers — stale hash can prevent updates
+      if (_errorCount >= 3) _outputHash = null;
     }
   }
 

@@ -119,6 +119,19 @@ async def run_monitor(agent_id: str) -> None:
     # Create transport from context machine config
     transport = TransportFactory.create(context.machine)
 
+    # Ensure agent is in RUNNING state — the monitor may be restarted
+    # while the agent was transiently marked with a stale status.
+    if agent.status != AgentStatus.RUNNING:
+        agent.status = AgentStatus.RUNNING
+        agent.completed_at = None
+        agent.exit_reason = None
+        agent_store.update_status(agent_id, AgentStatus.RUNNING)
+        # Clear completed_at (update_status doesn't clear it for RUNNING)
+        db.execute(
+            "UPDATE agents SET completed_at = NULL, exit_reason = NULL WHERE id = ?",
+            (agent_id,),
+        )
+
     # Write PID file
     _write_pid(agent_id)
 
