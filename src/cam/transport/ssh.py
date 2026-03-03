@@ -155,8 +155,11 @@ class SSHTransport(Transport):
 
         # Create detached session with command as initial program.
         # Session dies when process exits (same as LocalTransport).
+        # Explicit -x/-y so TUI apps (alternate screen) render a larger
+        # viewport — matches the pyte HistoryScreen(220, 50).
         create_cmd = self._remote_tmux_cmd(session_id, [
-            "new-session", "-d", "-s", session_id, "-c", workdir, command_str,
+            "new-session", "-d", "-x", "220", "-y", "50",
+            "-s", session_id, "-c", workdir, command_str,
         ])
         success, error = await self._run_ssh(create_cmd)
         if not success:
@@ -274,12 +277,26 @@ class SSHTransport(Transport):
         return strip_ansi(output).rstrip()
 
     async def session_exists(self, session_id: str) -> bool:
-        """Check if a remote TMUX session is alive."""
+        """Check if a remote TMUX session is alive.
+
+        Retries on SSH failure to avoid false negatives from transient
+        network issues — a single SSH timeout would otherwise cause the
+        monitor to declare the session dead and finalize the agent.
+        """
         has_cmd = self._remote_tmux_cmd(session_id, [
             "has-session", "-t", session_id,
         ])
-        success, _ = await self._run_ssh(has_cmd, check=False)
-        return success
+        for attempt in range(3):
+            success, _ = await self._run_ssh(has_cmd, check=False)
+            if success:
+                return True
+            if attempt < 2:
+                logger.debug(
+                    "session_exists check failed for %s (attempt %d/3), retrying",
+                    session_id, attempt + 1,
+                )
+                await asyncio.sleep(2.0)
+        return False
 
     async def kill_session(self, session_id: str) -> bool:
         """Kill a remote TMUX session and clean up socket."""

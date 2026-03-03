@@ -411,6 +411,11 @@ a { color: var(--accent); text-decoration: none; }
   flex-direction: column;
   overflow: hidden;
   padding-bottom: var(--safe-bottom);
+  /* Ensure flex children can calculate height even when parent
+     flex:1 doesn't resolve (some tablet WebViews).  The calc
+     subtracts the header bar so content fills the remaining space. */
+  min-height: 0;
+  height: calc(100dvh - var(--header-h));
 }
 #content.agent-detail-active .detail-header,
 #content.agent-detail-active .detail-meta-compact {
@@ -432,6 +437,7 @@ a { color: var(--accent); text-decoration: none; }
 }
 #content.agent-detail-active .output-pane {
   flex: 1;
+  min-height: 0;
   max-height: none;
 }
 

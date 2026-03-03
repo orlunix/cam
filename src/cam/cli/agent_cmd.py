@@ -20,7 +20,7 @@ import typer
 
 def run(
     tool: str = typer.Argument(..., help="Tool name (claude, codex, aider, ...)"),
-    prompt: str = typer.Argument(..., help="Task prompt"),
+    prompt: str = typer.Argument("", help="Task prompt (empty for interactive mode)"),
     ctx: Optional[str] = typer.Option(None, "--ctx", help="Context name (default: current directory)"),
     timeout: Optional[str] = typer.Option(None, "--timeout", help="Timeout (e.g. '30m', '2h')"),
     retry: int = typer.Option(0, "--retry", help="Retry count on failure"),

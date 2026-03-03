@@ -334,6 +334,10 @@ async def get_full_output(
 
     Returns output from byte offset onwards. Client should track the
     returned next_offset and pass it on subsequent calls to get only new data.
+
+    For TUI apps (Cursor, Claude) that use alternate screen buffers, pyte
+    rendering collapses history into a single screen. In that case, falls
+    back to the JSONL monitor log which contains timestamped snapshots.
     """
     state = await _require_auth(request)
 
@@ -357,6 +361,16 @@ async def get_full_output(
             file_size = log_path.stat().st_size
             if file_size > offset:
                 output = render_raw_log(log_path)
+                # TUI apps (alternate screen) produce tiny output from
+                # pyte — just the current visible screen.  Fall back to
+                # JSONL monitor snapshots which preserve full history.
+                # Use line count (< 80 ≈ single screen) instead of a
+                # file-size ratio to catch short-running TUI agents too.
+                pyte_lines = output.count('\n')
+                if pyte_lines < 80:
+                    jsonl_output = _build_jsonl_history(str(agent.id))
+                    if jsonl_output and len(jsonl_output) > len(output):
+                        output = jsonl_output
                 return {
                     "agent_id": str(agent.id),
                     "output": output,
@@ -379,6 +393,12 @@ async def get_full_output(
                 )
                 if raw_data and next_offset > offset:
                     output = render_raw_data(raw_data)
+                    # TUI fallback for remote logs — same logic as local
+                    pyte_lines = output.count('\n')
+                    if pyte_lines < 80:
+                        jsonl_output = _build_jsonl_history(str(agent.id))
+                        if jsonl_output and len(jsonl_output) > len(output):
+                            output = jsonl_output
                     return {
                         "agent_id": str(agent.id),
                         "output": output,
@@ -388,12 +408,68 @@ async def get_full_output(
             except Exception:
                 pass
 
+    # Last resort: try JSONL log directly (no pipe-pane log at all)
+    jsonl_output = _build_jsonl_history(str(agent.id))
+    if jsonl_output:
+        return {
+            "agent_id": str(agent.id),
+            "output": jsonl_output,
+            "next_offset": offset,
+            "active": not agent.is_terminal(),
+        }
+
     return {
         "agent_id": str(agent.id),
         "output": "",
         "next_offset": offset,
         "active": not agent.is_terminal(),
     }
+
+
+def _build_jsonl_history(agent_id: str) -> str:
+    """Build scrollable output history from JSONL monitor log snapshots.
+
+    Reads the structured JSONL log, extracts output snapshots, deduplicates
+    consecutive identical outputs, and joins them with timestamp headers.
+    This provides full history for TUI apps where pyte rendering fails.
+
+    Returns:
+        Concatenated history text, or empty string if no log found.
+    """
+    from cam.utils.logging import AgentLogger
+
+    agent_logger = AgentLogger(agent_id)
+    entries = agent_logger.read_lines()
+    if not entries:
+        return ""
+
+    parts: list[str] = []
+    prev_output = ""
+
+    for entry in entries:
+        etype = entry.get("type", "")
+        ts = entry.get("ts", "")[:19]
+
+        if etype == "output":
+            output = entry.get("output", "")
+            if output and output != prev_output:
+                parts.append(f"--- {ts} ---\n{output}")
+                prev_output = output
+        elif etype == "state_change":
+            data = entry.get("data", {})
+            from_s = data.get("from", "")
+            to_s = data.get("to", "")
+            label = f"{from_s} → {to_s}" if from_s else to_s
+            parts.append(f"--- {ts} [State: {label}] ---")
+        elif etype == "auto_confirm":
+            parts.append(f"--- {ts} [Auto-confirmed] ---")
+        elif etype == "finalize":
+            data = entry.get("data", {})
+            status = data.get("status", "")
+            reason = data.get("reason", "")
+            parts.append(f"--- {ts} [Finished: {status} - {reason}] ---")
+
+    return "\n\n".join(parts)
 
 
 @router.post("/agents/{agent_id}/input")
