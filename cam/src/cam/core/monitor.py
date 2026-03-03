@@ -329,8 +329,11 @@ class AgentMonitor:
                 await asyncio.sleep(poll_interval)
 
         except asyncio.CancelledError:
-            self._logger.write("cancelled")
-            return self._finalize(AgentStatus.KILLED, "Monitor cancelled")
+            # Monitor was stopped externally (SIGTERM, restart, etc.)
+            # Do NOT change agent status here — if `cam kill` wants to
+            # mark KILLED, it does so explicitly via update_status().
+            self._logger.write("monitor_stopped")
+            return self._agent.status
         except Exception as exc:
             logger.exception("Unexpected error in monitor loop for agent %s", self._agent.id)
             self._logger.write("error", data={"error": str(exc)})

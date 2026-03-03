@@ -34,13 +34,15 @@ class AdapterRegistry:
         self._load_toml_adapters()
 
     def _register_builtins(self) -> None:
-        """Register built-in tool adapters."""
+        """Register built-in tool adapters.
+
+        Note: Claude and Cursor are loaded from TOML configs in _load_toml_adapters().
+        Only adapters that still use Python classes are registered here.
+        """
         from cam.adapters.aider import AiderAdapter
-        from cam.adapters.claude import ClaudeAdapter
         from cam.adapters.codex import CodexAdapter
         from cam.adapters.generic import GenericAdapter
 
-        self.register(ClaudeAdapter())
         self.register(CodexAdapter())
         self.register(AiderAdapter())
         self.register(GenericAdapter())

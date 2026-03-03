@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from cam.adapters.base import ConfirmAction
-from cam.adapters.claude import ClaudeAdapter
+from cam.adapters.configurable import ConfigurableAdapter
 from cam.adapters.codex import CodexAdapter
 from cam.adapters.aider import AiderAdapter
 from cam.adapters.generic import GenericAdapter
@@ -16,6 +18,14 @@ from cam.core.models import (
     MachineConfig,
     TaskDefinition,
 )
+
+# Claude adapter is now TOML-configured (not a Python class)
+_CLAUDE_TOML = Path(__file__).resolve().parent.parent / "src" / "cam" / "adapters" / "configs" / "claude.toml"
+
+
+def ClaudeAdapter():
+    """Load Claude adapter from TOML config."""
+    return ConfigurableAdapter.from_toml(_CLAUDE_TOML)
 
 
 @pytest.fixture
@@ -126,22 +136,22 @@ class TestClaudeAdapter:
         result = adapter.should_auto_confirm("Do you want to proceed?")
         assert result is not None
         assert isinstance(result, ConfirmAction)
-        assert result.response == "1"
-        assert result.send_enter is False
+        assert result.response == ""
+        assert result.send_enter is True
 
     def test_auto_confirm_yes_menu(self):
         adapter = ClaudeAdapter()
         result = adapter.should_auto_confirm("1. Yes  2. Yes, don't ask again  3. No")
         assert result is not None
-        assert result.response == "1"
-        assert result.send_enter is False
+        assert result.response == ""
+        assert result.send_enter is True
 
     def test_auto_confirm_allow_menu(self):
         adapter = ClaudeAdapter()
         result = adapter.should_auto_confirm("1. Allow for this session")
         assert result is not None
-        assert result.response == "1"
-        assert result.send_enter is False
+        assert result.response == ""
+        assert result.send_enter is True
 
     def test_auto_confirm_strips_ansi(self):
         adapter = ClaudeAdapter()
@@ -149,7 +159,19 @@ class TestClaudeAdapter:
             "\x1B[1m1. Yes\x1B[0m  2. No"
         )
         assert result is not None
-        assert result.response == "1"
+        assert result.response == ""
+
+    def test_auto_confirm_plan_mode_interview(self):
+        adapter = ClaudeAdapter()
+        output = (
+            "❯ 1. ~/confluence.token.txt\n"
+            "  2. .env 文件\n"
+            "Enter to select · Tab/Arrow keys to navigate · Esc to cancel"
+        )
+        result = adapter.should_auto_confirm(output)
+        assert result is not None
+        assert result.response == ""
+        assert result.send_enter is True
 
     def test_no_auto_confirm(self):
         adapter = ClaudeAdapter()
@@ -165,8 +187,8 @@ class TestClaudeAdapter:
         adapter = ClaudeAdapter()
         result = adapter.should_auto_confirm("1. Yes, I trust this folder  2. No, exit")
         assert result is not None
-        assert result.response == "1"
-        assert result.send_enter is False
+        assert result.response == ""
+        assert result.send_enter is True
 
     def test_completion_returns_none_for_single_prompt(self):
         adapter = ClaudeAdapter()
