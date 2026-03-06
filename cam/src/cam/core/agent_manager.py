@@ -8,12 +8,14 @@ a single high-level API for running and managing coding agents.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import signal
 import subprocess
 import sys
 from datetime import datetime
+from pathlib import Path
 from uuid import uuid4
 
 from cam.adapters.base import ToolAdapter
@@ -204,10 +206,18 @@ class AgentManager:
             pass
         self._event_bus.publish(started_event)
 
+        # 10b. Deploy cam-client on SSH/Agent transports for local monitoring
+        cam_client_active = False
+        if context.machine.type in (TransportType.SSH, TransportType.AGENT):
+            cam_client_active = await self._start_cam_client(
+                agent, transport, adapter, context
+            )
+
         # 11. Start monitoring
         if follow:
             await self._run_monitor_with_retries(
-                agent, transport, adapter, follow=True
+                agent, transport, adapter, follow=True,
+                client_active=cam_client_active,
             )
         else:
             # Spawn a background monitor subprocess that survives CLI exit.
@@ -407,6 +417,8 @@ class AgentManager:
         elapsed = 0.0
         ready = False
 
+        confirmed_once = False
+
         while elapsed < max_wait:
             await asyncio.sleep(poll_interval)
             elapsed += poll_interval
@@ -414,6 +426,14 @@ class AgentManager:
             output = await transport.capture_output(session_name)
             if not output.strip():
                 continue
+
+            # After a dialog has been confirmed, check readiness first.
+            # Old confirm patterns can linger in tmux scrollback; once
+            # the tool shows its ready prompt, we're done.
+            if confirmed_once and adapter.is_ready_for_input(output):
+                logger.info("Tool ready for input in %s after %.1fs", session_name, elapsed)
+                ready = True
+                break
 
             # Handle trust/permission prompts that appear before readiness
             ac = auto_confirm if auto_confirm is not None else True
@@ -426,6 +446,7 @@ class AgentManager:
                     confirm_action.response,
                     send_enter=confirm_action.send_enter,
                 )
+                confirmed_once = True
                 await asyncio.sleep(3.0)
                 elapsed += 3.0
                 continue
@@ -482,12 +503,97 @@ class AgentManager:
         """
         return self._transport_factory_class.create(context.machine)
 
+    async def _start_cam_client(
+        self,
+        agent: Agent,
+        transport: Transport,
+        adapter: ToolAdapter,
+        context: Context,
+    ) -> bool:
+        """Deploy and start cam-client on the target machine.
+
+        Returns True if cam-client was successfully deployed and launched.
+        Falls back silently to SSH-polling if anything fails.
+        """
+        if not hasattr(transport, '_run_ssh') or not hasattr(transport, 'write_file'):
+            return False
+
+        try:
+            # 1. Check if cam-client exists on target
+            ok, _ = await transport._run_ssh("test -f ~/.cam/cam-client.py", check=False)
+
+            # 2. Deploy if missing
+            if not ok:
+                client_path = Path(__file__).parent.parent / "client.py"
+                if not client_path.exists():
+                    logger.warning("cam-client.py not found at %s", client_path)
+                    return False
+                deployed = await transport.write_file(
+                    "~/.cam/cam-client.py", client_path.read_bytes()
+                )
+                if not deployed:
+                    logger.warning("Failed to deploy cam-client to %s", transport._host)
+                    return False
+                logger.info("Deployed cam-client.py to %s", transport._host)
+
+            # 3. Serialize adapter config
+            adapter_config = json.dumps(adapter.to_dict())
+
+            # 4. Resolve server URL reachable from target
+            server_host = self._config.server.host
+            server_port = self._config.server.port
+            if server_host in ("127.0.0.1", "0.0.0.0", "localhost"):
+                # For local server binding, cam-client can't reach it from remote.
+                # Skip cam-client for now — user needs to configure a reachable URL.
+                logger.info(
+                    "Skipping cam-client: server binds to %s (not reachable from remote)",
+                    server_host,
+                )
+                return False
+            server_url = f"http://{server_host}:{server_port}"
+
+            # 5. Auth token
+            auth_token = self._config.server.auth_token or ""
+            if not auth_token:
+                logger.info("Skipping cam-client: no auth token configured")
+                return False
+
+            # 6. Auto-confirm setting
+            ac = agent.task.auto_confirm
+            ac_flag = "True" if (ac is True or (ac is None and self._config.general.auto_confirm)) else "False"
+
+            # 7. Launch cam-client as background process on remote
+            # Use nohup + disown pattern via shell
+            import shlex
+            launch_cmd = (
+                f"nohup python3 ~/.cam/cam-client.py"
+                f" --agent-id {shlex.quote(str(agent.id))}"
+                f" --session {shlex.quote(agent.tmux_session)}"
+                f" --server {shlex.quote(server_url)}"
+                f" --token {shlex.quote(auth_token)}"
+                f" --auto-confirm {ac_flag}"
+                f" --adapter-config {shlex.quote(adapter_config)}"
+                f" > /tmp/cam-client-{agent.id}.log 2>&1 &"
+            )
+            ok, output = await transport._run_ssh(launch_cmd, check=False)
+            if not ok:
+                logger.warning("Failed to launch cam-client on %s: %s", transport._host, output)
+                return False
+
+            logger.info("Started cam-client on %s for agent %s", transport._host, agent.id)
+            return True
+
+        except Exception as e:
+            logger.warning("cam-client deployment failed: %s (falling back to SSH polling)", e)
+            return False
+
     async def _run_monitor_with_retries(
         self,
         agent: Agent,
         transport: Transport,
         adapter: ToolAdapter,
         follow: bool,
+        client_active: bool = False,
     ) -> AgentStatus:
         """Run the monitor loop with retry logic.
 
@@ -505,11 +611,11 @@ class AgentManager:
             The final AgentStatus.
         """
         if follow:
-            return await self._run_monitor_loop(agent, transport, adapter)
+            return await self._run_monitor_loop(agent, transport, adapter, client_active=client_active)
         else:
             # Launch as background task
             task = asyncio.create_task(
-                self._run_monitor_loop(agent, transport, adapter),
+                self._run_monitor_loop(agent, transport, adapter, client_active=client_active),
                 name=f"monitor-{agent.id}",
             )
             self._monitor_tasks[str(agent.id)] = task
@@ -520,6 +626,7 @@ class AgentManager:
         agent: Agent,
         transport: Transport,
         adapter: ToolAdapter,
+        client_active: bool = False,
     ) -> AgentStatus:
         """Execute the monitor with retry handling.
 
@@ -546,6 +653,7 @@ class AgentManager:
                     event_bus=self._event_bus,
                     agent_logger=agent_logger,
                     config=self._config,
+                    client_active=client_active,
                 )
                 final_status = await monitor.run()
             finally:

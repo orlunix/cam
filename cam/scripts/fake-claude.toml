@@ -1,0 +1,85 @@
+# Fake Claude adapter — for E2E testing of CAM's monitor pipeline.
+#
+# Uses real Claude patterns (state, completion, auto-confirm) but launches
+# fake_coding_cli.py instead of real Claude Code.
+#
+# Usage:
+#   1. Copy to ~/.local/share/cam/adapters/fake-claude.toml
+#   2. cam run -t fake-claude "fix the bug" --name test-run
+#
+# Or override the scenario via a second TOML (basic, trust, permission, full, error, hang).
+
+[adapter]
+name = "fake-claude"
+display_name = "Fake Claude"
+
+[launch]
+command = ["python3", "scripts/fake_coding_cli.py", "--tool", "claude", "--scenario", "full", "--work-duration", "5"]
+prompt_after_launch = true
+startup_wait = 30.0
+strip_ansi = true
+
+ready_pattern = "^[❯>]"
+ready_flags = ["MULTILINE"]
+
+[state]
+strategy = "last"
+recent_chars = 2000
+
+[[state.patterns]]
+state = "planning"
+pattern = "(● Read\\(|● Glob\\(|● Grep\\(|● WebFetch\\(|● WebSearch\\(|Thinking|Analyzing)"
+flags = ["IGNORECASE"]
+
+[[state.patterns]]
+state = "editing"
+pattern = "(● Edit\\(|● Write\\(|● NotebookEdit\\()"
+
+[[state.patterns]]
+state = "testing"
+pattern = "(● Bash\\(|Running tests|pytest|npm test|npm run)"
+flags = ["IGNORECASE"]
+
+[[state.patterns]]
+state = "committing"
+pattern = "(git commit|git push|gh pr create)"
+flags = ["IGNORECASE"]
+
+[completion]
+strategy = "prompt_count"
+
+prompt_pattern = "^[❯>]"
+prompt_flags = ["MULTILINE"]
+prompt_count_threshold = 2
+
+fallback_summary_pattern = "✻ .+ for \\d+"
+
+[[confirm]]
+pattern = "Enter to (confirm|select).*Esc to cancel"
+flags = ["IGNORECASE", "DOTALL"]
+response = ""
+send_enter = true
+
+[[confirm]]
+pattern = "Do\\s+you\\s+want\\s+to\\s+proceed"
+flags = ["IGNORECASE"]
+response = ""
+send_enter = true
+
+[[confirm]]
+pattern = "1\\.\\s*(Yes|Allow)"
+flags = ["IGNORECASE"]
+response = ""
+send_enter = true
+
+[[confirm]]
+pattern = "Allow\\s+(once|always)"
+flags = ["IGNORECASE"]
+response = ""
+send_enter = true
+
+[[confirm]]
+pattern = "\\(y/n\\)|\\[Y/n\\]|\\[y/N\\]"
+flags = ["IGNORECASE"]
+response = "y"
+send_enter = true
