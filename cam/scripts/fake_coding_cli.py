@@ -4,9 +4,12 @@
 Simulates Claude Code, Cursor, or Codex by printing output that matches
 adapter patterns, then reading stdin for auto-confirm responses.
 
-Usage:
-    cam run generic "test prompt" \
-        --command "python3 scripts/fake_coding_cli.py --tool claude --scenario full"
+Standalone usage (manual testing):
+    python3 scripts/fake_coding_cli.py --tool claude --scenario full
+
+For E2E testing via CAM, create a temporary TOML adapter in
+~/.local/share/cam/adapters/ and remove it after the test.
+Do NOT leave it installed — fake agents pollute the real agent list.
 """
 
 import argparse
