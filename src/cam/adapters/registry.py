@@ -39,12 +39,8 @@ class AdapterRegistry:
         Note: Claude and Cursor are loaded from TOML configs in _load_toml_adapters().
         Only adapters that still use Python classes are registered here.
         """
-        from cam.adapters.aider import AiderAdapter
-        from cam.adapters.codex import CodexAdapter
         from cam.adapters.generic import GenericAdapter
 
-        self.register(CodexAdapter())
-        self.register(AiderAdapter())
         self.register(GenericAdapter())
 
     def _load_toml_adapters(self) -> None:

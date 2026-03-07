@@ -71,6 +71,22 @@ class TransportFactory:
                 env_setup=config.env_setup,
             )
 
+        elif config.type == TransportType.CLIENT:
+            try:
+                from cam.transport.client import ClientTransport
+            except ImportError as e:
+                raise ImportError(
+                    f"Client transport requires additional dependencies: {e}"
+                ) from e
+
+            return ClientTransport(
+                host=config.host,
+                user=config.user,
+                port=config.port,
+                key_file=config.key_file,
+                env_setup=config.env_setup,
+            )
+
         elif config.type == TransportType.DOCKER:
             # Lazy import for Docker support
             try:

@@ -45,6 +45,7 @@ class TransportType(str, Enum):
     LOCAL = "local"
     SSH = "ssh"
     AGENT = "agent"
+    CLIENT = "client"
     WEBSOCKET = "websocket"
     DOCKER = "docker"
     OPENCLAW = "openclaw"
@@ -98,6 +99,9 @@ class MachineConfig(BaseModel):
         elif self.type == TransportType.AGENT:
             if not self.host:
                 raise ValueError("AGENT transport requires 'host'")
+        elif self.type == TransportType.CLIENT:
+            if not self.host:
+                raise ValueError("CLIENT transport requires 'host'")
         elif self.type == TransportType.DOCKER:
             if not self.image:
                 raise ValueError("DOCKER transport requires 'image'")
@@ -311,7 +315,13 @@ class Agent(BaseModel):
             return None
 
         end_time = self.completed_at or datetime.utcnow()
-        return (end_time - self.started_at).total_seconds()
+
+        # Normalize: strip tzinfo from both to avoid mixed naive/aware errors.
+        # All datetimes in CAM are UTC, but some paths write aware (+00:00)
+        # and others write naive (utcnow). Safe to compare as naive UTC.
+        start = self.started_at.replace(tzinfo=None)
+        end = end_time.replace(tzinfo=None)
+        return (end - start).total_seconds()
 
     def is_terminal(self) -> bool:
         """Check if agent is in a terminal state."""

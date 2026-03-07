@@ -2,6 +2,8 @@ import { api, state, navigate } from '../app.js';
 
 // Track which context is being edited (null = creating new)
 let editingId = null;
+// Track which card is expanded (by context id)
+let expandedId = null;
 
 export function renderContexts(container) {
   editingId = null;
@@ -71,42 +73,117 @@ export function renderContexts(container) {
       : `<div class="context-list">${contexts.map(c => {
           const m = machine(c);
           const isSSH = m.type === 'ssh' || m.host;
+          const isExpanded = expandedId === c.id;
+          const typeBadge = isSSH
+            ? `<span class="context-type-badge ssh">SSH</span>`
+            : `<span class="context-type-badge local">local</span>`;
+
+          // Detail rows
+          let details = `
+            <div class="context-detail-row">
+              <span class="context-detail-label">Path</span>
+              <span class="context-detail-value">${esc(c.path)}</span>
+            </div>`;
+          if (isSSH) {
+            details += `
+            <div class="context-detail-row">
+              <span class="context-detail-label">Host</span>
+              <span class="context-detail-value host">${esc(m.user || '')}@${esc(m.host)}:${m.port || 22}</span>
+            </div>`;
+          }
+          if (m.env_setup) {
+            details += `
+            <div class="context-detail-row">
+              <span class="context-detail-label">Env</span>
+              <span class="context-detail-value">${esc(m.env_setup)}</span>
+            </div>`;
+          }
+
+          // Action buttons
+          let actions = `
+            <button class="btn-sm btn-secondary browse-ctx" data-id="${c.id}">Browse</button>
+            <button class="btn-sm btn-secondary edit-ctx" data-id="${c.id}">Edit</button>`;
+          if (isSSH) {
+            actions += `
+            <button class="btn-sm btn-secondary sync-ctx" data-name="${c.name}">Sync</button>`;
+          }
+          actions += `
+            <button class="btn-sm btn-secondary copy-ctx" data-name="${c.name}">Duplicate</button>
+            <button class="btn-sm btn-danger delete-ctx" data-name="${c.name}">Delete</button>`;
+
           return `
-          <div class="context-card">
+          <div class="context-card${isExpanded ? ' expanded' : ''}" data-id="${c.id}">
             <div class="context-card-header">
-              <span class="context-name">${c.name}</span>
-              <span>
-                <button class="btn-sm btn-secondary browse-ctx" data-id="${c.id}">Browse</button>
-                <button class="btn-sm btn-secondary copy-ctx" data-name="${c.name}">Duplicate</button>
-                <button class="btn-sm btn-secondary edit-ctx" data-id="${c.id}">Edit</button>
-                <button class="btn-sm btn-danger delete-ctx" data-name="${c.name}">Delete</button>
-              </span>
+              <div class="context-card-left">
+                <span class="context-name">${esc(c.name)}</span>
+                ${typeBadge}
+              </div>
+              <span class="context-chevron">\u25B8</span>
             </div>
-            <div class="context-card-meta">
-              <span class="context-path">${c.path}</span>
-              ${isSSH ? `<span class="context-host">${m.user || ''}@${m.host}:${m.port || 22}</span>` : '<span class="context-type">local</span>'}
+            <div class="context-card-body">
+              <div class="context-detail-rows">${details}</div>
+              <div class="context-actions">${actions}</div>
             </div>
           </div>`;
         }).join('')}</div>`;
 
+    // Toggle expand on header click
+    listEl.querySelectorAll('.context-card-header').forEach(hdr => {
+      hdr.addEventListener('click', () => {
+        const card = hdr.closest('.context-card');
+        const id = card.dataset.id;
+        if (expandedId === id) {
+          expandedId = null;
+          card.classList.remove('expanded');
+        } else {
+          // Collapse previous
+          const prev = listEl.querySelector('.context-card.expanded');
+          if (prev) prev.classList.remove('expanded');
+          expandedId = id;
+          card.classList.add('expanded');
+        }
+      });
+    });
+
     // Browse handlers
     listEl.querySelectorAll('.browse-ctx').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
         navigate(`#/context/${btn.dataset.id}/files`);
       });
     });
 
     // Edit handlers
     listEl.querySelectorAll('.edit-ctx').forEach(btn => {
-      btn.addEventListener('click', () => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
         const ctx = contexts.find(c => c.id === btn.dataset.id);
         if (ctx) fillFormForEdit(ctx);
       });
     });
 
+    // Sync handlers
+    listEl.querySelectorAll('.sync-ctx').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        btn.disabled = true;
+        btn.textContent = 'Syncing...';
+        try {
+          const resp = await api.syncContext(btn.dataset.name);
+          const results = resp.results || {};
+          const synced = Object.values(results).filter(s => s === 'deployed' || s === 'updated').length;
+          const unchanged = Object.values(results).filter(s => s === 'unchanged').length;
+          state.toast(`Synced: ${synced} updated, ${unchanged} unchanged`, 'success');
+        } catch (e) { state.toast(e.message, 'error'); }
+        btn.disabled = false;
+        btn.textContent = 'Sync';
+      });
+    });
+
     // Copy handlers
     listEl.querySelectorAll('.copy-ctx').forEach(btn => {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
         const newName = prompt(`Duplicate "${btn.dataset.name}" as:`, `${btn.dataset.name}-copy`);
         if (!newName) return;
         try {
@@ -120,11 +197,13 @@ export function renderContexts(container) {
 
     // Delete handlers
     listEl.querySelectorAll('.delete-ctx').forEach(btn => {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
         if (!confirm(`Delete context "${btn.dataset.name}"?`)) return;
         try {
           await api.deleteContext(btn.dataset.name);
           state.toast('Context deleted', 'success');
+          expandedId = null;
           const resp = await api.listContexts();
           state.set('contexts', resp.contexts || []);
         } catch (e) { state.toast(e.message, 'error'); }
@@ -214,4 +293,10 @@ export function renderContexts(container) {
 
   // Return cleanup function for router
   return () => { unsub(); };
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = String(s || '');
+  return d.innerHTML;
 }

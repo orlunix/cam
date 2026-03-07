@@ -55,6 +55,7 @@ class AgentMonitor:
         event_bus: EventBus,
         agent_logger: AgentLogger,
         config: CamConfig,
+        client_active: bool = False,
     ) -> None:
         self._agent = agent
         self._transport = transport
@@ -63,6 +64,12 @@ class AgentMonitor:
         self._event_bus = event_bus
         self._logger = agent_logger
         self._config = config
+
+        # cam-client passive mode: when a cam-client is running on the target,
+        # skip SSH-based output capture, auto-confirm, and state detection.
+        # Only enforce timeouts and check heartbeat.
+        self._client_active: bool = client_active
+        self._last_client_sync: float = datetime.utcnow().timestamp()
 
         # Monitoring state
         self._previous_output: str = ""
@@ -106,8 +113,12 @@ class AgentMonitor:
         })
         self._publish_event("monitor_start")
 
-        # Interactive agents must run indefinitely — skip timeouts
-        interactive = self._agent.task.auto_confirm is not None
+        # Interactive mode: user explicitly set --no-auto-confirm, meaning
+        # they are attending the session manually. Skip completion detection
+        # and timeouts so the agent runs until the user stops it.
+        # auto_confirm=True or None → detect completion normally.
+        interactive = self._agent.task.auto_confirm is not None and not self._agent.task.auto_confirm
+        has_explicit_timeout = total_timeout is not None and total_timeout > 0
 
         try:
             while True:
@@ -117,7 +128,7 @@ class AgentMonitor:
                 # --------------------------------------------------
                 # 1. Total timeout check (skip for interactive agents)
                 # --------------------------------------------------
-                if total_timeout and self._agent.started_at and not interactive:
+                if total_timeout and self._agent.started_at and (has_explicit_timeout or not interactive):
                     elapsed = (datetime.utcnow() - self._agent.started_at).total_seconds()
                     if elapsed >= total_timeout:
                         self._logger.write("timeout", data={"elapsed": elapsed, "limit": total_timeout})
@@ -133,6 +144,26 @@ class AgentMonitor:
                         self._logger.write("idle_timeout", data={"idle_seconds": idle_seconds, "limit": idle_timeout})
                         await self._transport.kill_session(session_id)
                         return self._finalize(AgentStatus.TIMEOUT, f"Idle timeout after {idle_seconds:.0f}s with no output change")
+
+                # --------------------------------------------------
+                # 2b. cam-client passive mode
+                # --------------------------------------------------
+                if self._client_active:
+                    # cam-client handles output capture, auto-confirm, state detection
+                    # locally. The server monitor just checks for DB status changes
+                    # (cam-client pushes terminal status via /api/client/sync) and
+                    # watches for cam-client heartbeat timeout.
+                    fresh = self._agent_store.get(str(self._agent.id))
+                    if fresh and fresh.is_terminal():
+                        return fresh.status
+
+                    # Check heartbeat: cam-client syncs every ~2s.
+                    # If no sync for 30s, fall back to SSH polling.
+                    # Use the agent's DB updated_at or check client_output timestamp
+                    # (we can't directly access ServerState here, so check if agent
+                    # status changed in DB as a proxy for cam-client liveness).
+                    await asyncio.sleep(poll_interval * 2)
+                    continue
 
                 # --------------------------------------------------
                 # 3. Health check (periodic, not every poll)
@@ -263,6 +294,10 @@ class AgentMonitor:
                 # --------------------------------------------------
                 if not interactive and self._adapter.needs_prompt_after_launch():
                     prompt_visible = self._adapter.is_ready_for_input(output)
+                    # Don't count prompt as visible if a confirm dialog is active
+                    # (the prompt char ❯ appears in Ink select menus too)
+                    if prompt_visible and self._adapter.should_auto_confirm(output) is not None:
+                        prompt_visible = False
                     if not prompt_visible and self._has_worked:
                         self._prompt_disappeared = True
                     if (

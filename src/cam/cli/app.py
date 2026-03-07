@@ -200,6 +200,8 @@ app.command(name="kill")(agent_cmd.kill)
 app.command(name="retry")(agent_cmd.retry)
 app.command(name="update")(agent_cmd.update)
 app.command(name="prune")(agent_cmd.prune)
+app.command(name="rm")(agent_cmd.rm)
+app.command(name="import")(agent_cmd.import_agents)
 
 # Task command (cam apply -f)
 from cam.cli import task_cmd  # noqa: E402
@@ -223,6 +225,7 @@ from cam.cli import system_cmd  # noqa: E402
 app.command(name="version")(system_cmd.version)
 app.command(name="doctor")(system_cmd.doctor)
 app.command(name="init")(system_cmd.init)
+app.command(name="sync")(system_cmd.sync)
 
 
 # Server command — starts the API server
