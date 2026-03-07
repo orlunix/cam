@@ -51,6 +51,25 @@ def cleanup_agent_caches(agent_id: str) -> None:
     _agent_status_cache.pop(agent_id, None)
 
 
+def cleanup_agent_logs(agent_id: str) -> None:
+    """Delete local log files for an agent.
+
+    Removes both structured JSONL monitor logs and full-output pipe-pane logs.
+    """
+    from cam.constants import LOG_DIR
+
+    paths = [
+        LOG_DIR / f"{agent_id}.jsonl",
+        LOG_DIR / "output" / f"{agent_id}.log",
+    ]
+    for path in paths:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            # Best-effort cleanup; don't block API responses on filesystem issues.
+            pass
+
+
 async def _require_auth(request: Request):
     """Validate auth token from request headers."""
     state = request.app.state.server
@@ -177,10 +196,21 @@ async def stop_agent(agent_id: str, request: Request, force: bool = False):
             status_code=404, detail=f"Agent not found: {agent_id}"
         )
 
+    # Queue stop command for cam-client (it will also kill tmux locally)
+    aid = str(agent.id)
+    if aid in state.client_agents:
+        state.client_commands.setdefault(aid, []).append(
+            {"type": "stop", "graceful": not force}
+        )
+
     try:
-        await state.agent_manager.stop_agent(str(agent.id), graceful=not force)
-        cleanup_agent_caches(str(agent.id))
-        return {"ok": True, "agent_id": str(agent.id)}
+        await state.agent_manager.stop_agent(aid, graceful=not force)
+        # Clean up cam-client state
+        state.client_agents.discard(aid)
+        state.client_output.pop(aid, None)
+        state.client_commands.pop(aid, None)
+        cleanup_agent_caches(aid)
+        return {"ok": True, "agent_id": aid}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -241,6 +271,7 @@ async def delete_agent_history(agent_id: str, request: Request):
     deleted = state.agent_store.delete(str(agent.id))
     if not deleted:
         raise HTTPException(status_code=404, detail="Agent not found")
+    cleanup_agent_logs(str(agent.id))
     cleanup_agent_caches(str(agent.id))
     return {"ok": True, "agent_id": str(agent.id)}
 
@@ -283,6 +314,17 @@ async def get_output(
     if not agent.tmux_session or agent.is_terminal():
         _cleanup_output_caches(str(agent.id))
         return {"agent_id": str(agent.id), "output": "", "active": False}
+
+    # cam-client path: return client-pushed output if available and fresh
+    aid = str(agent.id)
+    if aid in state.client_agents and aid in state.client_output:
+        c_output, c_hash, c_ts = state.client_output[aid]
+        if time.monotonic() - c_ts < 10.0:  # Stale after 10s → fall through to SSH
+            if hash and c_hash == hash:
+                return {"agent_id": aid, "unchanged": True, "active": True, "hash": c_hash}
+            import hashlib as _hl
+            out_hash = c_hash or _hl.md5(c_output.encode()).hexdigest()[:8]
+            return {"agent_id": aid, "output": c_output, "active": True, "hash": out_hash}
 
     # Check cache — always stores full output + hash
     cache_key = (str(agent.id), lines)
@@ -361,16 +403,13 @@ async def get_full_output(
             file_size = log_path.stat().st_size
             if file_size > offset:
                 output = render_raw_log(log_path)
-                # TUI apps (alternate screen) produce tiny output from
-                # pyte — just the current visible screen.  Fall back to
-                # JSONL monitor snapshots which preserve full history.
-                # Use line count (< 80 ≈ single screen) instead of a
-                # file-size ratio to catch short-running TUI agents too.
-                pyte_lines = output.count('\n')
-                if pyte_lines < 80:
-                    jsonl_output = _build_jsonl_history(str(agent.id))
-                    if jsonl_output and len(jsonl_output) > len(output):
-                        output = jsonl_output
+                # TUI apps produce dense ANSI escape sequences that
+                # pyte collapses into just the visible screen.  JSONL
+                # monitor snapshots often contain far more scrollable
+                # history.  Always compare and pick the larger source.
+                jsonl_output = _build_jsonl_history(str(agent.id))
+                if jsonl_output and len(jsonl_output) > len(output):
+                    output = jsonl_output
                 return {
                     "agent_id": str(agent.id),
                     "output": output,
@@ -393,12 +432,10 @@ async def get_full_output(
                 )
                 if raw_data and next_offset > offset:
                     output = render_raw_data(raw_data)
-                    # TUI fallback for remote logs — same logic as local
-                    pyte_lines = output.count('\n')
-                    if pyte_lines < 80:
-                        jsonl_output = _build_jsonl_history(str(agent.id))
-                        if jsonl_output and len(jsonl_output) > len(output):
-                            output = jsonl_output
+                    # Same as local: pick whichever source is larger
+                    jsonl_output = _build_jsonl_history(str(agent.id))
+                    if jsonl_output and len(jsonl_output) > len(output):
+                        output = jsonl_output
                     return {
                         "agent_id": str(agent.id),
                         "output": output,
@@ -486,6 +523,14 @@ async def send_input(agent_id: str, body: SendInputRequest, request: Request):
     if not agent.tmux_session or agent.is_terminal():
         raise HTTPException(status_code=400, detail="Agent is not running")
 
+    # cam-client path: queue command instead of SSH
+    aid = str(agent.id)
+    if aid in state.client_agents:
+        state.client_commands.setdefault(aid, []).append(
+            {"type": "input", "text": body.text, "send_enter": body.send_enter}
+        )
+        return {"ok": True}
+
     context = state.context_store.get(str(agent.context_id))
     if not context:
         raise HTTPException(status_code=400, detail="Agent context not found")
@@ -512,6 +557,14 @@ async def send_key(agent_id: str, body: SendKeyRequest, request: Request):
 
     if not agent.tmux_session or agent.is_terminal():
         raise HTTPException(status_code=400, detail="Agent is not running")
+
+    # cam-client path: queue key command
+    aid = str(agent.id)
+    if aid in state.client_agents:
+        state.client_commands.setdefault(aid, []).append(
+            {"type": "key", "key": body.key}
+        )
+        return {"ok": True}
 
     context = state.context_store.get(str(agent.context_id))
     if not context:

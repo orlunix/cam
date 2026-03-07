@@ -164,6 +164,32 @@ async def copy_context(name_or_id: str, request: Request, new_name: str = ""):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/contexts/{name_or_id}/sync")
+async def sync_context(name_or_id: str, request: Request):
+    """Sync cam-client and adapter configs to a remote context's target."""
+    state = await _require_auth(request)
+
+    context = state.context_store.get(name_or_id)
+    if not context:
+        raise HTTPException(
+            status_code=404, detail=f"Context not found: {name_or_id}"
+        )
+
+    from cam.core.models import TransportType
+
+    if context.machine.type == TransportType.LOCAL:
+        raise HTTPException(
+            status_code=400, detail="Sync is only for remote contexts (SSH/Agent)"
+        )
+
+    try:
+        results = await state.agent_manager.sync_to_target(context)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"ok": True, "results": results}
+
+
 @router.delete("/contexts/{name_or_id}")
 async def delete_context(name_or_id: str, request: Request):
     """Remove a context."""

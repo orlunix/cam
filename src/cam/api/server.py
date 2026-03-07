@@ -54,6 +54,11 @@ class ServerState:
         )
         self.started_at = time.time()
 
+        # cam-client state — in-memory caches for client-pushed data
+        self.client_output: dict[str, tuple[str, str, float]] = {}  # agent_id → (output, hash, ts)
+        self.client_commands: dict[str, list[dict]] = {}             # agent_id → pending commands
+        self.client_agents: set[str] = set()                         # agent_ids with active cam-client
+
         # Auth
         token = self.config.server.auth_token or generate_token()
         self.auth_token = token
@@ -142,12 +147,14 @@ def create_app(overrides: dict | None = None) -> FastAPI:
 
     # Register routes
     from cam.api.routes.agents import router as agents_router
+    from cam.api.routes.client import router as client_router
     from cam.api.routes.contexts import router as contexts_router
     from cam.api.routes.files import router as files_router
     from cam.api.routes.system import router as system_router
     from cam.api.ws import router as ws_router
 
     app.include_router(agents_router, prefix="/api")
+    app.include_router(client_router, prefix="/api")
     app.include_router(contexts_router, prefix="/api")
     app.include_router(files_router, prefix="/api")
     app.include_router(system_router, prefix="/api")

@@ -160,6 +160,45 @@ class TestAgents:
         resp = client.get("/api/agents/nonexistent/logs", headers=headers)
         assert resp.status_code == 404
 
+    def test_delete_agent_history_cleans_logs(self, authed, tmp_path, monkeypatch):
+        client, headers = authed
+        state = client.app.state.server
+
+        import cam.constants as c
+
+        log_dir = tmp_path / "logs"
+        output_dir = log_dir / "output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(c, "LOG_DIR", log_dir)
+
+        agent_id = str(uuid4())
+        now = datetime.utcnow()
+        agent = Agent(
+            id=agent_id,
+            task=TaskDefinition(name="done-task", tool="claude", prompt="done"),
+            context_id="ctx-1",
+            context_name="ctx",
+            context_path="/tmp/test",
+            transport_type=TransportType.LOCAL,
+            status=AgentStatus.COMPLETED,
+            state=AgentState.IDLE,
+            started_at=now,
+            completed_at=now,
+        )
+        state.agent_store.save(agent)
+
+        jsonl_log = log_dir / f"{agent_id}.jsonl"
+        full_log = output_dir / f"{agent_id}.log"
+        jsonl_log.write_text("structured")
+        full_log.write_text("full output")
+
+        resp = client.delete(f"/api/agents/{agent_id}/history", headers=headers)
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert state.agent_store.get(agent_id) is None
+        assert not jsonl_log.exists()
+        assert not full_log.exists()
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Contexts

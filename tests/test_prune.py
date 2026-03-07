@@ -163,6 +163,7 @@ class TestCleanAgentFiles:
         c.PID_DIR = tmp_path / "pids"
         c.SOCKET_DIR = tmp_path / "sockets"
         c.LOG_DIR.mkdir()
+        (c.LOG_DIR / "output").mkdir()
         c.PID_DIR.mkdir()
         c.SOCKET_DIR.mkdir()
 
@@ -171,14 +172,16 @@ class TestCleanAgentFiles:
             session = "cam-abc123"
 
             (c.LOG_DIR / f"{agent_id}.jsonl").write_text("log")
+            (c.LOG_DIR / "output" / f"{agent_id}.log").write_text("full output")
             (c.PID_DIR / f"{agent_id}.pid").write_text("123")
             (c.SOCKET_DIR / f"{session}.sock").write_text("")
 
             counts = _clean_agent_files([agent_id], [session])
-            assert counts["logs"] == 1
+            assert counts["logs"] == 2
             assert counts["pids"] == 1
             assert counts["sockets"] == 1
             assert not (c.LOG_DIR / f"{agent_id}.jsonl").exists()
+            assert not (c.LOG_DIR / "output" / f"{agent_id}.log").exists()
             assert not (c.PID_DIR / f"{agent_id}.pid").exists()
             assert not (c.SOCKET_DIR / f"{session}.sock").exists()
         finally:
@@ -199,6 +202,7 @@ class TestFindOrphanFiles:
         c.PID_DIR = tmp_path / "pids"
         c.SOCKET_DIR = tmp_path / "sockets"
         c.LOG_DIR.mkdir()
+        (c.LOG_DIR / "output").mkdir()
         c.PID_DIR.mkdir()
         c.SOCKET_DIR.mkdir()
 
@@ -210,10 +214,15 @@ class TestFindOrphanFiles:
             # Create logs for known + unknown agent
             (c.LOG_DIR / f"{a.id}.jsonl").write_text("known")
             (c.LOG_DIR / f"{uuid4()}.jsonl").write_text("orphan")
+            (c.LOG_DIR / "output" / f"{a.id}.log").write_text("known output")
+            orphan_output = c.LOG_DIR / "output" / f"{uuid4()}.log"
+            orphan_output.write_text("orphan output")
 
             orphans = _find_orphan_files(agent_store)
-            assert len(orphans) == 1
-            assert "orphan" in Path(orphans[0]).read_text()
+            assert len(orphans) == 2
+            orphan_paths = {Path(p) for p in orphans}
+            assert orphan_output in orphan_paths
+            assert any("orphan" in p.read_text() for p in orphan_paths)
         finally:
             c.LOG_DIR = orig_log
             c.PID_DIR = orig_pid
