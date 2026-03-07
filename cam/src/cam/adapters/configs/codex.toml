@@ -1,12 +1,17 @@
-# Codex adapter — TOML equivalent of the Python CodexAdapter.
-# NOT loaded by registry (Python version takes priority). Used for testing only.
+# Codex adapter — interactive mode (no --full-auto, blocked by OpenAI cloud).
+# Auto-confirm handles the initial trust dialog and approval prompts.
+#
+# TUI markers:
+#   Input prompt:  › (start of line)
+#   Working:       • Thinking / Exploring / etc.
+#   Completion:    Two › lines = task done (echoed prompt + return to idle)
 
 [adapter]
 name = "codex"
 display_name = "OpenAI Codex"
 
 [launch]
-command = ["codex", "--full-auto", "{prompt}"]
+command = ["codex", "{prompt}"]
 prompt_after_launch = false
 startup_wait = 0.0
 
@@ -35,19 +40,21 @@ pattern = "(Committing|Pushing|git commit|git push|Creating PR)"
 flags = ["IGNORECASE"]
 
 [completion]
-strategy = "pattern"
-recent_chars = 500
-error_search_full = true
-min_output_length = 100
+strategy = "prompt_count"
 
-completion_pattern = "(Done|Completed|Finished|All changes applied)"
-completion_flags = ["IGNORECASE"]
+prompt_pattern = "^›"
+prompt_flags = ["MULTILINE"]
+prompt_count_threshold = 2
 
 error_pattern = "(Error:|error:|FAILED|fatal:|Exception|command not found)"
 error_flags = ["IGNORECASE"]
 
-shell_prompt_pattern = "(\\$|\\#|>)\\s*$"
-shell_prompt_flags = ["MULTILINE"]
+[[confirm]]
+# Trust dialog: "1. Yes, allow Codex to work in this folder"
+pattern = "1\\.\\s*(Yes,?\\s*)?allow Codex to work"
+flags = ["IGNORECASE"]
+response = "1"
+send_enter = true
 
 [[confirm]]
 pattern = "(Apply|Accept|Approve|Continue|Proceed).*\\[Y/n\\]"

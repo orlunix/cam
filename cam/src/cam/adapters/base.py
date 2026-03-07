@@ -144,3 +144,7 @@ class ToolAdapter(ABC):
             False if prompt is included in launch command
         """
         return False
+
+    def to_dict(self) -> dict:
+        """Return adapter config as a dict for serialization to cam-client."""
+        return {}

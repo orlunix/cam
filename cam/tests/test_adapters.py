@@ -8,8 +8,6 @@ import pytest
 
 from cam.adapters.base import ConfirmAction
 from cam.adapters.configurable import ConfigurableAdapter
-from cam.adapters.codex import CodexAdapter
-from cam.adapters.aider import AiderAdapter
 from cam.adapters.generic import GenericAdapter
 from cam.core.models import (
     AgentState,
@@ -19,13 +17,18 @@ from cam.core.models import (
     TaskDefinition,
 )
 
-# Claude adapter is now TOML-configured (not a Python class)
-_CLAUDE_TOML = Path(__file__).resolve().parent.parent / "src" / "cam" / "adapters" / "configs" / "claude.toml"
+# Claude and Codex adapters are TOML-configured (not Python classes)
+_CONFIGS_DIR = Path(__file__).resolve().parent.parent / "src" / "cam" / "adapters" / "configs"
 
 
 def ClaudeAdapter():
     """Load Claude adapter from TOML config."""
-    return ConfigurableAdapter.from_toml(_CLAUDE_TOML)
+    return ConfigurableAdapter.from_toml(_CONFIGS_DIR / "claude.toml")
+
+
+def CodexAdapter():
+    """Load Codex adapter from TOML config."""
+    return ConfigurableAdapter.from_toml(_CONFIGS_DIR / "codex.toml")
 
 
 @pytest.fixture
@@ -199,22 +202,33 @@ class TestClaudeAdapter:
         adapter = ClaudeAdapter()
         assert adapter.detect_completion("anything") is None
 
-    def test_completion_detected_with_two_prompts(self):
+    def test_completion_detected_with_two_bare_prompts(self):
         adapter = ClaudeAdapter()
-        # Two ❯ = task prompt + return to input = completed
-        output = '❯ Do something\n● Write(file.py)\n────\n❯\xa0Try "fix lint"\n────'
+        # Two bare ❯ prompts = task done (first prompt + return to input after completion)
+        output = '❯\xa0Try "fix lint"\n● Write(file.py)\n────\n❯\xa0Try "fix lint"\n────'
         assert adapter.detect_completion(output) == AgentStatus.COMPLETED
+
+    def test_completion_not_triggered_during_confirm_dialog(self):
+        adapter = ClaudeAdapter()
+        # Multiple ❯ lines but output contains a confirm pattern (permission prompt)
+        # — tool is waiting for approval, NOT idle
+        output = (
+            '❯ fetch something\n● Bash(curl ...)\n'
+            'Do you want to proceed?\n'
+            '❯ 1. Yes\n   2. No\n'
+        )
+        assert adapter.detect_completion(output) is None
 
     def test_completion_fallback_crunched_with_single_prompt(self):
         adapter = ClaudeAdapter()
-        # Single ❯ + "Crunched for" = completion (first ❯ scrolled past capture window)
-        output = "✻ Crunched for 1m 11s\n────\n❯ try it out\n────"
+        # Single bare ❯ + "Crunched for" = completion (first ❯ scrolled past capture window)
+        output = "✻ Crunched for 1m 11s\n────\n❯\n────"
         assert adapter.detect_completion(output) == AgentStatus.COMPLETED
 
     def test_completion_fallback_sauteed_with_single_prompt(self):
         adapter = ClaudeAdapter()
         # Claude rotates verbs: "Sautéed for" should also work
-        output = "✻ Sautéed for 41s\n────\n❯ try it out\n────"
+        output = "✻ Sautéed for 41s\n────\n❯\n────"
         assert adapter.detect_completion(output) == AgentStatus.COMPLETED
 
     def test_completion_no_fallback_without_prompt(self):
@@ -260,13 +274,25 @@ class TestCodexAdapter:
         adapter = CodexAdapter()
         cmd = adapter.get_launch_command(task, context)
         assert cmd[0] == "codex"
-        assert "--full-auto" in cmd
+        assert "--full-auto" not in cmd
+        assert task.prompt in cmd
 
     def test_not_interactive(self):
         adapter = CodexAdapter()
         assert not adapter.needs_prompt_after_launch()
 
-    def test_auto_confirm_returns_confirm_action(self):
+    def test_auto_confirm_trust_dialog(self):
+        adapter = CodexAdapter()
+        result = adapter.should_auto_confirm(
+            "1. Yes, allow Codex to work in this folder without asking for approval\n"
+            "2. No, ask me to approve edits and commands"
+        )
+        assert result is not None
+        assert isinstance(result, ConfirmAction)
+        assert result.response == "1"
+        assert result.send_enter is True
+
+    def test_auto_confirm_apply(self):
         adapter = CodexAdapter()
         result = adapter.should_auto_confirm("Apply changes? [Y/n]")
         assert result is not None
@@ -279,27 +305,18 @@ class TestCodexAdapter:
         result = adapter.should_auto_confirm("Just output")
         assert result is None
 
+    def test_completion_single_prompt_not_done(self):
+        adapter = CodexAdapter()
+        assert adapter.detect_completion("› say hello\n• Working...") is None
 
-class TestAiderAdapter:
-    def test_launch_command(self, task, context):
-        task.tool = "aider"
-        adapter = AiderAdapter()
-        cmd = adapter.get_launch_command(task, context)
-        assert cmd[0] == "aider"
-        assert "--yes" in cmd
+    def test_completion_two_prompts_done(self):
+        adapter = CodexAdapter()
+        output = "› say hello\n• Hello!\n› "
+        assert adapter.detect_completion(output) == AgentStatus.COMPLETED
 
-    def test_is_interactive(self):
-        adapter = AiderAdapter()
-        assert adapter.needs_prompt_after_launch()
-        assert adapter.get_startup_wait() > 0
-
-    def test_auto_confirm_returns_confirm_action(self):
-        adapter = AiderAdapter()
-        result = adapter.should_auto_confirm("Create new file test.py? y/n")
-        assert result is not None
-        assert isinstance(result, ConfirmAction)
-        assert result.response == "y"
-        assert result.send_enter is True
+    def test_completion_no_prompt(self):
+        adapter = CodexAdapter()
+        assert adapter.detect_completion("some output") is None
 
 
 class TestGenericAdapter:
@@ -321,9 +338,8 @@ class TestAdapterRegistry:
     def test_builtins_registered(self, adapter_registry):
         assert "claude" in adapter_registry
         assert "codex" in adapter_registry
-        assert "aider" in adapter_registry
         assert "generic" in adapter_registry
-        assert len(adapter_registry) >= 4
+        assert len(adapter_registry) >= 3
 
     def test_get(self, adapter_registry):
         adapter = adapter_registry.get("claude")
@@ -338,3 +354,4 @@ class TestAdapterRegistry:
         names = adapter_registry.names()
         assert "claude" in names
         assert "codex" in names
+        assert "aider" not in names

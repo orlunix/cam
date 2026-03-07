@@ -47,7 +47,6 @@ def check_all() -> list[DoctorCheck]:
     # Coding tools (all optional)
     checks.append(_check_tool("claude", "Claude Code"))
     checks.append(_check_tool("codex", "OpenAI Codex"))
-    checks.append(_check_tool("aider", "Aider"))
 
     return checks
 

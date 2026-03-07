@@ -19,14 +19,14 @@ import typer
 
 
 def run(
-    tool: str = typer.Argument(..., help="Tool name (claude, codex, aider, ...)"),
     prompt: str = typer.Argument("", help="Task prompt (empty for interactive mode)"),
+    tool: str = typer.Option("claude", "--tool", "-t", help="Tool name (claude, codex, ...)"),
     ctx: Optional[str] = typer.Option(None, "--ctx", help="Context name (default: current directory)"),
     timeout: Optional[str] = typer.Option(None, "--timeout", help="Timeout (e.g. '30m', '2h')"),
     retry: int = typer.Option(0, "--retry", help="Retry count on failure"),
     name: Optional[str] = typer.Option(None, "--name", help="Human-readable name"),
     detach: bool = typer.Option(False, "--detach", help="Don't follow output"),
-    auto_confirm: Optional[bool] = typer.Option(None, "--auto-confirm/--no-auto-confirm", help="Auto-confirm prompts (also enables interactive mode)"),
+    auto_confirm: Optional[bool] = typer.Option(True, "--auto-confirm/--no-auto-confirm", help="Auto-confirm prompts and enable interactive mode (default: on)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show plan without executing"),
 ) -> None:
     """Start a coding agent on a task."""
@@ -601,11 +601,15 @@ def _clean_agent_files(
     counts = {"logs": 0, "sockets": 0, "pids": 0}
 
     for agent_id in agent_ids:
-        # Log file
-        log_path = LOG_DIR / f"{agent_id}.jsonl"
-        if log_path.exists():
-            log_path.unlink()
-            counts["logs"] += 1
+        # Log files: structured JSONL + full output log
+        log_paths = [
+            LOG_DIR / f"{agent_id}.jsonl",
+            LOG_DIR / "output" / f"{agent_id}.log",
+        ]
+        for log_path in log_paths:
+            if log_path.exists():
+                log_path.unlink()
+                counts["logs"] += 1
 
         # PID file
         pid_path = PID_DIR / f"{agent_id}.pid"
@@ -640,6 +644,13 @@ def _find_orphan_files(agent_store) -> list[str]:
                 agent_id = f.stem
                 if agent_id not in known_ids:
                     orphans.append(str(f))
+        output_dir = LOG_DIR / "output"
+        if output_dir.exists():
+            for f in output_dir.iterdir():
+                if f.suffix == ".log":
+                    agent_id = f.stem
+                    if agent_id not in known_ids:
+                        orphans.append(str(f))
 
     # Orphan PIDs
     if PID_DIR.exists():
@@ -666,9 +677,13 @@ def _sum_log_bytes(agent_ids: list[str]) -> int:
 
     total = 0
     for agent_id in agent_ids:
-        log_path = LOG_DIR / f"{agent_id}.jsonl"
-        if log_path.exists():
-            total += log_path.stat().st_size
+        log_paths = [
+            LOG_DIR / f"{agent_id}.jsonl",
+            LOG_DIR / "output" / f"{agent_id}.log",
+        ]
+        for log_path in log_paths:
+            if log_path.exists():
+                total += log_path.stat().st_size
     return total
 
 
@@ -693,6 +708,140 @@ def _remove_files(paths: list[str]) -> int:
         except OSError:
             pass
     return removed
+
+
+def rm(
+    agent_id: str = typer.Argument(..., help="Agent number, name, or ID"),
+    kill: bool = typer.Option(False, "--kill", "-k", help="Kill the session before removing"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation prompt"),
+) -> None:
+    """Remove a single agent from the database.
+
+    Deletes the agent record, its events, and associated files (logs, PIDs,
+    sockets). For agents imported from a remote context, also removes from
+    the remote ~/.cam/agents.json.
+
+    Examples:
+        cam rm 86a9d46b
+        cam rm my-agent-name --kill
+        cam rm 3 --force
+    """
+    import asyncio
+
+    from cam.cli.app import state
+    from cam.cli.formatters import print_error, print_info, print_success, print_warning
+
+    agent = resolve_agent(agent_id)
+    if not agent:
+        print_error(f"Agent not found: {agent_id}")
+        raise typer.Exit(1)
+
+    aid = str(agent.id)
+    short_id = aid[:8]
+
+    # Kill if requested (or if still running)
+    if kill and not agent.is_terminal():
+        try:
+            asyncio.run(state.agent_manager.stop_agent(aid, graceful=False))
+            print_info(f"Killed agent {short_id}")
+        except Exception as e:
+            print_warning(f"Failed to kill agent: {e}")
+
+    if not agent.is_terminal() and not kill:
+        print_error(f"Agent {short_id} is still {agent.status.value}. Use --kill to force remove.")
+        raise typer.Exit(1)
+
+    # Confirm
+    if not force:
+        confirm = typer.confirm(f"Remove agent {short_id} ({agent.task.name})?")
+        if not confirm:
+            print_info("Cancelled.")
+            return
+
+    # Remove from remote agents.json if this came from a remote context
+    ctx = state.context_store.get(str(agent.context_id))
+    if ctx and ctx.machine.host:
+        _rm_remote_agent(state, ctx, aid)
+
+    # Clean local files (logs, PIDs, sockets)
+    _clean_agent_files([aid], [agent.tmux_session])
+
+    # Delete from server DB
+    deleted = state.agent_store.delete(aid)
+    if deleted:
+        print_success(f"Removed agent {short_id}")
+    else:
+        print_error(f"Agent {short_id} not found in database")
+
+
+def _rm_remote_agent(state, context, agent_id: str) -> None:
+    """Remove an agent from the remote ~/.cam/agents.json via SSH."""
+    from cam.cli.formatters import print_info, print_warning
+    from cam.transport.factory import TransportFactory
+
+    try:
+        transport = TransportFactory.create(context.machine)
+        if hasattr(transport, '_run_client_json'):
+            # ClientTransport
+            import asyncio
+            result = asyncio.run(
+                transport._run_client_json(["agent", "rm", "--id", agent_id])
+            )
+            if result.get("ok"):
+                print_info(f"Removed from remote agents.json")
+            return
+        if hasattr(transport, '_run_ssh'):
+            import asyncio
+            ok, output = asyncio.run(
+                transport._run_ssh(
+                    "python3 ~/.cam/cam-client.py agent rm --id %s" % agent_id,
+                    check=False,
+                )
+            )
+            if ok:
+                print_info(f"Removed from remote agents.json")
+            return
+    except Exception as e:
+        print_warning(f"Could not remove from remote: {e}")
+
+
+def import_agents(
+    ctx: str = typer.Option(..., "--ctx", help="Context name to import agents from"),
+) -> None:
+    """Import agents from a remote ~/.cam/agents.json into the server DB.
+
+    Discovers agents started via `camc run` on the remote machine and registers
+    them in the CAM server so they appear in `cam list`.
+
+    Examples:
+        cam import --ctx cookbook
+    """
+    import asyncio
+
+    from cam.cli.app import state
+    from cam.cli.formatters import print_error, print_info, print_success
+
+    context = state.context_store.get(ctx)
+    if not context:
+        print_error(f"Context not found: {ctx}")
+        raise typer.Exit(1)
+
+    try:
+        imported, skipped, updated = asyncio.run(
+            state.agent_manager.import_remote_agents(context)
+        )
+    except Exception as e:
+        print_error(f"Import failed: {e}")
+        raise typer.Exit(1)
+
+    if imported:
+        print_success(f"Imported {imported} new agent(s)")
+    if updated:
+        print_info(f"Updated {updated} existing agent(s)")
+    if skipped:
+        print_info(f"Skipped {skipped} agent(s) (already up to date)")
+    if not imported and not updated and not skipped:
+        print_info("No agents found on remote")
 
 
 def _print_log_entry(entry: dict) -> None:

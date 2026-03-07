@@ -8,6 +8,7 @@ a single high-level API for running and managing coding agents.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -208,7 +209,10 @@ class AgentManager:
 
         # 10b. Deploy cam-client on SSH/Agent transports for local monitoring
         cam_client_active = False
-        if context.machine.type in (TransportType.SSH, TransportType.AGENT):
+        if context.machine.type == TransportType.CLIENT:
+            # ClientTransport: session create already spawns a local monitor
+            cam_client_active = True
+        elif context.machine.type in (TransportType.SSH, TransportType.AGENT):
             cam_client_active = await self._start_cam_client(
                 agent, transport, adapter, context
             )
@@ -519,25 +523,46 @@ class AgentManager:
             return False
 
         try:
-            # 1. Check if cam-client exists on target
-            ok, _ = await transport._run_ssh("test -f ~/.cam/cam-client.py", check=False)
+            # 1. Read local client.py and compute hash
+            client_path = Path(__file__).parent.parent / "client.py"
+            if not client_path.exists():
+                logger.warning("cam-client.py not found at %s", client_path)
+                return False
+            client_bytes = client_path.read_bytes()
+            import hashlib
+            local_hash = hashlib.md5(client_bytes).hexdigest()[:12]
 
-            # 2. Deploy if missing
-            if not ok:
-                client_path = Path(__file__).parent.parent / "client.py"
-                if not client_path.exists():
-                    logger.warning("cam-client.py not found at %s", client_path)
-                    return False
+            # 2. Check remote hash — deploy if missing or outdated
+            # Wrap in bash -c for csh-default remotes (2>/dev/null is bash syntax)
+            ok, remote_hash = await transport._run_ssh(
+                "bash -c 'md5sum ~/.cam/cam-client.py 2>/dev/null | cut -c1-12'",
+                check=False,
+            )
+            remote_hash = remote_hash.strip() if ok else ""
+
+            if remote_hash != local_hash:
                 deployed = await transport.write_file(
-                    "~/.cam/cam-client.py", client_path.read_bytes()
+                    "~/.cam/cam-client.py", client_bytes
                 )
                 if not deployed:
                     logger.warning("Failed to deploy cam-client to %s", transport._host)
                     return False
-                logger.info("Deployed cam-client.py to %s", transport._host)
+                action = "Updated" if remote_hash else "Deployed"
+                logger.info("%s cam-client.py on %s (%s)", action, transport._host, local_hash)
 
-            # 3. Serialize adapter config
-            adapter_config = json.dumps(adapter.to_dict())
+            # 2b. Sync TOML adapter configs to ~/.cam/configs/
+            toml_results = await self._sync_toml_configs(transport)
+            for name, status in toml_results.items():
+                if status == "failed":
+                    logger.warning("Failed to sync %s to %s", name, transport._host)
+
+            # 3. Determine adapter config mode (--tool or --adapter-config)
+            tool_name = adapter.name if hasattr(adapter, 'name') else None
+            toml_synced = (
+                tool_name
+                and f"{tool_name}.toml" in toml_results
+                and toml_results[f"{tool_name}.toml"] != "failed"
+            )
 
             # 4. Resolve server URL reachable from target
             server_host = self._config.server.host
@@ -565,16 +590,23 @@ class AgentManager:
             # 7. Launch cam-client as background process on remote
             # Use nohup + disown pattern via shell
             import shlex
-            launch_cmd = (
+            if toml_synced:
+                config_flag = f" --tool {shlex.quote(tool_name)}"
+            else:
+                adapter_config = json.dumps(adapter.to_dict())
+                config_flag = f" --adapter-config {shlex.quote(adapter_config)}"
+            # Wrap in bash -c for csh-default remotes (2>&1 & is bash syntax)
+            inner_cmd = (
                 f"nohup python3 ~/.cam/cam-client.py"
                 f" --agent-id {shlex.quote(str(agent.id))}"
                 f" --session {shlex.quote(agent.tmux_session)}"
                 f" --server {shlex.quote(server_url)}"
                 f" --token {shlex.quote(auth_token)}"
                 f" --auto-confirm {ac_flag}"
-                f" --adapter-config {shlex.quote(adapter_config)}"
+                f"{config_flag}"
                 f" > /tmp/cam-client-{agent.id}.log 2>&1 &"
             )
+            launch_cmd = f"bash -c {shlex.quote(inner_cmd)}"
             ok, output = await transport._run_ssh(launch_cmd, check=False)
             if not ok:
                 logger.warning("Failed to launch cam-client on %s: %s", transport._host, output)
@@ -586,6 +618,331 @@ class AgentManager:
         except Exception as e:
             logger.warning("cam-client deployment failed: %s (falling back to SSH polling)", e)
             return False
+
+    async def _sync_toml_configs(
+        self,
+        transport: Transport,
+    ) -> dict[str, str]:
+        """Sync TOML adapter configs to ~/.cam/configs/ on target.
+
+        Hash-checks each file and only deploys changed ones.
+
+        Returns:
+            Dict of {filename: status} where status is
+            "deployed", "updated", "unchanged", or "failed".
+        """
+        configs_dir = Path(__file__).parent.parent / "adapters" / "configs"
+        results: dict[str, str] = {}
+
+        toml_files = sorted(configs_dir.glob("*.toml"))
+        if not toml_files:
+            return results
+
+        # Compute local hashes
+        local_hashes: dict[str, str] = {}
+        local_data: dict[str, bytes] = {}
+        for f in toml_files:
+            data = f.read_bytes()
+            local_hashes[f.name] = hashlib.md5(data).hexdigest()[:12]
+            local_data[f.name] = data
+
+        # Batch-check remote hashes in one SSH call (if transport supports it)
+        remote_hashes: dict[str, str] = {}
+        if hasattr(transport, '_run_ssh'):
+            remote_paths = " ".join(
+                f"~/.cam/configs/{name}" for name in local_hashes
+            )
+            # Wrap in bash -c for csh-default remotes
+            ok, output = await transport._run_ssh(
+                f"bash -c 'md5sum {remote_paths} 2>/dev/null'", check=False
+            )
+            if ok and output.strip():
+                for line in output.strip().splitlines():
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        rhash = parts[0][:12]
+                        rname = parts[-1].rsplit("/", 1)[-1]
+                        remote_hashes[rname] = rhash
+
+        # Deploy changed files
+        for name, data in local_data.items():
+            if local_hashes[name] == remote_hashes.get(name):
+                results[name] = "unchanged"
+                continue
+            deployed = await transport.write_file(
+                f"~/.cam/configs/{name}", data
+            )
+            if deployed:
+                action = "updated" if name in remote_hashes else "deployed"
+                results[name] = action
+                logger.info(
+                    "%s %s on %s",
+                    action.capitalize(),
+                    name,
+                    getattr(transport, '_host', 'target'),
+                )
+            else:
+                results[name] = "failed"
+
+        return results
+
+    async def sync_to_target(self, context: Context) -> dict[str, str]:
+        """Sync cam-client.py and TOML adapter configs to a context's target.
+
+        Public API for ``cam sync <context>``.
+
+        Returns:
+            Dict of {filename: status} with entries for cam-client.py
+            and each TOML config file.
+        """
+        transport = self._create_transport(context)
+        if not hasattr(transport, 'write_file'):
+            raise AgentManagerError(
+                f"Transport {context.machine.type.value} does not support file deployment"
+            )
+
+        results: dict[str, str] = {}
+
+        # 1. Sync cam-client.py
+        client_path = Path(__file__).parent.parent / "client.py"
+        if client_path.exists():
+            client_bytes = client_path.read_bytes()
+            local_hash = hashlib.md5(client_bytes).hexdigest()[:12]
+
+            remote_hash = ""
+            if hasattr(transport, '_run_ssh'):
+                ok, out = await transport._run_ssh(
+                    "bash -c 'md5sum ~/.cam/cam-client.py 2>/dev/null | cut -c1-12'",
+                    check=False,
+                )
+                remote_hash = out.strip() if ok else ""
+
+            if remote_hash != local_hash:
+                deployed = await transport.write_file(
+                    "~/.cam/cam-client.py", client_bytes
+                )
+                results["cam-client.py"] = (
+                    ("updated" if remote_hash else "deployed") if deployed else "failed"
+                )
+            else:
+                results["cam-client.py"] = "unchanged"
+
+        # 2. Sync camc (standalone CLI)
+        camc_path = Path(__file__).parent.parent / "camc.py"
+        if camc_path.exists():
+            camc_bytes = camc_path.read_bytes()
+            camc_local_hash = hashlib.md5(camc_bytes).hexdigest()[:12]
+
+            camc_remote_hash = ""
+            if hasattr(transport, '_run_ssh'):
+                ok, out = await transport._run_ssh(
+                    "bash -c 'md5sum ~/.cam/camc 2>/dev/null | cut -c1-12'",
+                    check=False,
+                )
+                camc_remote_hash = out.strip() if ok else ""
+
+            if camc_remote_hash != camc_local_hash:
+                deployed = await transport.write_file(
+                    "~/.cam/camc", camc_bytes
+                )
+                if deployed:
+                    # Make executable + symlink into PATH
+                    await transport._run_ssh(
+                        "bash -c 'chmod +x ~/.cam/camc && mkdir -p ~/.local/bin && ln -sf ~/.cam/camc ~/.local/bin/camc'",
+                        check=False,
+                    )
+                results["camc"] = (
+                    ("updated" if camc_remote_hash else "deployed") if deployed else "failed"
+                )
+            else:
+                results["camc"] = "unchanged"
+
+        # 3. Sync TOML configs
+        toml_results = await self._sync_toml_configs(transport)
+        results.update(toml_results)
+
+        return results
+
+    async def import_remote_agents(
+        self, context: Context
+    ) -> tuple[int, int, int]:
+        """Import agents from remote ~/.cam/agents.json into the server DB.
+
+        Reads the remote agents.json via SSH (``cam-client.py status``),
+        then creates or updates Agent records in the server store linked
+        to *context*.
+
+        Returns:
+            Tuple of (imported, skipped, updated) counts.
+        """
+        transport = self._create_transport(context)
+
+        # Get remote agents via cam-client.py status or direct SSH
+        remote_agents: list[dict] = []
+
+        if hasattr(transport, 'get_agent_status'):
+            # ClientTransport — use the status subcommand
+            changed, data = await transport.get_agent_status()
+            remote_agents = data.get("agents", [])
+        elif hasattr(transport, '_run_ssh'):
+            # SSHTransport — call cam-client.py directly
+            ok, output = await transport._run_ssh(
+                "python3 ~/.cam/cam-client.py status",
+                check=False,
+            )
+            if ok and output.strip():
+                try:
+                    data = json.loads(output)
+                    remote_agents = data.get("agents", [])
+                except (json.JSONDecodeError, ValueError):
+                    logger.warning("Failed to parse remote agents.json: %s", output[:200])
+        else:
+            raise AgentManagerError(
+                f"Transport {context.machine.type.value} does not support agent import"
+            )
+
+        imported = skipped = updated = 0
+
+        # Cache of auto-created contexts: remote_ctx_name -> Context
+        _ctx_cache: dict[str, Context] = {}
+
+        # Status/state mappings
+        _status_map = {
+            "running": AgentStatus.RUNNING,
+            "completed": AgentStatus.COMPLETED,
+            "failed": AgentStatus.FAILED,
+            "stopped": AgentStatus.KILLED,
+            "killed": AgentStatus.KILLED,
+        }
+        _state_map = {
+            "initializing": AgentState.INITIALIZING,
+            "planning": AgentState.PLANNING,
+            "editing": AgentState.EDITING,
+            "testing": AgentState.TESTING,
+            "committing": AgentState.COMMITTING,
+            "idle": AgentState.IDLE,
+        }
+
+        for ra in remote_agents:
+            remote_id = ra.get("id", "")
+            if not remote_id:
+                continue
+
+            # Check if already exists in server DB
+            existing = self._agent_store.get(remote_id)
+
+            agent_status = _status_map.get(ra.get("status", ""), AgentStatus.RUNNING)
+            agent_state = _state_map.get(ra.get("state", ""), AgentState.INITIALIZING)
+
+            # Parse timestamps
+            started_at = None
+            if ra.get("started_at"):
+                try:
+                    started_at = datetime.fromisoformat(
+                        ra["started_at"].replace("Z", "+00:00")
+                    )
+                except (ValueError, AttributeError):
+                    started_at = datetime.utcnow()
+
+            completed_at = None
+            if ra.get("completed_at"):
+                try:
+                    completed_at = datetime.fromisoformat(
+                        ra["completed_at"].replace("Z", "+00:00")
+                    )
+                except (ValueError, AttributeError):
+                    pass
+
+            if existing:
+                # Update if state changed
+                old_status = existing.status
+                old_state = existing.state
+                if old_status == agent_status and old_state == agent_state:
+                    skipped += 1
+                    continue
+                self._agent_store.update_status(
+                    str(existing.id), agent_status,
+                    state=agent_state if agent_state != old_state else None,
+                    exit_reason=ra.get("exit_reason"),
+                )
+                updated += 1
+            else:
+                # Create new Agent record
+                tool = ra.get("tool", "claude")
+                prompt = ra.get("prompt", "")
+                workdir = ra.get("path", context.path)
+                session = ra.get("session", "cam-%s" % remote_id)
+
+                # Resolve context: use remote agent's context info or fall back
+                remote_ctx = ra.get("context") or {}
+                if isinstance(remote_ctx, str):
+                    remote_ctx = {"name": remote_ctx}
+                ctx_name = remote_ctx.get("name")
+                ctx_host = remote_ctx.get("host")
+                ctx_port = remote_ctx.get("port")
+
+                # Determine which server Context to link to
+                target_ctx = context  # default: the importing context
+                if ctx_name:
+                    if ctx_name in _ctx_cache:
+                        target_ctx = _ctx_cache[ctx_name]
+                    else:
+                        # Look up existing server context by name
+                        existing_ctx = self._context_store.get(ctx_name)
+                        if existing_ctx:
+                            target_ctx = existing_ctx
+                        else:
+                            # Auto-create from remote info
+                            host = ctx_host or context.machine.host
+                            user = context.machine.user
+                            port = ctx_port or context.machine.port
+                            new_ctx = Context(
+                                name=ctx_name,
+                                path=workdir,
+                                machine=MachineConfig(
+                                    type=context.machine.type,
+                                    host=host,
+                                    user=user,
+                                    port=port,
+                                    key_file=context.machine.key_file,
+                                    env_setup=context.machine.env_setup,
+                                ),
+                            )
+                            self._context_store.add(new_ctx)
+                            target_ctx = new_ctx
+                            logger.info(
+                                "Auto-created context '%s' (%s@%s:%s)",
+                                ctx_name, user, host, port,
+                            )
+                        _ctx_cache[ctx_name] = target_ctx
+
+                agent = Agent(
+                    id=remote_id,
+                    task=TaskDefinition(
+                        name="%s-%s" % (tool, remote_id[:6]),
+                        tool=tool,
+                        prompt=prompt,
+                        context=target_ctx.name,
+                    ),
+                    context_id=target_ctx.id,
+                    context_name=target_ctx.name,
+                    context_path=workdir,
+                    transport_type=target_ctx.machine.type,
+                    status=agent_status,
+                    state=agent_state,
+                    tmux_session=session,
+                    started_at=started_at,
+                    completed_at=completed_at,
+                    exit_reason=ra.get("exit_reason"),
+                )
+                self._agent_store.save(agent)
+                imported += 1
+                logger.info(
+                    "Imported remote agent %s (%s, %s) from %s",
+                    remote_id, tool, agent_status.value, context.name,
+                )
+
+        return imported, skipped, updated
 
     async def _run_monitor_with_retries(
         self,
