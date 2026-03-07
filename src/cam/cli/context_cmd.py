@@ -36,6 +36,7 @@ def context_add(
     agent: bool = typer.Option(False, "--agent", help="WebSocket Agent Server mode"),
     agent_port: int = typer.Option(9876, "--agent-port", help="Agent server port"),
     token: Optional[str] = typer.Option(None, "--token", help="Auth token"),
+    client: bool = typer.Option(False, "--client", help="Use cam-client.py protocol"),
     docker: Optional[str] = typer.Option(None, "--docker", help="Docker image"),
     env_setup: Optional[str] = typer.Option(None, "--env-setup", help="Shell commands to run before agent (e.g. PATH setup)"),
     tag: Optional[list[str]] = typer.Option(None, "--tag", help="Tags (repeatable)"),
@@ -55,6 +56,8 @@ def context_add(
     # Determine transport type from options
     if docker:
         transport_type = TransportType.DOCKER
+    elif client and host:
+        transport_type = TransportType.CLIENT
     elif agent:
         transport_type = TransportType.WEBSOCKET
     elif host:

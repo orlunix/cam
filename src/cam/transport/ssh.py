@@ -56,6 +56,20 @@ class SSHTransport(Transport):
         conn_hash = hashlib.sha256(conn_key.encode()).hexdigest()[:12]
         self._control_path = Path(f"/tmp/cam-ssh-{conn_hash}")
 
+        # Cached remote $HOME — resolved lazily on first use
+        self._remote_home: str | None = None
+
+    async def _get_remote_home(self) -> str:
+        """Resolve and cache the remote user's home directory."""
+        if self._remote_home is None:
+            ok, out = await self._run_ssh("echo $HOME", check=False)
+            self._remote_home = out.strip() if ok and out.strip() else "/tmp"
+        return self._remote_home
+
+    def _remote_log_path(self, home: str, session_id: str) -> str:
+        """Build persistent log path under the remote user's home."""
+        return f"{home}/.cam/logs/{session_id}.output.log"
+
     def _ssh_base_args(self) -> list[str]:
         """Build base SSH command arguments with ControlMaster options."""
         args = [
@@ -176,16 +190,19 @@ class SSHTransport(Transport):
         return True
 
     async def start_logging(self, session_id: str, log_path: str) -> bool:
-        """Pipe all remote TMUX pane output to a log file via pipe-pane."""
+        """Pipe all remote TMUX pane output to a log file via pipe-pane.
+
+        Logs are stored under ~/.cam/logs/ on the remote host so they
+        persist across reboots (unlike the old /tmp/cam-logs/ path).
+        """
         target = f"{session_id}:0.0"
-        # Ensure remote log directory exists
-        remote_dir = "/tmp/cam-logs"
-        await self._run_ssh(f"mkdir -p {remote_dir}", check=False)
-        # Use remote path for SSH
-        remote_log = f"{remote_dir}/{session_id}.output.log"
+        home = await self._get_remote_home()
+        remote_dir = f"{home}/.cam/logs"
+        await self._run_ssh(f"mkdir -p {shlex.quote(remote_dir)}", check=False)
+        remote_log = self._remote_log_path(home, session_id)
         pipe_cmd = self._remote_tmux_cmd(session_id, [
             "pipe-pane", "-t", target,
-            f"cat >> {remote_log}",
+            f"cat >> {shlex.quote(remote_log)}",
         ])
         success, _ = await self._run_ssh(pipe_cmd, check=False)
         if success:
@@ -195,17 +212,24 @@ class SSHTransport(Transport):
         return success
 
     async def read_output_log(self, session_id: str, offset: int = 0, max_bytes: int = 256_000) -> tuple[str, int]:
-        """Read the pipe-pane output log from the remote host."""
-        remote_log = f"/tmp/cam-logs/{session_id}.output.log"
-        # Use dd to read from offset, limited to max_bytes.
-        # Wrap in bash -c to avoid csh redirect syntax issues (2>/dev/null).
-        inner = f"dd if={shlex.quote(remote_log)} bs=1 skip={offset} count={max_bytes} 2>/dev/null"
-        cmd = f"bash -c {shlex.quote(inner)}"
-        success, output = await self._run_ssh(cmd, check=False)
-        if not success or not output:
-            return "", offset
-        next_offset = offset + len(output.encode("utf-8", errors="replace"))
-        return output, next_offset
+        """Read the pipe-pane output log from the remote host.
+
+        Tries ~/.cam/logs/ first (persistent), falls back to the legacy
+        /tmp/cam-logs/ path for sessions started before the migration.
+        """
+        home = await self._get_remote_home()
+        remote_log = self._remote_log_path(home, session_id)
+        legacy_log = f"/tmp/cam-logs/{session_id}.output.log"
+
+        for log_path in (remote_log, legacy_log):
+            inner = f"dd if={shlex.quote(log_path)} bs=1 skip={offset} count={max_bytes} 2>/dev/null"
+            cmd = f"bash -c {shlex.quote(inner)}"
+            success, output = await self._run_ssh(cmd, check=False)
+            if success and output:
+                next_offset = offset + len(output.encode("utf-8", errors="replace"))
+                return output, next_offset
+
+        return "", offset
 
     async def send_input(self, session_id: str, text: str, send_enter: bool = True) -> bool:
         """Send text input to a remote TMUX session."""
@@ -392,19 +416,28 @@ class SSHTransport(Transport):
 
         Uses base64 encoding piped through SSH to avoid binary corruption.
         """
-        safe_path = shlex.quote(remote_path)
-        safe_dir = shlex.quote(str(Path(remote_path).parent))
+        # Expand ~ to $HOME so shell variable expansion works.
+        # shlex.quote would single-quote ~, preventing tilde expansion.
+        if remote_path.startswith("~/"):
+            rel = remote_path[2:]  # e.g. ".cam/cam-client.py"
+            rel_dir = str(Path(rel).parent)  # e.g. ".cam"
+            # Double-quote so $HOME expands but spaces are safe
+            shell_path = f'"$HOME/{rel}"'
+            shell_dir = f'"$HOME/{rel_dir}"'
+        else:
+            shell_path = shlex.quote(remote_path)
+            shell_dir = shlex.quote(str(Path(remote_path).parent))
 
         # Create parent directory
-        ok, _ = await self._run_ssh(f"mkdir -p {safe_dir}", check=False)
+        ok, _ = await self._run_ssh(f"mkdir -p {shell_dir}", check=False)
         if not ok:
-            logger.error("Failed to create remote dir: %s", safe_dir)
+            logger.error("Failed to create remote dir: %s", shell_dir)
             return False
 
         # Write file via base64 decode on remote side
         import base64
         b64 = base64.b64encode(data).decode("ascii")
-        ssh_args = self._ssh_base_args() + ["--", f"base64 -d > {safe_path}"]
+        ssh_args = self._ssh_base_args() + ["--", f"base64 -d > {shell_path}"]
 
         try:
             proc = await asyncio.create_subprocess_exec(

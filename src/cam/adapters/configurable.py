@@ -2,15 +2,25 @@
 
 Allows defining new tool adapters declaratively via TOML files,
 without writing Python code. Implements the full ToolAdapter interface.
+
+Detection logic (state, completion, auto-confirm) is delegated to
+``cam.client``, which is the single source of truth.  This adapter
+is a thin wrapper that converts plain-string returns → cam enums.
 """
 
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 
 from cam.adapters.base import ConfirmAction, ToolAdapter
+from cam.client import (
+    AdapterConfig,
+    detect_completion as _detect_completion,
+    detect_state as _detect_state,
+    is_ready_for_input as _is_ready_for_input,
+    should_auto_confirm as _should_auto_confirm,
+)
 from cam.core.models import AgentState, AgentStatus, Context, TaskDefinition
 
 try:
@@ -20,40 +30,24 @@ except ModuleNotFoundError:
 
 logger = logging.getLogger(__name__)
 
-# Map string flag names to re constants
-_RE_FLAGS = {
-    "IGNORECASE": re.IGNORECASE,
-    "MULTILINE": re.MULTILINE,
-    "DOTALL": re.DOTALL,
-}
-
 # Valid AgentState values for state patterns
 _VALID_STATES = {s.value: s for s in AgentState}
 
-
-def _compile_flags(flag_names: list[str]) -> int:
-    """Combine a list of regex flag names into a single flags int."""
-    flags = 0
-    for name in flag_names:
-        upper = name.upper()
-        if upper not in _RE_FLAGS:
-            raise ValueError(f"Unknown regex flag: {name!r} (valid: {list(_RE_FLAGS)})")
-        flags |= _RE_FLAGS[upper]
-    return flags
-
-
-def _compile(pattern: str, flags: list[str] | None = None) -> re.Pattern[str]:
-    """Compile a regex pattern with optional flag names."""
-    return re.compile(pattern, _compile_flags(flags or []))
+# Valid completion / state strategies (validated at init time)
+_VALID_STATE_STRATEGIES = ("first", "last")
+_VALID_COMPLETION_STRATEGIES = ("pattern", "prompt_count", "process_exit")
 
 
 class ConfigurableAdapter(ToolAdapter):
     """TOML-driven adapter implementing the full ToolAdapter interface.
 
-    All regex patterns are precompiled at init time for zero runtime overhead.
+    All detection logic is delegated to ``cam.client`` functions which
+    operate on a shared ``AdapterConfig`` parsed from the same TOML dict.
     """
 
     def __init__(self, config: dict) -> None:
+        self._config = config  # Stored for to_dict() serialization
+
         adapter = config.get("adapter", {})
         if not adapter.get("name"):
             raise ValueError("adapter.name is required")
@@ -63,86 +57,38 @@ class ConfigurableAdapter(ToolAdapter):
         self.name: str = adapter["name"]
         self.display_name: str = adapter["display_name"]
 
-        # Launch config
-        launch = config.get("launch", {})
-        self._command: list[str] = launch.get("command", [])
-        self._prompt_after_launch: bool = launch.get("prompt_after_launch", False)
-        self._startup_wait: float = float(launch.get("startup_wait", 2.0))
-        self._strip_ansi: bool = launch.get("strip_ansi", False)
-
-        # Ready pattern (optional)
-        rp = launch.get("ready_pattern")
-        self._ready_pattern: re.Pattern[str] | None = (
-            _compile(rp, launch.get("ready_flags")) if rp else None
-        )
-
-        # State detection
-        state_cfg = config.get("state", {})
-        self._state_strategy: str = state_cfg.get("strategy", "first")
-        if self._state_strategy not in ("first", "last"):
+        # Validate strategies before delegating to AdapterConfig
+        state_strategy = config.get("state", {}).get("strategy", "first")
+        if state_strategy not in _VALID_STATE_STRATEGIES:
             raise ValueError(
-                f"Unknown state.strategy: {self._state_strategy!r} (valid: 'first', 'last')"
+                f"Unknown state.strategy: {state_strategy!r} (valid: 'first', 'last')"
             )
-        self._state_recent_chars: int = state_cfg.get("recent_chars", 2000)
-        self._state_patterns: list[tuple[AgentState, re.Pattern[str]]] = []
-        for entry in state_cfg.get("patterns", []):
+
+        comp_strategy = config.get("completion", {}).get("strategy", "process_exit")
+        if comp_strategy not in _VALID_COMPLETION_STRATEGIES:
+            raise ValueError(
+                f"Unknown completion.strategy: {comp_strategy!r} "
+                f"(valid: 'pattern', 'prompt_count', 'process_exit')"
+            )
+
+        # Validate state names
+        for entry in config.get("state", {}).get("patterns", []):
             state_str = entry["state"]
             if state_str not in _VALID_STATES:
                 raise ValueError(
                     f"Unknown state: {state_str!r} (valid: {list(_VALID_STATES)})"
                 )
-            self._state_patterns.append((
-                _VALID_STATES[state_str],
-                _compile(entry["pattern"], entry.get("flags")),
-            ))
 
-        # Completion detection
-        comp = config.get("completion", {})
-        self._completion_strategy: str = comp.get("strategy", "process_exit")
-        if self._completion_strategy not in ("pattern", "prompt_count", "process_exit"):
-            raise ValueError(
-                f"Unknown completion.strategy: {self._completion_strategy!r} "
-                f"(valid: 'pattern', 'prompt_count', 'process_exit')"
-            )
-        self._completion_recent_chars: int = comp.get("recent_chars", 500)
-        self._min_output_length: int = comp.get("min_output_length", 100)
-        self._error_search_full: bool = comp.get("error_search_full", True)
+        # Delegate all pattern compilation + detection config to client.py
+        self._ac = AdapterConfig(config)
 
-        # Pattern strategy
-        cp = comp.get("completion_pattern")
-        self._completion_pattern: re.Pattern[str] | None = (
-            _compile(cp, comp.get("completion_flags")) if cp else None
-        )
-        ep = comp.get("error_pattern")
-        self._error_pattern: re.Pattern[str] | None = (
-            _compile(ep, comp.get("error_flags")) if ep else None
-        )
-        sp = comp.get("shell_prompt_pattern")
-        self._shell_prompt_pattern: re.Pattern[str] | None = (
-            _compile(sp, comp.get("shell_prompt_flags")) if sp else None
-        )
+        # Launch config (kept here — not needed by client.py detection)
+        launch = config.get("launch", {})
+        self._command: list[str] = launch.get("command", [])
 
-        # Prompt-count strategy
-        pp = comp.get("prompt_pattern")
-        self._prompt_pattern: re.Pattern[str] | None = (
-            _compile(pp, comp.get("prompt_flags")) if pp else None
-        )
-        self._prompt_count_threshold: int = comp.get("prompt_count_threshold", 2)
-        fp = comp.get("fallback_summary_pattern")
-        self._fallback_summary_pattern: re.Pattern[str] | None = (
-            _compile(fp, comp.get("fallback_summary_flags")) if fp else None
-        )
-
-        # Auto-confirm rules (ordered)
-        self._confirm_rules: list[tuple[re.Pattern[str], ConfirmAction]] = []
-        for rule in config.get("confirm", []):
-            self._confirm_rules.append((
-                _compile(rule["pattern"], rule.get("flags")),
-                ConfirmAction(
-                    response=rule.get("response", ""),
-                    send_enter=rule.get("send_enter", True),
-                ),
-            ))
+    def to_dict(self) -> dict:
+        """Return the raw adapter config for serialization to cam-client."""
+        return self._config
 
     @classmethod
     def from_toml(cls, path: Path) -> ConfigurableAdapter:
@@ -174,125 +120,28 @@ class ConfigurableAdapter(ToolAdapter):
         return result
 
     def detect_state(self, output: str) -> AgentState | None:
-        """Detect state using configured strategy."""
-        recent = output[-self._state_recent_chars:] if len(output) > self._state_recent_chars else output
-        if self._strip_ansi:
-            from cam.utils.ansi import strip_ansi
-            recent = strip_ansi(recent)
-
-        if self._state_strategy == "last":
-            # Find the last matching pattern (most recent activity wins)
-            last_pos = -1
-            last_state: AgentState | None = None
-            for state, pattern in self._state_patterns:
-                for m in pattern.finditer(recent):
-                    if m.start() > last_pos:
-                        last_pos = m.start()
-                        last_state = state
-            return last_state
-        else:
-            # "first" strategy: return first matching pattern
-            for state, pattern in self._state_patterns:
-                if pattern.search(recent):
-                    return state
-            return None
+        s = _detect_state(output, self._ac)
+        return AgentState(s) if s else None
 
     def should_auto_confirm(self, output: str) -> ConfirmAction | None:
-        """Check confirm rules in order, return first match."""
-        if self._strip_ansi:
-            from cam.utils.ansi import strip_ansi
-            output = strip_ansi(output)
-        # Strip box-drawing border characters (│┌┐└┘─├┤┬┴┼╭╮╰╯) and
-        # whitespace from both ends of each line.  TUI borders inflate
-        # line length (e.g. 279 chars of padding) and push the real
-        # confirm text like (y) out of the 500-char matching window.
-        _BOX = "─│┌┐└┘├┤┬┴┼╭╮╰╯ \t"
-        lines = [line.strip(_BOX) for line in output.splitlines()]
-        # Drop fully-empty lines from the tail
-        while lines and not lines[-1]:
-            lines.pop()
-        clean = "\n".join(lines).rstrip()
-        recent = clean[-500:] if len(clean) > 500 else clean
-
-        for pattern, action in self._confirm_rules:
-            if pattern.search(recent):
-                return action
-        return None
+        r = _should_auto_confirm(output, self._ac)
+        if r is None:
+            return None
+        return ConfirmAction(response=r[0], send_enter=r[1])
 
     def detect_completion(self, output: str) -> AgentStatus | None:
-        """Detect completion using configured strategy."""
-        if self._completion_strategy == "process_exit":
-            return None  # Rely on session exit
-
-        if self._completion_strategy == "prompt_count":
-            return self._detect_completion_prompt_count(output)
-
-        # Default: "pattern" strategy
-        return self._detect_completion_pattern(output)
-
-    def _detect_completion_pattern(self, output: str) -> AgentStatus | None:
-        """Pattern-based completion detection (like Codex/Aider)."""
-        if self._strip_ansi:
-            from cam.utils.ansi import strip_ansi
-            output = strip_ansi(output)
-
-        # Check errors (optionally in full output)
-        if self._error_pattern:
-            search_text = output if self._error_search_full else (
-                output[-self._completion_recent_chars:] if len(output) > self._completion_recent_chars else output
-            )
-            if self._error_pattern.search(search_text):
-                return AgentStatus.FAILED
-
-        recent = output[-self._completion_recent_chars:] if len(output) > self._completion_recent_chars else output
-
-        if self._completion_pattern and self._completion_pattern.search(recent):
+        r = _detect_completion(output, self._ac)
+        if r == "completed":
             return AgentStatus.COMPLETED
-
-        if (
-            self._shell_prompt_pattern
-            and self._shell_prompt_pattern.search(recent)
-            and len(output) > self._min_output_length
-        ):
-            return AgentStatus.COMPLETED
-
-        return None
-
-    def _detect_completion_prompt_count(self, output: str) -> AgentStatus | None:
-        """Prompt-count completion detection (like Claude)."""
-        if not self._prompt_pattern:
-            return None
-
-        if self._strip_ansi:
-            from cam.utils.ansi import strip_ansi
-            clean = strip_ansi(output)
-        else:
-            clean = output
-
-        count = len(self._prompt_pattern.findall(clean))
-        if count >= self._prompt_count_threshold:
-            return AgentStatus.COMPLETED
-
-        # Fallback: single prompt + summary pattern
-        if (
-            count == 1
-            and self._fallback_summary_pattern
-            and self._fallback_summary_pattern.search(clean)
-        ):
-            return AgentStatus.COMPLETED
-
+        if r == "failed":
+            return AgentStatus.FAILED
         return None
 
     def is_ready_for_input(self, output: str) -> bool:
-        if not self._ready_pattern:
-            return True
-        if self._strip_ansi:
-            from cam.utils.ansi import strip_ansi
-            output = strip_ansi(output)
-        return bool(self._ready_pattern.search(output))
+        return _is_ready_for_input(output, self._ac)
 
     def get_startup_wait(self) -> float:
-        return self._startup_wait
+        return self._ac.startup_wait
 
     def needs_prompt_after_launch(self) -> bool:
-        return self._prompt_after_launch
+        return self._ac.prompt_after_launch

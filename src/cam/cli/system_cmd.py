@@ -160,7 +160,6 @@ def init() -> None:
     tools = {
         "claude": shutil.which("claude"),
         "codex": shutil.which("codex"),
-        "aider": shutil.which("aider"),
     }
     for tool_name, path in tools.items():
         if path:
@@ -202,3 +201,57 @@ def init() -> None:
     console.print("  cam run claude \"task\"      # Run an agent")
     console.print("  cam list                  # Check agent status")
     console.print("  cam --help                # Full command reference")
+
+
+# ---------------------------------------------------------------------------
+# cam sync
+# ---------------------------------------------------------------------------
+
+
+def sync(
+    ctx_name: str = typer.Argument(..., help="Context name to sync to"),
+) -> None:
+    """Sync cam-client and adapter configs to a remote context."""
+    import asyncio
+
+    from cam.cli.app import state
+
+    context = state.context_store.get(ctx_name)
+    if not context:
+        print_error(f"Context not found: {ctx_name}")
+        raise typer.Exit(1)
+
+    from cam.core.models import TransportType
+
+    if context.machine.type == TransportType.LOCAL:
+        print_error("Sync is only for remote contexts (SSH/Agent)")
+        raise typer.Exit(1)
+
+    print_info(f"Syncing to context '{ctx_name}' ({context.machine.host})...")
+
+    try:
+        results = asyncio.run(state.agent_manager.sync_to_target(context))
+    except Exception as e:
+        print_error(f"Sync failed: {e}")
+        raise typer.Exit(1)
+
+    if not results:
+        print_info("Nothing to sync.")
+        return
+
+    for name, status in results.items():
+        if status == "unchanged":
+            console.print(f"  [dim]{name}: unchanged[/dim]")
+        elif status == "failed":
+            console.print(f"  [red]{name}: FAILED[/red]")
+        else:
+            console.print(f"  [green]{name}: {status}[/green]")
+
+    failed = sum(1 for s in results.values() if s == "failed")
+    if failed:
+        print_error(f"{failed} file(s) failed to sync")
+        raise typer.Exit(1)
+
+    synced = sum(1 for s in results.values() if s in ("deployed", "updated"))
+    unchanged = sum(1 for s in results.values() if s == "unchanged")
+    print_success(f"Sync complete: {synced} deployed/updated, {unchanged} unchanged")

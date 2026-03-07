@@ -9,7 +9,6 @@ from uuid import uuid4
 import pytest
 
 from cam.adapters.base import ConfirmAction
-from cam.adapters.codex import CodexAdapter
 from cam.adapters.configurable import ConfigurableAdapter
 from cam.core.models import AgentState, AgentStatus, Context, TaskDefinition
 
@@ -34,13 +33,8 @@ def context():
 
 
 @pytest.fixture
-def codex_toml_adapter():
+def codex_adapter():
     return ConfigurableAdapter.from_toml(CODEX_TOML)
-
-
-@pytest.fixture
-def codex_python_adapter():
-    return CodexAdapter()
 
 
 @pytest.fixture
@@ -122,16 +116,17 @@ class TestLoading:
         assert adapter.get_startup_wait() == 10.0
 
 
-# ── Codex behavior equivalence tests ──────────────────────────────
+# ── Codex TOML adapter tests ─────────────────────────────────────
 
 
-class TestCodexEquivalence:
-    """Verify ConfigurableAdapter(codex.toml) behaves identically to CodexAdapter."""
+class TestCodexToml:
+    """Test ConfigurableAdapter loaded from codex.toml."""
 
-    def test_launch_command(self, codex_toml_adapter, codex_python_adapter, task, context):
-        toml_cmd = codex_toml_adapter.get_launch_command(task, context)
-        py_cmd = codex_python_adapter.get_launch_command(task, context)
-        assert toml_cmd == py_cmd
+    def test_launch_command(self, codex_adapter, task, context):
+        cmd = codex_adapter.get_launch_command(task, context)
+        assert cmd[0] == "codex"
+        assert "--full-auto" not in cmd
+        assert task.prompt in cmd
 
     def test_launch_no_double_substitution(self):
         """Prompt containing {path} must not get replaced by context.path."""
@@ -147,11 +142,11 @@ class TestCodexEquivalence:
         cmd = adapter.get_launch_command(task, ctx)
         assert cmd == ["tool", "--prompt", "fix {path} in code"]
 
-    def test_startup_wait(self, codex_toml_adapter, codex_python_adapter):
-        assert codex_toml_adapter.get_startup_wait() == codex_python_adapter.get_startup_wait()
+    def test_startup_wait(self, codex_adapter):
+        assert codex_adapter.get_startup_wait() == 0.0
 
-    def test_needs_prompt_after_launch(self, codex_toml_adapter, codex_python_adapter):
-        assert codex_toml_adapter.needs_prompt_after_launch() == codex_python_adapter.needs_prompt_after_launch()
+    def test_needs_prompt_after_launch(self, codex_adapter):
+        assert codex_adapter.needs_prompt_after_launch() is False
 
     # ── detect_state ──
 
@@ -181,14 +176,13 @@ class TestCodexEquivalence:
         ("git push origin main", AgentState.COMMITTING),
         ("some random output", None),
     ])
-    def test_detect_state(self, codex_toml_adapter, codex_python_adapter, output, expected):
-        toml_result = codex_toml_adapter.detect_state(output)
-        py_result = codex_python_adapter.detect_state(output)
-        assert toml_result == py_result == expected
+    def test_detect_state(self, codex_adapter, output, expected):
+        assert codex_adapter.detect_state(output) == expected
 
     # ── should_auto_confirm ──
 
     @pytest.mark.parametrize("output,expect_match", [
+        ("1. Yes, allow Codex to work in this folder\n2. No", True),
         ("Apply changes? [Y/n]", True),
         ("Accept suggestion? [Y/n]", True),
         ("Approve all? [Y/n]", True),
@@ -198,62 +192,32 @@ class TestCodexEquivalence:
         ("Press Enter to continue", True),
         ("Just some normal output", False),
     ])
-    def test_auto_confirm(self, codex_toml_adapter, codex_python_adapter, output, expect_match):
-        toml_result = codex_toml_adapter.should_auto_confirm(output)
-        py_result = codex_python_adapter.should_auto_confirm(output)
+    def test_auto_confirm(self, codex_adapter, output, expect_match):
+        result = codex_adapter.should_auto_confirm(output)
         if expect_match:
-            assert toml_result is not None and py_result is not None
-            assert toml_result.response == py_result.response
-            assert toml_result.send_enter == py_result.send_enter
+            assert result is not None
         else:
-            assert toml_result is None and py_result is None
+            assert result is None
 
-    # ── detect_completion ──
+    def test_trust_dialog_sends_1(self, codex_adapter):
+        output = "1. Yes, allow Codex to work in this folder\n2. No"
+        result = codex_adapter.should_auto_confirm(output)
+        assert result.response == "1"
+        assert result.send_enter is True
 
-    def test_completion_done(self, codex_toml_adapter, codex_python_adapter):
-        output = "x" * 200 + "\nDone"
-        assert codex_toml_adapter.detect_completion(output) == AgentStatus.COMPLETED
-        assert codex_python_adapter.detect_completion(output) == AgentStatus.COMPLETED
+    # ── detect_completion (prompt_count strategy) ──
 
-    def test_completion_completed(self, codex_toml_adapter, codex_python_adapter):
-        output = "x" * 200 + "\nCompleted successfully"
-        assert codex_toml_adapter.detect_completion(output) == AgentStatus.COMPLETED
-        assert codex_python_adapter.detect_completion(output) == AgentStatus.COMPLETED
+    def test_completion_two_prompts(self, codex_adapter):
+        output = "› say hello\n• Hello!\n› "
+        assert codex_adapter.detect_completion(output) == AgentStatus.COMPLETED
 
-    def test_completion_finished(self, codex_toml_adapter, codex_python_adapter):
-        output = "x" * 200 + "\nFinished all tasks"
-        assert codex_toml_adapter.detect_completion(output) == AgentStatus.COMPLETED
-        assert codex_python_adapter.detect_completion(output) == AgentStatus.COMPLETED
+    def test_completion_single_prompt_not_done(self, codex_adapter):
+        output = "› say hello\n• Working..."
+        assert codex_adapter.detect_completion(output) is None
 
-    def test_completion_all_changes_applied(self, codex_toml_adapter, codex_python_adapter):
-        output = "x" * 200 + "\nAll changes applied"
-        assert codex_toml_adapter.detect_completion(output) == AgentStatus.COMPLETED
-        assert codex_python_adapter.detect_completion(output) == AgentStatus.COMPLETED
-
-    def test_error_detected(self, codex_toml_adapter, codex_python_adapter):
-        output = "Error: something went wrong"
-        assert codex_toml_adapter.detect_completion(output) == AgentStatus.FAILED
-        assert codex_python_adapter.detect_completion(output) == AgentStatus.FAILED
-
-    def test_fatal_error(self, codex_toml_adapter, codex_python_adapter):
-        output = "fatal: not a git repository"
-        assert codex_toml_adapter.detect_completion(output) == AgentStatus.FAILED
-        assert codex_python_adapter.detect_completion(output) == AgentStatus.FAILED
-
-    def test_shell_prompt_completion(self, codex_toml_adapter, codex_python_adapter):
-        output = "a" * 200 + "\nsome output\n$ "
-        assert codex_toml_adapter.detect_completion(output) == AgentStatus.COMPLETED
-        assert codex_python_adapter.detect_completion(output) == AgentStatus.COMPLETED
-
-    def test_shell_prompt_too_short(self, codex_toml_adapter, codex_python_adapter):
-        output = "$ "
-        assert codex_toml_adapter.detect_completion(output) is None
-        assert codex_python_adapter.detect_completion(output) is None
-
-    def test_no_completion(self, codex_toml_adapter, codex_python_adapter):
+    def test_completion_no_prompt(self, codex_adapter):
         output = "Working on things..."
-        assert codex_toml_adapter.detect_completion(output) is None
-        assert codex_python_adapter.detect_completion(output) is None
+        assert codex_adapter.detect_completion(output) is None
 
 
 # ── Cursor adapter tests ──────────────────────────────────────────
@@ -439,24 +403,24 @@ class TestRegistryIntegration:
         assert adapter is not None
         assert adapter.display_name == "Cursor Agent"
 
-    def test_python_adapters_still_present(self):
+    def test_adapters_still_present(self):
         from cam.adapters.registry import AdapterRegistry
         reg = AdapterRegistry()
-        for name in ["claude", "codex", "aider", "generic"]:
+        for name in ["claude", "codex", "generic"]:
             assert name in reg
 
-    def test_codex_toml_skipped(self):
-        """Python CodexAdapter wins over codex.toml."""
+    def test_codex_from_toml(self):
+        """Codex is loaded from TOML config."""
         from cam.adapters.registry import AdapterRegistry
         reg = AdapterRegistry()
         adapter = reg.get("codex")
         assert adapter is not None
-        assert isinstance(adapter, CodexAdapter)
+        assert isinstance(adapter, ConfigurableAdapter)
 
     def test_total_adapter_count(self):
         from cam.adapters.registry import AdapterRegistry
         reg = AdapterRegistry()
-        assert len(reg) == 5  # 4 Python + cursor
+        assert len(reg) == 4  # generic (Python) + claude + codex + cursor (TOML)
 
     def test_names_includes_cursor(self):
         from cam.adapters.registry import AdapterRegistry
