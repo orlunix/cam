@@ -55,8 +55,11 @@ export function renderSettings(container) {
     </form>
 
     <div class="section-divider"></div>
-    <div class="form-section-label">About</div>
-    <div class="about-text">CAM v0.1.0 &mdash; Coding Agent Manager</div>
+    <div class="form-section-label">App</div>
+    <div class="form-group">
+      <div class="about-text" style="margin-bottom:8px;">CAM v0.1.0 &mdash; Cache: ${document.querySelector('meta[name="cam-version"]')?.content || 'unknown'}</div>
+      <button type="button" class="btn-secondary btn-full" id="update-btn">Update app</button>
+    </div>
   `;
 
   container.querySelector('#settings-form').addEventListener('submit', async (e) => {
@@ -100,6 +103,25 @@ export function renderSettings(container) {
     }
 
     renderSettings(container); // Re-render with new status
+  });
+
+  container.querySelector('#update-btn').addEventListener('click', async () => {
+    const btn = container.querySelector('#update-btn');
+    btn.disabled = true;
+    btn.textContent = 'Updating...';
+    // Best-effort cache cleanup — ignore errors (file:// has no SW/cache API)
+    try { const r = await navigator.serviceWorker.getRegistrations(); await Promise.all(r.map(x => x.unregister())); } catch {}
+    try { const k = await caches.keys(); await Promise.all(k.map(x => caches.delete(x))); } catch {}
+    // Redirect to relay for fresh files, or reload
+    const relayUrl = localStorage.getItem('cam_relay_url') || '';
+    if (relayUrl) {
+      const httpUrl = relayUrl.replace(/^ws:\/\//, 'http://').replace(/^wss:\/\//, 'https://');
+      state.toast('Loading from server...', 'success');
+      setTimeout(() => { location.href = httpUrl; }, 300);
+    } else {
+      state.toast('Reloading...', 'success');
+      setTimeout(() => location.reload(), 300);
+    }
   });
 
   container.querySelector('#test-btn').addEventListener('click', async () => {
