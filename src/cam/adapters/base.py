@@ -188,6 +188,18 @@ class ToolAdapter(ABC):
         """Consecutive COMPLETED probes needed to confirm idle."""
         return 2
 
+    def get_auto_exit(self) -> bool:
+        """Whether to auto-exit when agent completes and is confirmed idle."""
+        return False
+
+    def get_exit_action(self) -> str:
+        """How to exit: 'kill_session', 'send_exit', or 'mark_only'."""
+        return "kill_session"
+
+    def get_exit_command(self) -> str:
+        """Command to send if exit_action is 'send_exit'."""
+        return "/exit"
+
     def to_dict(self) -> dict:
         """Return adapter config as a dict for serialization to cam-client."""
         return {}

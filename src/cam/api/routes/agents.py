@@ -146,6 +146,9 @@ async def list_agents(
     if limit:
         filters["limit"] = limit
 
+    # Reconcile stale RUNNING agents whose sessions have died
+    await state.agent_manager.reconcile()
+
     agents = await state.agent_manager.list_agents(**filters)
     return AgentListResponse(
         agents=[agent_to_response(a) for a in agents],
@@ -163,6 +166,11 @@ async def get_agent(agent_id: str, request: Request):
         raise HTTPException(
             status_code=404, detail=f"Agent not found: {agent_id}"
         )
+    # Reconcile if this agent is RUNNING but its session is gone
+    from cam.core.models import AgentStatus as _AgentStatus
+    if agent.status == _AgentStatus.RUNNING:
+        await state.agent_manager.reconcile()
+        agent = await state.agent_manager.get_agent(agent_id)
     return agent_to_response(agent)
 
 

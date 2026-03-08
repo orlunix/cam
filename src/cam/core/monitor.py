@@ -83,6 +83,7 @@ class AgentMonitor:
         self._probe_count: int = 0
         self._consecutive_probe_completed: int = 0
         self._idle_confirmed: bool = False  # True once probe confirms idle
+        self._completion_detected: AgentStatus | None = None  # Set when completion pattern matched
 
     # ------------------------------------------------------------------
     # Public API
@@ -251,24 +252,26 @@ class AgentMonitor:
                     })
 
                 # --------------------------------------------------
-                # 8. Detect completion (report only, never auto-exit)
+                # 8. Detect completion
                 # --------------------------------------------------
                 idle_for = now - self._last_change_time
                 if not output_changed and idle_for >= self._adapter.get_completion_stable():
                     completion_status = self._adapter.detect_completion(output)
                     if completion_status is not None:
-                        cost = self._adapter.estimate_cost(output)
-                        if cost is not None:
-                            self._agent.cost_estimate = cost
-                        files = self._adapter.parse_files_changed(output)
-                        if files:
-                            self._agent.files_changed = files
-                        self._logger.write("completion_detected", data={
-                            "status": completion_status.value,
-                        })
-                        self._publish_event("completion_detected", {
-                            "status": completion_status.value,
-                        })
+                        if not self._completion_detected:
+                            self._completion_detected = completion_status
+                            cost = self._adapter.estimate_cost(output)
+                            if cost is not None:
+                                self._agent.cost_estimate = cost
+                            files = self._adapter.parse_files_changed(output)
+                            if files:
+                                self._agent.files_changed = files
+                            self._logger.write("completion_detected", data={
+                                "status": completion_status.value,
+                            })
+                            self._publish_event("completion_detected", {
+                                "status": completion_status.value,
+                            })
 
                 # --------------------------------------------------
                 # 8b. Probe-based idle detection
@@ -286,6 +289,7 @@ class AgentMonitor:
                 if output_changed and not probe_caused:
                     self._idle_confirmed = False
                     self._consecutive_probe_completed = 0
+                    self._completion_detected = None
 
                 if (
                     self._config.monitor.probe_detection
@@ -340,6 +344,62 @@ class AgentMonitor:
                             self._consecutive_probe_completed = 0
                         else:
                             self._consecutive_probe_completed = 0
+
+                # --------------------------------------------------
+                # 8c. Auto-exit on completion + idle confirmed
+                # --------------------------------------------------
+                # CLI --auto-exit flag overrides adapter config
+                auto_exit = self._agent.task.auto_exit
+                if auto_exit is None:
+                    auto_exit = self._adapter.get_auto_exit()
+                # Two paths to auto-exit:
+                # 1. Probe-confirmed idle: has_worked + idle_confirmed + completion
+                # 2. Completion pattern only: for trivial tasks where state never
+                #    changes (e.g. "say hello"), completion pattern (two ❯ prompts)
+                #    is strong enough evidence if output has been stable long enough
+                completion_stable_enough = (
+                    self._completion_detected == AgentStatus.COMPLETED
+                    and idle_for >= self._adapter.get_completion_stable() * 3
+                )
+                if (
+                    auto_exit
+                    and self._completion_detected == AgentStatus.COMPLETED
+                    and (
+                        (self._has_worked and self._idle_confirmed)
+                        or completion_stable_enough
+                    )
+                ):
+                    exit_action = self._adapter.get_exit_action()
+                    self._logger.write("auto_exit", data={
+                        "exit_action": exit_action,
+                    })
+                    if exit_action == "kill_session":
+                        try:
+                            await self._transport.kill_session(session_id)
+                        except Exception:
+                            pass
+                    elif exit_action == "send_exit":
+                        try:
+                            await self._transport.send_input(
+                                session_id,
+                                self._adapter.get_exit_command(),
+                                send_enter=True,
+                            )
+                            # Wait for session to die
+                            for _ in range(10):
+                                await asyncio.sleep(1)
+                                if not await self._transport.session_exists(session_id):
+                                    break
+                            else:
+                                # Force kill if send_exit didn't work
+                                try:
+                                    await self._transport.kill_session(session_id)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                    # mark_only: just finalize without touching the session
+                    return self._finalize(AgentStatus.COMPLETED, "Task completed (auto-exit)")
 
                 # --------------------------------------------------
                 # 9. Sleep until next poll

@@ -242,6 +242,27 @@ class Relay:
                 writer.close()
             return
 
+        # Relay status — handled directly, no forwarding
+        if path == "/_relay/status":
+            import json as _json
+            status_body = _json.dumps({
+                "relay": "ok",
+                "server_connected": self._server_writer is not None,
+                "clients": len(self._clients),
+            }).encode()
+            resp = (
+                f"HTTP/1.1 200 OK\r\n"
+                f"Content-Type: application/json\r\n"
+                f"Content-Length: {len(status_body)}\r\n"
+                f"Access-Control-Allow-Origin: *\r\n"
+                f"Connection: close\r\n"
+                f"\r\n"
+            )
+            writer.write(resp.encode() + status_body)
+            await writer.drain()
+            writer.close()
+            return
+
         # API requests — proxy through connected server
         if path.startswith("/api/"):
             log.info("HTTP-API %s %s from %s", method, path, peer)
@@ -532,6 +553,28 @@ class Relay:
                     continue
                 elif opcode == OP_PONG:
                     continue
+
+                # Handle relay-internal requests directly
+                if opcode == OP_TEXT:
+                    import json as _json
+                    try:
+                        msg = _json.loads(payload)
+                        if msg.get("path") == "/_relay/status":
+                            resp = _json.dumps({
+                                "id": msg.get("id", ""),
+                                "status": 200,
+                                "headers": {"content-type": "application/json"},
+                                "body": _json.dumps({
+                                    "relay": "ok",
+                                    "server_connected": self._server_writer is not None,
+                                    "clients": len(self._clients),
+                                }),
+                            })
+                            writer.write(make_frame(OP_TEXT, resp.encode()))
+                            await writer.drain()
+                            continue
+                    except (ValueError, TypeError):
+                        pass
 
                 # Forward to server
                 if self._server_writer is not None:
