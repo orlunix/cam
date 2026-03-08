@@ -74,3 +74,17 @@ send_enter = true
 pattern = "Run \\(always"
 response = ""
 send_enter = true
+
+[probe]
+char = "Z"
+confirm_response = ""
+confirm_send_enter = true
+wait = 0.3
+idle_threshold = 2
+
+[monitor]
+confirm_cooldown = 5.0
+confirm_sleep = 0.5
+completion_stable = 3.0
+health_check_interval = 15
+empty_threshold = 3
