@@ -917,6 +917,10 @@ export function renderAgentDetail(container, agentId) {
     const pane = container.querySelector('#output-pane');
     if (!pane) return;
 
+    // Skip if a fetch is already in flight — prevents resetting the
+    // inflight timer which causes the elapsed counter to jump backward.
+    if (_inflightStart) return;
+
     _inflightAbort = new AbortController();
     _startInflightTracking('Fetching output');
 

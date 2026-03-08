@@ -96,3 +96,17 @@ pattern = "\\(y/n\\)|\\[Y/n\\]|\\[y/N\\]"
 flags = ["IGNORECASE"]
 response = "y"
 send_enter = true
+
+[probe]
+char = "Z"                    # probe char when auto-confirm OFF
+confirm_response = ""         # fallback confirm when auto-confirm ON
+confirm_send_enter = true     # send Enter with fallback confirm
+wait = 0.3                    # seconds after probe before recapture
+idle_threshold = 2            # consecutive COMPLETED probes → idle confirmed
+
+[monitor]
+confirm_cooldown = 5.0        # seconds between auto-confirm attempts
+confirm_sleep = 0.5           # sleep after sending confirmation
+completion_stable = 3.0       # idle seconds before checking completion
+health_check_interval = 15    # seconds between tmux alive checks
+empty_threshold = 3           # consecutive empty captures before concern

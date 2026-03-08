@@ -261,6 +261,20 @@ class AdapterConfig(object):
                 rule.get("send_enter", True),
             ))
 
+        probe_cfg = config.get("probe", {})
+        self.probe_char = probe_cfg.get("char", "Z")
+        self.probe_confirm_response = probe_cfg.get("confirm_response", "")
+        self.probe_confirm_send_enter = probe_cfg.get("confirm_send_enter", True)
+        self.probe_wait = float(probe_cfg.get("wait", 0.3))
+        self.probe_idle_threshold = int(probe_cfg.get("idle_threshold", 2))
+
+        mon_cfg = config.get("monitor", {})
+        self.confirm_cooldown = float(mon_cfg.get("confirm_cooldown", 5.0))
+        self.confirm_sleep = float(mon_cfg.get("confirm_sleep", 0.5))
+        self.completion_stable = float(mon_cfg.get("completion_stable", 3.0))
+        self.health_check_interval = float(mon_cfg.get("health_check_interval", 15))
+        self.empty_threshold = int(mon_cfg.get("empty_threshold", 3))
+
 
 # ---------------------------------------------------------------------------
 # Subprocess helper (3.6 compat: no capture_output, no text)
@@ -544,7 +558,8 @@ def remove_pid(agent_id):
 
 class ClientMonitor(object):
     def __init__(self, agent_id, session_id, server_url, token,
-                 adapter_config, auto_confirm=True, poll_interval=1.0):
+                 adapter_config, auto_confirm=True, poll_interval=1.0,
+                 prompt=""):
         self.agent_id = agent_id
         self.session_id = session_id
         self.server_url = server_url
@@ -558,7 +573,6 @@ class ClientMonitor(object):
         self._current_state = None
         self._last_confirm_time = 0.0
         self._has_worked = False
-        self._prompt_disappeared = False
         self._running = True
         self._last_change_time = time.time()
 
@@ -583,7 +597,7 @@ class ClientMonitor(object):
             now = time.time()
             events = []
 
-            if now - last_health_check >= 15:
+            if now - last_health_check >= self.config.health_check_interval:
                 last_health_check = now
                 if not tmux_session_exists(self.session_id):
                     log.info("Session %s gone", self.session_id)
@@ -609,7 +623,7 @@ class ClientMonitor(object):
                 time.sleep(self.poll_interval)
                 continue
 
-            if self.auto_confirm and now - self._last_confirm_time >= 5.0:
+            if self.auto_confirm and now - self._last_confirm_time >= self.config.confirm_cooldown:
                 confirm = should_auto_confirm(output, self.config)
                 if confirm is not None:
                     response, send_enter = confirm
@@ -619,7 +633,7 @@ class ClientMonitor(object):
                                    "detail": {"response": response, "send_enter": send_enter},
                                    "ts": now})
                     log.info("Auto-confirmed: response=%r send_enter=%s", response, send_enter)
-                    time.sleep(0.5)
+                    time.sleep(self.config.confirm_sleep)
                     continue
 
             new_state = detect_state(output, self.config)
@@ -634,25 +648,18 @@ class ClientMonitor(object):
                                "detail": {"from": old_state or "initializing", "to": new_state},
                                "ts": now})
 
-            idle_for = now - self._last_change_time
+            # Detect completion for status reporting (but never auto-exit)
             status_to_send = None
             exit_reason = None
+            idle_for = now - self._last_change_time
 
-            if not output_changed and idle_for >= 3.0:
+            if not output_changed and idle_for >= self.config.completion_stable:
                 completion = detect_completion(output, self.config)
                 if completion:
-                    status_to_send = completion
-                    exit_reason = completion
-
-            if (self.config.prompt_after_launch
-                    and self.config.ready_pattern and self._has_worked):
-                clean = strip_ansi(output) if self.config.strip_ansi else output
-                prompt_visible = bool(self.config.ready_pattern.search(clean))
-                if not prompt_visible:
-                    self._prompt_disappeared = True
-                if prompt_visible and self._prompt_disappeared:
-                    status_to_send = "completed"
-                    exit_reason = "Tool returned to input prompt"
+                    # Report as event, don't exit
+                    events.append({"type": "completion_detected",
+                                   "detail": {"status": completion},
+                                   "ts": now})
 
             sync_output = output if output_changed else None
             response = sync_with_server(
@@ -1108,7 +1115,6 @@ def _run_local_monitor(session_id, tool):
     last_confirm = 0.0
     current_state = None
     has_worked = False
-    prompt_disappeared = False
     empty_count = 0
 
     try:
@@ -1157,28 +1163,11 @@ def _run_local_monitor(session_id, tool):
                 current_state = ns
                 store.update(session_id, state=ns)
 
-            done = reason = None
+            # Detect completion for status reporting (but never auto-exit)
             if not changed and now - last_change >= 3.0:
                 done = detect_completion(output, config)
                 if done:
-                    reason = done
-
-            if config.prompt_after_launch and config.ready_pattern and has_worked:
-                clean = strip_ansi(output) if config.strip_ansi else output
-                pv = bool(config.ready_pattern.search(clean))
-                if pv and config.confirm_rules:
-                    for cp, _r, _e in config.confirm_rules:
-                        if cp.search(clean):
-                            pv = False
-                            break
-                if not pv:
-                    prompt_disappeared = True
-                if pv and prompt_disappeared:
-                    done, reason = "completed", "Prompt returned"
-
-            if done in ("completed", "failed"):
-                store.update(session_id, status=done, exit_reason=reason, completed_at=_now_iso())
-                return
+                    store.update(session_id, state="idle")
 
             time.sleep(1)
     finally:
@@ -1302,6 +1291,7 @@ def main():
     parser.add_argument("--tool", default=None)
     parser.add_argument("--auto-confirm", type=bool, default=True)
     parser.add_argument("--poll-interval", type=float, default=1.0)
+    parser.add_argument("--prompt", default="")
     args = parser.parse_args()
 
     config_dict = None
@@ -1328,6 +1318,7 @@ def main():
         server_url=args.server.rstrip("/"), token=args.token,
         adapter_config=adapter_config,
         auto_confirm=args.auto_confirm, poll_interval=args.poll_interval,
+        prompt=args.prompt,
     )
 
     signal.signal(signal.SIGTERM, lambda s, f: monitor.stop())
