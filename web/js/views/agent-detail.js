@@ -12,6 +12,10 @@ export function renderAgentDetail(container, agentId) {
   let _deferredUpdate = null;
   let _directInput = false;
   let _errorCount = 0;
+  let _inflightStart = 0;       // timestamp when current output request started
+  let _inflightTimer = null;     // interval updating the in-flight toast
+  let _inflightAbort = null;     // AbortController for cancelling slow requests
+  let _lastResponseMs = 0;       // last successful response time in ms
   // Restore last-seen output so the view renders instantly on re-entry
   const _prevOutput = state.getOutput(agentId);
   let cachedOutput = _prevOutput?.text || '';
@@ -47,6 +51,79 @@ export function renderAgentDetail(container, agentId) {
       }
     }, { passive: false });
   }
+
+  // Floating "Copy" button — appears when text is selected inside an output pane.
+  // Android WebView's native copy popup doesn't work with immersive fullscreen.
+  function _wireCopyButton(pane) {
+    let copyBtn = null;
+    const show = (x, y) => {
+      if (!copyBtn) {
+        copyBtn = document.createElement('button');
+        copyBtn.textContent = 'Copy';
+        copyBtn.className = 'copy-float-btn';
+        document.body.appendChild(copyBtn);
+        copyBtn.addEventListener('click', () => {
+          const sel = window.getSelection();
+          const text = sel ? sel.toString() : '';
+          if (text) {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(text).then(
+                () => state.toast('Copied', 'success'),
+                () => _fallbackCopy(text),
+              );
+            } else {
+              _fallbackCopy(text);
+            }
+          }
+          sel && sel.removeAllRanges();
+          hide();
+        });
+      }
+      copyBtn.style.top = Math.max(8, y - 44) + 'px';
+      copyBtn.style.left = Math.min(window.innerWidth - 70, Math.max(8, x - 28)) + 'px';
+      copyBtn.classList.remove('hidden');
+    };
+    const hide = () => { if (copyBtn) copyBtn.classList.add('hidden'); };
+    const _fallbackCopy = (text) => {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;left:-9999px;';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); state.toast('Copied', 'success'); }
+      catch { state.toast('Copy failed', 'error'); }
+      document.body.removeChild(ta);
+    };
+    const check = () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.toString()) { hide(); return; }
+      try {
+        if (!pane.contains(sel.anchorNode)) { hide(); return; }
+      } catch { hide(); return; }
+      const r = sel.getRangeAt(0).getBoundingClientRect();
+      show(r.left + r.width / 2, r.top);
+    };
+    document.addEventListener('selectionchange', check);
+    // Flush deferred output update once user clears their selection
+    const flushDeferred = () => {
+      const sel = window.getSelection();
+      if ((!sel || sel.isCollapsed) && _deferredUpdate) {
+        const { pane: p, text } = _deferredUpdate;
+        _deferredUpdate = null;
+        _applyPaneUpdate(p, text);
+      }
+    };
+    document.addEventListener('selectionchange', flushDeferred);
+    // Clean up on view teardown
+    const origCleanup = _copyCleanups;
+    _copyCleanups = () => {
+      if (origCleanup) origCleanup();
+      document.removeEventListener('selectionchange', check);
+      document.removeEventListener('selectionchange', flushDeferred);
+      if (copyBtn) { copyBtn.remove(); copyBtn = null; }
+    };
+  }
+  let _copyCleanups = null;
 
   // #content is the parent — we toggle flex layout on it
   const contentEl = document.getElementById('content');
@@ -381,7 +458,8 @@ export function renderAgentDetail(container, agentId) {
         sending = true;
         sendBtn.disabled = true;
         sendBtn.textContent = '...';
-        try { await api.sendInput(agentId, text); }
+        const preview = text.length > 20 ? text.slice(0, 20) + '\u2026' : text;
+        try { await _tracked(`Sending "${preview}"`, () => api.sendInput(agentId, text)); }
         catch (e) {
           // Restore text on failure so user can retry
           inputText.value = text;
@@ -436,20 +514,24 @@ export function renderAgentDetail(container, agentId) {
     }
 
     // Quick-action buttons: fire-and-forget with brief disable to prevent double-tap
-    function quickSend(btn, fn) {
+    const _keyLabels = { 'C-c': '^C', 'Escape': 'Esc', 'Enter': 'Enter', 'BSpace': 'Backspace', 'Tab': 'Tab', 'BTab': 'Shift-Tab', 'DC': 'Del', 'Left': '\u2190', 'Right': '\u2192', 'Up': '\u2191', 'Down': '\u2193', 'PPage': 'PgUp', 'NPage': 'PgDn', 'Home': 'Home', 'End': 'End' };
+    function quickSend(btn, label, fn) {
       btn.addEventListener('click', () => {
         if (btn.disabled) return;
         btn.disabled = true;
         btn.style.opacity = '0.4';
-        fn().catch(e => state.toast(e.message, 'error'))
+        _tracked(label, fn).catch(e => state.toast(e.message, 'error'))
           .finally(() => { btn.disabled = false; btn.style.opacity = ''; });
       });
     }
     root.querySelectorAll('.btn-quick[data-input]').forEach(btn => {
-      quickSend(btn, () => api.sendInput(agentId, btn.dataset.input, false));
+      const ch = btn.dataset.input;
+      quickSend(btn, `Sending "${ch}"`, () => api.sendInput(agentId, ch, false));
     });
     root.querySelectorAll('.btn-quick[data-key]').forEach(btn => {
-      quickSend(btn, () => api.sendKey(agentId, btn.dataset.key));
+      const key = btn.dataset.key;
+      const label = `Sending ${_keyLabels[key] || key}`;
+      quickSend(btn, label, () => api.sendKey(agentId, key));
     });
 
     // File upload
@@ -533,6 +615,9 @@ export function renderAgentDetail(container, agentId) {
       outputOffset = 0;
       cachedOutput = '';
       autoScroll = true;
+      // Stop auto-refresh — full mode is manual-refresh only (allows text selection)
+      clearInterval(outputTimer);
+      outputTimer = null;
       render();
     });
 
@@ -542,6 +627,11 @@ export function renderAgentDetail(container, agentId) {
       useFullOutput = false;
       cachedOutput = '';
       autoScroll = true;
+      // Restart auto-refresh for live mode
+      clearInterval(outputTimer);
+      if (['running', 'starting', 'pending'].includes(agent?.status)) {
+        outputTimer = setInterval(loadOutput, 2000);
+      }
       render();
     });
 
@@ -554,6 +644,7 @@ export function renderAgentDetail(container, agentId) {
     const pane = container.querySelector('#output-pane');
     if (pane) {
       _wirePinchZoom(pane);
+      _wireCopyButton(pane);
       pane.addEventListener('scroll', () => {
         if (_scrollByCode) return;
         // User manually scrolled — disable auto-scroll, show jump button
@@ -683,6 +774,9 @@ export function renderAgentDetail(container, agentId) {
 
   function _onTouchEnd() {
     _touching = false;
+    // Don't flush deferred update if user has an active selection (let them copy first)
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) return;
     if (_deferredUpdate) {
       const { pane, text } = _deferredUpdate;
       _deferredUpdate = null;
@@ -691,6 +785,16 @@ export function renderAgentDetail(container, agentId) {
   }
 
   function _applyPaneUpdate(pane, trimmed) {
+    // Don't nuke DOM while user has text selected — defer until selection clears
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed) {
+      try {
+        if (pane.contains(sel.anchorNode)) {
+          _deferredUpdate = { pane, text: trimmed };
+          return;
+        }
+      } catch { /* anchorNode may be detached */ }
+    }
     _scrollByCode = true;
     pane.textContent = trimmed;
     cachedOutput = trimmed;
@@ -700,6 +804,111 @@ export function renderAgentDetail(container, agentId) {
     requestAnimationFrame(() => { _scrollByCode = false; });
   }
 
+  // --- In-flight status toast ---
+  // Tracks any in-flight request (output fetch, key send, text input)
+  // and shows a floating toast with live context when it takes > 1s.
+  let _inflightLabel = '';  // e.g. "Fetching output", "Sending Esc", "Sending ^C"
+
+  function _viaPath() {
+    const mode = state.get('connectionMode') || 'direct';
+    const ctx = agent?.context_name || '';
+    let via = mode === 'relay' ? 'relay' : 'direct';
+    if (ctx) via += ' \u2192 ' + ctx;
+    return via;
+  }
+
+  function _showInflightToast() {
+    let el = document.getElementById('inflight-toast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'inflight-toast';
+      el.className = 'inflight-toast';
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+  function _removeInflightToast() {
+    clearInterval(_inflightTimer);
+    _inflightTimer = null;
+    const el = document.getElementById('inflight-toast');
+    if (el) {
+      el.classList.add('inflight-toast-out');
+      setTimeout(() => el.remove(), 200);
+    }
+  }
+  function _startInflightTracking(label) {
+    _inflightLabel = label || 'Request';
+    _inflightStart = Date.now();
+    // Show toast after 1s — before that, feels instant enough
+    clearInterval(_inflightTimer);
+    _inflightTimer = setTimeout(() => {
+      _inflightTimer = setInterval(_updateInflightToast, 200);
+      _updateInflightToast();
+    }, 1000);
+  }
+  function _updateInflightToast() {
+    if (!_inflightStart) return;
+    const elapsed = ((Date.now() - _inflightStart) / 1000).toFixed(1);
+    const via = _viaPath();
+
+    const el = _showInflightToast();
+    el.classList.remove('inflight-toast-out', 'inflight-toast-ok', 'inflight-toast-err');
+    const slow = parseFloat(elapsed) >= 5.0;
+    el.innerHTML = slow
+      ? `<span>\u26a0 ${_inflightLabel} via ${via} \u2026 ${elapsed}s</span><button class="inflight-cancel" id="inflight-cancel-btn">Cancel</button>`
+      : `<span>\u23f3 ${_inflightLabel} via ${via} \u2026 ${elapsed}s</span>`;
+    const cancelBtn = el.querySelector('#inflight-cancel-btn');
+    if (cancelBtn) {
+      cancelBtn.onclick = () => {
+        if (_inflightAbort) _inflightAbort.abort();
+        _removeInflightToast();
+      };
+    }
+  }
+  function _finishInflightTracking(success, doneLabel) {
+    if (!_inflightStart) return;
+    const elapsed = Date.now() - _inflightStart;
+    _lastResponseMs = elapsed;
+    _inflightStart = 0;
+    clearInterval(_inflightTimer);
+    _inflightTimer = null;
+
+    // If response was fast (<1s), just remove quietly (toast never appeared)
+    if (elapsed < 1000) {
+      const el = document.getElementById('inflight-toast');
+      if (el) el.remove();
+      return;
+    }
+
+    // Response arrived after toast was shown — flash result briefly
+    const el = document.getElementById('inflight-toast');
+    if (el) {
+      const via = _viaPath();
+      const secs = (elapsed / 1000).toFixed(1);
+      const label = doneLabel || _inflightLabel;
+      el.innerHTML = success
+        ? `<span>\u2713 ${label} \u00b7 ${secs}s via ${via}</span>`
+        : `<span>\u2717 ${label} failed \u00b7 ${secs}s</span>`;
+      el.classList.remove('inflight-toast-ok', 'inflight-toast-err');
+      el.classList.toggle('inflight-toast-ok', success);
+      el.classList.toggle('inflight-toast-err', !success);
+      setTimeout(() => _removeInflightToast(), 1500);
+    }
+  }
+
+  // Convenience: wrap an async action with inflight tracking
+  async function _tracked(label, fn) {
+    _startInflightTracking(label);
+    try {
+      const result = await fn();
+      _finishInflightTracking(true);
+      return result;
+    } catch (e) {
+      _finishInflightTracking(false);
+      throw e;
+    }
+  }
+
   async function loadOutput() {
     if (fsOverlay) {
       loadFsOutput();
@@ -707,6 +916,9 @@ export function renderAgentDetail(container, agentId) {
     }
     const pane = container.querySelector('#output-pane');
     if (!pane) return;
+
+    _inflightAbort = new AbortController();
+    _startInflightTracking('Fetching output');
 
     try {
       if (useFullOutput) {
@@ -723,11 +935,14 @@ export function renderAgentDetail(container, agentId) {
         }
       }
       _errorCount = 0;
-    } catch {
+      _finishInflightTracking(true, 'Output updated');
+    } catch (e) {
+      if (e?.name === 'AbortError') return; // user cancelled
       _errorCount++;
       // After 3 consecutive failures, reset hash to force a full refresh
       // when connection recovers — stale hash can prevent updates
       if (_errorCount >= 3) _outputHash = null;
+      _finishInflightTracking(false, 'Output fetch');
     }
   }
 
@@ -757,7 +972,7 @@ export function renderAgentDetail(container, agentId) {
   // Pass cached agent from state to avoid blocking on a network fetch —
   // the page layout appears instantly, output loads in background.
   render(agent).then(() => {
-    if (['running', 'starting', 'pending'].includes(agent?.status)) {
+    if (['running', 'starting', 'pending'].includes(agent?.status) && !useFullOutput) {
       outputTimer = setInterval(loadOutput, 2000);
     }
   });
@@ -772,6 +987,9 @@ export function renderAgentDetail(container, agentId) {
   return () => {
     clearInterval(outputTimer);
     clearInterval(elapsedTimer);
+    _removeInflightToast();
+    if (_inflightAbort) _inflightAbort.abort();
+    if (_copyCleanups) _copyCleanups();
     contentEl.classList.remove('agent-detail-active');
     closeFullscreen();
     window.removeEventListener('resize', _onResize);
