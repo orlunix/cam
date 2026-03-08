@@ -384,6 +384,13 @@ a { color: var(--accent); text-decoration: none; }
   margin-bottom: 10px;
   padding: 0 4px;
 }
+.fetch-indicator {
+  font-size: 14px;
+  margin-left: 2px;
+  transition: color 0.2s;
+}
+.fetch-indicator.fetching { color: #58a6ff; }
+.fetch-indicator.fetch-err { color: #f85149; }
 
 /* Output section */
 .output-section {

@@ -172,7 +172,25 @@ export function renderAgentDetail(container, agentId) {
     if (agent.started_at) parts.push(timeSince(agent.started_at));
     if (agent.auto_confirm === false) parts.push('manual');
     if (agent.exit_reason) parts.push(agent.exit_reason);
-    return parts.join(' \u00b7 ');
+    return parts.join(' \u00b7 ') + ' <span id="fetch-indicator" class="fetch-indicator"></span>';
+  }
+
+  // Inline fetch status — tiny indicator on meta line instead of floating toast
+  let _fetchActive = false;
+  function _setFetchIndicator(status) {
+    // status: 'fetching' | 'ok' | 'err' | ''
+    const el = document.getElementById('fetch-indicator');
+    if (!el) return;
+    if (status === 'fetching') {
+      el.textContent = '\u2022';  // small dot
+      el.className = 'fetch-indicator fetching';
+    } else if (status === 'err') {
+      el.textContent = '\u2022';
+      el.className = 'fetch-indicator fetch-err';
+    } else {
+      el.textContent = '';
+      el.className = 'fetch-indicator';
+    }
   }
 
   function inputHTML() {
@@ -917,12 +935,10 @@ export function renderAgentDetail(container, agentId) {
     const pane = container.querySelector('#output-pane');
     if (!pane) return;
 
-    // Skip if a fetch is already in flight — prevents resetting the
-    // inflight timer which causes the elapsed counter to jump backward.
-    if (_inflightStart) return;
-
-    _inflightAbort = new AbortController();
-    _startInflightTracking('Fetching output');
+    // Skip if a fetch is already in flight
+    if (_fetchActive) return;
+    _fetchActive = true;
+    _setFetchIndicator('fetching');
 
     try {
       if (useFullOutput) {
@@ -939,15 +955,14 @@ export function renderAgentDetail(container, agentId) {
         }
       }
       _errorCount = 0;
-      _finishInflightTracking(true, 'Output updated');
+      _setFetchIndicator('');
     } catch (e) {
-      if (e?.name === 'AbortError') return; // user cancelled
+      if (e?.name === 'AbortError') { _fetchActive = false; return; }
       _errorCount++;
-      // After 3 consecutive failures, reset hash to force a full refresh
-      // when connection recovers — stale hash can prevent updates
       if (_errorCount >= 3) _outputHash = null;
-      _finishInflightTracking(false, 'Output fetch');
+      _setFetchIndicator('err');
     }
+    _fetchActive = false;
   }
 
   async function loadLogs() {
