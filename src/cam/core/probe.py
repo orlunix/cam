@@ -44,13 +44,29 @@ async def probe_session(
     transport: Transport,
     session_id: str,
     wait: float = 0.3,
+    probe_char: str = "Z",
+    send_enter: bool = False,
 ) -> ProbeResult:
     """Probe a session to determine if agent is busy or at prompt.
+
+    Two modes:
+
+    **Normal** (probe_char != ""): Send a character without Enter.
+    If the char echoes on the last line → COMPLETED (at prompt).
+    If output changed but char not visible → CONFIRMED (consumed).
+    If unchanged → BUSY (raw mode).
+
+    **Enter-only** (probe_char == ""): Send Enter only. No char to
+    echo-detect, so COMPLETED is never returned.
+    If output changed → CONFIRMED (Enter was consumed).
+    If unchanged → BUSY (agent in raw mode, Enter buffered).
 
     Args:
         transport: Transport instance for the session.
         session_id: TMUX session identifier.
         wait: Seconds to wait after sending probe before capturing.
+        probe_char: Character to send (empty = Enter-only mode).
+        send_enter: Whether to press Enter after the probe char.
 
     Returns:
         ProbeResult indicating the session's state.
@@ -74,9 +90,11 @@ async def probe_session(
 
     baseline = baseline.rstrip("\n")
 
-    # 3. Send probe character (no Enter)
+    # 3. Send probe (char and/or Enter)
     try:
-        sent = await transport.send_input(session_id, PROBE_CHAR, send_enter=False)
+        sent = await transport.send_input(
+            session_id, probe_char, send_enter=send_enter,
+        )
     except Exception as e:
         logger.debug("Probe: send_input failed for %s: %s", session_id, e)
         return ProbeResult.ERROR
@@ -97,21 +115,24 @@ async def probe_session(
     after = after.rstrip("\n")
 
     # 5. Classify result
-    after_lines = after.splitlines()
-    last_line = after_lines[-1] if after_lines else ""
+    if probe_char:
+        # Normal mode: check if probe char echoed on last line
+        after_lines = after.splitlines()
+        last_line = after_lines[-1] if after_lines else ""
+        baseline_last = baseline.splitlines()[-1] if baseline.splitlines() else ""
 
-    if PROBE_CHAR in last_line and PROBE_CHAR not in (baseline.splitlines()[-1] if baseline.splitlines() else ""):
-        # Probe is visible on the last line — agent is at prompt (echo mode)
-        # Clean up: send BSpace to remove the probe char
-        try:
-            await transport.send_key(session_id, "BSpace")
-        except Exception:
-            logger.debug("Probe: BSpace cleanup failed for %s", session_id)
-        logger.debug("Probe: COMPLETED for %s (probe visible)", session_id)
-        return ProbeResult.COMPLETED
+        if probe_char in last_line and probe_char not in baseline_last:
+            # Probe is visible on the last line — agent is at prompt (echo mode)
+            # Clean up: send BSpace to remove the probe char
+            try:
+                await transport.send_key(session_id, "BSpace")
+            except Exception:
+                logger.debug("Probe: BSpace cleanup failed for %s", session_id)
+            logger.debug("Probe: COMPLETED for %s (probe visible)", session_id)
+            return ProbeResult.COMPLETED
 
+    # Both modes: check if output changed
     if after != baseline:
-        # Output changed but probe not on last line — likely consumed as confirmation
         logger.debug("Probe: CONFIRMED for %s (output changed)", session_id)
         return ProbeResult.CONFIRMED
 

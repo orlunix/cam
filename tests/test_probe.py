@@ -186,3 +186,104 @@ class TestProbeEdgeCases:
         transport.send_key = AsyncMock(side_effect=RuntimeError("send_key failed"))
         result = await probe_session(transport, "cam-test", wait=0.01)
         assert result == ProbeResult.COMPLETED
+
+
+class TestProbeCustomChar:
+    """Test probe with custom probe_char parameter."""
+
+    @pytest.mark.asyncio
+    async def test_custom_char_visible_means_completed(self):
+        transport = _make_transport(
+            baseline="❯ \n",
+            after="❯ Q\n",
+        )
+        result = await probe_session(transport, "cam-test", wait=0.01, probe_char="Q")
+        assert result == ProbeResult.COMPLETED
+
+    @pytest.mark.asyncio
+    async def test_custom_char_bspace_cleanup(self):
+        transport = _make_transport(
+            baseline="❯ \n",
+            after="❯ Q\n",
+        )
+        await probe_session(transport, "cam-test", wait=0.01, probe_char="Q")
+        transport.send_key.assert_awaited_once_with("cam-test", "BSpace")
+
+    @pytest.mark.asyncio
+    async def test_default_z_behavior_unchanged(self):
+        """Default probe_char='Z' works as before."""
+        transport = _make_transport(
+            baseline="❯ \n",
+            after=f"❯ {PROBE_CHAR}\n",
+        )
+        result = await probe_session(transport, "cam-test", wait=0.01)
+        assert result == ProbeResult.COMPLETED
+
+
+class TestProbeEnterOnly:
+    """Test Enter-only mode (probe_char='', send_enter=True)."""
+
+    @pytest.mark.asyncio
+    async def test_enter_output_changed_means_confirmed(self):
+        """Enter consumed by prompt → output changes → CONFIRMED."""
+        transport = _make_transport(
+            baseline="Do you want to proceed?\n",
+            after="Proceeding...\nStep 1\n",
+        )
+        result = await probe_session(
+            transport, "cam-test", wait=0.01,
+            probe_char="", send_enter=True,
+        )
+        assert result == ProbeResult.CONFIRMED
+
+    @pytest.mark.asyncio
+    async def test_enter_output_unchanged_means_busy(self):
+        """Enter buffered in raw mode → output unchanged → BUSY."""
+        output = "Working on task...\n"
+        transport = _make_transport(
+            baseline=output,
+            after=output,
+        )
+        result = await probe_session(
+            transport, "cam-test", wait=0.01,
+            probe_char="", send_enter=True,
+        )
+        assert result == ProbeResult.BUSY
+
+    @pytest.mark.asyncio
+    async def test_enter_never_returns_completed(self):
+        """Enter-only mode can never return COMPLETED (no char to echo-detect)."""
+        # Even if output looks like it has something on last line
+        transport = _make_transport(
+            baseline="❯ \n",
+            after="❯ \n",  # unchanged
+        )
+        result = await probe_session(
+            transport, "cam-test", wait=0.01,
+            probe_char="", send_enter=True,
+        )
+        assert result == ProbeResult.BUSY
+
+    @pytest.mark.asyncio
+    async def test_enter_no_bspace_cleanup(self):
+        """Enter-only mode never sends BSpace."""
+        transport = _make_transport(
+            baseline="prompt\n",
+            after="new output\n",
+        )
+        await probe_session(
+            transport, "cam-test", wait=0.01,
+            probe_char="", send_enter=True,
+        )
+        transport.send_key.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_enter_send_input_called_correctly(self):
+        """Enter-only sends empty string with send_enter=True."""
+        output = "idle\n"
+        transport = _make_transport(baseline=output, after=output)
+        await probe_session(
+            transport, "cam-test", wait=0.01,
+            probe_char="", send_enter=True,
+        )
+        transport.send_input.assert_awaited_once_with("cam-test", "", send_enter=True)

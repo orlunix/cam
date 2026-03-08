@@ -8,8 +8,9 @@ from uuid import uuid4
 
 import pytest
 
-from cam.adapters.base import ConfirmAction
+from cam.adapters.base import ConfirmAction, ProbeAction
 from cam.adapters.configurable import ConfigurableAdapter
+from cam.client import AdapterConfig
 from cam.core.models import AgentState, AgentStatus, Context, TaskDefinition
 
 CONFIGS_DIR = Path(__file__).parent.parent / "src" / "cam" / "adapters" / "configs"
@@ -444,3 +445,142 @@ class TestRegistryIntegration:
         # The bad file isn't in the scan path, but we can test from_toml directly
         with pytest.raises(ValueError):
             ConfigurableAdapter.from_toml(bad_toml)
+
+
+# ── ProbeAction + timing config tests ────────────────────────────
+
+
+CLAUDE_TOML = CONFIGS_DIR / "claude.toml"
+
+
+@pytest.fixture
+def claude_adapter():
+    return ConfigurableAdapter.from_toml(CLAUDE_TOML)
+
+
+class TestProbeAction:
+    """Test get_probe_action for auto-confirm ON/OFF."""
+
+    def test_probe_action_auto_confirm_off(self, claude_adapter):
+        action = claude_adapter.get_probe_action(auto_confirm=False)
+        assert action == ProbeAction("Z", False, False)
+
+    def test_probe_action_auto_confirm_on(self, claude_adapter):
+        action = claude_adapter.get_probe_action(auto_confirm=True)
+        assert action == ProbeAction("", True, True)
+
+    def test_codex_probe_action_off(self, codex_adapter):
+        action = codex_adapter.get_probe_action(auto_confirm=False)
+        assert action == ProbeAction("Z", False, False)
+
+    def test_codex_probe_action_on(self, codex_adapter):
+        action = codex_adapter.get_probe_action(auto_confirm=True)
+        assert action == ProbeAction("", True, True)
+
+    def test_cursor_probe_action_off(self, cursor_adapter):
+        action = cursor_adapter.get_probe_action(auto_confirm=False)
+        assert action == ProbeAction("Z", False, False)
+
+    def test_cursor_probe_action_on(self, cursor_adapter):
+        action = cursor_adapter.get_probe_action(auto_confirm=True)
+        assert action == ProbeAction("", True, True)
+
+
+class TestAdapterConfigDefaults:
+    """Test AdapterConfig defaults for probe/monitor fields."""
+
+    def test_defaults_with_empty_config(self):
+        ac = AdapterConfig({"adapter": {"name": "x", "display_name": "X"}})
+        assert ac.probe_char == "Z"
+        assert ac.probe_confirm_response == ""
+        assert ac.probe_confirm_send_enter is True
+        assert ac.probe_wait == 0.3
+        assert ac.probe_idle_threshold == 2
+        assert ac.confirm_cooldown == 5.0
+        assert ac.confirm_sleep == 0.5
+        assert ac.completion_stable == 3.0
+        assert ac.health_check_interval == 15
+        assert ac.empty_threshold == 3
+
+    def test_custom_values_from_dict(self):
+        ac = AdapterConfig({
+            "adapter": {"name": "x", "display_name": "X"},
+            "probe": {
+                "char": "Q",
+                "confirm_response": "y",
+                "confirm_send_enter": False,
+                "wait": 0.5,
+                "idle_threshold": 3,
+            },
+            "monitor": {
+                "confirm_cooldown": 10.0,
+                "confirm_sleep": 1.0,
+                "completion_stable": 5.0,
+                "health_check_interval": 30,
+                "empty_threshold": 5,
+            },
+        })
+        assert ac.probe_char == "Q"
+        assert ac.probe_confirm_response == "y"
+        assert ac.probe_confirm_send_enter is False
+        assert ac.probe_wait == 0.5
+        assert ac.probe_idle_threshold == 3
+        assert ac.confirm_cooldown == 10.0
+        assert ac.confirm_sleep == 1.0
+        assert ac.completion_stable == 5.0
+        assert ac.health_check_interval == 30
+        assert ac.empty_threshold == 5
+
+
+class TestTimingGetters:
+    """Test that ConfigurableAdapter timing getters return config values."""
+
+    def test_confirm_cooldown(self, claude_adapter):
+        assert claude_adapter.get_confirm_cooldown() == 5.0
+
+    def test_confirm_sleep(self, claude_adapter):
+        assert claude_adapter.get_confirm_sleep() == 0.5
+
+    def test_completion_stable(self, claude_adapter):
+        assert claude_adapter.get_completion_stable() == 3.0
+
+    def test_probe_wait(self, claude_adapter):
+        assert claude_adapter.get_probe_wait() == 0.3
+
+    def test_probe_idle_threshold(self, claude_adapter):
+        assert claude_adapter.get_probe_idle_threshold() == 2
+
+    def test_custom_timing(self):
+        adapter = ConfigurableAdapter({
+            "adapter": {"name": "x", "display_name": "X"},
+            "monitor": {"confirm_cooldown": 99.0, "completion_stable": 7.5},
+            "probe": {"wait": 1.0, "idle_threshold": 5},
+        })
+        assert adapter.get_confirm_cooldown() == 99.0
+        assert adapter.get_completion_stable() == 7.5
+        assert adapter.get_probe_wait() == 1.0
+        assert adapter.get_probe_idle_threshold() == 5
+
+
+class TestGenericAdapterDefaults:
+    """Test that GenericAdapter (base ToolAdapter) has sensible defaults."""
+
+    def test_generic_probe_action(self):
+        from cam.adapters.registry import AdapterRegistry
+        reg = AdapterRegistry()
+        generic = reg.get("generic")
+        action = generic.get_probe_action(auto_confirm=False)
+        assert action == ProbeAction("Z", False, False)
+        # auto_confirm=True still returns default (not configurable)
+        action_on = generic.get_probe_action(auto_confirm=True)
+        assert action_on == ProbeAction("Z", False, False)
+
+    def test_generic_timing_defaults(self):
+        from cam.adapters.registry import AdapterRegistry
+        reg = AdapterRegistry()
+        generic = reg.get("generic")
+        assert generic.get_confirm_cooldown() == 5.0
+        assert generic.get_confirm_sleep() == 0.5
+        assert generic.get_completion_stable() == 3.0
+        assert generic.get_probe_wait() == 0.3
+        assert generic.get_probe_idle_threshold() == 2

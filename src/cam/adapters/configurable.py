@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from cam.adapters.base import ConfirmAction, ToolAdapter
+from cam.adapters.base import ConfirmAction, ProbeAction, ToolAdapter
 from cam.client import (
     AdapterConfig,
     detect_completion as _detect_completion,
@@ -145,3 +145,27 @@ class ConfigurableAdapter(ToolAdapter):
 
     def needs_prompt_after_launch(self) -> bool:
         return self._ac.prompt_after_launch
+
+    def get_probe_action(self, auto_confirm: bool) -> ProbeAction:
+        if auto_confirm:
+            return ProbeAction(
+                char=self._ac.probe_confirm_response,
+                send_enter=self._ac.probe_confirm_send_enter,
+                is_confirm=True,
+            )
+        return ProbeAction(char=self._ac.probe_char, send_enter=False, is_confirm=False)
+
+    def get_confirm_cooldown(self) -> float:
+        return self._ac.confirm_cooldown
+
+    def get_confirm_sleep(self) -> float:
+        return self._ac.confirm_sleep
+
+    def get_completion_stable(self) -> float:
+        return self._ac.completion_stable
+
+    def get_probe_wait(self) -> float:
+        return self._ac.probe_wait
+
+    def get_probe_idle_threshold(self) -> int:
+        return self._ac.probe_idle_threshold
