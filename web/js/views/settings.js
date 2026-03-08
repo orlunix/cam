@@ -109,18 +109,38 @@ export function renderSettings(container) {
     const btn = container.querySelector('#update-btn');
     btn.disabled = true;
     btn.textContent = 'Updating...';
-    // Best-effort cache cleanup — ignore errors (file:// has no SW/cache API)
-    try { const r = await navigator.serviceWorker.getRegistrations(); await Promise.all(r.map(x => x.unregister())); } catch {}
-    try { const k = await caches.keys(); await Promise.all(k.map(x => caches.delete(x))); } catch {}
-    // Redirect to relay for fresh files, or reload
+
+    // Determine the base HTTP URL for the server
     const relayUrl = localStorage.getItem('cam_relay_url') || '';
-    if (relayUrl) {
-      const httpUrl = relayUrl.replace(/^ws:\/\//, 'http://').replace(/^wss:\/\//, 'https://');
-      state.toast('Loading from server...', 'success');
-      setTimeout(() => { location.href = httpUrl; }, 300);
-    } else {
+    const serverUrl = localStorage.getItem('cam_server_url') || '';
+    let baseUrl = '';
+    if (relayUrl) baseUrl = relayUrl.replace(/^ws:\/\//, 'http://').replace(/^wss:\/\//, 'https://');
+    else if (serverUrl) baseUrl = serverUrl;
+    else if (location.protocol !== 'file:') baseUrl = location.origin;
+
+    if (location.protocol === 'file:' && baseUrl) {
+      // Running from APK — open APK download in external browser
+      const apkUrl = baseUrl + '/assets/cam.apk';
+      const a = document.createElement('a');
+      a.href = apkUrl;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      state.toast('Opening download in browser...', 'success');
+      btn.disabled = false;
+      btn.textContent = 'Update app';
+    } else if (baseUrl) {
+      // Running from HTTP — clear caches and hard reload
+      try { const r = await navigator.serviceWorker.getRegistrations(); await Promise.all(r.map(x => x.unregister())); } catch {}
+      try { const k = await caches.keys(); await Promise.all(k.map(x => caches.delete(x))); } catch {}
       state.toast('Reloading...', 'success');
-      setTimeout(() => location.reload(), 300);
+      setTimeout(() => { location.href = baseUrl + '/?_=' + Date.now(); }, 500);
+    } else {
+      btn.disabled = false;
+      btn.textContent = 'Update app';
+      state.toast('No server URL configured', 'error');
     }
   });
 
