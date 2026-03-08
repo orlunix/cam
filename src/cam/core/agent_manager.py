@@ -15,7 +15,7 @@ import os
 import signal
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -179,10 +179,27 @@ class AgentManager:
             await transport.start_logging(session_name, output_log_path)
 
         # 9. If adapter needs prompt after launch, handle startup prompts then send task
+        prompt_failed = False
         if adapter.needs_prompt_after_launch():
-            await self._wait_and_send_prompt(
-                transport, adapter, session_name, task.prompt, task.auto_confirm
-            )
+            try:
+                await self._wait_and_send_prompt(
+                    transport, adapter, session_name, task.prompt, task.auto_confirm
+                )
+            except Exception as e:
+                logger.error(
+                    "Failed to send prompt during startup for agent %s: %s",
+                    agent_id, e,
+                )
+                prompt_failed = True
+                # In follow mode, propagate the error immediately
+                if follow:
+                    agent.status = AgentStatus.FAILED
+                    agent.completed_at = datetime.now(timezone.utc)
+                    agent.exit_reason = f"Startup prompt failed: {e}"
+                    self._agent_store.save(agent)
+                    raise AgentManagerError(f"Failed to start agent: {e}") from e
+                # In detach mode, continue so the monitor still gets spawned —
+                # the monitor can detect completion/failure from the tmux session.
 
         # 10. Update status to RUNNING
         agent.status = AgentStatus.RUNNING
@@ -485,11 +502,13 @@ class AgentManager:
         Args:
             agent: The agent to monitor.
         """
+        stderr_path = str(LOG_DIR / f"monitor-{agent.id}.stderr")
         try:
+            stderr_fh = open(stderr_path, "w")
             proc = subprocess.Popen(
                 [sys.executable, "-m", "cam.core.monitor_runner", str(agent.id)],
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=stderr_fh,
                 start_new_session=True,
             )
             logger.info(
