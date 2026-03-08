@@ -160,14 +160,13 @@ def _run_monitor(agent_id):
     last_confirm = 0.0
     current_state = None
     has_worked = False
-    prompt_disappeared = False
     empty_count = 0
 
     try:
         while running[0]:
             now = time.time()
 
-            if now - last_health >= 15:
+            if now - last_health >= config.health_check_interval:
                 last_health = now
                 if not tmux_session_exists(session):
                     status = "completed" if has_worked else "failed"
@@ -185,7 +184,7 @@ def _run_monitor(agent_id):
             if not output.strip():
                 empty_count += 1
                 # Early health check: if output empty for 3+ cycles, session may have died
-                if empty_count >= 3 and not tmux_session_exists(session):
+                if empty_count >= config.empty_threshold and not tmux_session_exists(session):
                     status = "completed" if has_worked else "failed"
                     store.update(agent_id, status=status,
                                  exit_reason="Session exited", completed_at=_now_iso())
@@ -194,12 +193,12 @@ def _run_monitor(agent_id):
                 continue
             empty_count = 0
 
-            if now - last_confirm >= 5.0:
+            if now - last_confirm >= config.confirm_cooldown:
                 confirm = should_auto_confirm(output, config)
                 if confirm:
                     tmux_send_input(session, confirm[0], send_enter=confirm[1])
                     last_confirm = now
-                    time.sleep(0.5)
+                    time.sleep(config.confirm_sleep)
                     continue
 
             ns = detect_state(output, config)
@@ -209,30 +208,11 @@ def _run_monitor(agent_id):
                 current_state = ns
                 store.update(agent_id, state=ns)
 
-            done = reason = None
-            if not changed and now - last_change >= 3.0:
+            # Detect completion for status reporting (but never auto-exit)
+            if not changed and now - last_change >= config.completion_stable:
                 done = detect_completion(output, config)
                 if done:
-                    reason = done
-
-            if config.prompt_after_launch and config.ready_pattern and has_worked:
-                clean = strip_ansi(output) if config.strip_ansi else output
-                pv = bool(config.ready_pattern.search(clean))
-                # Don't count prompt as "returned" if a confirm dialog is active
-                # (the prompt char ❯ appears in Ink select menus too)
-                if pv and config.confirm_rules:
-                    for cp, _r, _e in config.confirm_rules:
-                        if cp.search(clean):
-                            pv = False
-                            break
-                if not pv:
-                    prompt_disappeared = True
-                if pv and prompt_disappeared:
-                    done, reason = "completed", "Prompt returned"
-
-            if done in ("completed", "failed"):
-                store.update(agent_id, status=done, exit_reason=reason, completed_at=_now_iso())
-                return
+                    store.update(agent_id, state="idle")
 
             time.sleep(1)
     finally:
@@ -378,6 +358,7 @@ def cmd_add(args):
     agent_id = uuid4().hex[:8]
     store.save({"id": agent_id, "tool": args.tool, "session": args.session, "status": "running",
                 "state": None, "prompt": "(adopted)", "path": os.getcwd(),
+                "context": {"name": None, "host": None, "port": None},
                 "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
                 "monitor_pid": None})
     # Spawn monitor if config exists

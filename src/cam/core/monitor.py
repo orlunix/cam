@@ -15,8 +15,8 @@ from cam.adapters.base import ConfirmAction, ToolAdapter
 from cam.core.config import CamConfig
 from cam.core.events import EventBus
 from cam.core.models import Agent, AgentEvent, AgentState, AgentStatus
-from cam.core.probe import ProbeResult, probe_session
 from cam.storage.agent_store import AgentStore
+from cam.core.probe import ProbeResult, probe_session
 from cam.transport.base import Transport
 from cam.utils.logging import AgentLogger
 
@@ -78,11 +78,11 @@ class AgentMonitor:
         self._last_confirm_time: float = 0.0  # Cooldown to avoid re-sending
         self._poll_count: int = 0
         self._has_worked: bool = False  # True once agent enters a working state
-        self._prompt_disappeared: bool = False  # True once input prompt is gone
         # Probe detection state
         self._last_probe_time: float = 0.0
         self._probe_count: int = 0
         self._consecutive_probe_completed: int = 0
+        self._idle_confirmed: bool = False  # True once probe confirms idle
 
     # ------------------------------------------------------------------
     # Public API
@@ -113,12 +113,8 @@ class AgentMonitor:
         })
         self._publish_event("monitor_start")
 
-        # Interactive mode: user explicitly set --no-auto-confirm, meaning
-        # they are attending the session manually. Skip completion detection
-        # and timeouts so the agent runs until the user stops it.
-        # auto_confirm=True or None → detect completion normally.
-        interactive = self._agent.task.auto_confirm is not None and not self._agent.task.auto_confirm
-        has_explicit_timeout = total_timeout is not None and total_timeout > 0
+        # All agents are interactive — they never auto-complete.
+        # Agents end only when: user stops, session dies, or explicit timeout.
 
         try:
             while True:
@@ -126,24 +122,14 @@ class AgentMonitor:
                 now = datetime.utcnow().timestamp()
 
                 # --------------------------------------------------
-                # 1. Total timeout check (skip for interactive agents)
+                # 1. Total timeout check (only if explicitly set)
                 # --------------------------------------------------
-                if total_timeout and self._agent.started_at and (has_explicit_timeout or not interactive):
+                if total_timeout and total_timeout > 0 and self._agent.started_at:
                     elapsed = (datetime.utcnow() - self._agent.started_at).total_seconds()
                     if elapsed >= total_timeout:
                         self._logger.write("timeout", data={"elapsed": elapsed, "limit": total_timeout})
                         await self._transport.kill_session(session_id)
                         return self._finalize(AgentStatus.TIMEOUT, f"Total timeout after {elapsed:.0f}s")
-
-                # --------------------------------------------------
-                # 2. Idle timeout check (skip for interactive agents)
-                # --------------------------------------------------
-                if idle_timeout > 0 and not interactive:
-                    idle_seconds = now - self._last_change_time
-                    if idle_seconds >= idle_timeout:
-                        self._logger.write("idle_timeout", data={"idle_seconds": idle_seconds, "limit": idle_timeout})
-                        await self._transport.kill_session(session_id)
-                        return self._finalize(AgentStatus.TIMEOUT, f"Idle timeout after {idle_seconds:.0f}s with no output change")
 
                 # --------------------------------------------------
                 # 2b. cam-client passive mode
@@ -221,7 +207,7 @@ class AgentMonitor:
                     ac = self._config.general.auto_confirm
                 if ac:
                     now_confirm = datetime.utcnow().timestamp()
-                    if now_confirm - self._last_confirm_time >= 5.0:
+                    if now_confirm - self._last_confirm_time >= self._adapter.get_confirm_cooldown():
                         confirm_action = self._adapter.should_auto_confirm(output)
                         if confirm_action is not None:
                             self._last_confirm_time = now_confirm
@@ -238,7 +224,7 @@ class AgentMonitor:
                                 confirm_action.response,
                                 send_enter=confirm_action.send_enter,
                             )
-                            await asyncio.sleep(0.5)
+                            await asyncio.sleep(self._adapter.get_confirm_sleep())
                             continue
 
                 # --------------------------------------------------
@@ -265,58 +251,47 @@ class AgentMonitor:
                     })
 
                 # --------------------------------------------------
-                # 8. Detect completion (only when output has stabilized)
-                #    Skip in interactive mode — user must manually stop.
+                # 8. Detect completion (report only, never auto-exit)
                 # --------------------------------------------------
                 idle_for = now - self._last_change_time
-                completion_status = (
-                    self._adapter.detect_completion(output)
-                    if not interactive and not output_changed and idle_for >= 3.0
-                    else None
-                )
-                if completion_status is not None:
-                    # Extract cost and file info from final output
-                    cost = self._adapter.estimate_cost(output)
-                    if cost is not None:
-                        self._agent.cost_estimate = cost
-
-                    files = self._adapter.parse_files_changed(output)
-                    if files:
-                        self._agent.files_changed = files
-
-                    reason = "completed" if completion_status == AgentStatus.COMPLETED else "failed"
-                    return self._finalize(completion_status, reason)
-
-                # --------------------------------------------------
-                # 8b. Detect completion via input prompt return
-                #     Skip in interactive mode — agent stays alive
-                #     for continued user interaction.
-                # --------------------------------------------------
-                if not interactive and self._adapter.needs_prompt_after_launch():
-                    prompt_visible = self._adapter.is_ready_for_input(output)
-                    # Don't count prompt as visible if a confirm dialog is active
-                    # (the prompt char ❯ appears in Ink select menus too)
-                    if prompt_visible and self._adapter.should_auto_confirm(output) is not None:
-                        prompt_visible = False
-                    if not prompt_visible and self._has_worked:
-                        self._prompt_disappeared = True
-                    if (
-                        prompt_visible
-                        and self._has_worked
-                        and self._prompt_disappeared
-                    ):
-                        self._logger.write("prompt_return_completion", data={
-                            "state": self._agent.state.value,
+                if not output_changed and idle_for >= self._adapter.get_completion_stable():
+                    completion_status = self._adapter.detect_completion(output)
+                    if completion_status is not None:
+                        cost = self._adapter.estimate_cost(output)
+                        if cost is not None:
+                            self._agent.cost_estimate = cost
+                        files = self._adapter.parse_files_changed(output)
+                        if files:
+                            self._agent.files_changed = files
+                        self._logger.write("completion_detected", data={
+                            "status": completion_status.value,
                         })
-                        return self._finalize(AgentStatus.COMPLETED, "Tool returned to input prompt")
+                        self._publish_event("completion_detected", {
+                            "status": completion_status.value,
+                        })
 
                 # --------------------------------------------------
-                # 8c. Probe-based completion detection (Path 4)
+                # 8b. Probe-based idle detection
                 # --------------------------------------------------
-                # When output has been idle long enough and probe is enabled,
-                # send a probe character to test terminal echo state.
-                # TUI apps disable echo (raw mode) while working.
-                if self._config.monitor.probe_detection and self._has_worked and not interactive:
+                # Probe to confirm idle state, but stop once confirmed
+                # to avoid polluting the terminal with probe characters.
+                # Resumes if output changes (agent starts working again).
+                # Skip reset if output changed shortly after a probe — that
+                # change was likely caused by the probe itself (e.g. Enter
+                # triggering a confirmation response).
+                probe_caused = (
+                    self._last_probe_time > 0
+                    and now - self._last_probe_time < self._adapter.get_probe_wait() + poll_interval * 2
+                )
+                if output_changed and not probe_caused:
+                    self._idle_confirmed = False
+                    self._consecutive_probe_completed = 0
+
+                if (
+                    self._config.monitor.probe_detection
+                    and self._has_worked
+                    and not self._idle_confirmed
+                ):
                     probe_stable = self._config.monitor.probe_stable_seconds
                     probe_cooldown = self._config.monitor.probe_cooldown
                     if (
@@ -325,8 +300,14 @@ class AgentMonitor:
                     ):
                         self._last_probe_time = now
                         self._probe_count += 1
+                        probe_action = self._adapter.get_probe_action(
+                            auto_confirm=bool(ac),
+                        )
                         probe_result = await probe_session(
-                            self._transport, session_id
+                            self._transport, session_id,
+                            wait=self._adapter.get_probe_wait(),
+                            probe_char=probe_action.char,
+                            send_enter=probe_action.send_enter,
                         )
                         probe_data = {
                             "result": probe_result.value,
@@ -336,26 +317,28 @@ class AgentMonitor:
                         self._logger.write("probe", data=probe_data)
                         self._publish_event("probe", probe_data)
 
+                        if probe_result == ProbeResult.CONFIRMED and probe_action.is_confirm:
+                            self._logger.write("smart_probe_confirm", data={"char": probe_action.char})
+                            self._publish_event("smart_probe_confirm")
+
                         if probe_result == ProbeResult.COMPLETED:
                             self._consecutive_probe_completed += 1
-                            if self._consecutive_probe_completed >= 2:
-                                return self._finalize(
-                                    AgentStatus.COMPLETED,
-                                    "Probe detected agent at prompt (echo mode)",
-                                )
+                            if self._consecutive_probe_completed >= self._adapter.get_probe_idle_threshold():
+                                # Confirmed idle — stop probing
+                                self._idle_confirmed = True
+                                self._logger.write("idle_confirmed", data={
+                                    "probe_count": self._probe_count,
+                                })
+                                self._publish_event("idle_confirmed", {
+                                    "probe_count": self._probe_count,
+                                })
                         elif probe_result == ProbeResult.BUSY:
-                            # Agent IS working — reset idle timer
                             self._last_change_time = now
                             self._consecutive_probe_completed = 0
                         elif probe_result == ProbeResult.CONFIRMED:
-                            # Probe was consumed (e.g. as confirmation input)
                             self._last_change_time = now
                             self._consecutive_probe_completed = 0
-                        elif probe_result == ProbeResult.SESSION_DEAD:
-                            self._consecutive_probe_completed = 0
-                            # Let the health check handle it
                         else:
-                            # ERROR — reset consecutive counter
                             self._consecutive_probe_completed = 0
 
                 # --------------------------------------------------

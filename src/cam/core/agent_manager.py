@@ -596,6 +596,9 @@ class AgentManager:
                 adapter_config = json.dumps(adapter.to_dict())
                 config_flag = f" --adapter-config {shlex.quote(adapter_config)}"
             # Wrap in bash -c for csh-default remotes (2>&1 & is bash syntax)
+            prompt_flag = ""
+            if agent.task.prompt and agent.task.prompt.strip():
+                prompt_flag = f" --prompt {shlex.quote(agent.task.prompt)}"
             inner_cmd = (
                 f"nohup python3 ~/.cam/cam-client.py"
                 f" --agent-id {shlex.quote(str(agent.id))}"
@@ -603,6 +606,7 @@ class AgentManager:
                 f" --server {shlex.quote(server_url)}"
                 f" --token {shlex.quote(auth_token)}"
                 f" --auto-confirm {ac_flag}"
+                f"{prompt_flag}"
                 f"{config_flag}"
                 f" > /tmp/cam-client-{agent.id}.log 2>&1 &"
             )

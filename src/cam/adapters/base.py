@@ -24,6 +24,20 @@ class ConfirmAction(NamedTuple):
     send_enter: bool = True
 
 
+class ProbeAction(NamedTuple):
+    """Describes what to send when probing a session.
+
+    Attributes:
+        char: Character to send (empty string = Enter-only mode).
+        send_enter: Whether to send Enter with the probe.
+        is_confirm: True if this probe doubles as a confirmation attempt.
+    """
+
+    char: str
+    send_enter: bool = False
+    is_confirm: bool = False
+
+
 class ToolAdapter(ABC):
     """Base class for coding tool adapters.
 
@@ -144,6 +158,35 @@ class ToolAdapter(ABC):
             False if prompt is included in launch command
         """
         return False
+
+    def get_probe_action(self, auto_confirm: bool) -> ProbeAction:
+        """Return the probe action based on auto-confirm state.
+
+        When auto-confirm is on, the probe can double as a fallback
+        confirmation (e.g. sending Enter). When off, sends a neutral
+        character that won't affect the agent.
+        """
+        return ProbeAction(char="Z", send_enter=False, is_confirm=False)
+
+    def get_confirm_cooldown(self) -> float:
+        """Seconds between auto-confirm attempts."""
+        return 5.0
+
+    def get_confirm_sleep(self) -> float:
+        """Seconds to sleep after sending a confirmation."""
+        return 0.5
+
+    def get_completion_stable(self) -> float:
+        """Seconds of idle output before checking completion."""
+        return 3.0
+
+    def get_probe_wait(self) -> float:
+        """Seconds to wait after probe before recapturing."""
+        return 0.3
+
+    def get_probe_idle_threshold(self) -> int:
+        """Consecutive COMPLETED probes needed to confirm idle."""
+        return 2
 
     def to_dict(self) -> dict:
         """Return adapter config as a dict for serialization to cam-client."""
