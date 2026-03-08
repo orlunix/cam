@@ -176,26 +176,10 @@ export function renderAgentDetail(container, agentId) {
     if (agent.started_at) parts.push(timeSince(agent.started_at));
     if (agent.auto_confirm === false) parts.push('manual');
     if (agent.exit_reason) parts.push(agent.exit_reason);
-    return parts.join(' \u00b7 ') + ' <span id="fetch-indicator" class="fetch-indicator"></span>';
+    return parts.join(' \u00b7 ');
   }
 
-  // Inline fetch status — tiny indicator on meta line instead of floating toast
   let _fetchActive = false;
-  function _setFetchIndicator(status) {
-    // status: 'fetching' | 'ok' | 'err' | ''
-    const el = document.getElementById('fetch-indicator');
-    if (!el) return;
-    if (status === 'fetching') {
-      el.textContent = '\u2022';  // small dot
-      el.className = 'fetch-indicator fetching';
-    } else if (status === 'err') {
-      el.textContent = '\u2022';
-      el.className = 'fetch-indicator fetch-err';
-    } else {
-      el.textContent = '';
-      el.className = 'fetch-indicator';
-    }
-  }
 
   function inputHTML() {
     return `
@@ -481,7 +465,7 @@ export function renderAgentDetail(container, agentId) {
         sendBtn.disabled = true;
         sendBtn.textContent = '...';
         const preview = text.length > 20 ? text.slice(0, 20) + '\u2026' : text;
-        try { await _tracked(`Sending "${preview}"`, () => api.sendInput(agentId, text)); }
+        try { await _tracked(`Sending "${preview}"`, () => api.sendInput(agentId, text), true); }
         catch (e) {
           // Restore text on failure so user can retry
           inputText.value = text;
@@ -542,7 +526,7 @@ export function renderAgentDetail(container, agentId) {
         if (btn.disabled) return;
         btn.disabled = true;
         btn.style.opacity = '0.4';
-        _tracked(label, fn).catch(e => state.toast(e.message, 'error'))
+        _tracked(label, fn, true).catch(e => state.toast(e.message, 'error'))
           .finally(() => { btn.disabled = false; btn.style.opacity = ''; });
       });
     }
@@ -858,15 +842,27 @@ export function renderAgentDetail(container, agentId) {
       setTimeout(() => el.remove(), 200);
     }
   }
-  function _startInflightTracking(label) {
+  let _inflightImmediate = false;  // true = user action in progress (higher priority)
+  let _inflightId = 0;             // tracks which action owns the toast
+  function _startInflightTracking(label, immediate) {
+    // Don't let background fetch overwrite an active user action
+    if (!immediate && _inflightImmediate && _inflightStart) return null;
+    // If a send preempts, the old tracking is orphaned (its finish will be ignored)
+    const id = ++_inflightId;
     _inflightLabel = label || 'Request';
     _inflightStart = Date.now();
-    // Show toast after 1s — before that, feels instant enough
+    _inflightImmediate = !!immediate;
     clearInterval(_inflightTimer);
-    _inflightTimer = setTimeout(() => {
-      _inflightTimer = setInterval(_updateInflightToast, 200);
+    if (immediate) {
       _updateInflightToast();
-    }, 1000);
+      _inflightTimer = setInterval(_updateInflightToast, 200);
+    } else {
+      _inflightTimer = setTimeout(() => {
+        _inflightTimer = setInterval(_updateInflightToast, 200);
+        _updateInflightToast();
+      }, 1000);
+    }
+    return id;
   }
   function _updateInflightToast() {
     if (!_inflightStart) return;
@@ -887,46 +883,41 @@ export function renderAgentDetail(container, agentId) {
       };
     }
   }
-  function _finishInflightTracking(success, doneLabel) {
+  function _finishInflightTracking(id, success, doneLabel) {
+    // Ignore if a newer action has taken over the toast
+    if (id !== _inflightId) return;
     if (!_inflightStart) return;
     const elapsed = Date.now() - _inflightStart;
     _lastResponseMs = elapsed;
     _inflightStart = 0;
+    _inflightImmediate = false;
     clearInterval(_inflightTimer);
     _inflightTimer = null;
 
-    // If response was fast (<1s), just remove quietly (toast never appeared)
-    if (elapsed < 1000) {
-      const el = document.getElementById('inflight-toast');
-      if (el) el.remove();
-      return;
-    }
-
-    // Response arrived after toast was shown — flash result briefly
-    const el = document.getElementById('inflight-toast');
-    if (el) {
-      const via = _viaPath();
-      const secs = (elapsed / 1000).toFixed(1);
-      const label = doneLabel || _inflightLabel;
-      el.innerHTML = success
-        ? `<span>\u2713 ${label} \u00b7 ${secs}s via ${via}</span>`
-        : `<span>\u2717 ${label} failed \u00b7 ${secs}s</span>`;
-      el.classList.remove('inflight-toast-ok', 'inflight-toast-err');
-      el.classList.toggle('inflight-toast-ok', success);
-      el.classList.toggle('inflight-toast-err', !success);
-      setTimeout(() => _removeInflightToast(), 1500);
-    }
+    // Always show result briefly
+    const el = _showInflightToast();
+    const via = _viaPath();
+    const secs = (elapsed / 1000).toFixed(1);
+    const label = doneLabel || _inflightLabel;
+    el.innerHTML = success
+      ? `<span>\u2713 ${label} \u00b7 ${secs}s via ${via}</span>`
+      : `<span>\u2717 ${label} failed \u00b7 ${secs}s</span>`;
+    el.classList.remove('inflight-toast-out', 'inflight-toast-ok', 'inflight-toast-err');
+    el.classList.toggle('inflight-toast-ok', success);
+    el.classList.toggle('inflight-toast-err', !success);
+    setTimeout(() => _removeInflightToast(), 1200);
   }
 
   // Convenience: wrap an async action with inflight tracking
-  async function _tracked(label, fn) {
-    _startInflightTracking(label);
+  // immediate=true shows toast instantly (for user actions like send/key)
+  async function _tracked(label, fn, immediate = false) {
+    const id = _startInflightTracking(label, immediate);
     try {
       const result = await fn();
-      _finishInflightTracking(true);
+      if (id != null) _finishInflightTracking(id, true);
       return result;
     } catch (e) {
-      _finishInflightTracking(false);
+      if (id != null) _finishInflightTracking(id, false);
       throw e;
     }
   }
@@ -942,29 +933,28 @@ export function renderAgentDetail(container, agentId) {
     // Skip if a fetch is already in flight
     if (_fetchActive) return;
     _fetchActive = true;
-    _setFetchIndicator('fetching');
 
     try {
-      if (useFullOutput) {
-        const data = await api.agentFullOutput(agentId, outputOffset);
-        if (data.output) {
-          updatePane(pane, data.output);
-          outputOffset = data.next_offset || outputOffset;
+      await _tracked('Fetching output', async () => {
+        if (useFullOutput) {
+          const data = await api.agentFullOutput(agentId, outputOffset);
+          if (data.output) {
+            updatePane(pane, data.output);
+            outputOffset = data.next_offset || outputOffset;
+          }
+        } else {
+          const data = await api.agentOutput(agentId, 200, _outputHash);
+          if (data.hash) _outputHash = data.hash;
+          if (!data.unchanged && data.output) {
+            updatePane(pane, data.output);
+          }
         }
-      } else {
-        const data = await api.agentOutput(agentId, 200, _outputHash);
-        if (data.hash) _outputHash = data.hash;
-        if (!data.unchanged && data.output) {
-          updatePane(pane, data.output);
-        }
-      }
+      });
       _errorCount = 0;
-      _setFetchIndicator('');
     } catch (e) {
       if (e?.name === 'AbortError') { _fetchActive = false; return; }
       _errorCount++;
       if (_errorCount >= 3) _outputHash = null;
-      _setFetchIndicator('err');
     }
     _fetchActive = false;
   }
