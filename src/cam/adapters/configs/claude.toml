@@ -110,3 +110,6 @@ confirm_sleep = 0.5           # sleep after sending confirmation
 completion_stable = 3.0       # idle seconds before checking completion
 health_check_interval = 15    # seconds between tmux alive checks
 empty_threshold = 3           # consecutive empty captures before concern
+auto_exit = false             # finalize agent when task completes and idle confirmed
+exit_action = "kill_session"  # "kill_session", "send_exit", or "mark_only"
+exit_command = "/exit"        # command to send if exit_action = "send_exit"

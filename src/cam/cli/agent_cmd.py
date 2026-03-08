@@ -27,6 +27,7 @@ def run(
     name: Optional[str] = typer.Option(None, "--name", help="Human-readable name"),
     detach: bool = typer.Option(False, "--detach", help="Don't follow output"),
     auto_confirm: Optional[bool] = typer.Option(True, "--auto-confirm/--no-auto-confirm", help="Auto-confirm prompts and enable interactive mode (default: on)"),
+    auto_exit: Optional[bool] = typer.Option(None, "--auto-exit/--no-auto-exit", help="Auto-finalize agent when task completes (overrides adapter config)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show plan without executing"),
 ) -> None:
     """Start a coding agent on a task."""
@@ -77,6 +78,7 @@ def run(
         timeout=timeout_seconds,
         retry=RetryPolicy(max_retries=retry),
         auto_confirm=auto_confirm,
+        auto_exit=auto_exit,
     )
 
     # Validate tool exists

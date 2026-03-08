@@ -584,3 +584,52 @@ class TestGenericAdapterDefaults:
         assert generic.get_completion_stable() == 3.0
         assert generic.get_probe_wait() == 0.3
         assert generic.get_probe_idle_threshold() == 2
+
+
+class TestAutoExitConfig:
+    """Tests for auto-exit configuration."""
+
+    def test_auto_exit_defaults_false(self):
+        """Auto-exit should be disabled by default."""
+        from cam.adapters.registry import AdapterRegistry
+        reg = AdapterRegistry()
+        generic = reg.get("generic")
+        assert generic.get_auto_exit() is False
+        assert generic.get_exit_action() == "kill_session"
+        assert generic.get_exit_command() == "/exit"
+
+    def test_toml_auto_exit_config(self):
+        """TOML adapters should load auto_exit from [monitor] section."""
+        import tomllib
+        with open(CODEX_TOML, "rb") as f:
+            config = tomllib.load(f)
+        adapter = ConfigurableAdapter(config)
+
+        assert adapter.get_auto_exit() is False
+        assert adapter.get_exit_action() == "kill_session"
+        assert adapter.get_exit_command() == "/exit"
+
+    def test_auto_exit_enabled_from_config(self):
+        """auto_exit=true should propagate through ConfigurableAdapter."""
+        config = {
+            "adapter": {"name": "test", "display_name": "Test"},
+            "launch": {"command": ["test"]},
+            "monitor": {
+                "auto_exit": True,
+                "exit_action": "send_exit",
+                "exit_command": "quit",
+            },
+        }
+        adapter = ConfigurableAdapter(config)
+
+        assert adapter.get_auto_exit() is True
+        assert adapter.get_exit_action() == "send_exit"
+        assert adapter.get_exit_command() == "quit"
+
+    def test_task_auto_exit_field(self):
+        """TaskDefinition should accept auto_exit field."""
+        task = TaskDefinition(name="test", tool="claude", prompt="test", auto_exit=True)
+        assert task.auto_exit is True
+
+        task_none = TaskDefinition(name="test", tool="claude", prompt="test")
+        assert task_none.auto_exit is None

@@ -274,6 +274,9 @@ class AdapterConfig(object):
         self.completion_stable = float(mon_cfg.get("completion_stable", 3.0))
         self.health_check_interval = float(mon_cfg.get("health_check_interval", 15))
         self.empty_threshold = int(mon_cfg.get("empty_threshold", 3))
+        self.auto_exit = bool(mon_cfg.get("auto_exit", False))
+        self.exit_action = mon_cfg.get("exit_action", "kill_session")
+        self.exit_command = mon_cfg.get("exit_command", "/exit")
 
 
 # ---------------------------------------------------------------------------
@@ -575,6 +578,7 @@ class ClientMonitor(object):
         self._has_worked = False
         self._running = True
         self._last_change_time = time.time()
+        self._completion_detected = None
 
     def stop(self):
         self._running = False
@@ -648,7 +652,7 @@ class ClientMonitor(object):
                                "detail": {"from": old_state or "initializing", "to": new_state},
                                "ts": now})
 
-            # Detect completion for status reporting (but never auto-exit)
+            # Detect completion
             status_to_send = None
             exit_reason = None
             idle_for = now - self._last_change_time
@@ -656,10 +660,37 @@ class ClientMonitor(object):
             if not output_changed and idle_for >= self.config.completion_stable:
                 completion = detect_completion(output, self.config)
                 if completion:
-                    # Report as event, don't exit
-                    events.append({"type": "completion_detected",
-                                   "detail": {"status": completion},
-                                   "ts": now})
+                    if not self._completion_detected:
+                        self._completion_detected = completion
+                        events.append({"type": "completion_detected",
+                                       "detail": {"status": completion},
+                                       "ts": now})
+
+            # Reset completion on real output change
+            if output_changed:
+                self._completion_detected = None
+
+            # Auto-exit: completion confirmed + idle stable
+            if (
+                self.config.auto_exit
+                and self._has_worked
+                and self._completion_detected == "completed"
+                and idle_for >= self.config.completion_stable * 2
+            ):
+                exit_action = self.config.exit_action
+                log.info("Auto-exit: action=%s", exit_action)
+                if exit_action == "kill_session":
+                    tmux_kill_session(self.session_id)
+                elif exit_action == "send_exit":
+                    tmux_send_input(self.session_id, self.config.exit_command, send_enter=True)
+                    for _ in range(10):
+                        time.sleep(1)
+                        if not tmux_session_exists(self.session_id):
+                            break
+                    else:
+                        tmux_kill_session(self.session_id)
+                status_to_send = "completed"
+                exit_reason = "Task completed (auto-exit)"
 
             sync_output = output if output_changed else None
             response = sync_with_server(

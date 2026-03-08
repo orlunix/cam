@@ -407,6 +407,7 @@ export class CamApi {
   // --- Convenience methods ---
 
   health() { return this.request('GET', '/api/system/health'); }
+  relayStatus() { return this.request('GET', '/_relay/status'); }
   config() { return this.request('GET', '/api/system/config'); }
   listAgents(params = {}) {
     const qs = new URLSearchParams();

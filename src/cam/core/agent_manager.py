@@ -377,10 +377,15 @@ class AgentManager:
                 continue
 
             if not alive:
+                # If the agent progressed past initializing, it likely
+                # completed normally; otherwise it's a startup failure.
+                has_worked = agent.state not in (AgentState.INITIALIZING, None)
+                final_status = AgentStatus.COMPLETED if has_worked else AgentStatus.FAILED
+                exit_reason = "Session ended cleanly" if has_worked else "TMUX session disappeared"
                 self._agent_store.update_status(
                     str(agent.id),
-                    AgentStatus.FAILED,
-                    exit_reason="TMUX session disappeared",
+                    final_status,
+                    exit_reason=exit_reason,
                 )
                 orphaned.append(agent)
 
