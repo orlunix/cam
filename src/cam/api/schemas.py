@@ -22,6 +22,7 @@ class RunAgentRequest(BaseModel):
     retry: int = Field(default=0, ge=0)
     env: dict[str, str] = Field(default_factory=dict)
     auto_confirm: bool | None = None
+    auto_exit: bool | None = None
 
 
 class AgentResponse(BaseModel):
@@ -41,6 +42,7 @@ class AgentResponse(BaseModel):
     cost_estimate: float | None
     files_changed: list[str]
     auto_confirm: bool | None = None
+    auto_exit: bool | None = None
 
 
 class AgentListResponse(BaseModel):
@@ -117,4 +119,5 @@ def agent_to_response(agent: Agent) -> AgentResponse:
         cost_estimate=agent.cost_estimate,
         files_changed=agent.files_changed,
         auto_confirm=agent.task.auto_confirm,
+        auto_exit=agent.task.auto_exit,
     )

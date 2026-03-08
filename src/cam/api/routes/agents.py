@@ -107,6 +107,7 @@ async def run_agent(body: RunAgentRequest, request: Request):
         retry=RetryPolicy(max_retries=body.retry),
         env=body.env,
         auto_confirm=body.auto_confirm,
+        auto_exit=body.auto_exit,
     )
 
     try:

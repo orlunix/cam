@@ -45,6 +45,15 @@ export function renderStartAgent(container) {
         <div class="form-hint">Automatically respond to permission prompts</div>
       </div>
 
+      <div class="form-group">
+        <label class="toggle-row">
+          <span>Auto-exit</span>
+          <input type="checkbox" id="autoexit" class="toggle-input">
+          <span class="toggle-slider"></span>
+        </label>
+        <div class="form-hint">Finalize agent when task completes</div>
+      </div>
+
       <details class="form-advanced">
         <summary>Advanced options</summary>
         <div class="form-group">
@@ -76,6 +85,7 @@ export function renderStartAgent(container) {
       context: container.querySelector('#context').value,
       prompt: container.querySelector('#prompt').value || ' ',
       auto_confirm: container.querySelector('#autoconfirm').checked,
+      auto_exit: container.querySelector('#autoexit').checked,
       retry: parseInt(container.querySelector('#retry').value) || 0,
     };
     const timeout = container.querySelector('#timeout').value.trim();
