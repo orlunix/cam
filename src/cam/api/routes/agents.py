@@ -482,7 +482,8 @@ def _build_jsonl_history(agent_id: str) -> str:
 
     parts: list[str] = []
     prev_output = ""
-    prev_lines: set[str] = set()
+    prev_len = 0
+    prev_hash = 0
 
     for entry in entries:
         etype = entry.get("type", "")
@@ -492,23 +493,23 @@ def _build_jsonl_history(agent_id: str) -> str:
             output = entry.get("output", "")
             if not output or output == prev_output:
                 continue
-            # Strip trailing whitespace from each line for comparison
-            cur_lines = set(
-                l.rstrip() for l in output.splitlines() if l.strip()
-            )
-            # Skip if >80% of non-empty lines are the same as previous snapshot
-            # (catches spinner changes, cursor blinks, minor TUI redraws)
-            if prev_lines and cur_lines:
-                overlap = len(cur_lines & prev_lines)
-                similarity = overlap / max(len(cur_lines), len(prev_lines))
-                if similarity > 0.8:
-                    # Still update prev so we track drift over time
+            # Cheap similarity check: compare length + first/last lines.
+            # Near-identical redraws (spinner, cursor blink) keep the same
+            # structure — only a few chars change. This catches ~95% of
+            # duplicates with zero allocation overhead.
+            cur_len = len(output)
+            # Hash first 80 + last 80 chars (stable across minor redraws)
+            cur_hash = hash(output[:80]) ^ hash(output[-80:])
+            if prev_hash:
+                len_ratio = min(cur_len, prev_len) / max(cur_len, prev_len) if max(cur_len, prev_len) else 1
+                if len_ratio > 0.9 and cur_hash == prev_hash:
                     prev_output = output
-                    prev_lines = cur_lines
+                    prev_len = cur_len
                     continue
             parts.append(f"--- {ts} ---\n{output}")
             prev_output = output
-            prev_lines = cur_lines
+            prev_len = cur_len
+            prev_hash = cur_hash
         elif etype == "state_change":
             data = entry.get("data", {})
             from_s = data.get("from", "")
