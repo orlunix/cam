@@ -395,9 +395,9 @@ a { color: var(--accent); text-decoration: none; }
   padding: 10px 12px;
   max-height: 50vh;
   overflow-y: auto;
-  overflow-x: hidden;
+  overflow-x: auto;
   white-space: pre-wrap;
-  word-break: break-all;
+  word-break: break-word;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-x pan-y;
   overscroll-behavior: contain;
@@ -1057,6 +1057,49 @@ select.form-input {
   to { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
 
+/* === In-flight request toast === */
+.inflight-toast {
+  position: fixed;
+  bottom: calc(var(--safe-bottom) + 60px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 16px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+  z-index: 250;
+  max-width: calc(100vw - 24px);
+  background: rgba(30, 30, 30, 0.92);
+  color: #bbb;
+  border: 1px solid #444;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: toast-in 0.2s ease-out;
+  pointer-events: auto;
+  white-space: nowrap;
+}
+.inflight-toast span { overflow: hidden; text-overflow: ellipsis; }
+.inflight-toast-ok { color: var(--green); border-color: var(--green); }
+.inflight-toast-err { color: var(--red); border-color: var(--red); }
+.inflight-toast-out {
+  opacity: 0;
+  transition: opacity 0.2s ease-out;
+}
+.inflight-cancel {
+  background: none;
+  border: 1px solid #888;
+  color: #ccc;
+  border-radius: 12px;
+  padding: 2px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.inflight-cancel:active { background: rgba(255,255,255,0.1); }
+
 /* === File Browser === */
 .fb-breadcrumb {
   display: flex;
@@ -1128,3 +1171,21 @@ select.form-input {
     gap: 8px;
   }
 }
+
+/* Floating copy button for output pane text selection */
+.copy-float-btn {
+  position: fixed;
+  z-index: 10000;
+  background: #3b82f6;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.copy-float-btn:active { background: #2563eb; }
+.copy-float-btn.hidden { display: none; }
