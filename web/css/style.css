@@ -833,7 +833,7 @@ select.form-input {
 .toggle-slider {
   width: 42px;
   height: 24px;
-  background: var(--border);
+  background: #555;
   border-radius: 12px;
   position: relative;
   transition: background 0.2s;

@@ -143,16 +143,14 @@ export function renderAgentDetail(container, agentId) {
     const onResize = () => {
       const h = vv.height;
       appEl.style.height = h + 'px';
-      // Also resize fullscreen overlay if open
       if (fsOverlay) fsOverlay.style.height = h + 'px';
-      // Scroll output to bottom when keyboard opens (height shrinks)
       const pane = container.querySelector('#output-pane');
       if (pane && autoScroll) requestAnimationFrame(() => { pane.scrollTop = pane.scrollHeight; });
       const fsPre = fsOverlay ? fsOverlay.querySelector('#fs-output-pane') : null;
       if (fsPre && autoScroll) requestAnimationFrame(() => { fsPre.scrollTop = fsPre.scrollHeight; });
     };
     vv.addEventListener('resize', onResize);
-    onResize(); // set initial height
+    onResize();
     _vvCleanup = () => {
       vv.removeEventListener('resize', onResize);
       appEl.style.height = '';
