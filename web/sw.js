@@ -1,4 +1,4 @@
-const CACHE_NAME = 'cam-v57';
+const CACHE_NAME = 'cam-v58';
 
 // Pre-cache key files on install so first load after SW activation is fast
 const PRECACHE = [
