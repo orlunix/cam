@@ -5,8 +5,18 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html { touch-action: manipulation; }  /* prevent double-tap zoom globally */
 
+/* Block text selection globally — only output panes opt back in */
+body {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 /* Prevent mobile browser auto-zoom: inputs/selects/textareas must be >= 16px */
-input, select, textarea { font-size: 16px !important; }
+input, select, textarea {
+  font-size: 16px !important;
+  -webkit-user-select: text;
+  user-select: text;
+}
 
 :root {
   --bg: #111111;
@@ -634,6 +644,8 @@ details[open] > .collapse-summary::before {
   white-space: pre-wrap;
   word-break: break-word;
   margin-top: 6px;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 /* Detail bottom actions */

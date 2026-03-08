@@ -54,6 +54,7 @@ export function renderAgentDetail(container, agentId) {
 
   // Floating "Copy" button — appears when text is selected inside an output pane.
   // Android WebView's native copy popup doesn't work with immersive fullscreen.
+  let _copyCleanups = null;
   function _wireCopyButton(pane) {
     let copyBtn = null;
     const show = (x, y) => {
@@ -123,7 +124,6 @@ export function renderAgentDetail(container, agentId) {
       if (copyBtn) { copyBtn.remove(); copyBtn = null; }
     };
   }
-  let _copyCleanups = null;
 
   // #content is the parent — we toggle flex layout on it
   const contentEl = document.getElementById('content');
@@ -372,7 +372,7 @@ export function renderAgentDetail(container, agentId) {
         </div>
       </div>
       <div style="flex:1;min-height:0;display:flex;flex-direction:column;position:relative;padding:0 4px;">
-        <pre id="fs-output-pane" style="flex:1;overflow-y:auto;overflow-x:hidden;margin:0;padding:8px;background:#0d1117;color:#c9d1d9;font-family:SFMono-Regular,Consolas,Liberation Mono,Menlo,monospace;font-size:12px;line-height:1.45;white-space:pre-wrap;word-break:break-all;border-radius:4px;-webkit-overflow-scrolling:touch;"></pre>
+        <pre id="fs-output-pane" style="flex:1;overflow-y:auto;overflow-x:auto;margin:0;padding:8px;background:#0d1117;color:#c9d1d9;font-family:SFMono-Regular,Consolas,Liberation Mono,Menlo,monospace;font-size:12px;line-height:1.45;white-space:pre-wrap;word-break:break-word;border-radius:4px;-webkit-overflow-scrolling:touch;-webkit-user-select:text;user-select:text;"></pre>
         <button class="jump-bottom-btn hidden" id="fs-jump-bottom" style="position:absolute;bottom:12px;right:16px;">\u2193 Bottom</button>
       </div>
       ${isActive ? `<div style="flex-shrink:0;padding:6px 8px;border-top:1px solid #333;">${inputHTML()}</div>` : ''}
