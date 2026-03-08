@@ -482,6 +482,7 @@ def _build_jsonl_history(agent_id: str) -> str:
 
     parts: list[str] = []
     prev_output = ""
+    prev_lines: set[str] = set()
 
     for entry in entries:
         etype = entry.get("type", "")
@@ -489,9 +490,25 @@ def _build_jsonl_history(agent_id: str) -> str:
 
         if etype == "output":
             output = entry.get("output", "")
-            if output and output != prev_output:
-                parts.append(f"--- {ts} ---\n{output}")
-                prev_output = output
+            if not output or output == prev_output:
+                continue
+            # Strip trailing whitespace from each line for comparison
+            cur_lines = set(
+                l.rstrip() for l in output.splitlines() if l.strip()
+            )
+            # Skip if >80% of non-empty lines are the same as previous snapshot
+            # (catches spinner changes, cursor blinks, minor TUI redraws)
+            if prev_lines and cur_lines:
+                overlap = len(cur_lines & prev_lines)
+                similarity = overlap / max(len(cur_lines), len(prev_lines))
+                if similarity > 0.8:
+                    # Still update prev so we track drift over time
+                    prev_output = output
+                    prev_lines = cur_lines
+                    continue
+            parts.append(f"--- {ts} ---\n{output}")
+            prev_output = output
+            prev_lines = cur_lines
         elif etype == "state_change":
             data = entry.get("data", {})
             from_s = data.get("from", "")
