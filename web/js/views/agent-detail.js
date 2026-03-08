@@ -21,6 +21,10 @@ export function renderAgentDetail(container, agentId) {
   let cachedOutput = _prevOutput?.text || '';
   let _outputHash = _prevOutput?.hash || null;
   let agent = (state.get('agents') || []).find(a => a.id === agentId);
+  // Auto-switch to full output for completed/terminal agents (live capture returns empty)
+  if (agent && ['completed', 'failed', 'killed', 'timeout'].includes(agent.status)) {
+    useFullOutput = true;
+  }
   let fsOverlay = null;
 
   // Output font size — pinch-to-zoom on output pane adjusts font size

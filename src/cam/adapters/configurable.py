@@ -169,3 +169,12 @@ class ConfigurableAdapter(ToolAdapter):
 
     def get_probe_idle_threshold(self) -> int:
         return self._ac.probe_idle_threshold
+
+    def get_auto_exit(self) -> bool:
+        return self._ac.auto_exit
+
+    def get_exit_action(self) -> str:
+        return self._ac.exit_action
+
+    def get_exit_command(self) -> str:
+        return self._ac.exit_command

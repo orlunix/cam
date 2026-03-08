@@ -134,6 +134,15 @@ async function _connectWithRetry(cfg) {
     updateConnectionDot(mode);
 
     if (mode !== 'disconnected') {
+      if (mode === 'relay') {
+        // Check if CAM server is actually connected to relay
+        try {
+          const rs = await api.relayStatus();
+          if (rs && !rs.server_connected) {
+            state.toast('Relay connected but CAM server is offline', 'warning', 8000);
+          }
+        } catch {}
+      }
       await loadData();
       if (mode === 'relay') api._requestRelayEventStream();
     } else if (!cfg.token && !cfg.relayToken) {
@@ -182,6 +191,17 @@ async function loadData() {
     }
   } catch (e) {
     console.error('Failed to load data:', e);
+    // If via relay, check if server is the problem
+    if (api.mode === 'relay') {
+      try {
+        const rs = await api.relayStatus();
+        if (rs && !rs.server_connected) {
+          state.toast('CAM server is offline', 'error', 8000);
+          const label = document.getElementById('conn-label');
+          if (label) label.textContent = 'server offline';
+        }
+      } catch {}
+    }
   }
 }
 
