@@ -16,7 +16,6 @@ Usage:
 """
 
 import argparse
-import hashlib
 import importlib.util
 import json
 import logging
@@ -43,6 +42,7 @@ try:
         tmux_send_input, tmux_kill_session, create_tmux_session,
         should_auto_confirm, detect_state, detect_completion,
         is_ready_for_input, strip_ansi, _find_tmux_socket,
+        run_monitor_loop,
     )
 except ImportError:
     # On target: load from ~/.cam/cam-client.py via importlib
@@ -66,6 +66,7 @@ except ImportError:
     is_ready_for_input = _cl.is_ready_for_input
     strip_ansi = _cl.strip_ansi
     _find_tmux_socket = _cl._find_tmux_socket
+    run_monitor_loop = _cl.run_monitor_loop
 
 # ---------------------------------------------------------------------------
 # Logging & constants
@@ -79,6 +80,34 @@ logging.basicConfig(
 log = logging.getLogger("camc")
 
 CONFIGS_DIR = os.path.join(CAM_DIR, "configs")
+CONTEXT_FILE = os.path.join(CAM_DIR, "context.json")
+
+_DEFAULT_CONTEXT = {"name": None, "host": None, "port": None}
+
+
+def _load_default_context():
+    """Load default context from ~/.cam/context.json.
+
+    If the file doesn't exist, create it as a template with null values
+    for the user to fill in.  Returns a dict with name/host/port.
+    """
+    if not os.path.exists(CONTEXT_FILE):
+        os.makedirs(CAM_DIR, exist_ok=True)
+        with open(CONTEXT_FILE, "w") as f:
+            json.dump(_DEFAULT_CONTEXT, f, indent=2)
+            f.write("\n")
+        log.info("Created default context template: %s", CONTEXT_FILE)
+        return dict(_DEFAULT_CONTEXT)
+    try:
+        with open(CONTEXT_FILE) as f:
+            ctx = json.load(f)
+        # Merge with defaults so missing keys don't break things
+        result = dict(_DEFAULT_CONTEXT)
+        result.update(ctx)
+        return result
+    except (ValueError, IOError) as e:
+        log.warning("Failed to read %s: %s — using defaults", CONTEXT_FILE, e)
+        return dict(_DEFAULT_CONTEXT)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -144,82 +173,9 @@ def _run_monitor(agent_id):
     agent = store.get(agent_id)
     if not agent:
         sys.exit(1)
-
     config = AdapterConfig(load_toml(os.path.join(CONFIGS_DIR, "%s.toml" % agent["tool"])))
-    session = agent["session"]
-
     pid_path = "/tmp/camc-%s.pid" % agent_id
-    with open(pid_path, "w") as f:
-        f.write(str(os.getpid()))
-
-    running = [True]
-    signal.signal(signal.SIGTERM, lambda s, f: running.__setitem__(0, False))
-
-    prev_hash = ""
-    last_change = last_health = time.time()
-    last_confirm = 0.0
-    current_state = None
-    has_worked = False
-    empty_count = 0
-
-    try:
-        while running[0]:
-            now = time.time()
-
-            if now - last_health >= config.health_check_interval:
-                last_health = now
-                if not tmux_session_exists(session):
-                    status = "completed" if has_worked else "failed"
-                    store.update(agent_id, status=status,
-                                 exit_reason="Session exited", completed_at=_now_iso())
-                    return
-
-            output = capture_tmux(session)
-            h = hashlib.md5(output.encode()).hexdigest()[:8]
-            changed = h != prev_hash
-            if changed:
-                last_change = now
-            prev_hash = h
-
-            if not output.strip():
-                empty_count += 1
-                # Early health check: if output empty for 3+ cycles, session may have died
-                if empty_count >= config.empty_threshold and not tmux_session_exists(session):
-                    status = "completed" if has_worked else "failed"
-                    store.update(agent_id, status=status,
-                                 exit_reason="Session exited", completed_at=_now_iso())
-                    return
-                time.sleep(1)
-                continue
-            empty_count = 0
-
-            if now - last_confirm >= config.confirm_cooldown:
-                confirm = should_auto_confirm(output, config)
-                if confirm:
-                    tmux_send_input(session, confirm[0], send_enter=confirm[1])
-                    last_confirm = now
-                    time.sleep(config.confirm_sleep)
-                    continue
-
-            ns = detect_state(output, config)
-            if ns and ns != current_state:
-                if ns != "initializing":
-                    has_worked = True
-                current_state = ns
-                store.update(agent_id, state=ns)
-
-            # Detect completion for status reporting (but never auto-exit)
-            if not changed and now - last_change >= config.completion_stable:
-                done = detect_completion(output, config)
-                if done:
-                    store.update(agent_id, state="idle")
-
-            time.sleep(1)
-    finally:
-        try:
-            os.unlink(pid_path)
-        except OSError:
-            pass
+    run_monitor_loop(agent["session"], agent_id, config, store, pid_path=pid_path)
 
 
 # ---------------------------------------------------------------------------
@@ -261,10 +217,13 @@ def cmd_run(args):
         if prompt.strip():
             tmux_send_input(session, prompt, send_enter=True)
 
+    name = getattr(args, "name", None) or None
+    context = _load_default_context()
     store = AgentStore()
     store.save({"id": agent_id, "tool": tool, "session": session, "status": "running",
                 "state": "initializing", "prompt": prompt, "path": workdir,
-                "context": {"name": None, "host": None, "port": None},
+                "name": name,
+                "context": context,
                 "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
                 "monitor_pid": None})
 
@@ -280,6 +239,8 @@ def cmd_run(args):
         pass
 
     print("  ID: %s  Tool: %s  Session: %s" % (agent_id, tool, session))
+    if name:
+        print("  Name: %s" % name)
     print("  Path: %s" % workdir)
     if prompt:
         print("  Prompt: %s" % (prompt[:60] + "..." if len(prompt) > 60 else prompt))
@@ -307,14 +268,15 @@ def cmd_list(args):
     reset = "\033[0m"
     use_color = sys.stdout.isatty()
 
-    print("%-10s %-10s %-12s %-12s %-30s %s" % ("ID", "TOOL", "STATUS", "STATE", "PROMPT", "STARTED"))
-    print("-" * 90)
+    print("%-10s %-16s %-10s %-12s %-12s %-24s %s" % ("ID", "NAME", "TOOL", "STATUS", "STATE", "PROMPT", "STARTED"))
+    print("-" * 100)
     for a in sorted(agents, key=lambda x: x.get("started_at", ""), reverse=True):
         s = a.get("status", "?")
         ss = "%s%-12s%s" % (colors.get(s, ""), s, reset) if use_color else "%-12s" % s
-        print("%-10s %-10s %s %-12s %-30s %s" % (
-            a.get("id", "?"), a.get("tool", "?"), ss,
-            a.get("state", "") or "", (a.get("prompt", "") or "")[:30],
+        print("%-10s %-16s %-10s %s %-12s %-24s %s" % (
+            a.get("id", "?"), (a.get("name") or "")[:16],
+            a.get("tool", "?"), ss,
+            a.get("state", "") or "", (a.get("prompt", "") or "")[:24],
             _time_ago(a.get("started_at"))))
 
 
@@ -356,9 +318,10 @@ def cmd_add(args):
         sys.stderr.write("Error: tmux session '%s' not found\n" % args.session); sys.exit(1)
     store = AgentStore()
     agent_id = uuid4().hex[:8]
+    context = _load_default_context()
     store.save({"id": agent_id, "tool": args.tool, "session": args.session, "status": "running",
                 "state": None, "prompt": "(adopted)", "path": os.getcwd(),
-                "context": {"name": None, "host": None, "port": None},
+                "context": context,
                 "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
                 "monitor_pid": None})
     # Spawn monitor if config exists
@@ -420,7 +383,9 @@ examples:
     sub = p.add_subparsers(dest="command")
 
     r = sub.add_parser("run", help="Launch an agent")
-    r.add_argument("tool"); r.add_argument("prompt", nargs="?", default=""); r.add_argument("--path", "-p", default=os.getcwd())
+    r.add_argument("tool"); r.add_argument("prompt", nargs="?", default="")
+    r.add_argument("--path", "-p", default=os.getcwd())
+    r.add_argument("--name", "-n", default=None, help="Human-readable name for this agent")
 
     sub.add_parser("list", aliases=["ls"], help="List agents")
 

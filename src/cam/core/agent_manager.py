@@ -538,26 +538,30 @@ class AgentManager:
         adapter: ToolAdapter,
         context: Context,
     ) -> bool:
-        """Deploy and start cam-client on the target machine.
+        """Deploy cam-client and start a local monitor on the target machine.
 
-        Returns True if cam-client was successfully deployed and launched.
+        The local monitor handles auto-confirm, state detection, and completion
+        locally.  The server-side monitor reads processed state via SSH (pull
+        mode) instead of doing its own detection.
+
+        Returns True if the local monitor was started (pull mode available).
         Falls back silently to SSH-polling if anything fails.
         """
         if not hasattr(transport, '_run_ssh') or not hasattr(transport, 'write_file'):
             return False
 
         try:
-            # 1. Read local client.py and compute hash
+            import hashlib
+            import shlex
+
+            # 1. Deploy cam-client.py
             client_path = Path(__file__).parent.parent / "client.py"
             if not client_path.exists():
                 logger.warning("cam-client.py not found at %s", client_path)
                 return False
             client_bytes = client_path.read_bytes()
-            import hashlib
             local_hash = hashlib.md5(client_bytes).hexdigest()[:12]
 
-            # 2. Check remote hash — deploy if missing or outdated
-            # Wrap in bash -c for csh-default remotes (2>/dev/null is bash syntax)
             ok, remote_hash = await transport._run_ssh(
                 "bash -c 'md5sum ~/.cam/cam-client.py 2>/dev/null | cut -c1-12'",
                 check=False,
@@ -574,73 +578,52 @@ class AgentManager:
                 action = "Updated" if remote_hash else "Deployed"
                 logger.info("%s cam-client.py on %s (%s)", action, transport._host, local_hash)
 
-            # 2b. Sync TOML adapter configs to ~/.cam/configs/
+            # 2. Sync TOML adapter configs
             toml_results = await self._sync_toml_configs(transport)
             for name, status in toml_results.items():
                 if status == "failed":
                     logger.warning("Failed to sync %s to %s", name, transport._host)
 
-            # 3. Determine adapter config mode (--tool or --adapter-config)
-            tool_name = adapter.name if hasattr(adapter, 'name') else None
-            toml_synced = (
-                tool_name
-                and f"{tool_name}.toml" in toml_results
-                and toml_results[f"{tool_name}.toml"] != "failed"
-            )
-
-            # 4. Resolve server URL reachable from target
-            server_host = self._config.server.host
-            server_port = self._config.server.port
-            if server_host in ("127.0.0.1", "0.0.0.0", "localhost"):
-                # For local server binding, cam-client can't reach it from remote.
-                # Skip cam-client for now — user needs to configure a reachable URL.
-                logger.info(
-                    "Skipping cam-client: server binds to %s (not reachable from remote)",
-                    server_host,
-                )
-                return False
-            server_url = f"http://{server_host}:{server_port}"
-
-            # 5. Auth token
-            auth_token = self._config.server.auth_token or ""
-            if not auth_token:
-                logger.info("Skipping cam-client: no auth token configured")
-                return False
-
-            # 6. Auto-confirm setting
-            ac = agent.task.auto_confirm
-            ac_flag = "True" if (ac is True or (ac is None and self._config.general.auto_confirm)) else "False"
-
-            # 7. Launch cam-client as background process on remote
-            # Use nohup + disown pattern via shell
-            import shlex
-            if toml_synced:
-                config_flag = f" --tool {shlex.quote(tool_name)}"
-            else:
-                adapter_config = json.dumps(adapter.to_dict())
-                config_flag = f" --adapter-config {shlex.quote(adapter_config)}"
-            # Wrap in bash -c for csh-default remotes (2>&1 & is bash syntax)
-            prompt_flag = ""
-            if agent.task.prompt and agent.task.prompt.strip():
-                prompt_flag = f" --prompt {shlex.quote(agent.task.prompt)}"
-            inner_cmd = (
-                f"nohup python3 ~/.cam/cam-client.py"
-                f" --agent-id {shlex.quote(str(agent.id))}"
+            # 3. Register agent in remote ~/.cam/agents.json
+            tool_name = adapter.name if hasattr(adapter, 'name') else "claude"
+            register_cmd = (
+                f"python3 ~/.cam/cam-client.py agent register"
+                f" --id {shlex.quote(str(agent.id))}"
                 f" --session {shlex.quote(agent.tmux_session)}"
-                f" --server {shlex.quote(server_url)}"
-                f" --token {shlex.quote(auth_token)}"
-                f" --auto-confirm {ac_flag}"
-                f"{prompt_flag}"
-                f"{config_flag}"
+                f" --tool {shlex.quote(tool_name)}"
+                f" --path {shlex.quote(context.path)}"
+            )
+            if agent.task.prompt:
+                register_cmd += f" --prompt {shlex.quote(agent.task.prompt)}"
+            if agent.task.name:
+                register_cmd += f" --name {shlex.quote(agent.task.name)}"
+            # Propagate auto-exit setting to remote
+            auto_exit = agent.task.auto_exit
+            if auto_exit is None:
+                auto_exit = adapter.get_auto_exit() if hasattr(adapter, 'get_auto_exit') else False
+            if auto_exit:
+                register_cmd += " --auto-exit"
+            ok, output = await transport._run_ssh(register_cmd, check=False)
+            if not ok:
+                logger.warning("Failed to register agent on remote: %s", output)
+                return False
+
+            # 4. Launch local monitor (no HTTP server needed)
+            inner_cmd = (
+                f"nohup python3 ~/.cam/cam-client.py _monitor_bg"
+                f" {shlex.quote(str(agent.id))} {shlex.quote(tool_name)}"
                 f" > /tmp/cam-client-{agent.id}.log 2>&1 &"
             )
             launch_cmd = f"bash -c {shlex.quote(inner_cmd)}"
             ok, output = await transport._run_ssh(launch_cmd, check=False)
             if not ok:
-                logger.warning("Failed to launch cam-client on %s: %s", transport._host, output)
+                logger.warning("Failed to launch cam-client monitor on %s: %s", transport._host, output)
                 return False
 
-            logger.info("Started cam-client on %s for agent %s", transport._host, agent.id)
+            logger.info(
+                "Started cam-client local monitor on %s for agent %s (pull mode)",
+                transport._host, agent.id,
+            )
             return True
 
         except Exception as e:
@@ -944,10 +927,11 @@ class AgentManager:
                             )
                         _ctx_cache[ctx_name] = target_ctx
 
+                task_name = ra.get("name") or "%s-%s" % (tool, remote_id[:6])
                 agent = Agent(
                     id=remote_id,
                     task=TaskDefinition(
-                        name="%s-%s" % (tool, remote_id[:6]),
+                        name=task_name,
                         tool=tool,
                         prompt=prompt,
                         context=target_ctx.name,
