@@ -38,7 +38,8 @@ Five layers, top to bottom:
 - **API Server** (`src/cam/api/`) — FastAPI with token auth, WebSocket events, relay connector for NAT traversal.
 - **Relay** (`relay/relay.py`) — Standalone zero-dep WebSocket relay (stdlib-only RFC 6455). Bridges REST-over-WS between mobile clients and CAM server.
 - **Storage** (`src/cam/storage/`) — SQLite via raw `sqlite3`. Schema created in `database.py`. Agent/context/history stores with short-ID prefix matching.
-- **cam-agent** (`cam-agent/`) — Go binary providing standardized remote protocol over SSH. Wraps tmux on Linux.
+- **cam-agent** (`src/cam-agent/`) — Go binary providing standardized remote protocol over SSH. Wraps tmux on Linux.
+- **camc** (`src/camc`) — Standalone single-file CLI (stdlib-only, Python 3.6+). Self-contained version of the agent manager for distribution.
 - **Web/Mobile** (`web/`) — PWA frontend. Android WebView wrapper in `android/`.
 
 ## Critical Pydantic v2 Patterns
@@ -140,7 +141,7 @@ Background mode (`--detach`) spawns `monitor_runner.py` as a subprocess with PID
 
 ## cam-agent Go Binary
 
-- Located at `cam-agent/`. Single binary, cross-compiled for linux/windows/darwin.
+- Located at `src/cam-agent/`. Single binary, cross-compiled for linux/windows/darwin.
 - CLI subcommands over SSH: `ping`, `session create/exists/kill/capture/send/key`, `file list/read/write`, `session log-start/log-read`.
 - Linux backend: thin wrapper around real tmux (sockets at `/tmp/cam-agent-sockets/`).
 - ANSI stripping done in Go (agent-side) — capture returns plain text.

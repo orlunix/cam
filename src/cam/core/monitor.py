@@ -65,10 +65,14 @@ class AgentMonitor:
         self._logger = agent_logger
         self._config = config
 
-        # cam-client passive mode: when a cam-client is running on the target,
-        # skip SSH-based output capture, auto-confirm, and state detection.
-        # Only enforce timeouts and check heartbeat.
-        self._client_active: bool = client_active
+        # Pull mode: cam-client monitors locally, server reads processed state
+        # via SSH.  Falls back to full SSH polling if pull fails for 30s.
+        self._pull_mode: bool = client_active
+        self._last_pull_success: float = datetime.utcnow().timestamp()
+        self._pull_hash: str = ""
+
+        # Legacy passive mode (HTTP push) — kept for backward compat
+        self._client_active: bool = False
         self._last_client_sync: float = datetime.utcnow().timestamp()
 
         # Monitoring state
@@ -133,22 +137,38 @@ class AgentMonitor:
                         return self._finalize(AgentStatus.TIMEOUT, f"Total timeout after {elapsed:.0f}s")
 
                 # --------------------------------------------------
-                # 2b. cam-client passive mode
+                # 2a. Pull mode: read cam-client's local state via SSH
+                # --------------------------------------------------
+                if self._pull_mode:
+                    pulled = await self._pull_client_status()
+                    if pulled is not None:
+                        self._last_pull_success = now
+                        terminal = self._apply_remote_state(pulled)
+                        if terminal is not None:
+                            return terminal
+                    else:
+                        # Pull failed — if no success for 30s, fall back
+                        if now - self._last_pull_success >= 30:
+                            logger.warning(
+                                "Pull mode failed for 30s, falling back to SSH polling for agent %s",
+                                self._agent.id,
+                            )
+                            self._pull_mode = False
+                            # Continue to normal SSH polling below
+                        else:
+                            await asyncio.sleep(poll_interval * 2)
+                            continue
+
+                    await asyncio.sleep(poll_interval * 2)
+                    continue
+
+                # --------------------------------------------------
+                # 2b. cam-client passive mode (legacy HTTP push)
                 # --------------------------------------------------
                 if self._client_active:
-                    # cam-client handles output capture, auto-confirm, state detection
-                    # locally. The server monitor just checks for DB status changes
-                    # (cam-client pushes terminal status via /api/client/sync) and
-                    # watches for cam-client heartbeat timeout.
                     fresh = self._agent_store.get(str(self._agent.id))
                     if fresh and fresh.is_terminal():
                         return fresh.status
-
-                    # Check heartbeat: cam-client syncs every ~2s.
-                    # If no sync for 30s, fall back to SSH polling.
-                    # Use the agent's DB updated_at or check client_output timestamp
-                    # (we can't directly access ServerState here, so check if agent
-                    # status changed in DB as a proxy for cam-client liveness).
                     await asyncio.sleep(poll_interval * 2)
                     continue
 
@@ -420,6 +440,105 @@ class AgentMonitor:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    async def _pull_client_status(self) -> dict | None:
+        """Read cam-client's processed state for this agent via SSH.
+
+        Runs ``cam-client.py status --id <agent_id> --hash <prev_hash>``
+        on the remote.  The remote returns JSON with agent state/status, or
+        ``{"unchanged": true}`` if the hash matches (nothing new).
+
+        Returns:
+            Parsed dict on success, None on any failure.
+        """
+        import json
+        import shlex
+
+        if not hasattr(self._transport, '_run_ssh'):
+            return None
+
+        agent_id = str(self._agent.id)
+        cmd = f"python3 ~/.cam/cam-client.py status --id {shlex.quote(agent_id)}"
+        if self._pull_hash:
+            cmd += f" --hash {shlex.quote(self._pull_hash)}"
+
+        try:
+            ok, output = await self._transport._run_ssh(cmd, check=False)
+            if not ok or not output.strip():
+                return None
+            data = json.loads(output.strip())
+            return data
+        except Exception as exc:
+            logger.debug("Pull failed for agent %s: %s", agent_id, exc)
+            return None
+
+    def _apply_remote_state(self, data: dict) -> AgentStatus | None:
+        """Apply state from cam-client pull response to the local agent.
+
+        Args:
+            data: Parsed JSON from cam-client status command.
+
+        Returns:
+            Terminal AgentStatus if the agent has finished, else None.
+        """
+        if data.get("unchanged"):
+            return None
+
+        # Update pull hash for next conditional request
+        if "hash" in data:
+            self._pull_hash = data["hash"]
+
+        # Extract remote agent info (may be a list or single object)
+        agents = data.get("agents", [])
+        if not agents:
+            # Single agent response
+            if "status" in data:
+                agents = [data]
+            else:
+                return None
+
+        agent_id = str(self._agent.id)
+        remote = None
+        for a in agents:
+            if a.get("id") == agent_id:
+                remote = a
+                break
+        if not remote:
+            return None
+
+        # Apply state change
+        remote_state_str = remote.get("state")
+        if remote_state_str:
+            try:
+                new_state = AgentState(remote_state_str)
+                if new_state != self._agent.state:
+                    if new_state != AgentState.INITIALIZING:
+                        self._has_worked = True
+                    old_state = self._agent.state
+                    self._agent.state = new_state
+                    self._agent_store.update_status(
+                        agent_id, self._agent.status, state=new_state,
+                    )
+                    self._logger.write("state_change", data={
+                        "from": old_state.value, "to": new_state.value, "source": "pull",
+                    })
+                    self._publish_event("state_change", {
+                        "from": old_state.value, "to": new_state.value,
+                    })
+            except ValueError:
+                pass  # Unknown state string
+
+        # Apply status change (terminal states)
+        remote_status_str = remote.get("status")
+        if remote_status_str in ("completed", "failed", "stopped"):
+            try:
+                remote_status = AgentStatus(remote_status_str)
+                reason = remote.get("exit_reason", f"Reported by cam-client: {remote_status_str}")
+                return self._finalize(remote_status, reason)
+            except ValueError:
+                pass
+
+        return None
 
     def _publish_event(self, event_type: str, detail: dict | None = None) -> None:
         """Create and publish an AgentEvent on the event bus.

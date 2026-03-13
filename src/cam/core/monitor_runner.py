@@ -144,6 +144,12 @@ async def run_monitor(agent_id: str) -> None:
             agent_logger.open()
 
             try:
+                # Enable pull mode for SSH/Agent transports where
+                # cam-client runs a local monitor on the remote machine.
+                from cam.core.models import TransportType
+                cam_client_active = context.machine.type in (
+                    TransportType.SSH, TransportType.AGENT, TransportType.CLIENT,
+                )
                 monitor = AgentMonitor(
                     agent=agent,
                     transport=transport,
@@ -152,6 +158,7 @@ async def run_monitor(agent_id: str) -> None:
                     event_bus=event_bus,
                     agent_logger=agent_logger,
                     config=config,
+                    client_active=cam_client_active,
                 )
                 final_status = await monitor.run()
             finally:
