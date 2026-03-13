@@ -209,49 +209,79 @@ def init() -> None:
 
 
 def sync(
-    ctx_name: str = typer.Argument(..., help="Context name to sync to"),
+    ctx_name: str = typer.Argument(None, help="Context name to sync to (omit for all remote contexts)"),
 ) -> None:
-    """Sync cam-client and adapter configs to a remote context."""
+    """Sync cam-client and adapter configs to a remote context.
+
+    If no context is specified, syncs to all remote (SSH/Agent) contexts.
+    """
     import asyncio
 
     from cam.cli.app import state
-
-    context = state.context_store.get(ctx_name)
-    if not context:
-        print_error(f"Context not found: {ctx_name}")
-        raise typer.Exit(1)
-
     from cam.core.models import TransportType
 
-    if context.machine.type == TransportType.LOCAL:
-        print_error("Sync is only for remote contexts (SSH/Agent)")
-        raise typer.Exit(1)
+    # Build list of contexts to sync
+    if ctx_name:
+        context = state.context_store.get(ctx_name)
+        if not context:
+            print_error(f"Context not found: {ctx_name}")
+            raise typer.Exit(1)
+        if context.machine.type == TransportType.LOCAL:
+            print_error("Sync is only for remote contexts (SSH/Agent)")
+            raise typer.Exit(1)
+        contexts = [context]
+    else:
+        all_contexts = state.context_store.list()
+        contexts = [c for c in all_contexts if c.machine.type != TransportType.LOCAL]
+        if not contexts:
+            print_info("No remote contexts found.")
+            return
+        # Deduplicate by host to avoid syncing the same machine twice
+        seen_hosts = set()
+        unique = []
+        for c in contexts:
+            key = (c.machine.host, c.machine.port, c.machine.user)
+            if key not in seen_hosts:
+                seen_hosts.add(key)
+                unique.append(c)
+        contexts = unique
+        print_info(f"Syncing to {len(contexts)} remote context(s)...")
 
-    print_info(f"Syncing to context '{ctx_name}' ({context.machine.host})...")
+    total_synced = 0
+    total_unchanged = 0
+    total_failed = 0
 
-    try:
-        results = asyncio.run(state.agent_manager.sync_to_target(context))
-    except Exception as e:
-        print_error(f"Sync failed: {e}")
-        raise typer.Exit(1)
+    for context in contexts:
+        print_info(f"Syncing to context '{context.name}' ({context.machine.host})...")
 
-    if not results:
-        print_info("Nothing to sync.")
-        return
+        try:
+            results = asyncio.run(state.agent_manager.sync_to_target(context))
+        except Exception as e:
+            print_error(f"  Sync failed: {e}")
+            total_failed += 1
+            continue
 
-    for name, status in results.items():
-        if status == "unchanged":
-            console.print(f"  [dim]{name}: unchanged[/dim]")
-        elif status == "failed":
-            console.print(f"  [red]{name}: FAILED[/red]")
-        else:
-            console.print(f"  [green]{name}: {status}[/green]")
+        if not results:
+            print_info("  Nothing to sync.")
+            continue
 
-    failed = sum(1 for s in results.values() if s == "failed")
-    if failed:
-        print_error(f"{failed} file(s) failed to sync")
-        raise typer.Exit(1)
+        for name, status in results.items():
+            if status == "unchanged":
+                console.print(f"  [dim]{name}: unchanged[/dim]")
+            elif status == "failed":
+                console.print(f"  [red]{name}: FAILED[/red]")
+            else:
+                console.print(f"  [green]{name}: {status}[/green]")
 
-    synced = sum(1 for s in results.values() if s in ("deployed", "updated"))
-    unchanged = sum(1 for s in results.values() if s == "unchanged")
-    print_success(f"Sync complete: {synced} deployed/updated, {unchanged} unchanged")
+        failed = sum(1 for s in results.values() if s == "failed")
+        synced = sum(1 for s in results.values() if s in ("deployed", "updated"))
+        unchanged = sum(1 for s in results.values() if s == "unchanged")
+        total_synced += synced
+        total_unchanged += unchanged
+        total_failed += failed
+
+        if failed:
+            print_error(f"  {failed} file(s) failed to sync")
+
+    print_success(f"Sync complete: {total_synced} deployed/updated, {total_unchanged} unchanged"
+                  + (f", {total_failed} failed" if total_failed else ""))

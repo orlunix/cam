@@ -1,0 +1,1411 @@
+#!/usr/bin/env python3
+"""camc — Standalone coding agent manager CLI.
+
+Manages AI coding agents (Claude Code, Codex, Cursor) via tmux sessions.
+Auto-confirm, state detection, completion detection, background monitoring.
+
+Single file, stdlib-only, Python 3.6+.
+
+Quick start:
+    camc init                          # First-time setup
+    camc run claude "fix the tests"    # Launch an agent
+    camc list                          # Show all agents
+    camc logs <id> -f                  # Follow agent output
+    camc attach <id>                   # Attach to tmux session
+    camc stop <id>                     # Stop an agent
+    camc rm <id> --kill                # Remove and kill agent
+"""
+
+import argparse
+import hashlib
+import json
+import logging
+import os
+import re
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from datetime import datetime
+from uuid import uuid4
+
+__version__ = "1.0.0"
+
+# ---------------------------------------------------------------------------
+# Logging & constants
+# ---------------------------------------------------------------------------
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [camc] %(levelname)s %(message)s",
+    stream=sys.stderr,
+)
+log = logging.getLogger("camc")
+
+CAM_DIR = os.path.expanduser("~/.cam")
+CONFIGS_DIR = os.path.join(CAM_DIR, "configs")
+AGENTS_FILE = os.path.join(CAM_DIR, "agents.json")
+CONTEXT_FILE = os.path.join(CAM_DIR, "context.json")
+SOCKETS_DIR = "/tmp/cam-sockets"
+
+_DEFAULT_CONTEXT = {"name": None, "host": None, "port": None}
+
+
+# ---------------------------------------------------------------------------
+# Embedded adapter configs (written to ~/.cam/configs/ on `camc init`)
+# ---------------------------------------------------------------------------
+
+_EMBEDDED_CONFIGS = {
+    "claude.toml": r"""# Claude Code adapter — interactive mode with --allowed-tools.
+[adapter]
+name = "claude"
+display_name = "Claude Code"
+
+[launch]
+command = ["claude", "--allowed-tools", "Bash,Edit,Read,Write,Glob,Grep,WebFetch,TodoWrite,NotebookEdit"]
+prompt_after_launch = true
+startup_wait = 30.0
+strip_ansi = true
+
+ready_pattern = "^[❯>]"
+ready_flags = ["MULTILINE"]
+
+[state]
+strategy = "last"
+recent_chars = 2000
+
+[[state.patterns]]
+state = "planning"
+pattern = "(● Read\\(|● Glob\\(|● Grep\\(|● WebFetch\\(|● WebSearch\\(|Thinking|Analyzing)"
+flags = ["IGNORECASE"]
+
+[[state.patterns]]
+state = "editing"
+pattern = "(● Edit\\(|● Write\\(|● NotebookEdit\\()"
+
+[[state.patterns]]
+state = "testing"
+pattern = "(● Bash\\(|Running tests|pytest|npm test|npm run)"
+flags = ["IGNORECASE"]
+
+[[state.patterns]]
+state = "committing"
+pattern = "(git commit|git push|gh pr create)"
+flags = ["IGNORECASE"]
+
+[completion]
+strategy = "prompt_count"
+
+prompt_pattern = "^[❯>]"
+prompt_flags = ["MULTILINE"]
+prompt_count_threshold = 2
+
+fallback_summary_pattern = "✻ .+ for \\d+"
+
+[[confirm]]
+pattern = "Enter to (confirm|select).*Esc to cancel"
+flags = ["IGNORECASE", "DOTALL"]
+response = ""
+send_enter = true
+
+[[confirm]]
+pattern = "Do\\s+you\\s+want\\s+to\\s+proceed"
+flags = ["IGNORECASE"]
+response = ""
+send_enter = true
+
+[[confirm]]
+pattern = "1\\.\\s*(Yes|Allow)"
+flags = ["IGNORECASE"]
+response = ""
+send_enter = true
+
+[[confirm]]
+pattern = "Allow\\s+(once|always)"
+flags = ["IGNORECASE"]
+response = ""
+send_enter = true
+
+[[confirm]]
+pattern = "\\(y/n\\)|\\[Y/n\\]|\\[y/N\\]"
+flags = ["IGNORECASE"]
+response = "y"
+send_enter = true
+
+[probe]
+char = "Z"
+confirm_response = ""
+confirm_send_enter = true
+wait = 0.3
+idle_threshold = 2
+
+[monitor]
+confirm_cooldown = 5.0
+confirm_sleep = 0.5
+completion_stable = 3.0
+health_check_interval = 15
+empty_threshold = 3
+auto_exit = false
+exit_action = "kill_session"
+exit_command = "/exit"
+""",
+    "codex.toml": r"""# Codex adapter — interactive mode.
+[adapter]
+name = "codex"
+display_name = "OpenAI Codex"
+
+[launch]
+command = ["codex", "{prompt}"]
+prompt_after_launch = false
+startup_wait = 0.0
+
+[state]
+strategy = "first"
+recent_chars = 2000
+
+[[state.patterns]]
+state = "planning"
+pattern = "(Thinking|Planning|Analyzing|Reading|Searching|Reviewing)"
+flags = ["IGNORECASE"]
+
+[[state.patterns]]
+state = "editing"
+pattern = "(Editing|Writing|Creating|Modifying|Applying|Patching)"
+flags = ["IGNORECASE"]
+
+[[state.patterns]]
+state = "testing"
+pattern = "(Running|Testing|Executing|Verifying|npm test|pytest|cargo test)"
+flags = ["IGNORECASE"]
+
+[[state.patterns]]
+state = "committing"
+pattern = "(Committing|Pushing|git commit|git push|Creating PR)"
+flags = ["IGNORECASE"]
+
+[completion]
+strategy = "prompt_count"
+
+prompt_pattern = "^›"
+prompt_flags = ["MULTILINE"]
+prompt_count_threshold = 2
+
+error_pattern = "(Error:|error:|FAILED|fatal:|Exception|command not found)"
+error_flags = ["IGNORECASE"]
+
+[[confirm]]
+pattern = "1\\.\\s*(Yes,?\\s*)?allow Codex to work"
+flags = ["IGNORECASE"]
+response = "1"
+send_enter = true
+
+[[confirm]]
+pattern = "(Apply|Accept|Approve|Continue|Proceed).*\\[Y/n\\]"
+flags = ["IGNORECASE"]
+response = "y"
+send_enter = true
+
+[[confirm]]
+pattern = "(Apply|Accept|Approve|Continue|Proceed).*\\[y/N\\]"
+flags = ["IGNORECASE"]
+response = "y"
+send_enter = true
+
+[[confirm]]
+pattern = "Press Enter"
+flags = ["IGNORECASE"]
+response = ""
+send_enter = true
+
+[probe]
+char = "Z"
+confirm_response = ""
+confirm_send_enter = true
+wait = 0.3
+idle_threshold = 2
+
+[monitor]
+confirm_cooldown = 5.0
+confirm_sleep = 0.5
+completion_stable = 3.0
+health_check_interval = 15
+empty_threshold = 3
+auto_exit = false
+exit_action = "kill_session"
+exit_command = "/exit"
+""",
+    "cursor.toml": r"""# Cursor Agent adapter — interactive mode.
+[adapter]
+name = "cursor"
+display_name = "Cursor Agent"
+
+[launch]
+command = ["agent", "--workspace", "{path}"]
+prompt_after_launch = true
+startup_wait = 15.0
+strip_ansi = true
+
+ready_pattern = "→"
+ready_flags = ["MULTILINE"]
+
+[state]
+strategy = "last"
+recent_chars = 2000
+
+[[state.patterns]]
+state = "planning"
+pattern = "(⬢ Read|⬢ Glob|⬢ Grep|Thinking|Analyzing)"
+
+[[state.patterns]]
+state = "editing"
+pattern = "(⬢ Edit|⬢ Write)"
+
+[[state.patterns]]
+state = "testing"
+pattern = "(\\$ .+in /|Running tests|pytest|npm test)"
+flags = ["IGNORECASE"]
+
+[[state.patterns]]
+state = "committing"
+pattern = "(git commit|git push|gh pr create)"
+flags = ["IGNORECASE"]
+
+[completion]
+strategy = "prompt_count"
+
+prompt_pattern = "→"
+prompt_flags = ["MULTILINE"]
+prompt_count_threshold = 2
+
+fallback_summary_pattern = "·\\s*\\d+(\\.\\d+)?%"
+
+[[confirm]]
+pattern = "Trust this workspace"
+response = ""
+send_enter = true
+
+[[confirm]]
+pattern = "\\(y\\)"
+response = ""
+send_enter = true
+
+[[confirm]]
+pattern = "Run \\(always"
+response = ""
+send_enter = true
+
+[probe]
+char = "Z"
+confirm_response = ""
+confirm_send_enter = true
+wait = 0.3
+idle_threshold = 2
+
+[monitor]
+confirm_cooldown = 5.0
+confirm_sleep = 0.5
+completion_stable = 3.0
+health_check_interval = 15
+empty_threshold = 3
+auto_exit = false
+exit_action = "kill_session"
+exit_command = "/exit"
+""",
+}
+
+
+# ===========================================================================
+# Minimal TOML parser (subset: strings, bools, numbers, arrays, tables)
+# ===========================================================================
+
+def _parse_toml(text):
+    root = {}
+    current = root
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = re.match(r"^\[\[([^\]]+)\]\]$", line)
+        if m:
+            key_path = m.group(1).strip().split(".")
+            target = root
+            for k in key_path[:-1]:
+                if k not in target:
+                    target[k] = {}
+                target = target[k]
+            last = key_path[-1]
+            if last not in target:
+                target[last] = []
+            new_item = {}
+            target[last].append(new_item)
+            current = new_item
+            continue
+        m = re.match(r"^\[([^\]]+)\]$", line)
+        if m:
+            key_path = m.group(1).strip().split(".")
+            target = root
+            for k in key_path:
+                if k not in target:
+                    target[k] = {}
+                target = target[k]
+            current = target
+            continue
+        m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$', line)
+        if m:
+            current[m.group(1)] = _parse_toml_value(m.group(2).strip())
+    return root
+
+
+def _parse_toml_value(s):
+    if s.startswith('"'):
+        i, result = 1, []
+        while i < len(s):
+            c = s[i]
+            if c == "\\":
+                i += 1
+                if i < len(s):
+                    esc = {"n": "\n", "t": "\t", "\\": "\\", '"': '"'}.get(s[i], "\\" + s[i])
+                    result.append(esc)
+            elif c == '"':
+                break
+            else:
+                result.append(c)
+            i += 1
+        return "".join(result)
+    if s == "true":
+        return True
+    if s == "false":
+        return False
+    if s.startswith("["):
+        inner = s[1:].rstrip()
+        if inner.endswith("]"):
+            inner = inner[:-1]
+        return [_parse_toml_value(p.strip()) for p in inner.split(",") if p.strip()]
+    val = s.split("#")[0].strip()
+    try:
+        return float(val) if "." in val else int(val)
+    except ValueError:
+        return val
+
+
+def load_toml(path):
+    try:
+        import tomllib
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except (ImportError, ModuleNotFoundError):
+        pass
+    try:
+        import tomli
+        with open(path, "rb") as f:
+            return tomli.load(f)
+    except (ImportError, ModuleNotFoundError):
+        pass
+    with open(path, "r") as f:
+        return _parse_toml(f.read())
+
+
+# ===========================================================================
+# ANSI stripping & text processing
+# ===========================================================================
+
+_ANSI_RE = re.compile(
+    r"\x1B\[[0-9;?]*[ -/]*[@-~]"
+    r"|\x1B\][^\x07]*\x07"
+    r"|\x1B[()][AB012]"
+    r"|\x1B[@-_]"
+)
+
+
+def strip_ansi(text):
+    return _ANSI_RE.sub("", text)
+
+
+_BOX_CHARS = u"\u2500\u2502\u250c\u2510\u2514\u2518\u251c\u2524\u252c\u2534\u253c\u256d\u256e\u2570\u256f \t"
+
+
+def clean_for_confirm(text):
+    lines = [line.strip(_BOX_CHARS) for line in text.splitlines()]
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines).rstrip()
+
+
+_RE_FLAGS = {
+    "IGNORECASE": re.IGNORECASE,
+    "MULTILINE": re.MULTILINE,
+    "DOTALL": re.DOTALL,
+}
+
+
+def compile_pattern(pattern, flags=None):
+    f = 0
+    for name in (flags or []):
+        upper = name.upper()
+        if upper in _RE_FLAGS:
+            f |= _RE_FLAGS[upper]
+    return re.compile(pattern, f)
+
+
+# ===========================================================================
+# Adapter config parser
+# ===========================================================================
+
+class AdapterConfig(object):
+    """Parsed adapter config from a TOML dict."""
+
+    def __init__(self, config):
+        launch = config.get("launch", {})
+        self.strip_ansi = launch.get("strip_ansi", False)
+        self.command = launch.get("command", [])
+
+        rp = launch.get("ready_pattern")
+        self.ready_pattern = compile_pattern(rp, launch.get("ready_flags")) if rp else None
+        self.prompt_after_launch = launch.get("prompt_after_launch", False)
+        self.startup_wait = float(launch.get("startup_wait", 2.0))
+
+        state_cfg = config.get("state", {})
+        self.state_strategy = state_cfg.get("strategy", "first")
+        self.state_recent_chars = state_cfg.get("recent_chars", 2000)
+        self.state_patterns = []
+        for entry in state_cfg.get("patterns", []):
+            self.state_patterns.append((
+                entry["state"],
+                compile_pattern(entry["pattern"], entry.get("flags")),
+            ))
+
+        comp = config.get("completion", {})
+        self.completion_strategy = comp.get("strategy", "process_exit")
+        self.completion_recent_chars = comp.get("recent_chars", 500)
+        self.min_output_length = comp.get("min_output_length", 100)
+
+        cp = comp.get("completion_pattern")
+        self.completion_pattern = compile_pattern(cp, comp.get("completion_flags")) if cp else None
+        ep = comp.get("error_pattern")
+        self.error_pattern = compile_pattern(ep, comp.get("error_flags")) if ep else None
+        self.error_search_full = comp.get("error_search_full", True)
+
+        sp = comp.get("shell_prompt_pattern")
+        self.shell_prompt_pattern = compile_pattern(sp, comp.get("shell_prompt_flags")) if sp else None
+
+        pp = comp.get("prompt_pattern")
+        self.prompt_pattern = compile_pattern(pp, comp.get("prompt_flags")) if pp else None
+        self.prompt_count_threshold = comp.get("prompt_count_threshold", 2)
+        fp = comp.get("fallback_summary_pattern")
+        self.fallback_summary_pattern = compile_pattern(fp, comp.get("fallback_summary_flags")) if fp else None
+
+        self.confirm_rules = []
+        for rule in config.get("confirm", []):
+            self.confirm_rules.append((
+                compile_pattern(rule["pattern"], rule.get("flags")),
+                rule.get("response", ""),
+                rule.get("send_enter", True),
+            ))
+
+        probe_cfg = config.get("probe", {})
+        self.probe_char = probe_cfg.get("char", "Z")
+        self.probe_confirm_response = probe_cfg.get("confirm_response", "")
+        self.probe_confirm_send_enter = probe_cfg.get("confirm_send_enter", True)
+        self.probe_wait = float(probe_cfg.get("wait", 0.3))
+        self.probe_idle_threshold = int(probe_cfg.get("idle_threshold", 2))
+
+        mon_cfg = config.get("monitor", {})
+        self.confirm_cooldown = float(mon_cfg.get("confirm_cooldown", 5.0))
+        self.confirm_sleep = float(mon_cfg.get("confirm_sleep", 0.5))
+        self.completion_stable = float(mon_cfg.get("completion_stable", 3.0))
+        self.health_check_interval = float(mon_cfg.get("health_check_interval", 15))
+        self.empty_threshold = int(mon_cfg.get("empty_threshold", 3))
+        self.auto_exit = bool(mon_cfg.get("auto_exit", False))
+        self.exit_action = mon_cfg.get("exit_action", "kill_session")
+        self.exit_command = mon_cfg.get("exit_command", "/exit")
+
+
+# ===========================================================================
+# Subprocess helper (3.6 compat)
+# ===========================================================================
+
+def _run(args, timeout=5, check=False):
+    try:
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, _ = proc.communicate(timeout=timeout)
+        if check and proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, args)
+        return proc.returncode, stdout.decode("utf-8", errors="replace")
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        return -1, ""
+    except Exception:
+        if check:
+            raise
+        return -1, ""
+
+
+# ===========================================================================
+# TMUX interaction
+# ===========================================================================
+
+def _find_tmux_socket(session_id):
+    server_sock_dir = os.path.expanduser("~/.local/share/cam/sockets")
+    for sock_dir in (SOCKETS_DIR, "/tmp/cam-agent-sockets", server_sock_dir):
+        sock = "%s/%s.sock" % (sock_dir, session_id)
+        if os.path.exists(sock):
+            return sock
+    return None
+
+
+def _tmux_base(session_id):
+    socket = _find_tmux_socket(session_id)
+    return ["tmux", "-u", "-S", socket] if socket else ["tmux"]
+
+
+def capture_tmux(session_id, lines=100):
+    socket = _find_tmux_socket(session_id)
+    target = "%s:0.0" % session_id
+    if socket:
+        args = ["tmux", "-u", "-S", socket, "capture-pane", "-p", "-J",
+                "-t", target, "-S", "-%d" % lines]
+    else:
+        args = ["tmux", "capture-pane", "-p", "-J",
+                "-t", target, "-S", "-%d" % lines]
+    try:
+        rc, output = _run(args)
+        if len(output.strip()) < 20:
+            alt = list(args)
+            alt.insert(alt.index("capture-pane") + 1, "-a")
+            rc2, alt_out = _run(alt)
+            if len(alt_out.strip()) > len(output.strip()):
+                output = alt_out
+        return strip_ansi(output).rstrip()
+    except Exception as e:
+        log.debug("capture_tmux failed: %s", e)
+        return ""
+
+
+def tmux_session_exists(session_id):
+    socket = _find_tmux_socket(session_id)
+    if socket:
+        args = ["tmux", "-u", "-S", socket, "has-session", "-t", session_id]
+    else:
+        args = ["tmux", "has-session", "-t", session_id]
+    rc, _ = _run(args)
+    return rc == 0
+
+
+def tmux_send_input(session_id, text, send_enter=True):
+    base = _tmux_base(session_id)
+    target = "%s:0.0" % session_id
+    try:
+        if text:
+            _run(base + ["send-keys", "-t", target, "-l", "--", text], check=True)
+        if send_enter:
+            _run(base + ["send-keys", "-t", target, "Enter"], check=True)
+        return True
+    except Exception as e:
+        log.warning("tmux_send_input failed: %s", e)
+        return False
+
+
+def tmux_kill_session(session_id):
+    socket = _find_tmux_socket(session_id)
+    if socket:
+        args = ["tmux", "-u", "-S", socket, "kill-session", "-t", session_id]
+    else:
+        args = ["tmux", "kill-session", "-t", session_id]
+    rc, _ = _run(args)
+    return rc == 0
+
+
+def create_tmux_session(session_id, command, workdir, env_setup=None):
+    try:
+        os.makedirs(SOCKETS_DIR)
+    except OSError:
+        pass
+    socket = "%s/%s.sock" % (SOCKETS_DIR, session_id)
+
+    inner_cmd = " ".join(shlex.quote(arg) for arg in command)
+    if env_setup:
+        command_str = "env -u CLAUDECODE bash -l -c %s" % shlex.quote(env_setup + " && exec " + inner_cmd)
+    else:
+        command_str = "env -u CLAUDECODE bash -l -c %s" % shlex.quote("exec " + inner_cmd)
+
+    try:
+        proc = subprocess.Popen(
+            ["tmux", "-u", "-S", socket, "new-session",
+             "-d", "-x", "220", "-y", "50",
+             "-s", session_id, "-c", workdir, command_str],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        proc.wait(timeout=10)
+        if proc.returncode != 0:
+            return False
+        _run(["tmux", "-u", "-S", socket, "set-option", "-t", session_id,
+              "history-limit", "50000"])
+        return True
+    except Exception as e:
+        log.error("Failed to create session %s: %s", session_id, e)
+        return False
+
+
+# ===========================================================================
+# Detection logic
+# ===========================================================================
+
+def detect_state(output, config):
+    recent = output[-config.state_recent_chars:]
+    if config.strip_ansi:
+        recent = strip_ansi(recent)
+    if config.state_strategy == "last":
+        last_pos, last_state = -1, None
+        for state_name, pattern in config.state_patterns:
+            for m in pattern.finditer(recent):
+                if m.start() > last_pos:
+                    last_pos = m.start()
+                    last_state = state_name
+        return last_state
+    else:
+        for state_name, pattern in config.state_patterns:
+            if pattern.search(recent):
+                return state_name
+        return None
+
+
+def should_auto_confirm(output, config):
+    if config.strip_ansi:
+        output = strip_ansi(output)
+    clean = clean_for_confirm(output)
+    recent = clean[-500:] if len(clean) > 500 else clean
+    for pattern, response, send_enter in config.confirm_rules:
+        if pattern.search(recent):
+            return (response, send_enter)
+    return None
+
+
+def detect_completion(output, config):
+    if config.completion_strategy == "process_exit":
+        return None
+    if config.completion_strategy == "prompt_count":
+        return _detect_prompt_count(output, config)
+    return _detect_pattern(output, config)
+
+
+def _detect_pattern(output, config):
+    if config.strip_ansi:
+        output = strip_ansi(output)
+    if config.error_pattern:
+        search_text = output if config.error_search_full else output[-config.completion_recent_chars:]
+        if config.error_pattern.search(search_text):
+            return "failed"
+    recent = output[-config.completion_recent_chars:]
+    if config.completion_pattern and config.completion_pattern.search(recent):
+        return "completed"
+    if (config.shell_prompt_pattern
+            and config.shell_prompt_pattern.search(recent)
+            and len(output) > config.min_output_length):
+        return "completed"
+    return None
+
+
+def _detect_prompt_count(output, config):
+    if not config.prompt_pattern:
+        return None
+    clean = strip_ansi(output) if config.strip_ansi else output
+    count = len(config.prompt_pattern.findall(clean))
+    if count >= config.prompt_count_threshold:
+        if config.confirm_rules:
+            for cp, _resp, _enter in config.confirm_rules:
+                if cp.search(clean):
+                    return None
+        return "completed"
+    if (count == 1
+            and config.fallback_summary_pattern
+            and config.fallback_summary_pattern.search(clean)):
+        return "completed"
+    return None
+
+
+def is_ready_for_input(output, config):
+    if not config.ready_pattern:
+        return True
+    clean = strip_ansi(output) if config.strip_ansi else output
+    return bool(config.ready_pattern.search(clean))
+
+
+# ===========================================================================
+# Agent store (JSON file with fcntl locking)
+# ===========================================================================
+
+try:
+    import fcntl as _fcntl
+except ImportError:
+    _fcntl = None
+
+
+class AgentStore(object):
+    def __init__(self, path=None):
+        self._path = path or AGENTS_FILE
+
+    def _read(self):
+        if not os.path.exists(self._path):
+            return []
+        try:
+            with open(self._path, "r") as f:
+                if _fcntl:
+                    _fcntl.flock(f.fileno(), _fcntl.LOCK_SH)
+                try:
+                    return json.load(f)
+                finally:
+                    if _fcntl:
+                        _fcntl.flock(f.fileno(), _fcntl.LOCK_UN)
+        except (ValueError, OSError):
+            return []
+
+    def _modify(self, fn):
+        d = os.path.dirname(self._path)
+        try:
+            os.makedirs(d)
+        except OSError:
+            pass
+        lock_path = self._path + ".lock"
+        with open(lock_path, "w") as lf:
+            if _fcntl:
+                _fcntl.flock(lf.fileno(), _fcntl.LOCK_EX)
+            try:
+                agents = []
+                if os.path.exists(self._path):
+                    try:
+                        with open(self._path, "r") as f:
+                            agents = json.load(f)
+                    except (ValueError, OSError):
+                        agents = []
+                agents = fn(agents)
+                tmp = self._path + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(agents, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, self._path)
+            finally:
+                if _fcntl:
+                    _fcntl.flock(lf.fileno(), _fcntl.LOCK_UN)
+
+    def list(self):
+        return self._read()
+
+    def get(self, agent_id):
+        agents = self._read()
+        for a in agents:
+            if a["id"] == agent_id:
+                return a
+        matches = [a for a in agents if a["id"].startswith(agent_id)]
+        return matches[0] if len(matches) == 1 else None
+
+    def save(self, agent):
+        def _do(agents):
+            for i, a in enumerate(agents):
+                if a["id"] == agent["id"]:
+                    agents[i] = agent
+                    return agents
+            agents.append(agent)
+            return agents
+        self._modify(_do)
+
+    def update(self, agent_id, **fields):
+        result = [None]
+        def _do(agents):
+            for a in agents:
+                if a["id"] == agent_id:
+                    a.update(fields)
+                    result[0] = a
+                    break
+            return agents
+        self._modify(_do)
+        return result[0]
+
+    def remove(self, agent_id):
+        found = [False]
+        def _do(agents):
+            new = [a for a in agents if a["id"] != agent_id]
+            found[0] = len(new) < len(agents)
+            return new
+        self._modify(_do)
+        return found[0]
+
+
+# ===========================================================================
+# Helpers
+# ===========================================================================
+
+def _now_iso():
+    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _time_ago(iso_str):
+    if not iso_str:
+        return ""
+    try:
+        clean = iso_str.replace("Z", "").replace("+00:00", "")
+        dt = datetime.strptime(clean[:19], "%Y-%m-%dT%H:%M:%S")
+        diff = (datetime.utcnow() - dt).total_seconds()
+        if diff < 60: return "%ds ago" % int(diff)
+        if diff < 3600: return "%dm ago" % int(diff / 60)
+        if diff < 86400: return "%dh ago" % int(diff / 3600)
+        return "%dd ago" % int(diff / 86400)
+    except Exception:
+        return iso_str[:16]
+
+
+def _load_default_context():
+    if not os.path.exists(CONTEXT_FILE):
+        try:
+            os.makedirs(CAM_DIR, exist_ok=True)
+        except OSError:
+            pass
+        with open(CONTEXT_FILE, "w") as f:
+            json.dump(_DEFAULT_CONTEXT, f, indent=2)
+            f.write("\n")
+        return dict(_DEFAULT_CONTEXT)
+    try:
+        with open(CONTEXT_FILE) as f:
+            ctx = json.load(f)
+        result = dict(_DEFAULT_CONTEXT)
+        result.update(ctx)
+        return result
+    except (ValueError, IOError):
+        return dict(_DEFAULT_CONTEXT)
+
+
+def _build_command(config, prompt, path):
+    replacements = {"{prompt}": prompt, "{path}": path}
+    result = []
+    for part in config.command:
+        for key, value in replacements.items():
+            if key in part:
+                part = part.replace(key, value)
+                break
+        result.append(part)
+    return result
+
+
+def _load_config(tool):
+    """Load adapter config for a tool, from file or embedded."""
+    toml_path = os.path.join(CONFIGS_DIR, "%s.toml" % tool)
+    if os.path.exists(toml_path):
+        return AdapterConfig(load_toml(toml_path))
+    # Fall back to embedded config
+    key = "%s.toml" % tool
+    if key in _EMBEDDED_CONFIGS:
+        return AdapterConfig(_parse_toml(_EMBEDDED_CONFIGS[key]))
+    sys.stderr.write("Error: no config for tool '%s'\n" % tool)
+    sys.stderr.write("Available: %s\n" % ", ".join(
+        k.replace(".toml", "") for k in _EMBEDDED_CONFIGS))
+    sys.exit(1)
+
+
+def _kill_monitor(agent):
+    pid = agent.get("monitor_pid")
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            pass
+    pid_path = "/tmp/camc-%s.pid" % agent["id"]
+    if os.path.exists(pid_path):
+        try:
+            with open(pid_path) as f:
+                os.kill(int(f.read().strip()), signal.SIGTERM)
+        except (ValueError, OSError):
+            pass
+        try:
+            os.unlink(pid_path)
+        except OSError:
+            pass
+
+
+# ===========================================================================
+# Background monitor loop
+# ===========================================================================
+
+def run_monitor_loop(session, agent_id, config, store, pid_path=None):
+    """Monitor a tmux session: auto-confirm, state detection, completion, auto-exit."""
+    if pid_path:
+        with open(pid_path, "w") as f:
+            f.write(str(os.getpid()))
+
+    running = [True]
+    signal.signal(signal.SIGTERM, lambda s, f: running.__setitem__(0, False))
+
+    prev_hash = ""
+    last_change = last_health = time.time()
+    last_confirm = 0.0
+    current_state = None
+    has_worked = False
+    empty_count = 0
+
+    try:
+        while running[0]:
+            now = time.time()
+
+            if now - last_health >= config.health_check_interval:
+                last_health = now
+                if not tmux_session_exists(session):
+                    status = "completed" if has_worked else "failed"
+                    store.update(agent_id, status=status,
+                                 exit_reason="Session exited", completed_at=_now_iso())
+                    return
+
+            output = capture_tmux(session)
+            h = hashlib.md5(output.encode()).hexdigest()[:8]
+            changed = h != prev_hash
+            if changed:
+                last_change = now
+            prev_hash = h
+
+            if not output.strip():
+                empty_count += 1
+                if empty_count >= config.empty_threshold and not tmux_session_exists(session):
+                    status = "completed" if has_worked else "failed"
+                    store.update(agent_id, status=status,
+                                 exit_reason="Session exited", completed_at=_now_iso())
+                    return
+                time.sleep(1)
+                continue
+            empty_count = 0
+
+            if now - last_confirm >= config.confirm_cooldown:
+                confirm = should_auto_confirm(output, config)
+                if confirm:
+                    tmux_send_input(session, confirm[0], send_enter=confirm[1])
+                    last_confirm = now
+                    time.sleep(config.confirm_sleep)
+                    continue
+
+            ns = detect_state(output, config)
+            if ns and ns != current_state:
+                if ns != "initializing":
+                    has_worked = True
+                current_state = ns
+                store.update(agent_id, state=ns)
+
+            if not changed and now - last_change >= config.completion_stable:
+                done = detect_completion(output, config)
+                if done:
+                    store.update(agent_id, state="idle")
+                    # Auto-exit when completion detected + agent has worked +
+                    # output stable for 3x completion_stable
+                    if has_worked and now - last_change >= config.completion_stable * 3:
+                        agent_rec = store.get(agent_id)
+                        ae = agent_rec.get("auto_exit") if agent_rec else None
+                        if ae is None:
+                            ae = getattr(config, "auto_exit", False)
+                        if ae:
+                            exit_action = getattr(config, "exit_action", "kill_session")
+                            if exit_action == "kill_session":
+                                tmux_kill_session(session)
+                            elif exit_action == "send_exit":
+                                tmux_send_input(session, getattr(config, "exit_command", "/exit"), send_enter=True)
+                                for _ in range(10):
+                                    time.sleep(1)
+                                    if not tmux_session_exists(session):
+                                        break
+                                else:
+                                    tmux_kill_session(session)
+                            store.update(agent_id, status="completed",
+                                         exit_reason="Task completed (auto-exit)",
+                                         completed_at=_now_iso())
+                            return
+
+            time.sleep(1)
+    finally:
+        if pid_path:
+            try:
+                os.unlink(pid_path)
+            except OSError:
+                pass
+
+
+def _run_monitor(agent_id):
+    store = AgentStore()
+    agent = store.get(agent_id)
+    if not agent:
+        sys.exit(1)
+    config = _load_config(agent["tool"])
+    pid_path = "/tmp/camc-%s.pid" % agent_id
+    run_monitor_loop(agent["session"], agent_id, config, store, pid_path=pid_path)
+
+
+# ===========================================================================
+# CLI commands
+# ===========================================================================
+
+def cmd_init(args):
+    """Interactive setup wizard."""
+    print("camc v%s — Coding Agent Manager (standalone)" % __version__)
+    print()
+
+    # 1. Check tmux
+    print("Checking dependencies...")
+    tmux_path = shutil.which("tmux")
+    if tmux_path:
+        print("  ✓ tmux: %s" % tmux_path)
+    else:
+        print("  ✗ tmux: NOT FOUND (required)")
+        print("  Install: apt install tmux / brew install tmux")
+        sys.exit(1)
+
+    # Check available tools
+    for tool_name in ("claude", "codex", "agent"):
+        path = shutil.which(tool_name)
+        if path:
+            print("  ✓ %s: %s" % (tool_name, path))
+        else:
+            print("  · %s: not found" % tool_name)
+
+    # 2. Create directories
+    print()
+    print("Setting up directories...")
+    for d in (CAM_DIR, CONFIGS_DIR):
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError:
+            pass
+    print("  Config: %s" % CAM_DIR)
+
+    # 3. Write adapter configs
+    print()
+    print("Writing adapter configs...")
+    for filename, content in _EMBEDDED_CONFIGS.items():
+        path = os.path.join(CONFIGS_DIR, filename)
+        if os.path.exists(path) and not getattr(args, "force", False):
+            print("  · %s: exists (use --force to overwrite)" % filename)
+        else:
+            with open(path, "w") as f:
+                f.write(content)
+            print("  ✓ %s" % filename)
+
+    # 4. Create context.json template
+    _load_default_context()
+    print()
+    print("  Context template: %s" % CONTEXT_FILE)
+
+    # 5. Done
+    print()
+    print("Setup complete!")
+    print()
+    print("Quick start:")
+    print("  camc run claude \"fix the tests\"   # Launch an agent")
+    print("  camc run claude                    # Interactive mode")
+    print("  camc list                          # Show all agents")
+    print("  camc logs <id> -f                  # Follow output")
+    print("  camc attach <id>                   # Attach to tmux")
+    print("  camc stop <id>                     # Stop an agent")
+
+
+def cmd_run(args):
+    tool, prompt = args.tool, args.prompt
+    workdir = os.path.abspath(args.path)
+    config = _load_config(tool)
+
+    agent_id = uuid4().hex[:8]
+    session = "cam-%s" % agent_id
+    launch_cmd = _build_command(config, prompt, workdir)
+
+    print("Starting %s agent %s..." % (tool, agent_id))
+    if not create_tmux_session(session, launch_cmd, workdir):
+        sys.stderr.write("Error: failed to create tmux session\n")
+        sys.exit(1)
+
+    # Startup: wait for readiness, auto-confirm, send prompt
+    if config.prompt_after_launch:
+        elapsed, confirmed = 0.0, False
+        while elapsed < config.startup_wait:
+            time.sleep(1); elapsed += 1
+            output = capture_tmux(session)
+            if not output.strip():
+                continue
+            if confirmed and is_ready_for_input(output, config):
+                break
+            confirm = should_auto_confirm(output, config)
+            if confirm:
+                tmux_send_input(session, confirm[0], send_enter=confirm[1])
+                confirmed = True
+                time.sleep(3); elapsed += 3
+                continue
+            if is_ready_for_input(output, config):
+                break
+        if prompt.strip():
+            tmux_send_input(session, prompt, send_enter=True)
+
+    name = getattr(args, "name", None) or None
+    auto_exit = getattr(args, "auto_exit", False)
+    context = _load_default_context()
+    store = AgentStore()
+    store.save({"id": agent_id, "tool": tool, "session": session, "status": "running",
+                "state": "initializing", "prompt": prompt, "path": workdir,
+                "name": name, "auto_exit": auto_exit,
+                "context": context,
+                "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
+                "monitor_pid": None})
+
+    # Spawn background monitor
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "_monitor", agent_id],
+            stdout=subprocess.DEVNULL,
+            stderr=open("/tmp/camc-%s.log" % agent_id, "a"),
+            start_new_session=True)
+        store.update(agent_id, monitor_pid=proc.pid)
+    except Exception:
+        pass
+
+    print("  ID: %s  Tool: %s  Session: %s" % (agent_id, tool, session))
+    if name:
+        print("  Name: %s" % name)
+    print("  Path: %s" % workdir)
+    if prompt:
+        print("  Prompt: %s" % (prompt[:60] + "..." if len(prompt) > 60 else prompt))
+    else:
+        print("  Prompt: (interactive)")
+    if auto_exit:
+        print("  Auto-exit: ON")
+    print()
+    print("  Attach: camc attach %s" % agent_id)
+    print("  Logs:   camc logs %s -f" % agent_id)
+
+
+def cmd_list(args):
+    store = AgentStore()
+    agents = store.list()
+    if not agents:
+        print("No agents."); return
+
+    for a in agents:
+        if a["status"] == "running" and not tmux_session_exists(a["session"]):
+            state = a.get("state") or "initializing"
+            status = "failed" if state == "initializing" else "completed"
+            a.update(status=status, exit_reason="Session gone", completed_at=_now_iso())
+            store.update(a["id"], **{k: a[k] for k in ("status", "exit_reason", "completed_at")})
+
+    colors = {"running": "\033[32m", "completed": "\033[36m", "failed": "\033[31m", "stopped": "\033[33m"}
+    reset = "\033[0m"
+    use_color = sys.stdout.isatty()
+
+    print("%-10s %-16s %-10s %-12s %-12s %-24s %s" % ("ID", "NAME", "TOOL", "STATUS", "STATE", "PROMPT", "STARTED"))
+    print("-" * 100)
+    for a in sorted(agents, key=lambda x: x.get("started_at", ""), reverse=True):
+        s = a.get("status", "?")
+        ss = "%s%-12s%s" % (colors.get(s, ""), s, reset) if use_color else "%-12s" % s
+        print("%-10s %-16s %-10s %s %-12s %-24s %s" % (
+            a.get("id", "?"), (a.get("name") or "")[:16],
+            a.get("tool", "?"), ss,
+            a.get("state", "") or "", (a.get("prompt", "") or "")[:24],
+            _time_ago(a.get("started_at"))))
+
+
+def cmd_logs(args):
+    store = AgentStore()
+    a = store.get(args.id)
+    if not a:
+        sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
+    if args.follow:
+        prev = ""
+        try:
+            while True:
+                out = capture_tmux(a["session"], lines=200)
+                if out != prev:
+                    os.system("clear"); print(out); prev = out
+                if not tmux_session_exists(a["session"]):
+                    print("\n--- session ended ---"); break
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+    else:
+        out = capture_tmux(a["session"], lines=200)
+        print(out or ("(session not found)" if not tmux_session_exists(a["session"]) else "(no output)"))
+
+
+def cmd_stop(args):
+    store = AgentStore()
+    a = store.get(args.id)
+    if not a:
+        sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
+    _kill_monitor(a)
+    tmux_kill_session(a["session"])
+    store.update(a["id"], status="stopped", exit_reason="Stopped by user", completed_at=_now_iso())
+    print("Stopped agent %s" % a["id"])
+
+
+def cmd_add(args):
+    if not tmux_session_exists(args.session):
+        sys.stderr.write("Error: tmux session '%s' not found\n" % args.session); sys.exit(1)
+    store = AgentStore()
+    agent_id = uuid4().hex[:8]
+    context = _load_default_context()
+    store.save({"id": agent_id, "tool": args.tool, "session": args.session, "status": "running",
+                "state": None, "prompt": "(adopted)", "path": os.getcwd(),
+                "context": context,
+                "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
+                "monitor_pid": None})
+    # Spawn monitor
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "_monitor", agent_id],
+            stdout=subprocess.DEVNULL, stderr=open("/tmp/camc-%s.log" % agent_id, "a"),
+            start_new_session=True)
+        store.update(agent_id, monitor_pid=proc.pid)
+    except Exception:
+        pass
+    print("Adopted '%s' as agent %s (tool=%s)" % (args.session, agent_id, args.tool))
+
+
+def cmd_rm(args):
+    store = AgentStore()
+    a = store.get(args.id)
+    if not a:
+        sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
+    if args.kill:
+        _kill_monitor(a); tmux_kill_session(a["session"])
+    store.remove(a["id"])
+    print("Removed agent %s%s" % (a["id"], " (killed)" if args.kill else ""))
+
+
+def cmd_attach(args):
+    store = AgentStore()
+    a = store.get(args.id)
+    if not a:
+        sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
+    sock = _find_tmux_socket(a["session"])
+    if sock:
+        os.execvp("tmux", ["tmux", "-u", "-S", sock, "attach", "-t", a["session"]])
+    else:
+        os.execvp("tmux", ["tmux", "attach", "-t", a["session"]])
+
+
+def cmd_status(args):
+    """Machine-readable JSON status (for cam server pull mode)."""
+    store = AgentStore()
+    filter_id = getattr(args, "id", None)
+    agents = store.list()
+    if filter_id:
+        agents = [a for a in agents if a.get("id", "").startswith(filter_id)]
+    raw = json.dumps(agents, sort_keys=True)
+    h = hashlib.md5(raw.encode()).hexdigest()[:8]
+    req_hash = getattr(args, "hash", None)
+    if req_hash and req_hash == h:
+        print(json.dumps({"unchanged": True, "hash": h}))
+    else:
+        print(json.dumps({"agents": agents, "hash": h}))
+
+
+def cmd_version(args):
+    print("camc v%s" % __version__)
+    print()
+    print("Supported tools:")
+    for key in sorted(_EMBEDDED_CONFIGS):
+        name = key.replace(".toml", "")
+        path = os.path.join(CONFIGS_DIR, key)
+        exists = " (config: %s)" % path if os.path.exists(path) else " (embedded)"
+        print("  %s%s" % (name, exists))
+
+
+# ===========================================================================
+# Main
+# ===========================================================================
+
+def main():
+    p = argparse.ArgumentParser(
+        prog="camc",
+        description="Standalone coding agent manager — manage AI agents via tmux",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+examples:
+  camc init                         First-time setup
+  camc run claude "fix lint errors" Launch claude with a prompt
+  camc run claude                   Launch claude interactively
+  camc run codex "add tests" -p /app  Launch codex in /app
+  camc run claude "task" --auto-exit  Auto-exit on completion
+  camc list                         List all agents
+  camc logs abc1 -f                 Follow agent output
+  camc attach abc1                  Attach to agent tmux
+  camc stop abc1                    Stop an agent
+  camc add my-session --tool claude Adopt existing tmux session
+  camc rm abc1 --kill               Remove and kill agent
+  camc status                       JSON status (for automation)
+  camc version                      Show version info""")
+    sub = p.add_subparsers(dest="command")
+
+    # init
+    init_p = sub.add_parser("init", help="First-time setup")
+    init_p.add_argument("--force", "-f", action="store_true", help="Overwrite existing configs")
+
+    # run
+    r = sub.add_parser("run", help="Launch an agent")
+    r.add_argument("tool", help="Tool name (claude, codex, cursor)")
+    r.add_argument("prompt", nargs="?", default="", help="Task prompt (omit for interactive)")
+    r.add_argument("--path", "-p", default=os.getcwd(), help="Working directory")
+    r.add_argument("--name", "-n", default=None, help="Human-readable name")
+    r.add_argument("--auto-exit", "-a", action="store_true", help="Auto-exit on completion")
+
+    # list
+    sub.add_parser("list", aliases=["ls"], help="List agents")
+
+    # logs
+    l = sub.add_parser("logs", help="Show agent output")
+    l.add_argument("id", help="Agent ID (prefix match)")
+    l.add_argument("-f", "--follow", action="store_true", help="Follow output")
+
+    # stop
+    s = sub.add_parser("stop", help="Stop an agent")
+    s.add_argument("id", help="Agent ID")
+
+    # add
+    a = sub.add_parser("add", help="Adopt existing tmux session")
+    a.add_argument("session", help="tmux session name")
+    a.add_argument("--tool", "-t", default="claude", help="Tool type")
+
+    # rm
+    rm = sub.add_parser("rm", help="Remove from management")
+    rm.add_argument("id", help="Agent ID")
+    rm.add_argument("--kill", "-k", action="store_true", help="Also kill the session")
+
+    # attach
+    at = sub.add_parser("attach", help="Attach to agent tmux")
+    at.add_argument("id", help="Agent ID")
+
+    # status (machine-readable)
+    st = sub.add_parser("status", help="JSON status output")
+    st.add_argument("--id", default=None, help="Filter by agent ID")
+    st.add_argument("--hash", default=None, help="Return unchanged if hash matches")
+
+    # version
+    sub.add_parser("version", help="Show version")
+
+    # Hidden _monitor subcommand
+    if len(sys.argv) >= 3 and sys.argv[1] == "_monitor":
+        _run_monitor(sys.argv[2])
+        return
+
+    args = p.parse_args()
+    cmds = {
+        "init": cmd_init,
+        "run": cmd_run,
+        "list": cmd_list, "ls": cmd_list,
+        "logs": cmd_logs,
+        "stop": cmd_stop,
+        "add": cmd_add,
+        "rm": cmd_rm,
+        "attach": cmd_attach,
+        "status": cmd_status,
+        "version": cmd_version,
+    }
+    if args.command in cmds:
+        cmds[args.command](args)
+    else:
+        p.print_help()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

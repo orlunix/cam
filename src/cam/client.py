@@ -306,7 +306,9 @@ def _run(args, timeout=5, check=False):
 # ---------------------------------------------------------------------------
 
 def _find_tmux_socket(session_id):
-    for sock_dir in (SOCKETS_DIR, "/tmp/cam-agent-sockets"):
+    # Check all known socket directories: camc's, cam-agent's, and server's
+    server_sock_dir = os.path.expanduser("~/.local/share/cam/sockets")
+    for sock_dir in (SOCKETS_DIR, "/tmp/cam-agent-sockets", server_sock_dir):
         sock = "%s/%s.sock" % (sock_dir, session_id)
         if os.path.exists(sock):
             return sock
@@ -886,7 +888,10 @@ def _cmd_ping():
 
 def _cmd_status():
     store = AgentStore()
+    filter_id = _get_arg("--id")
     agents = store.list()
+    if filter_id:
+        agents = [a for a in agents if a.get("id", "").startswith(filter_id)]
     raw = json.dumps(agents, sort_keys=True)
     h = hashlib.md5(raw.encode()).hexdigest()[:8]
     req_hash = _get_arg("--hash")
@@ -1120,23 +1125,23 @@ def _cmd_file_write():
 # Background monitor (hidden _monitor_bg subcommand)
 # ---------------------------------------------------------------------------
 
-def _run_local_monitor(session_id, tool):
-    """Background monitor loop — same logic as camc's _run_monitor."""
-    store = AgentStore()
-    agent = store.get(session_id)
-    if not agent:
-        sys.exit(1)
+def run_monitor_loop(session, agent_id, config, store, pid_path=None):
+    """Shared synchronous monitor loop for cam-client and camc.
 
-    toml_path = os.path.join(CONFIGS_DIR, "%s.toml" % tool)
-    if not os.path.exists(toml_path):
-        log.error("Config not found: %s", toml_path)
-        sys.exit(1)
-    config = AdapterConfig(load_toml(toml_path))
-    session = agent.get("session", session_id)
+    Runs the core monitoring cycle: health check, capture output, change
+    detection, auto-confirm with cooldown, state detection, and completion
+    detection.  Stdlib-only, Python 3.6+.
 
-    pid_path = "/tmp/cam-client-monitor-%s.pid" % session_id
-    with open(pid_path, "w") as f:
-        f.write(str(os.getpid()))
+    Args:
+        session: tmux session name.
+        agent_id: agent ID for store updates.
+        config: AdapterConfig instance.
+        store: AgentStore instance.
+        pid_path: optional PID file path (written on start, cleaned on exit).
+    """
+    if pid_path:
+        with open(pid_path, "w") as f:
+            f.write(str(os.getpid()))
 
     running = [True]
     signal.signal(signal.SIGTERM, lambda s, f: running.__setitem__(0, False))
@@ -1152,11 +1157,11 @@ def _run_local_monitor(session_id, tool):
         while running[0]:
             now = time.time()
 
-            if now - last_health >= 15:
+            if now - last_health >= config.health_check_interval:
                 last_health = now
                 if not tmux_session_exists(session):
                     status = "completed" if has_worked else "failed"
-                    store.update(session_id, status=status,
+                    store.update(agent_id, status=status,
                                  exit_reason="Session exited", completed_at=_now_iso())
                     return
 
@@ -1169,22 +1174,21 @@ def _run_local_monitor(session_id, tool):
 
             if not output.strip():
                 empty_count += 1
-                # Early health check: if output empty for 3+ cycles, session may have died
-                if empty_count >= 3 and not tmux_session_exists(session):
+                if empty_count >= config.empty_threshold and not tmux_session_exists(session):
                     status = "completed" if has_worked else "failed"
-                    store.update(session_id, status=status,
+                    store.update(agent_id, status=status,
                                  exit_reason="Session exited", completed_at=_now_iso())
                     return
                 time.sleep(1)
                 continue
             empty_count = 0
 
-            if now - last_confirm >= 5.0:
+            if now - last_confirm >= config.confirm_cooldown:
                 confirm = should_auto_confirm(output, config)
                 if confirm:
                     tmux_send_input(session, confirm[0], send_enter=confirm[1])
                     last_confirm = now
-                    time.sleep(0.5)
+                    time.sleep(config.confirm_sleep)
                     continue
 
             ns = detect_state(output, config)
@@ -1192,20 +1196,60 @@ def _run_local_monitor(session_id, tool):
                 if ns != "initializing":
                     has_worked = True
                 current_state = ns
-                store.update(session_id, state=ns)
+                store.update(agent_id, state=ns)
 
-            # Detect completion for status reporting (but never auto-exit)
-            if not changed and now - last_change >= 3.0:
+            if not changed and now - last_change >= config.completion_stable:
                 done = detect_completion(output, config)
                 if done:
-                    store.update(session_id, state="idle")
+                    store.update(agent_id, state="idle")
+                    # Auto-exit: if completion detected + agent has worked +
+                    # output stable for 3x completion_stable, mark completed.
+                    # Per-agent auto_exit (from register) overrides TOML config.
+                    if has_worked and now - last_change >= config.completion_stable * 3:
+                        agent_rec = store.get(agent_id)
+                        ae = agent_rec.get("auto_exit") if agent_rec else None
+                        if ae is None:
+                            ae = getattr(config, "auto_exit", False)
+                        if ae:
+                            exit_action = getattr(config, "exit_action", "kill_session")
+                            if exit_action == "kill_session":
+                                tmux_kill_session(session)
+                            elif exit_action == "send_exit":
+                                tmux_send_input(session, getattr(config, "exit_command", "/exit"), send_enter=True)
+                                for _ in range(10):
+                                    time.sleep(1)
+                                    if not tmux_session_exists(session):
+                                        break
+                                else:
+                                    tmux_kill_session(session)
+                            store.update(agent_id, status="completed",
+                                         exit_reason="Task completed (auto-exit)",
+                                         completed_at=_now_iso())
+                            return
 
             time.sleep(1)
     finally:
-        try:
-            os.unlink(pid_path)
-        except OSError:
-            pass
+        if pid_path:
+            try:
+                os.unlink(pid_path)
+            except OSError:
+                pass
+
+
+def _run_local_monitor(agent_id, tool):
+    """Background monitor loop — delegates to shared run_monitor_loop."""
+    store = AgentStore()
+    agent = store.get(agent_id)
+    if not agent:
+        sys.exit(1)
+    toml_path = os.path.join(CONFIGS_DIR, "%s.toml" % tool)
+    if not os.path.exists(toml_path):
+        log.error("Config not found: %s", toml_path)
+        sys.exit(1)
+    config = AdapterConfig(load_toml(toml_path))
+    session = agent.get("session", agent_id)
+    pid_path = "/tmp/cam-client-monitor-%s.pid" % agent_id
+    run_monitor_loop(session, agent_id, config, store, pid_path=pid_path)
 
 
 # ---------------------------------------------------------------------------
@@ -1242,8 +1286,32 @@ def _cmd_agent_rm():
     _json_out({"ok": removed, "id": agent["id"]})
 
 
+def _cmd_agent_register():
+    """Register an agent in ~/.cam/agents.json for local monitoring."""
+    aid = _get_arg("--id")
+    session = _get_arg("--session")
+    tool = _get_arg("--tool", "claude")
+    path = _get_arg("--path", ".")
+    prompt = _get_arg("--prompt", "")
+    name = _get_arg("--name")
+    auto_exit = _has_flag("--auto-exit")
+    if not aid or not session:
+        _json_out({"ok": False, "error": "Missing --id or --session"})
+        sys.exit(1)
+    store = AgentStore()
+    store.save({
+        "id": aid, "tool": tool, "session": session, "status": "running",
+        "state": "initializing", "prompt": prompt, "path": path,
+        "name": name, "auto_exit": auto_exit,
+        "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
+        "monitor_pid": None,
+    })
+    _json_out({"ok": True, "id": aid})
+
+
 _AGENT_COMMANDS = {
     "rm": _cmd_agent_rm,
+    "register": _cmd_agent_register,
 }
 
 

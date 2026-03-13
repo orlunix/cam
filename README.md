@@ -200,7 +200,7 @@ cd android && ./build.sh
 
 ## cam-agent
 
-A Go binary (`cam-agent/`) that provides a standardized target protocol for running agents on remote machines. It wraps tmux on Linux and provides a uniform CLI interface:
+A Go binary (`src/cam-agent/`) that provides a standardized target protocol for running agents on remote machines. It wraps tmux on Linux and provides a uniform CLI interface:
 
 ```bash
 cam-agent ping
@@ -253,7 +253,8 @@ cam/
 │   ├── storage/         # SQLite database, agent/context/history stores
 │   ├── api/             # FastAPI server, routes, WebSocket, relay connector
 │   └── utils/           # ANSI stripping, doctor, shell helpers
-├── cam-agent/           # Go binary for standardized remote protocol
+│   cam-agent/           # Go binary for standardized remote protocol
+│   camc                 # Standalone single-file CLI (stdlib-only)
 ├── relay/               # Zero-dep WebSocket relay server
 ├── web/                 # PWA / Android WebView frontend
 │   ├── js/              # API client, app shell, view modules
