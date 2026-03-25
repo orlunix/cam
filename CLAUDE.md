@@ -72,6 +72,25 @@ Adapters are declared in `src/cam/adapters/configs/*.toml`. The `ConfigurableAda
 
 Detection logic lives in `src/cam/client.py` (shared between adapter and standalone client binary `camc.py`).
 
+## Sync and Heal (`cam sync`, `cam heal`)
+
+### `cam sync [context]`
+Deploys files to remote contexts via SSH:
+- `cam-client.py` — shared detection library
+- `camc` — standalone CLI (from `src/camc`, with chmod+symlink to `~/.local/bin/camc`)
+- `context.json` — context config including `env_setup` from server context
+- TOML adapter configs (claude.toml, codex.toml, cursor.toml)
+- Installs `camc heal` cron (best-effort, crontab may not be available)
+- Hash-based: only transfers files that changed (MD5 comparison)
+- Without args, syncs to all remote contexts (deduplicated by host)
+
+### `cam heal`
+Checks all running agents and restarts dead monitors:
+- **Local agents**: checks PID file at `~/.local/share/cam/pids/<id>.pid`, restarts `monitor_runner.py` if dead
+- **Remote agents**: SSHes into each unique host, runs `python3 ~/.cam/camc heal`
+- Deduplicates remote hosts (one SSH per host, not per agent)
+- Server cron: `0 * * * *` (hourly at :00)
+
 ## Claude Adapter Specifics
 
 - Runs in interactive mode (`claude --allowed-tools ...`), NOT headless `-p` mode.
@@ -96,6 +115,17 @@ The monitor polls every ~2 seconds:
 
 Background mode (`--detach`) spawns `monitor_runner.py` as a subprocess with PID file at `~/.local/share/cam/pids/<agent_id>.pid`. Uses `start_new_session=True` so the monitor survives CLI exit. `cam stop/kill` sends SIGTERM to the monitor subprocess and kills the TMUX session.
 
+### Monitor Self-Healing
+
+Both server-side `monitor_runner.py` and standalone `camc` monitors auto-restart on crash (up to 5 times with backoff). This handles transient errors like `database is locked` from SQLite contention with many concurrent agents.
+
+Three layers of protection:
+1. **Self-healing monitors** — auto-restart with exponential backoff (5s, 10s, 15s...)
+2. **`cam heal`** — CLI command that checks all running agents, restarts dead monitors (local + remote via SSH). Server cron runs hourly.
+3. **`camc heal`** — standalone equivalent, installed as cron (every 30min) on remote machines by `cam sync`.
+
+`cam heal` deduplicates remote hosts — runs `camc heal` once per unique host, not per agent.
+
 ## TMUX Session Design
 
 - Sessions run the command directly (not via shell), so the session dies when the process exits.
@@ -103,6 +133,7 @@ Background mode (`--detach`) spawns `monitor_runner.py` as a subprocess with PID
 - `capture-pane` returns empty during Claude's alternate screen buffer — fallback to `-a` flag.
 - Suppress capture-pane failures to debug level (expected when session exits).
 - `create_session` wraps command with `env -u CLAUDECODE` to prevent nested-session detection.
+- `create_session` unsets `TMUX`/`TMUX_PANE` env vars so sessions can be created from inside tmux (nested tmux servers via `-S` socket are independent, but tmux blocks on the env var).
 - LocalTransport accepts `env_setup` param; TransportFactory passes `config.env_setup`.
 
 ## Transport Notes
@@ -138,6 +169,20 @@ Background mode (`--detach`) spawns `monitor_runner.py` as a subprocess with PID
 - TTL cache (2s) on `capture_output()` to avoid repeated TMUX calls.
 - Relay uses `asyncio.create_task()` for concurrent dispatch instead of serial `await`.
 - WebSocket `onclose` rejects all pending `_requestMap` requests to prevent 15s hangs.
+
+## Standalone camc (`src/camc`)
+
+Single-file, stdlib-only CLI (Python 3.6+) for machines without the full cam package. Deployed to remotes by `cam sync`.
+
+- **Self-contained**: all detection logic, TOML parser, and adapter configs (claude/codex/cursor) embedded inline. No pip install needed.
+- **Commands**: `init`, `run`, `list`, `logs`, `attach`, `stop`, `add`, `rm`, `status`, `heal`, `version`.
+- **`camc run`**: creates tmux session, handles startup auto-confirm, spawns background monitor subprocess.
+- **PATH passthrough**: if no `env_setup` in `~/.cam/context.json`, injects the caller's `PATH` into the tmux session so tools like `claude` are found.
+- **`context.json`**: optional config at `~/.cam/context.json` with `env_setup` (shell commands run before agent launch). Deployed by `cam sync` from the server context's `machine.env_setup`.
+- **Agent store**: JSON file at `~/.cam/agents.json` (not SQLite — keeps it stdlib-only).
+- **Monitor logs**: `~/.cam/logs/monitor-<id>.log`. Stderr of monitor subprocess goes to `/tmp/camc-<id>.log`.
+- **`camc heal`**: checks all running agents, restarts dead monitors. Can be cron'd.
+- **`camc status`**: machine-readable JSON output with hash-based conditional responses (used by cam server pull mode).
 
 ## cam-agent Go Binary
 

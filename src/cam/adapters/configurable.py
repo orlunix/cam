@@ -147,12 +147,11 @@ class ConfigurableAdapter(ToolAdapter):
         return self._ac.prompt_after_launch
 
     def get_probe_action(self, auto_confirm: bool) -> ProbeAction:
+        # Never send Enter with probe — it disrupts user typing.
+        # When auto_confirm is on, use "1" as probe char so that if a
+        # permission menu consumed it, the monitor can follow up with Enter.
         if auto_confirm:
-            return ProbeAction(
-                char=self._ac.probe_confirm_response,
-                send_enter=self._ac.probe_confirm_send_enter,
-                is_confirm=True,
-            )
+            return ProbeAction(char="1", send_enter=False, is_confirm=True)
         return ProbeAction(char=self._ac.probe_char, send_enter=False, is_confirm=False)
 
     def get_confirm_cooldown(self) -> float:

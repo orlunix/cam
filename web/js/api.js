@@ -15,6 +15,8 @@ export class CamApi {
     this._eventHandlers = [];
     this._reconnectTimer = null;
     this._eventWs = null;
+    this._pingTimer = null;
+    this._consecutiveTimeouts = 0;
   }
 
   configure({ serverUrl, token, relayUrl, relayToken }) {
@@ -84,6 +86,8 @@ export class CamApi {
   disconnect() {
     this.mode = 'disconnected';
     clearTimeout(this._reconnectTimer);
+    clearInterval(this._pingTimer);
+    this._pingTimer = null;
     if (this._eventWs) { try { this._eventWs.close(); } catch {} this._eventWs = null; }
     if (this.ws) { try { this.ws.close(); } catch {} this.ws = null; }
     this._requestMap.forEach(({ reject }) => reject(new Error('disconnected')));
@@ -211,9 +215,16 @@ export class CamApi {
         return;
       }
       const id = `req-${++this._reqCounter}`;
-      const timeout = path.includes('/upload') ? 60000 : 15000;
+      const timeout = path.includes("/upload") ? 60000 : 15000;
       const timer = setTimeout(() => {
         this._requestMap.delete(id);
+        // Track consecutive timeouts — force reconnect after 2
+        this._consecutiveTimeouts++;
+        if (this._consecutiveTimeouts >= 5) {
+          console.warn('Relay: multiple timeouts, forcing reconnect');
+          this._consecutiveTimeouts = 0;
+          if (this.ws) { try { this.ws.close(); } catch {} }
+        }
         reject(new Error('Relay request timeout'));
       }, timeout);
 
@@ -251,6 +262,14 @@ export class CamApi {
         opened = true;
         clearTimeout(connectTimer);
         this.ws = ws;
+        this._consecutiveTimeouts = 0;
+        // Heartbeat: ping every 25s to detect dead connections
+        clearInterval(this._pingTimer);
+        this._pingTimer = setInterval(() => {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            try { this.ws.send(JSON.stringify({ ping: true })); } catch {}
+          }
+        }, 25000);
         resolve();
       };
 
@@ -263,6 +282,7 @@ export class CamApi {
           const { resolve: res, reject: rej, timer } = this._requestMap.get(data.id);
           clearTimeout(timer);
           this._requestMap.delete(data.id);
+          this._consecutiveTimeouts = 0; // Got a response — connection is alive
 
           if (data.status !== undefined) {
             // HTTP response from relay
@@ -292,6 +312,8 @@ export class CamApi {
 
       ws.onerror = () => { if (!opened) reject(new Error('Relay connect failed')); };
       ws.onclose = () => {
+        clearInterval(this._pingTimer);
+        this._pingTimer = null;
         // Reject all pending requests — their responses will never arrive
         this._requestMap.forEach(({ reject: rej, timer }) => {
           clearTimeout(timer);

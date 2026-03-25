@@ -110,6 +110,14 @@ class Transport(ABC):
         """
         ...
 
+    async def is_attached(self, session_id: str) -> bool:
+        """Check if a user is attached to the TMUX session.
+
+        Returns:
+            True if one or more clients are attached, False otherwise.
+        """
+        return False  # Default: assume not attached
+
     async def write_file(self, remote_path: str, data: bytes) -> bool:
         """Write binary data to a file on the target machine.
 

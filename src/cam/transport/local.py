@@ -212,6 +212,20 @@ class LocalTransport(Transport):
         success, _ = await self._run_tmux(["send-keys", "-t", target, key], socket)
         return success
 
+    async def is_attached(self, session_id: str) -> bool:
+        """Check if a user is attached to this TMUX session."""
+        socket = self._get_socket_path(session_id)
+        success, output = await self._run_tmux(
+            ["display-message", "-p", "-t", session_id, "#{session_attached}"],
+            socket,
+        )
+        if success and output.strip():
+            try:
+                return int(output.strip()) > 0
+            except ValueError:
+                pass
+        return False
+
     async def capture_output(self, session_id: str, lines: int = 100) -> str:
         """Capture the last N lines of TMUX pane output.
 

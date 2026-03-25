@@ -376,7 +376,197 @@ CLI can also continue using Core directly (current behavior) without going throu
 - Cost tracking dashboard
 - Notification integrations (Slack, Discord, email)
 
-## 10. Dependencies
+## 10. SDK Streaming Mode (Claude JSON Protocol)
+
+> Status: Planned
+> Priority: High — eliminates regex fragility for Claude agents
+
+### 10.1 Background
+
+Claude CLI supports `--output-format stream-json --permission-prompt-tool stdio` flags that replace the interactive terminal UI with a structured NDJSON protocol over stdin/stdout. This gives us:
+
+- **Typed events** instead of regex pattern matching on terminal text
+- **Explicit permission requests** instead of heuristic auto-confirm
+- **Definitive completion** (`result` message) instead of probe-based idle detection
+- **Tool call metadata** (name, input, id) instead of guessing from output text
+
+Reference implementation: [happy-cli](https://github.com/openclaw/happy) uses this protocol for full programmatic control of Claude.
+
+### 10.2 Protocol Overview
+
+Claude CLI emits line-delimited JSON on stdout:
+
+```jsonl
+{"type":"system","subtype":"init","session_id":"...","tools":["Bash","Edit","Read",...]}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll fix that bug..."},{"type":"tool_use","id":"tu_1","name":"Read","input":{"file_path":"/src/main.py"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_1","content":"..."}]}}
+{"type":"control_request","request_id":"cr_1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"pytest"}}}
+{"type":"result","subtype":"success","num_turns":5,"total_cost_usd":0.12,"duration_ms":45000}
+```
+
+Permission responses are written as JSON to stdin:
+
+```json
+{"type":"control_response","response":{"subtype":"success","request_id":"cr_1","response":{"behavior":"allow","updatedInput":{}}}}
+```
+
+### 10.3 Architecture
+
+SDK mode adds a parallel path alongside the existing terminal mode. No existing code is modified — it's an additive change.
+
+```
+Terminal mode (default):  tmux → capture-pane → ANSI strip → regex → state/confirm/completion
+SDK mode (--sdk):         subprocess pipe → JSON readline → typed events → direct mapping
+```
+
+#### New files
+
+| File | Purpose |
+|------|---------|
+| `src/cam/transport/sdk.py` | `SdkTransport` — manages subprocess with piped stdin/stdout instead of tmux |
+| `src/cam/core/sdk_monitor.py` | `SdkMonitor` — event-driven monitor consuming JSON events from a queue |
+
+#### Modified files (minimal changes)
+
+| File | Change |
+|------|--------|
+| `src/cam/core/models.py` | Add `mode: str \| None = None` to `TaskDefinition` |
+| `src/cam/core/agent_manager.py` | Branch in `run_agent()`: if `mode == "sdk"`, use `SdkTransport` + `SdkMonitor` |
+| `src/cam/core/monitor_runner.py` | Handle SDK mode in background monitor subprocess |
+| `src/cam/cli/run_cmd.py` | Add `--sdk` flag to `cam run` |
+| `src/cam/adapters/configs/claude.toml` | Add `[sdk]` section with streaming command |
+
+### 10.4 Component Design
+
+#### SdkTransport (`transport/sdk.py`)
+
+Implements the `Transport` ABC with a `subprocess.Popen` instead of tmux:
+
+```python
+class SdkTransport(Transport):
+    async def create_session(self, session_id, command, workdir):
+        self._proc = subprocess.Popen(
+            command, stdin=PIPE, stdout=PIPE, stderr=PIPE, cwd=workdir
+        )
+        # Background thread reads stdout lines → asyncio.Queue
+        self._reader = threading.Thread(target=self._read_events, daemon=True)
+        self._reader.start()
+
+    async def capture_output(self, session_id):
+        # Render accumulated events as text (API backward compat)
+        return self._render_events()
+
+    async def send_input(self, session_id, text):
+        # Write JSON to stdin (for permission responses)
+        self._proc.stdin.write(text.encode() + b"\n")
+        self._proc.stdin.flush()
+
+    async def session_exists(self, session_id):
+        return self._proc.poll() is None
+
+    async def kill_session(self, session_id):
+        self._proc.terminate()
+```
+
+#### SdkMonitor (`core/sdk_monitor.py`)
+
+Same public interface as `AgentMonitor` but event-driven instead of polling:
+
+```python
+class SdkMonitor:
+    async def run(self) -> AgentStatus:
+        while True:
+            event = await self._transport.event_queue.get()
+
+            if event["type"] == "assistant":
+                # Extract tool calls → map to AgentState
+                for block in event["message"]["content"]:
+                    if block["type"] == "tool_use":
+                        self._update_state(block["name"])
+
+            elif event["type"] == "control_request":
+                # Permission needed → check auto_confirm → respond
+                response = self._handle_permission(event)
+                await self._transport.send_input(session_id, json.dumps(response))
+
+            elif event["type"] == "result":
+                # Definitive completion — no probe needed
+                if event["subtype"] == "success":
+                    return AgentStatus.COMPLETED
+                return AgentStatus.FAILED
+```
+
+#### Permission Handling
+
+No regex matching. The `control_request` contains `tool_name` and `input` explicitly:
+
+```python
+def _handle_permission(self, event):
+    tool = event["request"]["tool_name"]
+    input_data = event["request"]["input"]
+
+    if self._auto_confirm:
+        behavior = "allow"
+    else:
+        behavior = "deny"  # or prompt user via API
+
+    return {
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": event["request_id"],
+            "response": {"behavior": behavior, "updatedInput": input_data}
+        }
+    }
+```
+
+### 10.5 What Does NOT Change
+
+- All non-Claude tools (Codex, Cursor, generic) — still tmux + terminal scraping
+- Claude in default terminal mode — unchanged, remains the default
+- `ToolAdapter` ABC, `ConfigurableAdapter`, existing `AgentMonitor`
+- Storage layer, event bus, DB schema (events are already `list[dict]`)
+- Web frontend, relay, API endpoints (output endpoint works via `capture_output()`)
+- `camc` standalone CLI — no SDK mode (requires subprocess pipe management)
+
+### 10.6 Tradeoffs
+
+| | Terminal mode | SDK mode |
+|---|---|---|
+| Tool support | Any CLI tool | Claude only |
+| `cam attach` | Full interactive TUI | Read-only event stream |
+| Reliability | Best-effort (regex, probes) | 100% (protocol contract) |
+| Confirm detection | Pattern matching + cooldown | Explicit JSON request/response |
+| Completion detection | Prompt counting + probe | Definitive `result` message |
+| State detection | Regex on output text | Tool name from `tool_use` blocks |
+| Output for humans | Raw terminal (rich) | Rendered from events (structured) |
+
+### 10.7 Implementation Phases
+
+1. **Phase A**: `SdkTransport` + `SdkMonitor` — core functionality, testable in isolation
+2. **Phase B**: Model + AgentManager wiring — `mode` field, branching logic
+3. **Phase C**: CLI `--sdk` flag + `claude.toml` SDK command
+4. **Phase D**: API `events` endpoint for richer structured output to web clients
+5. **Phase E**: `cam attach --sdk` read-only event viewer
+
+Phases A–C form the MVP. D–E are polish.
+
+### 10.8 Activation
+
+```bash
+cam run claude "Fix the bug" --sdk              # SDK streaming mode
+cam run claude "Fix the bug"                     # Default terminal mode (unchanged)
+```
+
+TOML config addition:
+
+```toml
+[sdk]
+enabled = true
+command = ["claude", "--output-format", "stream-json", "--permission-prompt-tool", "stdio", "-p", "{prompt}"]
+```
+
+## 11. Dependencies
 
 ### API Server
 - `fastapi` — HTTP framework

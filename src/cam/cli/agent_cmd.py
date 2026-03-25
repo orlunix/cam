@@ -25,7 +25,7 @@ def run(
     timeout: Optional[str] = typer.Option(None, "--timeout", help="Timeout (e.g. '30m', '2h')"),
     retry: int = typer.Option(0, "--retry", help="Retry count on failure"),
     name: Optional[str] = typer.Option(None, "--name", help="Human-readable name"),
-    detach: bool = typer.Option(False, "--detach", help="Don't follow output"),
+    detach: bool = typer.Option(True, "--detach/--follow", help="Detach after launch (default) or follow output"),
     auto_confirm: Optional[bool] = typer.Option(True, "--auto-confirm/--no-auto-confirm", help="Auto-confirm prompts and enable interactive mode (default: on)"),
     auto_exit: Optional[bool] = typer.Option(None, "--auto-exit/--no-auto-exit", help="Auto-finalize agent when task completes (overrides adapter config)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show plan without executing"),
@@ -54,14 +54,29 @@ def run(
             print_error(f"Context not found: {ctx}")
             raise typer.Exit(1)
     else:
-        # Use current directory as a temporary local context
-        context = Context(
-            id=str(uuid4()),
-            name="cwd",
-            path=os.getcwd(),
-            machine=MachineConfig(type=TransportType.LOCAL),
-            created_at=datetime.now(timezone.utc),
-        )
+        # Use current directory — find existing context for this path or create one
+        cwd = os.getcwd()
+        context = None
+        for c in state.context_store.list():
+            if c.path == cwd and c.machine.type == TransportType.LOCAL:
+                context = c
+                break
+        if not context:
+            # Auto-name from directory basename (e.g. "cam", "myproject")
+            base = os.path.basename(cwd) or "root"
+            # Deduplicate: if name exists, append short suffix
+            existing_names = {c.name for c in state.context_store.list()}
+            ctx_name = base
+            if ctx_name in existing_names:
+                ctx_name = f"{base}-{uuid4().hex[:4]}"
+            context = Context(
+                id=str(uuid4()),
+                name=ctx_name,
+                path=cwd,
+                machine=MachineConfig(type=TransportType.LOCAL),
+                created_at=datetime.now(timezone.utc),
+            )
+            state.context_store.add(context)
 
     # Parse timeout
     timeout_seconds = parse_duration(timeout) if timeout else None
@@ -276,6 +291,7 @@ def attach(
 
     from cam.cli.app import state
     from cam.cli.formatters import print_error, print_info
+    from cam.core.models import MachineConfig, TransportType
     from cam.transport.factory import TransportFactory
 
     # Default to most recent agent
@@ -292,11 +308,13 @@ def attach(
         raise typer.Exit(1)
 
     ctx = state.context_store.get(str(agent.context_id))
-    if not ctx:
-        print_error("Agent's context not found")
-        raise typer.Exit(1)
+    if ctx:
+        transport = TransportFactory.create(ctx.machine)
+    else:
+        # Ad-hoc context (e.g. cwd) — rebuild minimal local transport
+        machine = MachineConfig(type=agent.transport_type or TransportType.LOCAL)
+        transport = TransportFactory.create(machine)
 
-    transport = TransportFactory.create(ctx.machine)
     attach_cmd = transport.get_attach_command(agent.tmux_session)
     print_info(f"Attaching to TMUX session: {agent.tmux_session}")
     print_info("Press Ctrl+B, D to detach")
@@ -364,14 +382,17 @@ def kill(
 
 def retry(
     agent_id: str = typer.Argument(..., help="Agent ID of a failed/killed agent"),
-    detach: bool = typer.Option(False, "--detach", help="Don't follow output"),
+    detach: bool = typer.Option(True, "--detach/--follow", help="Detach after launch (default) or follow output"),
 ) -> None:
     """Re-run a failed or killed agent with the same configuration."""
     import asyncio
+    import os
+    from datetime import datetime, timezone
+    from uuid import uuid4
 
     from cam.cli.app import state
     from cam.cli.formatters import print_agent_detail, print_error, print_info, print_success
-    from cam.core.models import AgentStatus
+    from cam.core.models import AgentStatus, Context, MachineConfig, TransportType
 
     agent = state.agent_store.get(agent_id)
     if not agent:
@@ -385,8 +406,14 @@ def retry(
     # Resolve context
     ctx = state.context_store.get(agent.context_name) or state.context_store.get(str(agent.context_id))
     if not ctx:
-        print_error(f"Original context not found: {agent.context_name}")
-        raise typer.Exit(1)
+        # Rebuild from agent record (ad-hoc cwd context)
+        ctx = Context(
+            id=str(uuid4()),
+            name=agent.context_name or "cwd",
+            path=agent.context_path or os.getcwd(),
+            machine=MachineConfig(type=agent.transport_type or TransportType.LOCAL),
+            created_at=datetime.now(timezone.utc),
+        )
 
     print_info(f"Retrying agent {str(agent.id)[:8]} ({agent.task.tool}: {agent.task.prompt[:50]}...)")
 

@@ -62,6 +62,14 @@ cam run claude "Fix all lint errors" --auto-confirm --auto-exit
 # Agent runs unattended: approves prompts, detects completion, finalizes
 ```
 
+### Sync and Health Check
+
+```bash
+cam sync                                            # Deploy camc + configs to all remotes
+cam sync my-context                                 # Deploy to a specific context
+cam heal                                            # Check all agents, restart dead monitors
+```
+
 ### DAG Workflows
 
 ```bash
@@ -197,6 +205,30 @@ Build the Android APK:
 ```bash
 cd android && ./build.sh
 ```
+
+## Standalone CLI (camc)
+
+A single-file, zero-dependency CLI (`src/camc`) for managing agents on machines without the full cam package. Python 3.6+ stdlib only — no pip install needed.
+
+```bash
+# Deploy to remote machines via cam sync
+cam sync
+
+# Or copy manually
+scp src/camc remote:~/.cam/camc && ssh remote 'chmod +x ~/.cam/camc'
+
+# Use on the remote machine
+camc init                                           # First-time setup
+camc run claude "Fix the bug"                       # Launch an agent
+camc run claude                                     # Interactive mode
+camc list                                           # List agents
+camc logs <id> -f                                   # Follow output
+camc attach <id>                                    # Attach to tmux session
+camc stop <id>                                      # Stop agent
+camc heal                                           # Restart dead monitors
+```
+
+Features: background monitor with auto-confirm/completion detection, auto-exit, PATH passthrough from caller's shell, self-healing monitors (auto-restart on crash), JSON status endpoint for cam server pull mode.
 
 ## cam-agent
 

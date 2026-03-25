@@ -81,7 +81,9 @@ class AgentMonitor:
         self._last_health_check: float = 0.0
         self._last_confirm_time: float = 0.0  # Cooldown to avoid re-sending
         self._poll_count: int = 0
-        self._has_worked: bool = False  # True once agent enters a working state
+        # If agent already advanced beyond initializing (e.g. monitor restart),
+        # assume it has done work so we don't falsely mark it as failed.
+        self._has_worked: bool = agent.state not in (AgentState.INITIALIZING, None)
         # Probe detection state
         self._last_probe_time: float = 0.0
         self._probe_count: int = 0
@@ -278,6 +280,7 @@ class AgentMonitor:
                 if not output_changed and idle_for >= self._adapter.get_completion_stable():
                     completion_status = self._adapter.detect_completion(output)
                     if completion_status is not None:
+                        self._has_worked = True  # completion signal = agent did work
                         if not self._completion_detected:
                             self._completion_detected = completion_status
                             cost = self._adapter.estimate_cost(output)
@@ -311,10 +314,12 @@ class AgentMonitor:
                     self._consecutive_probe_completed = 0
                     self._completion_detected = None
 
+                max_probes = self._adapter.get_probe_idle_threshold() * 3
                 if (
                     self._config.monitor.probe_detection
                     and self._has_worked
                     and not self._idle_confirmed
+                    and self._probe_count < max_probes
                 ):
                     probe_stable = self._config.monitor.probe_stable_seconds
                     probe_cooldown = self._config.monitor.probe_cooldown
@@ -347,23 +352,29 @@ class AgentMonitor:
 
                         if probe_result == ProbeResult.COMPLETED:
                             self._consecutive_probe_completed += 1
-                            if self._consecutive_probe_completed >= self._adapter.get_probe_idle_threshold():
-                                # Confirmed idle — stop probing
-                                self._idle_confirmed = True
-                                self._logger.write("idle_confirmed", data={
-                                    "probe_count": self._probe_count,
-                                })
-                                self._publish_event("idle_confirmed", {
-                                    "probe_count": self._probe_count,
-                                })
+                        elif probe_result == ProbeResult.CONFIRMED and probe_action.is_confirm:
+                            # Smart probe: "1" consumed by TUI = idle at prompt.
+                            # Treat same as COMPLETED for idle counting.
+                            self._consecutive_probe_completed += 1
                         elif probe_result == ProbeResult.BUSY:
                             self._last_change_time = now
                             self._consecutive_probe_completed = 0
                         elif probe_result == ProbeResult.CONFIRMED:
+                            # Non-smart confirm: something changed unexpectedly
                             self._last_change_time = now
                             self._consecutive_probe_completed = 0
                         else:
                             self._consecutive_probe_completed = 0
+
+                        if self._consecutive_probe_completed >= self._adapter.get_probe_idle_threshold():
+                            # Confirmed idle — stop probing
+                            self._idle_confirmed = True
+                            self._logger.write("idle_confirmed", data={
+                                "probe_count": self._probe_count,
+                            })
+                            self._publish_event("idle_confirmed", {
+                                "probe_count": self._probe_count,
+                            })
 
                 # --------------------------------------------------
                 # 8c. Auto-exit on completion + idle confirmed

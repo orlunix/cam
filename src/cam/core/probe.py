@@ -115,27 +115,39 @@ async def probe_session(
     after = after.rstrip("\n")
 
     # 5. Classify result
+    result = ProbeResult.BUSY  # default: no change
+
     if probe_char:
-        # Normal mode: check if probe char echoed on last line
+        # Normal mode: check if probe char echoed anywhere in new output
         after_lines = after.splitlines()
         last_line = after_lines[-1] if after_lines else ""
         baseline_last = baseline.splitlines()[-1] if baseline.splitlines() else ""
 
         if probe_char in last_line and probe_char not in baseline_last:
-            # Probe is visible on the last line — agent is at prompt (echo mode)
-            # Clean up: send BSpace to remove the probe char
-            try:
-                await transport.send_key(session_id, "BSpace")
-            except Exception:
-                logger.debug("Probe: BSpace cleanup failed for %s", session_id)
-            logger.debug("Probe: COMPLETED for %s (probe visible)", session_id)
-            return ProbeResult.COMPLETED
+            result = ProbeResult.COMPLETED
+            logger.debug("Probe: COMPLETED for %s (probe visible on last line)", session_id)
+        elif after != baseline:
+            result = ProbeResult.CONFIRMED
+            logger.debug("Probe: CONFIRMED for %s (output changed)", session_id)
+        else:
+            logger.debug("Probe: BUSY for %s (no echo)", session_id)
+    else:
+        # Enter-only mode
+        if after != baseline:
+            result = ProbeResult.CONFIRMED
+            logger.debug("Probe: CONFIRMED for %s (output changed)", session_id)
+        else:
+            logger.debug("Probe: BUSY for %s (no echo)", session_id)
 
-    # Both modes: check if output changed
-    if after != baseline:
-        logger.debug("Probe: CONFIRMED for %s (output changed)", session_id)
-        return ProbeResult.CONFIRMED
+    # Always send BSpace after probe char to clean up, regardless of result.
+    # If char was consumed by a menu → BSpace is harmless.
+    # If char echoed on prompt → BSpace removes it.
+    # If agent is busy (raw mode) → BSpace is harmless.
+    if probe_char:
+        try:
+            await transport.send_key(session_id, "BSpace")
+            await asyncio.sleep(0.15)
+        except Exception:
+            logger.debug("Probe: BSpace cleanup failed for %s", session_id)
 
-    # Output unchanged — agent in raw mode, echo disabled
-    logger.debug("Probe: BUSY for %s (no echo)", session_id)
-    return ProbeResult.BUSY
+    return result
