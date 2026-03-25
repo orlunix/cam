@@ -29,7 +29,7 @@ from cam.adapters.registry import AdapterRegistry
 from cam.constants import PID_DIR
 from cam.core.config import load_config
 from cam.core.events import EventBus
-from cam.core.models import AgentEvent, AgentState, AgentStatus
+from cam.core.models import AgentEvent, AgentState, AgentStatus, Context, MachineConfig, TransportType
 from cam.core.monitor import AgentMonitor
 from cam.storage.agent_store import AgentStore
 from cam.storage.context_store import ContextStore
@@ -109,12 +109,15 @@ async def run_monitor(agent_id: str) -> None:
     # Load context to get machine config for transport
     context = context_store.get(str(agent.context_id))
     if context is None:
-        logger.error("Context %s not found for agent %s", agent.context_id, agent_id)
-        agent.status = AgentStatus.FAILED
-        agent.completed_at = datetime.now(timezone.utc)
-        agent.exit_reason = f"Context not found: {agent.context_id}"
-        agent_store.save(agent)
-        return
+        # Rebuild a minimal context from agent record (e.g. ad-hoc cwd launch)
+        logger.warning("Context %s not found, rebuilding from agent record", agent.context_id)
+        context = Context(
+            id=str(agent.context_id),
+            name=agent.context_name or "cwd",
+            path=agent.context_path or os.getcwd(),
+            machine=MachineConfig(type=agent.transport_type or TransportType.LOCAL),
+            created_at=datetime.now(timezone.utc),
+        )
 
     # Create transport from context machine config
     transport = TransportFactory.create(context.machine)
@@ -267,10 +270,43 @@ async def run_monitor(agent_id: str) -> None:
 
     except Exception:
         logger.exception("Monitor runner crashed for agent %s", agent_id)
-        agent.status = AgentStatus.FAILED
-        agent.completed_at = datetime.now(timezone.utc)
-        agent.exit_reason = "Monitor subprocess crashed"
-        agent_store.save(agent)
+        # Auto-restart on transient errors (e.g. database locked)
+        max_restarts = 5
+        for attempt in range(max_restarts):
+            await asyncio.sleep(5 * (attempt + 1))
+            agent = agent_store.get(agent_id)
+            if agent is None or agent.status != AgentStatus.RUNNING:
+                logger.info("Agent %s no longer running, not restarting monitor", agent_id)
+                break
+            logger.info("Restarting monitor for %s (attempt %d/%d)", agent_id, attempt + 1, max_restarts)
+            try:
+                agent_logger = AgentLogger(agent_id)
+                agent_logger.open()
+                try:
+                    monitor = AgentMonitor(
+                        agent=agent,
+                        transport=transport,
+                        adapter=adapter,
+                        agent_store=agent_store,
+                        event_bus=event_bus,
+                        agent_logger=agent_logger,
+                        config=config,
+                        client_active=cam_client_active,
+                    )
+                    await monitor.run()
+                finally:
+                    agent_logger.close()
+                break  # clean exit
+            except Exception:
+                logger.exception("Monitor restart %d failed for %s", attempt + 1, agent_id)
+        else:
+            logger.error("Max restarts reached for agent %s", agent_id)
+            agent = agent_store.get(agent_id)
+            if agent and agent.status == AgentStatus.RUNNING:
+                agent.status = AgentStatus.FAILED
+                agent.completed_at = datetime.now(timezone.utc)
+                agent.exit_reason = "Monitor crashed after max restarts"
+                agent_store.save(agent)
     finally:
         _remove_pid(agent_id)
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,8 @@ class Database:
 
         # Enable WAL mode for better concurrent reads
         self.conn.execute("PRAGMA journal_mode=WAL")
+        # Wait up to 5s for locks instead of failing immediately
+        self.conn.execute("PRAGMA busy_timeout=5000")
 
         # Run migrations
         self._migrate()
@@ -124,8 +127,22 @@ class Database:
         # Record migration
         self.execute("INSERT INTO schema_version (version) VALUES (1)")
 
+    def _retry_on_lock(self, fn, max_retries: int = 5):
+        """Retry a DB operation on transient locking errors."""
+        for attempt in range(max_retries + 1):
+            try:
+                return fn()
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e) or "locking" in str(e):
+                    if attempt < max_retries:
+                        time.sleep(0.1 * (attempt + 1))
+                        continue
+                raise DatabaseError(f"Failed to execute SQL: {e}") from e
+            except sqlite3.Error as e:
+                raise DatabaseError(f"Failed to execute SQL: {e}") from e
+
     def execute(self, sql: str, params: tuple[Any, ...] | dict[str, Any] = ()) -> sqlite3.Cursor:
-        """Execute a SQL statement.
+        """Execute a SQL statement with automatic retry on locking errors.
 
         Args:
             sql: SQL statement to execute.
@@ -134,15 +151,12 @@ class Database:
         Returns:
             Cursor object.
         """
-        try:
-            return self.conn.execute(sql, params)
-        except sqlite3.Error as e:
-            raise DatabaseError(f"Failed to execute SQL: {e}") from e
+        return self._retry_on_lock(lambda: self.conn.execute(sql, params))
 
     def executemany(
         self, sql: str, params_list: list[tuple[Any, ...] | dict[str, Any]]
     ) -> sqlite3.Cursor:
-        """Execute a SQL statement multiple times.
+        """Execute a SQL statement multiple times with automatic retry on locking errors.
 
         Args:
             sql: SQL statement to execute.
@@ -151,10 +165,7 @@ class Database:
         Returns:
             Cursor object.
         """
-        try:
-            return self.conn.executemany(sql, params_list)
-        except sqlite3.Error as e:
-            raise DatabaseError(f"Failed to execute SQL: {e}") from e
+        return self._retry_on_lock(lambda: self.conn.executemany(sql, params_list))
 
     def fetchone(
         self, sql: str, params: tuple[Any, ...] | dict[str, Any] = ()

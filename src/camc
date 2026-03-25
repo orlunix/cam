@@ -28,7 +28,7 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 __version__ = "1.0.0"
@@ -46,11 +46,12 @@ log = logging.getLogger("camc")
 
 CAM_DIR = os.path.expanduser("~/.cam")
 CONFIGS_DIR = os.path.join(CAM_DIR, "configs")
+LOGS_DIR = os.path.join(CAM_DIR, "logs")
 AGENTS_FILE = os.path.join(CAM_DIR, "agents.json")
 CONTEXT_FILE = os.path.join(CAM_DIR, "context.json")
 SOCKETS_DIR = "/tmp/cam-sockets"
 
-_DEFAULT_CONTEXT = {"name": None, "host": None, "port": None}
+_DEFAULT_CONTEXT = {"name": None, "host": None, "port": None, "env_setup": None}
 
 
 # ---------------------------------------------------------------------------
@@ -590,7 +591,7 @@ def tmux_session_exists(session_id):
         args = ["tmux", "-u", "-S", socket, "has-session", "-t", session_id]
     else:
         args = ["tmux", "has-session", "-t", session_id]
-    rc, _ = _run(args)
+    rc, _ = _run(args, timeout=15)
     return rc == 0
 
 
@@ -618,18 +619,52 @@ def tmux_kill_session(session_id):
     return rc == 0
 
 
-def create_tmux_session(session_id, command, workdir, env_setup=None):
+def create_tmux_session(session_id, command, workdir, env_setup=None, inherit_env=True):
     try:
         os.makedirs(SOCKETS_DIR)
     except OSError:
         pass
     socket = "%s/%s.sock" % (SOCKETS_DIR, session_id)
 
+    # Unset TMUX so we can create sessions from inside tmux (nesting)
+    env = os.environ.copy()
+    env.pop("TMUX", None)
+    env.pop("TMUX_PANE", None)
+    # Unset CLAUDECODE to prevent nested-session detection
+    env.pop("CLAUDECODE", None)
+
+    if inherit_env:
+        # Shell mode: start tmux with user's default shell, inherit all env.
+        # Then send the command via send-keys.
+        try:
+            tmux_cmd = ["tmux", "-u", "-S", socket, "new-session",
+                 "-d", "-x", "220", "-y", "50",
+                 "-s", session_id, "-c", workdir]
+            proc = subprocess.Popen(
+                tmux_cmd,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env=env,
+            )
+            proc.wait(timeout=10)
+            if proc.returncode != 0:
+                return False
+            _run(["tmux", "-u", "-S", socket, "set-option", "-t", session_id,
+                  "history-limit", "50000"])
+            # Send the command via send-keys
+            inner_cmd = " ".join(shlex.quote(arg) for arg in command)
+            target = "%s:0.0" % session_id
+            _run(["tmux", "-u", "-S", socket, "send-keys", "-t", target,
+                  "-l", "--", inner_cmd])
+            _run(["tmux", "-u", "-S", socket, "send-keys", "-t", target, "Enter"])
+            return True
+        except Exception as e:
+            log.error("Failed to create shell session %s: %s", session_id, e)
+            return False
+
     inner_cmd = " ".join(shlex.quote(arg) for arg in command)
-    if env_setup:
-        command_str = "env -u CLAUDECODE bash -l -c %s" % shlex.quote(env_setup + " && exec " + inner_cmd)
-    else:
-        command_str = "env -u CLAUDECODE bash -l -c %s" % shlex.quote("exec " + inner_cmd)
+    if not env_setup:
+        env_setup = "export PATH=%s" % shlex.quote(os.environ.get("PATH", ""))
+    command_str = "env -u CLAUDECODE bash -l -c %s" % shlex.quote(env_setup + " && exec " + inner_cmd)
 
     try:
         proc = subprocess.Popen(
@@ -637,6 +672,7 @@ def create_tmux_session(session_id, command, workdir, env_setup=None):
              "-d", "-x", "220", "-y", "50",
              "-s", session_id, "-c", workdir, command_str],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=env,
         )
         proc.wait(timeout=10)
         if proc.returncode != 0:
@@ -839,7 +875,7 @@ class AgentStore(object):
 # ===========================================================================
 
 def _now_iso():
-    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _time_ago(iso_str):
@@ -848,7 +884,7 @@ def _time_ago(iso_str):
     try:
         clean = iso_str.replace("Z", "").replace("+00:00", "")
         dt = datetime.strptime(clean[:19], "%Y-%m-%dT%H:%M:%S")
-        diff = (datetime.utcnow() - dt).total_seconds()
+        diff = (datetime.now(timezone.utc).replace(tzinfo=None) - dt).total_seconds()
         if diff < 60: return "%ds ago" % int(diff)
         if diff < 3600: return "%dm ago" % int(diff / 60)
         if diff < 86400: return "%dh ago" % int(diff / 3600)
@@ -952,6 +988,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None):
                 last_health = now
                 if not tmux_session_exists(session):
                     status = "completed" if has_worked else "failed"
+                    log.info("Session gone: %s -> %s", session, status)
                     store.update(agent_id, status=status,
                                  exit_reason="Session exited", completed_at=_now_iso())
                     return
@@ -977,6 +1014,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None):
             if now - last_confirm >= config.confirm_cooldown:
                 confirm = should_auto_confirm(output, config)
                 if confirm:
+                    log.info("Auto-confirm: %r enter=%s", confirm[0], confirm[1])
                     tmux_send_input(session, confirm[0], send_enter=confirm[1])
                     last_confirm = now
                     time.sleep(config.confirm_sleep)
@@ -986,16 +1024,17 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None):
             if ns and ns != current_state:
                 if ns != "initializing":
                     has_worked = True
+                log.info("State: %s -> %s", current_state, ns)
                 current_state = ns
                 store.update(agent_id, state=ns)
 
             if not changed and now - last_change >= config.completion_stable:
                 done = detect_completion(output, config)
                 if done:
+                    has_worked = True  # completion signal = agent did work
                     store.update(agent_id, state="idle")
-                    # Auto-exit when completion detected + agent has worked +
-                    # output stable for 3x completion_stable
-                    if has_worked and now - last_change >= config.completion_stable * 3:
+                    # Auto-exit when completion detected + output stable for 3x completion_stable
+                    if now - last_change >= config.completion_stable * 3:
                         agent_rec = store.get(agent_id)
                         ae = agent_rec.get("auto_exit") if agent_rec else None
                         if ae is None:
@@ -1027,13 +1066,52 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None):
 
 
 def _run_monitor(agent_id):
+    # Reconfigure logging to file for background monitor
+    try:
+        os.makedirs(LOGS_DIR, exist_ok=True)
+    except OSError:
+        pass
+    log_path = os.path.join(LOGS_DIR, "monitor-%s.log" % agent_id)
+    for h in logging.root.handlers[:]:
+        logging.root.removeHandler(h)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [monitor] %(levelname)s %(message)s",
+        filename=log_path,
+    )
+    log.info("Monitor starting for agent %s", agent_id)
+
     store = AgentStore()
     agent = store.get(agent_id)
     if not agent:
+        log.error("Agent %s not found", agent_id)
         sys.exit(1)
     config = _load_config(agent["tool"])
+    log.info("Tool=%s session=%s path=%s", agent["tool"], agent["session"], agent.get("path"))
     pid_path = "/tmp/camc-%s.pid" % agent_id
-    run_monitor_loop(agent["session"], agent_id, config, store, pid_path=pid_path)
+
+    # Auto-restart on crash (e.g. database locked, transient errors)
+    max_restarts = 5
+    for attempt in range(max_restarts + 1):
+        try:
+            run_monitor_loop(agent["session"], agent_id, config, store, pid_path=pid_path)
+            break  # clean exit
+        except Exception as e:
+            log.error("Monitor crashed (attempt %d/%d): %s", attempt + 1, max_restarts, e)
+            if attempt >= max_restarts:
+                log.error("Max restarts reached, giving up")
+                store.update(agent_id, status="failed", exit_reason="Monitor crashed: %s" % e,
+                             completed_at=_now_iso())
+                break
+            time.sleep(5 * (attempt + 1))  # backoff: 5s, 10s, 15s...
+            # Re-check if agent is still running
+            agent = store.get(agent_id)
+            if not agent or agent.get("status") != "running":
+                log.info("Agent no longer running, stopping monitor")
+                break
+            log.info("Restarting monitor...")
+
+    log.info("Monitor finished for agent %s", agent_id)
 
 
 # ===========================================================================
@@ -1103,17 +1181,27 @@ def cmd_init(args):
     print("  camc stop <id>                     # Stop an agent")
 
 
+def _want_json(args):
+    """Check if --json flag is set."""
+    return getattr(args, "json", False)
+
+
 def cmd_run(args):
-    tool, prompt = args.tool, args.prompt
+    tool = getattr(args, "tool", None) or "claude"
+    prompt = getattr(args, "prompt", "") or ""
     workdir = os.path.abspath(args.path)
+    os.makedirs(workdir, exist_ok=True)
     config = _load_config(tool)
 
     agent_id = uuid4().hex[:8]
     session = "cam-%s" % agent_id
     launch_cmd = _build_command(config, prompt, workdir)
 
+    context = _load_default_context()
+    env_setup = context.get("env_setup") or None
+    inherit_env = not getattr(args, "no_inherit_env", False)
     print("Starting %s agent %s..." % (tool, agent_id))
-    if not create_tmux_session(session, launch_cmd, workdir):
+    if not create_tmux_session(session, launch_cmd, workdir, env_setup=env_setup, inherit_env=inherit_env):
         sys.stderr.write("Error: failed to create tmux session\n")
         sys.exit(1)
 
@@ -1140,7 +1228,6 @@ def cmd_run(args):
 
     name = getattr(args, "name", None) or None
     auto_exit = getattr(args, "auto_exit", False)
-    context = _load_default_context()
     store = AgentStore()
     store.save({"id": agent_id, "tool": tool, "session": session, "status": "running",
                 "state": "initializing", "prompt": prompt, "path": workdir,
@@ -1179,7 +1266,11 @@ def cmd_list(args):
     store = AgentStore()
     agents = store.list()
     if not agents:
-        print("No agents."); return
+        if _want_json(args):
+            print("[]")
+        else:
+            print("No agents.")
+        return
 
     for a in agents:
         if a["status"] == "running" and not tmux_session_exists(a["session"]):
@@ -1188,13 +1279,30 @@ def cmd_list(args):
             a.update(status=status, exit_reason="Session gone", completed_at=_now_iso())
             store.update(a["id"], **{k: a[k] for k in ("status", "exit_reason", "completed_at")})
 
+    # Apply filters
+    status_filter = getattr(args, "status", None)
+    if status_filter:
+        agents = [a for a in agents if a.get("status") == status_filter]
+
+    # Sort by started_at descending
+    agents = sorted(agents, key=lambda x: x.get("started_at", ""), reverse=True)
+
+    # Limit
+    last_n = getattr(args, "last", 50) or 50
+    agents = agents[:last_n]
+
+    # JSON output
+    if _want_json(args):
+        print(json.dumps(agents, indent=2))
+        return
+
     colors = {"running": "\033[32m", "completed": "\033[36m", "failed": "\033[31m", "stopped": "\033[33m"}
     reset = "\033[0m"
     use_color = sys.stdout.isatty()
 
     print("%-10s %-16s %-10s %-12s %-12s %-24s %s" % ("ID", "NAME", "TOOL", "STATUS", "STATE", "PROMPT", "STARTED"))
     print("-" * 100)
-    for a in sorted(agents, key=lambda x: x.get("started_at", ""), reverse=True):
+    for a in agents:
         s = a.get("status", "?")
         ss = "%s%-12s%s" % (colors.get(s, ""), s, reset) if use_color else "%-12s" % s
         print("%-10s %-16s %-10s %s %-12s %-24s %s" % (
@@ -1209,11 +1317,12 @@ def cmd_logs(args):
     a = store.get(args.id)
     if not a:
         sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
+    tail_n = getattr(args, "tail", 50) or 50
     if args.follow:
         prev = ""
         try:
             while True:
-                out = capture_tmux(a["session"], lines=200)
+                out = capture_tmux(a["session"], lines=max(tail_n, 200))
                 if out != prev:
                     os.system("clear"); print(out); prev = out
                 if not tmux_session_exists(a["session"]):
@@ -1222,7 +1331,7 @@ def cmd_logs(args):
         except KeyboardInterrupt:
             pass
     else:
-        out = capture_tmux(a["session"], lines=200)
+        out = capture_tmux(a["session"], lines=tail_n)
         print(out or ("(session not found)" if not tmux_session_exists(a["session"]) else "(no output)"))
 
 
@@ -1235,6 +1344,18 @@ def cmd_stop(args):
     tmux_kill_session(a["session"])
     store.update(a["id"], status="stopped", exit_reason="Stopped by user", completed_at=_now_iso())
     print("Stopped agent %s" % a["id"])
+
+
+def cmd_kill(args):
+    """Force kill a running agent (sends SIGKILL to tmux session)."""
+    store = AgentStore()
+    a = store.get(args.id)
+    if not a:
+        sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
+    _kill_monitor(a)
+    tmux_kill_session(a["session"])
+    store.update(a["id"], status="stopped", exit_reason="Force killed by user", completed_at=_now_iso())
+    print("Killed agent %s" % a["id"])
 
 
 def cmd_add(args):
@@ -1273,9 +1394,20 @@ def cmd_rm(args):
 
 def cmd_attach(args):
     store = AgentStore()
-    a = store.get(args.id)
-    if not a:
-        sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
+    agent_id = getattr(args, "id", None)
+    if not agent_id:
+        # No ID given — attach to most recent running agent
+        agents = store.list()
+        running = [a for a in agents if a.get("status") == "running"]
+        running.sort(key=lambda x: x.get("started_at", ""), reverse=True)
+        if not running:
+            sys.stderr.write("Error: no running agents\n"); sys.exit(1)
+        a = running[0]
+        print("Attaching to most recent: %s (%s)" % (a.get("name") or a["id"], a["id"]))
+    else:
+        a = store.get(agent_id)
+        if not a:
+            sys.stderr.write("Error: agent '%s' not found\n" % agent_id); sys.exit(1)
     sock = _find_tmux_socket(a["session"])
     if sock:
         os.execvp("tmux", ["tmux", "-u", "-S", sock, "attach", "-t", a["session"]])
@@ -1284,19 +1416,132 @@ def cmd_attach(args):
 
 
 def cmd_status(args):
-    """Machine-readable JSON status (for cam server pull mode)."""
+    """Show detailed agent status / machine-readable JSON status."""
     store = AgentStore()
-    filter_id = getattr(args, "id", None)
+    filter_id = getattr(args, "agent_id", None) or getattr(args, "id", None)
     agents = store.list()
     if filter_id:
         agents = [a for a in agents if a.get("id", "").startswith(filter_id)]
-    raw = json.dumps(agents, sort_keys=True)
-    h = hashlib.md5(raw.encode()).hexdigest()[:8]
+
     req_hash = getattr(args, "hash", None)
-    if req_hash and req_hash == h:
-        print(json.dumps({"unchanged": True, "hash": h}))
+    if req_hash:
+        # Machine-readable mode with hash-based conditional response
+        raw = json.dumps(agents, sort_keys=True)
+        h = hashlib.md5(raw.encode()).hexdigest()[:8]
+        if req_hash == h:
+            print(json.dumps({"unchanged": True, "hash": h}))
+        else:
+            print(json.dumps({"agents": agents, "hash": h}))
+        return
+
+    if not agents:
+        sys.stderr.write("Error: agent '%s' not found\n" % filter_id if filter_id else "No agents.\n")
+        sys.exit(1 if filter_id else 0)
+
+    # Single agent detail view (like cam status)
+    if filter_id and len(agents) == 1:
+        a = agents[0]
+        if _want_json(args):
+            print(json.dumps(a, indent=2))
+            return
+        print("Agent: %s" % a.get("id", "?"))
+        if a.get("name"):
+            print("  Name:      %s" % a["name"])
+        print("  Tool:      %s" % a.get("tool", "?"))
+        print("  Status:    %s" % a.get("status", "?"))
+        print("  State:     %s" % (a.get("state") or "-"))
+        print("  Path:      %s" % a.get("path", "?"))
+        print("  Session:   %s" % a.get("session", "?"))
+        print("  Started:   %s" % (a.get("started_at") or "-"))
+        if a.get("completed_at"):
+            print("  Completed: %s" % a["completed_at"])
+        if a.get("exit_reason"):
+            print("  Exit:      %s" % a["exit_reason"])
+        prompt = a.get("prompt") or ""
+        print("  Prompt:    %s" % (prompt[:80] + "..." if len(prompt) > 80 else prompt or "(interactive)"))
+        if a.get("auto_exit"):
+            print("  Auto-exit: ON")
+        # Check session alive
+        alive = tmux_session_exists(a.get("session", ""))
+        print("  Session:   %s" % ("alive" if alive else "dead"))
+        return
+
+    # Multiple agents — JSON dump
+    if _want_json(args):
+        print(json.dumps(agents, indent=2))
     else:
+        raw = json.dumps(agents, sort_keys=True)
+        h = hashlib.md5(raw.encode()).hexdigest()[:8]
         print(json.dumps({"agents": agents, "hash": h}))
+
+
+def cmd_heal(args):
+    """Check running agents and restart dead monitor daemons."""
+    store = AgentStore()
+    agents = store.list()
+    running = [a for a in agents if a.get("status") == "running"]
+    if not running:
+        print("No running agents.")
+        return
+
+    healed = 0
+    ok = 0
+    for a in running:
+        aid = a["id"]
+        name = a.get("name") or aid
+        session = a.get("session", "")
+
+        # Check if tmux session is alive
+        if not tmux_session_exists(session):
+            state = a.get("state") or "initializing"
+            status = "completed" if state not in ("initializing",) else "failed"
+            store.update(aid, status=status, exit_reason="Session gone (heal)", completed_at=_now_iso())
+            print("  %s (%s): session dead, marked %s" % (name, aid, status))
+            continue
+
+        # Check if monitor process is alive
+        monitor_alive = False
+        pid = a.get("monitor_pid")
+        if pid:
+            try:
+                os.kill(pid, 0)
+                monitor_alive = True
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        if not monitor_alive:
+            pid_path = "/tmp/camc-%s.pid" % aid
+            if os.path.exists(pid_path):
+                try:
+                    with open(pid_path) as f:
+                        fpid = int(f.read().strip())
+                    os.kill(fpid, 0)
+                    monitor_alive = True
+                except (ValueError, ProcessLookupError, PermissionError, OSError):
+                    try:
+                        os.unlink(pid_path)
+                    except OSError:
+                        pass
+
+        if monitor_alive:
+            print("  %s (%s): ok" % (name, aid))
+            ok += 1
+            continue
+
+        # Restart monitor
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, os.path.abspath(__file__), "_monitor", aid],
+                stdout=subprocess.DEVNULL,
+                stderr=open("/tmp/camc-%s.log" % aid, "a"),
+                start_new_session=True)
+            store.update(aid, monitor_pid=proc.pid)
+            print("  %s (%s): restarted (PID %d)" % (name, aid, proc.pid))
+            healed += 1
+        except Exception as e:
+            print("  %s (%s): restart failed: %s" % (name, aid, e))
+
+    failed = len(running) - ok - healed
+    print("Heal: %d healthy, %d restarted%s" % (ok, healed, ", %d failed" % failed if failed else ""))
 
 
 def cmd_version(args):
@@ -1317,23 +1562,28 @@ def cmd_version(args):
 def main():
     p = argparse.ArgumentParser(
         prog="camc",
-        description="Standalone coding agent manager — manage AI agents via tmux",
+        description="CAM Client — Standalone coding agent manager. PM2 for AI coding agents.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 examples:
-  camc init                         First-time setup
-  camc run claude "fix lint errors" Launch claude with a prompt
-  camc run claude                   Launch claude interactively
-  camc run codex "add tests" -p /app  Launch codex in /app
-  camc run claude "task" --auto-exit  Auto-exit on completion
-  camc list                         List all agents
-  camc logs abc1 -f                 Follow agent output
-  camc attach abc1                  Attach to agent tmux
-  camc stop abc1                    Stop an agent
-  camc add my-session --tool claude Adopt existing tmux session
-  camc rm abc1 --kill               Remove and kill agent
-  camc status                       JSON status (for automation)
-  camc version                      Show version info""")
+  camc init                           First-time setup
+  camc run "fix lint errors"          Launch claude (default) with a prompt
+  camc run -t codex "add tests"       Launch codex with a prompt
+  camc run                            Launch claude interactively
+  camc list                           List all agents
+  camc list --json                    List agents as JSON
+  camc list --status running          List only running agents
+  camc logs abc1 -f                   Follow agent output
+  camc attach abc1                    Attach to agent tmux
+  camc stop abc1                      Gracefully stop an agent
+  camc kill abc1                      Force kill an agent
+  camc status abc1                    Show detailed agent status
+  camc add my-session --tool claude   Adopt existing tmux session
+  camc rm abc1 --kill                 Remove and kill agent
+  camc heal                           Restart dead monitors
+  camc version                        Show version info""")
+    p.add_argument("--json", action="store_true", help="Output as JSON")
+    p.add_argument("--verbose", "-v", action="store_true", help="Verbose output (debug logging)")
     sub = p.add_subparsers(dest="command")
 
     # init
@@ -1341,24 +1591,32 @@ examples:
     init_p.add_argument("--force", "-f", action="store_true", help="Overwrite existing configs")
 
     # run
-    r = sub.add_parser("run", help="Launch an agent")
-    r.add_argument("tool", help="Tool name (claude, codex, cursor)")
-    r.add_argument("prompt", nargs="?", default="", help="Task prompt (omit for interactive)")
+    r = sub.add_parser("run", help="Start a coding agent on a task")
+    r.add_argument("prompt", nargs="?", default="", help="Task prompt (empty for interactive mode)")
+    r.add_argument("--tool", "-t", default="claude", help="Tool name (claude, codex, cursor) [default: claude]")
     r.add_argument("--path", "-p", default=os.getcwd(), help="Working directory")
     r.add_argument("--name", "-n", default=None, help="Human-readable name")
     r.add_argument("--auto-exit", "-a", action="store_true", help="Auto-exit on completion")
+    r.add_argument("--no-inherit-env", action="store_true", help="Legacy mode: wrap command with bash -c and env_setup")
 
     # list
-    sub.add_parser("list", aliases=["ls"], help="List agents")
+    ls = sub.add_parser("list", aliases=["ls"], help="List agents")
+    ls.add_argument("--status", default=None, help="Filter by status")
+    ls.add_argument("--last", "-n", type=int, default=50, help="Show last N agents [default: 50]")
 
     # logs
-    l = sub.add_parser("logs", help="Show agent output")
+    l = sub.add_parser("logs", help="View agent output logs")
     l.add_argument("id", help="Agent ID (prefix match)")
     l.add_argument("-f", "--follow", action="store_true", help="Follow output")
+    l.add_argument("--tail", "-n", type=int, default=50, help="Last N lines [default: 50]")
 
     # stop
-    s = sub.add_parser("stop", help="Stop an agent")
+    s = sub.add_parser("stop", help="Gracefully stop a running agent")
     s.add_argument("id", help="Agent ID")
+
+    # kill
+    k = sub.add_parser("kill", help="Force kill a running agent")
+    k.add_argument("id", help="Agent ID")
 
     # add
     a = sub.add_parser("add", help="Adopt existing tmux session")
@@ -1366,18 +1624,21 @@ examples:
     a.add_argument("--tool", "-t", default="claude", help="Tool type")
 
     # rm
-    rm = sub.add_parser("rm", help="Remove from management")
+    rm = sub.add_parser("rm", help="Remove a single agent")
     rm.add_argument("id", help="Agent ID")
     rm.add_argument("--kill", "-k", action="store_true", help="Also kill the session")
 
     # attach
-    at = sub.add_parser("attach", help="Attach to agent tmux")
-    at.add_argument("id", help="Agent ID")
+    at = sub.add_parser("attach", help="Attach to an agent's TMUX session (interactive)")
+    at.add_argument("id", nargs="?", default=None, help="Agent number, name, or ID")
 
-    # status (machine-readable)
-    st = sub.add_parser("status", help="JSON status output")
-    st.add_argument("--id", default=None, help="Filter by agent ID")
-    st.add_argument("--hash", default=None, help="Return unchanged if hash matches")
+    # status
+    st = sub.add_parser("status", help="Show detailed agent status")
+    st.add_argument("agent_id", nargs="?", default=None, help="Agent ID (full or short)")
+    st.add_argument("--hash", default=None, help="Return unchanged if hash matches (automation)")
+
+    # heal
+    sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
 
     # version
     sub.add_parser("version", help="Show version")
@@ -1388,16 +1649,22 @@ examples:
         return
 
     args = p.parse_args()
+    # Enable debug logging if --verbose
+    if getattr(args, "verbose", False):
+        logging.getLogger("camc").setLevel(logging.DEBUG)
+
     cmds = {
         "init": cmd_init,
         "run": cmd_run,
         "list": cmd_list, "ls": cmd_list,
         "logs": cmd_logs,
         "stop": cmd_stop,
+        "kill": cmd_kill,
         "add": cmd_add,
         "rm": cmd_rm,
         "attach": cmd_attach,
         "status": cmd_status,
+        "heal": cmd_heal,
         "version": cmd_version,
     }
     if args.command in cmds:

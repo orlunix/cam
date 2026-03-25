@@ -147,8 +147,9 @@ class AgentManager:
         self._agent_store.save(agent)
         logger.info("Created agent %s for task '%s' on context '%s'", agent_id, task.name, context.name)
 
-        # 6. Ensure socket directory exists
+        # 6. Ensure socket directory and context path exist
         SOCKET_DIR.mkdir(parents=True, exist_ok=True)
+        Path(context.path).mkdir(parents=True, exist_ok=True)
 
         # 7. Get launch command from adapter
         launch_command = adapter.get_launch_command(task, context)
@@ -374,14 +375,18 @@ class AgentManager:
             # Build transport for this agent's context
             context = self._context_store.get(str(agent.context_id))
             if context is None:
-                # Context was deleted -- cannot verify, mark orphaned
-                self._agent_store.update_status(
-                    str(agent.id),
-                    AgentStatus.FAILED,
-                    exit_reason="Context no longer exists",
+                # Context missing (e.g. ad-hoc cwd) — rebuild from agent record
+                context = Context(
+                    id=str(agent.context_id),
+                    name=agent.context_name or "cwd",
+                    path=agent.context_path or "",
+                    machine=MachineConfig(type=agent.transport_type or TransportType.LOCAL),
+                    created_at=datetime.now(timezone.utc),
                 )
-                orphaned.append(agent)
-                continue
+                if not context.path:
+                    # No path info — cannot verify
+                    orphaned.append(agent)
+                    continue
 
             try:
                 transport = self._create_transport(context)
@@ -739,7 +744,11 @@ class AgentManager:
                 results["cam-client.py"] = "unchanged"
 
         # 2. Sync camc (standalone CLI)
-        camc_path = Path(__file__).parent.parent / "camc.py"
+        # Prefer the standalone single-file version at src/camc,
+        # fall back to src/cam/camc.py for older layouts.
+        camc_path = Path(__file__).parent.parent.parent / "camc"
+        if not camc_path.exists():
+            camc_path = Path(__file__).parent.parent / "camc.py"
         if camc_path.exists():
             camc_bytes = camc_path.read_bytes()
             camc_local_hash = hashlib.md5(camc_bytes).hexdigest()[:12]
@@ -757,7 +766,6 @@ class AgentManager:
                     "~/.cam/camc", camc_bytes
                 )
                 if deployed:
-                    # Make executable + symlink into PATH
                     await transport._run_ssh(
                         "bash -c 'chmod +x ~/.cam/camc && mkdir -p ~/.local/bin && ln -sf ~/.cam/camc ~/.local/bin/camc'",
                         check=False,
@@ -768,7 +776,39 @@ class AgentManager:
             else:
                 results["camc"] = "unchanged"
 
-        # 3. Sync TOML configs
+            # Try to install heal cron (best-effort, crontab may not be available)
+            if hasattr(transport, '_run_ssh'):
+                await transport._run_ssh(
+                    "bash -c '(crontab -l 2>/dev/null | grep -v camc.heal; echo \"0,30 * * * * python3 ~/.cam/camc heal >> /tmp/camc-heal.log 2>&1\") | crontab - 2>/dev/null'",
+                    check=False,
+                )
+
+        # 3. Sync context.json (env_setup, etc.)
+        ctx_data = {
+            "name": context.name,
+            "host": context.machine.host,
+            "port": context.machine.port,
+            "env_setup": context.machine.env_setup,
+        }
+        import json as _json
+        ctx_bytes = (_json.dumps(ctx_data, indent=2) + "\n").encode()
+        ctx_local_hash = hashlib.md5(ctx_bytes).hexdigest()[:12]
+        ctx_remote_hash = ""
+        if hasattr(transport, '_run_ssh'):
+            ok, out = await transport._run_ssh(
+                "bash -c 'md5sum ~/.cam/context.json 2>/dev/null | cut -c1-12'",
+                check=False,
+            )
+            ctx_remote_hash = out.strip() if ok else ""
+        if ctx_remote_hash != ctx_local_hash:
+            deployed = await transport.write_file("~/.cam/context.json", ctx_bytes)
+            results["context.json"] = (
+                ("updated" if ctx_remote_hash else "deployed") if deployed else "failed"
+            )
+        else:
+            results["context.json"] = "unchanged"
+
+        # 4. Sync TOML configs
         toml_results = await self._sync_toml_configs(transport)
         results.update(toml_results)
 
