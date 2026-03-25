@@ -270,6 +270,8 @@ export function renderAgentDetail(container, agentId) {
               <button class="overflow-menu-item ${!useFullOutput ? 'active' : ''}" id="toggle-live">Live output</button>
               <button class="overflow-menu-item" id="refresh-output">Refresh</button>
               <button class="overflow-menu-item" id="toggle-fullscreen">Fullscreen</button>
+              <button class="overflow-menu-item" id="toggle-wrap">Scroll mode</button>
+              <button class="overflow-menu-item" id="reset-zoom">Reset zoom</button>
               <hr>
               <button class="overflow-menu-item danger" id="stop-btn">Stop agent</button>
             </div>
@@ -304,6 +306,8 @@ export function renderAgentDetail(container, agentId) {
               <button class="overflow-menu-item ${!useFullOutput ? 'active' : ''}" id="toggle-live">Live output</button>
               <button class="overflow-menu-item" id="refresh-output">Refresh</button>
               <button class="overflow-menu-item" id="toggle-fullscreen">Fullscreen</button>
+              <button class="overflow-menu-item" id="toggle-wrap">Scroll mode</button>
+              <button class="overflow-menu-item" id="reset-zoom">Reset zoom</button>
               <hr>
               <button class="overflow-menu-item" id="restart-btn">Restart</button>
               <button class="overflow-menu-item danger" id="delete-btn">Delete agent</button>
@@ -388,6 +392,7 @@ export function renderAgentDetail(container, agentId) {
     const pre = overlay.querySelector('#fs-output-pane');
     pre.textContent = cachedOutput || 'Loading...';
     _applyFontSize();
+    _applyWrap();
     _wirePinchZoom(pre);
 
     overlay.querySelector('#fs-close').addEventListener('click', closeFullscreen);
@@ -645,8 +650,33 @@ export function renderAgentDetail(container, agentId) {
       openFullscreen(isActive);
     });
 
+    // Scroll mode: toggle between pre-wrap (wraps lines) and pre (horizontal scroll)
+    let _wrapMode = localStorage.getItem('cam_output_wrap') !== 'scroll';
+    const _applyWrap = () => {
+      document.querySelectorAll('#output-pane, #fs-output-pane').forEach(el => {
+        el.style.whiteSpace = _wrapMode ? 'pre-wrap' : 'pre';
+        el.style.wordBreak = _wrapMode ? 'break-word' : 'normal';
+      });
+      const btn = container.querySelector('#toggle-wrap');
+      if (btn) btn.textContent = _wrapMode ? 'Scroll mode' : 'Wrap mode';
+    };
+    container.querySelector('#toggle-wrap')?.addEventListener('click', () => {
+      closeMenu();
+      _wrapMode = !_wrapMode;
+      localStorage.setItem('cam_output_wrap', _wrapMode ? 'wrap' : 'scroll');
+      _applyWrap();
+    });
+
+    // Reset zoom to default 12px
+    container.querySelector('#reset-zoom')?.addEventListener('click', () => {
+      closeMenu();
+      _fontSize = 12;
+      _applyFontSize();
+    });
+
     const pane = container.querySelector('#output-pane');
     if (pane) {
+      _applyWrap(); // Apply saved wrap/scroll mode
       _wirePinchZoom(pane);
       _wireCopyButton(pane);
       pane.addEventListener('scroll', () => {

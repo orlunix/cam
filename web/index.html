@@ -7,19 +7,19 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>CAM</title>
-  <meta name="cam-version" content="v58">
+  <meta name="cam-version" content="v59">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/icon-192.png">
   <link rel="apple-touch-icon" href="assets/icon-192.png">
-  <link rel="stylesheet" href="css/style.css?v=58">
-  <link rel="modulepreload" href="js/api.js?v=58">
-  <link rel="modulepreload" href="js/state.js?v=58">
-  <link rel="modulepreload" href="js/views/dashboard.js?v=58">
-  <link rel="modulepreload" href="js/views/agent-detail.js?v=58">
-  <link rel="modulepreload" href="js/views/start-agent.js?v=58">
-  <link rel="modulepreload" href="js/views/contexts.js?v=58">
-  <link rel="modulepreload" href="js/views/settings.js?v=58">
-  <link rel="modulepreload" href="js/views/file-browser.js?v=58">
+  <link rel="stylesheet" href="css/style.css?v=59">
+  <link rel="modulepreload" href="js/api.js?v=59">
+  <link rel="modulepreload" href="js/state.js?v=59">
+  <link rel="modulepreload" href="js/views/dashboard.js?v=59">
+  <link rel="modulepreload" href="js/views/agent-detail.js?v=59">
+  <link rel="modulepreload" href="js/views/start-agent.js?v=59">
+  <link rel="modulepreload" href="js/views/contexts.js?v=59">
+  <link rel="modulepreload" href="js/views/settings.js?v=59">
+  <link rel="modulepreload" href="js/views/file-browser.js?v=59">
 </head>
 <body>
   <div id="app">
@@ -39,6 +39,10 @@
           </a>
           <a href="#/settings" class="header-menu-item nav-item" data-route="/settings">
             <span class="hm-icon">&#9881;</span> Settings
+          </a>
+          <hr style="border:0;border-top:1px solid #333;margin:4px 0;">
+          <a href="javascript:void(0)" class="header-menu-item" id="reload-app">
+            <span class="hm-icon">&#8635;</span> Reload
           </a>
         </nav>
         <span class="logo">CAM</span>
@@ -64,7 +68,11 @@
         menu.classList.add('hidden');
       }
     });
+    // Reload button — full page reload to reset all state
+    document.getElementById('reload-app').addEventListener('click', function() {
+      location.reload();
+    });
   </script>
-  <script type="module" src="js/app.js?v=58"></script>
+  <script type="module" src="js/app.js?v=59"></script>
 </body>
 </html>
