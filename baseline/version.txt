@@ -1,0 +1,6 @@
+camc v1.0.0
+
+Supported tools:
+  claude (config: /home/hren/.cam/configs/claude.toml)
+  codex (config: /home/hren/.cam/configs/codex.toml)
+  cursor (config: /home/hren/.cam/configs/cursor.toml)
