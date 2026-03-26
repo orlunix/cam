@@ -913,3 +913,123 @@ def _print_log_entry(entry: dict) -> None:
         console.print(f"[dim]{ts}[/dim] [bold]Finished: {status_val}[/bold]")
     else:
         console.print(f"[dim]{ts}[/dim] [{event_type}] {data or output}")
+
+
+# ---------------------------------------------------------------------------
+# capture
+# ---------------------------------------------------------------------------
+
+
+def capture(
+    agent_id: str = typer.Argument(..., help="Agent ID (or prefix)"),
+    lines: int = typer.Option(100, "--lines", "-n", help="Number of lines to capture"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON with content hash"),
+) -> None:
+    """Capture an agent's tmux screen output."""
+    import asyncio
+    import hashlib
+
+    from cam.cli.app import state
+    from cam.cli.formatters import print_error, print_json
+
+    agent = state.agent_store.get(agent_id)
+    if agent is None:
+        print_error(f"Agent '{agent_id}' not found")
+        raise typer.Exit(1)
+
+    if not agent.tmux_session:
+        print_error("Agent has no tmux session")
+        raise typer.Exit(1)
+
+    context = state.context_store.get(str(agent.context_id))
+    if context is None:
+        print_error("Agent's context not found")
+        raise typer.Exit(1)
+
+    transport = state.agent_manager._create_transport(context)
+    output = asyncio.run(transport.capture_output(agent.tmux_session, lines=lines))
+
+    if json_output:
+        content_hash = hashlib.md5(output.encode()).hexdigest()[:8]
+        print_json({"content": output, "hash": content_hash})
+    else:
+        typer.echo(output, nl=False)
+
+
+# ---------------------------------------------------------------------------
+# send
+# ---------------------------------------------------------------------------
+
+
+def send(
+    agent_id: str = typer.Argument(..., help="Agent ID (or prefix)"),
+    text: str = typer.Option(..., "--text", "-t", help="Text to send"),
+    no_enter: bool = typer.Option(False, "--no-enter", help="Don't send Enter after text"),
+) -> None:
+    """Send text input to an agent's tmux session."""
+    import asyncio
+
+    from cam.cli.app import state
+    from cam.cli.formatters import print_error, print_success
+
+    agent = state.agent_store.get(agent_id)
+    if agent is None:
+        print_error(f"Agent '{agent_id}' not found")
+        raise typer.Exit(1)
+
+    if not agent.tmux_session:
+        print_error("Agent has no tmux session")
+        raise typer.Exit(1)
+
+    context = state.context_store.get(str(agent.context_id))
+    if context is None:
+        print_error("Agent's context not found")
+        raise typer.Exit(1)
+
+    transport = state.agent_manager._create_transport(context)
+    ok = asyncio.run(transport.send_input(agent.tmux_session, text, send_enter=not no_enter))
+
+    if ok:
+        print_success("Sent")
+    else:
+        print_error("Failed to send input")
+        raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------------------
+# key
+# ---------------------------------------------------------------------------
+
+
+def key(
+    agent_id: str = typer.Argument(..., help="Agent ID (or prefix)"),
+    key_name: str = typer.Option(..., "--key", "-k", help="Key to send (e.g. C-c, Enter, Escape)"),
+) -> None:
+    """Send a special key to an agent's tmux session."""
+    import asyncio
+
+    from cam.cli.app import state
+    from cam.cli.formatters import print_error, print_success
+
+    agent = state.agent_store.get(agent_id)
+    if agent is None:
+        print_error(f"Agent '{agent_id}' not found")
+        raise typer.Exit(1)
+
+    if not agent.tmux_session:
+        print_error("Agent has no tmux session")
+        raise typer.Exit(1)
+
+    context = state.context_store.get(str(agent.context_id))
+    if context is None:
+        print_error("Agent's context not found")
+        raise typer.Exit(1)
+
+    transport = state.agent_manager._create_transport(context)
+    ok = asyncio.run(transport.send_key(agent.tmux_session, key_name))
+
+    if ok:
+        print_success(f"Sent key: {key_name}")
+    else:
+        print_error(f"Failed to send key: {key_name}")
+        raise typer.Exit(1)

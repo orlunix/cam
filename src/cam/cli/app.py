@@ -202,6 +202,9 @@ app.command(name="update")(agent_cmd.update)
 app.command(name="prune")(agent_cmd.prune)
 app.command(name="rm")(agent_cmd.rm)
 app.command(name="import")(agent_cmd.import_agents)
+app.command(name="capture")(agent_cmd.capture)
+app.command(name="send")(agent_cmd.send)
+app.command(name="key")(agent_cmd.key)
 
 # Task command (cam apply -f)
 from cam.cli import task_cmd  # noqa: E402
