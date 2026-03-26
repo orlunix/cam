@@ -176,51 +176,51 @@ No data duplication problem: cam serve's SQLite is a **derived cache**, camc's J
 
 ## 4. camc Scope
 
-camc becomes a full-featured agent manager distributed as a single binary (via PyInstaller):
+camc is a **pure local agent manager** — it only manages tmux sessions on its own machine. It has no awareness of other machines or camc instances. Remote coordination is done exclusively by cam serve via SSH.
+
+Distributed as a single file (stdlib-only, Python 3.6+) or PyInstaller binary:
 
 ```
-src/camc/
+src/camc_pkg/
+  __init__.py        # Constants, logging, version
   __main__.py        # CLI entry point
   cli.py             # argparse commands (run, list, stop, kill, logs, attach, status, heal, apply, history)
-  transport/
-    local.py         # Local tmux operations
-    ssh.py           # SSH to other camc instances (paramiko)
-  core/
-    manager.py       # Agent lifecycle (create, start, stop, kill)
-    monitor.py       # Background monitor loop
-    detection.py     # State detection, completion detection, auto-confirm
-    probe.py         # Idle probe
-    scheduler.py     # DAG task graph, topological sort, parallel execution
-  adapters/
-    loader.py        # TOML adapter config loader
-    configs/         # Embedded adapter TOML files (claude, codex, cursor)
+  transport.py       # Local tmux operations (create, capture, send, kill)
+  detection.py       # State detection, completion detection, auto-confirm
+  monitor.py         # Background monitor loop with auto-restart
+  adapters.py        # TOML parser, embedded adapter configs, AdapterConfig
   storage.py         # JSON file store (~/.cam/agents.json) + events.jsonl
-  models.py          # dataclass models (no pydantic dependency)
+  utils.py           # ANSI stripping, subprocess helpers, time utilities
 ```
+
+Build: `python build_camc.py` merges package into a single stdlib-only file for deployment.
 
 ### camc capabilities:
 - **Agent lifecycle**: run, stop, kill, list, status, logs, attach
 - **Monitoring**: background monitor with auto-restart, state detection, auto-confirm, probe
 - **Event history**: append-only events.jsonl, `camc history` command
-- **SSH transport**: manage agents on remote machines by SSH-ing to remote camc
-- **DAG scheduling**: `camc apply tasks.yaml` — topological sort, parallel execution, dependency tracking
+- **DAG scheduling**: `camc apply tasks.yaml` — topological sort, parallel execution, dependency tracking (local only)
 - **Self-healing**: `camc heal` — check monitors, restart dead ones
-- **Zero dependencies at runtime**: PyInstaller single binary, drop on any Linux machine
+- **Zero dependencies**: stdlib-only Python 3.6+, single-file deployment via `cam sync`
+
+### What camc does NOT do:
+- **No SSH** — camc never connects to other machines
+- **No aggregation** — camc only knows about its own machine's agents
+- **No peer communication** — camc instances are fully independent
 
 ### Build & Distribution
 
 ```bash
-# Development
-pip install -e ".[dev]"
-pytest
+# Development (multi-file package)
+python -m camc_pkg version           # Run from package directly
+python -m pytest tests/test_camc/    # Run camc tests
 
-# Build single binary
-pyinstaller --onefile -n camc src/camc/__main__.py
+# Build single file for deployment
+python build_camc.py                 # Output: dist/camc
+python build_camc.py --verify        # Build + verify against package
 
-# Deploy to remote
-scp camc remote:~/.local/bin/camc
-# or
-cam sync  # auto-deploys to all remote contexts
+# Deploy to all remotes
+cam sync                             # Auto-deploys to all remote contexts
 ```
 
 ## 5. Communication Protocol
@@ -412,15 +412,15 @@ After the core architecture stabilizes, camc can support agent memory:
 
 ## 9. Migration Path
 
-### Phase 1: camc gets SSH transport + history
-- Add SSH transport to camc (paramiko for PyInstaller build, or subprocess ssh for single-file)
-- Add events.jsonl and `camc history` command
-- `camc run -t claude "task" --remote user@host` manages agents on remote machines
+### Phase 1: camc gets event history
+- Add events.jsonl: monitor appends state changes, auto-confirm, completion events
+- Add `camc history <id>` command to view event log
+- Add `camc --json history --since <ts>` for cam serve to pull incremental events
 - cam still works as-is — **no breaking changes**
 
 ### Phase 2: camc gets DAG scheduler
 - Port `TaskGraph` and `Scheduler` from cam to camc
-- `camc apply tasks.yaml` runs DAG locally or across SSH remotes
+- `camc apply tasks.yaml` runs DAG locally (parallel execution, dependency tracking)
 - YAML format stays the same — **no breaking changes**
 
 ### Phase 3: cam delegates to camc
@@ -449,10 +449,9 @@ Each phase is independently deployable and rollback-safe.
 
 ### Costs
 - **Local Web UI latency** — cam serve polls local camc instead of direct SQLite writes (+1-2s for state updates, within existing 2s poll interval)
-- **camc binary size** — PyInstaller binary ~15MB (vs current 58KB script)
 - **Migration effort** — phased approach minimizes risk but takes time
 
 ### Mitigations
 - Local camc: cam serve reads `agents.json` directly (same filesystem), near-zero latency
-- Binary size: acceptable for a self-contained tool with zero runtime dependencies
+- Single-file build (~1700 lines, ~60KB) keeps deployment lightweight
 - Migration: each phase is independently useful, deployable, and rollback-safe
