@@ -927,30 +927,20 @@ def capture(
 ) -> None:
     """Capture an agent's tmux screen output."""
     import asyncio
-    import hashlib
 
     from cam.cli.app import state
     from cam.cli.formatters import print_error, print_json
+    from cam.core.agent_manager import AgentManagerError
 
-    agent = state.agent_store.get(agent_id)
-    if agent is None:
-        print_error(f"Agent '{agent_id}' not found")
+    try:
+        output, content_hash = asyncio.run(
+            state.agent_manager.capture_output(agent_id, lines=lines)
+        )
+    except AgentManagerError as e:
+        print_error(str(e))
         raise typer.Exit(1)
-
-    if not agent.tmux_session:
-        print_error("Agent has no tmux session")
-        raise typer.Exit(1)
-
-    context = state.context_store.get(str(agent.context_id))
-    if context is None:
-        print_error("Agent's context not found")
-        raise typer.Exit(1)
-
-    transport = state.agent_manager._create_transport(context)
-    output = asyncio.run(transport.capture_output(agent.tmux_session, lines=lines))
 
     if json_output:
-        content_hash = hashlib.md5(output.encode()).hexdigest()[:8]
         print_json({"content": output, "hash": content_hash})
     else:
         typer.echo(output, nl=False)
@@ -971,23 +961,15 @@ def send(
 
     from cam.cli.app import state
     from cam.cli.formatters import print_error, print_success
+    from cam.core.agent_manager import AgentManagerError
 
-    agent = state.agent_store.get(agent_id)
-    if agent is None:
-        print_error(f"Agent '{agent_id}' not found")
+    try:
+        ok = asyncio.run(
+            state.agent_manager.send_input(agent_id, text, send_enter=not no_enter)
+        )
+    except AgentManagerError as e:
+        print_error(str(e))
         raise typer.Exit(1)
-
-    if not agent.tmux_session:
-        print_error("Agent has no tmux session")
-        raise typer.Exit(1)
-
-    context = state.context_store.get(str(agent.context_id))
-    if context is None:
-        print_error("Agent's context not found")
-        raise typer.Exit(1)
-
-    transport = state.agent_manager._create_transport(context)
-    ok = asyncio.run(transport.send_input(agent.tmux_session, text, send_enter=not no_enter))
 
     if ok:
         print_success("Sent")
@@ -1010,23 +992,15 @@ def key(
 
     from cam.cli.app import state
     from cam.cli.formatters import print_error, print_success
+    from cam.core.agent_manager import AgentManagerError
 
-    agent = state.agent_store.get(agent_id)
-    if agent is None:
-        print_error(f"Agent '{agent_id}' not found")
+    try:
+        ok = asyncio.run(
+            state.agent_manager.send_key(agent_id, key_name)
+        )
+    except AgentManagerError as e:
+        print_error(str(e))
         raise typer.Exit(1)
-
-    if not agent.tmux_session:
-        print_error("Agent has no tmux session")
-        raise typer.Exit(1)
-
-    context = state.context_store.get(str(agent.context_id))
-    if context is None:
-        print_error("Agent's context not found")
-        raise typer.Exit(1)
-
-    transport = state.agent_manager._create_transport(context)
-    ok = asyncio.run(transport.send_key(agent.tmux_session, key_name))
 
     if ok:
         print_success(f"Sent key: {key_name}")
