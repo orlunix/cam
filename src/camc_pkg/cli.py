@@ -484,6 +484,34 @@ def cmd_heal(args):
     print("Heal: %d healthy, %d restarted%s" % (ok, healed, ", %d failed" % failed if failed else ""))
 
 
+def cmd_apply(args):
+    """Apply tasks from a YAML file (DAG scheduler)."""
+    from camc_pkg.scheduler import SchedulerError, TaskGraph, load_task_file, run_dag
+
+    task_file = args.file
+    dry_run = getattr(args, "dry_run", False)
+    workdir = os.path.abspath(getattr(args, "path", None) or os.getcwd())
+
+    try:
+        tasks, metadata = load_task_file(task_file)
+    except SchedulerError as e:
+        sys.stderr.write("Error: %s\n" % e); sys.exit(1)
+
+    try:
+        graph = TaskGraph(tasks)
+    except SchedulerError as e:
+        sys.stderr.write("Error: invalid task graph: %s\n" % e); sys.exit(1)
+
+    try:
+        results = run_dag(graph, workdir=workdir, dry_run=dry_run)
+    except SchedulerError as e:
+        sys.stderr.write("Error: %s\n" % e); sys.exit(1)
+
+    # Exit code: non-zero if any task failed
+    if results and any(r.get("status") not in ("completed", None) for r in results.values()):
+        sys.exit(1)
+
+
 def cmd_history(args):
     """Show event history for an agent."""
     events = EventStore()
@@ -571,6 +599,8 @@ examples:
   camc status abc1                    Show detailed agent status
   camc add my-session --tool claude   Adopt existing tmux session
   camc rm abc1 --kill                 Remove and kill agent
+  camc apply -f tasks.yaml             Run DAG task file
+  camc apply -f tasks.yaml --dry-run  Validate without executing
   camc history abc1                    Show event history for agent
   camc history --since 2026-03-25     Events after date
   camc heal                           Restart dead monitors
@@ -630,6 +660,12 @@ examples:
     st.add_argument("agent_id", nargs="?", default=None, help="Agent ID (full or short)")
     st.add_argument("--hash", default=None, help="Return unchanged if hash matches (automation)")
 
+    # apply
+    ap = sub.add_parser("apply", help="Run tasks from a YAML file (DAG scheduler)")
+    ap.add_argument("--file", "-f", required=True, help="Path to task YAML file")
+    ap.add_argument("--path", "-p", default=None, help="Working directory [default: cwd]")
+    ap.add_argument("--dry-run", action="store_true", help="Validate and show plan without executing")
+
     # history
     hi = sub.add_parser("history", help="Show event history")
     hi.add_argument("id", nargs="?", default=None, help="Agent ID (prefix match, omit for all)")
@@ -663,6 +699,7 @@ examples:
         "rm": cmd_rm,
         "attach": cmd_attach,
         "status": cmd_status,
+        "apply": cmd_apply,
         "history": cmd_history,
         "heal": cmd_heal,
         "version": cmd_version,
