@@ -104,8 +104,30 @@ async def lifespan(app: FastAPI):
         )
         logger.info("Relay connector started → %s", relay_url)
 
+    # Start camc poller — syncs agent state from camc instances to SQLite
+    camc_poller_task = None
+    try:
+        from cam.core.camc_poller import CamcPoller
+
+        camc_poller = CamcPoller(
+            agent_store=server_state.agent_store,
+            context_store=server_state.context_store,
+            event_bus=server_state.event_bus,
+        )
+        server_state.camc_poller = camc_poller
+        camc_poller_task = asyncio.create_task(camc_poller.run(interval=5.0))
+        logger.info("CamcPoller started (5s interval)")
+    except Exception as e:
+        logger.warning("CamcPoller failed to start: %s", e)
+
     yield
 
+    if camc_poller_task and not camc_poller_task.done():
+        camc_poller_task.cancel()
+        try:
+            await camc_poller_task
+        except asyncio.CancelledError:
+            pass
     if relay_task and not relay_task.done():
         relay_task.cancel()
         try:
