@@ -45,7 +45,10 @@ def _run_camc(args: list[str], timeout: float = 30) -> tuple[int, str]:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout,
         )
-        return proc.returncode, proc.stdout
+        output = proc.stdout
+        if proc.returncode != 0 and not output.strip():
+            output = proc.stderr
+        return proc.returncode, output
     except subprocess.TimeoutExpired:
         logger.warning("camc command timed out: %s", " ".join(args))
         return -1, ""
@@ -63,12 +66,18 @@ def _run_camc_ssh(host: str, user: str, port: int | None, args: list[str],
         ssh_cmd += ["-p", str(port)]
     ssh_cmd += ["-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=no"]
     target = "%s@%s" % (user, host) if user else host
-    ssh_cmd += [target, "python3", camc_remote] + args
+    import shlex
+    # Build the remote command as a single string to preserve quoting
+    remote_cmd = "python3 %s %s" % (camc_remote, " ".join(shlex.quote(a) for a in args))
+    ssh_cmd += [target, remote_cmd]
     try:
         proc = subprocess.run(
             ssh_cmd, capture_output=True, text=True, timeout=timeout,
         )
-        return proc.returncode, proc.stdout
+        output = proc.stdout
+        if proc.returncode != 0 and not output.strip():
+            output = proc.stderr
+        return proc.returncode, output
     except subprocess.TimeoutExpired:
         logger.warning("SSH camc timed out: %s %s", target, " ".join(args))
         return -1, ""
