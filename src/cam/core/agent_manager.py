@@ -110,6 +110,12 @@ class AgentManager:
             AgentManagerError: If the adapter is not found, session creation
                 fails, or other setup errors occur.
         """
+        # 0. Check if context is camc-managed — delegate to camc if so
+        from cam.core.camc_migration import is_camc_managed
+
+        if is_camc_managed(context.name):
+            return await self._run_agent_via_camc(task, context, follow)
+
         # 1. Get adapter from registry
         adapter = self._adapter_registry.get(task.tool)
         if adapter is None:
@@ -267,6 +273,13 @@ class AgentManager:
 
         if agent.is_terminal():
             logger.info("Agent %s is already in terminal state %s", agent_id, agent.status.value)
+            return
+
+        # Check if agent's context is camc-managed — delegate stop to camc
+        from cam.core.camc_migration import is_camc_managed
+
+        if agent.context_name and is_camc_managed(agent.context_name):
+            await self._stop_agent_via_camc(agent, graceful)
             return
 
         # Cancel in-process background monitor task if one exists
@@ -524,6 +537,170 @@ class AgentManager:
             logger.exception(
                 "Failed to spawn background monitor for agent %s", agent.id
             )
+
+    async def _run_agent_via_camc(
+        self, task: TaskDefinition, context: Context, follow: bool
+    ) -> Agent:
+        """Launch an agent by delegating to camc on the target machine.
+
+        Used when a context is marked as camc-managed. camc handles tmux
+        session creation, startup auto-confirm, and monitoring locally.
+        cam only needs to record the agent in SQLite and track state via
+        CamcPoller.
+        """
+        from cam.core.camc_delegate import CamcDelegate
+
+        machine = context.machine
+        host = getattr(machine, "host", None)
+        user = getattr(machine, "user", None)
+        port = getattr(machine, "port", None)
+
+        delegate = CamcDelegate(host=host, user=user, port=port)
+
+        # Call camc run (blocking subprocess, run in thread to avoid blocking event loop)
+        result = await asyncio.to_thread(
+            delegate.run_agent,
+            tool=task.tool,
+            prompt=task.prompt,
+            path=context.path,
+            name=task.name,
+            auto_exit=task.auto_exit or False,
+        )
+
+        if result is None:
+            raise AgentManagerError(
+                "camc run failed on %s for tool '%s'" % (host or "local", task.tool)
+            )
+
+        # Build Agent model from camc response
+        from cam.core.camc_poller import _camc_agent_to_model
+
+        agent = _camc_agent_to_model(result, context.name, context_id=context.id)
+        agent.context_path = context.path
+        agent.transport_type = context.machine.type
+
+        # Persist to cam's SQLite
+        self._agent_store.save(agent)
+
+        # Update context last-used timestamp
+        try:
+            self._context_store.update_last_used(str(context.id))
+        except Exception:
+            pass
+
+        # Publish started event
+        started_event = AgentEvent(
+            agent_id=agent.id,
+            event_type="agent_started",
+            detail={"task": task.name, "tool": task.tool, "context": context.name,
+                    "via": "camc"},
+        )
+        try:
+            self._agent_store.add_event(started_event)
+        except Exception:
+            pass
+        self._event_bus.publish(started_event)
+
+        logger.info(
+            "Agent %s launched via camc on %s (tool=%s)",
+            agent.id, context.name, task.tool,
+        )
+
+        # In follow mode, poll camc until agent finishes
+        if follow:
+            await self._follow_camc_agent(delegate, agent)
+
+        return agent
+
+    async def _stop_agent_via_camc(self, agent: Agent, graceful: bool) -> None:
+        """Stop an agent by delegating to camc on the target machine."""
+        from cam.core.camc_delegate import CamcDelegate
+
+        context = self._context_store.get(str(agent.context_id))
+        if context is None:
+            # Fallback: try to determine host from transport type
+            host = user = port = None
+        else:
+            machine = context.machine
+            host = getattr(machine, "host", None)
+            user = getattr(machine, "user", None)
+            port = getattr(machine, "port", None)
+
+        delegate = CamcDelegate(host=host, user=user, port=port)
+
+        if graceful:
+            ok = await asyncio.to_thread(delegate.stop_agent, agent.id)
+        else:
+            ok = await asyncio.to_thread(delegate.kill_agent, agent.id)
+
+        if not ok:
+            logger.warning("camc stop/kill failed for agent %s, updating local state anyway", agent.id)
+
+        # Update local SQLite
+        self._agent_store.update_status(
+            agent.id,
+            AgentStatus.KILLED,
+            exit_reason="Stopped by user" if graceful else "Force killed",
+        )
+
+        # Publish event
+        kill_event = AgentEvent(
+            agent_id=agent.id,
+            event_type="agent_killed",
+            detail={"graceful": graceful, "via": "camc"},
+        )
+        try:
+            self._agent_store.add_event(kill_event)
+        except Exception:
+            pass
+        self._event_bus.publish(kill_event)
+
+        logger.info("Stopped agent %s via camc", agent.id)
+
+    async def _follow_camc_agent(self, delegate, agent: Agent) -> None:
+        """Poll camc until agent reaches a terminal state (follow mode)."""
+        from cam.core.camc_poller import _camc_agent_to_model
+
+        poll_interval = 3.0
+        while True:
+            await asyncio.sleep(poll_interval)
+            data = await asyncio.to_thread(delegate.get_agent, agent.id)
+            if data is None:
+                # Agent disappeared from camc — treat as completed
+                self._agent_store.update_status(
+                    agent.id, AgentStatus.COMPLETED,
+                    exit_reason="Agent no longer tracked by camc",
+                )
+                break
+
+            status = data.get("status", "running")
+            if status in ("completed", "failed", "stopped"):
+                from cam.core.camc_poller import _STATUS_MAP
+                final_status = _STATUS_MAP.get(status, AgentStatus.COMPLETED)
+                exit_reason = data.get("exit_reason", "")
+                self._agent_store.update_status(
+                    agent.id, final_status, exit_reason=exit_reason,
+                )
+                # Publish completion event
+                done_event = AgentEvent(
+                    agent_id=agent.id,
+                    event_type="agent_completed",
+                    detail={"status": status, "exit_reason": exit_reason},
+                )
+                try:
+                    self._agent_store.add_event(done_event)
+                except Exception:
+                    pass
+                self._event_bus.publish(done_event)
+                break
+
+            # Update state if changed
+            state_str = data.get("state", "")
+            if state_str:
+                from cam.core.camc_poller import _STATE_MAP
+                new_state = _STATE_MAP.get(state_str)
+                if new_state and new_state != agent.state:
+                    agent.state = new_state
 
     def _create_transport(self, context: Context) -> Transport:
         """Create a transport for the given context.
