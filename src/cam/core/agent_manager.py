@@ -675,49 +675,56 @@ class AgentManager:
         """Create a transport for the given context."""
         return self._transport_factory_class.create(context.machine)
 
-    def _resolve_agent_transport(
-        self, agent_id: str
-    ) -> tuple[Agent, Context, Transport]:
-        """Look up agent, its context, and create the transport.
+    def _resolve_agent_delegate(self, agent_id: str):
+        """Look up agent, its context, and create a CamcDelegate.
 
+        Returns (agent, camc_agent_id, delegate).
         Raises AgentManagerError on any lookup failure.
         """
+        from cam.core.camc_delegate import CamcDelegate
+
         agent = self._agent_store.get(agent_id)
         if agent is None:
             raise AgentManagerError(f"Agent not found: {agent_id}")
-        if not agent.tmux_session:
-            raise AgentManagerError("Agent has no tmux session")
         context = self._context_store.get(str(agent.context_id))
         if context is None:
             raise AgentManagerError("Agent's context not found")
-        transport = self._create_transport(context)
-        return agent, context, transport
+        machine = context.machine
+        delegate = CamcDelegate(
+            host=getattr(machine, "host", None),
+            user=getattr(machine, "user", None),
+            port=getattr(machine, "port", None),
+        )
+        # camc uses its own short IDs; pass the tmux session name which
+        # camc can match, or fall back to the full agent ID.
+        camc_id = agent.tmux_session or str(agent.id)
+        return agent, camc_id, delegate
 
     async def capture_output(
         self, agent_id: str, *, lines: int = 100
     ) -> tuple[str, str]:
-        """Capture agent screen output.
+        """Capture agent screen output via camc.
 
         Returns (output_text, md5_hash_prefix).
         """
-        agent, _ctx, transport = self._resolve_agent_transport(agent_id)
-        output = await transport.capture_output(agent.tmux_session, lines=lines)
+        _agent, camc_id, delegate = self._resolve_agent_delegate(agent_id)
+        output = await asyncio.to_thread(delegate.capture, camc_id, lines)
         output_hash = hashlib.md5(output.encode()).hexdigest()[:8]
         return output, output_hash
 
     async def send_input(
         self, agent_id: str, text: str, *, send_enter: bool = True
     ) -> bool:
-        """Send text input to an agent's tmux session."""
-        agent, _ctx, transport = self._resolve_agent_transport(agent_id)
-        return await transport.send_input(
-            agent.tmux_session, text, send_enter=send_enter
+        """Send text input to an agent via camc."""
+        _agent, camc_id, delegate = self._resolve_agent_delegate(agent_id)
+        return await asyncio.to_thread(
+            delegate.send_input, camc_id, text, send_enter
         )
 
     async def send_key(self, agent_id: str, key: str) -> bool:
-        """Send a special key to an agent's tmux session."""
-        agent, _ctx, transport = self._resolve_agent_transport(agent_id)
-        return await transport.send_key(agent.tmux_session, key)
+        """Send a special key to an agent via camc."""
+        _agent, camc_id, delegate = self._resolve_agent_delegate(agent_id)
+        return await asyncio.to_thread(delegate.send_key, camc_id, key)
 
     async def _sync_toml_configs(
         self,
