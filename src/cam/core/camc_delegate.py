@@ -198,6 +198,30 @@ class CamcDelegate:
         return result if isinstance(result, list) else []
 
     # ------------------------------------------------------------------
+    # Agent interaction
+    # ------------------------------------------------------------------
+
+    def capture(self, agent_id: str, lines: int = 100) -> str:
+        """Capture agent screen output via camc capture."""
+        args = ["capture", agent_id, "--lines", str(lines)]
+        rc, out = self._run(args)
+        return out if rc == 0 else ""
+
+    def send_input(self, agent_id: str, text: str,
+                   send_enter: bool = True) -> bool:
+        """Send text input to an agent via camc send."""
+        args = ["send", agent_id, "--text", text]
+        if not send_enter:
+            args.append("--no-enter")
+        rc, _ = self._run(args)
+        return rc == 0
+
+    def send_key(self, agent_id: str, key: str) -> bool:
+        """Send a special key to an agent via camc key."""
+        rc, _ = self._run(["key", agent_id, "--key", key])
+        return rc == 0
+
+    # ------------------------------------------------------------------
     # Maintenance
     # ------------------------------------------------------------------
 
