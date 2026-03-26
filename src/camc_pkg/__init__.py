@@ -29,6 +29,7 @@ CAM_DIR = os.path.expanduser("~/.cam")
 CONFIGS_DIR = os.path.join(CAM_DIR, "configs")
 LOGS_DIR = os.path.join(CAM_DIR, "logs")
 AGENTS_FILE = os.path.join(CAM_DIR, "agents.json")
+EVENTS_FILE = os.path.join(CAM_DIR, "events.jsonl")
 CONTEXT_FILE = os.path.join(CAM_DIR, "context.json")
 SOCKETS_DIR = "/tmp/cam-sockets"
 
