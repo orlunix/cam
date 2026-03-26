@@ -1,21 +1,12 @@
 #!/usr/bin/env python3
-"""camc — Standalone coding agent manager CLI.
+"""camc — Standalone coding agent manager (single-file build).
 
-Manages AI coding agents (Claude Code, Codex, Cursor) via tmux sessions.
-Auto-confirm, state detection, completion detection, background monitoring.
-
-Single file, stdlib-only, Python 3.6+.
-
-Quick start:
-    camc init                          # First-time setup
-    camc run claude "fix the tests"    # Launch an agent
-    camc list                          # Show all agents
-    camc logs <id> -f                  # Follow agent output
-    camc attach <id>                   # Attach to tmux session
-    camc stop <id>                     # Stop an agent
-    camc rm <id> --kill                # Remove and kill agent
+Auto-generated from camc_pkg/ package. Do not edit directly.
+Edit the source in src/camc_pkg/ and rebuild with build_camc.py.
 """
 
+from datetime import datetime, timezone
+from uuid import uuid4
 import argparse
 import hashlib
 import json
@@ -28,13 +19,15 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
-from uuid import uuid4
+
+# ===========================================================================
+# Constants and logging
+# ===========================================================================
 
 __version__ = "1.0.0"
 
 # ---------------------------------------------------------------------------
-# Logging & constants
+# Logging
 # ---------------------------------------------------------------------------
 
 logging.basicConfig(
@@ -44,15 +37,166 @@ logging.basicConfig(
 )
 log = logging.getLogger("camc")
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
 CAM_DIR = os.path.expanduser("~/.cam")
 CONFIGS_DIR = os.path.join(CAM_DIR, "configs")
 LOGS_DIR = os.path.join(CAM_DIR, "logs")
 AGENTS_FILE = os.path.join(CAM_DIR, "agents.json")
+EVENTS_FILE = os.path.join(CAM_DIR, "events.jsonl")
 CONTEXT_FILE = os.path.join(CAM_DIR, "context.json")
 SOCKETS_DIR = "/tmp/cam-sockets"
 
 _DEFAULT_CONTEXT = {"name": None, "host": None, "port": None, "env_setup": None}
 
+
+# ===========================================================================
+# utils
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# ANSI stripping & text processing
+# ---------------------------------------------------------------------------
+
+_ANSI_RE = re.compile(
+    r"\x1B\[[0-9;?]*[ -/]*[@-~]"
+    r"|\x1B\][^\x07]*\x07"
+    r"|\x1B[()][AB012]"
+    r"|\x1B[@-_]"
+)
+
+
+def strip_ansi(text):
+    return _ANSI_RE.sub("", text)
+
+
+_BOX_CHARS = u"\u2500\u2502\u250c\u2510\u2514\u2518\u251c\u2524\u252c\u2534\u253c\u256d\u256e\u2570\u256f \t"
+
+
+def clean_for_confirm(text):
+    lines = [line.strip(_BOX_CHARS) for line in text.splitlines()]
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines).rstrip()
+
+
+_RE_FLAGS = {
+    "IGNORECASE": re.IGNORECASE,
+    "MULTILINE": re.MULTILINE,
+    "DOTALL": re.DOTALL,
+}
+
+
+def compile_pattern(pattern, flags=None):
+    f = 0
+    for name in (flags or []):
+        upper = name.upper()
+        if upper in _RE_FLAGS:
+            f |= _RE_FLAGS[upper]
+    return re.compile(pattern, f)
+
+
+# ---------------------------------------------------------------------------
+# Subprocess helper (3.6 compat)
+# ---------------------------------------------------------------------------
+
+def _run(args, timeout=5, check=False):
+    try:
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, _ = proc.communicate(timeout=timeout)
+        if check and proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, args)
+        return proc.returncode, stdout.decode("utf-8", errors="replace")
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        return -1, ""
+    except Exception:
+        if check:
+            raise
+        return -1, ""
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _now_iso():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _time_ago(iso_str):
+    if not iso_str:
+        return ""
+    try:
+        clean = iso_str.replace("Z", "").replace("+00:00", "")
+        dt = datetime.strptime(clean[:19], "%Y-%m-%dT%H:%M:%S")
+        diff = (datetime.now(timezone.utc).replace(tzinfo=None) - dt).total_seconds()
+        if diff < 60: return "%ds ago" % int(diff)
+        if diff < 3600: return "%dm ago" % int(diff / 60)
+        if diff < 86400: return "%dh ago" % int(diff / 3600)
+        return "%dd ago" % int(diff / 86400)
+    except Exception:
+        return iso_str[:16]
+
+
+def _load_default_context():
+    if not os.path.exists(CONTEXT_FILE):
+        try:
+            os.makedirs(CAM_DIR, exist_ok=True)
+        except OSError:
+            pass
+        with open(CONTEXT_FILE, "w") as f:
+            json.dump(_DEFAULT_CONTEXT, f, indent=2)
+            f.write("\n")
+        return dict(_DEFAULT_CONTEXT)
+    try:
+        with open(CONTEXT_FILE) as f:
+            ctx = json.load(f)
+        result = dict(_DEFAULT_CONTEXT)
+        result.update(ctx)
+        return result
+    except (ValueError, IOError):
+        return dict(_DEFAULT_CONTEXT)
+
+
+def _build_command(config, prompt, path):
+    replacements = {"{prompt}": prompt, "{path}": path}
+    result = []
+    for part in config.command:
+        for key, value in replacements.items():
+            if key in part:
+                part = part.replace(key, value)
+                break
+        result.append(part)
+    return result
+
+
+def _kill_monitor(agent):
+    pid = agent.get("monitor_pid")
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, OSError):
+            pass
+    pid_path = "/tmp/camc-%s.pid" % agent["id"]
+    if os.path.exists(pid_path):
+        try:
+            with open(pid_path) as f:
+                os.kill(int(f.read().strip()), signal.SIGTERM)
+        except (ValueError, OSError):
+            pass
+        try:
+            os.unlink(pid_path)
+        except OSError:
+            pass
+
+
+# ===========================================================================
+# adapters
+# ===========================================================================
 
 # ---------------------------------------------------------------------------
 # Embedded adapter configs (written to ~/.cam/configs/ on `camc init`)
@@ -409,48 +553,6 @@ def load_toml(path):
 
 
 # ===========================================================================
-# ANSI stripping & text processing
-# ===========================================================================
-
-_ANSI_RE = re.compile(
-    r"\x1B\[[0-9;?]*[ -/]*[@-~]"
-    r"|\x1B\][^\x07]*\x07"
-    r"|\x1B[()][AB012]"
-    r"|\x1B[@-_]"
-)
-
-
-def strip_ansi(text):
-    return _ANSI_RE.sub("", text)
-
-
-_BOX_CHARS = u"\u2500\u2502\u250c\u2510\u2514\u2518\u251c\u2524\u252c\u2534\u253c\u256d\u256e\u2570\u256f \t"
-
-
-def clean_for_confirm(text):
-    lines = [line.strip(_BOX_CHARS) for line in text.splitlines()]
-    while lines and not lines[-1]:
-        lines.pop()
-    return "\n".join(lines).rstrip()
-
-
-_RE_FLAGS = {
-    "IGNORECASE": re.IGNORECASE,
-    "MULTILINE": re.MULTILINE,
-    "DOTALL": re.DOTALL,
-}
-
-
-def compile_pattern(pattern, flags=None):
-    f = 0
-    for name in (flags or []):
-        upper = name.upper()
-        if upper in _RE_FLAGS:
-            f |= _RE_FLAGS[upper]
-    return re.compile(pattern, f)
-
-
-# ===========================================================================
 # Adapter config parser
 # ===========================================================================
 
@@ -523,29 +625,23 @@ class AdapterConfig(object):
         self.exit_command = mon_cfg.get("exit_command", "/exit")
 
 
-# ===========================================================================
-# Subprocess helper (3.6 compat)
-# ===========================================================================
-
-def _run(args, timeout=5, check=False):
-    try:
-        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        stdout, _ = proc.communicate(timeout=timeout)
-        if check and proc.returncode != 0:
-            raise subprocess.CalledProcessError(proc.returncode, args)
-        return proc.returncode, stdout.decode("utf-8", errors="replace")
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.communicate()
-        return -1, ""
-    except Exception:
-        if check:
-            raise
-        return -1, ""
+def _load_config(tool):
+    """Load adapter config for a tool, from file or embedded."""
+    toml_path = os.path.join(CONFIGS_DIR, "%s.toml" % tool)
+    if os.path.exists(toml_path):
+        return AdapterConfig(load_toml(toml_path))
+    # Fall back to embedded config
+    key = "%s.toml" % tool
+    if key in _EMBEDDED_CONFIGS:
+        return AdapterConfig(_parse_toml(_EMBEDDED_CONFIGS[key]))
+    sys.stderr.write("Error: no config for tool '%s'\n" % tool)
+    sys.stderr.write("Available: %s\n" % ", ".join(
+        k.replace(".toml", "") for k in _EMBEDDED_CONFIGS))
+    sys.exit(1)
 
 
 # ===========================================================================
-# TMUX interaction
+# transport
 # ===========================================================================
 
 def _find_tmux_socket(session_id):
@@ -686,7 +782,7 @@ def create_tmux_session(session_id, command, workdir, env_setup=None, inherit_en
 
 
 # ===========================================================================
-# Detection logic
+# detection
 # ===========================================================================
 
 def detect_state(output, config):
@@ -770,7 +866,7 @@ def is_ready_for_input(output, config):
 
 
 # ===========================================================================
-# Agent store (JSON file with fcntl locking)
+# storage
 # ===========================================================================
 
 try:
@@ -870,101 +966,105 @@ class AgentStore(object):
         return found[0]
 
 
-# ===========================================================================
-# Helpers
-# ===========================================================================
+class EventStore(object):
+    """Append-only event log (JSONL format)."""
 
-def _now_iso():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    def __init__(self, path=None):
+        self._path = path or EVENTS_FILE
 
-
-def _time_ago(iso_str):
-    if not iso_str:
-        return ""
-    try:
-        clean = iso_str.replace("Z", "").replace("+00:00", "")
-        dt = datetime.strptime(clean[:19], "%Y-%m-%dT%H:%M:%S")
-        diff = (datetime.now(timezone.utc).replace(tzinfo=None) - dt).total_seconds()
-        if diff < 60: return "%ds ago" % int(diff)
-        if diff < 3600: return "%dm ago" % int(diff / 60)
-        if diff < 86400: return "%dh ago" % int(diff / 3600)
-        return "%dd ago" % int(diff / 86400)
-    except Exception:
-        return iso_str[:16]
-
-
-def _load_default_context():
-    if not os.path.exists(CONTEXT_FILE):
+    def append(self, agent_id, event_type, detail=None):
+        """Append an event to events.jsonl."""
+        event = {
+            "agent_id": agent_id,
+            "ts": _now_iso(),
+            "type": event_type,
+            "detail": detail or {},
+        }
+        d = os.path.dirname(self._path)
         try:
-            os.makedirs(CAM_DIR, exist_ok=True)
+            os.makedirs(d)
         except OSError:
             pass
-        with open(CONTEXT_FILE, "w") as f:
-            json.dump(_DEFAULT_CONTEXT, f, indent=2)
-            f.write("\n")
-        return dict(_DEFAULT_CONTEXT)
-    try:
-        with open(CONTEXT_FILE) as f:
-            ctx = json.load(f)
-        result = dict(_DEFAULT_CONTEXT)
-        result.update(ctx)
-        return result
-    except (ValueError, IOError):
-        return dict(_DEFAULT_CONTEXT)
-
-
-def _build_command(config, prompt, path):
-    replacements = {"{prompt}": prompt, "{path}": path}
-    result = []
-    for part in config.command:
-        for key, value in replacements.items():
-            if key in part:
-                part = part.replace(key, value)
-                break
-        result.append(part)
-    return result
-
-
-def _load_config(tool):
-    """Load adapter config for a tool, from file or embedded."""
-    toml_path = os.path.join(CONFIGS_DIR, "%s.toml" % tool)
-    if os.path.exists(toml_path):
-        return AdapterConfig(load_toml(toml_path))
-    # Fall back to embedded config
-    key = "%s.toml" % tool
-    if key in _EMBEDDED_CONFIGS:
-        return AdapterConfig(_parse_toml(_EMBEDDED_CONFIGS[key]))
-    sys.stderr.write("Error: no config for tool '%s'\n" % tool)
-    sys.stderr.write("Available: %s\n" % ", ".join(
-        k.replace(".toml", "") for k in _EMBEDDED_CONFIGS))
-    sys.exit(1)
-
-
-def _kill_monitor(agent):
-    pid = agent.get("monitor_pid")
-    if pid:
         try:
-            os.kill(pid, signal.SIGTERM)
-        except (ProcessLookupError, OSError):
-            pass
-    pid_path = "/tmp/camc-%s.pid" % agent["id"]
-    if os.path.exists(pid_path):
-        try:
-            with open(pid_path) as f:
-                os.kill(int(f.read().strip()), signal.SIGTERM)
-        except (ValueError, OSError):
-            pass
-        try:
-            os.unlink(pid_path)
+            with open(self._path, "a") as f:
+                if _fcntl:
+                    _fcntl.flock(f.fileno(), _fcntl.LOCK_EX)
+                try:
+                    f.write(json.dumps(event, separators=(",", ":")) + "\n")
+                finally:
+                    if _fcntl:
+                        _fcntl.flock(f.fileno(), _fcntl.LOCK_UN)
         except OSError:
             pass
 
+    def read(self, agent_id=None, since=None, limit=500):
+        """Read events, optionally filtered by agent_id and/or since timestamp."""
+        if not os.path.exists(self._path):
+            return []
+        events = []
+        try:
+            with open(self._path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                    except (ValueError, TypeError):
+                        continue
+                    if agent_id and ev.get("agent_id") != agent_id:
+                        # Also match prefix
+                        if not ev.get("agent_id", "").startswith(agent_id):
+                            continue
+                    if since and ev.get("ts", "") < since:
+                        continue
+                    events.append(ev)
+        except OSError:
+            return []
+        # Return most recent events (tail)
+        return events[-limit:]
+
+    def rotate(self, max_age_days=30):
+        """Remove events older than max_age_days."""
+        if not os.path.exists(self._path):
+            return 0
+        from datetime import datetime, timezone, timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        kept = []
+        removed = 0
+        try:
+            with open(self._path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                    except (ValueError, TypeError):
+                        continue
+                    if ev.get("ts", "") < cutoff:
+                        removed += 1
+                    else:
+                        kept.append(line)
+        except OSError:
+            return 0
+        if removed > 0:
+            try:
+                tmp = self._path + ".tmp"
+                with open(tmp, "w") as f:
+                    for line in kept:
+                        f.write(line + "\n")
+                os.replace(tmp, self._path)
+            except OSError:
+                pass
+        return removed
+
 
 # ===========================================================================
-# Background monitor loop
+# monitor
 # ===========================================================================
 
-def run_monitor_loop(session, agent_id, config, store, pid_path=None):
+def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=None):
     """Monitor a tmux session: auto-confirm, state detection, completion, auto-exit."""
     if pid_path:
         with open(pid_path, "w") as f:
@@ -980,6 +1080,12 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None):
     has_worked = False
     empty_count = 0
 
+    def _event(event_type, detail=None):
+        if events:
+            events.append(agent_id, event_type, detail)
+
+    _event("monitor_start")
+
     try:
         while running[0]:
             now = time.time()
@@ -991,6 +1097,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None):
                     log.info("Session gone: %s -> %s", session, status)
                     store.update(agent_id, status=status,
                                  exit_reason="Session exited", completed_at=_now_iso())
+                    _event("completed", {"status": status, "reason": "Session exited"})
                     return
 
             output = capture_tmux(session)
@@ -1006,6 +1113,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None):
                     status = "completed" if has_worked else "failed"
                     store.update(agent_id, status=status,
                                  exit_reason="Session exited", completed_at=_now_iso())
+                    _event("completed", {"status": status, "reason": "Session exited"})
                     return
                 time.sleep(1)
                 continue
@@ -1017,6 +1125,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None):
                     log.info("Auto-confirm: %r enter=%s", confirm[0], confirm[1])
                     tmux_send_input(session, confirm[0], send_enter=confirm[1])
                     last_confirm = now
+                    _event("auto_confirm", {"response": confirm[0], "send_enter": confirm[1]})
                     time.sleep(config.confirm_sleep)
                     continue
 
@@ -1025,6 +1134,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None):
                 if ns != "initializing":
                     has_worked = True
                 log.info("State: %s -> %s", current_state, ns)
+                _event("state_change", {"from": current_state, "to": ns})
                 current_state = ns
                 store.update(agent_id, state=ns)
 
@@ -1054,6 +1164,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None):
                             store.update(agent_id, status="completed",
                                          exit_reason="Task completed (auto-exit)",
                                          completed_at=_now_iso())
+                            _event("completed", {"status": "completed", "reason": "auto-exit"})
                             return
 
             time.sleep(1)
@@ -1082,6 +1193,7 @@ def _run_monitor(agent_id):
     log.info("Monitor starting for agent %s", agent_id)
 
     store = AgentStore()
+    events = EventStore()
     agent = store.get(agent_id)
     if not agent:
         log.error("Agent %s not found", agent_id)
@@ -1094,7 +1206,7 @@ def _run_monitor(agent_id):
     max_restarts = 5
     for attempt in range(max_restarts + 1):
         try:
-            run_monitor_loop(agent["session"], agent_id, config, store, pid_path=pid_path)
+            run_monitor_loop(agent["session"], agent_id, config, store, pid_path=pid_path, events=events)
             break  # clean exit
         except Exception as e:
             log.error("Monitor crashed (attempt %d/%d): %s", attempt + 1, max_restarts, e)
@@ -1115,7 +1227,333 @@ def _run_monitor(agent_id):
 
 
 # ===========================================================================
-# CLI commands
+# scheduler
+# ===========================================================================
+
+class SchedulerError(Exception):
+    """Error raised by the task scheduler."""
+
+
+# ---------------------------------------------------------------------------
+# Task graph (DAG) — topological sort, cycle detection
+# ---------------------------------------------------------------------------
+
+class TaskGraph(object):
+    """Directed Acyclic Graph of task dependencies."""
+
+    def __init__(self, tasks):
+        self._tasks = {}       # name -> task dict
+        self._edges = {}       # name -> [dep names]
+
+        for task in tasks:
+            name = task.get("name")
+            if not name:
+                raise SchedulerError("All tasks must have a 'name' field")
+            if name in self._tasks:
+                raise SchedulerError("Duplicate task name: '%s'" % name)
+            self._tasks[name] = task
+            deps = task.get("depends_on", [])
+            if isinstance(deps, str):
+                deps = [deps]
+            self._edges[name] = deps
+
+        self._validate()
+
+    def _validate(self):
+        # Check all dependencies reference existing tasks
+        for task_name, deps in self._edges.items():
+            for dep in deps:
+                if dep not in self._tasks:
+                    raise SchedulerError(
+                        "Task '%s' depends on '%s' which is not defined" % (task_name, dep))
+
+        # Detect cycles using DFS
+        visited = set()
+        in_stack = set()
+
+        def dfs(node):
+            if node in in_stack:
+                raise SchedulerError("Circular dependency detected involving task '%s'" % node)
+            if node in visited:
+                return
+            in_stack.add(node)
+            for dep in self._edges.get(node, []):
+                dfs(dep)
+            in_stack.discard(node)
+            visited.add(node)
+
+        for task_name in self._tasks:
+            dfs(task_name)
+
+    def execution_order(self):
+        """Return tasks grouped by execution level (list of lists of names)."""
+        in_degree = {name: len(self._edges.get(name, [])) for name in self._tasks}
+        levels = []
+        ready = sorted([name for name, deg in in_degree.items() if deg == 0])
+
+        while ready:
+            levels.append(ready)
+            next_ready = []
+            for completed_name in ready:
+                for task_name, deps in self._edges.items():
+                    if completed_name in deps:
+                        in_degree[task_name] -= 1
+                        if in_degree[task_name] == 0:
+                            next_ready.append(task_name)
+            ready = sorted(next_ready)
+
+        return levels
+
+    def get_task(self, name):
+        return self._tasks[name]
+
+    @property
+    def task_names(self):
+        return list(self._tasks.keys())
+
+    def __len__(self):
+        return len(self._tasks)
+
+
+# ---------------------------------------------------------------------------
+# YAML loader
+# ---------------------------------------------------------------------------
+
+def load_task_file(path):
+    """Load a task YAML file and return (tasks, metadata).
+
+    Each task is a dict with: name, tool, prompt, context, timeout,
+    depends_on, env.
+    """
+    try:
+        import yaml
+    except ImportError:
+        raise SchedulerError(
+            "PyYAML is required for task files. Install with: pip install pyyaml")
+
+    if not os.path.exists(path):
+        raise SchedulerError("Task file not found: %s" % path)
+
+    with open(path, "r") as f:
+        try:
+            data = yaml.safe_load(f)
+        except Exception as e:
+            raise SchedulerError("Invalid YAML in %s: %s" % (path, e))
+
+    if not isinstance(data, dict):
+        raise SchedulerError("Task file must be a YAML mapping")
+
+    defaults = data.get("defaults", {})
+    default_tool = defaults.get("tool", "claude")
+    default_timeout = defaults.get("timeout")
+
+    raw_tasks = data.get("tasks", [])
+    if not raw_tasks:
+        raise SchedulerError("No tasks defined in %s" % path)
+
+    tasks = []
+    for raw in raw_tasks:
+        if not isinstance(raw, dict):
+            raise SchedulerError("Each task must be a mapping")
+        name = raw.get("name")
+        if not name:
+            raise SchedulerError("Each task must have a 'name' field")
+        prompt = raw.get("prompt")
+        if not prompt:
+            raise SchedulerError("Task '%s' is missing required 'prompt' field" % name)
+
+        depends_on = raw.get("depends_on", [])
+        if isinstance(depends_on, str):
+            depends_on = [depends_on]
+
+        tasks.append({
+            "name": name,
+            "tool": raw.get("tool", default_tool),
+            "prompt": prompt,
+            "context": raw.get("context"),
+            "timeout": raw.get("timeout", default_timeout),
+            "depends_on": depends_on,
+            "env": raw.get("env", {}),
+        })
+
+    metadata = {
+        "version": data.get("version", "1"),
+        "defaults": defaults,
+        "task_count": len(tasks),
+    }
+    return tasks, metadata
+
+
+# ---------------------------------------------------------------------------
+# Scheduler — synchronous, level-by-level execution
+# ---------------------------------------------------------------------------
+
+def _launch_agent(task, workdir):
+    """Launch a single agent for a task. Returns agent dict or None."""
+    from uuid import uuid4
+    import subprocess
+
+    tool = task.get("tool", "claude")
+    prompt = task.get("prompt", "")
+    name = task.get("name")
+    config = _load_config(tool)
+
+    agent_id = uuid4().hex[:8]
+    session = "cam-%s" % agent_id
+    launch_cmd = _build_command(config, prompt, workdir)
+
+    context = _load_default_context()
+    env_setup = context.get("env_setup") or None
+
+    if not create_tmux_session(session, launch_cmd, workdir, env_setup=env_setup, inherit_env=True):
+        return None
+
+    # Startup: wait for readiness, auto-confirm, send prompt
+    if config.prompt_after_launch:
+        elapsed, confirmed = 0.0, False
+        while elapsed < config.startup_wait:
+            time.sleep(1); elapsed += 1
+            output = capture_tmux(session)
+            if not output.strip():
+                continue
+            if confirmed and is_ready_for_input(output, config):
+                break
+            confirm = should_auto_confirm(output, config)
+            if confirm:
+                tmux_send_input(session, confirm[0], send_enter=confirm[1])
+                confirmed = True
+                time.sleep(3); elapsed += 3
+                continue
+            if is_ready_for_input(output, config):
+                break
+        if prompt.strip():
+            tmux_send_input(session, prompt, send_enter=True)
+
+    store = AgentStore()
+    agent = {
+        "id": agent_id, "tool": tool, "session": session, "status": "running",
+        "state": "initializing", "prompt": prompt, "path": workdir,
+        "name": name, "auto_exit": False, "context": context,
+        "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
+        "monitor_pid": None,
+    }
+    store.save(agent)
+
+    # Spawn background monitor
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "camc_pkg", "_monitor", agent_id],
+            stdout=subprocess.DEVNULL,
+            stderr=open("/tmp/camc-%s.log" % agent_id, "a"),
+            start_new_session=True)
+        store.update(agent_id, monitor_pid=proc.pid)
+    except Exception:
+        pass
+
+    return agent
+
+
+def run_dag(graph, workdir=None, dry_run=False, poll_interval=5, timeout=None):
+    """Execute a TaskGraph synchronously, level by level.
+
+    Args:
+        graph: Validated TaskGraph.
+        workdir: Working directory for agents (default: cwd).
+        dry_run: If True, just print plan without executing.
+        poll_interval: Seconds between status polls.
+        timeout: Max seconds to wait per level (None = no limit).
+
+    Returns:
+        Dict mapping task name -> final status string.
+    """
+    workdir = workdir or os.getcwd()
+    levels = graph.execution_order()
+    results = {}  # task_name -> {"status": ..., "agent_id": ...}
+
+    # Print plan
+    print("Task graph: %d tasks, %d levels" % (len(graph), len(levels)))
+    for level_idx, level in enumerate(levels):
+        print("  Level %d:" % (level_idx + 1))
+        for task_name in level:
+            task = graph.get_task(task_name)
+            deps = " (after: %s)" % ", ".join(task.get("depends_on", [])) if task.get("depends_on") else ""
+            print("    %s: [%s] %s%s" % (task_name, task.get("tool", "claude"),
+                  (task.get("prompt", ""))[:50], deps))
+    print()
+
+    if dry_run:
+        print("Dry run complete — no tasks were executed.")
+        return results
+
+    store = AgentStore()
+    events = EventStore()
+
+    for level_idx, level in enumerate(levels):
+        print("--- Level %d/%d ---" % (level_idx + 1, len(levels)))
+
+        # Check dependencies succeeded
+        for task_name in level:
+            task = graph.get_task(task_name)
+            for dep in task.get("depends_on", []):
+                dep_result = results.get(dep, {})
+                if dep_result.get("status") != "completed":
+                    msg = "Task '%s' skipped: dependency '%s' %s" % (
+                        task_name, dep, dep_result.get("status", "not run"))
+                    print("  ✗ %s" % msg)
+                    results[task_name] = {"status": "skipped", "agent_id": None}
+                    events.append(task_name, "skipped", {"reason": msg})
+                    continue
+
+        # Launch agents for this level
+        level_agents = {}  # task_name -> agent_id
+        for task_name in level:
+            if task_name in results:
+                continue  # Already handled (skipped)
+            task = graph.get_task(task_name)
+            print("  Starting: %s [%s]" % (task_name, task.get("tool", "claude")))
+            agent = _launch_agent(task, workdir)
+            if agent:
+                level_agents[task_name] = agent["id"]
+                print("    Agent %s session %s" % (agent["id"], agent["session"]))
+                events.append(agent["id"], "dag_task_start", {"task": task_name, "level": level_idx + 1})
+            else:
+                print("    ✗ Failed to launch")
+                results[task_name] = {"status": "failed", "agent_id": None}
+
+        # Wait for all agents in this level to complete
+        if level_agents:
+            start = time.time()
+            pending = set(level_agents.keys())
+            while pending:
+                if timeout and (time.time() - start) > timeout:
+                    for tn in list(pending):
+                        results[tn] = {"status": "timeout", "agent_id": level_agents[tn]}
+                    print("  ⚠ Level timeout reached")
+                    break
+                time.sleep(poll_interval)
+                for task_name in list(pending):
+                    agent_id = level_agents[task_name]
+                    a = store.get(agent_id)
+                    if not a:
+                        continue
+                    status = a.get("status", "running")
+                    if status != "running":
+                        results[task_name] = {"status": status, "agent_id": agent_id}
+                        pending.discard(task_name)
+                        icon = "✓" if status == "completed" else "✗"
+                        print("  %s %s: %s [%s]" % (icon, task_name, status, agent_id))
+
+    # Summary
+    print()
+    completed = sum(1 for r in results.values() if r.get("status") == "completed")
+    failed = sum(1 for r in results.values() if r.get("status") in ("failed", "timeout", "skipped"))
+    print("Results: %d completed, %d failed/skipped out of %d" % (completed, failed, len(results)))
+
+    return results
+
+
+# ===========================================================================
+# cli
 # ===========================================================================
 
 def cmd_init(args):
@@ -1274,7 +1712,7 @@ def cmd_run(args):
     # Spawn background monitor
     try:
         proc = subprocess.Popen(
-            [sys.executable, os.path.abspath(__file__), "_monitor", agent_id],
+            [sys.executable, "-m", "camc_pkg", "_monitor", agent_id],
             stdout=subprocess.DEVNULL,
             stderr=open("/tmp/camc-%s.log" % agent_id, "a"),
             start_new_session=True)
@@ -1407,7 +1845,7 @@ def cmd_add(args):
     # Spawn monitor
     try:
         proc = subprocess.Popen(
-            [sys.executable, os.path.abspath(__file__), "_monitor", agent_id],
+            [sys.executable, "-m", "camc_pkg", "_monitor", agent_id],
             stdout=subprocess.DEVNULL, stderr=open("/tmp/camc-%s.log" % agent_id, "a"),
             start_new_session=True)
         store.update(agent_id, monitor_pid=proc.pid)
@@ -1565,7 +2003,7 @@ def cmd_heal(args):
         # Restart monitor
         try:
             proc = subprocess.Popen(
-                [sys.executable, os.path.abspath(__file__), "_monitor", aid],
+                [sys.executable, "-m", "camc_pkg", "_monitor", aid],
                 stdout=subprocess.DEVNULL,
                 stderr=open("/tmp/camc-%s.log" % aid, "a"),
                 start_new_session=True)
@@ -1579,6 +2017,84 @@ def cmd_heal(args):
     print("Heal: %d healthy, %d restarted%s" % (ok, healed, ", %d failed" % failed if failed else ""))
 
 
+def cmd_apply(args):
+    """Apply tasks from a YAML file (DAG scheduler)."""
+
+    task_file = args.file
+    dry_run = getattr(args, "dry_run", False)
+    workdir = os.path.abspath(getattr(args, "path", None) or os.getcwd())
+
+    try:
+        tasks, metadata = load_task_file(task_file)
+    except SchedulerError as e:
+        sys.stderr.write("Error: %s\n" % e); sys.exit(1)
+
+    try:
+        graph = TaskGraph(tasks)
+    except SchedulerError as e:
+        sys.stderr.write("Error: invalid task graph: %s\n" % e); sys.exit(1)
+
+    try:
+        results = run_dag(graph, workdir=workdir, dry_run=dry_run)
+    except SchedulerError as e:
+        sys.stderr.write("Error: %s\n" % e); sys.exit(1)
+
+    # Exit code: non-zero if any task failed
+    if results and any(r.get("status") not in ("completed", None) for r in results.values()):
+        sys.exit(1)
+
+
+def cmd_history(args):
+    """Show event history for an agent."""
+    events = EventStore()
+    agent_id = getattr(args, "id", None)
+    since = getattr(args, "since", None)
+    limit = getattr(args, "limit", 100) or 100
+    entries = events.read(agent_id=agent_id, since=since, limit=limit)
+
+    if not entries:
+        if _want_json(args):
+            print("[]")
+        else:
+            print("No events%s." % (" for %s" % agent_id if agent_id else ""))
+        return
+
+    if _want_json(args):
+        print(json.dumps(entries, indent=2))
+        return
+
+    # Human-readable table
+    colors = {
+        "state_change": "\033[36m",
+        "auto_confirm": "\033[33m",
+        "completed": "\033[32m",
+        "monitor_start": "\033[34m",
+    }
+    reset = "\033[0m"
+    use_color = sys.stdout.isatty()
+
+    print("%-10s %-20s %-16s %s" % ("AGENT", "TIME", "EVENT", "DETAIL"))
+    print("-" * 80)
+    for ev in entries:
+        etype = ev.get("type", "?")
+        detail = ev.get("detail", {})
+        if etype == "state_change":
+            detail_str = "%s -> %s" % (detail.get("from", "?"), detail.get("to", "?"))
+        elif etype == "auto_confirm":
+            resp = detail.get("response", "")
+            detail_str = "response=%r" % resp if resp else "(enter)"
+        elif etype == "completed":
+            detail_str = "%s: %s" % (detail.get("status", "?"), detail.get("reason", "?"))
+        else:
+            detail_str = json.dumps(detail) if detail else ""
+
+        ts = ev.get("ts", "")[:19].replace("T", " ")
+        c = colors.get(etype, "") if use_color else ""
+        r = reset if use_color and c else ""
+        print("%-10s %-20s %s%-16s%s %s" % (
+            ev.get("agent_id", "?")[:8], ts, c, etype, r, detail_str))
+
+
 def cmd_version(args):
     print("camc v%s" % __version__)
     print()
@@ -1588,6 +2104,67 @@ def cmd_version(args):
         path = os.path.join(CONFIGS_DIR, key)
         exists = " (config: %s)" % path if os.path.exists(path) else " (embedded)"
         print("  %s%s" % (name, exists))
+
+
+def cmd_capture(args):
+    """Capture tmux screen output for an agent."""
+    store = AgentStore()
+    a = store.get(args.id)
+    if not a:
+        print("Agent not found: %s" % args.id, file=sys.stderr)
+        sys.exit(1)
+    session = a.get("session", "")
+    if not session:
+        print("Agent has no tmux session", file=sys.stderr)
+        sys.exit(1)
+    lines = getattr(args, "lines", 100) or 100
+    output = capture_tmux(session, lines=lines)
+    if _want_json(args):
+        import hashlib
+        h = hashlib.md5(output.encode()).hexdigest()[:8]
+        print(json.dumps({"content": output, "hash": h}, indent=2))
+    else:
+        sys.stdout.write(output)
+
+
+def cmd_send(args):
+    """Send text input to an agent's tmux session."""
+    store = AgentStore()
+    a = store.get(args.id)
+    if not a:
+        print("Agent not found: %s" % args.id, file=sys.stderr)
+        sys.exit(1)
+    session = a.get("session", "")
+    if not session:
+        print("Agent has no tmux session", file=sys.stderr)
+        sys.exit(1)
+    send_enter = not getattr(args, "no_enter", False)
+    tmux_send_input(session, args.text, send_enter=send_enter)
+    print("Sent.")
+
+
+def cmd_key(args):
+    """Send a special key to an agent's tmux session."""
+    store = AgentStore()
+    a = store.get(args.id)
+    if not a:
+        print("Agent not found: %s" % args.id, file=sys.stderr)
+        sys.exit(1)
+    session = a.get("session", "")
+    if not session:
+        print("Agent has no tmux session", file=sys.stderr)
+        sys.exit(1)
+    sock = _find_tmux_socket(session)
+    cmd = ["tmux"]
+    if sock:
+        cmd += ["-S", sock]
+    cmd += ["send-keys", "-t", session, args.key]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=5)
+        print("Sent key: %s" % args.key)
+    except Exception as e:
+        print("Failed to send key: %s" % e, file=sys.stderr)
+        sys.exit(1)
 
 
 # ===========================================================================
@@ -1615,6 +2192,13 @@ examples:
   camc status abc1                    Show detailed agent status
   camc add my-session --tool claude   Adopt existing tmux session
   camc rm abc1 --kill                 Remove and kill agent
+  camc apply -f tasks.yaml             Run DAG task file
+  camc apply -f tasks.yaml --dry-run  Validate without executing
+  camc history abc1                    Show event history for agent
+  camc history --since 2026-03-25     Events after date
+  camc capture abc1 --lines 50        Capture agent screen output
+  camc send abc1 --text "hello"       Send text to agent
+  camc key abc1 --key C-c             Send special key to agent
   camc heal                           Restart dead monitors
   camc version                        Show version info""")
     p.add_argument("--json", action="store_true", help="Output as JSON")
@@ -1672,6 +2256,34 @@ examples:
     st.add_argument("agent_id", nargs="?", default=None, help="Agent ID (full or short)")
     st.add_argument("--hash", default=None, help="Return unchanged if hash matches (automation)")
 
+    # apply
+    ap = sub.add_parser("apply", help="Run tasks from a YAML file (DAG scheduler)")
+    ap.add_argument("--file", "-f", required=True, help="Path to task YAML file")
+    ap.add_argument("--path", "-p", default=None, help="Working directory [default: cwd]")
+    ap.add_argument("--dry-run", action="store_true", help="Validate and show plan without executing")
+
+    # history
+    hi = sub.add_parser("history", help="Show event history")
+    hi.add_argument("id", nargs="?", default=None, help="Agent ID (prefix match, omit for all)")
+    hi.add_argument("--since", default=None, help="Only events after timestamp (ISO 8601)")
+    hi.add_argument("--limit", "-n", type=int, default=100, help="Max events to show [default: 100]")
+
+    # capture
+    cap = sub.add_parser("capture", help="Capture agent tmux screen output")
+    cap.add_argument("id", help="Agent ID (prefix match)")
+    cap.add_argument("--lines", "-n", type=int, default=100, help="Number of lines [default: 100]")
+
+    # send
+    snd = sub.add_parser("send", help="Send text input to agent tmux session")
+    snd.add_argument("id", help="Agent ID (prefix match)")
+    snd.add_argument("--text", "-t", required=True, help="Text to send")
+    snd.add_argument("--no-enter", action="store_true", help="Don't send Enter after text")
+
+    # key
+    ky = sub.add_parser("key", help="Send a special key to agent tmux session")
+    ky.add_argument("id", help="Agent ID (prefix match)")
+    ky.add_argument("--key", "-k", required=True, help="Key to send (e.g. C-c, Enter, Escape)")
+
     # heal
     sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
 
@@ -1699,6 +2311,11 @@ examples:
         "rm": cmd_rm,
         "attach": cmd_attach,
         "status": cmd_status,
+        "apply": cmd_apply,
+        "history": cmd_history,
+        "capture": cmd_capture,
+        "send": cmd_send,
+        "key": cmd_key,
         "heal": cmd_heal,
         "version": cmd_version,
     }

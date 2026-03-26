@@ -574,6 +574,67 @@ def cmd_version(args):
         print("  %s%s" % (name, exists))
 
 
+def cmd_capture(args):
+    """Capture tmux screen output for an agent."""
+    store = AgentStore()
+    a = store.get(args.id)
+    if not a:
+        print("Agent not found: %s" % args.id, file=sys.stderr)
+        sys.exit(1)
+    session = a.get("session", "")
+    if not session:
+        print("Agent has no tmux session", file=sys.stderr)
+        sys.exit(1)
+    lines = getattr(args, "lines", 100) or 100
+    output = capture_tmux(session, lines=lines)
+    if _want_json(args):
+        import hashlib
+        h = hashlib.md5(output.encode()).hexdigest()[:8]
+        print(json.dumps({"content": output, "hash": h}, indent=2))
+    else:
+        sys.stdout.write(output)
+
+
+def cmd_send(args):
+    """Send text input to an agent's tmux session."""
+    store = AgentStore()
+    a = store.get(args.id)
+    if not a:
+        print("Agent not found: %s" % args.id, file=sys.stderr)
+        sys.exit(1)
+    session = a.get("session", "")
+    if not session:
+        print("Agent has no tmux session", file=sys.stderr)
+        sys.exit(1)
+    send_enter = not getattr(args, "no_enter", False)
+    tmux_send_input(session, args.text, send_enter=send_enter)
+    print("Sent.")
+
+
+def cmd_key(args):
+    """Send a special key to an agent's tmux session."""
+    store = AgentStore()
+    a = store.get(args.id)
+    if not a:
+        print("Agent not found: %s" % args.id, file=sys.stderr)
+        sys.exit(1)
+    session = a.get("session", "")
+    if not session:
+        print("Agent has no tmux session", file=sys.stderr)
+        sys.exit(1)
+    sock = _find_tmux_socket(session)
+    cmd = ["tmux"]
+    if sock:
+        cmd += ["-S", sock]
+    cmd += ["send-keys", "-t", session, args.key]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=5)
+        print("Sent key: %s" % args.key)
+    except Exception as e:
+        print("Failed to send key: %s" % e, file=sys.stderr)
+        sys.exit(1)
+
+
 # ===========================================================================
 # Main
 # ===========================================================================
@@ -603,6 +664,9 @@ examples:
   camc apply -f tasks.yaml --dry-run  Validate without executing
   camc history abc1                    Show event history for agent
   camc history --since 2026-03-25     Events after date
+  camc capture abc1 --lines 50        Capture agent screen output
+  camc send abc1 --text "hello"       Send text to agent
+  camc key abc1 --key C-c             Send special key to agent
   camc heal                           Restart dead monitors
   camc version                        Show version info""")
     p.add_argument("--json", action="store_true", help="Output as JSON")
@@ -672,6 +736,22 @@ examples:
     hi.add_argument("--since", default=None, help="Only events after timestamp (ISO 8601)")
     hi.add_argument("--limit", "-n", type=int, default=100, help="Max events to show [default: 100]")
 
+    # capture
+    cap = sub.add_parser("capture", help="Capture agent tmux screen output")
+    cap.add_argument("id", help="Agent ID (prefix match)")
+    cap.add_argument("--lines", "-n", type=int, default=100, help="Number of lines [default: 100]")
+
+    # send
+    snd = sub.add_parser("send", help="Send text input to agent tmux session")
+    snd.add_argument("id", help="Agent ID (prefix match)")
+    snd.add_argument("--text", "-t", required=True, help="Text to send")
+    snd.add_argument("--no-enter", action="store_true", help="Don't send Enter after text")
+
+    # key
+    ky = sub.add_parser("key", help="Send a special key to agent tmux session")
+    ky.add_argument("id", help="Agent ID (prefix match)")
+    ky.add_argument("--key", "-k", required=True, help="Key to send (e.g. C-c, Enter, Escape)")
+
     # heal
     sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
 
@@ -701,6 +781,9 @@ examples:
         "status": cmd_status,
         "apply": cmd_apply,
         "history": cmd_history,
+        "capture": cmd_capture,
+        "send": cmd_send,
+        "key": cmd_key,
         "heal": cmd_heal,
         "version": cmd_version,
     }
