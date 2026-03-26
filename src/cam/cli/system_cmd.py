@@ -385,3 +385,88 @@ def heal() -> None:
                 failed += 1
 
     print_success(f"Heal complete: {ok} healthy, {healed} restarted, {failed} failed")
+
+
+# ---------------------------------------------------------------------------
+# cam migrate
+# ---------------------------------------------------------------------------
+
+
+def migrate(
+    ctx_name: str = typer.Argument(..., help="Context name to migrate (or 'list' to show managed contexts)"),
+    rollback: bool = typer.Option(False, "--rollback", help="Revert context to direct management"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show migration plan without executing"),
+) -> None:
+    """Migrate a context to camc-managed mode (or rollback).
+
+    After migration, agent operations on this context are delegated to camc.
+    camc must be deployed first via 'cam sync'.
+
+    Use 'cam migrate list' to see which contexts are camc-managed.
+    Use --rollback to revert a context to direct management.
+    """
+    from cam.cli.app import state
+    from cam.core.camc_migration import (
+        list_managed,
+        migrate_context,
+        rollback_context,
+    )
+
+    # Special case: list managed contexts
+    if ctx_name == "list":
+        managed = list_managed()
+        if not managed:
+            print_info("No contexts are camc-managed.")
+        else:
+            console.print("[bold]camc-managed contexts:[/bold]")
+            for name in managed:
+                console.print(f"  [cyan]{name}[/cyan]")
+        return
+
+    if rollback:
+        result = rollback_context(
+            ctx_name,
+            agent_store=state.agent_store,
+            context_store=state.context_store,
+        )
+        if "error" in result:
+            print_error(result["error"])
+            raise typer.Exit(1)
+        print_success(f"Context '{ctx_name}' reverted to direct management.")
+        return
+
+    # Migrate
+    result = migrate_context(
+        ctx_name,
+        agent_store=state.agent_store,
+        context_store=state.context_store,
+        dry_run=dry_run,
+    )
+
+    if is_json_mode():
+        print_json(result)
+        return
+
+    if "error" in result:
+        print_error(result["error"])
+        raise typer.Exit(1)
+
+    if dry_run:
+        console.print(f"[bold]Migration plan for '{ctx_name}':[/bold]")
+        console.print(f"  Host: {result.get('host', 'local')}")
+        console.print(f"  Agents found: {result.get('agents_found', 0)}")
+        for d in result.get("details", []):
+            console.print(
+                f"  {d['action']}: {d.get('tool', '?')} "
+                f"(session={d.get('session', '?')}, id={d.get('agent_id', '?')})"
+            )
+        return
+
+    console.print(f"[bold]Migration results for '{ctx_name}':[/bold]")
+    console.print(f"  Adopted: {result.get('adopted', 0)}")
+    console.print(f"  Failed:  {result.get('failed', 0)}")
+    console.print(f"  Skipped: {result.get('skipped', 0)}")
+    if result.get("managed"):
+        print_success(f"Context '{ctx_name}' is now camc-managed.")
+    else:
+        print_error("Migration did not complete — no agents were adopted.")

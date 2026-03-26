@@ -227,6 +227,7 @@ app.command(name="doctor")(system_cmd.doctor)
 app.command(name="init")(system_cmd.init)
 app.command(name="sync")(system_cmd.sync)
 app.command(name="heal")(system_cmd.heal)
+app.command(name="migrate")(system_cmd.migrate)
 
 
 # Server command — starts the API server

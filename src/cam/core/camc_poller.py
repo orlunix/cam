@@ -47,7 +47,8 @@ _STATE_MAP = {
 }
 
 
-def _camc_agent_to_model(data: dict, context_name: str | None = None) -> Agent:
+def _camc_agent_to_model(data: dict, context_name: str | None = None,
+                         context_id: str | None = None) -> Agent:
     """Convert a camc JSON agent dict to a cam Agent model.
 
     The camc JSON format (from _agent_to_cam_json) already matches cam's
@@ -85,6 +86,7 @@ def _camc_agent_to_model(data: dict, context_name: str | None = None) -> Agent:
     return Agent(
         id=data.get("id", ""),
         task=task,
+        context_id=context_id or data.get("context_id", ""),
         context_name=context_name or data.get("context_name", ""),
         context_path=data.get("context_path", ""),
         transport_type=TransportType.LOCAL if data.get("transport_type") == "local" else TransportType.SSH,
@@ -172,7 +174,7 @@ class CamcPoller:
                 if existing is None:
                     # New agent discovered from camc — import it
                     try:
-                        agent = _camc_agent_to_model(agent_data, ctx.name)
+                        agent = _camc_agent_to_model(agent_data, ctx.name, context_id=ctx.id)
                         self._agent_store.save(agent)
                         logger.info("Imported agent %s from %s", agent_id, ctx.name)
                     except Exception as e:
