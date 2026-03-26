@@ -1,0 +1,6 @@
+usage: camc list [-h] [--status STATUS] [--last LAST]
+
+options:
+  -h, --help            show this help message and exit
+  --status STATUS       Filter by status
+  --last LAST, -n LAST  Show last N agents [default: 50]

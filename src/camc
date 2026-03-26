@@ -1186,6 +1186,41 @@ def _want_json(args):
     return getattr(args, "json", False)
 
 
+def _agent_to_cam_json(a):
+    """Convert internal agent dict to cam-compatible JSON format."""
+    context = a.get("context") or {}
+    ctx_name = context.get("name") if isinstance(context, dict) else None
+    ctx_host = context.get("host") if isinstance(context, dict) else None
+    ctx_port = context.get("port") if isinstance(context, dict) else None
+    session = a.get("session", "")
+    sock = _find_tmux_socket(session) if session else None
+    transport = "ssh" if ctx_host and ctx_host != "localhost" else "local"
+    return {
+        "id": a.get("id", ""),
+        "task": {
+            "name": a.get("name") or "",
+            "tool": a.get("tool", ""),
+            "prompt": a.get("prompt", ""),
+            "auto_confirm": True,
+            "auto_exit": a.get("auto_exit", False),
+        },
+        "context_name": ctx_name or "",
+        "context_path": a.get("path", ""),
+        "transport_type": transport,
+        "status": a.get("status", ""),
+        "state": a.get("state", ""),
+        "tmux_session": session,
+        "tmux_socket": sock or "",
+        "pid": a.get("monitor_pid"),
+        "started_at": a.get("started_at"),
+        "completed_at": a.get("completed_at"),
+        "exit_reason": a.get("exit_reason"),
+        "retry_count": 0,
+        "cost_estimate": None,
+        "files_changed": [],
+    }
+
+
 def cmd_run(args):
     tool = getattr(args, "tool", None) or "claude"
     prompt = getattr(args, "prompt", "") or ""
@@ -1291,9 +1326,9 @@ def cmd_list(args):
     last_n = getattr(args, "last", 50) or 50
     agents = agents[:last_n]
 
-    # JSON output
+    # JSON output — cam-compatible format
     if _want_json(args):
-        print(json.dumps(agents, indent=2))
+        print(json.dumps([_agent_to_cam_json(a) for a in agents], indent=2))
         return
 
     colors = {"running": "\033[32m", "completed": "\033[36m", "failed": "\033[31m", "stopped": "\033[33m"}
@@ -1442,7 +1477,7 @@ def cmd_status(args):
     if filter_id and len(agents) == 1:
         a = agents[0]
         if _want_json(args):
-            print(json.dumps(a, indent=2))
+            print(json.dumps(_agent_to_cam_json(a), indent=2))
             return
         print("Agent: %s" % a.get("id", "?"))
         if a.get("name"):
@@ -1468,7 +1503,7 @@ def cmd_status(args):
 
     # Multiple agents — JSON dump
     if _want_json(args):
-        print(json.dumps(agents, indent=2))
+        print(json.dumps([_agent_to_cam_json(a) for a in agents], indent=2))
     else:
         raw = json.dumps(agents, sort_keys=True)
         h = hashlib.md5(raw.encode()).hexdigest()[:8]

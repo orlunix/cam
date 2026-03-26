@@ -1,0 +1,43 @@
+usage: camc [-h] [--json] [--verbose]
+            {init,run,list,ls,logs,stop,kill,add,rm,attach,status,heal,version}
+            ...
+
+CAM Client — Standalone coding agent manager. PM2 for AI coding agents.
+
+positional arguments:
+  {init,run,list,ls,logs,stop,kill,add,rm,attach,status,heal,version}
+    init                First-time setup
+    run                 Start a coding agent on a task
+    list (ls)           List agents
+    logs                View agent output logs
+    stop                Gracefully stop a running agent
+    kill                Force kill a running agent
+    add                 Adopt existing tmux session
+    rm                  Remove a single agent
+    attach              Attach to an agent's TMUX session (interactive)
+    status              Show detailed agent status
+    heal                Check running agents and restart dead monitor daemons
+    version             Show version
+
+options:
+  -h, --help            show this help message and exit
+  --json                Output as JSON
+  --verbose, -v         Verbose output (debug logging)
+
+examples:
+  camc init                           First-time setup
+  camc run "fix lint errors"          Launch claude (default) with a prompt
+  camc run -t codex "add tests"       Launch codex with a prompt
+  camc run                            Launch claude interactively
+  camc list                           List all agents
+  camc list --json                    List agents as JSON
+  camc list --status running          List only running agents
+  camc logs abc1 -f                   Follow agent output
+  camc attach abc1                    Attach to agent tmux
+  camc stop abc1                      Gracefully stop an agent
+  camc kill abc1                      Force kill an agent
+  camc status abc1                    Show detailed agent status
+  camc add my-session --tool claude   Adopt existing tmux session
+  camc rm abc1 --kill                 Remove and kill agent
+  camc heal                           Restart dead monitors
+  camc version                        Show version info
