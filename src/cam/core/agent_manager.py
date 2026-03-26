@@ -667,9 +667,57 @@ class AgentManager:
                 if new_state and new_state != agent.state:
                     agent.state = new_state
 
+    # ------------------------------------------------------------------
+    # Transport operations (shared by CLI and API)
+    # ------------------------------------------------------------------
+
     def _create_transport(self, context: Context) -> Transport:
         """Create a transport for the given context."""
         return self._transport_factory_class.create(context.machine)
+
+    def _resolve_agent_transport(
+        self, agent_id: str
+    ) -> tuple[Agent, Context, Transport]:
+        """Look up agent, its context, and create the transport.
+
+        Raises AgentManagerError on any lookup failure.
+        """
+        agent = self._agent_store.get(agent_id)
+        if agent is None:
+            raise AgentManagerError(f"Agent not found: {agent_id}")
+        if not agent.tmux_session:
+            raise AgentManagerError("Agent has no tmux session")
+        context = self._context_store.get(str(agent.context_id))
+        if context is None:
+            raise AgentManagerError("Agent's context not found")
+        transport = self._create_transport(context)
+        return agent, context, transport
+
+    async def capture_output(
+        self, agent_id: str, *, lines: int = 100
+    ) -> tuple[str, str]:
+        """Capture agent screen output.
+
+        Returns (output_text, md5_hash_prefix).
+        """
+        agent, _ctx, transport = self._resolve_agent_transport(agent_id)
+        output = await transport.capture_output(agent.tmux_session, lines=lines)
+        output_hash = hashlib.md5(output.encode()).hexdigest()[:8]
+        return output, output_hash
+
+    async def send_input(
+        self, agent_id: str, text: str, *, send_enter: bool = True
+    ) -> bool:
+        """Send text input to an agent's tmux session."""
+        agent, _ctx, transport = self._resolve_agent_transport(agent_id)
+        return await transport.send_input(
+            agent.tmux_session, text, send_enter=send_enter
+        )
+
+    async def send_key(self, agent_id: str, key: str) -> bool:
+        """Send a special key to an agent's tmux session."""
+        agent, _ctx, transport = self._resolve_agent_transport(agent_id)
+        return await transport.send_key(agent.tmux_session, key)
 
     async def _sync_toml_configs(
         self,

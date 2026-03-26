@@ -358,16 +358,10 @@ async def get_output(
                     return {"agent_id": str(agent.id), "unchanged": True, "active": True, "hash": hash}
                 return cached_resp
 
-        context = state.context_store.get(str(agent.context_id))
-        if not context:
-            return {"agent_id": str(agent.id), "output": "", "active": False}
-
-        from cam.transport.factory import TransportFactory
-
-        transport = TransportFactory.create(context.machine)
         try:
-            output = await transport.capture_output(agent.tmux_session, lines=lines)
-            output_hash = hashlib.md5(output.encode()).hexdigest()[:8]
+            output, output_hash = await state.agent_manager.capture_output(
+                str(agent.id), lines=lines
+            )
             resp = {"agent_id": str(agent.id), "output": output, "active": True, "hash": output_hash}
             _output_cache[cache_key] = (resp, time.monotonic())
             if hash and output_hash == hash:
@@ -558,15 +552,8 @@ async def send_input(agent_id: str, body: SendInputRequest, request: Request):
         )
         return {"ok": True}
 
-    context = state.context_store.get(str(agent.context_id))
-    if not context:
-        raise HTTPException(status_code=400, detail="Agent context not found")
-
-    from cam.transport.factory import TransportFactory
-
-    transport = TransportFactory.create(context.machine)
-    ok = await transport.send_input(
-        agent.tmux_session, body.text, send_enter=body.send_enter
+    ok = await state.agent_manager.send_input(
+        str(agent.id), body.text, send_enter=body.send_enter
     )
     return {"ok": ok}
 
@@ -593,14 +580,7 @@ async def send_key(agent_id: str, body: SendKeyRequest, request: Request):
         )
         return {"ok": True}
 
-    context = state.context_store.get(str(agent.context_id))
-    if not context:
-        raise HTTPException(status_code=400, detail="Agent context not found")
-
-    from cam.transport.factory import TransportFactory
-
-    transport = TransportFactory.create(context.machine)
-    ok = await transport.send_key(agent.tmux_session, body.key)
+    ok = await state.agent_manager.send_key(str(agent.id), body.key)
     return {"ok": ok}
 
 
