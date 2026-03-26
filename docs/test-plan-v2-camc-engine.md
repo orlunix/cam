@@ -146,22 +146,14 @@ Every `camc` subcommand must produce identical output before and after the split
 | `test_monitor_crash_restart` | Restarts up to 5 times with backoff |
 | `test_monitor_session_died` | Marks agent completed/failed when session gone |
 
-## 4. Phase 1: SSH Transport + History
+## 4. Phase 1: Event History
 
 > Ref: architecture-v2 §9 "Phase 1"
+>
+> Note: camc is a pure local tool. SSH transport lives in cam serve, not camc.
+> cam serve SSHes into remote machines and calls `camc --json ...` commands.
 
-### 4.1 SSH transport tests
-
-| Test | What it verifies |
-|------|-----------------|
-| `test_ssh_run_remote` | `camc run --remote user@host` SSHes and runs camc on remote |
-| `test_ssh_list_remote` | `camc --json list --remote user@host` returns remote agents |
-| `test_ssh_stop_remote` | `camc stop <id> --remote user@host` stops remote agent |
-| `test_ssh_controlmaster` | Reuses SSH connection for multiple commands |
-| `test_ssh_timeout` | Handles SSH connection timeout gracefully |
-| `test_ssh_failure` | Returns clear error when SSH fails |
-
-### 4.2 Event history tests
+### 4.1 Event history tests
 
 | Test | What it verifies |
 |------|-----------------|
