@@ -10,14 +10,14 @@ import time
 from camc_pkg import LOGS_DIR, log
 from camc_pkg.utils import _now_iso
 from camc_pkg.adapters import _load_config
-from camc_pkg.storage import AgentStore
+from camc_pkg.storage import AgentStore, EventStore
 from camc_pkg.transport import (
     capture_tmux, tmux_session_exists, tmux_send_input, tmux_kill_session,
 )
 from camc_pkg.detection import detect_state, should_auto_confirm, detect_completion
 
 
-def run_monitor_loop(session, agent_id, config, store, pid_path=None):
+def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=None):
     """Monitor a tmux session: auto-confirm, state detection, completion, auto-exit."""
     if pid_path:
         with open(pid_path, "w") as f:
@@ -33,6 +33,12 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None):
     has_worked = False
     empty_count = 0
 
+    def _event(event_type, detail=None):
+        if events:
+            events.append(agent_id, event_type, detail)
+
+    _event("monitor_start")
+
     try:
         while running[0]:
             now = time.time()
@@ -44,6 +50,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None):
                     log.info("Session gone: %s -> %s", session, status)
                     store.update(agent_id, status=status,
                                  exit_reason="Session exited", completed_at=_now_iso())
+                    _event("completed", {"status": status, "reason": "Session exited"})
                     return
 
             output = capture_tmux(session)
@@ -59,6 +66,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None):
                     status = "completed" if has_worked else "failed"
                     store.update(agent_id, status=status,
                                  exit_reason="Session exited", completed_at=_now_iso())
+                    _event("completed", {"status": status, "reason": "Session exited"})
                     return
                 time.sleep(1)
                 continue
@@ -70,6 +78,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None):
                     log.info("Auto-confirm: %r enter=%s", confirm[0], confirm[1])
                     tmux_send_input(session, confirm[0], send_enter=confirm[1])
                     last_confirm = now
+                    _event("auto_confirm", {"response": confirm[0], "send_enter": confirm[1]})
                     time.sleep(config.confirm_sleep)
                     continue
 
@@ -78,6 +87,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None):
                 if ns != "initializing":
                     has_worked = True
                 log.info("State: %s -> %s", current_state, ns)
+                _event("state_change", {"from": current_state, "to": ns})
                 current_state = ns
                 store.update(agent_id, state=ns)
 
@@ -107,6 +117,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None):
                             store.update(agent_id, status="completed",
                                          exit_reason="Task completed (auto-exit)",
                                          completed_at=_now_iso())
+                            _event("completed", {"status": "completed", "reason": "auto-exit"})
                             return
 
             time.sleep(1)
@@ -135,6 +146,7 @@ def _run_monitor(agent_id):
     log.info("Monitor starting for agent %s", agent_id)
 
     store = AgentStore()
+    events = EventStore()
     agent = store.get(agent_id)
     if not agent:
         log.error("Agent %s not found", agent_id)
@@ -147,7 +159,7 @@ def _run_monitor(agent_id):
     max_restarts = 5
     for attempt in range(max_restarts + 1):
         try:
-            run_monitor_loop(agent["session"], agent_id, config, store, pid_path=pid_path)
+            run_monitor_loop(agent["session"], agent_id, config, store, pid_path=pid_path, events=events)
             break  # clean exit
         except Exception as e:
             log.error("Monitor crashed (attempt %d/%d): %s", attempt + 1, max_restarts, e)

@@ -14,7 +14,7 @@ from uuid import uuid4
 from camc_pkg import __version__, CAM_DIR, CONFIGS_DIR, CONTEXT_FILE, log
 from camc_pkg.utils import _now_iso, _time_ago, _load_default_context, _build_command, _kill_monitor
 from camc_pkg.adapters import _EMBEDDED_CONFIGS, _load_config
-from camc_pkg.storage import AgentStore
+from camc_pkg.storage import AgentStore, EventStore
 from camc_pkg.transport import (
     _find_tmux_socket, capture_tmux, tmux_session_exists,
     tmux_send_input, tmux_kill_session, create_tmux_session,
@@ -484,6 +484,57 @@ def cmd_heal(args):
     print("Heal: %d healthy, %d restarted%s" % (ok, healed, ", %d failed" % failed if failed else ""))
 
 
+def cmd_history(args):
+    """Show event history for an agent."""
+    events = EventStore()
+    agent_id = getattr(args, "id", None)
+    since = getattr(args, "since", None)
+    limit = getattr(args, "limit", 100) or 100
+    entries = events.read(agent_id=agent_id, since=since, limit=limit)
+
+    if not entries:
+        if _want_json(args):
+            print("[]")
+        else:
+            print("No events%s." % (" for %s" % agent_id if agent_id else ""))
+        return
+
+    if _want_json(args):
+        print(json.dumps(entries, indent=2))
+        return
+
+    # Human-readable table
+    colors = {
+        "state_change": "\033[36m",
+        "auto_confirm": "\033[33m",
+        "completed": "\033[32m",
+        "monitor_start": "\033[34m",
+    }
+    reset = "\033[0m"
+    use_color = sys.stdout.isatty()
+
+    print("%-10s %-20s %-16s %s" % ("AGENT", "TIME", "EVENT", "DETAIL"))
+    print("-" * 80)
+    for ev in entries:
+        etype = ev.get("type", "?")
+        detail = ev.get("detail", {})
+        if etype == "state_change":
+            detail_str = "%s -> %s" % (detail.get("from", "?"), detail.get("to", "?"))
+        elif etype == "auto_confirm":
+            resp = detail.get("response", "")
+            detail_str = "response=%r" % resp if resp else "(enter)"
+        elif etype == "completed":
+            detail_str = "%s: %s" % (detail.get("status", "?"), detail.get("reason", "?"))
+        else:
+            detail_str = json.dumps(detail) if detail else ""
+
+        ts = ev.get("ts", "")[:19].replace("T", " ")
+        c = colors.get(etype, "") if use_color else ""
+        r = reset if use_color and c else ""
+        print("%-10s %-20s %s%-16s%s %s" % (
+            ev.get("agent_id", "?")[:8], ts, c, etype, r, detail_str))
+
+
 def cmd_version(args):
     print("camc v%s" % __version__)
     print()
@@ -520,6 +571,8 @@ examples:
   camc status abc1                    Show detailed agent status
   camc add my-session --tool claude   Adopt existing tmux session
   camc rm abc1 --kill                 Remove and kill agent
+  camc history abc1                    Show event history for agent
+  camc history --since 2026-03-25     Events after date
   camc heal                           Restart dead monitors
   camc version                        Show version info""")
     p.add_argument("--json", action="store_true", help="Output as JSON")
@@ -577,6 +630,12 @@ examples:
     st.add_argument("agent_id", nargs="?", default=None, help="Agent ID (full or short)")
     st.add_argument("--hash", default=None, help="Return unchanged if hash matches (automation)")
 
+    # history
+    hi = sub.add_parser("history", help="Show event history")
+    hi.add_argument("id", nargs="?", default=None, help="Agent ID (prefix match, omit for all)")
+    hi.add_argument("--since", default=None, help="Only events after timestamp (ISO 8601)")
+    hi.add_argument("--limit", "-n", type=int, default=100, help="Max events to show [default: 100]")
+
     # heal
     sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
 
@@ -604,6 +663,7 @@ examples:
         "rm": cmd_rm,
         "attach": cmd_attach,
         "status": cmd_status,
+        "history": cmd_history,
         "heal": cmd_heal,
         "version": cmd_version,
     }
