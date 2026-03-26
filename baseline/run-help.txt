@@ -1,0 +1,14 @@
+usage: camc run [-h] [--tool TOOL] [--path PATH] [--name NAME] [--auto-exit]
+                [--no-inherit-env]
+                [prompt]
+
+positional arguments:
+  prompt                Task prompt (empty for interactive mode)
+
+options:
+  -h, --help            show this help message and exit
+  --tool TOOL, -t TOOL  Tool name (claude, codex, cursor) [default: claude]
+  --path PATH, -p PATH  Working directory
+  --name NAME, -n NAME  Human-readable name
+  --auto-exit, -a       Auto-exit on completion
+  --no-inherit-env      Legacy mode: wrap command with bash -c and env_setup
