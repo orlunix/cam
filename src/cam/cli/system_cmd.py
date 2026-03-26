@@ -293,20 +293,14 @@ def sync(
 
 
 def heal() -> None:
-    """Check running agents and restart dead monitor daemons.
+    """Check running agents and restart dead monitor daemons via camc.
 
-    For local agents, restarts the monitor_runner subprocess.
+    For local agents, runs 'camc heal' locally.
     For remote agents, runs 'camc heal' on the remote machine via SSH.
-    Intended to be run periodically via cron.
+    Deduplicates by host (one heal per unique machine).
     """
-    import asyncio
-    import os
-    import signal
-    import subprocess
-    import sys
-
     from cam.cli.app import state
-    from cam.constants import PID_DIR
+    from cam.core.camc_delegate import CamcDelegate
     from cam.core.models import AgentStatus, TransportType
 
     agents = state.agent_store.list(status=AgentStatus.RUNNING)
@@ -315,76 +309,42 @@ def heal() -> None:
         return
 
     healed = 0
-    ok = 0
     failed = 0
-    healed_remotes: set[str] = set()  # track hosts we already healed
+    healed_hosts: set[str] = set()  # track hosts we already healed
 
     for agent in agents:
-        agent_id = str(agent.id)
-        short_id = agent_id[:8]
-        name = agent.task.name or short_id
-
         context = state.context_store.get(str(agent.context_id))
-        transport_type = context.machine.type if context else TransportType.LOCAL
+        if context is None:
+            continue
 
-        if transport_type == TransportType.LOCAL:
-            # Check if monitor process is alive
-            pid_path = PID_DIR / f"{agent_id}.pid"
-            monitor_alive = False
-            if pid_path.exists():
-                try:
-                    pid = int(pid_path.read_text().strip())
-                    os.kill(pid, 0)
-                    monitor_alive = True
-                except (ValueError, ProcessLookupError, PermissionError):
-                    pid_path.unlink(missing_ok=True)
+        machine = context.machine
+        host = getattr(machine, "host", None)
+        user = getattr(machine, "user", None)
+        port = getattr(machine, "port", None)
 
-            if monitor_alive:
-                console.print(f"  [dim]{name} ({short_id}): monitor alive[/dim]")
-                ok += 1
-                continue
+        # Deduplicate by host
+        host_key = "%s@%s:%s" % (user or "", host or "local", port or "")
+        if host_key in healed_hosts:
+            continue
+        healed_hosts.add(host_key)
 
-            # Restart local monitor
-            console.print(f"  [yellow]{name} ({short_id}): monitor dead, restarting...[/yellow]")
-            try:
-                proc = subprocess.Popen(
-                    [sys.executable, "-m", "cam.core.monitor_runner", agent_id],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True,
-                )
-                console.print(f"  [green]{name} ({short_id}): restarted (PID {proc.pid})[/green]")
+        host_label = host or "local"
+        console.print(f"  Healing {host_label}...")
+
+        try:
+            delegate = CamcDelegate(host=host, user=user, port=port)
+            ok = delegate.heal()
+            if ok:
+                console.print(f"  [green]{host_label}: healed[/green]")
                 healed += 1
-            except Exception as e:
-                console.print(f"  [red]{name} ({short_id}): restart failed: {e}[/red]")
+            else:
+                console.print(f"  [red]{host_label}: heal failed[/red]")
                 failed += 1
-        else:
-            # Remote agent — run camc heal once per host
-            host_key = (context.machine.host, context.machine.port)
-            if host_key in healed_remotes:
-                console.print(f"  [dim]{name} ({short_id}): remote heal already ran[/dim]")
-                ok += 1
-                continue
-            healed_remotes.add(host_key)
+        except Exception as e:
+            console.print(f"  [red]{host_label}: heal failed: {e}[/red]")
+            failed += 1
 
-            try:
-                transport = state.agent_manager._create_transport(context)
-                success, output = asyncio.run(
-                    transport._run_ssh("bash -c 'python3 ~/.cam/camc heal 2>&1'", check=False)
-                )
-                output = output.strip()
-                if success:
-                    for line in output.splitlines():
-                        console.print(f"    {line}")
-                    healed += 1
-                else:
-                    console.print(f"  [red]{name} ({short_id}): remote heal failed: {output[:200]}[/red]")
-                    failed += 1
-            except Exception as e:
-                console.print(f"  [red]{name} ({short_id}): remote heal failed: {e}[/red]")
-                failed += 1
-
-    print_success(f"Heal complete: {ok} healthy, {healed} restarted, {failed} failed")
+    print_success(f"Heal complete: {healed} hosts healed, {failed} failed")
 
 
 # ---------------------------------------------------------------------------
