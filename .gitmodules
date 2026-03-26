@@ -1,0 +1,3 @@
+[submodule "teaspirit"]
+	path = teaspirit
+	url = https://gitlab-master.example.com/internal-org/tools/teaspirit.git
