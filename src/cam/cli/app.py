@@ -180,61 +180,65 @@ def main_callback(
 # Register subcommand groups and top-level commands
 # ---------------------------------------------------------------------------
 
-# Context commands live under ``cam context <subcommand>``
-from cam.cli import context_cmd  # noqa: E402
+# Help panel names for logical grouping in ``cam --help``
+_AGENT = "Agent Lifecycle"
+_INTERACT = "Agent Interaction"
+_MANAGE = "Agent Management"
+_WORKFLOW = "Workflows & History"
+_SYSTEM = "System & Setup"
 
-app.add_typer(context_cmd.app, name="context", help="Manage work contexts.")
-
-# Agent commands are registered directly on the root app so they feel like
-# first-class verbs: ``cam run``, ``cam list``, ``cam stop``, etc.
 from cam.cli import agent_cmd  # noqa: E402
 
-app.command(name="run")(agent_cmd.run)
-app.command(name="list")(agent_cmd.list)
-app.command(name="status")(agent_cmd.status)
-app.command(name="logs")(agent_cmd.logs)
-app.command(name="attach")(agent_cmd.attach)
+# --- Agent Lifecycle ---
+app.command(name="run", rich_help_panel=_AGENT)(agent_cmd.run)
+app.command(name="list", rich_help_panel=_AGENT)(agent_cmd.list)
+app.command(name="status", rich_help_panel=_AGENT)(agent_cmd.status)
+app.command(name="logs", rich_help_panel=_AGENT)(agent_cmd.logs)
+app.command(name="attach", rich_help_panel=_AGENT)(agent_cmd.attach)
 app.command(name="a", hidden=True)(agent_cmd.attach)
-app.command(name="stop")(agent_cmd.stop)
-app.command(name="kill")(agent_cmd.kill)
-app.command(name="retry")(agent_cmd.retry)
-app.command(name="update")(agent_cmd.update)
-app.command(name="prune")(agent_cmd.prune)
-app.command(name="rm")(agent_cmd.rm)
-app.command(name="import")(agent_cmd.import_agents)
-app.command(name="capture")(agent_cmd.capture)
-app.command(name="send")(agent_cmd.send)
-app.command(name="key")(agent_cmd.key)
+app.command(name="stop", rich_help_panel=_AGENT)(agent_cmd.stop)
+app.command(name="kill", rich_help_panel=_AGENT)(agent_cmd.kill)
+app.command(name="retry", rich_help_panel=_AGENT)(agent_cmd.retry)
 
-# Task command (cam apply -f)
+# --- Agent Interaction ---
+app.command(name="capture", rich_help_panel=_INTERACT)(agent_cmd.capture)
+app.command(name="send", rich_help_panel=_INTERACT)(agent_cmd.send)
+app.command(name="key", rich_help_panel=_INTERACT)(agent_cmd.key)
+
+# --- Agent Management ---
+app.command(name="update", rich_help_panel=_MANAGE)(agent_cmd.update)
+app.command(name="prune", rich_help_panel=_MANAGE)(agent_cmd.prune)
+app.command(name="rm", rich_help_panel=_MANAGE)(agent_cmd.rm)
+app.command(name="import", rich_help_panel=_MANAGE)(agent_cmd.import_agents)
+
+# --- Workflows & History ---
 from cam.cli import task_cmd  # noqa: E402
-
-app.command(name="apply")(task_cmd.apply)
-
-# History and stats commands
 from cam.cli import history_cmd  # noqa: E402
 
-app.command(name="history")(history_cmd.history)
-app.command(name="stats")(history_cmd.stats)
+app.command(name="apply", rich_help_panel=_WORKFLOW)(task_cmd.apply)
+app.command(name="history", rich_help_panel=_WORKFLOW)(history_cmd.history)
+app.command(name="stats", rich_help_panel=_WORKFLOW)(history_cmd.stats)
 
-# Config commands live under ``cam config <subcommand>``
-from cam.cli import config_cmd  # noqa: E402
-
-app.add_typer(config_cmd.app, name="config", help="Manage CAM configuration.")
-
-# System commands are also top-level: ``cam version``, ``cam doctor``
+# --- System & Setup ---
 from cam.cli import system_cmd  # noqa: E402
 
-app.command(name="version")(system_cmd.version)
-app.command(name="doctor")(system_cmd.doctor)
-app.command(name="init")(system_cmd.init)
-app.command(name="sync")(system_cmd.sync)
-app.command(name="heal")(system_cmd.heal)
-app.command(name="migrate")(system_cmd.migrate)
+app.command(name="version", rich_help_panel=_SYSTEM)(system_cmd.version)
+app.command(name="doctor", rich_help_panel=_SYSTEM)(system_cmd.doctor)
+app.command(name="init", rich_help_panel=_SYSTEM)(system_cmd.init)
+app.command(name="sync", rich_help_panel=_SYSTEM)(system_cmd.sync)
+app.command(name="heal", rich_help_panel=_SYSTEM)(system_cmd.heal)
+app.command(name="migrate", rich_help_panel=_SYSTEM)(system_cmd.migrate)
+
+# --- Subcommand groups ---
+from cam.cli import context_cmd  # noqa: E402
+from cam.cli import config_cmd  # noqa: E402
+
+app.add_typer(context_cmd.app, name="context", help="Manage work contexts.", rich_help_panel=_SYSTEM)
+app.add_typer(config_cmd.app, name="config", help="Manage CAM configuration.", rich_help_panel=_SYSTEM)
 
 
 # Server command — starts the API server
-@app.command(name="serve")
+@app.command(name="serve", rich_help_panel="System & Setup")
 def serve(
     host: str | None = typer.Option(None, "--host", help="Bind address"),
     port: int | None = typer.Option(None, "--port", help="Listen port"),
