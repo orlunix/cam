@@ -211,7 +211,7 @@ def init() -> None:
 def sync(
     ctx_name: str = typer.Argument(None, help="Context name to sync to (omit for all remote contexts)"),
 ) -> None:
-    """Sync cam-client and adapter configs to a remote context.
+    """Sync camc and adapter configs to a remote context.
 
     If no context is specified, syncs to all remote (SSH/Agent) contexts.
     """
