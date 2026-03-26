@@ -1,0 +1,3 @@
+[submodule "teaspirit"]
+	path = teaspirit
+	url = https://gitlab-master.nvidia.com/peregrine/tools/teaspirit.git
