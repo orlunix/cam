@@ -22,6 +22,7 @@ MODULE_ORDER = [
     "detection",
     "storage",
     "monitor",
+    "scheduler",
     "cli",
 ]
 
