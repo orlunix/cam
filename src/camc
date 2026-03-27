@@ -17,6 +17,7 @@ import shlex
 import shutil
 import signal
 import socket as _sock
+import sqlite3
 import subprocess
 import sys
 import time
@@ -1454,6 +1455,483 @@ def sync_camc_to_machine(machine, camc_path=None, configs_dir=None):
 
 
 # ===========================================================================
+# migrate
+# ===========================================================================
+
+def _find_cam_db():
+    """Find the cam SQLite database."""
+    # Standard location
+    default = os.path.expanduser("~/.local/share/cam/cam.db")
+    if os.path.exists(default):
+        return default
+    # Check env var
+    env = os.environ.get("CAM_DATA_DIR")
+    if env:
+        p = os.path.join(env, "cam.db")
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def _read_contexts_from_sqlite(db_path):
+    """Read all contexts from cam's SQLite database."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM contexts ORDER BY created_at DESC").fetchall()
+    contexts = []
+    for row in rows:
+        machine_config = json.loads(row["machine_config"])
+        contexts.append({
+            "id": row["id"],
+            "name": row["name"],
+            "path": row["path"],
+            "machine_config": machine_config,
+            "tags": json.loads(row["tags"]) if row["tags"] else [],
+        })
+    conn.close()
+    return contexts
+
+
+def _read_active_agents_from_sqlite(db_path):
+    """Read active (non-terminal) agents from cam's SQLite database."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT * FROM agents WHERE status IN ('running', 'starting', 'pending')"
+    ).fetchall()
+    agents = []
+    for row in rows:
+        agents.append(dict(row))
+    conn.close()
+    return agents
+
+
+def _machine_key(mc):
+    """Generate a unique key for a machine config."""
+    return "%s@%s:%s" % (mc.get("user", ""), mc.get("host", "local"), mc.get("port", 22))
+
+
+def _machine_name_from_host(host):
+    """Generate a machine name from a hostname."""
+    if not host or host in ("localhost", "127.0.0.1"):
+        return "local"
+    # Use short hostname: pdx-110.nvidia.com → pdx-110
+    short = host.split(".")[0]
+    # Sanitize: only alphanumeric, dash, underscore
+    return "".join(c if c.isalnum() or c in "-_" else "-" for c in short)
+
+
+def run_migrate(db_path=None, dry_run=False):
+    """Main migration logic. Returns (machines_count, contexts_count, agents_count)."""
+
+    if db_path is None:
+        db_path = _find_cam_db()
+    if not db_path or not os.path.exists(db_path):
+        print("Error: cam database not found at %s" % (db_path or "~/.local/share/cam/cam.db"))
+        print("Use --db PATH to specify location.")
+        return 0, 0, 0
+
+    print("Reading from: %s" % db_path)
+
+    # Read SQLite data
+    sqlite_contexts = _read_contexts_from_sqlite(db_path)
+    print("Found %d contexts in SQLite" % len(sqlite_contexts))
+
+    # Deduplicate machines
+    seen_machines = {}  # key → machine dict
+    machine_name_map = {}  # key → machine name
+    name_counts = {}  # track name collisions
+
+    for ctx in sqlite_contexts:
+        mc = ctx["machine_config"]
+        mtype = mc.get("type", "local")
+        if mtype == "local":
+            key = "local"
+            machine = {"name": "local", "type": "local"}
+        else:
+            key = _machine_key(mc)
+            base_name = _machine_name_from_host(mc.get("host"))
+            # Handle name collisions
+            if base_name in name_counts and name_counts[base_name] != key:
+                # Different machine with same short name — append port
+                base_name = "%s-%s" % (base_name, mc.get("port", 22))
+            name_counts.setdefault(base_name, key)
+
+            machine = {"name": base_name, "type": mtype}
+            if mc.get("host"):
+                machine["host"] = mc["host"]
+            if mc.get("user"):
+                machine["user"] = mc["user"]
+            if mc.get("port"):
+                machine["port"] = mc["port"]
+            if mc.get("env_setup"):
+                machine["env_setup"] = mc["env_setup"]
+            if mc.get("key_file"):
+                machine["key_file"] = mc["key_file"]
+
+        if key not in seen_machines:
+            seen_machines[key] = machine
+        machine_name_map[key] = seen_machines[key]["name"]
+
+    machines = list(seen_machines.values())
+    print("Deduplicated to %d machines" % len(machines))
+
+    # Build contexts
+    contexts = []
+    for ctx in sqlite_contexts:
+        mc = ctx["machine_config"]
+        mtype = mc.get("type", "local")
+        if mtype == "local":
+            key = "local"
+        else:
+            key = _machine_key(mc)
+
+        contexts.append({
+            "name": ctx["name"],
+            "machine": machine_name_map[key],
+            "path": ctx["path"],
+        })
+
+    print("Converted %d contexts" % len(contexts))
+
+    # Print plan
+    print()
+    print("Machines:")
+    for m in machines:
+        if m["type"] == "local":
+            print("  local")
+        else:
+            print("  %s: %s@%s:%s" % (m["name"], m.get("user", ""), m.get("host", ""), m.get("port", 22)))
+
+    print()
+    print("Contexts:")
+    for c in contexts:
+        print("  %s → machine=%s, path=%s" % (c["name"], c["machine"], c["path"]))
+
+    if dry_run:
+        print()
+        print("Dry run — no files written.")
+        return len(machines), len(contexts), 0
+
+    # Write machines.json
+    m_store = MachineStore()
+    for m in machines:
+        m_store.save(m)
+    print()
+    print("Wrote %d machines to %s" % (len(machines), MACHINES_FILE))
+
+    # Write contexts.json
+    c_store = ContextStore()
+    for c in contexts:
+        c_store.save(c)
+    print("Wrote %d contexts to %s" % (len(contexts), CONTEXTS_FILE))
+
+    # Merge active agents
+    agents_merged = 0
+    try:
+        sqlite_agents = _read_active_agents_from_sqlite(db_path)
+        if sqlite_agents:
+            a_store = AgentStore()
+            existing_ids = {a["id"] for a in a_store.list()}
+            for sa in sqlite_agents:
+                aid = sa.get("id", "")
+                if aid and aid not in existing_ids:
+                    # Minimal agent record — these are cam-format agents
+                    a_store.save({
+                        "id": aid,
+                        "task": {"name": "", "tool": "claude", "prompt": "", "auto_confirm": True, "auto_exit": False},
+                        "context_name": sa.get("context_name", ""),
+                        "context_path": sa.get("context_path", ""),
+                        "transport_type": sa.get("transport_type", "local"),
+                        "status": sa.get("status", "running"),
+                        "state": sa.get("state", "initializing"),
+                        "tmux_session": sa.get("tmux_session", ""),
+                        "tmux_socket": sa.get("tmux_socket", ""),
+                        "pid": sa.get("pid"),
+                        "hostname": "",
+                        "started_at": sa.get("started_at"),
+                        "completed_at": sa.get("completed_at"),
+                        "exit_reason": sa.get("exit_reason"),
+                        "retry_count": 0, "cost_estimate": None, "files_changed": [],
+                    })
+                    agents_merged += 1
+            if agents_merged:
+                print("Merged %d active agents" % agents_merged)
+    except Exception as e:
+        print("Warning: could not merge agents: %s" % e)
+
+    print()
+    print("Migration complete!")
+    print("You can now verify with: camc machine list && camc context list")
+    print("When satisfied, you can remove: rm -rf ~/.local/share/cam/")
+    return len(machines), len(contexts), agents_merged
+
+
+# ===========================================================================
+# formatters
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Rich detection
+# ---------------------------------------------------------------------------
+
+try:
+    from rich.console import Console
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.text import Text
+    _HAS_RICH = True
+    _console = Console()
+    _err_console = Console(stderr=True)
+except ImportError:
+    _HAS_RICH = False
+    _console = None
+    _err_console = None
+
+# ---------------------------------------------------------------------------
+# ANSI helpers (for non-rich fallback)
+# ---------------------------------------------------------------------------
+
+_use_color = sys.stdout.isatty()
+
+_ANSI = {
+    "red": "\033[31m",
+    "green": "\033[32m",
+    "yellow": "\033[33m",
+    "blue": "\033[34m",
+    "magenta": "\033[35m",
+    "cyan": "\033[36m",
+    "bold": "\033[1m",
+    "dim": "\033[2m",
+    "reset": "\033[0m",
+}
+
+
+def _c(text, color):
+    """Wrap text in ANSI color if terminal supports it."""
+    if not _use_color or not color:
+        return str(text)
+    return "%s%s%s" % (_ANSI.get(color, ""), text, _ANSI["reset"])
+
+
+# ---------------------------------------------------------------------------
+# Status / state styling
+# ---------------------------------------------------------------------------
+
+_STATUS_STYLE = {
+    "running": ("green", "▶"),
+    "completed": ("green", "✓"),
+    "failed": ("red", "✗"),
+    "stopped": ("yellow", "■"),
+    "killed": ("red", "☠"),
+    "pending": ("yellow", "⏳"),
+    "starting": ("yellow", "🚀"),
+    "timeout": ("red", "⏱"),
+    "retrying": ("yellow", "↻"),
+}
+
+_STATE_STYLE = {
+    "initializing": ("dim", "..."),
+    "planning": ("cyan", "🧠"),
+    "editing": ("blue", "✏"),
+    "testing": ("magenta", "🧪"),
+    "committing": ("green", "📦"),
+    "idle": ("dim", "💤"),
+}
+
+
+def styled_status(status):
+    """Return styled status string."""
+    color, icon = _STATUS_STYLE.get(status, ("", ""))
+    if _HAS_RICH:
+        return Text("%s %s" % (icon, status), style=color) if icon else Text(status)
+    return _c("%s %s" % (icon, status) if icon else status, color)
+
+
+def styled_state(state):
+    """Return styled state string."""
+    if not state:
+        return Text("-", style="dim") if _HAS_RICH else _c("-", "dim")
+    color, icon = _STATE_STYLE.get(state, ("", ""))
+    if _HAS_RICH:
+        return Text("%s %s" % (icon, state), style=color) if icon else Text(state)
+    return _c("%s %s" % (icon, state) if icon else state, color)
+
+
+# ---------------------------------------------------------------------------
+# Table output
+# ---------------------------------------------------------------------------
+
+def print_table(headers, rows, title=None, col_styles=None, col_widths=None):
+    """Print a table with optional Rich or ANSI fallback.
+
+    Args:
+        headers: list of column header strings
+        rows: list of lists/tuples (one per row)
+        title: optional table title
+        col_styles: optional dict {col_index: rich_style_string} for Rich mode
+        col_widths: optional dict {col_index: min_width} for ANSI fallback
+    """
+    if not rows:
+        return
+
+    col_styles = col_styles or {}
+    col_widths = col_widths or {}
+
+    if _HAS_RICH:
+        table = Table(title=title, show_lines=False)
+        for i, h in enumerate(headers):
+            style = col_styles.get(i, None)
+            table.add_column(h, style=style, no_wrap=(i == 0))
+        for row in rows:
+            cells = []
+            for cell in row:
+                if isinstance(cell, Text):
+                    cells.append(cell)
+                else:
+                    cells.append(str(cell) if cell is not None else "")
+            table.add_row(*cells)
+        _console.print(table)
+    else:
+        # Calculate column widths
+        ncols = len(headers)
+        widths = [max(len(str(h)), col_widths.get(i, 0)) for i, h in enumerate(headers)]
+        for row in rows:
+            for i in range(min(ncols, len(row))):
+                cell = row[i]
+                # Strip ANSI for width calc, but keep for display
+                plain = _strip_ansi(str(cell)) if cell is not None else ""
+                widths[i] = max(widths[i], len(plain))
+
+        # Cap widths to avoid overflow
+        widths = [min(w, 40) for w in widths]
+
+        fmt_parts = []
+        for i, w in enumerate(widths):
+            if i == ncols - 1:
+                fmt_parts.append("%s")  # last col unlimited
+            else:
+                fmt_parts.append("%%-%ds" % w)
+        fmt = "  ".join(fmt_parts)
+
+        if title:
+            print(_c(title, "bold"))
+        print(fmt % tuple(headers))
+        print("-" * (sum(widths) + 2 * (ncols - 1)))
+        for row in rows:
+            cells = []
+            for i in range(ncols):
+                c = row[i] if i < len(row) else ""
+                cells.append(str(c) if c is not None else "")
+            print(fmt % tuple(cells))
+
+
+def _strip_ansi(text):
+    """Strip ANSI escape codes for width calculation."""
+    import re
+    return re.sub(r'\033\[[0-9;]*m', '', text)
+
+
+# ---------------------------------------------------------------------------
+# Panel output
+# ---------------------------------------------------------------------------
+
+def print_panel(lines, title=None, border_style="cyan"):
+    """Print a bordered panel with optional Rich or ANSI fallback."""
+    if _HAS_RICH:
+        _console.print(Panel("\n".join(str(l) for l in lines),
+                             title=title, border_style=border_style))
+    else:
+        border = "\u2500"
+        if title:
+            hdr = "%s%s %s %s%s" % (_ANSI.get(border_style, ""), border * 2,
+                                     title, border * 30, _ANSI["reset"])
+            print(hdr if _use_color else "%s %s %s" % (border * 2, title, border * 30))
+        else:
+            print(border * 40)
+        for l in lines:
+            print("  %s" % l)
+        if _use_color and border_style in _ANSI:
+            print("%s%s%s" % (_ANSI[border_style], border * 40, _ANSI["reset"]))
+        else:
+            print(border * 40)
+
+
+# ---------------------------------------------------------------------------
+# Status messages
+# ---------------------------------------------------------------------------
+
+def print_success(msg):
+    if _HAS_RICH:
+        _console.print("[green]✓[/green] %s" % msg)
+    else:
+        print("%s %s" % (_c("✓", "green"), msg))
+
+
+def print_error(msg):
+    if _HAS_RICH:
+        _err_console.print("[red]✗[/red] %s" % msg)
+    else:
+        print("%s %s" % (_c("✗", "red"), msg), file=sys.stderr)
+
+
+def print_warning(msg):
+    if _HAS_RICH:
+        _console.print("[yellow]⚠[/yellow] %s" % msg)
+    else:
+        print("%s %s" % (_c("⚠", "yellow"), msg))
+
+
+def print_info(msg):
+    if _HAS_RICH:
+        _console.print("[cyan]ℹ[/cyan] %s" % msg)
+    else:
+        print("%s %s" % (_c("ℹ", "cyan"), msg))
+
+
+# ---------------------------------------------------------------------------
+# Key-value detail display
+# ---------------------------------------------------------------------------
+
+def print_detail(pairs, title=None, border_style="cyan"):
+    """Print key-value pairs, optionally inside a panel.
+
+    Args:
+        pairs: list of (key, value) tuples. Value can be str or (str, style).
+        title: if provided, wraps in a panel
+    """
+    lines = []
+    max_key_len = max((len(k) for k, v in pairs if v is not None), default=10)
+    for key, value in pairs:
+        if value is None:
+            continue
+        if isinstance(value, tuple):
+            value, style = value
+        else:
+            style = None
+        padding = " " * (max_key_len - len(key) + 1)
+        if _HAS_RICH:
+            if style:
+                lines.append("[bold]%s:[/bold]%s[%s]%s[/%s]" % (key, padding, style, value, style))
+            else:
+                lines.append("[bold]%s:[/bold]%s%s" % (key, padding, value))
+        else:
+            if style and _use_color and style in _ANSI:
+                lines.append("%s:%s%s%s%s" % (key, padding, _ANSI[style], value, _ANSI["reset"]))
+            else:
+                lines.append("%s:%s%s" % (key, padding, value))
+
+    if title:
+        print_panel(lines, title=title, border_style=border_style)
+    else:
+        for l in lines:
+            if _HAS_RICH:
+                _console.print("  %s" % l)
+            else:
+                print("  %s" % l)
+
+
+# ===========================================================================
 # monitor
 # ===========================================================================
 
@@ -2000,9 +2478,9 @@ def cmd_init(args):
     print("Checking dependencies...")
     tmux_path = shutil.which("tmux")
     if tmux_path:
-        print("  ✓ tmux: %s" % tmux_path)
+        print_success("tmux: %s" % tmux_path)
     else:
-        print("  ✗ tmux: NOT FOUND (required)")
+        print_error("tmux: NOT FOUND (required)")
         print("  Install: apt install tmux / brew install tmux")
         sys.exit(1)
 
@@ -2010,7 +2488,7 @@ def cmd_init(args):
     for tool_name in ("claude", "codex", "agent"):
         path = shutil.which(tool_name)
         if path:
-            print("  ✓ %s: %s" % (tool_name, path))
+            print_success("%s: %s" % (tool_name, path))
         else:
             print("  · %s: not found" % tool_name)
 
@@ -2034,7 +2512,7 @@ def cmd_init(args):
         else:
             with open(path, "w") as f:
                 f.write(content)
-            print("  ✓ %s" % filename)
+            print_success(filename)
 
     # 4. Create context.json template
     _load_default_context()
@@ -2280,20 +2758,20 @@ def cmd_list(args):
         print(json.dumps([_agent_to_cam_json(a) for a in agents], indent=2))
         return
 
-    colors = {"running": "\033[32m", "completed": "\033[36m", "failed": "\033[31m", "stopped": "\033[33m"}
-    reset = "\033[0m"
-    use_color = sys.stdout.isatty()
-
-    print("%-10s %-16s %-10s %-12s %-12s %-24s %s" % ("ID", "NAME", "TOOL", "STATUS", "STATE", "PROMPT", "STARTED"))
-    print("-" * 100)
+    headers = ["ID", "NAME", "TOOL", "STATUS", "STATE", "PROMPT", "STARTED"]
+    rows = []
     for a in agents:
-        s = a.get("status", "?")
-        ss = "%s%-12s%s" % (colors.get(s, ""), s, reset) if use_color else "%-12s" % s
-        print("%-10s %-16s %-10s %s %-12s %-24s %s" % (
-            a.get("id", "?"), (_tf(a, "name") or "")[:16],
-            _tf(a, "tool", "?"), ss,
-            a.get("state", "") or "", (_tf(a, "prompt") or "")[:24],
-            _time_ago(a.get("started_at"))))
+        rows.append([
+            a.get("id", "?")[:8],
+            (_tf(a, "name") or "")[:16],
+            _tf(a, "tool", "?"),
+            styled_status(a.get("status", "?")),
+            styled_state(a.get("state")),
+            (_tf(a, "prompt") or "")[:24],
+            _time_ago(a.get("started_at")),
+        ])
+    print_table(headers, rows, title="Agents",
+                col_styles={0: "dim", 1: "bold", 3: None, 6: "dim"})
 
 
 def cmd_logs(args):
@@ -2445,28 +2923,25 @@ def cmd_status(args):
         if _want_json(args):
             print(json.dumps(_agent_to_cam_json(a), indent=2))
             return
-        print("Agent: %s" % a.get("id", "?"))
-        aname = _tf(a, "name")
-        if aname:
-            print("  Name:      %s" % aname)
-        print("  Tool:      %s" % _tf(a, "tool", "?"))
-        print("  Status:    %s" % a.get("status", "?"))
-        print("  State:     %s" % (a.get("state") or "-"))
-        print("  Path:      %s" % _sf(a, "context_path", "?"))
-        session = _sf(a, "tmux_session", "?")
-        print("  Session:   %s" % session)
-        print("  Started:   %s" % (a.get("started_at") or "-"))
-        if a.get("completed_at"):
-            print("  Completed: %s" % a["completed_at"])
-        if a.get("exit_reason"):
-            print("  Exit:      %s" % a["exit_reason"])
         prompt = _tf(a, "prompt") or ""
-        print("  Prompt:    %s" % (prompt[:80] + "..." if len(prompt) > 80 else prompt or "(interactive)"))
-        if _tf(a, "auto_exit"):
-            print("  Auto-exit: ON")
-        # Check session alive
+        prompt_display = prompt[:80] + "..." if len(prompt) > 80 else prompt or "(interactive)"
         alive = tmux_session_exists(_sf(a, "tmux_session"))
-        print("  Session:   %s" % ("alive" if alive else "dead"))
+        pairs = [
+            ("ID", a.get("id", "?")),
+            ("Name", _tf(a, "name")),
+            ("Tool", _tf(a, "tool", "?")),
+            ("Status", a.get("status", "?")),
+            ("State", a.get("state") or "-"),
+            ("Path", _sf(a, "context_path", "?")),
+            ("Session", _sf(a, "tmux_session", "?")),
+            ("Started", a.get("started_at") or "-"),
+            ("Completed", a.get("completed_at")),
+            ("Exit", a.get("exit_reason")),
+            ("Prompt", prompt_display),
+            ("Auto-exit", "ON" if _tf(a, "auto_exit") else None),
+            ("Alive", _c("alive", "green") if alive else _c("dead", "red")),
+        ]
+        print_detail(pairs, title="Agent: %s" % a.get("id", "?"), border_style="green")
         return
 
     # Multiple agents — JSON dump
@@ -2608,17 +3083,12 @@ def cmd_history(args):
         return
 
     # Human-readable table
-    colors = {
-        "state_change": "\033[36m",
-        "auto_confirm": "\033[33m",
-        "completed": "\033[32m",
-        "monitor_start": "\033[34m",
+    _evt_colors = {
+        "state_change": "cyan", "auto_confirm": "yellow",
+        "completed": "green", "monitor_start": "blue",
     }
-    reset = "\033[0m"
-    use_color = sys.stdout.isatty()
-
-    print("%-10s %-20s %-16s %s" % ("AGENT", "TIME", "EVENT", "DETAIL"))
-    print("-" * 80)
+    headers = ["AGENT", "TIME", "EVENT", "DETAIL"]
+    rows = []
     for ev in entries:
         etype = ev.get("type", "?")
         detail = ev.get("detail", {})
@@ -2631,12 +3101,12 @@ def cmd_history(args):
             detail_str = "%s: %s" % (detail.get("status", "?"), detail.get("reason", "?"))
         else:
             detail_str = json.dumps(detail) if detail else ""
-
         ts = ev.get("ts", "")[:19].replace("T", " ")
-        c = colors.get(etype, "") if use_color else ""
-        r = reset if use_color and c else ""
-        print("%-10s %-20s %s%-16s%s %s" % (
-            ev.get("agent_id", "?")[:8], ts, c, etype, r, detail_str))
+        rows.append([
+            ev.get("agent_id", "?")[:8], ts,
+            _c(etype, _evt_colors.get(etype)), detail_str,
+        ])
+    print_table(headers, rows, title="Events")
 
 
 # ===========================================================================
@@ -2670,18 +3140,19 @@ def cmd_machine_list(args):
     if not machines:
         print("No machines configured.")
         return
-    colors = {"local": "\033[36m", "ssh": "\033[32m"}
-    reset = "\033[0m"
-    use_color = sys.stdout.isatty()
-    print("%-16s %-8s %-30s %-8s %s" % ("NAME", "TYPE", "HOST", "PORT", "USER"))
-    print("-" * 80)
+    _mtype_colors = {"local": "cyan", "ssh": "green"}
+    headers = ["NAME", "TYPE", "HOST", "PORT", "USER"]
+    rows = []
     for m in machines:
         mtype = m.get("type", "?")
-        c = colors.get(mtype, "") if use_color else ""
-        r = reset if use_color and c else ""
-        print("%-16s %s%-8s%s %-30s %-8s %s" % (
-            m.get("name", "?"), c, mtype, r,
-            m.get("host") or "-", m.get("port") or "-", m.get("user") or "-"))
+        rows.append([
+            m.get("name", "?"),
+            _c(mtype, _mtype_colors.get(mtype)),
+            m.get("host") or "-",
+            m.get("port") or "-",
+            m.get("user") or "-",
+        ])
+    print_table(headers, rows, title="Machines")
 
 
 def cmd_machine_add(args):
@@ -2771,9 +3242,9 @@ def cmd_machine_ping(args):
         host = m.get("host", "?")
         ok = ssh_ping(m)
         if ok:
-            print("  \033[32m✓\033[0m %s (%s)" % (name, host))
+            print_success("%s (%s)" % (name, host))
         else:
-            print("  \033[31m✗\033[0m %s (%s) — unreachable" % (name, host))
+            print_error("%s (%s) — unreachable" % (name, host))
 
 
 # ===========================================================================
@@ -2803,10 +3274,9 @@ def cmd_context_list(args):
     if not contexts:
         print("No contexts configured.")
         return
-    print("%-20s %-16s %s" % ("NAME", "MACHINE", "PATH"))
-    print("-" * 80)
-    for c in contexts:
-        print("%-20s %-16s %s" % (c.get("name", "?"), c.get("machine", "?"), c.get("path", "?")))
+    headers = ["NAME", "MACHINE", "PATH"]
+    rows = [[c.get("name", "?"), c.get("machine", "?"), c.get("path", "?")] for c in contexts]
+    print_table(headers, rows, title="Contexts", col_styles={0: "bold cyan", 1: "magenta"})
 
 
 def cmd_context_add(args):
@@ -2881,6 +3351,13 @@ def cmd_sync(args):
                 total_fail += 1
     print()
     print("Sync complete: %d deployed, %d failed" % (total_ok, total_fail))
+
+
+def cmd_migrate(args):
+    """Migrate cam SQLite data to JSON format."""
+    db_path = getattr(args, "db", None)
+    dry_run = getattr(args, "dry_run", False)
+    run_migrate(db_path=db_path, dry_run=dry_run)
 
 
 def cmd_version(args):
@@ -3124,6 +3601,11 @@ examples:
     sy = sub.add_parser("sync", help="Sync camc and configs to remote machines")
     sy.add_argument("target", nargs="?", default=None, help="Machine name (omit for all SSH machines)")
 
+    # migrate
+    mig = sub.add_parser("migrate", help="Migrate cam SQLite data to JSON")
+    mig.add_argument("--db", default=None, help="Path to cam.db [default: ~/.local/share/cam/cam.db]")
+    mig.add_argument("--dry-run", action="store_true", help="Show plan without writing files")
+
     # version
     sub.add_parser("version", help="Show version")
 
@@ -3157,6 +3639,7 @@ examples:
         "machine": cmd_machine,
         "context": cmd_context,
         "sync": cmd_sync,
+        "migrate": cmd_migrate,
         "version": cmd_version,
     }
     if args.command in cmds:
