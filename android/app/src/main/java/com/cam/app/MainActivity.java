@@ -6,16 +6,22 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.StrictMode;
+import android.util.Base64;
 import android.util.Log;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.ConsoleMessage;
+import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+
+import java.io.File;
+import java.io.FileOutputStream;
 
 public class MainActivity extends Activity {
 
@@ -27,6 +33,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        // Allow file:// URIs for APK install intent
+        StrictMode.VmPolicy.Builder builder = new StrictMode.VmPolicy.Builder();
+        StrictMode.setVmPolicy(builder.build());
 
         Window window = getWindow();
 
@@ -67,6 +77,9 @@ public class MainActivity extends Activity {
         webView.setBackgroundColor(Color.parseColor("#111111"));
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         webView.setVerticalScrollBarEnabled(false);
+
+        // Clear stale cache from previous APK versions
+        webView.clearCache(true);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -119,6 +132,60 @@ public class MainActivity extends Activity {
                 return true;
             }
         });
+
+        // Expose native bridge to JavaScript
+        webView.addJavascriptInterface(new Object() {
+            @JavascriptInterface
+            public void restartApp() {
+                runOnUiThread(() -> {
+                    Log.d(TAG, "restartApp() called from JS");
+                    recreate();
+                });
+            }
+
+            @JavascriptInterface
+            public boolean installApk(String base64Data) {
+                try {
+                    byte[] apkBytes = Base64.decode(base64Data, Base64.DEFAULT);
+                    File apkFile = new File(getCacheDir(), "cam-update.apk");
+                    FileOutputStream fos = new FileOutputStream(apkFile);
+                    fos.write(apkBytes);
+                    fos.close();
+                    apkFile.setReadable(true, false);
+                    Log.d(TAG, "APK saved: " + apkFile.length() + " bytes");
+
+                    Intent intent = new Intent(Intent.ACTION_VIEW);
+                    intent.setDataAndType(Uri.fromFile(apkFile),
+                            "application/vnd.android.package-archive");
+                    intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(intent);
+                    return true;
+                } catch (Exception e) {
+                    Log.e(TAG, "installApk failed", e);
+                    return false;
+                }
+            }
+
+            @JavascriptInterface
+            public String getAppVersion() {
+                try {
+                    java.io.InputStream is = getAssets().open("web/index.html");
+                    byte[] buf = new byte[2048];
+                    int n = is.read(buf);
+                    is.close();
+                    String head = new String(buf, 0, n);
+                    int idx = head.indexOf("cam-version");
+                    if (idx >= 0) {
+                        int q1 = head.indexOf("content=\"", idx) + 9;
+                        int q2 = head.indexOf("\"", q1);
+                        return head.substring(q1, q2);
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "getAppVersion failed", e);
+                }
+                return "unknown";
+            }
+        }, "CamBridge");
 
         webView.loadUrl("file:///android_asset/web/index.html");
     }
