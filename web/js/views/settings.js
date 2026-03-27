@@ -57,7 +57,7 @@ export function renderSettings(container) {
     <div class="section-divider"></div>
     <div class="form-section-label">App</div>
     <div class="form-group">
-      <div class="about-text" style="margin-bottom:8px;">CAM v0.1.0 &mdash; Cache: ${document.querySelector('meta[name="cam-version"]')?.content || 'unknown'}</div>
+      <div class="about-text" style="margin-bottom:8px;">CAM v0.1.0 &mdash; Installed: ${(window.CamBridge && window.CamBridge.getAppVersion) ? window.CamBridge.getAppVersion() : (document.querySelector('meta[name="cam-version"]')?.content || 'unknown')}</div>
       <button type="button" class="btn-secondary btn-full" id="update-btn">Update app</button>
     </div>
   `;
@@ -97,7 +97,7 @@ export function renderSettings(container) {
       } catch (err) {
         state.toast(`Data load error: ${err.message}`, 'error');
       }
-      if (mode === 'relay') api._requestRelayEventStream();
+      if (mode === 'relay') api.requestRelayEventStream();
     } else {
       state.toast('Connection failed — check URL and token', 'error');
     }
@@ -108,39 +108,56 @@ export function renderSettings(container) {
   container.querySelector('#update-btn').addEventListener('click', async () => {
     const btn = container.querySelector('#update-btn');
     btn.disabled = true;
-    btn.textContent = 'Updating...';
+    btn.textContent = 'Checking...';
 
-    // Determine the base HTTP URL for the server
-    const relayUrl = localStorage.getItem('cam_relay_url') || '';
-    const serverUrl = localStorage.getItem('cam_server_url') || '';
-    let baseUrl = '';
-    if (relayUrl) baseUrl = relayUrl.replace(/^ws:\/\//, 'http://').replace(/^wss:\/\//, 'https://');
-    else if (serverUrl) baseUrl = serverUrl;
-    else if (location.protocol !== 'file:') baseUrl = location.origin;
+    const hasBridge = window.CamBridge && window.CamBridge.installApk;
 
-    if (location.protocol === 'file:' && baseUrl) {
-      // Running from APK — open APK download in external browser
-      const apkUrl = baseUrl + '/assets/cam.apk';
-      const a = document.createElement('a');
-      a.href = apkUrl;
-      a.target = '_blank';
-      a.rel = 'noopener';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      state.toast('Opening download in browser...', 'success');
+    if (hasBridge) {
+      // Running from APK — download via API (works through relay) and install
+      try {
+        // Check server version first
+        const info = await api.request('GET', '/system/apk/info');
+        const installedVer = window.CamBridge.getAppVersion();
+        if (info.version === installedVer) {
+          state.toast(`Already up to date (${installedVer})`, 'success');
+          btn.disabled = false;
+          btn.textContent = 'Update app';
+          return;
+        }
+        btn.textContent = `Downloading ${info.version}...`;
+        const result = await api.request('GET', '/system/apk/download');
+        if (!result.data) {
+          state.toast('Download failed: no data', 'error');
+          btn.disabled = false;
+          btn.textContent = 'Update app';
+          return;
+        }
+        btn.textContent = 'Installing...';
+        const ok = window.CamBridge.installApk(result.data);
+        if (ok) {
+          state.toast(`Installing ${result.version}...`, 'success');
+        } else {
+          state.toast('Install failed', 'error');
+        }
+      } catch (err) {
+        state.toast(`Update failed: ${err.message}`, 'error');
+      }
       btn.disabled = false;
       btn.textContent = 'Update app';
-    } else if (baseUrl) {
-      // Running from HTTP — clear caches and hard reload
-      try { const r = await navigator.serviceWorker.getRegistrations(); await Promise.all(r.map(x => x.unregister())); } catch {}
-      try { const k = await caches.keys(); await Promise.all(k.map(x => caches.delete(x))); } catch {}
-      state.toast('Reloading...', 'success');
-      setTimeout(() => { location.href = baseUrl + '/?_=' + Date.now(); }, 500);
     } else {
-      btn.disabled = false;
-      btn.textContent = 'Update app';
-      state.toast('No server URL configured', 'error');
+      // Running from HTTP — clear caches and hard reload
+      const serverUrl = localStorage.getItem('cam_server_url') || '';
+      let baseUrl = serverUrl || (location.protocol !== 'file:' ? location.origin : '');
+      if (baseUrl) {
+        try { const r = await navigator.serviceWorker.getRegistrations(); await Promise.all(r.map(x => x.unregister())); } catch {}
+        try { const k = await caches.keys(); await Promise.all(k.map(x => caches.delete(x))); } catch {}
+        state.toast('Reloading...', 'success');
+        setTimeout(() => { location.href = baseUrl + '/?_=' + Date.now(); }, 500);
+      } else {
+        btn.disabled = false;
+        btn.textContent = 'Update app';
+        state.toast('No server URL configured', 'error');
+      }
     }
   });
 
