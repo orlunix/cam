@@ -24,6 +24,7 @@ MODULE_ORDER = [
     "machine_store",
     "context_store",
     "remote",
+    "migrate",
     "monitor",
     "scheduler",
     "cli",

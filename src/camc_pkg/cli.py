@@ -941,6 +941,14 @@ def cmd_sync(args):
     print("Sync complete: %d deployed, %d failed" % (total_ok, total_fail))
 
 
+def cmd_migrate(args):
+    """Migrate cam SQLite data to JSON format."""
+    from camc_pkg.migrate import run_migrate
+    db_path = getattr(args, "db", None)
+    dry_run = getattr(args, "dry_run", False)
+    run_migrate(db_path=db_path, dry_run=dry_run)
+
+
 def cmd_version(args):
     print("camc v%s" % __version__)
     print()
@@ -1182,6 +1190,11 @@ examples:
     sy = sub.add_parser("sync", help="Sync camc and configs to remote machines")
     sy.add_argument("target", nargs="?", default=None, help="Machine name (omit for all SSH machines)")
 
+    # migrate
+    mig = sub.add_parser("migrate", help="Migrate cam SQLite data to JSON")
+    mig.add_argument("--db", default=None, help="Path to cam.db [default: ~/.local/share/cam/cam.db]")
+    mig.add_argument("--dry-run", action="store_true", help="Show plan without writing files")
+
     # version
     sub.add_parser("version", help="Show version")
 
@@ -1215,6 +1228,7 @@ examples:
         "machine": cmd_machine,
         "context": cmd_context,
         "sync": cmd_sync,
+        "migrate": cmd_migrate,
         "version": cmd_version,
     }
     if args.command in cmds:
