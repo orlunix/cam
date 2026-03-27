@@ -25,6 +25,7 @@ MODULE_ORDER = [
     "context_store",
     "remote",
     "migrate",
+    "formatters",
     "monitor",
     "scheduler",
     "cli",

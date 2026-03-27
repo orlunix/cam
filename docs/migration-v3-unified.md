@@ -177,7 +177,7 @@ Same code, same commands, same output structure. Just simpler rendering.
 
 ## 4. Migration Phases
 
-### Phase 0: Schema Unification (DONE)
+### Phase 0: Schema Unification (DONE ✓)
 
 - [x] Unified agent record field names (session→tmux_session, path→context_path,
       monitor_pid→pid, flat fields→nested task)
@@ -300,39 +300,25 @@ Automated steps:
 **Events are NOT migrated** — 800K rows with no practical value. Fresh start
 with `events.jsonl` + auto-rotate.
 
-### Phase 4: CLI Unification
+### Phase 4: CLI Unification (DONE ✓)
 
 **Goal:** camc becomes the full CLI, cam CLI wrapper is optional.
 
-#### 4a. Remove typer/pydantic hard dependency
+#### 4a. camc entry point in pyproject.toml
 
-- cam CLI becomes a thin wrapper that imports camc functions
-- Or: camc IS the CLI, `cam` is just a symlink/alias
-- Entry point in pyproject.toml: `cam = "camc_pkg.cli:main"`
+- `camc = "camc_pkg.cli:main"` added as entry point
+- `camc_pkg` added to build targets
+- `cam` CLI still works as before (with full deps)
 
-#### 4b. Rich as optional dependency
+#### 4b. Rich as optional dependency (DONE)
 
-```toml
-# pyproject.toml
-[project]
-dependencies = []  # Zero hard dependencies
+- `rich` moved from hard dependency to `[ui]` optional
+- `pip install cam[ui]` for rich tables/panels
+- `pip install cam[all]` for everything
 
-[project.optional-dependencies]
-ui = ["rich>=13.0.0"]
-server = ["fastapi>=0.104.0", "uvicorn[standard]>=0.24.0"]
-all = ["rich>=13.0.0", "fastapi>=0.104.0", "uvicorn[standard]>=0.24.0"]
-```
+#### 4c. Formatters with fallback (DONE)
 
-```bash
-pip install cam            # Zero deps, ANSI output
-pip install cam[ui]        # + rich tables/panels
-pip install cam[server]    # + FastAPI server for web/mobile
-pip install cam[all]       # Everything
-```
-
-#### 4c. Formatters with fallback
-
-`src/camc_pkg/formatters.py`:
+`src/camc_pkg/formatters.py` created with:
 
 ```python
 try:
