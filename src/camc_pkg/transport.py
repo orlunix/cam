@@ -45,13 +45,24 @@ def capture_tmux(session_id, lines=100):
         return ""
 
 
+def _tmux_cmd():
+    """Find tmux binary — use full path for cron compatibility."""
+    import shutil
+    return shutil.which("tmux") or "tmux"
+
+
 def tmux_session_exists(session_id):
+    tmux = _tmux_cmd()
     socket = _find_tmux_socket(session_id)
     if socket:
-        args = ["tmux", "-u", "-S", socket, "has-session", "-t", session_id]
+        args = [tmux, "-u", "-S", socket, "has-session", "-t", session_id]
     else:
-        args = ["tmux", "has-session", "-t", session_id]
+        args = [tmux, "has-session", "-t", session_id]
     rc, _ = _run(args, timeout=15)
+    if rc != 0 and socket:
+        # Socket-based check failed — retry without socket (maybe socket is stale)
+        args = [tmux, "has-session", "-t", session_id]
+        rc, _ = _run(args, timeout=15)
     return rc == 0
 
 

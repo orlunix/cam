@@ -546,8 +546,14 @@ def cmd_heal(args):
         name = _tf(a, "name") or aid
         session = _sf(a, "tmux_session")
 
-        # Check if tmux session is alive
-        if not tmux_session_exists(session):
+        # Check if tmux session is alive — double-check to avoid false negatives
+        # (cron environment may cause transient tmux failures)
+        session_alive = tmux_session_exists(session)
+        if not session_alive:
+            # Retry once with a small delay to handle race conditions
+            time.sleep(0.5)
+            session_alive = tmux_session_exists(session)
+        if not session_alive:
             state = a.get("state") or "initializing"
             status = "completed" if state not in ("initializing",) else "failed"
             store.update(aid, status=status, exit_reason="Session gone (heal)", completed_at=_now_iso())
