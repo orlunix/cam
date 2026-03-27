@@ -196,7 +196,7 @@ Files changed:
 - `src/camc_pkg/utils.py` — _kill_monitor reads both pid and monitor_pid
 - `src/cam/core/camc_poller.py` — simplified conversion, both formats
 
-### Phase 1: Machine Layer + JSON Storage
+### Phase 1: Machine Layer + JSON Storage (DONE ✓)
 
 **Goal:** Replace SQLite with JSON files. Introduce Machine as first-class entity.
 
@@ -245,7 +245,7 @@ Local: check local agents. Remote: `ssh machine "camc heal"` for each SSH machin
 - For remote machines, SSH to camc (same as today, but simpler)
 - Remove cam's SQLite stores (AgentStore, ContextStore, EventStore)
 
-### Phase 2: Directory Consolidation
+### Phase 2: Directory Consolidation (DONE ✓)
 
 **Goal:** All files under `~/.cam/`, eliminate scattered paths.
 
