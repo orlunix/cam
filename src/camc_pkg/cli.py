@@ -28,6 +28,10 @@ from camc_pkg.transport import (
 )
 from camc_pkg.detection import should_auto_confirm, is_ready_for_input
 from camc_pkg.monitor import _run_monitor
+from camc_pkg.formatters import (
+    print_table, print_panel, print_detail, print_success, print_error, print_warning,
+    print_info, styled_status, styled_state, _c, _HAS_RICH,
+)
 
 # Resolve the camc script path for spawning monitor subprocesses.
 # When running as single-file build, sys.argv[0] is the script itself.
@@ -44,9 +48,9 @@ def cmd_init(args):
     print("Checking dependencies...")
     tmux_path = shutil.which("tmux")
     if tmux_path:
-        print("  ✓ tmux: %s" % tmux_path)
+        print_success("tmux: %s" % tmux_path)
     else:
-        print("  ✗ tmux: NOT FOUND (required)")
+        print_error("tmux: NOT FOUND (required)")
         print("  Install: apt install tmux / brew install tmux")
         sys.exit(1)
 
@@ -54,7 +58,7 @@ def cmd_init(args):
     for tool_name in ("claude", "codex", "agent"):
         path = shutil.which(tool_name)
         if path:
-            print("  ✓ %s: %s" % (tool_name, path))
+            print_success("%s: %s" % (tool_name, path))
         else:
             print("  · %s: not found" % tool_name)
 
@@ -78,7 +82,7 @@ def cmd_init(args):
         else:
             with open(path, "w") as f:
                 f.write(content)
-            print("  ✓ %s" % filename)
+            print_success(filename)
 
     # 4. Create context.json template
     _load_default_context()
@@ -324,20 +328,20 @@ def cmd_list(args):
         print(json.dumps([_agent_to_cam_json(a) for a in agents], indent=2))
         return
 
-    colors = {"running": "\033[32m", "completed": "\033[36m", "failed": "\033[31m", "stopped": "\033[33m"}
-    reset = "\033[0m"
-    use_color = sys.stdout.isatty()
-
-    print("%-10s %-16s %-10s %-12s %-12s %-24s %s" % ("ID", "NAME", "TOOL", "STATUS", "STATE", "PROMPT", "STARTED"))
-    print("-" * 100)
+    headers = ["ID", "NAME", "TOOL", "STATUS", "STATE", "PROMPT", "STARTED"]
+    rows = []
     for a in agents:
-        s = a.get("status", "?")
-        ss = "%s%-12s%s" % (colors.get(s, ""), s, reset) if use_color else "%-12s" % s
-        print("%-10s %-16s %-10s %s %-12s %-24s %s" % (
-            a.get("id", "?"), (_tf(a, "name") or "")[:16],
-            _tf(a, "tool", "?"), ss,
-            a.get("state", "") or "", (_tf(a, "prompt") or "")[:24],
-            _time_ago(a.get("started_at"))))
+        rows.append([
+            a.get("id", "?")[:8],
+            (_tf(a, "name") or "")[:16],
+            _tf(a, "tool", "?"),
+            styled_status(a.get("status", "?")),
+            styled_state(a.get("state")),
+            (_tf(a, "prompt") or "")[:24],
+            _time_ago(a.get("started_at")),
+        ])
+    print_table(headers, rows, title="Agents",
+                col_styles={0: "dim", 1: "bold", 3: None, 6: "dim"})
 
 
 def cmd_logs(args):
@@ -489,28 +493,25 @@ def cmd_status(args):
         if _want_json(args):
             print(json.dumps(_agent_to_cam_json(a), indent=2))
             return
-        print("Agent: %s" % a.get("id", "?"))
-        aname = _tf(a, "name")
-        if aname:
-            print("  Name:      %s" % aname)
-        print("  Tool:      %s" % _tf(a, "tool", "?"))
-        print("  Status:    %s" % a.get("status", "?"))
-        print("  State:     %s" % (a.get("state") or "-"))
-        print("  Path:      %s" % _sf(a, "context_path", "?"))
-        session = _sf(a, "tmux_session", "?")
-        print("  Session:   %s" % session)
-        print("  Started:   %s" % (a.get("started_at") or "-"))
-        if a.get("completed_at"):
-            print("  Completed: %s" % a["completed_at"])
-        if a.get("exit_reason"):
-            print("  Exit:      %s" % a["exit_reason"])
         prompt = _tf(a, "prompt") or ""
-        print("  Prompt:    %s" % (prompt[:80] + "..." if len(prompt) > 80 else prompt or "(interactive)"))
-        if _tf(a, "auto_exit"):
-            print("  Auto-exit: ON")
-        # Check session alive
+        prompt_display = prompt[:80] + "..." if len(prompt) > 80 else prompt or "(interactive)"
         alive = tmux_session_exists(_sf(a, "tmux_session"))
-        print("  Session:   %s" % ("alive" if alive else "dead"))
+        pairs = [
+            ("ID", a.get("id", "?")),
+            ("Name", _tf(a, "name")),
+            ("Tool", _tf(a, "tool", "?")),
+            ("Status", a.get("status", "?")),
+            ("State", a.get("state") or "-"),
+            ("Path", _sf(a, "context_path", "?")),
+            ("Session", _sf(a, "tmux_session", "?")),
+            ("Started", a.get("started_at") or "-"),
+            ("Completed", a.get("completed_at")),
+            ("Exit", a.get("exit_reason")),
+            ("Prompt", prompt_display),
+            ("Auto-exit", "ON" if _tf(a, "auto_exit") else None),
+            ("Alive", _c("alive", "green") if alive else _c("dead", "red")),
+        ]
+        print_detail(pairs, title="Agent: %s" % a.get("id", "?"), border_style="green")
         return
 
     # Multiple agents — JSON dump
@@ -654,17 +655,12 @@ def cmd_history(args):
         return
 
     # Human-readable table
-    colors = {
-        "state_change": "\033[36m",
-        "auto_confirm": "\033[33m",
-        "completed": "\033[32m",
-        "monitor_start": "\033[34m",
+    _evt_colors = {
+        "state_change": "cyan", "auto_confirm": "yellow",
+        "completed": "green", "monitor_start": "blue",
     }
-    reset = "\033[0m"
-    use_color = sys.stdout.isatty()
-
-    print("%-10s %-20s %-16s %s" % ("AGENT", "TIME", "EVENT", "DETAIL"))
-    print("-" * 80)
+    headers = ["AGENT", "TIME", "EVENT", "DETAIL"]
+    rows = []
     for ev in entries:
         etype = ev.get("type", "?")
         detail = ev.get("detail", {})
@@ -677,12 +673,12 @@ def cmd_history(args):
             detail_str = "%s: %s" % (detail.get("status", "?"), detail.get("reason", "?"))
         else:
             detail_str = json.dumps(detail) if detail else ""
-
         ts = ev.get("ts", "")[:19].replace("T", " ")
-        c = colors.get(etype, "") if use_color else ""
-        r = reset if use_color and c else ""
-        print("%-10s %-20s %s%-16s%s %s" % (
-            ev.get("agent_id", "?")[:8], ts, c, etype, r, detail_str))
+        rows.append([
+            ev.get("agent_id", "?")[:8], ts,
+            _c(etype, _evt_colors.get(etype)), detail_str,
+        ])
+    print_table(headers, rows, title="Events")
 
 
 # ===========================================================================
@@ -717,18 +713,19 @@ def cmd_machine_list(args):
     if not machines:
         print("No machines configured.")
         return
-    colors = {"local": "\033[36m", "ssh": "\033[32m"}
-    reset = "\033[0m"
-    use_color = sys.stdout.isatty()
-    print("%-16s %-8s %-30s %-8s %s" % ("NAME", "TYPE", "HOST", "PORT", "USER"))
-    print("-" * 80)
+    _mtype_colors = {"local": "cyan", "ssh": "green"}
+    headers = ["NAME", "TYPE", "HOST", "PORT", "USER"]
+    rows = []
     for m in machines:
         mtype = m.get("type", "?")
-        c = colors.get(mtype, "") if use_color else ""
-        r = reset if use_color and c else ""
-        print("%-16s %s%-8s%s %-30s %-8s %s" % (
-            m.get("name", "?"), c, mtype, r,
-            m.get("host") or "-", m.get("port") or "-", m.get("user") or "-"))
+        rows.append([
+            m.get("name", "?"),
+            _c(mtype, _mtype_colors.get(mtype)),
+            m.get("host") or "-",
+            m.get("port") or "-",
+            m.get("user") or "-",
+        ])
+    print_table(headers, rows, title="Machines")
 
 
 def cmd_machine_add(args):
@@ -823,9 +820,9 @@ def cmd_machine_ping(args):
         host = m.get("host", "?")
         ok = ssh_ping(m)
         if ok:
-            print("  \033[32m✓\033[0m %s (%s)" % (name, host))
+            print_success("%s (%s)" % (name, host))
         else:
-            print("  \033[31m✗\033[0m %s (%s) — unreachable" % (name, host))
+            print_error("%s (%s) — unreachable" % (name, host))
 
 
 # ===========================================================================
@@ -856,10 +853,9 @@ def cmd_context_list(args):
     if not contexts:
         print("No contexts configured.")
         return
-    print("%-20s %-16s %s" % ("NAME", "MACHINE", "PATH"))
-    print("-" * 80)
-    for c in contexts:
-        print("%-20s %-16s %s" % (c.get("name", "?"), c.get("machine", "?"), c.get("path", "?")))
+    headers = ["NAME", "MACHINE", "PATH"]
+    rows = [[c.get("name", "?"), c.get("machine", "?"), c.get("path", "?")] for c in contexts]
+    print_table(headers, rows, title="Contexts", col_styles={0: "bold cyan", 1: "magenta"})
 
 
 def cmd_context_add(args):
