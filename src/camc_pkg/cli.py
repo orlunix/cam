@@ -9,9 +9,16 @@ import shutil
 import subprocess
 import sys
 import time
-from uuid import uuid4
+import socket as _sock
+from uuid import uuid4, uuid5, NAMESPACE_DNS as _UUID_NS
 
-from camc_pkg import __version__, CAM_DIR, CONFIGS_DIR, CONTEXT_FILE, log
+
+def _gen_agent_id():
+    """Generate an 8-char agent ID from hostname + time + random."""
+    raw = "%s-%s-%s" % (_sock.gethostname(), time.time(), uuid4().hex[:8])
+    return uuid5(_UUID_NS, raw).hex[:8]
+
+from camc_pkg import __version__, CAM_DIR, CONFIGS_DIR, CONTEXT_FILE, LOGS_DIR, PIDS_DIR, log
 from camc_pkg.utils import _now_iso, _time_ago, _load_default_context, _build_command, _kill_monitor
 from camc_pkg.adapters import _EMBEDDED_CONFIGS, _load_config
 from camc_pkg.storage import AgentStore, EventStore
@@ -21,6 +28,11 @@ from camc_pkg.transport import (
 )
 from camc_pkg.detection import should_auto_confirm, is_ready_for_input
 from camc_pkg.monitor import _run_monitor
+
+# Resolve the camc script path for spawning monitor subprocesses.
+# When running as single-file build, sys.argv[0] is the script itself.
+# When running as `python -m camc_pkg`, we fall back to `-m camc_pkg`.
+_CAMC_SCRIPT = os.path.abspath(sys.argv[0]) if os.path.isfile(sys.argv[0]) else None
 
 
 def cmd_init(args):
@@ -91,38 +103,85 @@ def _want_json(args):
     return getattr(args, "json", False)
 
 
+def _tf(agent, field, default=""):
+    """Get a task sub-field from agent record (supports both old flat and new nested format)."""
+    t = agent.get("task")
+    if isinstance(t, dict):
+        return t.get(field, default)
+    return agent.get(field, default)
+
+
+_SENTINEL = object()
+
+
+def _sf(agent, field, default=""):
+    """Get a session-related field, handling legacy field names."""
+    # Unified field names first, then legacy fallbacks
+    _LEGACY = {"tmux_session": "session", "context_path": "path", "pid": "monitor_pid"}
+    v = agent.get(field, _SENTINEL)
+    if v is not _SENTINEL:
+        return v
+    legacy = _LEGACY.get(field)
+    if legacy:
+        return agent.get(legacy, default)
+    return default
+
+
 def _agent_to_cam_json(a):
-    """Convert internal agent dict to cam-compatible JSON format."""
-    context = a.get("context") or {}
-    ctx_name = context.get("name") if isinstance(context, dict) else None
-    ctx_host = context.get("host") if isinstance(context, dict) else None
-    ctx_port = context.get("port") if isinstance(context, dict) else None
-    session = a.get("session", "")
-    sock = _find_tmux_socket(session) if session else None
-    transport = "ssh" if ctx_host and ctx_host != "localhost" else "local"
-    return {
-        "id": a.get("id", ""),
-        "task": {
+    """Convert agent dict to cam-compatible JSON format.
+
+    With the unified schema, new-format records are already cam-compatible.
+    This function handles both legacy (flat fields) and new (nested task) formats.
+    """
+    # Handle nested task (new format) vs flat fields (legacy)
+    task = a.get("task")
+    if isinstance(task, dict):
+        task_out = dict(task)
+    else:
+        task_out = {
             "name": a.get("name") or "",
             "tool": a.get("tool", ""),
             "prompt": a.get("prompt", ""),
             "auto_confirm": True,
             "auto_exit": a.get("auto_exit", False),
-        },
-        "context_name": ctx_name or "",
-        "context_path": a.get("path", ""),
+        }
+
+    # Session name: unified = tmux_session, legacy = session
+    session = a.get("tmux_session") or a.get("session", "")
+    sock = a.get("tmux_socket") or (_find_tmux_socket(session) if session else None)
+
+    # Transport: unified has transport_type, legacy derives from context
+    transport = a.get("transport_type")
+    if not transport:
+        context = a.get("context") or {}
+        ctx_host = context.get("host") if isinstance(context, dict) else None
+        transport = "ssh" if ctx_host and ctx_host not in ("localhost", "127.0.0.1") else "local"
+
+    # Context name: unified has context_name, legacy derives from context dict
+    ctx_name = a.get("context_name")
+    if not ctx_name:
+        context = a.get("context") or {}
+        ctx_name = context.get("name", "") if isinstance(context, dict) else ""
+
+    return {
+        "id": a.get("id", ""),
+        "task": task_out,
+        "context_id": a.get("context_id", ""),
+        "context_name": ctx_name,
+        "context_path": a.get("context_path") or a.get("path", ""),
         "transport_type": transport,
         "status": a.get("status", ""),
         "state": a.get("state", ""),
         "tmux_session": session,
         "tmux_socket": sock or "",
-        "pid": a.get("monitor_pid"),
+        "pid": a.get("pid") if a.get("pid") is not None else a.get("monitor_pid"),
+        "hostname": a.get("hostname", ""),
         "started_at": a.get("started_at"),
         "completed_at": a.get("completed_at"),
         "exit_reason": a.get("exit_reason"),
-        "retry_count": 0,
-        "cost_estimate": None,
-        "files_changed": [],
+        "retry_count": a.get("retry_count", 0),
+        "cost_estimate": a.get("cost_estimate"),
+        "files_changed": a.get("files_changed", []),
     }
 
 
@@ -133,13 +192,19 @@ def cmd_run(args):
     os.makedirs(workdir, exist_ok=True)
     config = _load_config(tool)
 
-    agent_id = uuid4().hex[:8]
+    agent_id = _gen_agent_id()
     session = "cam-%s" % agent_id
     launch_cmd = _build_command(config, prompt, workdir)
 
     context = _load_default_context()
     env_setup = context.get("env_setup") or None
     inherit_env = not getattr(args, "no_inherit_env", False)
+    # Ensure dirs exist
+    for d in (LOGS_DIR, PIDS_DIR):
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError:
+            pass
     print("Starting %s agent %s..." % (tool, agent_id))
     if not create_tmux_session(session, launch_cmd, workdir, env_setup=env_setup, inherit_env=inherit_env):
         sys.stderr.write("Error: failed to create tmux session\n")
@@ -168,22 +233,36 @@ def cmd_run(args):
 
     name = getattr(args, "name", None) or None
     auto_exit = getattr(args, "auto_exit", False)
+    ctx_name = context.get("name", "") if isinstance(context, dict) else ""
+    ctx_host = context.get("host") if isinstance(context, dict) else None
+    transport = "ssh" if ctx_host and ctx_host not in ("localhost", "127.0.0.1") else "local"
     store = AgentStore()
-    store.save({"id": agent_id, "tool": tool, "session": session, "status": "running",
-                "state": "initializing", "prompt": prompt, "path": workdir,
-                "name": name, "auto_exit": auto_exit,
-                "context": context,
-                "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
-                "monitor_pid": None})
+    store.save({
+        "id": agent_id,
+        "task": {"name": name or "", "tool": tool, "prompt": prompt,
+                 "auto_confirm": True, "auto_exit": auto_exit},
+        "context_id": "",
+        "context_name": ctx_name,
+        "context_path": workdir,
+        "transport_type": transport,
+        "status": "running",
+        "state": "initializing",
+        "tmux_session": session,
+        "tmux_socket": "",
+        "pid": None,
+        "hostname": _sock.gethostname(),
+        "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
+        "retry_count": 0, "cost_estimate": None, "files_changed": [],
+    })
 
     # Spawn background monitor
     try:
         proc = subprocess.Popen(
-            [sys.executable, "-m", "camc_pkg", "_monitor", agent_id],
+            [sys.executable, _CAMC_SCRIPT, "_monitor", agent_id] if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg", "_monitor", agent_id],
             stdout=subprocess.DEVNULL,
-            stderr=open("/tmp/camc-%s.log" % agent_id, "a"),
+            stderr=open(os.path.join(LOGS_DIR, "monitor-%s.stderr" % agent_id), "a"),
             start_new_session=True)
-        store.update(agent_id, monitor_pid=proc.pid)
+        store.update(agent_id, pid=proc.pid)
     except Exception:
         pass
 
@@ -202,22 +281,31 @@ def cmd_run(args):
     print("  Logs:   camc logs %s -f" % agent_id)
 
 
+def _is_same_host(a_hostname, my_hostname):
+    """Compare hostnames tolerating FQDN vs short name differences."""
+    if not a_hostname or not my_hostname:
+        return True  # assume local if unknown
+    if a_hostname == my_hostname:
+        return True
+    # Compare short hostname (before first dot)
+    return a_hostname.split(".")[0] == my_hostname.split(".")[0]
+
+
 def cmd_list(args):
+    my_hostname = _sock.gethostname()
     store = AgentStore()
     agents = store.list()
+
+    # In shared-disk clusters, filter to agents belonging to this host.
+    # Agents without a hostname field are assumed to be local (pre-upgrade).
+    agents = [a for a in agents if _is_same_host(a.get("hostname"), my_hostname)]
+
     if not agents:
         if _want_json(args):
             print("[]")
         else:
             print("No agents.")
         return
-
-    for a in agents:
-        if a["status"] == "running" and not tmux_session_exists(a["session"]):
-            state = a.get("state") or "initializing"
-            status = "failed" if state == "initializing" else "completed"
-            a.update(status=status, exit_reason="Session gone", completed_at=_now_iso())
-            store.update(a["id"], **{k: a[k] for k in ("status", "exit_reason", "completed_at")})
 
     # Apply filters
     status_filter = getattr(args, "status", None)
@@ -246,9 +334,9 @@ def cmd_list(args):
         s = a.get("status", "?")
         ss = "%s%-12s%s" % (colors.get(s, ""), s, reset) if use_color else "%-12s" % s
         print("%-10s %-16s %-10s %s %-12s %-24s %s" % (
-            a.get("id", "?"), (a.get("name") or "")[:16],
-            a.get("tool", "?"), ss,
-            a.get("state", "") or "", (a.get("prompt", "") or "")[:24],
+            a.get("id", "?"), (_tf(a, "name") or "")[:16],
+            _tf(a, "tool", "?"), ss,
+            a.get("state", "") or "", (_tf(a, "prompt") or "")[:24],
             _time_ago(a.get("started_at"))))
 
 
@@ -258,21 +346,22 @@ def cmd_logs(args):
     if not a:
         sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
     tail_n = getattr(args, "tail", 50) or 50
+    session = _sf(a, "tmux_session")
     if args.follow:
         prev = ""
         try:
             while True:
-                out = capture_tmux(a["session"], lines=max(tail_n, 200))
+                out = capture_tmux(session, lines=max(tail_n, 200))
                 if out != prev:
                     os.system("clear"); print(out); prev = out
-                if not tmux_session_exists(a["session"]):
+                if not tmux_session_exists(session):
                     print("\n--- session ended ---"); break
                 time.sleep(1)
         except KeyboardInterrupt:
             pass
     else:
-        out = capture_tmux(a["session"], lines=tail_n)
-        print(out or ("(session not found)" if not tmux_session_exists(a["session"]) else "(no output)"))
+        out = capture_tmux(session, lines=tail_n)
+        print(out or ("(session not found)" if not tmux_session_exists(session) else "(no output)"))
 
 
 def cmd_stop(args):
@@ -281,7 +370,7 @@ def cmd_stop(args):
     if not a:
         sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
     _kill_monitor(a)
-    tmux_kill_session(a["session"])
+    tmux_kill_session(_sf(a, "tmux_session"))
     store.update(a["id"], status="stopped", exit_reason="Stopped by user", completed_at=_now_iso())
     print("Stopped agent %s" % a["id"])
 
@@ -293,7 +382,7 @@ def cmd_kill(args):
     if not a:
         sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
     _kill_monitor(a)
-    tmux_kill_session(a["session"])
+    tmux_kill_session(_sf(a, "tmux_session"))
     store.update(a["id"], status="stopped", exit_reason="Force killed by user", completed_at=_now_iso())
     print("Killed agent %s" % a["id"])
 
@@ -302,20 +391,35 @@ def cmd_add(args):
     if not tmux_session_exists(args.session):
         sys.stderr.write("Error: tmux session '%s' not found\n" % args.session); sys.exit(1)
     store = AgentStore()
-    agent_id = uuid4().hex[:8]
+    agent_id = _gen_agent_id()
     context = _load_default_context()
-    store.save({"id": agent_id, "tool": args.tool, "session": args.session, "status": "running",
-                "state": None, "prompt": "(adopted)", "path": os.getcwd(),
-                "context": context,
-                "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
-                "monitor_pid": None})
+    ctx_name = context.get("name", "") if isinstance(context, dict) else ""
+    ctx_host = context.get("host") if isinstance(context, dict) else None
+    transport = "ssh" if ctx_host and ctx_host not in ("localhost", "127.0.0.1") else "local"
+    store.save({
+        "id": agent_id,
+        "task": {"name": "", "tool": args.tool, "prompt": "(adopted)",
+                 "auto_confirm": True, "auto_exit": False},
+        "context_id": "",
+        "context_name": ctx_name,
+        "context_path": os.getcwd(),
+        "transport_type": transport,
+        "status": "running",
+        "state": None,
+        "tmux_session": args.session,
+        "tmux_socket": "",
+        "pid": None,
+        "hostname": _sock.gethostname(),
+        "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
+        "retry_count": 0, "cost_estimate": None, "files_changed": [],
+    })
     # Spawn monitor
     try:
         proc = subprocess.Popen(
-            [sys.executable, "-m", "camc_pkg", "_monitor", agent_id],
+            [sys.executable, _CAMC_SCRIPT, "_monitor", agent_id] if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg", "_monitor", agent_id],
             stdout=subprocess.DEVNULL, stderr=open("/tmp/camc-%s.log" % agent_id, "a"),
             start_new_session=True)
-        store.update(agent_id, monitor_pid=proc.pid)
+        store.update(agent_id, pid=proc.pid)
     except Exception:
         pass
     print("Adopted '%s' as agent %s (tool=%s)" % (args.session, agent_id, args.tool))
@@ -327,7 +431,7 @@ def cmd_rm(args):
     if not a:
         sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
     if args.kill:
-        _kill_monitor(a); tmux_kill_session(a["session"])
+        _kill_monitor(a); tmux_kill_session(_sf(a, "tmux_session"))
     store.remove(a["id"])
     print("Removed agent %s%s" % (a["id"], " (killed)" if args.kill else ""))
 
@@ -343,16 +447,17 @@ def cmd_attach(args):
         if not running:
             sys.stderr.write("Error: no running agents\n"); sys.exit(1)
         a = running[0]
-        print("Attaching to most recent: %s (%s)" % (a.get("name") or a["id"], a["id"]))
+        print("Attaching to most recent: %s (%s)" % (_tf(a, "name") or a["id"], a["id"]))
     else:
         a = store.get(agent_id)
         if not a:
             sys.stderr.write("Error: agent '%s' not found\n" % agent_id); sys.exit(1)
-    sock = _find_tmux_socket(a["session"])
+    session = _sf(a, "tmux_session")
+    sock = _find_tmux_socket(session)
     if sock:
-        os.execvp("tmux", ["tmux", "-u", "-S", sock, "attach", "-t", a["session"]])
+        os.execvp("tmux", ["tmux", "-u", "-S", sock, "attach", "-t", session])
     else:
-        os.execvp("tmux", ["tmux", "attach", "-t", a["session"]])
+        os.execvp("tmux", ["tmux", "attach", "-t", session])
 
 
 def cmd_status(args):
@@ -385,24 +490,26 @@ def cmd_status(args):
             print(json.dumps(_agent_to_cam_json(a), indent=2))
             return
         print("Agent: %s" % a.get("id", "?"))
-        if a.get("name"):
-            print("  Name:      %s" % a["name"])
-        print("  Tool:      %s" % a.get("tool", "?"))
+        aname = _tf(a, "name")
+        if aname:
+            print("  Name:      %s" % aname)
+        print("  Tool:      %s" % _tf(a, "tool", "?"))
         print("  Status:    %s" % a.get("status", "?"))
         print("  State:     %s" % (a.get("state") or "-"))
-        print("  Path:      %s" % a.get("path", "?"))
-        print("  Session:   %s" % a.get("session", "?"))
+        print("  Path:      %s" % _sf(a, "context_path", "?"))
+        session = _sf(a, "tmux_session", "?")
+        print("  Session:   %s" % session)
         print("  Started:   %s" % (a.get("started_at") or "-"))
         if a.get("completed_at"):
             print("  Completed: %s" % a["completed_at"])
         if a.get("exit_reason"):
             print("  Exit:      %s" % a["exit_reason"])
-        prompt = a.get("prompt") or ""
+        prompt = _tf(a, "prompt") or ""
         print("  Prompt:    %s" % (prompt[:80] + "..." if len(prompt) > 80 else prompt or "(interactive)"))
-        if a.get("auto_exit"):
+        if _tf(a, "auto_exit"):
             print("  Auto-exit: ON")
         # Check session alive
-        alive = tmux_session_exists(a.get("session", ""))
+        alive = tmux_session_exists(_sf(a, "tmux_session"))
         print("  Session:   %s" % ("alive" if alive else "dead"))
         return
 
@@ -417,6 +524,7 @@ def cmd_status(args):
 
 def cmd_heal(args):
     """Check running agents and restart dead monitor daemons."""
+    my_hostname = _sock.gethostname()
     store = AgentStore()
     agents = store.list()
     running = [a for a in agents if a.get("status") == "running"]
@@ -426,10 +534,16 @@ def cmd_heal(args):
 
     healed = 0
     ok = 0
+    skipped = 0
     for a in running:
+        # Skip agents from other machines in the cluster (shared NFS home)
+        agent_host = a.get("hostname")
+        if not _is_same_host(agent_host, my_hostname):
+            skipped += 1
+            continue
         aid = a["id"]
-        name = a.get("name") or aid
-        session = a.get("session", "")
+        name = _tf(a, "name") or aid
+        session = _sf(a, "tmux_session")
 
         # Check if tmux session is alive
         if not tmux_session_exists(session):
@@ -441,7 +555,7 @@ def cmd_heal(args):
 
         # Check if monitor process is alive
         monitor_alive = False
-        pid = a.get("monitor_pid")
+        pid = _sf(a, "pid", None)
         if pid:
             try:
                 os.kill(pid, 0)
@@ -449,18 +563,20 @@ def cmd_heal(args):
             except (ProcessLookupError, PermissionError, OSError):
                 pass
         if not monitor_alive:
-            pid_path = "/tmp/camc-%s.pid" % aid
-            if os.path.exists(pid_path):
-                try:
-                    with open(pid_path) as f:
-                        fpid = int(f.read().strip())
-                    os.kill(fpid, 0)
-                    monitor_alive = True
-                except (ValueError, ProcessLookupError, PermissionError, OSError):
+            from camc_pkg import PIDS_DIR
+            for pid_path in (os.path.join(PIDS_DIR, "%s.pid" % aid), "/tmp/camc-%s.pid" % aid):
+                if os.path.exists(pid_path):
                     try:
-                        os.unlink(pid_path)
-                    except OSError:
-                        pass
+                        with open(pid_path) as f:
+                            fpid = int(f.read().strip())
+                        os.kill(fpid, 0)
+                        monitor_alive = True
+                        break
+                    except (ValueError, ProcessLookupError, PermissionError, OSError):
+                        try:
+                            os.unlink(pid_path)
+                        except OSError:
+                            pass
 
         if monitor_alive:
             print("  %s (%s): ok" % (name, aid))
@@ -470,18 +586,24 @@ def cmd_heal(args):
         # Restart monitor
         try:
             proc = subprocess.Popen(
-                [sys.executable, "-m", "camc_pkg", "_monitor", aid],
+                [sys.executable, _CAMC_SCRIPT, "_monitor", aid] if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg", "_monitor", aid],
                 stdout=subprocess.DEVNULL,
                 stderr=open("/tmp/camc-%s.log" % aid, "a"),
                 start_new_session=True)
-            store.update(aid, monitor_pid=proc.pid)
+            store.update(aid, pid=proc.pid)
             print("  %s (%s): restarted (PID %d)" % (name, aid, proc.pid))
             healed += 1
         except Exception as e:
             print("  %s (%s): restart failed: %s" % (name, aid, e))
 
-    failed = len(running) - ok - healed
-    print("Heal: %d healthy, %d restarted%s" % (ok, healed, ", %d failed" % failed if failed else ""))
+    local_count = len(running) - skipped
+    failed = local_count - ok - healed
+    msg = "Heal: %d healthy, %d restarted" % (ok, healed)
+    if failed:
+        msg += ", %d failed" % failed
+    if skipped:
+        msg += " (%d skipped, other host)" % skipped
+    print(msg)
 
 
 def cmd_apply(args):
@@ -563,6 +685,262 @@ def cmd_history(args):
             ev.get("agent_id", "?")[:8], ts, c, etype, r, detail_str))
 
 
+# ===========================================================================
+# Machine management
+# ===========================================================================
+
+def cmd_machine(args):
+    """Machine management subcommands."""
+    sub = getattr(args, "machine_cmd", None)
+    if sub == "list":
+        cmd_machine_list(args)
+    elif sub == "add":
+        cmd_machine_add(args)
+    elif sub == "rm":
+        cmd_machine_rm(args)
+    elif sub == "edit":
+        cmd_machine_edit(args)
+    elif sub == "ping":
+        cmd_machine_ping(args)
+    else:
+        print("Usage: camc machine {list|add|rm|edit|ping}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_machine_list(args):
+    from camc_pkg.machine_store import MachineStore
+    store = MachineStore()
+    machines = store.list()
+    if _want_json(args):
+        print(json.dumps(machines, indent=2))
+        return
+    if not machines:
+        print("No machines configured.")
+        return
+    colors = {"local": "\033[36m", "ssh": "\033[32m"}
+    reset = "\033[0m"
+    use_color = sys.stdout.isatty()
+    print("%-16s %-8s %-30s %-8s %s" % ("NAME", "TYPE", "HOST", "PORT", "USER"))
+    print("-" * 80)
+    for m in machines:
+        mtype = m.get("type", "?")
+        c = colors.get(mtype, "") if use_color else ""
+        r = reset if use_color and c else ""
+        print("%-16s %s%-8s%s %-30s %-8s %s" % (
+            m.get("name", "?"), c, mtype, r,
+            m.get("host") or "-", m.get("port") or "-", m.get("user") or "-"))
+
+
+def cmd_machine_add(args):
+    from camc_pkg.machine_store import MachineStore
+    store = MachineStore()
+    name = args.name
+    if store.get(name) and name != "local":
+        print("Error: machine '%s' already exists (use 'camc machine edit' to update)" % name, file=sys.stderr)
+        sys.exit(1)
+    machine = {"name": name, "type": args.type or "ssh"}
+    if args.host:
+        machine["host"] = args.host
+    if args.user:
+        machine["user"] = args.user
+    if args.port:
+        machine["port"] = int(args.port)
+    if getattr(args, "env_setup", None):
+        machine["env_setup"] = args.env_setup
+    if getattr(args, "key_file", None):
+        machine["key_file"] = args.key_file
+    # Validate SSH machines
+    if machine["type"] == "ssh":
+        if not machine.get("host"):
+            print("Error: SSH machine requires --host", file=sys.stderr)
+            sys.exit(1)
+        if not machine.get("user"):
+            print("Error: SSH machine requires --user", file=sys.stderr)
+            sys.exit(1)
+    store.save(machine)
+    print("Added machine '%s' (%s)" % (name, machine["type"]))
+    if machine.get("host"):
+        print("  %s@%s:%s" % (machine.get("user", ""), machine["host"], machine.get("port", 22)))
+
+
+def cmd_machine_rm(args):
+    from camc_pkg.machine_store import MachineStore
+    store = MachineStore()
+    name = args.name
+    if name == "local":
+        print("Error: cannot remove the 'local' machine", file=sys.stderr)
+        sys.exit(1)
+    if not store.remove(name):
+        print("Error: machine '%s' not found" % name, file=sys.stderr)
+        sys.exit(1)
+    print("Removed machine '%s'" % name)
+
+
+def cmd_machine_edit(args):
+    from camc_pkg.machine_store import MachineStore
+    store = MachineStore()
+    name = args.name
+    m = store.get(name)
+    if not m:
+        print("Error: machine '%s' not found" % name, file=sys.stderr)
+        sys.exit(1)
+    changed = False
+    if args.host is not None:
+        m["host"] = args.host; changed = True
+    if args.user is not None:
+        m["user"] = args.user; changed = True
+    if args.port is not None:
+        m["port"] = int(args.port); changed = True
+    if getattr(args, "env_setup", None) is not None:
+        m["env_setup"] = args.env_setup; changed = True
+    if getattr(args, "key_file", None) is not None:
+        m["key_file"] = args.key_file; changed = True
+    if getattr(args, "type", None) is not None:
+        m["type"] = args.type; changed = True
+    if not changed:
+        print("Nothing to change. Use --host, --user, --port, --env-setup, --key-file")
+        return
+    store.save(m)
+    print("Updated machine '%s'" % name)
+
+
+def cmd_machine_ping(args):
+    from camc_pkg.machine_store import MachineStore
+    from camc_pkg.remote import ssh_ping
+    store = MachineStore()
+    if args.name:
+        machines = [store.get(args.name)]
+        if not machines[0]:
+            print("Error: machine '%s' not found" % args.name, file=sys.stderr)
+            sys.exit(1)
+    else:
+        machines = store.list_ssh()
+    if not machines:
+        print("No SSH machines configured.")
+        return
+    for m in machines:
+        name = m.get("name", "?")
+        host = m.get("host", "?")
+        ok = ssh_ping(m)
+        if ok:
+            print("  \033[32m✓\033[0m %s (%s)" % (name, host))
+        else:
+            print("  \033[31m✗\033[0m %s (%s) — unreachable" % (name, host))
+
+
+# ===========================================================================
+# Context management
+# ===========================================================================
+
+def cmd_context(args):
+    """Context management subcommands."""
+    sub = getattr(args, "context_cmd", None)
+    if sub == "list":
+        cmd_context_list(args)
+    elif sub == "add":
+        cmd_context_add(args)
+    elif sub == "rm":
+        cmd_context_rm(args)
+    else:
+        print("Usage: camc context {list|add|rm}", file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_context_list(args):
+    from camc_pkg.context_store import ContextStore
+    store = ContextStore()
+    contexts = store.list()
+    if _want_json(args):
+        print(json.dumps(contexts, indent=2))
+        return
+    if not contexts:
+        print("No contexts configured.")
+        return
+    print("%-20s %-16s %s" % ("NAME", "MACHINE", "PATH"))
+    print("-" * 80)
+    for c in contexts:
+        print("%-20s %-16s %s" % (c.get("name", "?"), c.get("machine", "?"), c.get("path", "?")))
+
+
+def cmd_context_add(args):
+    from camc_pkg.context_store import ContextStore
+    from camc_pkg.machine_store import MachineStore
+    ctx_store = ContextStore()
+    name = args.name
+    if ctx_store.get(name):
+        print("Error: context '%s' already exists" % name, file=sys.stderr)
+        sys.exit(1)
+    machine_name = getattr(args, "machine", None) or "local"
+    m_store = MachineStore()
+    if not m_store.get(machine_name):
+        print("Error: machine '%s' not found (use 'camc machine add' first)" % machine_name, file=sys.stderr)
+        sys.exit(1)
+    path = os.path.abspath(getattr(args, "path", None) or os.getcwd())
+    ctx_store.save({"name": name, "machine": machine_name, "path": path})
+    print("Added context '%s' (machine=%s, path=%s)" % (name, machine_name, path))
+
+
+def cmd_context_rm(args):
+    from camc_pkg.context_store import ContextStore
+    store = ContextStore()
+    if not store.remove(args.name):
+        print("Error: context '%s' not found" % args.name, file=sys.stderr)
+        sys.exit(1)
+    print("Removed context '%s'" % args.name)
+
+
+# ===========================================================================
+# Sync
+# ===========================================================================
+
+def cmd_sync(args):
+    """Sync camc and configs to remote machines."""
+    from camc_pkg.machine_store import MachineStore
+    from camc_pkg.remote import sync_camc_to_machine
+    store = MachineStore()
+
+    target = getattr(args, "target", None)
+    if target:
+        m = store.get(target)
+        if not m:
+            print("Error: machine '%s' not found" % target, file=sys.stderr)
+            sys.exit(1)
+        if m.get("type") != "ssh":
+            print("Error: sync only works with SSH machines" , file=sys.stderr)
+            sys.exit(1)
+        machines = [m]
+    else:
+        machines = store.list_ssh()
+
+    if not machines:
+        print("No SSH machines to sync.")
+        return
+
+    total_ok = 0
+    total_fail = 0
+    for m in machines:
+        name = m.get("name", "?")
+        host = m.get("host", "?")
+        print("Syncing to %s (%s)..." % (name, host))
+        try:
+            results = sync_camc_to_machine(m)
+        except Exception as e:
+            print("  \033[31m✗ Failed: %s\033[0m" % e)
+            total_fail += 1
+            continue
+        for fname, status in results.items():
+            if status == "deployed":
+                print("  \033[32m%s: deployed\033[0m" % fname)
+                total_ok += 1
+            elif status == "unchanged":
+                print("  %s: unchanged" % fname)
+            else:
+                print("  \033[31m%s: FAILED\033[0m" % fname)
+                total_fail += 1
+    print()
+    print("Sync complete: %d deployed, %d failed" % (total_ok, total_fail))
+
+
 def cmd_version(args):
     print("camc v%s" % __version__)
     print()
@@ -578,10 +956,12 @@ def cmd_capture(args):
     """Capture tmux screen output for an agent."""
     store = AgentStore()
     a = store.get(args.id)
-    if not a:
-        print("Agent not found: %s" % args.id, file=sys.stderr)
-        sys.exit(1)
-    session = a.get("session", "")
+    if a:
+        session = _sf(a, "tmux_session")
+    else:
+        # Not in agents.json — treat id as a tmux session name directly.
+        # This allows cam server to capture sessions it created via SSHTransport.
+        session = args.id
     if not session:
         print("Agent has no tmux session", file=sys.stderr)
         sys.exit(1)
@@ -599,10 +979,10 @@ def cmd_send(args):
     """Send text input to an agent's tmux session."""
     store = AgentStore()
     a = store.get(args.id)
-    if not a:
-        print("Agent not found: %s" % args.id, file=sys.stderr)
-        sys.exit(1)
-    session = a.get("session", "")
+    if a:
+        session = _sf(a, "tmux_session")
+    else:
+        session = args.id
     if not session:
         print("Agent has no tmux session", file=sys.stderr)
         sys.exit(1)
@@ -615,10 +995,10 @@ def cmd_key(args):
     """Send a special key to an agent's tmux session."""
     store = AgentStore()
     a = store.get(args.id)
-    if not a:
-        print("Agent not found: %s" % args.id, file=sys.stderr)
-        sys.exit(1)
-    session = a.get("session", "")
+    if a:
+        session = _sf(a, "tmux_session")
+    else:
+        session = args.id
     if not session:
         print("Agent has no tmux session", file=sys.stderr)
         sys.exit(1)
@@ -668,6 +1048,13 @@ examples:
   camc send abc1 --text "hello"       Send text to agent
   camc key abc1 --key C-c             Send special key to agent
   camc heal                           Restart dead monitors
+  camc machine list                   List machines
+  camc machine add pdx --host h --user u --port 22
+  camc machine ping                   Test SSH to all machines
+  camc context list                   List contexts
+  camc context add proj --machine pdx --path /home/...
+  camc sync                           Sync camc to all remote machines
+  camc sync pdx                       Sync to specific machine
   camc version                        Show version info""")
     p.add_argument("--json", action="store_true", help="Output as JSON")
     p.add_argument("--verbose", "-v", action="store_true", help="Verbose output (debug logging)")
@@ -755,6 +1142,46 @@ examples:
     # heal
     sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
 
+    # machine
+    mp = sub.add_parser("machine", help="Manage remote machines")
+    msub = mp.add_subparsers(dest="machine_cmd")
+    msub.add_parser("list", help="List machines")
+    ma = msub.add_parser("add", help="Add a machine")
+    ma.add_argument("name", help="Machine name")
+    ma.add_argument("--type", default="ssh", help="Machine type (local, ssh) [default: ssh]")
+    ma.add_argument("--host", default=None, help="Hostname or IP")
+    ma.add_argument("--user", default=None, help="SSH user")
+    ma.add_argument("--port", default=None, help="SSH port")
+    ma.add_argument("--env-setup", default=None, help="Shell commands to run before agent")
+    ma.add_argument("--key-file", default=None, help="SSH key file")
+    mrm = msub.add_parser("rm", help="Remove a machine")
+    mrm.add_argument("name", help="Machine name")
+    me = msub.add_parser("edit", help="Edit a machine")
+    me.add_argument("name", help="Machine name")
+    me.add_argument("--type", default=None)
+    me.add_argument("--host", default=None)
+    me.add_argument("--user", default=None)
+    me.add_argument("--port", default=None)
+    me.add_argument("--env-setup", default=None)
+    me.add_argument("--key-file", default=None)
+    mping = msub.add_parser("ping", help="Test SSH connectivity")
+    mping.add_argument("name", nargs="?", default=None, help="Machine name (omit for all)")
+
+    # context
+    cp = sub.add_parser("context", help="Manage project contexts")
+    csub = cp.add_subparsers(dest="context_cmd")
+    csub.add_parser("list", help="List contexts")
+    ca = csub.add_parser("add", help="Add a context")
+    ca.add_argument("name", help="Context name")
+    ca.add_argument("--machine", "-m", default="local", help="Machine name [default: local]")
+    ca.add_argument("--path", "-p", default=None, help="Working directory [default: cwd]")
+    crm = csub.add_parser("rm", help="Remove a context")
+    crm.add_argument("name", help="Context name")
+
+    # sync
+    sy = sub.add_parser("sync", help="Sync camc and configs to remote machines")
+    sy.add_argument("target", nargs="?", default=None, help="Machine name (omit for all SSH machines)")
+
     # version
     sub.add_parser("version", help="Show version")
 
@@ -785,6 +1212,9 @@ examples:
         "send": cmd_send,
         "key": cmd_key,
         "heal": cmd_heal,
+        "machine": cmd_machine,
+        "context": cmd_context,
+        "sync": cmd_sync,
         "version": cmd_version,
     }
     if args.command in cmds:

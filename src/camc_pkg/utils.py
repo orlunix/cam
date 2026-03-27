@@ -129,20 +129,24 @@ def _build_command(config, prompt, path):
 
 
 def _kill_monitor(agent):
-    pid = agent.get("monitor_pid")
+    pid = agent.get("pid") or agent.get("monitor_pid")
     if pid:
         try:
             os.kill(pid, signal.SIGTERM)
         except (ProcessLookupError, OSError):
             pass
-    pid_path = "/tmp/camc-%s.pid" % agent["id"]
-    if os.path.exists(pid_path):
-        try:
-            with open(pid_path) as f:
-                os.kill(int(f.read().strip()), signal.SIGTERM)
-        except (ValueError, OSError):
-            pass
-        try:
-            os.unlink(pid_path)
-        except OSError:
-            pass
+    from camc_pkg import PIDS_DIR
+    pid_path = os.path.join(PIDS_DIR, "%s.pid" % agent["id"])
+    # Also check legacy path
+    legacy_pid_path = "/tmp/camc-%s.pid" % agent["id"]
+    for p in (pid_path, legacy_pid_path):
+        if os.path.exists(p):
+            try:
+                with open(p) as f:
+                    os.kill(int(f.read().strip()), signal.SIGTERM)
+            except (ValueError, OSError):
+                pass
+            try:
+                os.unlink(p)
+            except OSError:
+                pass

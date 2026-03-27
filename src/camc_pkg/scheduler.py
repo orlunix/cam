@@ -216,23 +216,37 @@ def _launch_agent(task, workdir):
             tmux_send_input(session, prompt, send_enter=True)
 
     store = AgentStore()
+    import socket as _sock
+    ctx_name = context.get("name", "") if isinstance(context, dict) else ""
+    ctx_host = context.get("host") if isinstance(context, dict) else None
+    transport = "ssh" if ctx_host and ctx_host not in ("localhost", "127.0.0.1") else "local"
     agent = {
-        "id": agent_id, "tool": tool, "session": session, "status": "running",
-        "state": "initializing", "prompt": prompt, "path": workdir,
-        "name": name, "auto_exit": False, "context": context,
+        "id": agent_id,
+        "task": {"name": name or "", "tool": tool, "prompt": prompt,
+                 "auto_confirm": True, "auto_exit": False},
+        "context_id": "",
+        "context_name": ctx_name,
+        "context_path": workdir,
+        "transport_type": transport,
+        "status": "running",
+        "state": "initializing",
+        "tmux_session": session,
+        "tmux_socket": "",
+        "pid": None,
+        "hostname": _sock.gethostname(),
         "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
-        "monitor_pid": None,
+        "retry_count": 0, "cost_estimate": None, "files_changed": [],
     }
     store.save(agent)
 
     # Spawn background monitor
     try:
         proc = subprocess.Popen(
-            [sys.executable, "-m", "camc_pkg", "_monitor", agent_id],
+            [sys.executable, os.path.abspath(sys.argv[0]), "_monitor", agent_id] if os.path.isfile(sys.argv[0]) else [sys.executable, "-m", "camc_pkg", "_monitor", agent_id],
             stdout=subprocess.DEVNULL,
             stderr=open("/tmp/camc-%s.log" % agent_id, "a"),
             start_new_session=True)
-        store.update(agent_id, monitor_pid=proc.pid)
+        store.update(agent_id, pid=proc.pid)
     except Exception:
         pass
 
@@ -300,7 +314,7 @@ def run_dag(graph, workdir=None, dry_run=False, poll_interval=5, timeout=None):
             agent = _launch_agent(task, workdir)
             if agent:
                 level_agents[task_name] = agent["id"]
-                print("    Agent %s session %s" % (agent["id"], agent["session"]))
+                print("    Agent %s session %s" % (agent["id"], agent.get("tmux_session", "")))
                 events.append(agent["id"], "dag_task_start", {"task": task_name, "level": level_idx + 1})
             else:
                 print("    ✗ Failed to launch")

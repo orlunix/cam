@@ -25,21 +25,49 @@ cam serve           # Start API server (FastAPI + uvicorn)
 
 ## Architecture
 
-Five layers, top to bottom:
+### cam ↔ camc Delegation Model
+
+cam is the server/orchestrator. camc is the standalone agent manager deployed to each machine. All agent operations are delegated from cam to camc:
+
+```
+Mobile APP / CLI / Web
+        ↓
+   cam server (API + Relay)
+        ↓
+   Core: AgentManager
+        ↓
+   CamcDelegate ──SSH (ControlMaster)──→ remote camc
+        │                                    ↓
+   local camc                          camc manages locally:
+        │                              - tmux sessions
+        │                              - monitor loops
+   CamcPoller ←──SSH polling (5s)────  - agents.json
+        ↓                              - auto-confirm/completion
+   Storage: import to SQLite
+```
+
+**CamcDelegate** (`core/camc_delegate.py`): Wraps `camc` CLI calls over SSH. All agent operations (run, stop, kill, capture, send, key) go through camc. Uses ControlMaster to piggy-back on SSHTransport's persistent SSH connections (same socket path: `/tmp/cam-ssh-{sha256(user@host:port)[:12]}`).
+
+**CamcPoller** (`core/camc_poller.py`): Polls `camc --json list` on each remote every 5 seconds. Imports agent state into cam's SQLite for the API/mobile to query.
+
+**Key principle**: cam delegates, camc executes. Transport layer provides the SSH tunnel; camc does all tmux operations locally on each machine.
+
+### cam Server Layers
+
+Six layers, top to bottom:
 
 1. **CLI** (`src/cam/cli/`) — Typer commands. Shared state via `AppState` singleton in `app.py` with lazy-initialized properties (DB, stores, manager).
-2. **Core** (`src/cam/core/`) — `AgentManager` orchestrates lifecycle. `AgentMonitor` polls TMUX output for state changes, auto-confirm, and completion. `Probe` sends invisible characters to detect true idle. `Scheduler` runs DAG workflows.
-3. **Transport** (`src/cam/transport/`) — Abstraction over session backends. `LocalTransport` wraps tmux directly. `SSHTransport` runs tmux on remote machines via ControlMaster-pooled SSH. `AgentTransport` uses the `cam-agent` Go binary. `TransportFactory` creates the right one from context config.
-4. **Adapters** (`src/cam/adapters/`) — Tool-specific behavior defined in TOML files (`configs/*.toml`), loaded by `ConfigurableAdapter`. No Python code needed to add a new tool — just create a TOML file.
-5. **TMUX** — Each agent runs in its own tmux session. The session runs the command directly (not via shell), so it dies when the process exits.
+2. **API** (`src/cam/api/`) — FastAPI with token auth, WebSocket events, relay connector for NAT traversal.
+3. **Core** (`src/cam/core/`) — `AgentManager` orchestrates lifecycle. `CamcDelegate` delegates operations to camc. `CamcPoller` syncs remote state. `Scheduler` runs DAG workflows.
+4. **Transport** (`src/cam/transport/`) — SSH tunnel layer for cam ↔ camc communication. `SSHTransport` provides ControlMaster-pooled SSH connections. Also used for file browsing and `cam sync` deployment. `LocalTransport` wraps local tmux. `TransportFactory` creates the right one from context config.
+5. **Storage** (`src/cam/storage/`) — SQLite via raw `sqlite3`. Agent/context/history stores with short-ID prefix matching.
+6. **Adapters** (`src/cam/adapters/`) — Tool-specific behavior defined in TOML files (`configs/*.toml`), loaded by `ConfigurableAdapter`. No Python code needed to add a new tool — just create a TOML file.
 
 ### Key subsystems
 
-- **API Server** (`src/cam/api/`) — FastAPI with token auth, WebSocket events, relay connector for NAT traversal.
 - **Relay** (`relay/relay.py`) — Standalone zero-dep WebSocket relay (stdlib-only RFC 6455). Bridges REST-over-WS between mobile clients and CAM server.
-- **Storage** (`src/cam/storage/`) — SQLite via raw `sqlite3`. Schema created in `database.py`. Agent/context/history stores with short-ID prefix matching.
 - **cam-agent** (`src/cam-agent/`) — Go binary providing standardized remote protocol over SSH. Wraps tmux on Linux.
-- **camc** (`src/camc`) — Standalone single-file CLI (stdlib-only, Python 3.6+). Self-contained version of the agent manager for distribution.
+- **camc** (`src/camc_pkg/`, built to `dist/camc`) — Standalone single-file CLI (stdlib-only, Python 3.6+). Self-contained agent manager for each machine.
 - **Web/Mobile** (`web/`) — PWA frontend. Android WebView wrapper in `android/`.
 
 ## Critical Pydantic v2 Patterns
@@ -58,6 +86,52 @@ The codebase uses `from __future__ import annotations` in every module. This cre
 - `contexts.last_used_at` allows NULL (new contexts haven't been used yet).
 - `agents.created_at` uses a DB default — the Agent Pydantic model has no `created_at` field; use `started_at` for the DB column.
 - `AgentStore.get()` supports short ID prefix matching (e.g., pass `"86a9d46b"` instead of the full UUID).
+
+### cam vs camc Storage
+
+| | cam server | camc (per machine) |
+|---|---|---|
+| **Storage** | SQLite (`~/.local/share/cam/cam.db`) | JSON (`~/.cam/agents.json`) |
+| **Agent ID** | 8-char (imported from camc) or full UUID (legacy local) | 8-char hex via `uuid5(hostname+time+random)` |
+| **Events** | SQLite events table | `~/.cam/events.jsonl` |
+| **Sync** | CamcPoller imports from camc every 5s | Source of truth per machine |
+
+cam's SQLite is a cached aggregation of all remote camc instances. camc's `agents.json` is the source of truth for each machine.
+
+### Unified Agent Record Schema
+
+Both cam and camc use the same JSON field names for agent records. The canonical schema is defined in `src/cam/core/agent_schema.py`. Key fields:
+
+```
+{
+  "id":             "abc12345",                    # 8-char hex (camc) or full UUID (cam)
+  "task": {                                        # Nested task definition
+    "name":         "my-task",
+    "tool":         "claude",
+    "prompt":       "fix the bug",
+    "auto_confirm": true,
+    "auto_exit":    false
+  },
+  "context_id":     "",                            # cam context UUID (empty in camc)
+  "context_name":   "my-project",
+  "context_path":   "/home/user/project",
+  "transport_type": "ssh",                         # "local" or "ssh"
+  "status":         "running",                     # pending/starting/running/completed/failed/timeout/killed
+  "state":          "editing",                     # initializing/planning/editing/testing/committing/idle
+  "tmux_session":   "cam-abc12345",
+  "tmux_socket":    "",
+  "pid":            12345,                         # monitor process ID
+  "hostname":       "bpmpfw",                      # machine hostname (for NFS clusters)
+  "started_at":     "2026-01-01T00:00:00Z",
+  "completed_at":   null,
+  "exit_reason":    null,
+  "retry_count":    0,
+  "cost_estimate":  null,
+  "files_changed":  []
+}
+```
+
+**Legacy compatibility**: CamcPoller and camc CLI handle old-format records with `session` (now `tmux_session`), `path` (now `context_path`), `monitor_pid` (now `pid`), and flat `tool/prompt/name/auto_exit` (now nested under `task`). The `_sf()` and `_tf()` helpers in camc provide transparent access across both formats.
 
 ## TOML Adapter Config System
 
@@ -136,12 +210,21 @@ Three layers of protection:
 - `create_session` unsets `TMUX`/`TMUX_PANE` env vars so sessions can be created from inside tmux (nested tmux servers via `-S` socket are independent, but tmux blocks on the env var).
 - LocalTransport accepts `env_setup` param; TransportFactory passes `config.env_setup`.
 
-## Transport Notes
+## Transport and SSH Notes
 
 - `LocalTransport`: Direct tmux commands. `create_session` uses `subprocess.DEVNULL` (not PIPE) because tmux forks a server that inherits pipes.
-- `SSHTransport`: ControlMaster socket at `/tmp/cam-ssh-<sha256-hash>` (short path avoids 108-char Unix socket limit). Non-ASCII input base64-encoded to handle POSIX locale remotes.
+- `SSHTransport`: ControlMaster socket at `/tmp/cam-ssh-{sha256(user@host:port)[:12]}` (short path avoids 108-char Unix socket limit). Non-ASCII input base64-encoded to handle POSIX locale remotes. Creates tmux sessions with `-S /tmp/cam-sockets/{session}.sock`.
 - `SSHTransport` Windows support: `--shell powershell` on context, `_is_windows` flag, `_cmd_quote()` for cmd.exe double-quoting. Skip `bash -l -c` wrapping on Windows.
 - ANSI stripping happens at capture level (`transport/local.py`) and again before pattern matching.
+
+### CamcDelegate SSH Connection
+
+`CamcDelegate._run_camc_ssh()` reuses the same ControlMaster socket as `SSHTransport` (computed from `user@host:port`). This is critical because:
+- Some remote machines (NVIDIA containers) only accept SSH via specific ports (e.g., 3859, 3706, 3422) — not port 22.
+- ControlMaster sharing means CamcDelegate piggy-backs on SSHTransport's already-authenticated persistent connection.
+- Without ControlMaster, each camc subprocess call would need fresh SSH authentication, which fails on machines that require jump hosts or Kerberos.
+
+**Non-ASCII SSH handling**: Remote shells (csh/tcsh on NVIDIA machines) mangle non-ASCII bytes in command arguments. For non-ASCII args (e.g., Chinese prompts), `_run_camc_ssh` pipes a bash script via stdin (`ssh -T target bash` with `input=script`) to bypass the login shell.
 
 ## Test Conventions
 
@@ -170,19 +253,78 @@ Three layers of protection:
 - Relay uses `asyncio.create_task()` for concurrent dispatch instead of serial `await`.
 - WebSocket `onclose` rejects all pending `_requestMap` requests to prevent 15s hangs.
 
-## Standalone camc (`src/camc`)
+## Standalone camc (`src/camc_pkg/`, built to `dist/camc`)
 
-Single-file, stdlib-only CLI (Python 3.6+) for machines without the full cam package. Deployed to remotes by `cam sync`.
+Single-file, stdlib-only CLI (Python 3.6+) for machines without the full cam package. Deployed to remotes by `cam sync`. Source in `src/camc_pkg/`, built to `dist/camc` via `python3 build_camc.py`. Copy `dist/camc` to `src/camc` before `cam sync` (sync source is `src/camc`).
 
 - **Self-contained**: all detection logic, TOML parser, and adapter configs (claude/codex/cursor) embedded inline. No pip install needed.
-- **Commands**: `init`, `run`, `list`, `logs`, `attach`, `stop`, `add`, `rm`, `status`, `heal`, `version`.
+- **Commands**: `init`, `run`, `list`, `logs`, `attach`, `stop`, `add`, `rm`, `status`, `heal`, `capture`, `send`, `key`, `version`.
 - **`camc run`**: creates tmux session, handles startup auto-confirm, spawns background monitor subprocess.
 - **PATH passthrough**: if no `env_setup` in `~/.cam/context.json`, injects the caller's `PATH` into the tmux session so tools like `claude` are found.
 - **`context.json`**: optional config at `~/.cam/context.json` with `env_setup` (shell commands run before agent launch). Deployed by `cam sync` from the server context's `machine.env_setup`.
 - **Agent store**: JSON file at `~/.cam/agents.json` (not SQLite — keeps it stdlib-only).
 - **Monitor logs**: `~/.cam/logs/monitor-<id>.log`. Stderr of monitor subprocess goes to `/tmp/camc-<id>.log`.
-- **`camc heal`**: checks all running agents, restarts dead monitors. Can be cron'd.
+- **`camc heal`**: checks all running agents, restarts dead monitors. Filters by hostname — only touches agents belonging to the current machine. Can be cron'd.
 - **`camc status`**: machine-readable JSON output with hash-based conditional responses (used by cam server pull mode).
+- **`camc capture/send/key`**: operates on agents by ID or tmux session name. If agent is not in `agents.json`, falls back to using the ID as a tmux session name directly (supports sessions created by SSHTransport before camc delegation).
+
+### camc Agent ID Generation
+
+Agent IDs are 8 hex characters generated via `uuid5(NAMESPACE_DNS, hostname + timestamp + random)[:8]`. This ensures:
+- **Cluster-safe**: hostname component prevents collisions when multiple machines share `~/.cam/agents.json` via NFS.
+- **Format-compatible**: 8 chars, same as before. All existing code (tmux session names, prefix matching, display) works unchanged.
+
+### camc Cluster / Shared-Disk Support
+
+In environments where multiple machines share the same home directory (NFS clusters like NVIDIA PDX containers), `~/.cam/agents.json` is shared across all machines but tmux sessions are per-machine (`/tmp/cam-sockets/` is local).
+
+- **`hostname` field**: `camc run` records `socket.gethostname()` in each agent record.
+- **`camc list`**: filters to only show agents from the current hostname.
+- **`camc heal`**: skips agents from other hostnames (won't mistakenly mark remote-machine agents as dead).
+- **Hostname comparison**: uses `_is_same_host()` which compares short hostnames (before first `.`) to handle FQDN vs short name inconsistencies (e.g., `bpmpfw` vs `bpmpfw.nvidia.com`).
+- **`camc capture/send/key`**: tmux sockets in `/tmp/cam-sockets/` provide natural per-machine isolation — can only capture sessions running on the current machine.
+
+### camc Tmux Socket Paths
+
+camc searches multiple socket directories via `_find_tmux_socket()`:
+1. `/tmp/cam-sockets/{session}.sock` — primary (matches SSHTransport convention)
+2. `/tmp/cam-agent-sockets/{session}.sock` — cam-agent Go binary
+3. `~/.local/share/cam/sockets/{session}.sock` — cam server local sockets
+
+This allows camc to operate on sessions created by any transport backend.
+
+## v3 Migration Plan
+
+Full plan: `docs/migration-v3-unified.md`
+
+### Current Status: Phase 0 Complete
+
+Phase 0 (schema unification) is done. camc and cam use the same agent record
+field names. Next phases:
+
+1. **Phase 1: Machine Layer + JSON Storage** — introduce `machines.json` as
+   first-class entity, replace SQLite with JSON, add machine/context commands
+   to camc, sync/heal by machine instead of context.
+2. **Phase 2: Directory Consolidation** — all files under `~/.cam/`, eliminate
+   `~/.local/share/cam/` and `/tmp/camc-*` scatter.
+3. **Phase 3: Migration Tool** — `camc migrate` converts SQLite → JSON.
+4. **Phase 4: CLI Unification** — camc becomes the full CLI, rich is optional
+   (`pip install rich` for pretty tables, ANSI fallback without).
+5. **Phase 5: cam serve Simplification** — thin HTTP/WS wrapper reading JSON
+   directly, no more CamcPoller/SQLite.
+
+### Key Design Decisions
+
+- **Zero hard dependencies**: camc is stdlib-only, single file, Python 3.6+.
+- **Rich is optional**: `try: import rich` with ANSI fallback. Same code, same
+  commands — just simpler rendering without rich.
+- **Machine is first-class**: `machines.json` defines hosts. Contexts reference
+  machines by name. Sync/heal/poll iterate machines, not contexts.
+- **No SQLite**: JSON + fcntl locking. Data volume is tiny (tens of agents,
+  a few machines). Events auto-rotate at 30 days.
+- **Logs under ~/.cam/**: `~/.cam/logs/` and `~/.cam/pids/` for everything.
+  No more `/tmp/camc-*.log` scatter. Sockets stay in `/tmp/` (108-char limit).
+- **cam serve is optional**: only needed for web/mobile. `pip install cam[server]`.
 
 ## cam-agent Go Binary
 

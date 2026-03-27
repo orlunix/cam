@@ -30,7 +30,10 @@ CONFIGS_DIR = os.path.join(CAM_DIR, "configs")
 LOGS_DIR = os.path.join(CAM_DIR, "logs")
 AGENTS_FILE = os.path.join(CAM_DIR, "agents.json")
 EVENTS_FILE = os.path.join(CAM_DIR, "events.jsonl")
-CONTEXT_FILE = os.path.join(CAM_DIR, "context.json")
+MACHINES_FILE = os.path.join(CAM_DIR, "machines.json")
+CONTEXTS_FILE = os.path.join(CAM_DIR, "contexts.json")
+PIDS_DIR = os.path.join(CAM_DIR, "pids")
+CONTEXT_FILE = os.path.join(CAM_DIR, "context.json")  # Legacy single-machine context
 SOCKETS_DIR = "/tmp/cam-sockets"
 
 _DEFAULT_CONTEXT = {"name": None, "host": None, "port": None, "env_setup": None}
