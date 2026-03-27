@@ -546,6 +546,14 @@ def cmd_heal(args):
         name = _tf(a, "name") or aid
         session = _sf(a, "tmux_session")
 
+        # Skip remote (SSH) agents — their tmux sessions are on the remote machine,
+        # not locally checkable. Remote heal is handled by `camc heal` on each machine.
+        transport = a.get("transport_type", "local")
+        if transport != "local":
+            print("  %s (%s): skipped (remote/%s)" % (name, aid, transport))
+            skipped += 1
+            continue
+
         # Check if tmux session is alive — double-check to avoid false negatives
         # (cron environment may cause transient tmux failures)
         session_alive = tmux_session_exists(session)
