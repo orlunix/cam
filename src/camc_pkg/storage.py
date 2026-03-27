@@ -68,9 +68,10 @@ class AgentStore(object):
         for a in agents:
             if a["id"] == agent_id:
                 return a
-        # Exact session match (for cam → camc delegation by tmux session name)
+        # Exact tmux_session match (for cam → camc delegation by tmux session name)
+        # Support both new "tmux_session" and legacy "session" field names
         for a in agents:
-            if a.get("session") == agent_id:
+            if a.get("tmux_session") == agent_id or a.get("session") == agent_id:
                 return a
         # Prefix match on ID
         matches = [a for a in agents if a["id"].startswith(agent_id)]

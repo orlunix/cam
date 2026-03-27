@@ -99,7 +99,14 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                     # Auto-exit when completion detected + output stable for 3x completion_stable
                     if now - last_change >= config.completion_stable * 3:
                         agent_rec = store.get(agent_id)
-                        ae = agent_rec.get("auto_exit") if agent_rec else None
+                        # Support both new nested task format and legacy flat format
+                        ae = None
+                        if agent_rec:
+                            t = agent_rec.get("task")
+                            if isinstance(t, dict):
+                                ae = t.get("auto_exit")
+                            else:
+                                ae = agent_rec.get("auto_exit")
                         if ae is None:
                             ae = getattr(config, "auto_exit", False)
                         if ae:
@@ -151,15 +158,25 @@ def _run_monitor(agent_id):
     if not agent:
         log.error("Agent %s not found", agent_id)
         sys.exit(1)
-    config = _load_config(agent["tool"])
-    log.info("Tool=%s session=%s path=%s", agent["tool"], agent["session"], agent.get("path"))
-    pid_path = "/tmp/camc-%s.pid" % agent_id
+    # Support both new nested task format and legacy flat format
+    _t = agent.get("task")
+    _tool = _t.get("tool", "claude") if isinstance(_t, dict) else agent.get("tool", "claude")
+    _session = agent.get("tmux_session") or agent.get("session", "")
+    _path = agent.get("context_path") or agent.get("path", "")
+    config = _load_config(_tool)
+    log.info("Tool=%s session=%s path=%s", _tool, _session, _path)
+    from camc_pkg import PIDS_DIR
+    try:
+        os.makedirs(PIDS_DIR, exist_ok=True)
+    except OSError:
+        pass
+    pid_path = os.path.join(PIDS_DIR, "%s.pid" % agent_id)
 
     # Auto-restart on crash (e.g. database locked, transient errors)
     max_restarts = 5
     for attempt in range(max_restarts + 1):
         try:
-            run_monitor_loop(agent["session"], agent_id, config, store, pid_path=pid_path, events=events)
+            run_monitor_loop(_session, agent_id, config, store, pid_path=pid_path, events=events)
             break  # clean exit
         except Exception as e:
             log.error("Monitor crashed (attempt %d/%d): %s", attempt + 1, max_restarts, e)
