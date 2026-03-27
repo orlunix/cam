@@ -60,19 +60,42 @@ def _run_camc(args: list[str], timeout: float = 30) -> tuple[int, str]:
 def _run_camc_ssh(host: str, user: str, port: int | None, args: list[str],
                   timeout: float = 30) -> tuple[int, str]:
     """Run a camc command on a remote machine via SSH."""
+    import hashlib as _hl
     camc_remote = "~/.cam/camc"
+    # Reuse the same ControlMaster socket as SSHTransport so we piggy-back
+    # on its already-authenticated persistent connection.
+    conn_key = "%s@%s:%s" % (user or "default", host, port or 22)
+    conn_hash = _hl.sha256(conn_key.encode()).hexdigest()[:12]
+    control_path = "/tmp/cam-ssh-%s" % conn_hash
     ssh_cmd = ["ssh"]
     if port:
         ssh_cmd += ["-p", str(port)]
-    ssh_cmd += ["-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=no"]
+    ssh_cmd += [
+        "-o", "ConnectTimeout=10",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "ControlPath=%s" % control_path,
+        "-o", "ControlMaster=auto",
+        "-o", "ControlPersist=600",
+    ]
     target = "%s@%s" % (user, host) if user else host
     import shlex
-    # Build the remote command as a single string to preserve quoting
-    remote_cmd = "python3 %s %s" % (camc_remote, " ".join(shlex.quote(a) for a in args))
-    ssh_cmd += [target, remote_cmd]
+    # Check if any arg contains non-ASCII (e.g. Chinese prompts).
+    # Remote shells (csh/tcsh) mangle non-ASCII in positional args,
+    # so we pipe a bash script via stdin to bypass the login shell.
+    has_non_ascii = any(not a.isascii() for a in args)
+    if has_non_ascii:
+        quoted_args = " ".join(shlex.quote(a) for a in args)
+        # Pipe a bash script via stdin; SSH -T disables pty allocation
+        bash_script = "#!/bin/bash\npython3 %s %s\n" % (camc_remote, quoted_args)
+        ssh_cmd += ["-T", target, "bash"]
+    else:
+        remote_cmd = "python3 %s %s" % (camc_remote, " ".join(shlex.quote(a) for a in args))
+        ssh_cmd += [target, remote_cmd]
+        bash_script = None
     try:
         proc = subprocess.run(
             ssh_cmd, capture_output=True, text=True, timeout=timeout,
+            input=bash_script,
         )
         output = proc.stdout
         if proc.returncode != 0 and not output.strip():

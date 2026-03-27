@@ -46,56 +46,70 @@ _STATE_MAP = {
     "idle": AgentState.IDLE,
 }
 
+# Terminal statuses — never promote back to RUNNING from these
+_TERMINAL_STATUSES = {AgentStatus.COMPLETED, AgentStatus.FAILED, AgentStatus.KILLED}
+
+
+def _parse_ts(raw: str | None) -> datetime | None:
+    """Parse an ISO 8601 timestamp string to datetime."""
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
 
 def _camc_agent_to_model(data: dict, context_name: str | None = None,
                          context_id: str | None = None) -> Agent:
     """Convert a camc JSON agent dict to a cam Agent model.
 
-    The camc JSON format (from _agent_to_cam_json) already matches cam's
-    API format, so this is mostly field extraction.
+    Supports both the unified schema (new format with nested task, tmux_session,
+    context_path, pid) and legacy format (flat tool/prompt/name, session, path,
+    monitor_pid). The unified format is a near pass-through.
     """
+    # Task: new format has nested dict, legacy has flat fields
     task_data = data.get("task", {})
+    if isinstance(task_data, dict) and task_data:
+        task = TaskDefinition(
+            name=task_data.get("name", ""),
+            tool=task_data.get("tool", "claude"),
+            prompt=task_data.get("prompt", ""),
+            auto_confirm=task_data.get("auto_confirm", True),
+            auto_exit=task_data.get("auto_exit", False),
+        )
+    else:
+        # Legacy flat format
+        task = TaskDefinition(
+            name=data.get("name", ""),
+            tool=data.get("tool", "claude"),
+            prompt=data.get("prompt", ""),
+            auto_confirm=True,
+            auto_exit=data.get("auto_exit", False),
+        )
+
     status_str = data.get("status", "running")
     state_str = data.get("state", "")
 
-    # Parse timestamps
-    started_at = None
-    if data.get("started_at"):
-        try:
-            s = data["started_at"].replace("Z", "+00:00")
-            started_at = datetime.fromisoformat(s)
-        except (ValueError, AttributeError):
-            started_at = datetime.now(timezone.utc)
-
-    completed_at = None
-    if data.get("completed_at"):
-        try:
-            s = data["completed_at"].replace("Z", "+00:00")
-            completed_at = datetime.fromisoformat(s)
-        except (ValueError, AttributeError):
-            pass
-
-    task = TaskDefinition(
-        name=task_data.get("name", ""),
-        tool=task_data.get("tool", "claude"),
-        prompt=task_data.get("prompt", ""),
-        auto_confirm=task_data.get("auto_confirm", True),
-        auto_exit=task_data.get("auto_exit", False),
-    )
+    # Context name: unified has context_name, legacy derives from context dict
+    ctx_name = context_name or data.get("context_name")
+    if not ctx_name:
+        ctx = data.get("context", {}) or {}
+        ctx_name = ctx.get("name", "") if isinstance(ctx, dict) else ""
 
     return Agent(
         id=data.get("id", ""),
         task=task,
         context_id=context_id or data.get("context_id", ""),
-        context_name=context_name or data.get("context_name", ""),
-        context_path=data.get("context_path", ""),
+        context_name=ctx_name,
+        context_path=data.get("context_path") or data.get("path", ""),
         transport_type=TransportType.LOCAL if data.get("transport_type") == "local" else TransportType.SSH,
         status=_STATUS_MAP.get(status_str, AgentStatus.RUNNING),
         state=_STATE_MAP.get(state_str, AgentState.INITIALIZING),
-        tmux_session=data.get("tmux_session", ""),
-        tmux_socket=data.get("tmux_socket", ""),
-        started_at=started_at,
-        completed_at=completed_at,
+        tmux_session=data.get("tmux_session") or data.get("session", ""),
+        tmux_socket=data.get("tmux_socket") or data.get("socket", ""),
+        started_at=_parse_ts(data.get("started_at")) or datetime.now(timezone.utc),
+        completed_at=_parse_ts(data.get("completed_at")),
         exit_reason=data.get("exit_reason"),
     )
 
@@ -162,33 +176,71 @@ class CamcPoller:
                 logger.warning("Failed to poll %s: %s", ctx.name, e)
                 continue
 
+            # Build tmux_session index from existing DB agents to avoid
+            # importing camc shadow agents that duplicate real cam agents.
+            all_db_agents = self._agent_store.list()
+            db_sessions = {a.tmux_session for a in all_db_agents if a.tmux_session}
+
             for agent_data in camc_agents:
                 agent_id = agent_data.get("id", "")
                 if not agent_id:
                     continue
 
-                # Check if agent already exists in our store
+                # Check if agent already exists in our store (by ID)
                 existing = self._agent_store.get(agent_id)
                 status = agent_data.get("status", "running")
 
+                # Resolve tmux session name (unified: tmux_session, legacy: session)
+                tmux_sess = agent_data.get("tmux_session") or agent_data.get("session", "")
+
                 if existing is None:
+                    # Skip if another agent with same tmux_session already exists
+                    # (this is a camc shadow of a cam-managed agent)
+                    if tmux_sess and tmux_sess in db_sessions:
+                        # Update the real agent's status, but never resurrect
+                        # a terminal state (completed/failed/killed) back to running
+                        for dba in all_db_agents:
+                            if dba.tmux_session == tmux_sess:
+                                real_id = str(dba.id)
+                                prev = self._prev_states.get(real_id)
+                                if prev != status:
+                                    new_status = _STATUS_MAP.get(status)
+                                    if new_status and new_status != dba.status:
+                                        # Don't resurrect terminal states
+                                        if dba.status in (_TERMINAL_STATUSES) and new_status == AgentStatus.RUNNING:
+                                            pass
+                                        else:
+                                            self._agent_store.update_status(
+                                                real_id, new_status,
+                                                exit_reason=agent_data.get("exit_reason"),
+                                            )
+                                self._prev_states[real_id] = status
+                                break
+                        total += 1
+                        continue
+
                     # New agent discovered from camc — import it
                     try:
                         agent = _camc_agent_to_model(agent_data, ctx.name, context_id=ctx.id)
                         self._agent_store.save(agent)
+                        if tmux_sess:
+                            db_sessions.add(tmux_sess)
                         logger.info("Imported agent %s from %s", agent_id, ctx.name)
                     except Exception as e:
                         logger.warning("Failed to import agent %s: %s", agent_id, e)
                 else:
-                    # Update status if changed
+                    # Update status if changed (but never resurrect terminal states)
                     prev_status = self._prev_states.get(agent_id)
                     if prev_status != status:
                         new_status = _STATUS_MAP.get(status)
                         if new_status and new_status != existing.status:
-                            exit_reason = agent_data.get("exit_reason")
-                            self._agent_store.update_status(
-                                agent_id, new_status, exit_reason=exit_reason
-                            )
+                            if existing.status in _TERMINAL_STATUSES and new_status == AgentStatus.RUNNING:
+                                pass  # Don't resurrect
+                            else:
+                                exit_reason = agent_data.get("exit_reason")
+                                self._agent_store.update_status(
+                                    agent_id, new_status, exit_reason=exit_reason
+                                )
                             # Emit event
                             event = AgentEvent(
                                 agent_id=agent_id,
