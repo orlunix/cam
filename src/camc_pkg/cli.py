@@ -421,7 +421,8 @@ def cmd_add(args):
     try:
         proc = subprocess.Popen(
             [sys.executable, _CAMC_SCRIPT, "_monitor", agent_id] if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg", "_monitor", agent_id],
-            stdout=subprocess.DEVNULL, stderr=open("/tmp/camc-%s.log" % agent_id, "a"),
+            stdout=subprocess.DEVNULL,
+            stderr=open(os.path.join(LOGS_DIR, "monitor-%s.stderr" % agent_id), "a"),
             start_new_session=True)
         store.update(agent_id, pid=proc.pid)
     except Exception:
@@ -603,7 +604,7 @@ def cmd_heal(args):
             proc = subprocess.Popen(
                 [sys.executable, _CAMC_SCRIPT, "_monitor", aid] if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg", "_monitor", aid],
                 stdout=subprocess.DEVNULL,
-                stderr=open("/tmp/camc-%s.log" % aid, "a"),
+                stderr=open(os.path.join(LOGS_DIR, "monitor-%s.stderr" % aid), "a"),
                 start_new_session=True)
             store.update(aid, pid=proc.pid)
             print("  %s (%s): restarted (PID %d)" % (name, aid, proc.pid))
@@ -619,6 +620,27 @@ def cmd_heal(args):
     if skipped:
         msg += " (%d skipped, other host)" % skipped
     print(msg)
+
+    # Maintenance: rotate old events (30 days)
+    try:
+        removed = EventStore().rotate(max_age_days=30)
+        if removed:
+            print("Events: rotated %d old entries" % removed)
+    except Exception:
+        pass
+
+    # Cleanup legacy /tmp/camc-*.log files (Phase 2 consolidation)
+    try:
+        for f in os.listdir("/tmp"):
+            if f.startswith("camc-") and f.endswith(".log"):
+                p = os.path.join("/tmp", f)
+                try:
+                    if os.path.getsize(p) == 0:
+                        os.unlink(p)
+                except OSError:
+                    pass
+    except OSError:
+        pass
 
 
 def cmd_apply(args):
