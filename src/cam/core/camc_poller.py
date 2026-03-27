@@ -206,14 +206,10 @@ class CamcPoller:
                                 if prev != status:
                                     new_status = _STATUS_MAP.get(status)
                                     if new_status and new_status != dba.status:
-                                        # Don't resurrect terminal states
-                                        if dba.status in (_TERMINAL_STATUSES) and new_status == AgentStatus.RUNNING:
-                                            pass
-                                        else:
-                                            self._agent_store.update_status(
-                                                real_id, new_status,
-                                                exit_reason=agent_data.get("exit_reason"),
-                                            )
+                                        self._agent_store.update_status(
+                                            real_id, new_status,
+                                            exit_reason=agent_data.get("exit_reason"),
+                                        )
                                 self._prev_states[real_id] = status
                                 break
                         total += 1
@@ -229,18 +225,15 @@ class CamcPoller:
                     except Exception as e:
                         logger.warning("Failed to import agent %s: %s", agent_id, e)
                 else:
-                    # Update status if changed (but never resurrect terminal states)
+                    # Update status if changed — trust agents.json as source of truth
                     prev_status = self._prev_states.get(agent_id)
                     if prev_status != status:
                         new_status = _STATUS_MAP.get(status)
                         if new_status and new_status != existing.status:
-                            if existing.status in _TERMINAL_STATUSES and new_status == AgentStatus.RUNNING:
-                                pass  # Don't resurrect
-                            else:
-                                exit_reason = agent_data.get("exit_reason")
-                                self._agent_store.update_status(
-                                    agent_id, new_status, exit_reason=exit_reason
-                                )
+                            exit_reason = agent_data.get("exit_reason")
+                            self._agent_store.update_status(
+                                agent_id, new_status, exit_reason=exit_reason
+                            )
                             # Emit event
                             event = AgentEvent(
                                 agent_id=agent_id,
