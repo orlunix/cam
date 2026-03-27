@@ -7,19 +7,19 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>CAM</title>
-  <meta name="cam-version" content="v59">
+  <meta name="cam-version" content="v60">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/icon-192.png">
   <link rel="apple-touch-icon" href="assets/icon-192.png">
-  <link rel="stylesheet" href="css/style.css?v=59">
-  <link rel="modulepreload" href="js/api.js?v=59">
-  <link rel="modulepreload" href="js/state.js?v=59">
-  <link rel="modulepreload" href="js/views/dashboard.js?v=59">
-  <link rel="modulepreload" href="js/views/agent-detail.js?v=59">
-  <link rel="modulepreload" href="js/views/start-agent.js?v=59">
-  <link rel="modulepreload" href="js/views/contexts.js?v=59">
-  <link rel="modulepreload" href="js/views/settings.js?v=59">
-  <link rel="modulepreload" href="js/views/file-browser.js?v=59">
+  <link rel="stylesheet" href="css/style.css?v=60">
+  <link rel="modulepreload" href="js/api.js?v=60">
+  <link rel="modulepreload" href="js/state.js?v=60">
+  <link rel="modulepreload" href="js/views/dashboard.js?v=60">
+  <link rel="modulepreload" href="js/views/agent-detail.js?v=60">
+  <link rel="modulepreload" href="js/views/start-agent.js?v=60">
+  <link rel="modulepreload" href="js/views/contexts.js?v=60">
+  <link rel="modulepreload" href="js/views/settings.js?v=60">
+  <link rel="modulepreload" href="js/views/file-browser.js?v=60">
 </head>
 <body>
   <div id="app">
@@ -68,11 +68,15 @@
         menu.classList.add('hidden');
       }
     });
-    // Reload button — full page reload to reset all state
+    // Reload button — restart Android app or full page reload
     document.getElementById('reload-app').addEventListener('click', function() {
-      location.reload();
+      if (window.CamBridge && window.CamBridge.restartApp) {
+        window.CamBridge.restartApp();
+      } else {
+        location.reload();
+      }
     });
   </script>
-  <script type="module" src="js/app.js?v=59"></script>
+  <script type="module" src="js/app.js?v=60"></script>
 </body>
 </html>
