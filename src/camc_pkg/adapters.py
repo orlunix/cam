@@ -89,9 +89,7 @@ response = "y"
 send_enter = true
 
 [probe]
-char = "Z"
-confirm_response = ""
-confirm_send_enter = true
+char = "1"
 wait = 0.3
 idle_threshold = 2
 
@@ -104,6 +102,8 @@ empty_threshold = 3
 auto_exit = false
 exit_action = "kill_session"
 exit_command = "/exit"
+probe_stable = 10.0
+probe_cooldown = 20.0
 """,
     "codex.toml": r"""# Codex adapter — interactive mode.
 [adapter]
@@ -174,9 +174,7 @@ response = ""
 send_enter = true
 
 [probe]
-char = "Z"
-confirm_response = ""
-confirm_send_enter = true
+char = "1"
 wait = 0.3
 idle_threshold = 2
 
@@ -189,6 +187,8 @@ empty_threshold = 3
 auto_exit = false
 exit_action = "kill_session"
 exit_command = "/exit"
+probe_stable = 10.0
+probe_cooldown = 20.0
 """,
     "cursor.toml": r"""# Cursor Agent adapter — interactive mode.
 [adapter]
@@ -251,9 +251,7 @@ response = ""
 send_enter = true
 
 [probe]
-char = "Z"
-confirm_response = ""
-confirm_send_enter = true
+char = "1"
 wait = 0.3
 idle_threshold = 2
 
@@ -266,6 +264,8 @@ empty_threshold = 3
 auto_exit = false
 exit_action = "kill_session"
 exit_command = "/exit"
+probe_stable = 10.0
+probe_cooldown = 20.0
 """,
 }
 
@@ -418,8 +418,6 @@ class AdapterConfig(object):
 
         probe_cfg = config.get("probe", {})
         self.probe_char = probe_cfg.get("char", "Z")
-        self.probe_confirm_response = probe_cfg.get("confirm_response", "")
-        self.probe_confirm_send_enter = probe_cfg.get("confirm_send_enter", True)
         self.probe_wait = float(probe_cfg.get("wait", 0.3))
         self.probe_idle_threshold = int(probe_cfg.get("idle_threshold", 2))
 
@@ -432,6 +430,8 @@ class AdapterConfig(object):
         self.auto_exit = bool(mon_cfg.get("auto_exit", False))
         self.exit_action = mon_cfg.get("exit_action", "kill_session")
         self.exit_command = mon_cfg.get("exit_command", "/exit")
+        self.probe_stable = float(mon_cfg.get("probe_stable", 10.0))
+        self.probe_cooldown = float(mon_cfg.get("probe_cooldown", 20.0))
 
 
 def _load_config(tool):

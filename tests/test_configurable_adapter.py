@@ -463,27 +463,27 @@ class TestProbeAction:
 
     def test_probe_action_auto_confirm_off(self, claude_adapter):
         action = claude_adapter.get_probe_action(auto_confirm=False)
-        assert action == ProbeAction("Z", False, False)
+        assert action == ProbeAction("1", False, False)
 
     def test_probe_action_auto_confirm_on(self, claude_adapter):
         action = claude_adapter.get_probe_action(auto_confirm=True)
-        assert action == ProbeAction("", True, True)
+        assert action == ProbeAction("1", False, True)
 
     def test_codex_probe_action_off(self, codex_adapter):
         action = codex_adapter.get_probe_action(auto_confirm=False)
-        assert action == ProbeAction("Z", False, False)
+        assert action == ProbeAction("1", False, False)
 
     def test_codex_probe_action_on(self, codex_adapter):
         action = codex_adapter.get_probe_action(auto_confirm=True)
-        assert action == ProbeAction("", True, True)
+        assert action == ProbeAction("1", False, True)
 
     def test_cursor_probe_action_off(self, cursor_adapter):
         action = cursor_adapter.get_probe_action(auto_confirm=False)
-        assert action == ProbeAction("Z", False, False)
+        assert action == ProbeAction("1", False, False)
 
     def test_cursor_probe_action_on(self, cursor_adapter):
         action = cursor_adapter.get_probe_action(auto_confirm=True)
-        assert action == ProbeAction("", True, True)
+        assert action == ProbeAction("1", False, True)
 
 
 class TestAdapterConfigDefaults:
@@ -491,9 +491,7 @@ class TestAdapterConfigDefaults:
 
     def test_defaults_with_empty_config(self):
         ac = AdapterConfig({"adapter": {"name": "x", "display_name": "X"}})
-        assert ac.probe_char == "Z"
-        assert ac.probe_confirm_response == ""
-        assert ac.probe_confirm_send_enter is True
+        assert ac.probe_char == "1"
         assert ac.probe_wait == 0.3
         assert ac.probe_idle_threshold == 2
         assert ac.confirm_cooldown == 5.0
@@ -507,8 +505,6 @@ class TestAdapterConfigDefaults:
             "adapter": {"name": "x", "display_name": "X"},
             "probe": {
                 "char": "Q",
-                "confirm_response": "y",
-                "confirm_send_enter": False,
                 "wait": 0.5,
                 "idle_threshold": 3,
             },
@@ -521,8 +517,6 @@ class TestAdapterConfigDefaults:
             },
         })
         assert ac.probe_char == "Q"
-        assert ac.probe_confirm_response == "y"
-        assert ac.probe_confirm_send_enter is False
         assert ac.probe_wait == 0.5
         assert ac.probe_idle_threshold == 3
         assert ac.confirm_cooldown == 10.0
@@ -570,10 +564,10 @@ class TestGenericAdapterDefaults:
         reg = AdapterRegistry()
         generic = reg.get("generic")
         action = generic.get_probe_action(auto_confirm=False)
-        assert action == ProbeAction("Z", False, False)
+        assert action == ProbeAction("1", False, False)
         # auto_confirm=True still returns default (not configurable)
         action_on = generic.get_probe_action(auto_confirm=True)
-        assert action_on == ProbeAction("Z", False, False)
+        assert action_on == ProbeAction("1", False, False)
 
     def test_generic_timing_defaults(self):
         from cam.adapters.registry import AdapterRegistry
