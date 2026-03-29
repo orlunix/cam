@@ -262,9 +262,7 @@ class AdapterConfig(object):
             ))
 
         probe_cfg = config.get("probe", {})
-        self.probe_char = probe_cfg.get("char", "Z")
-        self.probe_confirm_response = probe_cfg.get("confirm_response", "")
-        self.probe_confirm_send_enter = probe_cfg.get("confirm_send_enter", True)
+        self.probe_char = probe_cfg.get("char", "1")
         self.probe_wait = float(probe_cfg.get("wait", 0.3))
         self.probe_idle_threshold = int(probe_cfg.get("idle_threshold", 2))
 

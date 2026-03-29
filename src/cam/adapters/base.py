@@ -160,13 +160,13 @@ class ToolAdapter(ABC):
         return False
 
     def get_probe_action(self, auto_confirm: bool) -> ProbeAction:
-        """Return the probe action based on auto-confirm state.
+        """Return the smart probe action.
 
-        When auto-confirm is on, the probe can double as a fallback
-        confirmation (e.g. sending Enter). When off, sends a neutral
-        character that won't affect the agent.
+        Sends probe char (default "1") without Enter. The char is chosen to
+        double as a confirmation response (selects option 1 in menus).
+        BSpace cleanup happens after the probe in the monitor loop.
         """
-        return ProbeAction(char="Z", send_enter=False, is_confirm=False)
+        return ProbeAction(char="1", send_enter=False, is_confirm=False)
 
     def get_confirm_cooldown(self) -> float:
         """Seconds between auto-confirm attempts."""

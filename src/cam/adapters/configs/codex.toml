@@ -75,9 +75,7 @@ response = ""
 send_enter = true
 
 [probe]
-char = "Z"
-confirm_response = ""
-confirm_send_enter = true
+char = "1"                    # smart probe char (also used for auto-confirm)
 wait = 0.3
 idle_threshold = 2
 
@@ -89,4 +87,6 @@ health_check_interval = 15
 empty_threshold = 3
 auto_exit = false             # finalize agent when task completes and idle confirmed
 exit_action = "kill_session"  # "kill_session", "send_exit", or "mark_only"
+probe_stable = 10.0
+probe_cooldown = 20.0
 exit_command = "/exit"        # command to send if exit_action = "send_exit"

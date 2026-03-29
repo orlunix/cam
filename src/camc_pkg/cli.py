@@ -24,7 +24,7 @@ from camc_pkg.adapters import _EMBEDDED_CONFIGS, _load_config
 from camc_pkg.storage import AgentStore, EventStore
 from camc_pkg.transport import (
     _find_tmux_socket, capture_tmux, tmux_session_exists,
-    tmux_send_input, tmux_kill_session, create_tmux_session,
+    tmux_send_input, tmux_send_key, tmux_kill_session, create_tmux_session,
 )
 from camc_pkg.detection import should_auto_confirm, is_ready_for_input
 from camc_pkg.monitor import _run_monitor
@@ -214,7 +214,7 @@ def cmd_run(args):
         sys.stderr.write("Error: failed to create tmux session\n")
         sys.exit(1)
 
-    # Startup: wait for readiness, auto-confirm, send prompt
+    # Startup: wait for readiness, auto-confirm via "1"+BSpace, send prompt
     if config.prompt_after_launch:
         elapsed, confirmed = 0.0, False
         while elapsed < config.startup_wait:
@@ -226,7 +226,11 @@ def cmd_run(args):
                 break
             confirm = should_auto_confirm(output, config)
             if confirm:
-                tmux_send_input(session, confirm[0], send_enter=confirm[1])
+                # Pattern matched a confirm dialog — send probe_char to select
+                # option. No Enter (avoids side effects), no BSpace (dialog
+                # consumes the char). probe_char is "1" for Claude (selects
+                # option 1 = Yes/Allow), configurable per adapter.
+                tmux_send_input(session, config.probe_char, send_enter=False)
                 confirmed = True
                 time.sleep(3); elapsed += 3
                 continue
@@ -235,7 +239,7 @@ def cmd_run(args):
         if prompt.strip():
             tmux_send_input(session, prompt, send_enter=True)
 
-    name = getattr(args, "name", None) or None
+    name = getattr(args, "name", None) or os.path.basename(workdir) or "%s-%s" % (tool, uuid4().hex[:6])
     auto_exit = getattr(args, "auto_exit", False)
     ctx_name = context.get("name", "") if isinstance(context, dict) else ""
     ctx_host = context.get("host") if isinstance(context, dict) else None
@@ -391,6 +395,39 @@ def cmd_kill(args):
     print("Killed agent %s" % a["id"])
 
 
+def cmd_update(args):
+    """Update agent properties (name, auto_confirm)."""
+    store = AgentStore()
+    a = store.get(args.id)
+    if not a:
+        sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
+
+    changed = False
+    task = a.get("task")
+    if not isinstance(task, dict):
+        # Legacy flat format — wrap into task
+        task = {"name": a.get("name", ""), "tool": a.get("tool", "claude"),
+                "prompt": a.get("prompt", ""), "auto_confirm": a.get("auto_confirm", True),
+                "auto_exit": a.get("auto_exit", False)}
+
+    if args.name is not None:
+        task["name"] = args.name
+        print_info("Updated name to: %s" % args.name)
+        changed = True
+    if args.auto_confirm is not None:
+        task["auto_confirm"] = args.auto_confirm
+        print_info("Updated auto_confirm to: %s" % args.auto_confirm)
+        changed = True
+
+    if not changed:
+        print_error("Nothing to update. Use --name or --auto-confirm.")
+        sys.exit(1)
+
+    a["task"] = task
+    store.save(a)
+    print_success("Agent %s updated" % a["id"])
+
+
 def cmd_add(args):
     if not tmux_session_exists(args.session):
         sys.stderr.write("Error: tmux session '%s' not found\n" % args.session); sys.exit(1)
@@ -398,8 +435,11 @@ def cmd_add(args):
     agent_id = _gen_agent_id()
     context = _load_default_context()
     ctx_name = context.get("name", "") if isinstance(context, dict) else ""
-    ctx_host = context.get("host") if isinstance(context, dict) else None
-    transport = "ssh" if ctx_host and ctx_host not in ("localhost", "127.0.0.1") else "local"
+    # Adopted sessions are always local — tmux_session_exists already confirmed
+    # the session is on this machine. camc only manages local tmux sessions.
+    # TODO: if camc adds SSH/remote support, transport_type should be derived
+    # from the session's origin (e.g. remote socket path or machine config).
+    transport = "local"
     store.save({
         "id": agent_id,
         "task": {"name": "", "tool": args.tool, "prompt": "(adopted)",
@@ -524,11 +564,69 @@ def cmd_status(args):
         print(json.dumps({"agents": agents, "hash": h}))
 
 
+def _kill_all_monitors():
+    """Kill all monitor processes on this machine (old and new)."""
+    killed = 0
+    try:
+        # Find all monitor processes: camc _monitor, cam-client.py _monitor_bg
+        out = subprocess.check_output(
+            ["ps", "aux"], stderr=subprocess.DEVNULL
+        ).decode("utf-8", errors="replace")
+        for line in out.splitlines():
+            if ("_monitor" in line or "monitor_bg" in line) and "grep" not in line:
+                parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        pid = int(parts[1])
+                        if pid != os.getpid():
+                            os.kill(pid, 15)  # SIGTERM
+                            killed += 1
+                    except (ValueError, ProcessLookupError, PermissionError):
+                        pass
+    except Exception:
+        pass
+    return killed
+
+
 def cmd_heal(args):
     """Check running agents and restart dead monitor daemons."""
+    upgrade = getattr(args, "upgrade", False)
+
+    if upgrade:
+        killed = _kill_all_monitors()
+        print("Upgrade: killed %d old monitor process(es)" % killed)
+        time.sleep(0.5)  # let processes die
+
     my_hostname = _sock.gethostname()
     store = AgentStore()
     agents = store.list()
+
+    if upgrade:
+        # Fix unnamed agents: use basename of context_path
+        # Detect duplicates and append ID prefix to disambiguate
+        unnamed = []
+        for a in agents:
+            t = a.get("task")
+            name = t.get("name", "") if isinstance(t, dict) else a.get("name", "")
+            if not name:
+                unnamed.append(a)
+        if unnamed:
+            name_counts = {}
+            for a in unnamed:
+                base = os.path.basename((a.get("context_path") or "").rstrip("/")) or "agent"
+                name_counts.setdefault(base, []).append(a["id"])
+            fixed = 0
+            for a in unnamed:
+                base = os.path.basename((a.get("context_path") or "").rstrip("/")) or "agent"
+                new_name = "%s-%s" % (base, a["id"][:4]) if len(name_counts[base]) > 1 else base
+                t = a.get("task")
+                if isinstance(t, dict):
+                    t["name"] = new_name
+                else:
+                    a["name"] = new_name
+                store.save(a)
+                fixed += 1
+            print("Upgrade: named %d unnamed agent(s)" % fixed)
     running = [a for a in agents if a.get("status") == "running"]
     if not running:
         print("No running agents.")
@@ -538,8 +636,21 @@ def cmd_heal(args):
     ok = 0
     skipped = 0
     for a in running:
-        # Skip agents from other machines in the cluster (shared NFS home)
         agent_host = a.get("hostname")
+        if not agent_host:
+            # Unknown hostname — check if tmux session exists locally.
+            # If yes, claim it for this host. If no, skip (don't mark dead).
+            session = _sf(a, "tmux_session")
+            if session and tmux_session_exists(session):
+                store.update(a["id"], hostname=my_hostname)
+                a["hostname"] = my_hostname
+                agent_host = my_hostname
+            else:
+                aid = a["id"]
+                name = _tf(a, "name") or aid
+                print("  %s (%s): skipped (no hostname, session not local)" % (name, aid))
+                skipped += 1
+                continue
         if not _is_same_host(agent_host, my_hostname):
             skipped += 1
             continue
@@ -1132,6 +1243,13 @@ examples:
     k = sub.add_parser("kill", help="Force kill a running agent")
     k.add_argument("id", help="Agent ID")
 
+    # update
+    up = sub.add_parser("update", help="Update agent properties")
+    up.add_argument("id", help="Agent ID")
+    up.add_argument("--name", default=None, help="Set agent name")
+    up.add_argument("--auto-confirm", dest="auto_confirm", default=None,
+                    type=lambda v: v.lower() in ("true", "1", "yes"), help="Enable/disable auto-confirm")
+
     # add
     a = sub.add_parser("add", help="Adopt existing tmux session")
     a.add_argument("session", help="tmux session name")
@@ -1180,7 +1298,8 @@ examples:
     ky.add_argument("--key", "-k", required=True, help="Key to send (e.g. C-c, Enter, Escape)")
 
     # heal
-    sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
+    heal_p = sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
+    heal_p.add_argument("--upgrade", action="store_true", help="Kill ALL monitors and restart with current camc binary")
 
     # machine
     mp = sub.add_parser("machine", help="Manage remote machines")
@@ -1247,6 +1366,7 @@ examples:
         "logs": cmd_logs,
         "stop": cmd_stop,
         "kill": cmd_kill,
+        "update": cmd_update,
         "add": cmd_add,
         "rm": cmd_rm,
         "attach": cmd_attach,
