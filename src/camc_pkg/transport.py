@@ -80,6 +80,18 @@ def tmux_send_input(session_id, text, send_enter=True):
         return False
 
 
+def tmux_send_key(session_id, key):
+    """Send a tmux key (e.g. 'BSpace', 'Enter', 'Escape') to a session."""
+    base = _tmux_base(session_id)
+    target = "%s:0.0" % session_id
+    try:
+        _run(base + ["send-keys", "-t", target, key], check=True)
+        return True
+    except Exception as e:
+        log.warning("tmux_send_key failed: %s", e)
+        return False
+
+
 def tmux_kill_session(session_id):
     socket = _find_tmux_socket(session_id)
     if socket:
