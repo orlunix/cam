@@ -1177,35 +1177,27 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 examples:
-  camc init                           First-time setup
-  camc run "fix lint errors"          Launch claude (default) with a prompt
-  camc run -t codex "add tests"       Launch codex with a prompt
-  camc run                            Launch claude interactively
+  camc run -n myfix "fix lint errors" Launch agent with a name
   camc list                           List all agents
-  camc list --json                    List agents as JSON
-  camc list --status running          List only running agents
-  camc logs abc1 -f                   Follow agent output
-  camc attach abc1                    Attach to agent tmux
-  camc stop abc1                      Gracefully stop an agent
+  camc a myfix                        Attach by name (a = attach)
+  camc a 3                            Attach by index (1-based)
+  camc run                            Launch claude interactively
+  camc run -t codex "add tests"       Launch codex with a prompt
+  camc stop myfix                     Gracefully stop by name
+  camc logs myfix -f                  Follow agent output
   camc kill abc1                      Force kill an agent
   camc status abc1                    Show detailed agent status
   camc add my-session --tool claude   Adopt existing tmux session
   camc rm abc1 --kill                 Remove and kill agent
-  camc apply -f tasks.yaml             Run DAG task file
-  camc apply -f tasks.yaml --dry-run  Validate without executing
-  camc history abc1                    Show event history for agent
-  camc history --since 2026-03-25     Events after date
-  camc capture abc1 --lines 50        Capture agent screen output
-  camc send abc1 --text "hello"       Send text to agent
+  camc apply -f tasks.yaml            Run DAG task file
+  camc history abc1                   Show event history for agent
+  camc capture myfix --lines 50       Capture agent screen output
+  camc send myfix --text "hello"      Send text to agent
   camc key abc1 --key C-c             Send special key to agent
   camc heal                           Restart dead monitors
   camc machine list                   List machines
-  camc machine add pdx --host h --user u --port 22
-  camc machine ping                   Test SSH to all machines
   camc context list                   List contexts
-  camc context add proj --machine pdx --path /home/...
   camc sync                           Sync camc to all remote machines
-  camc sync pdx                       Sync to specific machine
   camc version                        Show version info""")
     p.add_argument("--json", action="store_true", help="Output as JSON")
     p.add_argument("--verbose", "-v", action="store_true", help="Verbose output (debug logging)")
@@ -1353,6 +1345,11 @@ examples:
     if len(sys.argv) >= 3 and sys.argv[1] == "_monitor":
         _run_monitor(sys.argv[2])
         return
+
+    # Command aliases (expand before argparse sees them)
+    _aliases = {"a": "attach", "ls": "list"}
+    if len(sys.argv) > 1 and sys.argv[1] in _aliases:
+        sys.argv[1] = _aliases[sys.argv[1]]
 
     args = p.parse_args()
     # Enable debug logging if --verbose
