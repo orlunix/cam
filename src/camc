@@ -207,11 +207,25 @@ def _kill_monitor(agent):
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
-# Embedded adapter configs (written to ~/.cam/configs/ on `camc init`)
+# Embedded adapter configs — injected by build_camc.py at build time.
+# DO NOT edit here. Edit the TOML source files in src/cam/adapters/configs/.
 # ---------------------------------------------------------------------------
 
 _EMBEDDED_CONFIGS = {
     "claude.toml": r"""# Claude Code adapter — interactive mode with --allowed-tools.
+#
+# Runs in interactive mode (not headless -p) with pre-authorized tools.
+# Permission prompts use numbered menus:
+#   "1. Yes  2. Yes, don't ask again  3. No" — send "1" without Enter.
+# Trust dialogs (v2.1+) use Ink select menus:
+#   "Enter to confirm · Esc to cancel" — just press Enter.
+#
+# TUI markers:
+#   Ready prompt:     ❯ (start of line)
+#   Tool call:        ● Read(...), ● Bash(...)
+#   Task summary:     ✻ Crunched for 1m 11s
+#   Completion:       Two ❯ lines = task done (prompt echo + return to input)
+
 [adapter]
 name = "claude"
 display_name = "Claude Code"
@@ -255,56 +269,74 @@ prompt_pattern = "^[❯>]"
 prompt_flags = ["MULTILINE"]
 prompt_count_threshold = 2
 
+# Fallback: single ❯ plus task summary (✻ verb for time) = completion
+# Claude rotates verbs (Crunched, Sautéed, Whisked, Baked, etc.)
 fallback_summary_pattern = "✻ .+ for \\d+"
 
 [[confirm]]
+# Ink select menus: trust folder ("Enter to confirm"), plan mode interview
+# ("Enter to select"), and similar. Cursor is already on the right option,
+# just press Enter.
 pattern = "Enter to (confirm|select).*Esc to cancel"
 flags = ["IGNORECASE", "DOTALL"]
 response = ""
 send_enter = true
 
 [[confirm]]
+# Numbered permission menu: "Do you want to proceed? 1. Yes 2. No"
+# Send "1" to explicitly select option 1, more reliable than Enter
+# which depends on cursor position.
 pattern = "Do\\s+you\\s+want\\s+to\\s+proceed"
 flags = ["IGNORECASE"]
-response = ""
-send_enter = true
+response = "1"
+send_enter = false
 
 [[confirm]]
+# Numbered menu with "1. Yes" or "1. Allow" — send "1" to select.
 pattern = "1\\.\\s*(Yes|Allow)"
 flags = ["IGNORECASE"]
-response = ""
-send_enter = true
+response = "1"
+send_enter = false
 
 [[confirm]]
+# "Allow once" / "Always allow" select menu (Claude 4.x+)
 pattern = "Allow\\s+(once|always)"
 flags = ["IGNORECASE"]
 response = ""
 send_enter = true
 
 [[confirm]]
+# Permission prompt ending with (y/n) or [Y/n]
 pattern = "\\(y/n\\)|\\[Y/n\\]|\\[y/N\\]"
 flags = ["IGNORECASE"]
 response = "y"
 send_enter = true
 
 [probe]
-char = "Z"
-confirm_response = ""
-confirm_send_enter = true
-wait = 0.3
-idle_threshold = 2
+char = "1"                    # smart probe char (also used for auto-confirm)
+wait = 0.3                    # seconds after probe before recapture
+idle_threshold = 2            # consecutive idle probes → confirmed idle
 
 [monitor]
-confirm_cooldown = 5.0
-confirm_sleep = 0.5
-completion_stable = 3.0
-health_check_interval = 15
-empty_threshold = 3
-auto_exit = false
-exit_action = "kill_session"
-exit_command = "/exit"
+confirm_cooldown = 5.0        # seconds between auto-confirm attempts
+confirm_sleep = 0.5           # sleep after sending confirmation
+completion_stable = 3.0       # idle seconds before checking completion
+health_check_interval = 15    # seconds between tmux alive checks
+empty_threshold = 3           # consecutive empty captures before concern
+auto_exit = false             # finalize agent when task completes and idle confirmed
+probe_stable = 10.0           # idle seconds before first probe
+probe_cooldown = 20.0         # seconds between probes
+exit_action = "kill_session"  # "kill_session", "send_exit", or "mark_only"
+exit_command = "/exit"        # command to send if exit_action = "send_exit"
 """,
-    "codex.toml": r"""# Codex adapter — interactive mode.
+    "codex.toml": r"""# Codex adapter — interactive mode (no --full-auto, blocked by OpenAI cloud).
+# Auto-confirm handles the initial trust dialog and approval prompts.
+#
+# TUI markers:
+#   Input prompt:  › (start of line)
+#   Working:       • Thinking / Exploring / etc.
+#   Completion:    Two › lines = task done (echoed prompt + return to idle)
+
 [adapter]
 name = "codex"
 display_name = "OpenAI Codex"
@@ -349,6 +381,7 @@ error_pattern = "(Error:|error:|FAILED|fatal:|Exception|command not found)"
 error_flags = ["IGNORECASE"]
 
 [[confirm]]
+# Trust dialog: "1. Yes, allow Codex to work in this folder"
 pattern = "1\\.\\s*(Yes,?\\s*)?allow Codex to work"
 flags = ["IGNORECASE"]
 response = "1"
@@ -373,9 +406,7 @@ response = ""
 send_enter = true
 
 [probe]
-char = "Z"
-confirm_response = ""
-confirm_send_enter = true
+char = "1"                    # smart probe char (also used for auto-confirm)
 wait = 0.3
 idle_threshold = 2
 
@@ -385,11 +416,25 @@ confirm_sleep = 0.5
 completion_stable = 3.0
 health_check_interval = 15
 empty_threshold = 3
-auto_exit = false
-exit_action = "kill_session"
-exit_command = "/exit"
+auto_exit = false             # finalize agent when task completes and idle confirmed
+exit_action = "kill_session"  # "kill_session", "send_exit", or "mark_only"
+probe_stable = 10.0
+probe_cooldown = 20.0
+exit_command = "/exit"        # command to send if exit_action = "send_exit"
 """,
-    "cursor.toml": r"""# Cursor Agent adapter — interactive mode.
+    "cursor.toml": r"""# Cursor Agent adapter — interactive mode (like Claude adapter).
+#
+# Uses interactive TUI (not -p headless) because:
+# - headless `-p` mode rejects shell commands when --force/--yolo is disabled by admin
+# - interactive mode allows auto-confirming permission prompts via CAM monitor
+#
+# TUI markers observed:
+#   Ready prompt:     → Plan, search, build anything
+#   Tool call:        ⬢ Read /path   ⬢ Edit /path
+#   Shell command:    $ python3 test.py <time> in /dir
+#   Permission:       Run this command? → Run (once) (y)
+#   Completion:       → Add a follow-up  (second → prompt = done)
+
 [adapter]
 name = "cursor"
 display_name = "Cursor Agent"
@@ -432,27 +477,30 @@ prompt_pattern = "→"
 prompt_flags = ["MULTILINE"]
 prompt_count_threshold = 2
 
+# Fallback: single → plus usage percentage = completion
+# Agent shows "Claude 4.6 Opus (Thinking) · 6.7%" after task finishes
 fallback_summary_pattern = "·\\s*\\d+(\\.\\d+)?%"
 
 [[confirm]]
+# Workspace trust dialog: "▶ [a] Trust this workspace" — press Enter (cursor already on it)
 pattern = "Trust this workspace"
 response = ""
 send_enter = true
 
 [[confirm]]
+# Catch-all: any prompt with (y) — covers Proceed (y), Run (once) (y), etc.
 pattern = "\\(y\\)"
 response = ""
 send_enter = true
 
 [[confirm]]
+# "Run (always for this command)" has no (y) suffix
 pattern = "Run \\(always"
 response = ""
 send_enter = true
 
 [probe]
-char = "Z"
-confirm_response = ""
-confirm_send_enter = true
+char = "1"                    # smart probe char (also used for auto-confirm)
 wait = 0.3
 idle_threshold = 2
 
@@ -462,9 +510,11 @@ confirm_sleep = 0.5
 completion_stable = 3.0
 health_check_interval = 15
 empty_threshold = 3
-auto_exit = false
-exit_action = "kill_session"
-exit_command = "/exit"
+auto_exit = false             # finalize agent when task completes and idle confirmed
+exit_action = "kill_session"  # "kill_session", "send_exit", or "mark_only"
+probe_stable = 10.0
+probe_cooldown = 20.0
+exit_command = "/exit"        # command to send if exit_action = "send_exit"
 """,
 }
 
@@ -617,8 +667,6 @@ class AdapterConfig(object):
 
         probe_cfg = config.get("probe", {})
         self.probe_char = probe_cfg.get("char", "Z")
-        self.probe_confirm_response = probe_cfg.get("confirm_response", "")
-        self.probe_confirm_send_enter = probe_cfg.get("confirm_send_enter", True)
         self.probe_wait = float(probe_cfg.get("wait", 0.3))
         self.probe_idle_threshold = int(probe_cfg.get("idle_threshold", 2))
 
@@ -631,6 +679,8 @@ class AdapterConfig(object):
         self.auto_exit = bool(mon_cfg.get("auto_exit", False))
         self.exit_action = mon_cfg.get("exit_action", "kill_session")
         self.exit_command = mon_cfg.get("exit_command", "/exit")
+        self.probe_stable = float(mon_cfg.get("probe_stable", 10.0))
+        self.probe_cooldown = float(mon_cfg.get("probe_cooldown", 20.0))
 
 
 def _load_config(tool):
@@ -721,6 +771,18 @@ def tmux_send_input(session_id, text, send_enter=True):
         return True
     except Exception as e:
         log.warning("tmux_send_input failed: %s", e)
+        return False
+
+
+def tmux_send_key(session_id, key):
+    """Send a tmux key (e.g. 'BSpace', 'Enter', 'Escape') to a session."""
+    base = _tmux_base(session_id)
+    target = "%s:0.0" % session_id
+    try:
+        _run(base + ["send-keys", "-t", target, key], check=True)
+        return True
+    except Exception as e:
+        log.warning("tmux_send_key failed: %s", e)
         return False
 
 
@@ -827,10 +889,16 @@ def should_auto_confirm(output, config):
     if config.strip_ansi:
         output = strip_ansi(output)
     clean = clean_for_confirm(output)
-    recent = clean[-500:] if len(clean) > 500 else clean
+    # Only check the last few non-empty lines — real permission dialogs
+    # appear at the bottom of the screen.  Matching the full output causes
+    # false positives when the agent's *response* contains trigger text
+    # (e.g. a table mentioning "1. Yes").
+    lines = [l for l in clean.splitlines() if l.strip()]
+    recent = "\n".join(lines[-32:]) if len(lines) > 8 else clean
     for pattern, response, send_enter in config.confirm_rules:
-        if pattern.search(recent):
-            return (response, send_enter)
+        m = pattern.search(recent)
+        if m:
+            return (response, send_enter, pattern.pattern, m.group())
     return None
 
 
@@ -958,7 +1026,31 @@ class AgentStore(object):
                 return a
         # Prefix match on ID
         matches = [a for a in agents if a["id"].startswith(agent_id)]
-        return matches[0] if len(matches) == 1 else None
+        if len(matches) == 1:
+            return matches[0]
+        # Name match (exact then prefix, case-insensitive)
+        lower = agent_id.lower()
+        for a in agents:
+            task = a.get("task")
+            name = (task.get("name", "") if isinstance(task, dict) else a.get("name", "")) or ""
+            if name.lower() == lower:
+                return a
+        name_matches = []
+        for a in agents:
+            task = a.get("task")
+            name = (task.get("name", "") if isinstance(task, dict) else a.get("name", "")) or ""
+            if name.lower().startswith(lower):
+                name_matches.append(a)
+        if len(name_matches) == 1:
+            return name_matches[0]
+        # Numeric index (1-based, matches `camc list` order)
+        try:
+            idx = int(agent_id) - 1
+            if 0 <= idx < len(agents):
+                return agents[idx]
+        except ValueError:
+            pass
+        return None
 
     def save(self, agent):
         def _do(agents):
@@ -1946,8 +2038,78 @@ def print_detail(pairs, title=None, border_style="cyan"):
 # monitor
 # ===========================================================================
 
+def _smart_probe(session, config):
+    """Smart probe: send probe char, observe terminal echo, classify, clean up.
+
+    Sends the adapter's probe_char (default "1") without Enter, then checks
+    what happened:
+      - "idle": char appeared in output (echoed at prompt) -> waiting for input
+      - "busy": output unchanged (agent in raw mode) OR output changed but
+        char not echoed (consumed by a dialog, agent resumes work)
+      - "error": capture or send failed
+
+    BSpace follows to clean up the probe char from the terminal.
+
+    The probe char is configurable per adapter (config.probe_char). Default "1"
+    works for Claude (selects option 1 in permission menus). Other agents may
+    use a different char.
+
+    Returns: "idle", "busy", or "error"
+    """
+    char = config.probe_char
+
+    # 1. Capture baseline
+    baseline = capture_tmux(session)
+    if not baseline.strip():
+        return "error"
+
+    # 2. Send probe char (no Enter)
+    if not tmux_send_input(session, char, send_enter=False):
+        return "error"
+
+    # 3. Wait and recapture
+    time.sleep(config.probe_wait)
+    after = capture_tmux(session)
+
+    # 4. Classify — compare all non-empty lines, not just the last one.
+    # Claude Code's TUI has status/separator lines below the prompt, so the
+    # probe char may appear on any line (e.g. "❯\xa01"), not necessarily the last.
+    result = "busy"
+    baseline_stripped = baseline.rstrip("\n")
+    after_stripped = after.rstrip("\n")
+
+    if baseline_stripped != after_stripped:
+        # Output changed — check if the probe char was echoed (idle)
+        # or consumed by a dialog (busy)
+        baseline_lines = set(baseline_stripped.splitlines())
+        after_lines = after_stripped.splitlines()
+        for line in after_lines:
+            if line not in baseline_lines and char in line:
+                result = "idle"
+                break
+
+    # 5. BSpace to clean up probe char
+    tmux_send_key(session, "BSpace")
+    time.sleep(0.15)
+
+    return result
+
+
 def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=None):
-    """Monitor a tmux session: auto-confirm, state detection, completion, auto-exit."""
+    """Monitor a tmux session: unified confirm/probe, state detection, auto-exit.
+
+    Uses a single "1"+BSpace mechanism for both confirmation and idle detection.
+
+    Auto-confirm flow:
+      Confirm pattern matched -> send "1" (no BSpace, dialog consumes it).
+
+    Probe flow (after completion detected):
+      _smart_probe() -> classify result:
+        "idle" (echoed)  -> agent at prompt, consecutive_idle++
+        "busy" (else)    -> agent working or dialog consumed, reset idle state
+
+    Idle confirmed when consecutive_idle >= threshold (default 2).
+    """
     if pid_path:
         with open(pid_path, "w") as f:
             f.write(str(os.getpid()))
@@ -1956,11 +2118,20 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
     signal.signal(signal.SIGTERM, lambda s, f: running.__setitem__(0, False))
 
     prev_hash = ""
+    prev_output = ""
     last_change = last_health = time.time()
     last_confirm = 0.0
     current_state = None
     has_worked = False
     empty_count = 0
+
+    # Probe state (ported from cam server monitor)
+    last_probe = 0.0
+    probe_count = 0                    # total probes sent
+    consecutive_idle = 0          # consecutive idle probes
+    idle_confirmed = False             # set True once probe confirms idle
+    completion_detected = False        # set True when detect_completion matches
+    max_probes = config.probe_idle_threshold * 3  # give up after this many
 
     def _event(event_type, detail=None):
         if events:
@@ -1972,21 +2143,55 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
         while running[0]:
             now = time.time()
 
+            # --- Health check (periodic) ---
             if now - last_health >= config.health_check_interval:
                 last_health = now
                 if not tmux_session_exists(session):
-                    status = "completed" if has_worked else "failed"
-                    log.info("Session gone: %s -> %s", session, status)
+                    # Session disappeared — check last output for completion
+                    # signals before deciding completed vs failed.
+                    if prev_output:
+                        done = detect_completion(prev_output, config)
+                        if done:
+                            status = "completed"
+                        elif has_worked:
+                            status = "completed"
+                        else:
+                            status = "failed"
+                    else:
+                        status = "completed" if has_worked else "failed"
+                    reason = "Session ended cleanly" if status == "completed" else "Session exited before agent started working"
+                    log.info("Session gone: %s -> %s (%s)", session, status, reason)
                     store.update(agent_id, status=status,
-                                 exit_reason="Session exited", completed_at=_now_iso())
-                    _event("completed", {"status": status, "reason": "Session exited"})
+                                 exit_reason=reason, completed_at=_now_iso())
+                    _event("completed", {"status": status, "reason": reason})
                     return
 
+            # --- Capture output ---
             output = capture_tmux(session)
+            if output.strip():
+                prev_output = output
             h = hashlib.md5(output.encode()).hexdigest()[:8]
             changed = h != prev_hash
+
+            # --- Output change detection with probe-caused filter ---
+            # If output changed shortly after a probe, it was likely caused
+            # by the probe itself (e.g. "1" echoing or BSpace clearing).
+            # Don't reset idle state for probe-caused changes.
+            probe_caused = (
+                last_probe > 0
+                and now - last_probe < config.probe_wait + 2.0
+            )
+
             if changed:
-                last_change = now
+                if not probe_caused:
+                    # Real change — agent is working, reset everything
+                    last_change = now
+                    idle_confirmed = False
+                    consecutive_idle = 0
+                    completion_detected = False
+                else:
+                    # Probe-caused change — update hash but don't reset idle state
+                    log.debug("Probe-caused output change, not resetting")
             prev_hash = h
 
             if not output.strip():
@@ -2001,16 +2206,26 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 continue
             empty_count = 0
 
+            # --- Auto-confirm: send "1" when confirm pattern detected ---
+            # Pattern already matched a dialog, so "1" will be consumed by the
+            # menu (select option 1). No Enter, no BSpace needed.
             if now - last_confirm >= config.confirm_cooldown:
                 confirm = should_auto_confirm(output, config)
                 if confirm:
-                    log.info("Auto-confirm: %r enter=%s", confirm[0], confirm[1])
-                    tmux_send_input(session, confirm[0], send_enter=confirm[1])
+                    response, send_enter, pat_str, matched = confirm
+                    log.info("Auto-confirm: pattern=%r matched=%r -> response=%r enter=%s",
+                             pat_str, matched, response, send_enter)
+                    if response:
+                        tmux_send_input(session, response, send_enter=send_enter)
+                    elif send_enter:
+                        tmux_send_key(session, "Enter")
                     last_confirm = now
-                    _event("auto_confirm", {"response": confirm[0], "send_enter": confirm[1]})
+                    _event("auto_confirm", {"pattern": pat_str, "matched": matched,
+                                            "response": response})
                     time.sleep(config.confirm_sleep)
                     continue
 
+            # --- State detection ---
             ns = detect_state(output, config)
             if ns and ns != current_state:
                 if ns != "initializing":
@@ -2020,41 +2235,96 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 current_state = ns
                 store.update(agent_id, state=ns)
 
-            if not changed and now - last_change >= config.completion_stable:
+            # --- Completion detection ---
+            idle_for = now - last_change
+            if not changed and idle_for >= config.completion_stable:
                 done = detect_completion(output, config)
                 if done:
-                    has_worked = True  # completion signal = agent did work
+                    has_worked = True
+                    if not completion_detected:
+                        completion_detected = True
+                        log.info("Completion detected (output stable %.1fs)", idle_for)
+                        _event("completion_detected", {"idle_for": idle_for})
+
+            # --- Probe-based idle detection ---
+            # Only probe after completion detected, agent has worked,
+            # idle not yet confirmed, and haven't exceeded max probes.
+            if (has_worked
+                    and completion_detected
+                    and not idle_confirmed
+                    and probe_count < max_probes):
+                if (idle_for >= config.probe_stable
+                        and now - last_probe >= config.probe_cooldown):
+                    last_probe = now
+                    probe_count += 1
+                    probe_result = _smart_probe(session, config)
+
+                    log.info("Probe #%d: %s (consecutive=%d/%d)",
+                             probe_count, probe_result,
+                             consecutive_idle + (1 if probe_result == "idle" else 0),
+                             config.probe_idle_threshold)
+                    _event("probe", {
+                        "result": probe_result,
+                        "probe_count": probe_count,
+                        "consecutive_idle": consecutive_idle,
+                    })
+
+                    if probe_result == "idle":
+                        consecutive_idle += 1
+                    else:
+                        # busy or error — agent working, reset
+                        last_change = now
+                        consecutive_idle = 0
+                        completion_detected = False
+
+                    if consecutive_idle >= config.probe_idle_threshold:
+                        idle_confirmed = True
+                        log.info("Idle confirmed (%d consecutive probes)",
+                                 consecutive_idle)
+                        _event("idle_confirmed", {"probe_count": probe_count})
+                        store.update(agent_id, state="idle")
+
+            # --- Auto-exit on completion + idle confirmed ---
+            # Two paths:
+            # 1. Probe confirmed: completion_detected + idle_confirmed
+            # 2. Long stable fallback: completion_detected + idle >= completion_stable * 3
+            #    (for trivial tasks where probes all return busy/error)
+            completion_stable_enough = (
+                completion_detected
+                and idle_for >= config.completion_stable * 3
+            )
+            if completion_detected and (idle_confirmed or completion_stable_enough):
+                if not idle_confirmed:
                     store.update(agent_id, state="idle")
-                    # Auto-exit when completion detected + output stable for 3x completion_stable
-                    if now - last_change >= config.completion_stable * 3:
-                        agent_rec = store.get(agent_id)
-                        # Support both new nested task format and legacy flat format
-                        ae = None
-                        if agent_rec:
-                            t = agent_rec.get("task")
-                            if isinstance(t, dict):
-                                ae = t.get("auto_exit")
-                            else:
-                                ae = agent_rec.get("auto_exit")
-                        if ae is None:
-                            ae = getattr(config, "auto_exit", False)
-                        if ae:
-                            exit_action = getattr(config, "exit_action", "kill_session")
-                            if exit_action == "kill_session":
-                                tmux_kill_session(session)
-                            elif exit_action == "send_exit":
-                                tmux_send_input(session, getattr(config, "exit_command", "/exit"), send_enter=True)
-                                for _ in range(10):
-                                    time.sleep(1)
-                                    if not tmux_session_exists(session):
-                                        break
-                                else:
-                                    tmux_kill_session(session)
-                            store.update(agent_id, status="completed",
-                                         exit_reason="Task completed (auto-exit)",
-                                         completed_at=_now_iso())
-                            _event("completed", {"status": "completed", "reason": "auto-exit"})
-                            return
+
+                agent_rec = store.get(agent_id)
+                ae = None
+                if agent_rec:
+                    t = agent_rec.get("task")
+                    if isinstance(t, dict):
+                        ae = t.get("auto_exit")
+                    else:
+                        ae = agent_rec.get("auto_exit")
+                if ae is None:
+                    ae = getattr(config, "auto_exit", False)
+                if ae:
+                    exit_action = getattr(config, "exit_action", "kill_session")
+                    log.info("Auto-exit: action=%s", exit_action)
+                    if exit_action == "kill_session":
+                        tmux_kill_session(session)
+                    elif exit_action == "send_exit":
+                        tmux_send_input(session, getattr(config, "exit_command", "/exit"), send_enter=True)
+                        for _ in range(10):
+                            time.sleep(1)
+                            if not tmux_session_exists(session):
+                                break
+                        else:
+                            tmux_kill_session(session)
+                    store.update(agent_id, status="completed",
+                                 exit_reason="Task completed (auto-exit)",
+                                 completed_at=_now_iso())
+                    _event("completed", {"status": "completed", "reason": "auto-exit"})
+                    return
 
             time.sleep(1)
     finally:
@@ -2655,28 +2925,7 @@ def cmd_run(args):
         sys.stderr.write("Error: failed to create tmux session\n")
         sys.exit(1)
 
-    # Startup: wait for readiness, auto-confirm, send prompt
-    if config.prompt_after_launch:
-        elapsed, confirmed = 0.0, False
-        while elapsed < config.startup_wait:
-            time.sleep(1); elapsed += 1
-            output = capture_tmux(session)
-            if not output.strip():
-                continue
-            if confirmed and is_ready_for_input(output, config):
-                break
-            confirm = should_auto_confirm(output, config)
-            if confirm:
-                tmux_send_input(session, confirm[0], send_enter=confirm[1])
-                confirmed = True
-                time.sleep(3); elapsed += 3
-                continue
-            if is_ready_for_input(output, config):
-                break
-        if prompt.strip():
-            tmux_send_input(session, prompt, send_enter=True)
-
-    name = getattr(args, "name", None) or None
+    name = getattr(args, "name", None) or os.path.basename(workdir) or "%s-%s" % (tool, uuid4().hex[:6])
     auto_exit = getattr(args, "auto_exit", False)
     ctx_name = context.get("name", "") if isinstance(context, dict) else ""
     ctx_host = context.get("host") if isinstance(context, dict) else None
@@ -2699,6 +2948,31 @@ def cmd_run(args):
         "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
         "retry_count": 0, "cost_estimate": None, "files_changed": [],
     })
+
+    # Startup: wait for readiness, auto-confirm via "1"+BSpace, send prompt
+    if config.prompt_after_launch:
+        elapsed, confirmed = 0.0, False
+        while elapsed < config.startup_wait:
+            time.sleep(1); elapsed += 1
+            output = capture_tmux(session)
+            if not output.strip():
+                continue
+            if confirmed and is_ready_for_input(output, config):
+                break
+            confirm = should_auto_confirm(output, config)
+            if confirm:
+                # Pattern matched a confirm dialog — send probe_char to select
+                # option. No Enter (avoids side effects), no BSpace (dialog
+                # consumes the char). probe_char is "1" for Claude (selects
+                # option 1 = Yes/Allow), configurable per adapter.
+                tmux_send_input(session, config.probe_char, send_enter=False)
+                confirmed = True
+                time.sleep(3); elapsed += 3
+                continue
+            if is_ready_for_input(output, config):
+                break
+        if prompt.strip():
+            tmux_send_input(session, prompt, send_enter=True)
 
     # Spawn background monitor
     try:
@@ -2832,6 +3106,39 @@ def cmd_kill(args):
     print("Killed agent %s" % a["id"])
 
 
+def cmd_update(args):
+    """Update agent properties (name, auto_confirm)."""
+    store = AgentStore()
+    a = store.get(args.id)
+    if not a:
+        sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
+
+    changed = False
+    task = a.get("task")
+    if not isinstance(task, dict):
+        # Legacy flat format — wrap into task
+        task = {"name": a.get("name", ""), "tool": a.get("tool", "claude"),
+                "prompt": a.get("prompt", ""), "auto_confirm": a.get("auto_confirm", True),
+                "auto_exit": a.get("auto_exit", False)}
+
+    if args.name is not None:
+        task["name"] = args.name
+        print_info("Updated name to: %s" % args.name)
+        changed = True
+    if args.auto_confirm is not None:
+        task["auto_confirm"] = args.auto_confirm
+        print_info("Updated auto_confirm to: %s" % args.auto_confirm)
+        changed = True
+
+    if not changed:
+        print_error("Nothing to update. Use --name or --auto-confirm.")
+        sys.exit(1)
+
+    a["task"] = task
+    store.save(a)
+    print_success("Agent %s updated" % a["id"])
+
+
 def cmd_add(args):
     if not tmux_session_exists(args.session):
         sys.stderr.write("Error: tmux session '%s' not found\n" % args.session); sys.exit(1)
@@ -2839,8 +3146,11 @@ def cmd_add(args):
     agent_id = _gen_agent_id()
     context = _load_default_context()
     ctx_name = context.get("name", "") if isinstance(context, dict) else ""
-    ctx_host = context.get("host") if isinstance(context, dict) else None
-    transport = "ssh" if ctx_host and ctx_host not in ("localhost", "127.0.0.1") else "local"
+    # Adopted sessions are always local — tmux_session_exists already confirmed
+    # the session is on this machine. camc only manages local tmux sessions.
+    # TODO: if camc adds SSH/remote support, transport_type should be derived
+    # from the session's origin (e.g. remote socket path or machine config).
+    transport = "local"
     store.save({
         "id": agent_id,
         "task": {"name": "", "tool": args.tool, "prompt": "(adopted)",
@@ -2862,7 +3172,8 @@ def cmd_add(args):
     try:
         proc = subprocess.Popen(
             [sys.executable, _CAMC_SCRIPT, "_monitor", agent_id] if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg", "_monitor", agent_id],
-            stdout=subprocess.DEVNULL, stderr=open("/tmp/camc-%s.log" % agent_id, "a"),
+            stdout=subprocess.DEVNULL,
+            stderr=open(os.path.join(LOGS_DIR, "monitor-%s.stderr" % agent_id), "a"),
             start_new_session=True)
         store.update(agent_id, pid=proc.pid)
     except Exception:
@@ -2964,11 +3275,69 @@ def cmd_status(args):
         print(json.dumps({"agents": agents, "hash": h}))
 
 
+def _kill_all_monitors():
+    """Kill all monitor processes on this machine (old and new)."""
+    killed = 0
+    try:
+        # Find all monitor processes: camc _monitor, cam-client.py _monitor_bg
+        out = subprocess.check_output(
+            ["ps", "aux"], stderr=subprocess.DEVNULL
+        ).decode("utf-8", errors="replace")
+        for line in out.splitlines():
+            if ("_monitor" in line or "monitor_bg" in line) and "grep" not in line:
+                parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        pid = int(parts[1])
+                        if pid != os.getpid():
+                            os.kill(pid, 15)  # SIGTERM
+                            killed += 1
+                    except (ValueError, ProcessLookupError, PermissionError):
+                        pass
+    except Exception:
+        pass
+    return killed
+
+
 def cmd_heal(args):
     """Check running agents and restart dead monitor daemons."""
+    upgrade = getattr(args, "upgrade", False)
+
+    if upgrade:
+        killed = _kill_all_monitors()
+        print("Upgrade: killed %d old monitor process(es)" % killed)
+        time.sleep(0.5)  # let processes die
+
     my_hostname = _sock.gethostname()
     store = AgentStore()
     agents = store.list()
+
+    if upgrade:
+        # Fix unnamed agents: use basename of context_path
+        # Detect duplicates and append ID prefix to disambiguate
+        unnamed = []
+        for a in agents:
+            t = a.get("task")
+            name = t.get("name", "") if isinstance(t, dict) else a.get("name", "")
+            if not name:
+                unnamed.append(a)
+        if unnamed:
+            name_counts = {}
+            for a in unnamed:
+                base = os.path.basename((a.get("context_path") or "").rstrip("/")) or "agent"
+                name_counts.setdefault(base, []).append(a["id"])
+            fixed = 0
+            for a in unnamed:
+                base = os.path.basename((a.get("context_path") or "").rstrip("/")) or "agent"
+                new_name = "%s-%s" % (base, a["id"][:4]) if len(name_counts[base]) > 1 else base
+                t = a.get("task")
+                if isinstance(t, dict):
+                    t["name"] = new_name
+                else:
+                    a["name"] = new_name
+                store.save(a)
+                fixed += 1
+            print("Upgrade: named %d unnamed agent(s)" % fixed)
     running = [a for a in agents if a.get("status") == "running"]
     if not running:
         print("No running agents.")
@@ -2978,8 +3347,21 @@ def cmd_heal(args):
     ok = 0
     skipped = 0
     for a in running:
-        # Skip agents from other machines in the cluster (shared NFS home)
         agent_host = a.get("hostname")
+        if not agent_host:
+            # Unknown hostname — check if tmux session exists locally.
+            # If yes, claim it for this host. If no, skip (don't mark dead).
+            session = _sf(a, "tmux_session")
+            if session and tmux_session_exists(session):
+                store.update(a["id"], hostname=my_hostname)
+                a["hostname"] = my_hostname
+                agent_host = my_hostname
+            else:
+                aid = a["id"]
+                name = _tf(a, "name") or aid
+                print("  %s (%s): skipped (no hostname, session not local)" % (name, aid))
+                skipped += 1
+                continue
         if not _is_same_host(agent_host, my_hostname):
             skipped += 1
             continue
@@ -3043,7 +3425,7 @@ def cmd_heal(args):
             proc = subprocess.Popen(
                 [sys.executable, _CAMC_SCRIPT, "_monitor", aid] if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg", "_monitor", aid],
                 stdout=subprocess.DEVNULL,
-                stderr=open("/tmp/camc-%s.log" % aid, "a"),
+                stderr=open(os.path.join(LOGS_DIR, "monitor-%s.stderr" % aid), "a"),
                 start_new_session=True)
             store.update(aid, pid=proc.pid)
             print("  %s (%s): restarted (PID %d)" % (name, aid, proc.pid))
@@ -3059,6 +3441,27 @@ def cmd_heal(args):
     if skipped:
         msg += " (%d skipped, other host)" % skipped
     print(msg)
+
+    # Maintenance: rotate old events (30 days)
+    try:
+        removed = EventStore().rotate(max_age_days=30)
+        if removed:
+            print("Events: rotated %d old entries" % removed)
+    except Exception:
+        pass
+
+    # Cleanup legacy /tmp/camc-*.log files (Phase 2 consolidation)
+    try:
+        for f in os.listdir("/tmp"):
+            if f.startswith("camc-") and f.endswith(".log"):
+                p = os.path.join("/tmp", f)
+                try:
+                    if os.path.getsize(p) == 0:
+                        os.unlink(p)
+                except OSError:
+                    pass
+    except OSError:
+        pass
 
 
 def cmd_apply(args):
@@ -3536,6 +3939,13 @@ examples:
     k = sub.add_parser("kill", help="Force kill a running agent")
     k.add_argument("id", help="Agent ID")
 
+    # update
+    up = sub.add_parser("update", help="Update agent properties")
+    up.add_argument("id", help="Agent ID")
+    up.add_argument("--name", default=None, help="Set agent name")
+    up.add_argument("--auto-confirm", dest="auto_confirm", default=None,
+                    type=lambda v: v.lower() in ("true", "1", "yes"), help="Enable/disable auto-confirm")
+
     # add
     a = sub.add_parser("add", help="Adopt existing tmux session")
     a.add_argument("session", help="tmux session name")
@@ -3584,7 +3994,8 @@ examples:
     ky.add_argument("--key", "-k", required=True, help="Key to send (e.g. C-c, Enter, Escape)")
 
     # heal
-    sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
+    heal_p = sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
+    heal_p.add_argument("--upgrade", action="store_true", help="Kill ALL monitors and restart with current camc binary")
 
     # machine
     mp = sub.add_parser("machine", help="Manage remote machines")
@@ -3651,9 +4062,10 @@ examples:
         "logs": cmd_logs,
         "stop": cmd_stop,
         "kill": cmd_kill,
+        "update": cmd_update,
         "add": cmd_add,
         "rm": cmd_rm,
-        "attach": cmd_attach,
+        "attach": cmd_attach, "a": cmd_attach,
         "status": cmd_status,
         "apply": cmd_apply,
         "history": cmd_history,
