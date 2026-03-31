@@ -26,10 +26,16 @@ def should_auto_confirm(output, config):
     if config.strip_ansi:
         output = strip_ansi(output)
     clean = clean_for_confirm(output)
-    recent = clean[-500:] if len(clean) > 500 else clean
+    # Only check the last few non-empty lines — real permission dialogs
+    # appear at the bottom of the screen.  Matching the full output causes
+    # false positives when the agent's *response* contains trigger text
+    # (e.g. a table mentioning "1. Yes").
+    lines = [l for l in clean.splitlines() if l.strip()]
+    recent = "\n".join(lines[-32:]) if len(lines) > 8 else clean
     for pattern, response, send_enter in config.confirm_rules:
-        if pattern.search(recent):
-            return (response, send_enter)
+        m = pattern.search(recent)
+        if m:
+            return (response, send_enter, pattern.pattern, m.group())
     return None
 
 
