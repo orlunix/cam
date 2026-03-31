@@ -3192,6 +3192,18 @@ def cmd_rm(args):
     print("Removed agent %s%s" % (a["id"], " (killed)" if args.kill else ""))
 
 
+def cmd_prune(args):
+    """Remove all non-running agents (stopped, killed, completed, failed)."""
+    store = AgentStore()
+    agents = store.list()
+    removed = 0
+    for a in agents:
+        if a.get("status") not in ("running", "starting", "pending"):
+            store.remove(a["id"])
+            removed += 1
+    print("Pruned %d non-running agent%s" % (removed, "s" if removed != 1 else ""))
+
+
 def cmd_attach(args):
     store = AgentStore()
     agent_id = getattr(args, "id", None)
@@ -3948,6 +3960,9 @@ examples:
     rm.add_argument("id", help="Agent ID")
     rm.add_argument("--kill", "-k", action="store_true", help="Also kill the session")
 
+    # prune
+    sub.add_parser("prune", help="Remove all non-running agents")
+
     # attach
     at = sub.add_parser("attach", help="Attach to an agent's TMUX session (interactive)")
     at.add_argument("id", nargs="?", default=None, help="Agent number, name, or ID")
@@ -4062,6 +4077,7 @@ examples:
         "update": cmd_update,
         "add": cmd_add,
         "rm": cmd_rm,
+        "prune": cmd_prune,
         "attach": cmd_attach, "a": cmd_attach,
         "status": cmd_status,
         "apply": cmd_apply,

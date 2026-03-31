@@ -132,48 +132,68 @@ class CamcPoller:
         self._agent_store = agent_store
         self._context_store = context_store
         self._event_bus = event_bus
-        self._delegates: dict[str, CamcDelegate] = {}  # context_name -> delegate
-        self._last_event_ts: dict[str, str] = {}  # context_name -> last event ts
+        self._delegates: dict[str, CamcDelegate] = {}  # machine_name -> delegate
+        self._last_event_ts: dict[str, str] = {}  # machine_name -> last event ts
         self._prev_states: dict[str, str] = {}  # agent_id -> previous status
 
-    def _get_delegate(self, context_name: str, host: str | None,
+    @staticmethod
+    def _load_machines() -> list[dict]:
+        """Load machines from ~/.cam/machines.json."""
+        import json
+        from pathlib import Path
+        machines_path = Path.home() / ".cam" / "machines.json"
+        if not machines_path.exists():
+            return []
+        try:
+            with open(machines_path) as f:
+                return json.load(f)
+        except (ValueError, OSError):
+            return []
+
+    def _get_delegate(self, machine_name: str, host: str | None,
                       user: str | None, port: int | None) -> CamcDelegate:
-        """Get or create a CamcDelegate for a context."""
-        if context_name not in self._delegates:
-            self._delegates[context_name] = CamcDelegate(host=host, user=user, port=port)
-        return self._delegates[context_name]
+        """Get or create a CamcDelegate for a machine."""
+        if machine_name not in self._delegates:
+            self._delegates[machine_name] = CamcDelegate(host=host, user=user, port=port)
+        return self._delegates[machine_name]
+
+    def _machines_from_contexts(self) -> list[dict]:
+        """Derive unique machines from contexts (fallback when no machines.json)."""
+        contexts = self._context_store.list()
+        seen: dict[str, dict] = {}
+        for ctx in contexts:
+            m = ctx.machine
+            host = m.host if hasattr(m, "host") else None
+            user = m.user if hasattr(m, "user") else None
+            port = m.port if hasattr(m, "port") else None
+            key = "%s@%s:%s" % (user or "", host or "local", port or "")
+            if key not in seen:
+                seen[key] = {"name": ctx.name, "host": host, "user": user, "port": port}
+        return list(seen.values())
 
     async def poll_once(self) -> int:
-        """Poll all contexts once. Returns number of agents synced."""
-        contexts = self._context_store.list()
+        """Poll all machines once. Returns number of agents synced."""
+        machines = self._load_machines()
+        if not machines:
+            machines = self._machines_from_contexts()
         total = 0
 
-        # Deduplicate by host (multiple contexts may share a machine)
-        seen_hosts = set()
+        for machine in machines:
+            name = machine.get("name", "")
+            host = machine.get("host")
+            user = machine.get("user")
+            port = machine.get("port")
 
-        for ctx in contexts:
-            machine = ctx.machine
-            host = machine.host if hasattr(machine, "host") else None
-            user = machine.user if hasattr(machine, "user") else None
-            port = machine.port if hasattr(machine, "port") else None
+            delegate = self._get_delegate(name, host, user, port)
 
-            # Deduplicate remote hosts
-            host_key = "%s@%s:%s" % (user or "", host or "local", port or "")
-            if host_key in seen_hosts:
-                continue
-            seen_hosts.add(host_key)
-
-            delegate = self._get_delegate(ctx.name, host, user, port)
-
-            # Poll agents
+            # Poll agents from this machine
             try:
                 if delegate._is_local:
-                    # Fast path: read JSON directly
                     camc_agents = await asyncio.to_thread(delegate.read_agents_json)
                 else:
                     camc_agents = await asyncio.to_thread(delegate.list_agents)
             except Exception as e:
-                logger.warning("Failed to poll %s: %s", ctx.name, e)
+                logger.warning("Failed to poll machine %s: %s", name, e)
                 continue
 
             # Build tmux_session index from existing DB agents to avoid
@@ -216,12 +236,14 @@ class CamcPoller:
                         continue
 
                     # New agent discovered from camc — import it
+                    # Agent data carries its own context_name; no need to
+                    # resolve against the context store.
                     try:
-                        agent = _camc_agent_to_model(agent_data, ctx.name, context_id=ctx.id)
+                        agent = _camc_agent_to_model(agent_data)
                         self._agent_store.save(agent)
                         if tmux_sess:
                             db_sessions.add(tmux_sess)
-                        logger.info("Imported agent %s from %s", agent_id, ctx.name)
+                        logger.info("Imported agent %s from machine %s", agent_id, name)
                     except Exception as e:
                         logger.warning("Failed to import agent %s: %s", agent_id, e)
                 else:
@@ -251,7 +273,7 @@ class CamcPoller:
 
             # Poll events (incremental)
             try:
-                since = self._last_event_ts.get(ctx.name)
+                since = self._last_event_ts.get(name)
                 if delegate._is_local:
                     new_events = await asyncio.to_thread(delegate.read_events_since, since)
                 else:
@@ -259,8 +281,8 @@ class CamcPoller:
 
                 for ev in new_events:
                     ts = ev.get("ts", "")
-                    if ts > (self._last_event_ts.get(ctx.name) or ""):
-                        self._last_event_ts[ctx.name] = ts
+                    if ts > (self._last_event_ts.get(name) or ""):
+                        self._last_event_ts[name] = ts
                     # Convert to AgentEvent and publish
                     agent_event = AgentEvent(
                         agent_id=ev.get("agent_id", ""),
@@ -269,7 +291,7 @@ class CamcPoller:
                     )
                     self._event_bus.publish(agent_event)
             except Exception as e:
-                logger.debug("Failed to poll events from %s: %s", ctx.name, e)
+                logger.debug("Failed to poll events from %s: %s", name, e)
 
         return total
 
@@ -279,7 +301,7 @@ class CamcPoller:
         while True:
             try:
                 count = await self.poll_once()
-                logger.debug("Polled %d agents", count)
+                logger.info("Polled %d agents", count)
             except asyncio.CancelledError:
                 logger.info("CamcPoller stopped")
                 return
