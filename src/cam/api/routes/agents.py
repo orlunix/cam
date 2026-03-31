@@ -123,7 +123,7 @@ async def list_agents(
     status: str | None = None,
     tool: str | None = None,
     context: str | None = None,
-    limit: int = 20,
+    limit: int = 0,
 ):
     """List agents with optional filters."""
     state = await _require_auth(request)

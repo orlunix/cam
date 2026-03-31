@@ -142,7 +142,7 @@ def list(
     status: Optional[str] = typer.Option(None, "--status", help="Filter by status"),
     tool: Optional[str] = typer.Option(None, "--tool", help="Filter by tool"),
     ctx_name: Optional[str] = typer.Option(None, "--ctx", help="Filter by context"),
-    last: int = typer.Option(50, "--last", "-n", help="Show last N agents"),
+    last: int = typer.Option(0, "--last", "-n", help="Show last N agents (0=all)"),
     watch: bool = typer.Option(False, "--watch", "-w", help="Auto-refresh every 2s"),
 ) -> None:
     """List agents."""
