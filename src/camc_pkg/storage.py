@@ -75,7 +75,31 @@ class AgentStore(object):
                 return a
         # Prefix match on ID
         matches = [a for a in agents if a["id"].startswith(agent_id)]
-        return matches[0] if len(matches) == 1 else None
+        if len(matches) == 1:
+            return matches[0]
+        # Name match (exact then prefix, case-insensitive)
+        lower = agent_id.lower()
+        for a in agents:
+            task = a.get("task")
+            name = (task.get("name", "") if isinstance(task, dict) else a.get("name", "")) or ""
+            if name.lower() == lower:
+                return a
+        name_matches = []
+        for a in agents:
+            task = a.get("task")
+            name = (task.get("name", "") if isinstance(task, dict) else a.get("name", "")) or ""
+            if name.lower().startswith(lower):
+                name_matches.append(a)
+        if len(name_matches) == 1:
+            return name_matches[0]
+        # Numeric index (1-based, matches `camc list` order)
+        try:
+            idx = int(agent_id) - 1
+            if 0 <= idx < len(agents):
+                return agents[idx]
+        except ValueError:
+            pass
+        return None
 
     def save(self, agent):
         def _do(agents):

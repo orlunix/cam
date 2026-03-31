@@ -214,6 +214,30 @@ def cmd_run(args):
         sys.stderr.write("Error: failed to create tmux session\n")
         sys.exit(1)
 
+    name = getattr(args, "name", None) or os.path.basename(workdir) or "%s-%s" % (tool, uuid4().hex[:6])
+    auto_exit = getattr(args, "auto_exit", False)
+    ctx_name = context.get("name", "") if isinstance(context, dict) else ""
+    ctx_host = context.get("host") if isinstance(context, dict) else None
+    transport = "ssh" if ctx_host and ctx_host not in ("localhost", "127.0.0.1") else "local"
+    store = AgentStore()
+    store.save({
+        "id": agent_id,
+        "task": {"name": name or "", "tool": tool, "prompt": prompt,
+                 "auto_confirm": True, "auto_exit": auto_exit},
+        "context_id": "",
+        "context_name": ctx_name,
+        "context_path": workdir,
+        "transport_type": transport,
+        "status": "running",
+        "state": "initializing",
+        "tmux_session": session,
+        "tmux_socket": "",
+        "pid": None,
+        "hostname": _sock.gethostname(),
+        "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
+        "retry_count": 0, "cost_estimate": None, "files_changed": [],
+    })
+
     # Startup: wait for readiness, auto-confirm via "1"+BSpace, send prompt
     if config.prompt_after_launch:
         elapsed, confirmed = 0.0, False
@@ -238,30 +262,6 @@ def cmd_run(args):
                 break
         if prompt.strip():
             tmux_send_input(session, prompt, send_enter=True)
-
-    name = getattr(args, "name", None) or os.path.basename(workdir) or "%s-%s" % (tool, uuid4().hex[:6])
-    auto_exit = getattr(args, "auto_exit", False)
-    ctx_name = context.get("name", "") if isinstance(context, dict) else ""
-    ctx_host = context.get("host") if isinstance(context, dict) else None
-    transport = "ssh" if ctx_host and ctx_host not in ("localhost", "127.0.0.1") else "local"
-    store = AgentStore()
-    store.save({
-        "id": agent_id,
-        "task": {"name": name or "", "tool": tool, "prompt": prompt,
-                 "auto_confirm": True, "auto_exit": auto_exit},
-        "context_id": "",
-        "context_name": ctx_name,
-        "context_path": workdir,
-        "transport_type": transport,
-        "status": "running",
-        "state": "initializing",
-        "tmux_session": session,
-        "tmux_socket": "",
-        "pid": None,
-        "hostname": _sock.gethostname(),
-        "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
-        "retry_count": 0, "cost_estimate": None, "files_changed": [],
-    })
 
     # Spawn background monitor
     try:
@@ -1369,7 +1369,7 @@ examples:
         "update": cmd_update,
         "add": cmd_add,
         "rm": cmd_rm,
-        "attach": cmd_attach,
+        "attach": cmd_attach, "a": cmd_attach,
         "status": cmd_status,
         "apply": cmd_apply,
         "history": cmd_history,
