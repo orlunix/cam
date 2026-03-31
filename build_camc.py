@@ -33,12 +33,32 @@ MODULE_ORDER = [
 
 PKG_DIR = os.path.join(os.path.dirname(__file__), "src", "camc_pkg")
 DIST_DIR = os.path.join(os.path.dirname(__file__), "dist")
+TOML_DIR = os.path.join(os.path.dirname(__file__), "src", "cam", "adapters", "configs")
 
 
 def read_module(name):
     path = os.path.join(PKG_DIR, "%s.py" % name)
     with open(path, "r") as f:
-        return f.read()
+        src = f.read()
+    if name == "adapters":
+        src = _inject_embedded_configs(src)
+    return src
+
+
+def _inject_embedded_configs(src):
+    """Replace empty _EMBEDDED_CONFIGS with TOML files from src/cam/adapters/configs/."""
+    entries = []
+    for fname in sorted(os.listdir(TOML_DIR)):
+        if not fname.endswith(".toml"):
+            continue
+        with open(os.path.join(TOML_DIR, fname), "r") as f:
+            content = f.read()
+        entries.append('    "%s": r"""%s"""' % (fname, content))
+    replacement = "_EMBEDDED_CONFIGS = {\n%s,\n}" % ",\n".join(entries)
+    return src.replace(
+        "_EMBEDDED_CONFIGS = {}  # populated by build_camc.py",
+        replacement,
+    )
 
 
 def read_init():

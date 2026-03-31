@@ -69,19 +69,20 @@ response = ""
 send_enter = true
 
 [[confirm]]
-# Direct permission prompt: "Do you want to proceed?"
+# Numbered permission menu: "Do you want to proceed? 1. Yes 2. No"
+# Send "1" to explicitly select option 1, more reliable than Enter
+# which depends on cursor position.
 pattern = "Do\\s+you\\s+want\\s+to\\s+proceed"
 flags = ["IGNORECASE"]
-response = ""
-send_enter = true
+response = "1"
+send_enter = false
 
 [[confirm]]
-# Numbered menu with "1. Yes" or "1. Allow" — Ink select menu,
-# cursor (❯) is already on option 1, just press Enter.
+# Numbered menu with "1. Yes" or "1. Allow" — send "1" to select.
 pattern = "1\\.\\s*(Yes|Allow)"
 flags = ["IGNORECASE"]
-response = ""
-send_enter = true
+response = "1"
+send_enter = false
 
 [[confirm]]
 # "Allow once" / "Always allow" select menu (Claude 4.x+)

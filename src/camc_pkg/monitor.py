@@ -201,10 +201,16 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
             if now - last_confirm >= config.confirm_cooldown:
                 confirm = should_auto_confirm(output, config)
                 if confirm:
-                    log.info("Auto-confirm: pattern matched, sending '1'")
-                    tmux_send_input(session, "1", send_enter=False)
+                    response, send_enter, pat_str, matched = confirm
+                    log.info("Auto-confirm: pattern=%r matched=%r -> response=%r enter=%s",
+                             pat_str, matched, response, send_enter)
+                    if response:
+                        tmux_send_input(session, response, send_enter=send_enter)
+                    elif send_enter:
+                        tmux_send_key(session, "Enter")
                     last_confirm = now
-                    _event("auto_confirm", {"pattern": "matched"})
+                    _event("auto_confirm", {"pattern": pat_str, "matched": matched,
+                                            "response": response})
                     time.sleep(config.confirm_sleep)
                     continue
 

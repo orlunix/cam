@@ -172,20 +172,92 @@ Checks all running agents and restarts dead monitors:
 - Ready detection: polls for `❯` or `>` at start of line (Windows ConPTY renders `❯` as `>`).
 - Completion: counts prompt lines — 2+ `❯`/`>` lines = task done (prompt echo + return to input).
 - Fallback: single prompt + task summary line (`✻ verb for time`) also signals completion.
-- Auto-confirm patterns: trust dialog (Enter), permission menu (Enter on selected option), y/n prompts.
+- Auto-confirm patterns: trust dialog (Enter), permission menu (`1` to select), y/n prompts (`y`+Enter).
 - Pre-prompt auto-confirm: `agent_manager` polls during startup for trust/permission prompts before sending the task prompt.
 - `--allowed-tools` pre-authorizes Write/Read/Glob/Grep but Bash still needs per-command confirmation.
 
+## Auto-Confirm Strategy
+
+Auto-confirm detects permission dialogs in terminal output and sends the appropriate response. Patterns and responses are defined per-adapter in TOML `[[confirm]]` rules.
+
+### Detection: Last 32 Lines Only
+
+`should_auto_confirm()` only checks the **last 32 non-empty lines** of captured output, not the full screen. This prevents false positives when the agent's response text contains confirm keywords (e.g. a table mentioning "1. Yes"). Real permission dialogs always appear at the bottom of the terminal.
+
+### Claude Confirm Rules
+
+| Pattern | Response | Scenario |
+|---|---|---|
+| `Do you want to proceed` | `1` (no Enter) | Numbered permission menu (`1. Yes / 2. No`) |
+| `1. Yes` / `1. Allow` | `1` (no Enter) | Numbered permission menu |
+| `Enter to confirm/select` | Enter | Trust dialog, plan mode interview |
+| `Allow once/always` | Enter | Claude 4.x+ Ink select menu |
+| `(y/n)` / `[Y/n]` | `y` + Enter | y/n confirmation prompt |
+
+For numbered menus, `1` is sent without Enter — the Ink TUI consumes the keypress to select option 1. For Ink select menus where the cursor is already on the right option, Enter confirms the selection.
+
+### Cooldown
+
+Auto-confirm has a cooldown (`confirm_cooldown`, default 5s) to prevent rapid-fire confirmations. After sending a response, the monitor sleeps `confirm_sleep` (0.5s) then continues to the next poll cycle.
+
+## Smart Probe Strategy
+
+Smart probe detects whether the agent is truly idle after completion is detected. It sends a probe character and observes the terminal's reaction.
+
+### Mechanism
+
+1. **Capture baseline** — snapshot current terminal output
+2. **Send probe char** (`1`, no Enter) — the char is chosen to also work as a confirmation response
+3. **Wait** (`probe_wait`, 0.3s) — let terminal process the input
+4. **Recapture** — snapshot terminal output again
+5. **Classify** — compare baseline vs after:
+   - **idle**: probe char appeared in a new line (echoed at prompt `❯`) → agent is waiting for input
+   - **busy**: output unchanged (agent in raw mode) or output changed but char not echoed (consumed by a dialog) → agent is working
+6. **BSpace cleanup** — send Backspace to remove the probe char from the terminal
+
+### Key Design Decisions
+
+- **Scans all lines, not just the last**: Claude Code's TUI has separator and status lines below the prompt `❯`. The probe char may echo on any line, so classification compares all new lines between baseline and after capture.
+- **Probe-caused output filter**: If output changes shortly after a probe (`probe_wait + 2s`), it's likely caused by the probe itself (echo or BSpace). The monitor updates the hash but doesn't reset idle state.
+- **"confirmed" = busy**: If the probe's `1` is consumed by a permission dialog (output changes but `1` not echoed), the agent was blocked and now resumes work. This is classified as **busy**, not idle.
+
+### Idle Confirmation Flow
+
+```
+completion_detected (output stable 3s)
+    → probe #1: idle (consecutive=1)
+    → probe #2: idle (consecutive=2) → idle_confirmed ✓
+    → auto-exit if configured
+```
+
+- Probes only start after `completion_detected` AND `has_worked` AND output stable for `probe_stable` (10s).
+- `probe_idle_threshold` (default 2) consecutive idle probes needed to confirm.
+- `probe_cooldown` (20s) between probes.
+- Max probes = `threshold * 3` — gives up after too many attempts.
+- If any probe returns busy, `consecutive_idle` and `completion_detected` reset.
+
+### Auto-Confirm vs Probe: Two Paths, Same Char
+
+Both auto-confirm and probe use `1` as the input character, but they are distinct flows:
+
+| | Auto-Confirm | Smart Probe |
+|---|---|---|
+| **When** | Confirm pattern matched in output | After completion detected, output stable |
+| **Send** | `1` (no Enter, no BSpace) | `1` (no Enter) + BSpace cleanup |
+| **Why no BSpace** | Dialog consumes the `1` | Char may echo at prompt, needs cleanup |
+| **Result** | Agent resumes work | Classify: idle or busy |
+
 ## Monitor Loop (`core/monitor.py`)
 
-The monitor polls every ~2 seconds:
-1. Check tmux session alive
-2. Capture terminal output
-3. Run state detection (pattern matching on recent output)
-4. Check auto-confirm patterns and send responses (with cooldown)
-5. Check completion detection (only after output stable for 3s)
-6. Run probe if completion detected (confirm idle before finalizing)
-7. Handle auto-exit if configured
+The monitor polls every ~1 second:
+1. Check tmux session alive (health check every 15s)
+2. Capture terminal output, compute hash
+3. Filter probe-caused output changes (don't reset idle state)
+4. Check auto-confirm patterns on last 32 non-empty lines, send response (with cooldown)
+5. Run state detection (pattern matching on recent output)
+6. Check completion detection (only after output stable for 3s)
+7. Run smart probe if completion detected (confirm idle before finalizing)
+8. Handle auto-exit on completion + idle confirmed (or long stable fallback)
 
 Background mode (`--detach`) spawns `monitor_runner.py` as a subprocess with PID file at `~/.local/share/cam/pids/<agent_id>.pid`. Uses `start_new_session=True` so the monitor survives CLI exit. `cam stop/kill` sends SIGTERM to the monitor subprocess and kills the TMUX session.
 
