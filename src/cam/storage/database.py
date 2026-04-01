@@ -10,7 +10,7 @@ from typing import Any
 from cam.constants import DB_PATH
 
 # Current schema version
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class Database:
@@ -62,6 +62,8 @@ class Database:
         # Apply migrations
         if current_version < 1:
             self._migrate_to_v1()
+        if current_version < 2:
+            self._migrate_to_v2()
 
     def _migrate_to_v1(self) -> None:
         """Migrate to schema version 1."""
@@ -101,7 +103,10 @@ class Database:
                 retry_count INTEGER NOT NULL DEFAULT 0,
                 cost_estimate REAL,
                 files_changed TEXT NOT NULL DEFAULT '[]',
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                machine_host TEXT,
+                machine_user TEXT,
+                machine_port INTEGER
             )
             """
         )
@@ -126,6 +131,15 @@ class Database:
 
         # Record migration
         self.execute("INSERT INTO schema_version (version) VALUES (1)")
+
+    def _migrate_to_v2(self) -> None:
+        """Add machine_host/user/port columns to agents table."""
+        for col, typ in [("machine_host", "TEXT"), ("machine_user", "TEXT"), ("machine_port", "INTEGER")]:
+            try:
+                self.execute(f"ALTER TABLE agents ADD COLUMN {col} {typ}")
+            except Exception:
+                pass  # column already exists
+        self.execute("INSERT INTO schema_version (version) VALUES (2)")
 
     def _retry_on_lock(self, fn, max_retries: int = 5):
         """Retry a DB operation on transient locking errors."""

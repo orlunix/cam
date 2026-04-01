@@ -61,7 +61,10 @@ def _parse_ts(raw: str | None) -> datetime | None:
 
 
 def _camc_agent_to_model(data: dict, context_name: str | None = None,
-                         context_id: str | None = None) -> Agent:
+                         context_id: str | None = None,
+                         machine_host: str | None = None,
+                         machine_user: str | None = None,
+                         machine_port: int | None = None) -> Agent:
     """Convert a camc JSON agent dict to a cam Agent model.
 
     Supports both the unified schema (new format with nested task, tmux_session,
@@ -111,6 +114,9 @@ def _camc_agent_to_model(data: dict, context_name: str | None = None,
         started_at=_parse_ts(data.get("started_at")) or datetime.now(timezone.utc),
         completed_at=_parse_ts(data.get("completed_at")),
         exit_reason=data.get("exit_reason"),
+        machine_host=machine_host,
+        machine_user=machine_user,
+        machine_port=machine_port,
     )
 
 
@@ -235,11 +241,16 @@ class CamcPoller:
                         total += 1
                         continue
 
-                    # New agent discovered from camc — import it
-                    # Agent data carries its own context_name; no need to
-                    # resolve against the context store.
+                    # New agent discovered from camc — import it.
+                    # Store source machine info so cam attach/capture can
+                    # connect to the right host directly.
                     try:
-                        agent = _camc_agent_to_model(agent_data)
+                        agent = _camc_agent_to_model(
+                            agent_data,
+                            machine_host=host,
+                            machine_user=user,
+                            machine_port=port,
+                        )
                         self._agent_store.save(agent)
                         if tmux_sess:
                             db_sessions.add(tmux_sess)
@@ -247,6 +258,16 @@ class CamcPoller:
                     except Exception as e:
                         logger.warning("Failed to import agent %s: %s", agent_id, e)
                 else:
+                    # Backfill machine fields for agents imported before v2
+                    if host and not existing.machine_host:
+                        try:
+                            self._agent_store.db.execute(
+                                "UPDATE agents SET machine_host=?, machine_user=?, machine_port=? WHERE id=?",
+                                (host, user, port, agent_id),
+                            )
+                        except Exception:
+                            pass
+
                     # Update status if changed — trust agents.json as source of truth
                     prev_status = self._prev_states.get(agent_id)
                     if prev_status != status:

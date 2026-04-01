@@ -686,15 +686,19 @@ class AgentManager:
         agent = self._agent_store.get(agent_id)
         if agent is None:
             raise AgentManagerError(f"Agent not found: {agent_id}")
-        context = self._context_store.get(str(agent.context_id))
-        if context is None:
-            raise AgentManagerError("Agent's context not found")
-        machine = context.machine
-        delegate = CamcDelegate(
-            host=getattr(machine, "host", None),
-            user=getattr(machine, "user", None),
-            port=getattr(machine, "port", None),
-        )
+
+        # Use agent's machine fields first (set by poller on import),
+        # fall back to context lookup for legacy agents.
+        host, user, port = agent.machine_host, agent.machine_user, agent.machine_port
+        if not host:
+            context = self._context_store.get(str(agent.context_id))
+            if context is None:
+                raise AgentManagerError("Agent's context not found")
+            machine = context.machine
+            host = getattr(machine, "host", None)
+            user = getattr(machine, "user", None)
+            port = getattr(machine, "port", None)
+        delegate = CamcDelegate(host=host, user=user, port=port)
         # camc uses its own short IDs; pass the tmux session name which
         # camc can match, or fall back to the full agent ID.
         camc_id = agent.tmux_session or str(agent.id)
