@@ -312,6 +312,27 @@ flags = ["IGNORECASE"]
 response = "y"
 send_enter = true
 
+[[confirm]]
+# Generic confirmation with default Y
+pattern = "(Apply|Accept|Approve|Continue|Proceed).*\\[Y/n\\]"
+flags = ["IGNORECASE"]
+response = "y"
+send_enter = true
+
+[[confirm]]
+# Generic confirmation with default N — still confirm
+pattern = "(Apply|Accept|Approve|Continue|Proceed).*\\[y/N\\]"
+flags = ["IGNORECASE"]
+response = "y"
+send_enter = true
+
+[[confirm]]
+# Plain "Press Enter" prompt
+pattern = "Press Enter"
+flags = ["IGNORECASE"]
+response = ""
+send_enter = true
+
 [probe]
 char = "1"                    # smart probe char (also used for auto-confirm)
 wait = 0.3                    # seconds after probe before recapture
