@@ -178,6 +178,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                     idle_confirmed = False
                     consecutive_idle = 0
                     completion_detected = False
+                    probe_count = 0
                 else:
                     # Probe-caused change — update hash but don't reset idle state
                     log.debug("Probe-caused output change, not resetting")
