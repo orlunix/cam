@@ -428,9 +428,9 @@ class AgentManager:
         else:
             results["context.json"] = "unchanged"
 
-        # 4. Sync TOML configs
-        toml_results = await self._sync_toml_configs(transport)
-        results.update(toml_results)
+        # 4. TOML configs — no longer synced.
+        # camc embeds adapter configs; external files in ~/.cam/configs/
+        # are optional user overrides only.
 
         return results
 
