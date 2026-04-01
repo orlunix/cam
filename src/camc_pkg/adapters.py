@@ -73,16 +73,17 @@ def _parse_toml_value(s):
                 result.append(c)
             i += 1
         return "".join(result)
-    if s == "true":
-        return True
-    if s == "false":
-        return False
     if s.startswith("["):
         inner = s[1:].rstrip()
         if inner.endswith("]"):
             inner = inner[:-1]
         return [_parse_toml_value(p.strip()) for p in inner.split(",") if p.strip()]
+    # Strip inline comments before checking booleans/numbers
     val = s.split("#")[0].strip()
+    if val == "true":
+        return True
+    if val == "false":
+        return False
     try:
         return float(val) if "." in val else int(val)
     except ValueError:
@@ -179,16 +180,42 @@ class AdapterConfig(object):
         self.probe_cooldown = float(mon_cfg.get("probe_cooldown", 20.0))
 
 
+def _merge_toml(base, override):
+    """Merge override TOML dict into base. Lists (e.g. [[confirm]]) are appended."""
+    for k, v in override.items():
+        if isinstance(v, list) and isinstance(base.get(k), list):
+            base[k] = base[k] + v  # append (e.g. extra confirm rules)
+        elif isinstance(v, dict) and isinstance(base.get(k), dict):
+            _merge_toml(base[k], v)
+        else:
+            base[k] = v
+    return base
+
+
 def _load_config(tool):
-    """Load adapter config for a tool, from file or embedded."""
+    """Load adapter config for a tool.
+
+    Always loads embedded config first. If an external TOML file exists
+    at ~/.cam/configs/<tool>.toml, merges it on top (lists like [[confirm]]
+    are appended, scalar values are overridden).
+    """
+    key = "%s.toml" % tool
+    if key not in _EMBEDDED_CONFIGS:
+        sys.stderr.write("Error: no config for tool '%s'\n" % tool)
+        sys.stderr.write("Available: %s\n" % ", ".join(
+            k.replace(".toml", "") for k in _EMBEDDED_CONFIGS))
+        sys.exit(1)
+
+    config = _parse_toml(_EMBEDDED_CONFIGS[key])
+
+    # Merge external overrides if present
     toml_path = os.path.join(CONFIGS_DIR, "%s.toml" % tool)
     if os.path.exists(toml_path):
-        return AdapterConfig(load_toml(toml_path))
-    # Fall back to embedded config
-    key = "%s.toml" % tool
-    if key in _EMBEDDED_CONFIGS:
-        return AdapterConfig(_parse_toml(_EMBEDDED_CONFIGS[key]))
-    sys.stderr.write("Error: no config for tool '%s'\n" % tool)
-    sys.stderr.write("Available: %s\n" % ", ".join(
-        k.replace(".toml", "") for k in _EMBEDDED_CONFIGS))
-    sys.exit(1)
+        try:
+            ext = load_toml(toml_path)
+            _merge_toml(config, ext)
+            log.info("Merged external config: %s", toml_path)
+        except Exception as e:
+            log.warning("Failed to load external config %s: %s", toml_path, e)
+
+    return AdapterConfig(config)
