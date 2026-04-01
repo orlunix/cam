@@ -274,8 +274,10 @@ class CamcPoller:
                         new_status = _STATUS_MAP.get(status)
                         if new_status and new_status != existing.status:
                             exit_reason = agent_data.get("exit_reason")
+                            new_state = _STATE_MAP.get(agent_data.get("state", ""))
                             self._agent_store.update_status(
-                                agent_id, new_status, exit_reason=exit_reason
+                                agent_id, new_status, state=new_state,
+                                exit_reason=exit_reason,
                             )
                             # Emit event
                             event = AgentEvent(
@@ -288,6 +290,18 @@ class CamcPoller:
                             except Exception:
                                 pass
                             self._event_bus.publish(event)
+
+                    # Sync state independently of status changes
+                    state_str = agent_data.get("state", "")
+                    new_state = _STATE_MAP.get(state_str)
+                    if new_state and new_state != existing.state:
+                        try:
+                            self._agent_store.db.execute(
+                                "UPDATE agents SET state = ? WHERE id = ?",
+                                (new_state.value, agent_id),
+                            )
+                        except Exception:
+                            pass
 
                 self._prev_states[agent_id] = status
                 total += 1

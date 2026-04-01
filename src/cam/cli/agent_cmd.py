@@ -288,11 +288,10 @@ def attach(
 ) -> None:
     """Attach to an agent's TMUX session (interactive)."""
     import os
+    import shlex
 
     from cam.cli.app import state
     from cam.cli.formatters import print_error, print_info
-    from cam.core.models import MachineConfig, TransportType
-    from cam.transport.factory import TransportFactory
 
     # Default to most recent agent
     if agent_id is None:
@@ -303,20 +302,27 @@ def attach(
         print_error(f"Agent not found: {agent_id}")
         raise typer.Exit(1)
 
-    if not agent.tmux_session:
-        print_error("Agent has no TMUX session")
-        raise typer.Exit(1)
-
-    ctx = state.context_store.get(str(agent.context_id))
-    if ctx:
-        transport = TransportFactory.create(ctx.machine)
+    # Delegate to camc attach — it handles socket path discovery
+    camc_id = agent.tmux_session or str(agent.id)
+    host = agent.machine_host
+    if host and host != "localhost":
+        # Remote: SSH with -t for interactive tmux
+        import hashlib
+        user = agent.machine_user
+        port = agent.machine_port
+        conn_key = "%s@%s:%s" % (user or "default", host, port or 22)
+        conn_hash = hashlib.sha256(conn_key.encode()).hexdigest()[:12]
+        ssh_cmd = "ssh"
+        if port:
+            ssh_cmd += f" -p {port}"
+        ssh_cmd += f" -t -o ControlPath=/tmp/cam-ssh-{conn_hash}"
+        target = f"{user}@{host}" if user else host
+        ssh_cmd += f" {target} camc attach {shlex.quote(camc_id)}"
+        attach_cmd = ssh_cmd
     else:
-        # Ad-hoc context (e.g. cwd) — rebuild minimal local transport
-        machine = MachineConfig(type=agent.transport_type or TransportType.LOCAL)
-        transport = TransportFactory.create(machine)
+        attach_cmd = f"camc attach {shlex.quote(camc_id)}"
 
-    attach_cmd = transport.get_attach_command(agent.tmux_session)
-    print_info(f"Attaching to TMUX session: {agent.tmux_session}")
+    print_info(f"Attaching to agent: {camc_id}")
     print_info("Press Ctrl+B, D to detach")
     os.system(attach_cmd)
 
@@ -787,10 +793,29 @@ def rm(
             print_info("Cancelled.")
             return
 
-    # Remove from remote agents.json if this came from a remote context
-    ctx = state.context_store.get(str(agent.context_id))
-    if ctx and ctx.machine.host:
-        _rm_remote_agent(state, ctx, aid)
+    # Remove from remote/local agents.json via camc
+    from cam.core.camc_delegate import CamcDelegate
+    host = agent.machine_host
+    if host and host != "localhost":
+        try:
+            delegate = CamcDelegate(
+                host=host, user=agent.machine_user, port=agent.machine_port)
+            delegate._run(["rm", str(agent.id)])
+        except Exception:
+            pass  # best-effort
+    else:
+        # Local agent — camc rm locally
+        import subprocess
+        try:
+            subprocess.run(["camc", "rm", str(agent.id)],
+                           capture_output=True, timeout=10)
+        except Exception:
+            pass
+        # Legacy fallback: context-based remote rm
+        if not host:
+            ctx = state.context_store.get(str(agent.context_id))
+            if ctx and ctx.machine.host:
+                _rm_remote_agent(state, ctx, aid)
 
     # Clean local files (logs, PIDs, sockets)
     _clean_agent_files([aid], [agent.tmux_session])
