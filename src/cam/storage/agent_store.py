@@ -39,8 +39,9 @@ class AgentStore:
                     id, task_json, context_id, context_name, context_path,
                     transport_type, status, state, tmux_session, tmux_socket,
                     pid, started_at, completed_at, exit_reason, retry_count,
-                    cost_estimate, files_changed, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    cost_estimate, files_changed, created_at,
+                    machine_host, machine_user, machine_port
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     task_json = excluded.task_json,
                     context_id = excluded.context_id,
@@ -57,7 +58,10 @@ class AgentStore:
                     exit_reason = excluded.exit_reason,
                     retry_count = excluded.retry_count,
                     cost_estimate = excluded.cost_estimate,
-                    files_changed = excluded.files_changed
+                    files_changed = excluded.files_changed,
+                    machine_host = excluded.machine_host,
+                    machine_user = excluded.machine_user,
+                    machine_port = excluded.machine_port
                 """,
                 (
                     agent.id,
@@ -78,6 +82,9 @@ class AgentStore:
                     agent.cost_estimate,
                     json.dumps(agent.files_changed),
                     str(agent.started_at) if agent.started_at else None,
+                    agent.machine_host,
+                    agent.machine_user,
+                    agent.machine_port,
                 ),
             )
         except sqlite3.Error as e:
@@ -367,6 +374,9 @@ class AgentStore:
             retry_count=row["retry_count"],
             cost_estimate=row["cost_estimate"],
             files_changed=files_changed,
+            machine_host=row["machine_host"] if "machine_host" in row.keys() else None,
+            machine_user=row["machine_user"] if "machine_user" in row.keys() else None,
+            machine_port=row["machine_port"] if "machine_port" in row.keys() else None,
         )
 
     def _row_to_event(self, row: sqlite3.Row) -> AgentEvent:

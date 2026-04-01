@@ -263,6 +263,9 @@ class Agent(BaseModel):
     events: list[dict] = Field(default_factory=list)
     cost_estimate: Optional[float] = Field(default=None, ge=0.0)
     files_changed: list[str] = Field(default_factory=list)
+    machine_host: Optional[str] = None
+    machine_user: Optional[str] = None
+    machine_port: Optional[int] = None
 
     model_config = {
         "json_schema_extra": {
