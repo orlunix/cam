@@ -60,18 +60,8 @@ prompt_count_threshold = 2
 fallback_summary_pattern = "✻ .+ for \\d+"
 
 [[confirm]]
-# Ink select menus: trust folder ("Enter to confirm"), plan mode interview
-# ("Enter to select"), and similar. Cursor is already on the right option,
-# just press Enter.
-pattern = "Enter to (confirm|select).*Esc to cancel"
-flags = ["IGNORECASE", "DOTALL"]
-response = ""
-send_enter = true
-
-[[confirm]]
 # Numbered permission menu: "Do you want to proceed? 1. Yes 2. No"
-# Send "1" to explicitly select option 1, more reliable than Enter
-# which depends on cursor position.
+# Send "1" to select option 1. The Ink TUI consumes the keypress.
 pattern = "Do\\s+you\\s+want\\s+to\\s+proceed"
 flags = ["IGNORECASE"]
 response = "1"
@@ -86,9 +76,16 @@ send_enter = false
 
 [[confirm]]
 # "Allow once" / "Always allow" select menu (Claude 4.x+)
+# Send "1" to select the first option.
 pattern = "Allow\\s+(once|always)"
 flags = ["IGNORECASE"]
-response = ""
+response = "1"
+send_enter = false
+
+[[confirm]]
+# y/n confirmation prompt
+pattern = "\\(y/n\\)|\\[Y/n\\]|\\[y/N\\]"
+response = "y"
 send_enter = true
 
 [probe]

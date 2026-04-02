@@ -12,7 +12,9 @@ The single file is stdlib-only, Python 3.6+, zero dependencies.
 import argparse
 import os
 import re
+import subprocess
 import sys
+from datetime import datetime
 
 # Module load order (respects dependency DAG)
 MODULE_ORDER = [
@@ -158,9 +160,38 @@ def strip_stdlib_imports(source):
     return "\n".join(result)
 
 
+def _git_info():
+    """Get git short hash and check for dirty state."""
+    repo = os.path.dirname(os.path.abspath(__file__))
+    try:
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "--short=7", "HEAD"],
+            cwd=repo, stderr=subprocess.DEVNULL).decode().strip()
+        dirty = subprocess.call(
+            ["git", "diff", "--quiet", "HEAD", "--", "src/camc_pkg/"],
+            cwd=repo, stderr=subprocess.DEVNULL) != 0
+        return sha + ("-dirty" if dirty else "")
+    except Exception:
+        return "unknown"
+
+
+def _build_stamp():
+    """Return build stamp: 'git-hash YYYY-MM-DD HH:MM'."""
+    git = _git_info()
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    return "%s %s" % (git, ts)
+
+
 def build():
     # 1. Read __init__.py for version, constants, logging setup
     init_src = read_init()
+
+    # Stamp __build__ with git hash + date
+    stamp = _build_stamp()
+    init_src = init_src.replace(
+        '__build__ = ""  # populated by build_camc.py: "git-hash date"',
+        '__build__ = "%s"' % stamp,
+    )
 
     # 2. Collect all stdlib imports from all modules
     all_imports = set()
@@ -244,10 +275,32 @@ def main():
     os.chmod(args.output, 0o755)
 
     lines = output.count("\n")
-    print("Built %s (%d lines)" % (args.output, lines))
+
+    # Extract version from built output
+    ver = "?"
+    for line in output.splitlines():
+        if line.startswith("__version__"):
+            ver = line.split('"')[1]
+            break
+    stamp = _build_stamp()
+
+    print("Built %s  v%s (%s, %d lines)" % (args.output, ver, stamp, lines))
+
+    # Append to build log
+    log_path = os.path.join(os.path.dirname(__file__), "dist", "BUILD_LOG.md")
+    repo_root = os.path.dirname(os.path.abspath(__file__))
+    try:
+        git_log = subprocess.check_output(
+            ["git", "log", "--oneline", "-5", "--", "src/camc_pkg/"],
+            cwd=repo_root, stderr=subprocess.DEVNULL).decode().strip()
+    except Exception:
+        git_log = "(no git)"
+    entry = "## v%s  %s\n\n- Lines: %d\n- Output: %s\n- Recent changes:\n```\n%s\n```\n\n" % (
+        ver, stamp, lines, args.output, git_log)
+    with open(log_path, "a") as f:
+        f.write(entry)
 
     if args.verify:
-        import subprocess
         # Compare help outputs
         for cmd in ["--help", "run --help", "list --help", "version"]:
             pkg_out = subprocess.check_output(

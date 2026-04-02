@@ -1174,7 +1174,8 @@ def cmd_migrate(args):
 
 
 def cmd_version(args):
-    print("camc v%s" % __version__)
+    build = __build__ if __build__ else "dev"
+    print("camc v%s (%s)" % (__version__, build))
     print()
     print("Supported tools:")
     for key in sorted(_EMBEDDED_CONFIGS):

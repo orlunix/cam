@@ -3,7 +3,9 @@ __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
-dist/
+dist/*
+!dist/camc
+!dist/BUILD_LOG.md
 build/
 *.egg
 
