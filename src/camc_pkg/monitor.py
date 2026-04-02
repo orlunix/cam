@@ -103,6 +103,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
     last_confirm = 0.0
     last_confirm_matched = ""  # suppress duplicate matches on same text
     last_confirm_false = False  # was last confirm a false positive?
+    confirm_suppress = set()  # confirmed patterns — suppress scrollback re-triggers
     current_state = None
     has_worked = False
     empty_count = 0
@@ -171,6 +172,9 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                     # Real change — agent is working, reset idle state
                     last_change = now
                     idle_confirmed = False
+                    # Clear suppress set — scrollback has scrolled away,
+                    # new dialogs with the same text are real.
+                    confirm_suppress.clear()
                     # Don't reset false-positive state here — if the same
                     # pattern keeps matching across output changes, it's
                     # agent prose scrolling past, not a new dialog appearing.
@@ -205,14 +209,13 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 confirm = should_auto_confirm(output, config)
                 if confirm:
                     response, send_enter, pat_str, matched = confirm
-                    # Dedup: same pattern+text on unchanged screen → stale prose.
-                    # Key excludes hash because previous "1" echo changes the hash
-                    # even though the underlying content is the same stale prose.
                     confirm_key = "%s:%s" % (pat_str, matched)
+                    # After a successful confirm, the old dialog text lingers
+                    # in scrollback. Suppress re-matches until real output change.
+                    if confirm_key in confirm_suppress:
+                        time.sleep(1)
+                        continue
                     if confirm_key == last_confirm_matched and last_confirm_false:
-                        # Same pattern already proven to be stale prose. The hash
-                        # keeps changing (our "1"+BSpace cycle causes tiny diffs)
-                        # but the underlying content hasn't changed meaningfully.
                         log.debug("Auto-confirm: suppressed (known false positive)")
                         time.sleep(1)
                     else:
@@ -226,21 +229,24 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                         _event("auto_confirm", {"pattern": pat_str, "matched": matched,
                                                 "response": response})
                         time.sleep(config.confirm_sleep)
-                        # Check if dialog actually consumed the input.
-                        # Real dialog: screen redraws completely (agent resumes).
-                        # False positive: "1" just echoes at prompt — the confirm
-                        # pattern is still visible in the recaptured output.
+                        # Check if dialog consumed the input.
+                        # Real dialog: screen redraws (agent resumes).
+                        # False positive: "1" echoes at prompt, pattern still visible.
                         post = capture_tmux(session)
                         last_confirm_false = False
                         if response and not send_enter:
                             still_matches = should_auto_confirm(post, config)
                             if still_matches and still_matches[2] == pat_str:
-                                # Same pattern still matches → wasn't a real dialog.
-                                # Clean up echoed char.
+                                # Pattern still there → false positive, clean up.
                                 tmux_send_key(session, "BSpace")
                                 last_confirm_false = True
                                 log.info("Auto-confirm: false positive (pattern still visible), BSpace cleanup")
                                 _event("auto_confirm_cleanup", {"pattern": pat_str})
+                            else:
+                                # Dialog consumed → suppress this pattern until
+                                # real output change clears the scrollback.
+                                confirm_suppress.add(confirm_key)
+                                log.info("Auto-confirm: success, suppressing scrollback re-trigger")
                         last_confirm_matched = confirm_key
                     continue
 
