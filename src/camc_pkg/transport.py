@@ -92,6 +92,19 @@ def tmux_send_key(session_id, key):
         return False
 
 
+def tmux_is_attached(session_id):
+    """Check if a user is attached to this tmux session."""
+    base = _tmux_base(session_id)
+    try:
+        rc, output = _run(base + ["display-message", "-p", "-t", session_id,
+                                  "#{session_attached}"])
+        if rc == 0 and output.strip():
+            return int(output.strip()) > 0
+    except (ValueError, Exception):
+        pass
+    return False
+
+
 def tmux_kill_session(session_id):
     socket = _find_tmux_socket(session_id)
     if socket:

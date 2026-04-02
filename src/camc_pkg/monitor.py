@@ -1,12 +1,10 @@
 """Background monitor loop: unified confirm/probe via "1"+BSpace, state detection, auto-exit.
 
-Ported from cam server's monitor.py + probe.py (deleted in Phase 4).
-Key features preserved:
-  - Unified "1"+BSpace for both auto-confirm and idle probe
-  - Smart probe returns "idle" or "busy" (no ambiguous "confirmed" state)
-  - Probe-caused output change filter (avoids false reset)
-  - Max probe limit (threshold * 3)
-  - Completion + idle_confirmed + auto-exit flow
+v2 design (single-probe, attachment-aware):
+  - Auto-confirm: always runs (even when user attached)
+  - Single probe: screen stable 5s → send "1" → echoed = idle, consumed = busy
+  - Attachment check: only blocks auto-exit (don't kill session user is in)
+  - Idle revival: any real output change resets idle_confirmed → full cycle resumes
 """
 
 import hashlib
@@ -22,7 +20,7 @@ from camc_pkg.adapters import _load_config
 from camc_pkg.storage import AgentStore, EventStore
 from camc_pkg.transport import (
     capture_tmux, tmux_session_exists, tmux_send_input, tmux_send_key,
-    tmux_kill_session,
+    tmux_kill_session, tmux_is_attached,
 )
 from camc_pkg.detection import detect_state, should_auto_confirm, detect_completion
 
@@ -85,19 +83,12 @@ def _smart_probe(session, config):
 
 
 def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=None):
-    """Monitor a tmux session: unified confirm/probe, state detection, auto-exit.
+    """Monitor a tmux session: auto-confirm, single-probe idle detection, auto-exit.
 
-    Uses a single "1"+BSpace mechanism for both confirmation and idle detection.
-
-    Auto-confirm flow:
-      Confirm pattern matched -> send "1" (no BSpace, dialog consumes it).
-
-    Probe flow (after completion detected):
-      _smart_probe() -> classify result:
-        "idle" (echoed)  -> agent at prompt, consecutive_idle++
-        "busy" (else)    -> agent working or dialog consumed, reset idle state
-
-    Idle confirmed when consecutive_idle >= threshold (default 2).
+    Phase 1 - Auto-confirm: always runs, sends response when confirm pattern matched.
+    Phase 2 - State detection: pattern match on output → planning/editing/testing/etc.
+    Phase 3 - Idle probe: screen stable 5s → send "1" → echoed = idle (single probe).
+    Phase 4 - Auto-exit: idle_confirmed + not attached + auto_exit → kill session.
     """
     if pid_path:
         with open(pid_path, "w") as f:
@@ -110,17 +101,15 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
     prev_output = ""
     last_change = last_health = time.time()
     last_confirm = 0.0
+    last_confirm_matched = ""  # suppress duplicate matches on same text
+    last_confirm_false = False  # was last confirm a false positive?
     current_state = None
     has_worked = False
     empty_count = 0
 
-    # Probe state (ported from cam server monitor)
+    # Probe state
     last_probe = 0.0
-    probe_count = 0                    # total probes sent
-    consecutive_idle = 0          # consecutive idle probes
-    idle_confirmed = False             # set True once probe confirms idle
-    completion_detected = False        # set True when detect_completion matches
-    max_probes = config.probe_idle_threshold * 3  # give up after this many
+    idle_confirmed = False
 
     def _event(event_type, detail=None):
         if events:
@@ -170,15 +159,23 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 last_probe > 0
                 and now - last_probe < config.probe_wait + 2.0
             )
+            # Also filter confirm-caused changes: "1"+BSpace cycle changes
+            # the output hash but isn't real agent work.
+            confirm_caused = (
+                last_confirm > 0
+                and now - last_confirm < config.confirm_cooldown
+            )
 
             if changed:
-                if not probe_caused:
-                    # Real change — agent is working, reset everything
+                if not probe_caused and not confirm_caused:
+                    # Real change — agent is working, reset idle state
                     last_change = now
                     idle_confirmed = False
-                    consecutive_idle = 0
-                    completion_detected = False
-                    probe_count = 0
+                    # Don't reset false-positive state here — if the same
+                    # pattern keeps matching across output changes, it's
+                    # agent prose scrolling past, not a new dialog appearing.
+                    # The false-positive flag is only reset when the confirm
+                    # pattern stops matching (output no longer contains it).
                 else:
                     # Probe-caused change — update hash but don't reset idle state
                     log.debug("Probe-caused output change, not resetting")
@@ -196,23 +193,55 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 continue
             empty_count = 0
 
-            # --- Auto-confirm: send "1" when confirm pattern detected ---
-            # Pattern already matched a dialog, so "1" will be consumed by the
-            # menu (select option 1). No Enter, no BSpace needed.
+            # --- Auto-confirm: send response when confirm pattern detected ---
+            # Real permission dialogs consume the keystroke (e.g. "1" selects
+            # option 1). If the pattern matched agent prose instead, the char
+            # would echo at the prompt. To prevent "1" accumulation:
+            #   1. Capture baseline before sending
+            #   2. Send response
+            #   3. Wait briefly, recapture
+            #   4. If output didn't change (false positive), BSpace to clean up
             if now - last_confirm >= config.confirm_cooldown:
                 confirm = should_auto_confirm(output, config)
                 if confirm:
                     response, send_enter, pat_str, matched = confirm
-                    log.info("Auto-confirm: pattern=%r matched=%r -> response=%r enter=%s",
-                             pat_str, matched, response, send_enter)
-                    if response:
-                        tmux_send_input(session, response, send_enter=send_enter)
-                    elif send_enter:
-                        tmux_send_key(session, "Enter")
-                    last_confirm = now
-                    _event("auto_confirm", {"pattern": pat_str, "matched": matched,
-                                            "response": response})
-                    time.sleep(config.confirm_sleep)
+                    # Dedup: same pattern+text on unchanged screen → stale prose.
+                    # Key excludes hash because previous "1" echo changes the hash
+                    # even though the underlying content is the same stale prose.
+                    confirm_key = "%s:%s" % (pat_str, matched)
+                    if confirm_key == last_confirm_matched and last_confirm_false:
+                        # Same pattern already proven to be stale prose. The hash
+                        # keeps changing (our "1"+BSpace cycle causes tiny diffs)
+                        # but the underlying content hasn't changed meaningfully.
+                        log.debug("Auto-confirm: suppressed (known false positive)")
+                        time.sleep(1)
+                    else:
+                        log.info("Auto-confirm: pattern=%r matched=%r -> response=%r enter=%s",
+                                 pat_str, matched, response, send_enter)
+                        if response:
+                            tmux_send_input(session, response, send_enter=send_enter)
+                        elif send_enter:
+                            tmux_send_key(session, "Enter")
+                        last_confirm = now
+                        _event("auto_confirm", {"pattern": pat_str, "matched": matched,
+                                                "response": response})
+                        time.sleep(config.confirm_sleep)
+                        # Check if dialog actually consumed the input.
+                        # Real dialog: screen redraws completely (agent resumes).
+                        # False positive: "1" just echoes at prompt — the confirm
+                        # pattern is still visible in the recaptured output.
+                        post = capture_tmux(session)
+                        last_confirm_false = False
+                        if response and not send_enter:
+                            still_matches = should_auto_confirm(post, config)
+                            if still_matches and still_matches[2] == pat_str:
+                                # Same pattern still matches → wasn't a real dialog.
+                                # Clean up echoed char.
+                                tmux_send_key(session, "BSpace")
+                                last_confirm_false = True
+                                log.info("Auto-confirm: false positive (pattern still visible), BSpace cleanup")
+                                _event("auto_confirm_cleanup", {"pattern": pat_str})
+                        last_confirm_matched = confirm_key
                     continue
 
             # --- State detection ---
@@ -225,96 +254,69 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 current_state = ns
                 store.update(agent_id, state=ns)
 
-            # --- Completion detection ---
+            # --- Idle probe: single probe when screen stable ---
             idle_for = now - last_change
-            if not changed and idle_for >= config.completion_stable:
-                done = detect_completion(output, config)
-                if done:
-                    has_worked = True
-                    if not completion_detected:
-                        completion_detected = True
-                        log.info("Completion detected (output stable %.1fs)", idle_for)
-                        _event("completion_detected", {"idle_for": idle_for})
+            if (not idle_confirmed
+                    and not changed
+                    and idle_for >= config.probe_stable
+                    and now - last_probe >= config.probe_cooldown):
+                last_probe = now
+                probe_result = _smart_probe(session, config)
 
-            # --- Probe-based idle detection ---
-            # Only probe after completion detected, agent has worked,
-            # idle not yet confirmed, and haven't exceeded max probes.
-            if (has_worked
-                    and completion_detected
-                    and not idle_confirmed
-                    and probe_count < max_probes):
-                if (idle_for >= config.probe_stable
-                        and now - last_probe >= config.probe_cooldown):
-                    last_probe = now
-                    probe_count += 1
-                    probe_result = _smart_probe(session, config)
+                log.info("Probe: %s (idle_for=%.1fs)", probe_result, idle_for)
+                _event("probe", {"result": probe_result, "idle_for": idle_for})
 
-                    log.info("Probe #%d: %s (consecutive=%d/%d)",
-                             probe_count, probe_result,
-                             consecutive_idle + (1 if probe_result == "idle" else 0),
-                             config.probe_idle_threshold)
-                    _event("probe", {
-                        "result": probe_result,
-                        "probe_count": probe_count,
-                        "consecutive_idle": consecutive_idle,
-                    })
-
-                    if probe_result == "idle":
-                        consecutive_idle += 1
-                    else:
-                        # busy or error — agent working, reset
-                        last_change = now
-                        consecutive_idle = 0
-                        completion_detected = False
-
-                    if consecutive_idle >= config.probe_idle_threshold:
-                        idle_confirmed = True
-                        log.info("Idle confirmed (%d consecutive probes)",
-                                 consecutive_idle)
-                        _event("idle_confirmed", {"probe_count": probe_count})
-                        store.update(agent_id, state="idle")
-
-            # --- Auto-exit on completion + idle confirmed ---
-            # Two paths:
-            # 1. Probe confirmed: completion_detected + idle_confirmed
-            # 2. Long stable fallback: completion_detected + idle >= completion_stable * 3
-            #    (for trivial tasks where probes all return busy/error)
-            completion_stable_enough = (
-                completion_detected
-                and idle_for >= config.completion_stable * 3
-            )
-            if completion_detected and (idle_confirmed or completion_stable_enough):
-                if not idle_confirmed:
+                if probe_result == "idle":
+                    idle_confirmed = True
+                    log.info("Idle confirmed (single probe)")
+                    _event("idle_confirmed")
                     store.update(agent_id, state="idle")
+                else:
+                    # busy or error — agent working or dialog consumed "1"
+                    last_change = now
 
-                agent_rec = store.get(agent_id)
-                ae = None
-                if agent_rec:
-                    t = agent_rec.get("task")
-                    if isinstance(t, dict):
-                        ae = t.get("auto_exit")
-                    else:
-                        ae = agent_rec.get("auto_exit")
-                if ae is None:
-                    ae = getattr(config, "auto_exit", False)
-                if ae:
-                    exit_action = getattr(config, "exit_action", "kill_session")
-                    log.info("Auto-exit: action=%s", exit_action)
-                    if exit_action == "kill_session":
-                        tmux_kill_session(session)
-                    elif exit_action == "send_exit":
-                        tmux_send_input(session, getattr(config, "exit_command", "/exit"), send_enter=True)
-                        for _ in range(10):
-                            time.sleep(1)
-                            if not tmux_session_exists(session):
-                                break
+            # --- Fallback: long stable without probe confirmation ---
+            fallback_stable = getattr(config, "fallback_stable", 30.0)
+            if not idle_confirmed and idle_for >= fallback_stable:
+                idle_confirmed = True
+                log.info("Idle confirmed (fallback: stable %.1fs)", idle_for)
+                _event("idle_confirmed", {"reason": "fallback"})
+                store.update(agent_id, state="idle")
+
+            # --- Auto-exit: only when idle + not attached ---
+            if idle_confirmed:
+                # Don't kill a session a user is sitting in
+                if tmux_is_attached(session):
+                    pass  # wait for detach
+                else:
+                    agent_rec = store.get(agent_id)
+                    ae = None
+                    if agent_rec:
+                        t = agent_rec.get("task")
+                        if isinstance(t, dict):
+                            ae = t.get("auto_exit")
                         else:
+                            ae = agent_rec.get("auto_exit")
+                    if ae is None:
+                        ae = getattr(config, "auto_exit", False)
+                    if ae:
+                        exit_action = getattr(config, "exit_action", "kill_session")
+                        log.info("Auto-exit: action=%s", exit_action)
+                        if exit_action == "kill_session":
                             tmux_kill_session(session)
-                    store.update(agent_id, status="completed",
-                                 exit_reason="Task completed (auto-exit)",
-                                 completed_at=_now_iso())
-                    _event("completed", {"status": "completed", "reason": "auto-exit"})
-                    return
+                        elif exit_action == "send_exit":
+                            tmux_send_input(session, getattr(config, "exit_command", "/exit"), send_enter=True)
+                            for _ in range(10):
+                                time.sleep(1)
+                                if not tmux_session_exists(session):
+                                    break
+                            else:
+                                tmux_kill_session(session)
+                        store.update(agent_id, status="completed",
+                                     exit_reason="Task completed (auto-exit)",
+                                     completed_at=_now_iso())
+                        _event("completed", {"status": "completed", "reason": "auto-exit"})
+                        return
 
             time.sleep(1)
     finally:
