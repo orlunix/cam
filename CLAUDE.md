@@ -48,7 +48,11 @@ Mobile APP / CLI / Web
 
 **CamcDelegate** (`core/camc_delegate.py`): Wraps `camc` CLI calls over SSH. All agent operations (run, stop, kill, capture, send, key) go through camc. Uses ControlMaster to piggy-back on SSHTransport's persistent SSH connections (same socket path: `/tmp/cam-ssh-{sha256(user@host:port)[:12]}`).
 
-**CamcPoller** (`core/camc_poller.py`): Polls `camc --json list` on each remote every 5 seconds. Imports agent state into cam's SQLite for the API/mobile to query.
+**CamcPoller** (`core/camc_poller.py`): Polls `camc --json list` on each remote every 5 seconds. Imports agent state into cam's SQLite for the API/mobile to query. Three-layer machine_host correctness strategy:
+
+1. **Write at creation**: `AgentManager.run_agent()` passes machine connection info (host/user/port) from the context when creating the Agent model, so new agents get correct host from the start.
+2. **Hostname guard + self-healing backfill**: Poller skips agents whose `hostname` doesn't match the machine being polled (`_is_same_host()`), preventing cross-contamination on NFS clusters. For agents that pass the guard, poller corrects `machine_host/port` if they don't match — this self-heals any prior misassignment (e.g. from before the hostname guard existed).
+3. **Attach context fallback**: `cam attach` falls back to the context's SSH config when `machine_host` is missing or `localhost`, so attach still works even if the DB record is incomplete.
 
 **Key principle**: cam delegates, camc executes. Transport layer provides the SSH tunnel; camc does all tmux operations locally on each machine.
 
@@ -353,7 +357,8 @@ In environments where multiple machines share the same home directory (NFS clust
 - **`hostname` field**: `camc run` records `socket.gethostname()` in each agent record.
 - **`camc list`**: filters to only show agents from the current hostname.
 - **`camc heal`**: skips agents from other hostnames (won't mistakenly mark remote-machine agents as dead).
-- **Hostname comparison**: uses `_is_same_host()` which compares short hostnames (before first `.`) to handle FQDN vs short name inconsistencies (e.g., `bpmpfw` vs `bpmpfw.nvidia.com`).
+- **Hostname comparison**: uses `_is_same_host()` which compares short hostnames (before first `.`) to handle FQDN vs short name inconsistencies (e.g., `bpmpfw` vs `bpmpfw.nvidia.com`). Used by both camc (local filtering) and CamcPoller (prevents importing agents with wrong machine_host).
+- **CamcPoller NFS guard**: when polling machine X, skips agents whose `hostname` ≠ X. For agents that pass, corrects `machine_host/port` if they don't match the polling machine — self-heals prior cross-contamination without manual intervention.
 - **`camc capture/send/key`**: tmux sockets in `/tmp/cam-sockets/` provide natural per-machine isolation — can only capture sessions running on the current machine.
 
 ### camc Tmux Socket Paths
@@ -406,3 +411,19 @@ field names. Next phases:
 - ANSI stripping done in Go (agent-side) — capture returns plain text.
 - Python side: `AgentTransport` in `src/cam/transport/agent.py`. Reuses SSH ControlMaster pooling.
 - Build: `cd cam-agent && make build`.
+
+## AI News Digest (Follow Builders Skill)
+
+Get curated AI industry news from top builders (founders, researchers, engineers) on X/Twitter and YouTube podcasts.
+
+### Quick Use
+
+- **On-demand**: Run the follow-builders skill from `~/skills/follow-builders/`
+  ```bash
+  cd ~/skills/follow-builders/scripts && node prepare-digest.js 2>/dev/null
+  ```
+  This outputs JSON with tweets, podcasts, and prompts. The agent then remixes it into a readable digest.
+
+- **Config**: `~/.follow-builders/config.json` — language (`en`/`zh`/`bilingual`), frequency, delivery method.
+- **Sources**: Curated centrally, updated automatically. Tracks ~10 AI builders on X and select podcasts.
+- **Delivery**: `stdout` (default), Telegram, or email. OpenClaw users get automatic channel delivery via cron.

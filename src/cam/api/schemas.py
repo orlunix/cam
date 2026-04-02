@@ -43,6 +43,7 @@ class AgentResponse(BaseModel):
     files_changed: list[str]
     auto_confirm: bool | None = None
     auto_exit: bool | None = None
+    machine_host: str | None = None
 
 
 class AgentListResponse(BaseModel):
@@ -120,4 +121,5 @@ def agent_to_response(agent: Agent) -> AgentResponse:
         files_changed=agent.files_changed,
         auto_confirm=agent.task.auto_confirm,
         auto_exit=agent.task.auto_exit,
+        machine_host=getattr(agent, "machine_host", None),
     )
