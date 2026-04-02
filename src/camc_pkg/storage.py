@@ -42,13 +42,26 @@ class AgentStore(object):
                 _fcntl.flock(lf.fileno(), _fcntl.LOCK_EX)
             try:
                 agents = []
+                file_had_data = False
                 if os.path.exists(self._path):
                     try:
+                        sz = os.path.getsize(self._path)
+                        file_had_data = sz > 4  # non-trivial content (not just "[]")
                         with open(self._path, "r") as f:
                             agents = json.load(f)
                     except (ValueError, OSError):
+                        if file_had_data:
+                            # File exists with data but JSON parse failed —
+                            # likely NFS stale cache or partial read. Refuse
+                            # to overwrite to prevent wiping valid data.
+                            return
                         agents = []
                 agents = fn(agents)
+                # Safety: never shrink a non-empty file to empty. This
+                # prevents a failed read (agents=[]) + no-op update from
+                # wiping the entire store.
+                if not agents and file_had_data:
+                    return
                 tmp = self._path + ".tmp"
                 with open(tmp, "w") as f:
                     json.dump(agents, f, indent=2)

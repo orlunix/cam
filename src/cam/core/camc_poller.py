@@ -50,6 +50,21 @@ _STATE_MAP = {
 _TERMINAL_STATUSES = {AgentStatus.COMPLETED, AgentStatus.FAILED, AgentStatus.KILLED}
 
 
+def _is_same_host(hostname_a: str | None, hostname_b: str | None) -> bool:
+    """Compare hostnames tolerating FQDN vs short name differences.
+
+    On NFS clusters, agents.json is shared across machines. Each agent records
+    its hostname (socket.gethostname()). When polling machine X, we must only
+    claim agents whose hostname matches X — otherwise we'd assign the wrong
+    SSH connection info (host/port) to agents running on a different machine.
+    """
+    if not hostname_a or not hostname_b:
+        return False  # unknown → don't assume match (safe default for poller)
+    if hostname_a == hostname_b:
+        return True
+    return hostname_a.split(".")[0] == hostname_b.split(".")[0]
+
+
 def _parse_ts(raw: str | None) -> datetime | None:
     """Parse an ISO 8601 timestamp string to datetime."""
     if not raw:
@@ -192,12 +207,12 @@ class CamcPoller:
 
             delegate = self._get_delegate(name, host, user, port)
 
-            # Poll agents from this machine
+            # Poll agents from this machine.
+            # Always use list_agents (camc --json list) so hostname filtering
+            # is applied consistently — local and remote behave the same way.
+            # This matters on NFS clusters where agents.json is shared.
             try:
-                if delegate._is_local:
-                    camc_agents = await asyncio.to_thread(delegate.read_agents_json)
-                else:
-                    camc_agents = await asyncio.to_thread(delegate.list_agents)
+                camc_agents = await asyncio.to_thread(delegate.list_agents)
             except Exception as e:
                 logger.warning("Failed to poll machine %s: %s", name, e)
                 continue
@@ -210,6 +225,14 @@ class CamcPoller:
             for agent_data in camc_agents:
                 agent_id = agent_data.get("id", "")
                 if not agent_id:
+                    continue
+
+                # NFS cluster guard: on shared-disk clusters, camc list returns
+                # agents from ALL machines. Only claim agents whose hostname
+                # matches the machine we're currently polling — otherwise we'd
+                # assign the wrong SSH connection info (host/port).
+                agent_hostname = agent_data.get("hostname", "")
+                if agent_hostname and host and not _is_same_host(agent_hostname, host):
                     continue
 
                 # Check if agent already exists in our store (by ID)
@@ -258,8 +281,14 @@ class CamcPoller:
                     except Exception as e:
                         logger.warning("Failed to import agent %s: %s", agent_id, e)
                 else:
-                    # Backfill machine fields for agents imported before v2
-                    if host and not existing.machine_host:
+                    # Correct machine fields: the hostname guard above already
+                    # ensures we only reach here when the agent's hostname
+                    # matches the machine we're polling, so it's safe to
+                    # overwrite — this self-heals any prior cross-contamination
+                    # (e.g. NFS shared agents.json assigned wrong host).
+                    if host and (not existing.machine_host
+                                 or existing.machine_host != host
+                                 or existing.machine_port != port):
                         try:
                             self._agent_store.db.execute(
                                 "UPDATE agents SET machine_host=?, machine_user=?, machine_port=? WHERE id=?",
@@ -309,10 +338,7 @@ class CamcPoller:
             # Poll events (incremental)
             try:
                 since = self._last_event_ts.get(name)
-                if delegate._is_local:
-                    new_events = await asyncio.to_thread(delegate.read_events_since, since)
-                else:
-                    new_events = await asyncio.to_thread(delegate.get_history, since=since)
+                new_events = await asyncio.to_thread(delegate.get_history, since=since)
 
                 for ev in new_events:
                     ts = ev.get("ts", "")

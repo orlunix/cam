@@ -432,32 +432,62 @@ def cmd_add(args):
     if not tmux_session_exists(args.session):
         sys.stderr.write("Error: tmux session '%s' not found\n" % args.session); sys.exit(1)
     store = AgentStore()
-    agent_id = _gen_agent_id()
-    context = _load_default_context()
-    ctx_name = context.get("name", "") if isinstance(context, dict) else ""
-    # Adopted sessions are always local — tmux_session_exists already confirmed
-    # the session is on this machine. camc only manages local tmux sessions.
-    # TODO: if camc adds SSH/remote support, transport_type should be derived
-    # from the session's origin (e.g. remote socket path or machine config).
-    transport = "local"
-    store.save({
-        "id": agent_id,
-        "task": {"name": "", "tool": args.tool, "prompt": "(adopted)",
-                 "auto_confirm": True, "auto_exit": False},
-        "context_id": "",
-        "context_name": ctx_name,
-        "context_path": os.getcwd(),
-        "transport_type": transport,
-        "status": "running",
-        "state": None,
-        "tmux_session": args.session,
-        "tmux_socket": "",
-        "pid": None,
-        "hostname": _sock.gethostname(),
-        "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
-        "retry_count": 0, "cost_estimate": None, "files_changed": [],
-    })
-    # Spawn monitor
+
+    # Check if an agent with this tmux_session already exists — reuse it
+    # instead of creating a duplicate. This preserves name/prompt/task info
+    # when re-adopting sessions (e.g. after NFS wipe or heal recovery).
+    existing = None
+    for a in store.list():
+        if _sf(a, "tmux_session") == args.session:
+            existing = a
+            break
+
+    if existing:
+        agent_id = existing["id"]
+        # Reactivate: set running, clear completion fields, update hostname
+        store.update(agent_id, status="running", state="idle",
+                     completed_at=None, exit_reason=None,
+                     hostname=_sock.gethostname())
+        # Update name if --name provided
+        if getattr(args, "name", None):
+            task = existing.get("task", {})
+            if isinstance(task, dict):
+                task["name"] = args.name
+                store.update(agent_id, task=task)
+        print("Re-adopted '%s' as agent %s" % (args.session, agent_id))
+    else:
+        agent_id = _gen_agent_id()
+        context = _load_default_context()
+        ctx_name = context.get("name", "") if isinstance(context, dict) else ""
+        name = getattr(args, "name", None) or ""
+        store.save({
+            "id": agent_id,
+            "task": {"name": name, "tool": args.tool, "prompt": "(adopted)",
+                     "auto_confirm": True, "auto_exit": False},
+            "context_id": "",
+            "context_name": ctx_name,
+            "context_path": os.getcwd(),
+            "transport_type": "local",
+            "status": "running",
+            "state": None,
+            "tmux_session": args.session,
+            "tmux_socket": "",
+            "pid": None,
+            "hostname": _sock.gethostname(),
+            "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
+            "retry_count": 0, "cost_estimate": None, "files_changed": [],
+        })
+        print("Adopted '%s' as agent %s (tool=%s)" % (args.session, agent_id, args.tool))
+
+    # Spawn monitor (if not already running)
+    existing_pid = (existing or {}).get("pid")
+    if existing_pid:
+        try:
+            os.kill(existing_pid, 0)
+            print("  Monitor already running (PID %d)" % existing_pid)
+            return
+        except OSError:
+            pass
     try:
         proc = subprocess.Popen(
             [sys.executable, _CAMC_SCRIPT, "_monitor", agent_id] if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg", "_monitor", agent_id],
@@ -467,7 +497,6 @@ def cmd_add(args):
         store.update(agent_id, pid=proc.pid)
     except Exception:
         pass
-    print("Adopted '%s' as agent %s (tool=%s)" % (args.session, agent_id, args.tool))
 
 
 def cmd_rm(args):
@@ -639,8 +668,46 @@ def cmd_heal(args):
                 store.save(a)
                 fixed += 1
             print("Upgrade: named %d unnamed agent(s)" % fixed)
+    # --- Phase 1: Resume agents with live sessions but terminal status ---
+    terminal = [a for a in agents if a.get("status") in ("completed", "failed", "stopped")]
+    resumed = 0
+    for a in terminal:
+        agent_host = a.get("hostname")
+        if agent_host and not _is_same_host(agent_host, my_hostname):
+            continue
+        session = _sf(a, "tmux_session")
+        if not session:
+            continue
+        transport = a.get("transport_type", "local")
+        if transport != "local":
+            continue
+        if not tmux_session_exists(session):
+            continue
+        aid = a["id"]
+        name = _tf(a, "name") or aid
+        # Session still alive but agent marked terminal — resume it
+        store.update(aid, status="running", state="idle",
+                     completed_at=None, exit_reason=None)
+        # Spawn monitor
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, _CAMC_SCRIPT, "_monitor", aid] if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg", "_monitor", aid],
+                stdout=subprocess.DEVNULL,
+                stderr=open(os.path.join(LOGS_DIR, "monitor-%s.stderr" % aid), "a"),
+                start_new_session=True)
+            store.update(aid, pid=proc.pid)
+            print("  %s (%s): resumed (session alive, PID %d)" % (name, aid, proc.pid))
+        except Exception as e:
+            print("  %s (%s): resume failed: %s" % (name, aid, e))
+        resumed += 1
+    if resumed:
+        print("Resumed %d agent(s) with live sessions" % resumed)
+        # Re-read agents list after resume updates
+        agents = store.list()
+
+    # --- Phase 2: Check running agents, restart dead monitors ---
     running = [a for a in agents if a.get("status") == "running"]
-    if not running:
+    if not running and not resumed:
         print("No running agents.")
         return
 
@@ -738,6 +805,8 @@ def cmd_heal(args):
     local_count = len(running) - skipped
     failed = local_count - ok - healed
     msg = "Heal: %d healthy, %d restarted" % (ok, healed)
+    if resumed:
+        msg += ", %d resumed" % resumed
     if failed:
         msg += ", %d failed" % failed
     if skipped:
@@ -1258,6 +1327,7 @@ examples:
     a = sub.add_parser("add", help="Adopt existing tmux session")
     a.add_argument("session", help="tmux session name")
     a.add_argument("--tool", "-t", default="claude", help="Tool type")
+    a.add_argument("--name", "-n", default=None, help="Human-readable name")
 
     # rm
     rm = sub.add_parser("rm", help="Remove a single agent")

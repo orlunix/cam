@@ -302,14 +302,30 @@ def attach(
         print_error(f"Agent not found: {agent_id}")
         raise typer.Exit(1)
 
-    # Delegate to camc attach — it handles socket path discovery
-    camc_id = agent.tmux_session or str(agent.id)
+    # Delegate to camc attach — it handles socket path discovery.
+    # Use agent ID for camc lookup; fall back to tmux session name for
+    # legacy agents that exist in cam's DB but not in camc's agents.json.
+    camc_id = str(agent.id)
+    tmux_session = getattr(agent, "tmux_session", "") or ""
     host = agent.machine_host
+    user = getattr(agent, "machine_user", None)
+    port = getattr(agent, "machine_port", None)
+
+    # Fallback: if machine_host is missing but agent is SSH-based, look up context
+    if (not host or host == "localhost") and getattr(agent, "transport_type", "") == "ssh":
+        ctx_name = getattr(agent, "context_name", "")
+        if ctx_name:
+            import json as _json
+            ctx = state.context_store.get_by_name(ctx_name)
+            if ctx and ctx.machine_config:
+                mc = ctx.machine_config if isinstance(ctx.machine_config, dict) else _json.loads(ctx.machine_config)
+                host = mc.get("host")
+                user = user or mc.get("user")
+                port = port or mc.get("port")
+
     if host and host != "localhost":
         # Remote: SSH with -t for interactive tmux
         import hashlib
-        user = agent.machine_user
-        port = agent.machine_port
         conn_key = "%s@%s:%s" % (user or "default", host, port or 22)
         conn_hash = hashlib.sha256(conn_key.encode()).hexdigest()[:12]
         ssh_cmd = "ssh"
@@ -322,7 +338,7 @@ def attach(
     else:
         attach_cmd = f"camc attach {shlex.quote(camc_id)}"
 
-    print_info(f"Attaching to agent: {camc_id}")
+    print_info(f"Attaching to agent: {camc_id[:8]}")
     print_info("Press Ctrl+B, D to detach")
     os.system(attach_cmd)
 

@@ -134,7 +134,9 @@ class AgentManager:
         # Build Agent model from camc response
         from cam.core.camc_poller import _camc_agent_to_model
 
-        agent = _camc_agent_to_model(result, context.name, context_id=context.id)
+        agent = _camc_agent_to_model(result, context.name, context_id=context.id,
+                                     machine_host=host, machine_user=user,
+                                     machine_port=port)
         agent.context_path = context.path
         agent.transport_type = context.machine.type
 

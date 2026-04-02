@@ -52,8 +52,8 @@ export function renderDashboard(container) {
   container.innerHTML = `
     <div id="dash-stats"></div>
     <div class="filter-bar">
-      <select id="filter-context" class="filter-select">
-        <option value="">All contexts</option>
+      <select id="filter-machine" class="filter-select">
+        <option value="">All machines</option>
       </select>
       <select id="filter-status" class="filter-select">
         <option value="">All status</option>
@@ -93,11 +93,11 @@ export function renderDashboard(container) {
   // Filter elements (static, not rebuilt on refresh)
   const statusSel = container.querySelector('#filter-status');
   const toolSel = container.querySelector('#filter-tool');
-  const contextSel = container.querySelector('#filter-context');
+  const machineSel = container.querySelector('#filter-machine');
   const filters = state.get('filters');
   if (filters.status) statusSel.value = filters.status;
   if (filters.tool) toolSel.value = filters.tool;
-  if (filters.context) contextSel.value = filters.context;
+  if (filters.machine) machineSel.value = filters.machine;
 
   statusSel.addEventListener('change', () => {
     state.set('filters', { ...state.get('filters'), status: statusSel.value });
@@ -105,8 +105,8 @@ export function renderDashboard(container) {
   toolSel.addEventListener('change', () => {
     state.set('filters', { ...state.get('filters'), tool: toolSel.value });
   });
-  contextSel.addEventListener('change', () => {
-    state.set('filters', { ...state.get('filters'), context: contextSel.value });
+  machineSel.addEventListener('change', () => {
+    state.set('filters', { ...state.get('filters'), machine: machineSel.value });
   });
 
   function renderList() {
@@ -116,7 +116,7 @@ export function renderDashboard(container) {
     let filtered = agents;
     if (filters.status) filtered = filtered.filter(a => a.status === filters.status);
     if (filters.tool) filtered = filtered.filter(a => a.tool === filters.tool);
-    if (filters.context) filtered = filtered.filter(a => a.context_name === filters.context);
+    if (filters.machine) filtered = filtered.filter(a => (a.machine_host || 'local') === filters.machine);
 
     // Sort: running first, then by started_at desc
     filtered.sort((a, b) => {
@@ -134,10 +134,14 @@ export function renderDashboard(container) {
     toolSel.innerHTML = `<option value="">All tools</option>${tools.map(t => `<option value="${t}">${t}</option>`).join('')}`;
     toolSel.value = curTool;
 
-    const contexts = [...new Set(agents.map(a => a.context_name).filter(Boolean))].sort();
-    const curCtx = contextSel.value;
-    contextSel.innerHTML = `<option value="">All contexts</option>${contexts.map(c => `<option value="${c}">${c}</option>`).join('')}`;
-    contextSel.value = curCtx;
+    const machines = [...new Set(agents.map(a => a.machine_host || 'local'))].sort();
+    const curMachine = machineSel.value;
+    machineSel.innerHTML = `<option value="">All machines</option>${machines.map(m => {
+      // Show short hostname for readability
+      const label = m === 'local' ? 'local' : m.split('.')[0];
+      return `<option value="${m}">${label}</option>`;
+    }).join('')}`;
+    machineSel.value = curMachine;
 
     // Agent list — incremental DOM update to avoid full rebuild flicker
     const listEl = container.querySelector('#agent-list-container');
