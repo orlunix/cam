@@ -168,6 +168,10 @@ class AdapterConfig(object):
         self.probe_idle_threshold = int(probe_cfg.get("idle_threshold", 2))
 
         mon_cfg = config.get("monitor", {})
+        bp = mon_cfg.get("busy_pattern")
+        self.busy_pattern = compile_pattern(bp, mon_cfg.get("busy_flags")) if bp else None
+        dp = mon_cfg.get("done_pattern")
+        self.done_pattern = compile_pattern(dp, mon_cfg.get("done_flags")) if dp else None
         self.confirm_cooldown = float(mon_cfg.get("confirm_cooldown", 5.0))
         self.confirm_sleep = float(mon_cfg.get("confirm_sleep", 0.5))
         self.completion_stable = float(mon_cfg.get("completion_stable", 3.0))

@@ -146,7 +146,7 @@ Adapters are declared in `src/cam/adapters/configs/*.toml`. The `ConfigurableAda
 - `[completion]` — strategy (prompt_count), prompt_pattern, threshold
 - `[[confirm]]` — auto-confirm rules: pattern, response, send_enter
 - `[probe]` — idle detection char, wait time, threshold
-- `[monitor]` — cooldowns, auto_exit, exit_action
+- `[monitor]` — cooldowns, auto_exit, exit_action, busy_pattern, done_pattern
 
 Detection logic lives in `src/cam/client.py` (shared between adapter and standalone client binary `camc.py`).
 
@@ -180,88 +180,69 @@ Checks all running agents and restarts dead monitors:
 - Pre-prompt auto-confirm: `agent_manager` polls during startup for trust/permission prompts before sending the task prompt.
 - `--allowed-tools` pre-authorizes Write/Read/Glob/Grep but Bash still needs per-command confirmation.
 
-## Auto-Confirm Strategy
+## Monitor Loop (`camc_pkg/monitor.py`)
 
-Auto-confirm detects permission dialogs in terminal output and sends the appropriate response. Patterns and responses are defined per-adapter in TOML `[[confirm]]` rules.
+Pure screen-based, tool-agnostic design. No characters sent for idle detection — only for auto-confirm and stuck fallback. The monitor polls every ~1 second:
 
-### Detection: Last 32 Lines Only
+### Step 1: Health Check (every 15s)
 
-`should_auto_confirm()` only checks the **last 32 non-empty lines** of captured output, not the full screen. This prevents false positives when the agent's response text contains confirm keywords (e.g. a table mentioning "1. Yes"). Real permission dialogs always appear at the bottom of the terminal.
+- `tmux_session_exists(session)` — is the tmux session alive?
+- Gone → `completed` if `has_worked`, else `failed` → exit monitor
 
-### Claude Confirm Rules
+### Step 2: Capture + Hash
+
+- `capture_tmux(session)` → raw terminal text
+- **Strip last line before hashing** — Claude's status bar (`? for shortcuts` ↔ `esc to interrupt`) alternates every cycle, causing false hash changes. Stripping it ensures idle detection works.
+- MD5 hash → `changed = (hash != prev_hash)`
+
+### Step 2b: Auxiliary Screen Signals (busy/done)
+
+Optional patterns from TOML `[monitor]` config, checked on last 5 non-empty lines:
+
+- **`busy_pattern`** (Claude: `ing[.…]{1,3}`, e.g. "Creating…", "Smooshing…"): Agent is definitely working → skip auto-confirm, reset idle timer, set `has_worked=True`.
+- **`done_pattern`** (Claude: `ed\s+for\s+\d+[smh]`, e.g. "Crunched for 36s"): Task just completed → fast-track idle to 5s (instead of 60s) when bare prompt also visible.
+
+Each tool defines its own patterns in TOML. If not configured, falls back to standard 60s idle.
+
+### Step 3: Auto-Confirm (cooldown 5s)
+
+Detects permission dialogs and sends response. All rules defined in TOML `[[confirm]]`.
+
+**Skip conditions** (either skips auto-confirm):
+- **Busy signal**: `busy_pattern` matched → agent is working, not at a dialog
+- **Bare prompt**: a line in the last 5 that is JUST `❯`/`>`/`›` → agent at input prompt, confirm text is stale history
+
+Detection checks the **last 8 non-empty lines** only. Real dialogs appear at screen bottom; checking full output causes false positives on agent prose.
+
+**Claude Confirm Rules** (defined in TOML):
 
 | Pattern | Response | Scenario |
 |---|---|---|
 | `Do you want to proceed` | `1` (no Enter) | Numbered permission menu (`1. Yes / 2. No`) |
 | `1. Yes` / `1. Allow` | `1` (no Enter) | Numbered permission menu |
-| `Enter to confirm/select` | Enter | Trust dialog, plan mode interview |
-| `Allow once/always` | Enter | Claude 4.x+ Ink select menu |
+| `Allow once/always` | `1` (no Enter) | Claude 4.x+ Ink select menu |
 | `(y/n)` / `[Y/n]` | `y` + Enter | y/n confirmation prompt |
 
-For numbered menus, `1` is sent without Enter — the Ink TUI consumes the keypress to select option 1. For Ink select menus where the cursor is already on the right option, Enter confirms the selection.
+### Step 4: State Detection
 
-### Cooldown
+Regex on recent 2000 chars → `planning`/`editing`/`testing`/`committing`. State change sets `has_worked=True`.
 
-Auto-confirm has a cooldown (`confirm_cooldown`, default 5s) to prevent rapid-fire confirmations. After sending a response, the monitor sleeps `confirm_sleep` (0.5s) then continues to the next poll cycle.
+### Step 5: Output Change
 
-## Smart Probe Strategy
+Hash changed → reset idle timer (`last_change = now`), clear `idle_confirmed`.
 
-Smart probe detects whether the agent is truly idle after completion is detected. It sends a probe character and observes the terminal's reaction.
+### Step 6: Idle Detection
 
-### Mechanism
+**Standard**: `has_worked` + screen hash stable 60s + prompt visible → idle confirmed.
+**Fast-track**: `done_pattern` matched + bare prompt + 5s stable → idle confirmed.
 
-1. **Capture baseline** — snapshot current terminal output
-2. **Send probe char** (`1`, no Enter) — the char is chosen to also work as a confirmation response
-3. **Wait** (`probe_wait`, 0.3s) — let terminal process the input
-4. **Recapture** — snapshot terminal output again
-5. **Classify** — compare baseline vs after:
-   - **idle**: probe char appeared in a new line (echoed at prompt `❯`) → agent is waiting for input
-   - **busy**: output unchanged (agent in raw mode) or output changed but char not echoed (consumed by a dialog) → agent is working
-6. **BSpace cleanup** — send Backspace to remove the probe char from the terminal
+### Step 6b: Stuck Fallback
 
-### Key Design Decisions
+`has_worked` + screen frozen 120s + prompt NOT visible → send `1` to try to unblock. The character is configurable via `probe_char` in TOML.
 
-- **Scans all lines, not just the last**: Claude Code's TUI has separator and status lines below the prompt `❯`. The probe char may echo on any line, so classification compares all new lines between baseline and after capture.
-- **Probe-caused output filter**: If output changes shortly after a probe (`probe_wait + 2s`), it's likely caused by the probe itself (echo or BSpace). The monitor updates the hash but doesn't reset idle state.
-- **"confirmed" = busy**: If the probe's `1` is consumed by a permission dialog (output changes but `1` not echoed), the agent was blocked and now resumes work. This is classified as **busy**, not idle.
+### Step 7: Auto-Exit
 
-### Idle Confirmation Flow
-
-```
-completion_detected (output stable 3s)
-    → probe #1: idle (consecutive=1)
-    → probe #2: idle (consecutive=2) → idle_confirmed ✓
-    → auto-exit if configured
-```
-
-- Probes only start after `completion_detected` AND `has_worked` AND output stable for `probe_stable` (10s).
-- `probe_idle_threshold` (default 2) consecutive idle probes needed to confirm.
-- `probe_cooldown` (20s) between probes.
-- Max probes = `threshold * 3` — gives up after too many attempts.
-- If any probe returns busy, `consecutive_idle` and `completion_detected` reset.
-
-### Auto-Confirm vs Probe: Two Paths, Same Char
-
-Both auto-confirm and probe use `1` as the input character, but they are distinct flows:
-
-| | Auto-Confirm | Smart Probe |
-|---|---|---|
-| **When** | Confirm pattern matched in output | After completion detected, output stable |
-| **Send** | `1` (no Enter, no BSpace) | `1` (no Enter) + BSpace cleanup |
-| **Why no BSpace** | Dialog consumes the `1` | Char may echo at prompt, needs cleanup |
-| **Result** | Agent resumes work | Classify: idle or busy |
-
-## Monitor Loop (`core/monitor.py`)
-
-The monitor polls every ~1 second:
-1. Check tmux session alive (health check every 15s)
-2. Capture terminal output, compute hash
-3. Filter probe-caused output changes (don't reset idle state)
-4. Check auto-confirm patterns on last 32 non-empty lines, send response (with cooldown)
-5. Run state detection (pattern matching on recent output)
-6. Check completion detection (only after output stable for 3s)
-7. Run smart probe if completion detected (confirm idle before finalizing)
-8. Handle auto-exit on completion + idle confirmed (or long stable fallback)
+`idle_confirmed` + user not attached + `auto_exit` enabled → kill session → mark completed.
 
 Background mode (`--detach`) spawns `monitor_runner.py` as a subprocess with PID file at `~/.local/share/cam/pids/<agent_id>.pid`. Uses `start_new_session=True` so the monitor survives CLI exit. `cam stop/kill` sends SIGTERM to the monitor subprocess and kills the TMUX session.
 
