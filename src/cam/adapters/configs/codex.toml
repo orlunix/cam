@@ -80,6 +80,8 @@ wait = 0.3
 idle_threshold = 2
 
 [monitor]
+# Codex shows "• Working (7s • esc to interrupt)" while busy
+busy_pattern = "Working \\(\\d+s"
 confirm_cooldown = 5.0
 confirm_sleep = 0.5
 completion_stable = 3.0

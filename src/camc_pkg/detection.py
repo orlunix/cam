@@ -31,7 +31,7 @@ def should_auto_confirm(output, config):
     # false positives when the agent's *response* contains trigger text
     # (e.g. a table mentioning "1. Yes").
     lines = [l for l in clean.splitlines() if l.strip()]
-    recent = "\n".join(lines[-32:]) if len(lines) > 8 else clean
+    recent = "\n".join(lines[-8:])
     for pattern, response, send_enter in config.confirm_rules:
         m = pattern.search(recent)
         if m:

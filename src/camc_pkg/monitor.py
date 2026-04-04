@@ -1,10 +1,24 @@
-"""Background monitor loop: unified confirm/probe via "1"+BSpace, state detection, auto-exit.
+"""Background monitor loop (~1s poll cycle).
 
-v2 design (single-probe, attachment-aware):
-  - Auto-confirm: always runs (even when user attached)
-  - Single probe: screen stable 5s → send "1" → echoed = idle, consumed = busy
-  - Attachment check: only blocks auto-exit (don't kill session user is in)
-  - Idle revival: any real output change resets idle_confirmed → full cycle resumes
+Pure screen-based, tool-agnostic design:
+  1. Capture screen -> detect state/confirm/idle
+  2. Auto-confirm: pattern match on last 8 lines -> send response
+  3. Idle: screen hash stable 60s + prompt visible -> idle
+  4. Stuck fallback: screen frozen 120s + prompt NOT visible -> send "1"
+  5. Auto-exit: idle + not attached + auto_exit enabled -> kill
+
+No probe mechanism.  No characters sent except auto-confirm responses
+and stuck fallback.  All tool differences handled via TOML config patterns.
+
+Auxiliary screen signals (optional, from TOML config):
+  busy_pattern: "ing…" style → definitely busy, skip confirm, reset idle
+  done_pattern: "ed for Xs" style → task done, fast-track idle with prompt
+
+Logging levels:
+  DEBUG  - every cycle decision (hash, idle_for, why skipped, screen tail)
+  INFO   - state changes, auto-confirm, idle, auto-exit, stuck
+  WARNING- stuck fallback, unexpected situations
+  ERROR  - crashes, session errors
 """
 
 import hashlib
@@ -22,74 +36,18 @@ from camc_pkg.transport import (
     capture_tmux, tmux_session_exists, tmux_send_input, tmux_send_key,
     tmux_kill_session, tmux_is_attached,
 )
-from camc_pkg.detection import detect_state, should_auto_confirm, detect_completion
+from camc_pkg.detection import (
+    detect_state, should_auto_confirm, detect_completion, is_ready_for_input,
+)
 
 
-def _smart_probe(session, config):
-    """Smart probe: send probe char, observe terminal echo, classify, clean up.
-
-    Sends the adapter's probe_char (default "1") without Enter, then checks
-    what happened:
-      - "idle": char appeared in output (echoed at prompt) -> waiting for input
-      - "busy": output unchanged (agent in raw mode) OR output changed but
-        char not echoed (consumed by a dialog, agent resumes work)
-      - "error": capture or send failed
-
-    BSpace follows to clean up the probe char from the terminal.
-
-    The probe char is configurable per adapter (config.probe_char). Default "1"
-    works for Claude (selects option 1 in permission menus). Other agents may
-    use a different char.
-
-    Returns: "idle", "busy", or "error"
-    """
-    char = config.probe_char
-
-    # 1. Capture baseline
-    baseline = capture_tmux(session)
-    if not baseline.strip():
-        return "error"
-
-    # 2. Send probe char (no Enter)
-    if not tmux_send_input(session, char, send_enter=False):
-        return "error"
-
-    # 3. Wait and recapture
-    time.sleep(config.probe_wait)
-    after = capture_tmux(session)
-
-    # 4. Classify — compare all non-empty lines, not just the last one.
-    # Claude Code's TUI has status/separator lines below the prompt, so the
-    # probe char may appear on any line (e.g. "❯\xa01"), not necessarily the last.
-    result = "busy"
-    baseline_stripped = baseline.rstrip("\n")
-    after_stripped = after.rstrip("\n")
-
-    if baseline_stripped != after_stripped:
-        # Output changed — check if the probe char was echoed (idle)
-        # or consumed by a dialog (busy)
-        baseline_lines = set(baseline_stripped.splitlines())
-        after_lines = after_stripped.splitlines()
-        for line in after_lines:
-            if line not in baseline_lines and char in line:
-                result = "idle"
-                break
-
-    # 5. BSpace to clean up probe char
-    tmux_send_key(session, "BSpace")
-    time.sleep(0.15)
-
-    return result
+def _screen_tail(output, n=3):
+    """Last n non-empty lines of screen output, for logging."""
+    lines = [l.strip() for l in output.rstrip("\n").split("\n") if l.strip()]
+    return " | ".join(lines[-n:]) if lines else "(empty)"
 
 
 def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=None):
-    """Monitor a tmux session: auto-confirm, single-probe idle detection, auto-exit.
-
-    Phase 1 - Auto-confirm: always runs, sends response when confirm pattern matched.
-    Phase 2 - State detection: pattern match on output → planning/editing/testing/etc.
-    Phase 3 - Idle probe: screen stable 5s → send "1" → echoed = idle (single probe).
-    Phase 4 - Auto-exit: idle_confirmed + not attached + auto_exit → kill session.
-    """
     if pid_path:
         with open(pid_path, "w") as f:
             f.write(str(os.getpid()))
@@ -101,156 +59,121 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
     prev_output = ""
     last_change = last_health = time.time()
     last_confirm = 0.0
-    last_confirm_matched = ""  # suppress duplicate matches on same text
-    last_confirm_false = False  # was last confirm a false positive?
-    confirm_suppress = set()  # confirmed patterns — suppress scrollback re-triggers
     current_state = None
     has_worked = False
-    empty_count = 0
-
-    # Probe state
-    last_probe = 0.0
     idle_confirmed = False
+    cycle = 0
 
-    def _event(event_type, detail=None):
+    def _event(etype, detail=None):
         if events:
-            events.append(agent_id, event_type, detail)
+            events.append(agent_id, etype, detail)
 
     _event("monitor_start")
+    log.info("Config: confirm_cooldown=%.1f confirm_sleep=%.1f health_check=%.1f",
+             config.confirm_cooldown, config.confirm_sleep, config.health_check_interval)
 
     try:
         while running[0]:
             now = time.time()
+            cycle += 1
 
-            # --- Health check (periodic) ---
+            # --- 1. Health check (every 15s) ---
             if now - last_health >= config.health_check_interval:
                 last_health = now
-                if not tmux_session_exists(session):
-                    # Session disappeared — check last output for completion
-                    # signals before deciding completed vs failed.
+                alive = tmux_session_exists(session)
+                log.debug("[%d] Health check: session=%s alive=%s", cycle, session, alive)
+                if not alive:
                     if prev_output:
                         done = detect_completion(prev_output, config)
-                        if done:
-                            status = "completed"
-                        elif has_worked:
-                            status = "completed"
-                        else:
-                            status = "failed"
+                        status = "completed" if (done or has_worked) else "failed"
                     else:
                         status = "completed" if has_worked else "failed"
                     reason = "Session ended cleanly" if status == "completed" else "Session exited before agent started working"
-                    log.info("Session gone: %s -> %s (%s)", session, status, reason)
+                    log.info("Session gone -> %s (%s) [has_worked=%s]", status, reason, has_worked)
+                    log.info("Last screen: %s", _screen_tail(prev_output, 5))
                     store.update(agent_id, status=status,
                                  exit_reason=reason, completed_at=_now_iso())
                     _event("completed", {"status": status, "reason": reason})
                     return
 
-            # --- Capture output ---
+            # --- 2. Capture screen ---
             output = capture_tmux(session)
             if output.strip():
                 prev_output = output
-            h = hashlib.md5(output.encode()).hexdigest()[:8]
+
+            # Hash: strip last line (status bar flicker) before hashing
+            hash_input = output.rsplit("\n", 1)[0] if "\n" in output else output
+            h = hashlib.md5(hash_input.encode()).hexdigest()[:8]
             changed = h != prev_hash
-
-            # --- Output change detection with probe-caused filter ---
-            # If output changed shortly after a probe, it was likely caused
-            # by the probe itself (e.g. "1" echoing or BSpace clearing).
-            # Don't reset idle state for probe-caused changes.
-            probe_caused = (
-                last_probe > 0
-                and now - last_probe < config.probe_wait + 2.0
-            )
-            # Also filter confirm-caused changes: "1"+BSpace cycle changes
-            # the output hash but isn't real agent work.
-            confirm_caused = (
-                last_confirm > 0
-                and now - last_confirm < config.confirm_cooldown
-            )
-
-            if changed:
-                if not probe_caused and not confirm_caused:
-                    # Real change — agent is working, reset idle state
-                    last_change = now
-                    idle_confirmed = False
-                    # Clear suppress set — scrollback has scrolled away,
-                    # new dialogs with the same text are real.
-                    confirm_suppress.clear()
-                    # Don't reset false-positive state here — if the same
-                    # pattern keeps matching across output changes, it's
-                    # agent prose scrolling past, not a new dialog appearing.
-                    # The false-positive flag is only reset when the confirm
-                    # pattern stops matching (output no longer contains it).
-                else:
-                    # Probe-caused change — update hash but don't reset idle state
-                    log.debug("Probe-caused output change, not resetting")
             prev_hash = h
 
             if not output.strip():
-                empty_count += 1
-                if empty_count >= config.empty_threshold and not tmux_session_exists(session):
-                    status = "completed" if has_worked else "failed"
-                    store.update(agent_id, status=status,
-                                 exit_reason="Session exited", completed_at=_now_iso())
-                    _event("completed", {"status": status, "reason": "Session exited"})
-                    return
+                log.debug("[%d] Empty screen, skipping", cycle)
                 time.sleep(1)
                 continue
-            empty_count = 0
 
-            # --- Auto-confirm: send response when confirm pattern detected ---
-            # Real permission dialogs consume the keystroke (e.g. "1" selects
-            # option 1). If the pattern matched agent prose instead, the char
-            # would echo at the prompt. To prevent "1" accumulation:
-            #   1. Capture baseline before sending
-            #   2. Send response
-            #   3. Wait briefly, recapture
-            #   4. If output didn't change (false positive), BSpace to clean up
-            if now - last_confirm >= config.confirm_cooldown:
+            idle_for = now - last_change
+            prompt_visible = is_ready_for_input(output, config)
+
+            # --- 2b. Auxiliary screen signals (busy/done) ---
+            tail_text = "\n".join(
+                [l for l in output.rstrip("\n").split("\n") if l.strip()][-5:]
+            )
+            screen_busy = (config.busy_pattern and
+                           bool(config.busy_pattern.search(tail_text)))
+            screen_done = (config.done_pattern and
+                           bool(config.done_pattern.search(tail_text)))
+
+            if screen_busy:
+                # Definitely working — reset idle, mark has_worked, skip confirm
+                if not has_worked:
+                    has_worked = True
+                    log.info("Busy signal detected, has_worked=True")
+                last_change = now
+                idle_confirmed = False
+
+            if screen_done and not has_worked:
+                has_worked = True
+                log.info("Done signal detected, has_worked=True")
+
+            # Periodic debug summary (every 30 cycles ≈ 30s)
+            if cycle % 30 == 0:
+                log.debug("[%d] hash=%s changed=%s idle_for=%.0fs prompt=%s state=%s has_worked=%s idle_confirmed=%s",
+                          cycle, h, changed, idle_for, prompt_visible, current_state, has_worked, idle_confirmed)
+                log.debug("[%d] screen: %s", cycle, _screen_tail(output))
+
+            # --- 3. Auto-confirm (cooldown-gated) ---
+            # Skip when: busy signal (agent is working, not at a dialog),
+            # or bare prompt (agent at input, confirm text is stale history).
+            confirm_cd = now - last_confirm
+            tail_lines = [l for l in output.rstrip("\n").split("\n") if l.strip()][-5:]
+            bare_prompt = any(
+                l.strip() in ("\u276f", ">", "\u203a")  # ❯  >  ›
+                for l in tail_lines
+            )
+            skip_confirm = screen_busy or bare_prompt
+            if confirm_cd >= config.confirm_cooldown and not skip_confirm:
                 confirm = should_auto_confirm(output, config)
                 if confirm:
                     response, send_enter, pat_str, matched = confirm
-                    confirm_key = "%s:%s" % (pat_str, matched)
-                    # After a successful confirm, the old dialog text lingers
-                    # in scrollback. Suppress re-matches until real output change.
-                    if confirm_key in confirm_suppress:
-                        time.sleep(1)
-                        continue
-                    if confirm_key == last_confirm_matched and last_confirm_false:
-                        log.debug("Auto-confirm: suppressed (known false positive)")
-                        time.sleep(1)
-                    else:
-                        log.info("Auto-confirm: pattern=%r matched=%r -> response=%r enter=%s",
-                                 pat_str, matched, response, send_enter)
-                        if response:
-                            tmux_send_input(session, response, send_enter=send_enter)
-                        elif send_enter:
-                            tmux_send_key(session, "Enter")
-                        last_confirm = now
-                        _event("auto_confirm", {"pattern": pat_str, "matched": matched,
-                                                "response": response})
-                        time.sleep(config.confirm_sleep)
-                        # Check if dialog consumed the input.
-                        # Real dialog: screen redraws (agent resumes).
-                        # False positive: "1" echoes at prompt, pattern still visible.
-                        post = capture_tmux(session)
-                        last_confirm_false = False
-                        if response and not send_enter:
-                            still_matches = should_auto_confirm(post, config)
-                            if still_matches and still_matches[2] == pat_str:
-                                # Pattern still there → false positive, clean up.
-                                tmux_send_key(session, "BSpace")
-                                last_confirm_false = True
-                                log.info("Auto-confirm: false positive (pattern still visible), BSpace cleanup")
-                                _event("auto_confirm_cleanup", {"pattern": pat_str})
-                            else:
-                                # Dialog consumed → suppress this pattern until
-                                # real output change clears the scrollback.
-                                confirm_suppress.add(confirm_key)
-                                log.info("Auto-confirm: success, suppressing scrollback re-trigger")
-                        last_confirm_matched = confirm_key
+                    log.info("Auto-confirm: pattern=%r matched=%r -> %r (enter=%s)",
+                             pat_str, matched, response, send_enter)
+                    log.debug("[%d] Confirm screen: %s", cycle, _screen_tail(output, 5))
+                    if response:
+                        tmux_send_input(session, response, send_enter=send_enter)
+                    elif send_enter:
+                        tmux_send_key(session, "Enter")
+                    last_confirm = now
+                    last_change = now
+                    idle_confirmed = False
+                    has_worked = True
+                    _event("auto_confirm", {"pattern": pat_str, "response": response})
+                    time.sleep(config.confirm_sleep)
                     continue
+            else:
+                log.debug("[%d] Confirm cooldown (%.1fs remaining)", cycle, config.confirm_cooldown - confirm_cd)
 
-            # --- State detection ---
+            # --- 4. State detection ---
             ns = detect_state(output, config)
             if ns and ns != current_state:
                 if ns != "initializing":
@@ -260,40 +183,44 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 current_state = ns
                 store.update(agent_id, state=ns)
 
-            # --- Idle probe: single probe when screen stable ---
-            idle_for = now - last_change
-            if (not idle_confirmed
-                    and not changed
-                    and idle_for >= config.probe_stable
-                    and now - last_probe >= config.probe_cooldown):
-                last_probe = now
-                probe_result = _smart_probe(session, config)
+            # --- 5. Output change ---
+            if changed:
+                log.debug("[%d] Output changed (hash %s -> %s), reset idle timer", cycle, prev_hash, h)
+                last_change = now
+                idle_confirmed = False
 
-                log.info("Probe: %s (idle_for=%.1fs)", probe_result, idle_for)
-                _event("probe", {"result": probe_result, "idle_for": idle_for})
-
-                if probe_result == "idle":
+            # --- 6. Idle detection (pure screen: stable hash + prompt visible) ---
+            # Fast-track: done signal + bare prompt → idle after 5s (not 60s).
+            # The done signal ("ed for Xs") is a definitive completion marker.
+            idle_threshold = 5 if (screen_done and bare_prompt) else 60
+            if has_worked and not idle_confirmed and idle_for >= idle_threshold:
+                if prompt_visible:
                     idle_confirmed = True
-                    log.info("Idle confirmed (single probe)")
-                    _event("idle_confirmed")
+                    if idle_threshold < 60:
+                        log.info("Idle confirmed (done signal + prompt, %.0fs stable)", idle_for)
+                    else:
+                        log.info("Idle confirmed (screen stable %.0fs, prompt visible)", idle_for)
+                    _event("idle_confirmed", {"idle_for": idle_for})
                     store.update(agent_id, state="idle")
                 else:
-                    # busy or error — agent working or dialog consumed "1"
-                    last_change = now
+                    log.debug("[%d] Idle candidate (%.0fs stable) but prompt not visible", cycle, idle_for)
 
-            # --- Fallback: long stable without probe confirmation ---
-            fallback_stable = getattr(config, "fallback_stable", 30.0)
-            if not idle_confirmed and idle_for >= fallback_stable:
-                idle_confirmed = True
-                log.info("Idle confirmed (fallback: stable %.1fs)", idle_for)
-                _event("idle_confirmed", {"reason": "fallback"})
-                store.update(agent_id, state="idle")
+            # --- 6b. Stuck fallback: screen frozen but prompt NOT visible ---
+            stuck_threshold = getattr(config, "stuck_timeout", 120)
+            if (has_worked and not idle_confirmed
+                    and idle_for >= stuck_threshold
+                    and not prompt_visible):
+                log.warning("Stuck fallback (%.0fs frozen, prompt not visible) — sending '1'", idle_for)
+                log.warning("Stuck screen: %s", _screen_tail(output, 5))
+                tmux_send_input(session, "1", send_enter=False)
+                last_change = now
+                _event("stuck_fallback", {"idle_for": idle_for})
 
-            # --- Auto-exit: only when idle + not attached ---
+            # --- 7. Auto-exit ---
             if idle_confirmed:
-                # Don't kill a session a user is sitting in
-                if tmux_is_attached(session):
-                    pass  # wait for detach
+                attached = tmux_is_attached(session)
+                if attached:
+                    log.debug("[%d] Idle but user attached, waiting", cycle)
                 else:
                     agent_rec = store.get(agent_id)
                     ae = None
@@ -307,7 +234,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                         ae = getattr(config, "auto_exit", False)
                     if ae:
                         exit_action = getattr(config, "exit_action", "kill_session")
-                        log.info("Auto-exit: action=%s", exit_action)
+                        log.info("Auto-exit: action=%s (idle_for=%.0fs)", exit_action, idle_for)
                         if exit_action == "kill_session":
                             tmux_kill_session(session)
                         elif exit_action == "send_exit":
@@ -323,6 +250,8 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                                      completed_at=_now_iso())
                         _event("completed", {"status": "completed", "reason": "auto-exit"})
                         return
+                    else:
+                        log.debug("[%d] Idle but auto_exit disabled", cycle)
 
             time.sleep(1)
     finally:
@@ -334,7 +263,6 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
 
 
 def _run_monitor(agent_id):
-    # Reconfigure logging to file for background monitor
     try:
         os.makedirs(LOGS_DIR, exist_ok=True)
     except OSError:
@@ -343,11 +271,13 @@ def _run_monitor(agent_id):
     for h in logging.root.handlers[:]:
         logging.root.removeHandler(h)
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,
         format="%(asctime)s [monitor] %(levelname)s %(message)s",
         filename=log_path,
     )
-    log.info("Monitor starting for agent %s", agent_id)
+    from camc_pkg import __version__, __build__
+    log.info("Monitor starting for agent %s (pid=%d) camc=%s (%s)",
+             agent_id, os.getpid(), __version__, __build__ or "dev")
 
     store = AgentStore()
     events = EventStore()
@@ -355,13 +285,13 @@ def _run_monitor(agent_id):
     if not agent:
         log.error("Agent %s not found", agent_id)
         sys.exit(1)
-    # Support both new nested task format and legacy flat format
     _t = agent.get("task")
     _tool = _t.get("tool", "claude") if isinstance(_t, dict) else agent.get("tool", "claude")
     _session = agent.get("tmux_session") or agent.get("session", "")
     _path = agent.get("context_path") or agent.get("path", "")
     config = _load_config(_tool)
     log.info("Tool=%s session=%s path=%s", _tool, _session, _path)
+    log.info("Confirm rules: %s", [(p.pattern, r, e) for p, r, e in config.confirm_rules])
     from camc_pkg import PIDS_DIR
     try:
         os.makedirs(PIDS_DIR, exist_ok=True)
@@ -369,21 +299,19 @@ def _run_monitor(agent_id):
         pass
     pid_path = os.path.join(PIDS_DIR, "%s.pid" % agent_id)
 
-    # Auto-restart on crash (e.g. database locked, transient errors)
     max_restarts = 5
     for attempt in range(max_restarts + 1):
         try:
             run_monitor_loop(_session, agent_id, config, store, pid_path=pid_path, events=events)
-            break  # clean exit
+            break
         except Exception as e:
-            log.error("Monitor crashed (attempt %d/%d): %s", attempt + 1, max_restarts, e)
+            log.error("Monitor crashed (attempt %d/%d): %s", attempt + 1, max_restarts, e, exc_info=True)
             if attempt >= max_restarts:
                 log.error("Max restarts reached, giving up")
                 store.update(agent_id, status="failed", exit_reason="Monitor crashed: %s" % e,
                              completed_at=_now_iso())
                 break
-            time.sleep(5 * (attempt + 1))  # backoff: 5s, 10s, 15s...
-            # Re-check if agent is still running
+            time.sleep(5 * (attempt + 1))
             agent = store.get(agent_id)
             if not agent or agent.get("status") != "running":
                 log.info("Agent no longer running, stopping monitor")
