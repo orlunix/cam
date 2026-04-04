@@ -1,0 +1,44 @@
+# cam-flow CLI demo — workflow with loops
+#
+# Flow graph:
+#   start → fix → test ──success──→ done
+#                  ↑      fail
+#                  └───── fix ←───┘
+#
+# The test→fix→test loop repeats until all tests pass or max iterations.
+
+start:
+  do: agent claude
+  with: |
+    Run the tests to see what's broken:
+      pytest test_calculator.py -v
+    Analyze all failures. Identify root causes in calculator.py.
+    Put a summary of ALL failing tests and their causes into state_updates.error.
+    Do NOT fix anything yet — just analyze.
+  next: fix
+
+fix:
+  do: agent claude
+  with: |
+    Fix EXACTLY ONE bug in calculator.py — pick the most critical unfixed one.
+    Do NOT fix multiple bugs in a single pass. One bug, one fix, then stop.
+    Error info from analysis: {{state.error}}
+
+    Rules:
+    - Only modify calculator.py, never modify test_calculator.py
+    - Fix ONE bug only — leave the rest for the next iteration
+    - Make a minimal, targeted fix for that single bug
+  next: test
+
+test:
+  do: cmd pytest test_calculator.py -v
+  transitions:
+    - if: fail
+      goto: fix
+    - if: success
+      goto: done
+
+done:
+  do: agent claude
+  with: |
+    All tests pass. Give a brief summary of what was fixed.
