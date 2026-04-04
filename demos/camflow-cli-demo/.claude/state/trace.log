@@ -1,0 +1,10 @@
+{"pc": "start", "next_pc": "fix", "status": "success", "summary": "Analyzed 5 failing tests across 4 bugs in calculator.py", "reason": "next"}
+{"pc": "fix", "next_pc": "test", "status": "success", "summary": "Fixed bug #1: added zero-division check to divide()", "reason": "next"}
+{"pc": "test", "next_pc": "fix", "status": "fail", "summary": "4 tests still failing: average_empty, factorial, factorial_negative, power_negative_exp", "reason": "transition: if fail goto fix"}
+{"pc": "fix", "next_pc": "test", "status": "success", "summary": "Fixed bug #2: added empty-list check to average()", "reason": "next"}
+{"pc": "test", "next_pc": "fix", "status": "fail", "summary": "3 tests still failing: factorial, factorial_negative, power_negative_exp", "reason": "transition: if fail goto fix"}
+{"pc": "fix", "next_pc": "test", "status": "success", "summary": "Fixed bug #3: factorial off-by-one (range(1,n+1)) and added negative check", "reason": "next"}
+{"pc": "test", "next_pc": "fix", "status": "fail", "summary": "1 test still failing: power_negative_exp", "reason": "transition: if fail goto fix"}
+{"pc": "fix", "next_pc": "test", "status": "success", "summary": "Fixed bug #4: replaced manual loop in power() with base**exp to handle negative exponents", "reason": "next"}
+{"pc": "test", "next_pc": "done", "status": "success", "summary": "All 11 tests pass", "reason": "transition: if success goto done"}
+{"pc": "done", "next_pc": null, "status": "success", "summary": "Workflow complete: all 4 bugs fixed, all 11 tests pass", "reason": "workflow done"}
