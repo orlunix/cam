@@ -44,6 +44,8 @@ class AgentResponse(BaseModel):
     auto_confirm: bool | None = None
     auto_exit: bool | None = None
     machine_host: str | None = None
+    machine_user: str | None = None
+    machine_port: int | None = None
 
 
 class AgentListResponse(BaseModel):
@@ -122,4 +124,6 @@ def agent_to_response(agent: Agent) -> AgentResponse:
         auto_confirm=agent.task.auto_confirm,
         auto_exit=agent.task.auto_exit,
         machine_host=getattr(agent, "machine_host", None),
+        machine_user=getattr(agent, "machine_user", None),
+        machine_port=getattr(agent, "machine_port", None),
     )

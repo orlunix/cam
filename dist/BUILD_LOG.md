@@ -104,3 +104,16 @@ f60d7f1 Fix NFS agent wipe, poller cross-contamination, attach for remote agents
 a0e3893 Fix "a" alias for attach (expand before argparse), reorder help examples
 ```
 
+## v1.1.0  a51e39e-dirty 2026-04-04 21:27
+
+- Lines: 4165
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+209bfe2 Rewrite monitor to pure screen-based design, add busy/done signals
+6dbfb10 Fix auto-confirm scrollback re-triggering, add camc build versioning, track dist/camc
+f60d7f1 Fix NFS agent wipe, poller cross-contamination, attach for remote agents, bump to v61
+8192584 Fix TOML parser bool bug, config loading order, probe reset, faster probe timings
+230bda7 Add camc prune, machine-based polling, fix agent list limits
+```
+
