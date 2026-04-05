@@ -2,6 +2,9 @@
 #
 # Build CAM APK using Android SDK command-line tools (no Gradle/Android Studio)
 #
+# Version is read from VERSION file (semver: major.minor.patch)
+# and automatically applied to AndroidManifest.xml and web assets.
+#
 # Prerequisites:
 #   sudo apt install -y openjdk-17-jdk-headless
 #   mkdir -p ~/android-sdk/cmdline-tools && cd ~/android-sdk/cmdline-tools
@@ -18,11 +21,22 @@ PLATFORM="$ANDROID_HOME/platforms/android-34/android.jar"
 PROJ_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$PROJ_DIR/app/src/main"
 BUILD_DIR="$PROJ_DIR/build"
+WEB_DIR="$PROJ_DIR/../web"
 KEYSTORE="$PROJ_DIR/cam-release.keystore"
 KEY_ALIAS="cam"
 KEY_PASS="camapp123"
 
-echo "=== CAM APK Build ==="
+# --- Read version from VERSION file ---
+VERSION_FILE="$PROJ_DIR/VERSION"
+if [ ! -f "$VERSION_FILE" ]; then
+    echo "ERROR: VERSION file not found"
+    exit 1
+fi
+VERSION=$(head -1 "$VERSION_FILE" | tr -d '[:space:]')
+IFS='.' read -r V_MAJOR V_MINOR V_PATCH <<< "$VERSION"
+VERSION_CODE=$(( V_MAJOR * 10000 + V_MINOR * 100 + V_PATCH ))
+
+echo "=== CAM APK Build v${VERSION} (code: ${VERSION_CODE}) ==="
 
 # Verify tools
 for tool in "$BUILD_TOOLS/aapt2" "$BUILD_TOOLS/d8" "$BUILD_TOOLS/apksigner" "$BUILD_TOOLS/zipalign"; do
@@ -38,6 +52,20 @@ if [ ! -f "$PLATFORM" ]; then
     echo "Install: yes | sdkmanager 'platforms;android-34'"
     exit 1
 fi
+
+# --- Stamp version into source files ---
+echo "[0/6] Stamping version v${VERSION}..."
+
+# AndroidManifest.xml: update versionCode and versionName
+sed -i "s/android:versionCode=\"[^\"]*\"/android:versionCode=\"${VERSION_CODE}\"/" "$SRC_DIR/AndroidManifest.xml"
+sed -i "s/android:versionName=\"[^\"]*\"/android:versionName=\"${VERSION}\"/" "$SRC_DIR/AndroidManifest.xml"
+
+# Web assets: update cam-version meta tag and cache-busting ?v= query strings
+sed -i "s/content=\"v[^\"]*\"/content=\"v${VERSION}\"/" "$WEB_DIR/index.html"
+sed -i "s/?v=[^\"]*/?v=${VERSION}/g" "$WEB_DIR/index.html"
+sed -i "s/?v=[^']*'/?v=${VERSION}'/g" "$WEB_DIR/js/app.js"
+sed -i "s/cam-v[^']*/cam-v${VERSION}/" "$WEB_DIR/sw.js"
+sed -i "s/?v=[^']*'/?v=${VERSION}'/g" "$WEB_DIR/sw.js"
 
 # Clean
 rm -rf "$BUILD_DIR"
@@ -81,7 +109,7 @@ cd "$PROJ_DIR"
 # Bundle web app into assets/web/
 echo "  Bundling web assets..."
 mkdir -p "$BUILD_DIR/assets_staging/assets/web"
-rsync -a --exclude='*.apk' "$PROJ_DIR/../web/" "$BUILD_DIR/assets_staging/assets/web/"
+rsync -a --exclude='*.apk' "$WEB_DIR/" "$BUILD_DIR/assets_staging/assets/web/"
 cd "$BUILD_DIR/assets_staging"
 zip -r -u "$BUILD_DIR/app.tmp.apk" assets/
 cd "$PROJ_DIR"
@@ -113,11 +141,16 @@ fi
     --out "$BUILD_DIR/cam.apk" \
     "$BUILD_DIR/app.aligned.apk"
 
+# Also create versioned copy
+cp "$BUILD_DIR/cam.apk" "$BUILD_DIR/cam-v${VERSION}.apk"
+
 # Verify
 "$BUILD_TOOLS/apksigner" verify "$BUILD_DIR/cam.apk"
 
 SIZE=$(du -h "$BUILD_DIR/cam.apk" | cut -f1)
 echo ""
 echo "=== BUILD SUCCESS ==="
+echo "Version: v${VERSION} (versionCode: ${VERSION_CODE})"
 echo "APK: $BUILD_DIR/cam.apk ($SIZE)"
+echo "APK: $BUILD_DIR/cam-v${VERSION}.apk"
 echo "Install: adb install $BUILD_DIR/cam.apk"
