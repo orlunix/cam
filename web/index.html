@@ -7,20 +7,20 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>CAM</title>
-  <meta name="cam-version" content="v63">
+  <meta name="cam-version" content="v0.64.0">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="assets/icon-192.png">
   <link rel="apple-touch-icon" href="assets/icon-192.png">
-  <link rel="stylesheet" href="css/style.css?v=63">
-  <link rel="modulepreload" href="js/api.js?v=63">
-  <link rel="modulepreload" href="js/state.js?v=63">
-  <link rel="modulepreload" href="js/views/dashboard.js?v=63">
-  <link rel="modulepreload" href="js/views/agent-detail.js?v=63">
-  <link rel="modulepreload" href="js/views/start-agent.js?v=63">
-  <link rel="modulepreload" href="js/views/contexts.js?v=63">
-  <link rel="modulepreload" href="js/views/settings.js?v=63">
-  <link rel="modulepreload" href="js/views/machines.js?v=63">
-  <link rel="modulepreload" href="js/views/file-browser.js?v=63">
+  <link rel="stylesheet" href="css/style.css?v=0.64.0">
+  <link rel="modulepreload" href="js/api.js?v=0.64.0">
+  <link rel="modulepreload" href="js/state.js?v=0.64.0">
+  <link rel="modulepreload" href="js/views/dashboard.js?v=0.64.0">
+  <link rel="modulepreload" href="js/views/agent-detail.js?v=0.64.0">
+  <link rel="modulepreload" href="js/views/start-agent.js?v=0.64.0">
+  <link rel="modulepreload" href="js/views/contexts.js?v=0.64.0">
+  <link rel="modulepreload" href="js/views/settings.js?v=0.64.0">
+  <link rel="modulepreload" href="js/views/machines.js?v=0.64.0">
+  <link rel="modulepreload" href="js/views/file-browser.js?v=0.64.0">
 </head>
 <body>
   <div id="app">
@@ -75,12 +75,12 @@
     // Reload button — restart Android app or full page reload
     document.getElementById('reload-app').addEventListener('click', function() {
       if (window.CamBridge && window.CamBridge.restartApp) {
-        window.CamBridge.restartApp();
+        window.CamBridge.restartApp(location.hash || '#/');
       } else {
         location.reload();
       }
     });
   </script>
-  <script type="module" src="js/app.js?v=63"></script>
+  <script type="module" src="js/app.js?v=0.64.0"></script>
 </body>
 </html>
