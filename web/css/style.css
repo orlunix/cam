@@ -61,7 +61,7 @@ a { color: var(--accent); text-decoration: none; }
   display: flex;
   flex-direction: column;
   height: 100%;
-  max-width: 600px;
+  max-width: 100%;
   margin: 0 auto;
 }
 
@@ -1008,6 +1008,21 @@ select.form-input {
 }
 .context-actions .btn-sm { flex: 1; min-width: 70px; text-align: center; }
 
+/* === Machines === */
+.machine-agent-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  background: rgba(255,255,255,0.06);
+  color: var(--text-dim);
+}
+.machine-agent-badge.running {
+  background: rgba(61,214,140,0.15);
+  color: var(--green);
+}
+
 /* === Settings === */
 .connection-status {
   display: flex;
@@ -1022,6 +1037,53 @@ select.form-input {
   font-size: 13px;
   color: var(--text-muted);
   padding: 4px 0;
+}
+
+/* Profiles */
+.profile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+.profile-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.profile-item.active {
+  border-color: var(--accent);
+}
+.profile-item-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.profile-name {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.profile-detail {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.profile-item-right {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 /* === Page Header === */
@@ -1175,8 +1237,8 @@ select.form-input {
 
 /* === Responsive === */
 @media (min-width: 768px) {
-  #app { max-width: 720px; }
-  .input-section { max-width: 720px; }
+  #app { max-width: 100%; }
+  .input-section { max-width: 100%; }
 
   .agent-list {
     display: grid;

@@ -138,8 +138,15 @@ public class MainActivity extends Activity {
             @JavascriptInterface
             public void restartApp() {
                 runOnUiThread(() -> {
-                    Log.d(TAG, "restartApp() called from JS");
-                    recreate();
+                    Log.d(TAG, "restartApp() called from JS — full process restart");
+                    Intent intent = getPackageManager().getLaunchIntentForPackage(getPackageName());
+                    if (intent != null) {
+                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                        startActivity(intent);
+                        finish();
+                        // Kill the process so everything reinitializes fresh
+                        android.os.Process.killProcess(android.os.Process.myPid());
+                    }
                 });
             }
 
