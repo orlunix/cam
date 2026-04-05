@@ -83,13 +83,25 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 alive = tmux_session_exists(session)
                 log.debug("[%d] Health check: session=%s alive=%s", cycle, session, alive)
                 if not alive:
+                    # Retry to avoid transient false positives (tmux server hiccup,
+                    # heavy load, etc.).  A single failed check previously caused
+                    # agents to be incorrectly marked completed.
+                    confirmed_dead = True
+                    for retry in range(3):
+                        time.sleep(2)
+                        if tmux_session_exists(session):
+                            log.info("Session reappeared on retry %d — false alarm", retry + 1)
+                            confirmed_dead = False
+                            break
+                    if not confirmed_dead:
+                        continue
                     if prev_output:
                         done = detect_completion(prev_output, config)
                         status = "completed" if (done or has_worked) else "failed"
                     else:
                         status = "completed" if has_worked else "failed"
                     reason = "Session ended cleanly" if status == "completed" else "Session exited before agent started working"
-                    log.info("Session gone -> %s (%s) [has_worked=%s]", status, reason, has_worked)
+                    log.info("Session gone (confirmed after retries) -> %s (%s) [has_worked=%s]", status, reason, has_worked)
                     log.info("Last screen: %s", _screen_tail(prev_output, 5))
                     store.update(agent_id, status=status,
                                  exit_reason=reason, completed_at=_now_iso())

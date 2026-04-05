@@ -17,19 +17,19 @@ export function renderMachines(container) {
     if (!listEl) return;
 
     // Build machine list from contexts
-    const machineMap = new Map(); // key: host or 'local'
+    const machineMap = new Map();
 
     for (const c of contexts) {
       const m = c.machine || {};
       const host = m.host || 'local';
-      const key = host === 'local' ? 'local' : `${m.user || ''}@${host}:${m.port || 22}`;
+      const port = m.port || null;
+      const key = host === 'local' ? 'local' : `${host}:${port || 'default'}`;
 
       if (!machineMap.has(key)) {
         machineMap.set(key, {
-          key,
-          host,
+          key, host,
           user: m.user || '',
-          port: m.port || 22,
+          port,
           env_setup: m.env_setup || '',
           isSSH: !!(m.type === 'ssh' || m.host),
           contexts: [],
@@ -42,14 +42,11 @@ export function renderMachines(container) {
     for (const a of agents) {
       const host = a.machine_host || 'local';
       const user = a.machine_user || '';
-      const port = a.machine_port || 22;
-      const key = host === 'local' ? 'local' : `${user}@${host}:${port}`;
+      const port = a.machine_port || null;
+      const key = host === 'local' ? 'local' : `${host}:${port || 'default'}`;
       if (!machineMap.has(key)) {
         machineMap.set(key, {
-          key,
-          host,
-          user,
-          port,
+          key, host, user, port,
           env_setup: '',
           isSSH: host !== 'local',
           contexts: [],
@@ -66,8 +63,10 @@ export function renderMachines(container) {
       });
       return {
         ...m,
+        agents: machineAgents,
         agentCount: machineAgents.length,
         runningCount: machineAgents.filter(a => a.status === 'running').length,
+        completedCount: machineAgents.filter(a => a.status !== 'running').length,
       };
     });
 
@@ -99,7 +98,7 @@ export function renderMachines(container) {
         details += `
           <div class="context-detail-row">
             <span class="context-detail-label">Host</span>
-            <span class="context-detail-value host">${esc(m.user ? m.user + '@' : '')}${esc(m.host)}:${m.port}</span>
+            <span class="context-detail-value host">${esc(m.user ? m.user + '@' : '')}${esc(m.host)}${m.port ? ':' + m.port : ''}</span>
           </div>`;
       }
       if (m.contexts.length > 0) {
@@ -124,9 +123,18 @@ export function renderMachines(container) {
           </div>`;
       }
 
-      const actions = `
-        <button class="btn-sm btn-secondary filter-machine" data-host="${esc(m.host)}">Filter Agents</button>
-        ${m.isSSH && m.contexts.length > 0 ? `<button class="btn-sm btn-secondary sync-machine" data-key="${esc(m.key)}">Sync All</button>` : ''}`;
+      // Actions
+      let actions = `
+        <button class="btn-sm btn-secondary filter-machine" data-host="${esc(m.host)}">Filter Agents</button>`;
+      if (m.isSSH && m.contexts.length > 0) {
+        actions += `<button class="btn-sm btn-secondary sync-machine" data-key="${esc(m.key)}">Sync</button>`;
+      }
+      if (m.completedCount > 0) {
+        actions += `<button class="btn-sm btn-secondary clean-machine" data-key="${esc(m.key)}">Clean ${m.completedCount}</button>`;
+      }
+      if (m.contexts.length > 0) {
+        actions += `<button class="btn-sm btn-danger delete-machine" data-key="${esc(m.key)}">Delete</button>`;
+      }
 
       return `
         <div class="context-card${isExpanded ? ' expanded' : ''}" data-key="${esc(m.key)}">
@@ -176,8 +184,7 @@ export function renderMachines(container) {
     listEl.querySelectorAll('.sync-machine').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        const key = btn.dataset.key;
-        const machine = machines.find(m => m.key === key);
+        const machine = machines.find(m => m.key === btn.dataset.key);
         if (!machine) return;
         btn.disabled = true;
         btn.textContent = 'Syncing...';
@@ -192,9 +199,75 @@ export function renderMachines(container) {
             state.toast(`Sync ${ctx.name} failed: ${err.message}`, 'error');
           }
         }
-        state.toast(`Synced ${machine.contexts.length} contexts: ${synced} updated, ${unchanged} unchanged`, 'success');
+        state.toast(`Synced ${machine.contexts.length} ctx: ${synced} updated, ${unchanged} unchanged`, 'success');
         btn.disabled = false;
-        btn.textContent = 'Sync All';
+        btn.textContent = 'Sync';
+      });
+    });
+
+    // Clean completed agents on this machine
+    listEl.querySelectorAll('.clean-machine').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const machine = machines.find(m => m.key === btn.dataset.key);
+        if (!machine) return;
+        const completed = machine.agents.filter(a => a.status !== 'running');
+        if (!completed.length) return;
+        btn.disabled = true;
+        btn.textContent = 'Cleaning...';
+        let cleaned = 0;
+        for (const a of completed) {
+          try {
+            await api.deleteAgentHistory(a.id);
+            cleaned++;
+          } catch {}
+        }
+        // Refresh agent list
+        try {
+          const resp = await api.listAgents({ limit: 50 });
+          state.set('agents', resp.agents || []);
+        } catch {}
+        state.toast(`Cleaned ${cleaned} completed agents`, 'success');
+      });
+    });
+
+    // Delete machine (all contexts + agents)
+    listEl.querySelectorAll('.delete-machine').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const machine = machines.find(m => m.key === btn.dataset.key);
+        if (!machine) return;
+        const shortHost = machine.host === 'local' ? 'local' : machine.host.split('.')[0];
+        const msg = `Delete machine "${shortHost}"?\n\n` +
+          `This will remove ${machine.contexts.length} context(s): ${machine.contexts.map(c => c.name).join(', ')}` +
+          (machine.runningCount > 0 ? `\n\nWARNING: ${machine.runningCount} agent(s) still running!` : '');
+        if (!confirm(msg)) return;
+        btn.disabled = true;
+        btn.textContent = 'Deleting...';
+        let deleted = 0;
+        for (const ctx of machine.contexts) {
+          try {
+            await api.deleteContext(ctx.name);
+            deleted++;
+          } catch (err) {
+            state.toast(`Delete ${ctx.name} failed: ${err.message}`, 'error');
+          }
+        }
+        // Clean agent history too
+        for (const a of machine.agents.filter(a => a.status !== 'running')) {
+          try { await api.deleteAgentHistory(a.id); } catch {}
+        }
+        // Refresh
+        try {
+          const [ctxResp, agentResp] = await Promise.all([
+            api.listContexts(),
+            api.listAgents({ limit: 50 }),
+          ]);
+          state.set('contexts', ctxResp.contexts || []);
+          state.set('agents', agentResp.agents || []);
+        } catch {}
+        expandedId = null;
+        state.toast(`Deleted ${deleted} context(s) from ${shortHost}`, 'success');
       });
     });
   }

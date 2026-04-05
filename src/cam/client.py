@@ -1164,6 +1164,15 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None):
             if now - last_health >= config.health_check_interval:
                 last_health = now
                 if not tmux_session_exists(session):
+                    # Retry to avoid transient false positives
+                    confirmed_dead = True
+                    for retry in range(3):
+                        time.sleep(2)
+                        if tmux_session_exists(session):
+                            confirmed_dead = False
+                            break
+                    if not confirmed_dead:
+                        continue
                     status = "completed" if has_worked else "failed"
                     store.update(agent_id, status=status,
                                  exit_reason="Session exited", completed_at=_now_iso())
@@ -1179,6 +1188,15 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None):
             if not output.strip():
                 empty_count += 1
                 if empty_count >= config.empty_threshold and not tmux_session_exists(session):
+                    # Retry to confirm session is truly gone
+                    confirmed_dead = True
+                    for retry in range(3):
+                        time.sleep(2)
+                        if tmux_session_exists(session):
+                            confirmed_dead = False
+                            break
+                    if not confirmed_dead:
+                        continue
                     status = "completed" if has_worked else "failed"
                     store.update(agent_id, status=status,
                                  exit_reason="Session exited", completed_at=_now_iso())
