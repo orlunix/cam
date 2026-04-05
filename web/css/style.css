@@ -227,6 +227,7 @@ a { color: var(--accent); text-decoration: none; }
 }
 .filter-select {
   flex: 1;
+  min-width: 0;
   appearance: none;
   background: var(--bg-input);
   color: var(--text);
