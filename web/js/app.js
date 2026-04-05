@@ -1,12 +1,12 @@
-import { api } from './api.js?v=63';
-import { state } from './state.js?v=63';
-import { renderDashboard } from './views/dashboard.js?v=63';
-import { renderAgentDetail } from './views/agent-detail.js?v=63';
-import { renderStartAgent } from './views/start-agent.js?v=63';
-import { renderContexts } from './views/contexts.js?v=63';
-import { renderSettings } from './views/settings.js?v=63';
-import { renderFileBrowser } from './views/file-browser.js?v=63';
-import { renderMachines } from './views/machines.js?v=63';
+import { api } from './api.js?v=0.64.0';
+import { state } from './state.js?v=0.64.0';
+import { renderDashboard } from './views/dashboard.js?v=0.64.0';
+import { renderAgentDetail } from './views/agent-detail.js?v=0.64.0';
+import { renderStartAgent } from './views/start-agent.js?v=0.64.0';
+import { renderContexts } from './views/contexts.js?v=0.64.0';
+import { renderSettings } from './views/settings.js?v=0.64.0';
+import { renderFileBrowser } from './views/file-browser.js?v=0.64.0';
+import { renderMachines } from './views/machines.js?v=0.64.0';
 
 // --- Router ---
 
@@ -125,6 +125,9 @@ async function init() {
 
   // Connect (tries direct first, then relay)
   await _connectWithRetry(cfg);
+
+  // Re-render current view now that API is connected and data is loaded
+  route();
 
   // Periodic refresh — also retries connection if disconnected
   setInterval(() => {

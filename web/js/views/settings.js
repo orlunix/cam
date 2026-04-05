@@ -122,9 +122,8 @@ export function renderSettings(container) {
     <div class="section-divider"></div>
     <div class="form-section-label">App</div>
     <div class="form-group">
-      <div class="about-text" style="margin-bottom:8px;">CAM v0.1.0 &mdash; Installed: ${(window.CamBridge && window.CamBridge.getAppVersion) ? window.CamBridge.getAppVersion() : (document.querySelector('meta[name="cam-version"]')?.content || 'unknown')}</div>
+      <div class="about-text" style="margin-bottom:8px;">CAM &mdash; Installed: ${(window.CamBridge && window.CamBridge.getAppVersion) ? 'v' + window.CamBridge.getAppVersion() : (document.querySelector('meta[name="cam-version"]')?.content || 'unknown')}</div>
       <button type="button" class="btn-secondary btn-full" id="update-btn">Update app</button>
-      ${(window.CamBridge && window.CamBridge.restartApp) ? '<button type="button" class="btn-secondary btn-full" id="reload-btn" style="margin-top:8px;">Reload app</button>' : ''}
     </div>
   `;
 
@@ -271,35 +270,16 @@ export function renderSettings(container) {
     btn.disabled = true;
     btn.textContent = 'Checking...';
 
-    const hasBridge = window.CamBridge && window.CamBridge.installApk;
-
-    if (hasBridge) {
-      try {
-        const info = await api.request('GET', '/api/system/apk/info');
-        const installedVer = window.CamBridge.getAppVersion();
-        if (info.version === installedVer) {
-          state.toast(`Already up to date (${installedVer})`, 'success');
-          btn.disabled = false;
-          btn.textContent = 'Update app';
-          return;
-        }
-        btn.textContent = `Downloading ${info.version}...`;
-        const result = await api.request('GET', '/api/system/apk/download');
-        if (!result.data) {
-          state.toast('Download failed: no data', 'error');
-          btn.disabled = false;
-          btn.textContent = 'Update app';
-          return;
-        }
-        btn.textContent = 'Installing...';
-        const ok = window.CamBridge.installApk(result.data);
-        if (ok) {
-          state.toast(`Installing ${result.version}...`, 'success');
-        } else {
-          state.toast('Install failed', 'error');
-        }
-      } catch (err) {
-        state.toast(`Update failed: ${err.message}`, 'error');
+    if (window.CamBridge) {
+      // Android app: open APK download in external browser
+      const relayUrl = localStorage.getItem('cam_relay_url') || '';
+      const serverUrl = localStorage.getItem('cam_server_url') || '';
+      const baseUrl = relayUrl || serverUrl;
+      if (baseUrl) {
+        const apkUrl = baseUrl.replace(/\/$/, '') + '/assets/cam.apk';
+        location.href = apkUrl;
+      } else {
+        state.toast('No server URL configured', 'error');
       }
       btn.disabled = false;
       btn.textContent = 'Update app';
@@ -318,17 +298,6 @@ export function renderSettings(container) {
       }
     }
   });
-
-  // --- Reload app (Android only) ---
-  const reloadBtn = container.querySelector('#reload-btn');
-  if (reloadBtn) {
-    reloadBtn.addEventListener('click', () => {
-      // Save current route so the app returns to the same screen after restart
-      localStorage.setItem('cam_reload_route', location.hash || '#/');
-      state.toast('Restarting...', 'success');
-      setTimeout(() => window.CamBridge.restartApp(), 300);
-    });
-  }
 
   // --- Test Connection ---
 

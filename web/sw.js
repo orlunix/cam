@@ -1,19 +1,19 @@
-const CACHE_NAME = 'cam-v63';
+const CACHE_NAME = 'cam-v0.64.0';
 
 // Pre-cache key files on install so first load after SW activation is fast
 const PRECACHE = [
   '/',
-  '/js/app.js?v=63',
-  '/js/api.js?v=63',
-  '/js/state.js?v=63',
-  '/js/views/dashboard.js?v=63',
-  '/js/views/agent-detail.js?v=63',
-  '/js/views/start-agent.js?v=63',
-  '/js/views/contexts.js?v=63',
-  '/js/views/settings.js?v=63',
-  '/js/views/machines.js?v=63',
-  '/js/views/file-browser.js?v=63',
-  '/css/style.css?v=63',
+  '/js/app.js?v=0.64.0',
+  '/js/api.js?v=0.64.0',
+  '/js/state.js?v=0.64.0',
+  '/js/views/dashboard.js?v=0.64.0',
+  '/js/views/agent-detail.js?v=0.64.0',
+  '/js/views/start-agent.js?v=0.64.0',
+  '/js/views/contexts.js?v=0.64.0',
+  '/js/views/settings.js?v=0.64.0',
+  '/js/views/machines.js?v=0.64.0',
+  '/js/views/file-browser.js?v=0.64.0',
+  '/css/style.css?v=0.64.0',
 ];
 
 self.addEventListener('install', event => {

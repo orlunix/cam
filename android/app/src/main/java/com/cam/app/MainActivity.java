@@ -106,6 +106,7 @@ public class MainActivity extends Activity {
                 }
                 return false;
             }
+
         });
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
@@ -136,15 +137,15 @@ public class MainActivity extends Activity {
         // Expose native bridge to JavaScript
         webView.addJavascriptInterface(new Object() {
             @JavascriptInterface
-            public void restartApp() {
+            public void restartApp(String route) {
                 runOnUiThread(() -> {
-                    Log.d(TAG, "restartApp() called from JS — full process restart");
+                    Log.d(TAG, "restartApp() route=" + route);
                     Intent intent = getPackageManager().getLaunchIntentForPackage(getPackageName());
                     if (intent != null) {
                         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                        intent.putExtra("route", route != null ? route : "#/");
                         startActivity(intent);
                         finish();
-                        // Kill the process so everything reinitializes fresh
                         android.os.Process.killProcess(android.os.Process.myPid());
                     }
                 });
@@ -176,25 +177,30 @@ public class MainActivity extends Activity {
             @JavascriptInterface
             public String getAppVersion() {
                 try {
-                    java.io.InputStream is = getAssets().open("web/index.html");
-                    byte[] buf = new byte[2048];
-                    int n = is.read(buf);
-                    is.close();
-                    String head = new String(buf, 0, n);
-                    int idx = head.indexOf("cam-version");
-                    if (idx >= 0) {
-                        int q1 = head.indexOf("content=\"", idx) + 9;
-                        int q2 = head.indexOf("\"", q1);
-                        return head.substring(q1, q2);
-                    }
+                    return getPackageManager()
+                        .getPackageInfo(getPackageName(), 0).versionName;
                 } catch (Exception e) {
                     Log.e(TAG, "getAppVersion failed", e);
                 }
                 return "unknown";
             }
+
+            @JavascriptInterface
+            public int getAppVersionCode() {
+                try {
+                    return getPackageManager()
+                        .getPackageInfo(getPackageName(), 0).versionCode;
+                } catch (Exception e) {
+                    Log.e(TAG, "getAppVersionCode failed", e);
+                }
+                return 0;
+            }
         }, "CamBridge");
 
-        webView.loadUrl("file:///android_asset/web/index.html");
+        // Load page with route from Intent (set by restartApp) or default
+        String route = getIntent().getStringExtra("route");
+        String url = "file:///android_asset/web/index.html" + (route != null ? route : "");
+        webView.loadUrl(url);
     }
 
     @Override
