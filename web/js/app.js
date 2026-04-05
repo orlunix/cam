@@ -1,11 +1,12 @@
-import { api } from './api.js?v=61';
-import { state } from './state.js?v=61';
-import { renderDashboard } from './views/dashboard.js?v=61';
-import { renderAgentDetail } from './views/agent-detail.js?v=61';
-import { renderStartAgent } from './views/start-agent.js?v=61';
-import { renderContexts } from './views/contexts.js?v=61';
-import { renderSettings } from './views/settings.js?v=61';
-import { renderFileBrowser } from './views/file-browser.js?v=61';
+import { api } from './api.js?v=63';
+import { state } from './state.js?v=63';
+import { renderDashboard } from './views/dashboard.js?v=63';
+import { renderAgentDetail } from './views/agent-detail.js?v=63';
+import { renderStartAgent } from './views/start-agent.js?v=63';
+import { renderContexts } from './views/contexts.js?v=63';
+import { renderSettings } from './views/settings.js?v=63';
+import { renderFileBrowser } from './views/file-browser.js?v=63';
+import { renderMachines } from './views/machines.js?v=63';
 
 // --- Router ---
 
@@ -15,6 +16,7 @@ const routes = [
   { pattern: /^\/context\/([^/]+)\/files(.*)$/,  view: renderFileBrowser,  nav: null },
   { pattern: /^\/start$/,          view: renderStartAgent,   nav: '/start' },
   { pattern: /^\/contexts$/,       view: renderContexts,     nav: '/contexts' },
+  { pattern: /^\/machines$/,       view: renderMachines,     nav: '/machines' },
   { pattern: /^\/settings$/,       view: renderSettings,     nav: '/settings' },
 ];
 
@@ -72,6 +74,13 @@ async function init() {
   document.addEventListener('touchmove', e => {
     if (e.touches.length > 1) e.preventDefault();
   }, { passive: false });
+
+  // Restore route after Android app restart (full process kill + relaunch)
+  const savedRoute = localStorage.getItem('cam_reload_route');
+  if (savedRoute) {
+    localStorage.removeItem('cam_reload_route');
+    location.hash = savedRoute;
+  }
 
   // Wire state listener and router FIRST — UI must render immediately
   api.onEvent(handleEvent);
