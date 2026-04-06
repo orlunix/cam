@@ -41,6 +41,7 @@ Determine:
 - `state_updates`: key-value pairs to merge into state
   - On failure: include `{"error": "description of what went wrong"}`
   - On success: include useful info for downstream nodes
+  - If `new_lesson` is in state_updates, append it to the `lessons` array in state
 
 ### 5. Resolve transition (first match wins)
 
@@ -53,9 +54,14 @@ Determine:
 
 ### 6. Update files
 
-Merge `state_updates` into state, then write `.claude/state/workflow.json`:
+Merge `state_updates` into state. Handle lessons specially:
+- If `state_updates` contains `new_lesson` (a string), append it to `state.lessons` (an array)
+- Keep `lessons` array to max 10 entries — drop oldest if over limit
+- Remove `new_lesson` from state after appending to `lessons`
+
+Then write `.claude/state/workflow.json`:
 ```json
-{"pc": "<next node or null>", "status": "<running|done|failed>", ...merged state}
+{"pc": "<next node or null>", "status": "<running|done|failed>", "lessons": [...], ...merged state}
 ```
 
 Append to `.claude/state/trace.log`:
