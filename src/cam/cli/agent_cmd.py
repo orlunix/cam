@@ -142,6 +142,7 @@ def list(
     status: Optional[str] = typer.Option(None, "--status", help="Filter by status"),
     tool: Optional[str] = typer.Option(None, "--tool", help="Filter by tool"),
     ctx_name: Optional[str] = typer.Option(None, "--ctx", help="Filter by context"),
+    machine: Optional[str] = typer.Option(None, "--machine", "-m", help="Filter by machine host (substring match)"),
     last: int = typer.Option(0, "--last", "-n", help="Show last N agents (0=all)"),
     watch: bool = typer.Option(False, "--watch", "-w", help="Auto-refresh every 2s"),
 ) -> None:
@@ -166,6 +167,7 @@ def list(
             status=agent_status,
             context_id=context_id,
             tool=tool,
+            machine=machine,
             limit=last,
         )
         if not agents:

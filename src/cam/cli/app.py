@@ -232,9 +232,11 @@ app.command(name="migrate", rich_help_panel=_SYSTEM)(system_cmd.migrate)
 # --- Subcommand groups ---
 from cam.cli import context_cmd  # noqa: E402
 from cam.cli import config_cmd  # noqa: E402
+from cam.cli import node_cmd  # noqa: E402
 
 app.add_typer(context_cmd.app, name="context", help="Manage work contexts.", rich_help_panel=_SYSTEM)
 app.add_typer(config_cmd.app, name="config", help="Manage CAM configuration.", rich_help_panel=_SYSTEM)
+app.add_typer(node_cmd.app, name="node", help="View nodes and their agents.", rich_help_panel=_SYSTEM)
 
 
 # Server command — starts the API server
