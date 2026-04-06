@@ -14,25 +14,26 @@ def multiply(a, b):
 
 
 def divide(a, b):
-    if b == 0:
-        raise ValueError("Cannot divide by zero")
+    # Bug: no zero-division check
     return a / b
 
 
 def average(numbers):
-    if not numbers:
-        raise ValueError("Cannot average empty list")
+    # Bug: no empty-list check
     return sum(numbers) / len(numbers)
 
 
 def factorial(n):
-    if n < 0:
-        raise ValueError("Cannot compute factorial of negative number")
+    # Bug: off-by-one (range stops too early) + no negative check
     result = 1
-    for i in range(1, n + 1):
+    for i in range(1, n):
         result *= i
     return result
 
 
 def power(base, exp):
-    return base ** exp
+    # Bug: manual loop can't handle negative exponents
+    result = 1
+    for _ in range(exp):
+        result *= base
+    return result

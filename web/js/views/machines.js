@@ -5,7 +5,7 @@ let expandedId = null;
 export function renderMachines(container) {
   container.innerHTML = `
     <div class="page-header">
-      <h2>Machines</h2>
+      <h2>Nodes</h2>
     </div>
     <div id="machine-list-container"></div>
   `;
@@ -77,7 +77,7 @@ export function renderMachines(container) {
     });
 
     if (machines.length === 0) {
-      listEl.innerHTML = '<div class="empty-state">No machines. Add a context with SSH to see remote machines.</div>';
+      listEl.innerHTML = '<div class="empty-state">No nodes. Add a context with SSH to see remote nodes.</div>';
       return;
     }
 
@@ -238,7 +238,7 @@ export function renderMachines(container) {
         const machine = machines.find(m => m.key === btn.dataset.key);
         if (!machine) return;
         const shortHost = machine.host === 'local' ? 'local' : machine.host.split('.')[0];
-        const msg = `Delete machine "${shortHost}"?\n\n` +
+        const msg = `Delete node "${shortHost}"?\n\n` +
           `This will remove ${machine.contexts.length} context(s): ${machine.contexts.map(c => c.name).join(', ')}` +
           (machine.runningCount > 0 ? `\n\nWARNING: ${machine.runningCount} agent(s) still running!` : '');
         if (!confirm(msg)) return;

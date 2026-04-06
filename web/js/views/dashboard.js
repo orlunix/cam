@@ -53,7 +53,7 @@ export function renderDashboard(container) {
     <div id="dash-stats"></div>
     <div class="filter-bar">
       <select id="filter-machine" class="filter-select">
-        <option value="">All machines</option>
+        <option value="">All nodes</option>
       </select>
       <select id="filter-status" class="filter-select">
         <option value="">All status</option>
@@ -136,7 +136,7 @@ export function renderDashboard(container) {
 
     const machines = [...new Set(agents.map(a => a.machine_host || 'local'))].sort();
     const curMachine = machineSel.value;
-    machineSel.innerHTML = `<option value="">All machines</option>${machines.map(m => {
+    machineSel.innerHTML = `<option value="">All nodes</option>${machines.map(m => {
       // Show short hostname for readability
       const label = m === 'local' ? 'local' : m.split('.')[0];
       return `<option value="${m}">${label}</option>`;

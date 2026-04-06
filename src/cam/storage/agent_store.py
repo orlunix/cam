@@ -121,6 +121,7 @@ class AgentStore:
         status: AgentStatus | None = None,
         context_id: str | None = None,
         tool: str | None = None,
+        machine: str | None = None,
         limit: int | None = None,
     ) -> list[Agent]:
         """List agents with optional filtering.
@@ -129,6 +130,7 @@ class AgentStore:
             status: Filter by status.
             context_id: Filter by context ID.
             tool: Filter by tool name (searches in task.tool field).
+            machine: Filter by machine host (substring match, 'local' for local agents).
             limit: Maximum number of agents to return.
 
         Returns:
@@ -150,6 +152,13 @@ class AgentStore:
         if tool:
             query += " AND json_extract(task_json, '$.tool') = ?"
             params.append(tool)
+
+        if machine:
+            if machine.lower() == "local":
+                query += " AND (machine_host IS NULL OR machine_host = '' OR machine_host = 'localhost')"
+            else:
+                query += " AND machine_host LIKE ?"
+                params.append(f"%{machine}%")
 
         # Order by created_at descending (most recent first)
         query += " ORDER BY created_at DESC"
