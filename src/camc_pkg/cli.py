@@ -18,8 +18,8 @@ def _gen_agent_id():
     raw = "%s-%s-%s" % (_sock.gethostname(), time.time(), uuid4().hex[:8])
     return uuid5(_UUID_NS, raw).hex[:8]
 
-from camc_pkg import __version__, CAM_DIR, CONFIGS_DIR, CONTEXT_FILE, LOGS_DIR, PIDS_DIR, log
-from camc_pkg.utils import _now_iso, _time_ago, _load_default_context, _build_command, _kill_monitor
+from camc_pkg import __version__, CAM_DIR, CONFIGS_DIR, CONTEXT_FILE, LOGS_DIR, PIDS_DIR, SOCKETS_DIR, log
+from camc_pkg.utils import _now_iso, _time_ago, _load_default_context, _build_command, _kill_monitor, _run
 from camc_pkg.adapters import _EMBEDDED_CONFIGS, _load_config
 from camc_pkg.storage import AgentStore, EventStore
 from camc_pkg.transport import (
@@ -812,6 +812,98 @@ def cmd_heal(args):
     if skipped:
         msg += " (%d skipped, other host)" % skipped
     print(msg)
+
+    # --- Phase 3: Adopt orphan tmux sessions not in agents.json ---
+    # Scan socket directories for cam-* sessions that have no agent record.
+    # This catches agents created by cam server (SQLite) or other transports
+    # whose monitors died — they'd otherwise be invisible to heal.
+    known_sessions = set()
+    for a in store.list():
+        s = _sf(a, "tmux_session")
+        if s:
+            known_sessions.add(s)
+
+    orphan_dirs = [
+        SOCKETS_DIR,  # /tmp/cam-sockets
+        "/tmp/cam-agent-sockets",
+        os.path.expanduser("~/.local/share/cam/sockets"),
+    ]
+    adopted = 0
+    stale_cleaned = 0
+    for sock_dir in orphan_dirs:
+        try:
+            entries = os.listdir(sock_dir)
+        except OSError:
+            continue
+        for fname in entries:
+            if not fname.startswith("cam-") or not fname.endswith(".sock"):
+                continue
+            session = fname[:-5]  # strip .sock → "cam-abc12345"
+            if session in known_sessions:
+                continue
+            # Verify session is actually alive
+            if not tmux_session_exists(session):
+                # Stale socket — tmux server is gone, clean it up
+                try:
+                    os.unlink(os.path.join(sock_dir, fname))
+                    stale_cleaned += 1
+                except OSError:
+                    pass
+                continue
+            # Extract agent ID from session name (cam-{id})
+            aid = session[4:]  # strip "cam-"
+            if not aid:
+                continue
+            # Prevent duplicate adoption (same session in multiple socket dirs)
+            known_sessions.add(session)
+            # Try to figure out the working directory from tmux
+            cwd = ""
+            try:
+                sock_path = os.path.join(sock_dir, fname)
+                rc, out = _run(["tmux", "-S", sock_path,
+                                "display-message", "-t", session, "-p", "#{pane_current_path}"],
+                               timeout=5)
+                if rc == 0 and out.strip():
+                    cwd = out.strip()
+            except Exception:
+                pass
+            # Default tool to claude (most common agent type)
+            tool = "claude"
+            # Create adopted agent record
+            agent_name = os.path.basename(cwd) if cwd else "orphan-%s" % aid[:4]
+            store.save({
+                "id": aid,
+                "task": {"name": agent_name, "tool": tool, "prompt": "",
+                         "auto_confirm": True, "auto_exit": False},
+                "context_id": "",
+                "context_name": "",
+                "context_path": cwd,
+                "transport_type": "local",
+                "status": "running",
+                "state": "idle",
+                "tmux_session": session,
+                "tmux_socket": "",
+                "pid": None,
+                "hostname": my_hostname,
+                "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
+                "retry_count": 0, "cost_estimate": None, "files_changed": [],
+            })
+            # Spawn monitor for the adopted agent
+            try:
+                proc = subprocess.Popen(
+                    [sys.executable, _CAMC_SCRIPT, "_monitor", aid] if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg", "_monitor", aid],
+                    stdout=subprocess.DEVNULL,
+                    stderr=open(os.path.join(LOGS_DIR, "monitor-%s.stderr" % aid), "a"),
+                    start_new_session=True)
+                store.update(aid, pid=proc.pid)
+                print("  %s (%s): adopted orphan session, monitor PID %d" % (agent_name, aid, proc.pid))
+            except Exception as e:
+                print("  %s (%s): adopted but monitor failed: %s" % (agent_name, aid, e))
+            adopted += 1
+    if adopted:
+        print("Adopted %d orphan session(s)" % adopted)
+    if stale_cleaned:
+        print("Cleaned %d stale socket(s)" % stale_cleaned)
 
     # Maintenance: rotate old events (30 days)
     try:
