@@ -117,3 +117,29 @@ f60d7f1 Fix NFS agent wipe, poller cross-contamination, attach for remote agents
 230bda7 Add camc prune, machine-based polling, fix agent list limits
 ```
 
+## v1.1.0  bbe2572-dirty 2026-04-09 08:44
+
+- Lines: 4346
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+bbe2572 Add heal Phase 3: orphan tmux adoption, stale socket cleanup, Case 002 doc
+4f58db5 Fix monitor false session-death, deduplicate machines list, add machine management
+209bfe2 Rewrite monitor to pure screen-based design, add busy/done signals
+6dbfb10 Fix auto-confirm scrollback re-triggering, add camc build versioning, track dist/camc
+f60d7f1 Fix NFS agent wipe, poller cross-contamination, attach for remote agents, bump to v61
+```
+
+## v1.1.0  bbe2572-dirty 2026-04-10 21:13
+
+- Lines: 4346
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+bbe2572 Add heal Phase 3: orphan tmux adoption, stale socket cleanup, Case 002 doc
+4f58db5 Fix monitor false session-death, deduplicate machines list, add machine management
+209bfe2 Rewrite monitor to pure screen-based design, add busy/done signals
+6dbfb10 Fix auto-confirm scrollback re-triggering, add camc build versioning, track dist/camc
+f60d7f1 Fix NFS agent wipe, poller cross-contamination, attach for remote agents, bump to v61
+```
+
