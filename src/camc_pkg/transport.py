@@ -138,11 +138,13 @@ def create_tmux_session(session_id, command, workdir, env_setup=None, inherit_en
                  "-s", session_id, "-c", workdir]
             proc = subprocess.Popen(
                 tmux_cmd,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 env=env,
             )
-            proc.wait(timeout=10)
+            _, stderr = proc.communicate(timeout=10)
             if proc.returncode != 0:
+                err_msg = stderr.decode(errors="replace").strip() if stderr else "exit code %d" % proc.returncode
+                log.error("tmux new-session failed: %s", err_msg)
                 return False
             _run(["tmux", "-u", "-S", socket, "set-option", "-t", session_id,
                   "history-limit", "50000"])
@@ -153,6 +155,9 @@ def create_tmux_session(session_id, command, workdir, env_setup=None, inherit_en
                   "-l", "--", inner_cmd])
             _run(["tmux", "-u", "-S", socket, "send-keys", "-t", target, "Enter"])
             return True
+        except subprocess.TimeoutExpired:
+            log.error("tmux new-session timed out after 10s for %s", session_id)
+            return False
         except Exception as e:
             log.error("Failed to create shell session %s: %s", session_id, e)
             return False
@@ -167,15 +172,20 @@ def create_tmux_session(session_id, command, workdir, env_setup=None, inherit_en
             ["tmux", "-u", "-S", socket, "new-session",
              "-d", "-x", "220", "-y", "50",
              "-s", session_id, "-c", workdir, command_str],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=env,
         )
-        proc.wait(timeout=10)
+        _, stderr = proc.communicate(timeout=10)
         if proc.returncode != 0:
+            err_msg = stderr.decode(errors="replace").strip() if stderr else "exit code %d" % proc.returncode
+            log.error("tmux new-session failed: %s", err_msg)
             return False
         _run(["tmux", "-u", "-S", socket, "set-option", "-t", session_id,
               "history-limit", "50000"])
         return True
+    except subprocess.TimeoutExpired:
+        log.error("tmux new-session timed out after 10s for %s", session_id)
+        return False
     except Exception as e:
         log.error("Failed to create session %s: %s", session_id, e)
         return False

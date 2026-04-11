@@ -457,19 +457,31 @@ class Relay:
         self._server_sid = sid
         log.info("Server connected from %s (sid=%s)", peer, sid[:8] if sid else "none")
 
-        try:
+        import time
+        last_activity = time.monotonic()
+
+        async def _read_loop():
+            """Read frames from server, forwarding to clients."""
+            nonlocal last_activity
             while True:
-                result = await read_frame(reader)
+                # Timeout on read: if no frame for 90s, connection is dead.
+                # cam serve sends WS PINGs every 30s, so 90s = 3 missed pings.
+                try:
+                    result = await asyncio.wait_for(read_frame(reader), timeout=90)
+                except asyncio.TimeoutError:
+                    log.warning("Server read timeout (90s no data) — closing dead connection")
+                    return
                 if result is None:
                     log.info("Server read_frame returned None (EOF)")
-                    break
+                    return
 
                 opcode, payload = result
+                last_activity = time.monotonic()
 
                 log.debug("Server frame: opcode=%d len=%d", opcode, len(payload))
                 if opcode == OP_CLOSE:
                     log.info("Server sent CLOSE frame")
-                    break
+                    return
                 elif opcode == OP_PING:
                     log.debug("Server PING, sending PONG")
                     writer.write(make_frame(OP_PONG, payload))
@@ -520,6 +532,40 @@ class Relay:
                     self._clients.pop(cid, None)
                     log.info("Client %d dropped (write error)", cid)
 
+        async def _ping_loop():
+            """Actively ping the server to detect dead connections.
+
+            Without this, relay has no way to know when a server connection
+            dies silently (e.g. SSH tunnel drops, NAT timeout). The relay
+            would keep _server_writer set, sending mobile requests into a
+            dead pipe that times out after 30s.
+
+            With active pings, relay detects dead connections within ~50s
+            and clears _server_writer, allowing cam serve to reconnect.
+            """
+            await asyncio.sleep(5)  # Let connection stabilize
+            while True:
+                try:
+                    writer.write(make_frame(OP_PING, b"relay-keepalive"))
+                    await writer.drain()
+                    log.debug("Server PING sent (keepalive)")
+                except Exception as e:
+                    log.warning("Server PING failed: %s — connection dead", e)
+                    return
+                await asyncio.sleep(25)
+
+        try:
+            read_task = asyncio.create_task(_read_loop())
+            ping_task = asyncio.create_task(_ping_loop())
+            done, pending = await asyncio.wait(
+                [read_task, ping_task], return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+            # Propagate exceptions from completed tasks
+            for t in done:
+                if t.exception():
+                    log.warning("Server task error: %s", t.exception())
         except Exception as e:
             log.warning("Server error: %s", e)
         finally:

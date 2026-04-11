@@ -255,10 +255,19 @@ class CamcPoller:
                                 if prev != status:
                                     new_status = _STATUS_MAP.get(status)
                                     if new_status and new_status != dba.status:
-                                        self._agent_store.update_status(
-                                            real_id, new_status,
-                                            exit_reason=agent_data.get("exit_reason"),
-                                        )
+                                        # Never demote a running agent to terminal based on
+                                        # a shadow record — the real machine's poll is the
+                                        # authoritative source for that agent's status.
+                                        if dba.status == AgentStatus.RUNNING and new_status in _TERMINAL_STATUSES:
+                                            logger.debug(
+                                                "Shadow skip: %s -> %s (real %s is running on different machine)",
+                                                agent_id, new_status.value, real_id,
+                                            )
+                                        else:
+                                            self._agent_store.update_status(
+                                                real_id, new_status,
+                                                exit_reason=agent_data.get("exit_reason"),
+                                            )
                                 self._prev_states[real_id] = status
                                 break
                         total += 1

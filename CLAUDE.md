@@ -408,3 +408,69 @@ Get curated AI industry news from top builders (founders, researchers, engineers
 - **Config**: `~/.follow-builders/config.json` — language (`en`/`zh`/`bilingual`), frequency, delivery method.
 - **Sources**: Curated centrally, updated automatically. Tracks ~10 AI builders on X and select podcasts.
 - **Delivery**: `stdout` (default), Telegram, or email. OpenClaw users get automatic channel delivery via cron.
+
+## TeaSpirit — Teams ↔ CAM Bridge
+
+### Overview
+
+TeaSpirit (`teaspirit/`) connects Microsoft Teams to CAM/CAMC, allowing phone-based agent management. Two versions exist: TypeScript (`workspace/cam/teaspirit/`) and Python (`~/test/aicli/teams-cam-bridge/`).
+
+### Modes
+
+- **Channel mode**: Monitor a Teams channel, relay agent output
+- **Chat mode**: Personal 1-on-1 with agent
+- **Group mode** (`MODE=group`): Multiple users in a Teams group chat, each can independently attach to agents
+- **Attach mode**: Permanently attached to one agent (interactive chatbot)
+- **Assistant mode**: Extracts complete answers from tmux capture (not real-time streaming), no duplicates or missing paragraphs
+
+### Group Chat Protocol
+
+In group chat, messages arrive as `[Name] text`. The agent must:
+1. Identify the sender by name prefix
+2. Respond to that person's question specifically
+3. Maintain per-sender attach state (`Map<senderId, attachState>`)
+
+### Group Chat Auth Constraints
+
+All CLI tools (calendar-cli, outlook-cli, etc.) authenticate as the TeaSpirit host user. When other users ask personal questions in group chat:
+
+| Data Type | Accessible? | Reason |
+|-----------|-------------|--------|
+| Other user's public calendar | Yes | `calendar-cli find --user <email>` if shared |
+| Other user's email | No | No cross-user permission |
+| NVBugs | Yes | Public query API |
+| Helios directory | Yes | Organization-wide |
+| Confluence / Glean | Yes | Organization-wide content |
+| Other user's private calendar | No | Requires their auth token |
+
+**Strategy**: For queries the host token can't serve, respond honestly ("I don't have permission to access your calendar"). For organization-wide data (bugs, docs, directory), answer normally.
+
+### TeaSpirit Commands (Python version `dispatch_direct`)
+
+Users type `//command` in Teams:
+
+| Command | Action |
+|---------|--------|
+| `//screen` | Capture current screen |
+| `//esc` | Send Escape key |
+| `//key` | Enter key submenu |
+| `//help` | Show help card |
+| `//tab`, `//c-c`, `//y`, `//n` | Send shortcut keys |
+
+### Multi-Machine Management (Planned)
+
+TeaSpirit will manage all machines' agents via SSH → camc (no cam server dependency):
+
+```
+Teams → TeaSpirit → SSH → Machine A: camc --json list/capture/send
+                  → SSH → Machine B: camc --json list/capture/send
+                  → local: camc --json list/capture/send
+```
+
+Config: `~/.cam/teaspirit/machines.json`. Agent list grouped by machine. Phase 1: multi-machine list. Phase 2: cross-machine attach. Phase 3: run/stop/heal from Teams.
+
+### Multi-Instance
+
+- Default config: `~/.cam/teaspirit/.env`
+- Named instances: `~/.cam/teaspirit/<name>/.env`
+- `teaspirit start <name>` / `teaspirit stop <name>`

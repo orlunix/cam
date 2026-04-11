@@ -1,49 +1,73 @@
 # CAM — Coding Agent Manager
 
-PM2 for AI coding agents. Manage Claude Code, Codex, Cursor, and other AI coding tools from a unified CLI, REST API, mobile app, or DAG scheduler.
+PM2 for AI coding agents. Manage Claude Code, Codex, Cursor, and other AI CLI tools via TMUX sessions, with auto-confirm, completion detection, background monitoring, and remote execution.
 
-CAM wraps each agent in a TMUX session, monitors its output for state changes, handles permission prompts automatically, and detects task completion — so you can launch agents, walk away, and check results later.
+## Architecture
+
+```
+Mobile APP / CLI / Web
+        ↓
+   cam serve (API + Relay)
+        ↓
+   Core: AgentManager
+        ↓
+   CamcDelegate ──SSH (ControlMaster)──→ remote camc
+        │                                    ↓
+   local camc                          camc manages locally:
+        │                              - tmux sessions
+        │                              - monitor loops
+   CamcPoller ←──SSH polling (5s)────  - agents.json
+        ↓                              - auto-confirm/completion
+   Storage: import to SQLite
+```
+
+**cam** is the server/orchestrator. **camc** is the standalone agent manager deployed to each machine. All agent operations are delegated from cam to camc.
+
+- **camc** is the source of truth — each machine's `~/.cam/agents.json` is authoritative
+- **cam serve** aggregates into SQLite for the API/mobile to query via CamcPoller
+- **CamcDelegate** wraps `camc` CLI calls over SSH, using ControlMaster to piggyback on persistent connections
 
 ## Features
 
-- **Multi-tool support** — Claude Code, Codex, Cursor, and any CLI tool via TOML adapter configs
-- **Auto-confirm** — automatically approve permission prompts (trust dialogs, tool approvals)
+- **Multi-tool support** — Claude Code, Codex, Cursor, and any CLI tool via TOML adapter configs (no Python code needed)
+- **Auto-confirm** — automatically approve permission prompts (trust dialogs, tool approvals, y/n prompts)
 - **Completion detection** — pattern-based detection of when an agent finishes its task
-- **Background monitor** — detach mode with a per-agent subprocess that handles auto-confirm and state tracking
-- **DAG scheduler** — define multi-agent workflows with dependencies in YAML
+- **Background monitor** — per-agent subprocess with auto-confirm, state tracking, idle detection, and stuck fallback
+- **Auto-exit** — automatically kill idle agents after task completion
 - **Remote execution** — run agents on remote machines via SSH with ControlMaster connection pooling
-- **REST API** — FastAPI server with token auth, WebSocket events, file management
-- **WebSocket relay** — zero-dependency relay server for NAT traversal (phone → relay → home server)
+- **NFS cluster support** — hostname-based agent isolation for shared-disk environments
+- **REST API** — FastAPI server with token auth, WebSocket events, hash-based conditional responses
+- **WebSocket relay** — zero-dependency relay server for NAT traversal (mobile → relay → home server), with HTTP proxy fallback
 - **Mobile app** — Android PWA/WebView app for managing agents from your phone
-- **Probe-based idle detection** — send invisible probe characters to confirm agent is truly idle
+- **DAG scheduler** — define multi-agent workflows with dependencies in YAML
+- **Self-healing** — monitors auto-restart on crash, `cam heal` / `camc heal` restart dead monitors
 
 ## Install
 
 ```bash
-pip install -e .
+pip install -e ".[all,dev]"    # Full install with all deps + pytest
 ```
 
-Optional dependencies:
+Or selectively:
 
 ```bash
-pip install -e ".[dev]"      # pytest
-pip install -e ".[yaml]"     # DAG scheduler (pyyaml)
-pip install -e ".[remote]"   # WebSocket transport (websockets)
-pip install -e ".[server]"   # API server (fastapi, uvicorn)
-pip install -e ".[all]"      # Everything
+pip install -e .               # Core CLI only
+pip install -e ".[server]"     # API server (fastapi, uvicorn)
+pip install -e ".[yaml]"       # DAG scheduler (pyyaml)
+pip install -e ".[dev]"        # Test suite (pytest)
 ```
 
-Requirements: Python 3.10+, tmux installed and on PATH.
+Requirements: Python 3.10+, tmux.
 
 ## Quick Start
 
 ```bash
 cam doctor                                          # Check environment
-cam context add my-project /path/to/project         # Register a project directory
+cam context add my-project /path/to/project         # Register a project
 cam run claude "Add error handling to the API"      # Launch an agent
 cam list                                            # List all agents
 cam logs <agent-id> -f                              # Follow live output
-cam status <agent-id>                               # Detailed agent status
+cam attach <agent-id>                               # Attach to TMUX session
 cam stop <agent-id>                                 # Graceful stop
 ```
 
@@ -52,31 +76,30 @@ cam stop <agent-id>                                 # Graceful stop
 ```bash
 cam run claude "Refactor the auth module" --detach  # Launch and detach
 cam list                                            # Check status anytime
-cam attach <agent-id>                               # Reattach to TMUX session
+cam attach <agent-id>                               # Reattach to session
 ```
 
 ### Auto-confirm and Auto-exit
 
 ```bash
 cam run claude "Fix all lint errors" --auto-confirm --auto-exit
-# Agent runs unattended: approves prompts, detects completion, finalizes
+# Agent runs unattended: approves prompts, detects completion, exits
 ```
 
 ### Sync and Health Check
 
 ```bash
-cam sync                                            # Deploy camc + configs to all remotes
-cam sync my-context                                 # Deploy to a specific context
-cam heal                                            # Check all agents, restart dead monitors
+cam sync                     # Deploy camc + configs to all remote machines
+cam sync my-context          # Deploy to a specific context
+cam heal                     # Check all agents, restart dead monitors (local + remote)
 ```
 
 ### DAG Workflows
 
 ```bash
-cam apply tasks.yaml                                # Run a multi-agent workflow
+cam apply tasks.yaml         # Run a multi-agent workflow
 ```
 
-Example `tasks.yaml`:
 ```yaml
 version: 1
 defaults:
@@ -88,71 +111,54 @@ tasks:
   - id: tests
     prompt: "Add missing unit tests"
     depends_on: [lint]
-  - id: docs
-    prompt: "Update API documentation"
-    depends_on: [lint]
   - id: review
-    prompt: "Review all changes and summarize"
-    depends_on: [tests, docs]
+    prompt: "Review all changes"
+    depends_on: [tests]
 ```
 
-## Contexts
+## Standalone CLI (camc)
 
-Contexts are named project directories that agents work in.
+Single-file, zero-dependency CLI for managing agents on any machine. Python 3.6+ stdlib only — no pip install needed. This is the core execution engine that runs on every machine.
 
 ```bash
-cam context add frontend /home/user/projects/webapp
-cam context add backend /home/user/projects/api
-cam context list
-
-# Remote context (SSH)
-cam context add remote-box /home/user/project \
-    --host server.example.com --user deploy --port 22
-
-# cam-agent transport (standardized binary protocol)
-cam context add managed /home/user/project \
-    --transport agent --host server.example.com --user deploy
+camc run claude "Fix the bug"       # Launch an agent
+camc run claude                     # Interactive mode
+camc list                           # List agents (filtered by hostname)
+camc logs <id> -f                   # Follow output
+camc attach <id>                    # Attach to tmux session
+camc stop <id>                      # Stop agent
+camc heal                           # Restart dead monitors
+camc capture <id>                   # Capture terminal output
+camc send <id> --text "hello"       # Send text to agent
 ```
+
+Deploy via `cam sync` or manually: `scp dist/camc remote:~/.local/bin/camc`
+
+Storage: `~/.cam/agents.json` (source of truth), `~/.cam/logs/monitor-<id>.log`, `~/.cam/events.jsonl`
+
+## Monitor Loop
+
+The monitor is a pure screen-based, tool-agnostic design. No characters sent for idle detection — only for auto-confirm and stuck fallback. Runs as a background subprocess per agent, polling every ~1 second:
+
+1. **Health check** (every 15s) — is the tmux session alive?
+2. **Capture + hash** — MD5 of terminal output (last line stripped to avoid status bar flicker)
+3. **Auto-confirm** (5s cooldown) — detect permission dialogs, send response per TOML rules
+4. **State detection** — regex on recent output → planning/editing/testing/committing
+5. **Idle detection** — screen stable 60s + prompt visible → idle confirmed (fast-track: 5s after done pattern)
+6. **Stuck fallback** — screen frozen 120s + no prompt → send probe character
+7. **Auto-exit** — idle + user not attached + auto_exit enabled → kill session
 
 ## Adapter Configuration
 
-Each tool is configured via a TOML file in `src/cam/adapters/configs/`. The adapter config defines:
+Each tool is configured via TOML in `src/cam/adapters/configs/`. Key sections:
 
-- **Launch command** and startup behavior
-- **Ready detection** — regex patterns to detect when the agent is ready for input
-- **State detection** — patterns that map output to states (planning, editing, testing, committing)
-- **Completion detection** — how to tell when a task is finished
-- **Auto-confirm rules** — patterns and responses for permission prompts
-- **Probe settings** — idle detection via invisible characters
-- **Monitor settings** — cooldowns, thresholds, auto-exit behavior
+- `[launch]` — command, prompt_after_launch, startup_wait, ready_pattern
+- `[state]` — `[[state.patterns]]` mapping regex → agent state
+- `[completion]` — strategy, prompt_pattern, threshold
+- `[[confirm]]` — auto-confirm rules: pattern, response, send_enter
+- `[monitor]` — cooldowns, busy_pattern, done_pattern, auto_exit
 
-Example (abbreviated `claude.toml`):
-
-```toml
-[adapter]
-name = "claude"
-display_name = "Claude Code"
-
-[launch]
-command = ["claude", "--allowed-tools", "Bash,Edit,Read,Write,Glob,Grep"]
-prompt_after_launch = true
-startup_wait = 30.0
-
-ready_pattern = "^[❯>]"
-ready_flags = ["MULTILINE"]
-
-[completion]
-strategy = "prompt_count"
-prompt_pattern = "^[❯>]"
-prompt_count_threshold = 2
-
-[[confirm]]
-pattern = "Enter to (confirm|select).*Esc to cancel"
-response = ""
-send_enter = true
-```
-
-To add a new tool, create a `.toml` file in the configs directory — no Python code required.
+To add a new tool, create a `.toml` file — no Python code required.
 
 ## API Server
 
@@ -160,11 +166,9 @@ To add a new tool, create a `.toml` file in the configs directory — no Python 
 cam serve --host 0.0.0.0 --port 8420 --token <secret>
 ```
 
-REST endpoints:
-
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/agents` | List agents |
+| GET | `/api/agents` | List agents (supports `?status=running&limit=50`) |
 | POST | `/api/agents` | Start an agent |
 | GET | `/api/agents/:id` | Agent details |
 | DELETE | `/api/agents/:id` | Stop agent |
@@ -172,7 +176,7 @@ REST endpoints:
 | POST | `/api/agents/:id/input` | Send text input |
 | POST | `/api/agents/:id/key` | Send special key (Ctrl-C, Escape) |
 | GET | `/api/contexts` | List contexts |
-| POST | `/api/contexts` | Create context |
+| GET | `/api/health` | Server health + adapters |
 | WS | `/api/ws` | Real-time event stream |
 
 ### Relay Server
@@ -180,151 +184,77 @@ REST endpoints:
 For accessing your home server from mobile over the internet:
 
 ```bash
-# On public server:
-python relay/relay.py --port 8001 --token <relay-token>
+# On public-facing server:
+python relay/relay.py --port 8001 --token <relay-token> --web-root /path/to/web
 
 # On home server:
 cam serve --port 8420 --token <api-token> \
     --relay ws://relay-host:8001 --relay-token <relay-token>
 ```
 
-The relay is a standalone Python script with zero dependencies (stdlib-only WebSocket implementation with manual RFC 6455 framing). It bridges REST-over-WebSocket requests between mobile clients and your CAM server.
+The relay is a standalone Python script with zero dependencies (stdlib-only RFC 6455 WebSocket). It bridges REST-over-WebSocket between mobile clients and your CAM server. Also supports HTTP proxy mode for environments where WebSocket is blocked.
 
 ## Mobile App
 
-The `web/` directory contains a PWA that works as both a browser app and an Android WebView app.
+The `web/` directory contains a PWA that works as both a browser app and an Android WebView wrapper (`android/`).
 
-- **Dashboard** — list running/completed agents with live status updates
+- **Dashboard** — running/completed agents with live status
 - **Start Agent** — select context, tool, enter prompt, toggle auto-confirm/auto-exit
-- **Agent Detail** — live terminal output, send input/keys, view logs
+- **Agent Detail** — live terminal output, send input/keys
 - **File Browser** — browse and read files in agent contexts
-- **Settings** — server connection, relay configuration, cache management
+- **Contexts / Machines** — manage project directories and remote machines
+- **Settings** — connection profiles, relay protocol (WS/HTTP), cache
 
-Build the Android APK:
+## Machines and Contexts
 
-```bash
-cd android && ./build.sh
-```
-
-## Standalone CLI (camc)
-
-A single-file, zero-dependency CLI (`src/camc`) for managing agents on machines without the full cam package. Python 3.6+ stdlib only — no pip install needed.
+Machines are defined in `~/.cam/machines.json`. Contexts reference machines.
 
 ```bash
-# Deploy to remote machines via cam sync
-cam sync
-
-# Or copy manually
-scp src/camc remote:~/.cam/camc && ssh remote 'chmod +x ~/.cam/camc'
-
-# Use on the remote machine
-camc init                                           # First-time setup
-camc run claude "Fix the bug"                       # Launch an agent
-camc run claude                                     # Interactive mode
-camc list                                           # List agents
-camc logs <id> -f                                   # Follow output
-camc attach <id>                                    # Attach to tmux session
-camc stop <id>                                      # Stop agent
-camc heal                                           # Restart dead monitors
+# Remote context
+cam context add my-project /home/user/project \
+    --host server.example.com --user deploy --port 22
 ```
 
-Features: background monitor with auto-confirm/completion detection, auto-exit, PATH passthrough from caller's shell, self-healing monitors (auto-restart on crash), JSON status endpoint for cam server pull mode.
-
-## cam-agent
-
-A Go binary (`src/cam-agent/`) that provides a standardized target protocol for running agents on remote machines. It wraps tmux on Linux and provides a uniform CLI interface:
-
-```bash
-cam-agent ping
-cam-agent session create --name <id> -- <command>
-cam-agent session capture --name <id>
-cam-agent session send --name <id> --text "hello"
-cam-agent session exists --name <id>
-cam-agent session kill --name <id>
-```
-
-Build:
-
-```bash
-cd cam-agent && make build
-```
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────┐
-│                    CLI (Typer)                   │
-│  run · list · status · logs · stop · attach      │
-├─────────────────────────────────────────────────┤
-│                   Core Layer                     │
-│  AgentManager · AgentMonitor · EventBus          │
-│  Scheduler · Config · Models · Probe             │
-├─────────────────────────────────────────────────┤
-│                 Transport Layer                  │
-│  Local · SSH · Agent · Docker · WebSocket        │
-├─────────────────────────────────────────────────┤
-│                 Adapter Layer                    │
-│  ConfigurableAdapter (TOML-driven)               │
-│  Claude · Codex · Cursor · Generic               │
-├─────────────────────────────────────────────────┤
-│              Session Backend                     │
-│  tmux (Linux/macOS) · wintmux (Windows)          │
-└─────────────────────────────────────────────────┘
-```
+On NFS clusters where multiple machines share `~/.cam/agents.json`, camc uses hostname-based filtering to ensure each machine only manages its own agents.
 
 ## Directory Structure
 
 ```
 cam/
-├── src/cam/
-│   ├── cli/             # Typer commands (run, list, stop, context, etc.)
-│   ├── core/            # Agent manager, monitor, scheduler, models, config
-│   ├── adapters/        # Tool adapters and TOML configs
-│   │   └── configs/     # claude.toml, codex.toml, cursor.toml
-│   ├── transport/       # Local, SSH, Agent, Docker, WebSocket transports
-│   ├── storage/         # SQLite database, agent/context/history stores
-│   ├── api/             # FastAPI server, routes, WebSocket, relay connector
-│   └── utils/           # ANSI stripping, doctor, shell helpers
-│   cam-agent/           # Go binary for standardized remote protocol
-│   camc                 # Standalone single-file CLI (stdlib-only)
-├── relay/               # Zero-dep WebSocket relay server
-├── web/                 # PWA / Android WebView frontend
-│   ├── js/              # API client, app shell, view modules
-│   └── css/             # Styles
-├── android/             # Android WebView app (Java)
-├── tests/               # pytest test suite
-├── scripts/             # Helper scripts (daemon launcher, test tools)
-└── docs/                # Architecture documentation
+├── src/cam/               # cam server package
+│   ├── cli/               # Typer commands
+│   ├── api/               # FastAPI server, routes, relay connector
+│   ├── core/              # AgentManager, CamcDelegate, CamcPoller, Scheduler
+│   ├── transport/         # SSH, Local, Agent transports
+│   ├── storage/           # SQLite stores (agents, contexts, events)
+│   └── adapters/configs/  # TOML adapter configs (claude, codex, cursor)
+├── src/camc_pkg/          # camc source (built to dist/camc)
+├── src/cam-agent/         # Go binary for standardized remote protocol
+├── relay/                 # Zero-dep WebSocket relay server
+├── web/                   # PWA frontend
+│   ├── js/                # API client, app shell, view modules
+│   └── css/               # Styles
+├── android/               # Android WebView wrapper
+├── tests/                 # pytest suite (~450 tests)
+├── dist/                  # Built artifacts (camc)
+└── docs/                  # Architecture docs, case studies
 ```
 
-## Configuration
+## Storage
 
-Global config at `~/.config/cam/config.toml`:
-
-```toml
-[cam]
-data_dir = "~/.local/share/cam"
-
-[cam.defaults]
-tool = "claude"
-auto_confirm = false
-auto_exit = false
-timeout = 0
-
-[cam.env_setup]
-# Shell commands run before agent launch (e.g., activate virtualenv)
-# commands = ["source ~/.nvm/nvm.sh"]
-```
-
-Data stored at `~/.local/share/cam/`:
-- `cam.db` — SQLite database (agents, contexts, history)
-- `pids/` — PID files for background monitor subprocesses
+| | cam serve | camc (per machine) |
+|---|---|---|
+| **Storage** | SQLite (`~/.local/share/cam/cam.db`) | JSON (`~/.cam/agents.json`) |
+| **Agent ID** | 8-char hex (from camc) or full UUID (legacy) | 8-char hex via `uuid5(hostname+time+random)` |
+| **Role** | Aggregated cache for API/mobile | Source of truth per machine |
 
 ## Testing
 
 ```bash
-pip install -e ".[dev]"
-pytest
+pip install -e ".[all,dev]"
+pytest                    # Full suite (~450 tests)
+pytest tests/test_foo.py  # Single file
+pytest -k "test_name"     # By name
 ```
 
 ## License
