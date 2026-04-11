@@ -189,12 +189,88 @@ def _agent_to_cam_json(a):
     }
 
 
+def _preflight(tool, tool_binary, workdir):
+    """Run environment checks before launching an agent.
+
+    Returns a list of (level, message) tuples where level is 'error' or 'warn'.
+    'error' items should block startup; 'warn' items are advisory.
+    """
+    issues = []
+
+    # 1. tmux available?
+    if not shutil.which("tmux"):
+        issues.append(("error", "tmux not found in PATH. Install: apt install tmux / brew install tmux"))
+
+    # 2. Tool binary in PATH?
+    if tool_binary and not shutil.which(tool_binary):
+        hints = {
+            "claude": "npm install -g @anthropic-ai/claude-code",
+            "codex": "npm install -g @openai/codex",
+        }
+        hint = hints.get(tool, "ensure '%s' is in your PATH" % tool_binary)
+        issues.append(("error", "'%s' not found in PATH. Install: %s" % (tool_binary, hint)))
+
+    # 3. Working directory accessible?
+    if not os.path.isdir(workdir):
+        try:
+            os.makedirs(workdir, exist_ok=True)
+        except OSError as e:
+            issues.append(("error", "Cannot create working directory %s: %s" % (workdir, e)))
+    elif not os.access(workdir, os.R_OK):
+        issues.append(("error", "Working directory not readable: %s" % workdir))
+
+    # 4. Socket directory writable?
+    try:
+        os.makedirs(SOCKETS_DIR, exist_ok=True)
+        test_path = os.path.join(SOCKETS_DIR, ".preflight-test")
+        with open(test_path, "w") as f:
+            f.write("")
+        os.remove(test_path)
+    except OSError as e:
+        issues.append(("warn", "Socket directory not writable (%s): %s" % (SOCKETS_DIR, e)))
+
+    # 5. Log directory writable?
+    try:
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        test_path = os.path.join(LOGS_DIR, ".preflight-test")
+        with open(test_path, "w") as f:
+            f.write("")
+        os.remove(test_path)
+    except OSError as e:
+        issues.append(("warn", "Log directory not writable (%s): %s — monitor logging will fail" % (LOGS_DIR, e)))
+
+    # 6. Agent store writable?
+    store_path = os.path.join(CAM_DIR, "agents.json")
+    try:
+        os.makedirs(CAM_DIR, exist_ok=True)
+        # Just check we can open for append (doesn't corrupt existing data)
+        with open(store_path, "a"):
+            pass
+    except OSError as e:
+        issues.append(("warn", "Agent store not writable (%s): %s" % (store_path, e)))
+
+    return issues
+
+
 def cmd_run(args):
     tool = getattr(args, "tool", None) or "claude"
     prompt = getattr(args, "prompt", "") or ""
     workdir = os.path.abspath(args.path)
     os.makedirs(workdir, exist_ok=True)
     config = _load_config(tool)
+
+    # Preflight environment checks
+    tool_binary = config.command[0] if config.command else None
+    issues = _preflight(tool, tool_binary, workdir)
+    has_error = False
+    for level, msg in issues:
+        if level == "error":
+            print_error(msg)
+            has_error = True
+        else:
+            print_warning(msg)
+    if has_error:
+        sys.exit(1)
 
     agent_id = _gen_agent_id()
     session = "cam-%s" % agent_id
@@ -211,7 +287,8 @@ def cmd_run(args):
             pass
     print("Starting %s agent %s..." % (tool, agent_id))
     if not create_tmux_session(session, launch_cmd, workdir, env_setup=env_setup, inherit_env=inherit_env):
-        sys.stderr.write("Error: failed to create tmux session\n")
+        print_error("Failed to create tmux session for '%s'" % session)
+        print_info("Debug: tmux -u -S %s/%s.sock new-session -d -s %s -c %s" % (SOCKETS_DIR, session, session, workdir))
         sys.exit(1)
 
     name = getattr(args, "name", None) or os.path.basename(workdir) or "%s-%s" % (tool, uuid4().hex[:6])
@@ -271,8 +348,10 @@ def cmd_run(args):
             stderr=open(os.path.join(LOGS_DIR, "monitor-%s.stderr" % agent_id), "a"),
             start_new_session=True)
         store.update(agent_id, pid=proc.pid)
-    except Exception:
-        pass
+    except Exception as e:
+        print_warning("Monitor failed to start: %s" % e)
+        print_warning("Agent is running but auto-confirm/idle detection won't work")
+        print_warning("Check: camc logs %s -f" % agent_id)
 
     print("  ID: %s  Tool: %s  Session: %s" % (agent_id, tool, session))
     if name:
