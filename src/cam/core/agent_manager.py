@@ -233,6 +233,38 @@ class AgentManager:
 
         logger.info("Stopped agent %s via camc", agent_id)
 
+    async def update_agent(self, agent_id: str, name: str | None = None,
+                           auto_confirm: bool | None = None) -> None:
+        """Update agent properties via camc (source of truth).
+
+        Delegates to camc update on the remote machine. The poller will
+        sync the change back to local SQLite.
+
+        Raises:
+            AgentManagerError: If agent is not found or camc update fails.
+        """
+        agent, camc_id, delegate = self._resolve_agent_delegate(agent_id)
+
+        ok = await asyncio.to_thread(
+            delegate.update_agent, camc_id, name=name, auto_confirm=auto_confirm,
+        )
+        if not ok:
+            raise AgentManagerError(f"camc update failed for agent {agent.id}")
+
+        # Also update local SQLite so the change is visible immediately
+        # (poller will overwrite with camc data on next cycle anyway).
+        changed = False
+        if name is not None:
+            agent.task.name = name
+            changed = True
+        if auto_confirm is not None:
+            agent.task.auto_confirm = auto_confirm
+            changed = True
+        if changed:
+            self._agent_store.save(agent)
+
+        logger.info("Updated agent %s via camc", agent_id)
+
     async def get_agent(self, agent_id: str) -> Agent | None:
         """Get an agent by ID."""
         return self._agent_store.get(agent_id)
