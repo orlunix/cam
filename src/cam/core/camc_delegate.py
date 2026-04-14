@@ -245,6 +245,21 @@ class CamcDelegate:
         return rc == 0
 
     # ------------------------------------------------------------------
+    # Update
+    # ------------------------------------------------------------------
+
+    def update_agent(self, agent_id: str, name: str | None = None,
+                     auto_confirm: bool | None = None) -> bool:
+        """Update agent properties via camc update."""
+        args = ["update", agent_id]
+        if name is not None:
+            args += ["--name", name]
+        if auto_confirm is not None:
+            args += ["--auto-confirm", str(auto_confirm).lower()]
+        rc, _ = self._run(args)
+        return rc == 0
+
+    # ------------------------------------------------------------------
     # Maintenance
     # ------------------------------------------------------------------
 

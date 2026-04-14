@@ -467,7 +467,9 @@ def update(
     name: Optional[str] = typer.Option(None, "--name", help="Set agent name"),
     auto_confirm: Optional[bool] = typer.Option(None, "--auto-confirm", help="Enable/disable auto-confirm"),
 ) -> None:
-    """Update agent properties."""
+    """Update agent properties (syncs to remote camc)."""
+    import asyncio
+
     from cam.cli.app import state
     from cam.cli.formatters import print_agent_detail, print_error, print_info, print_success
 
@@ -476,23 +478,28 @@ def update(
         print_error(f"Agent not found: {agent_id}")
         raise typer.Exit(1)
 
-    changed = False
-    if name is not None:
-        agent.task.name = name
-        print_info(f"Updated name to: {name}")
-        changed = True
-    if auto_confirm is not None:
-        agent.task.auto_confirm = auto_confirm
-        print_info(f"Updated auto_confirm to: {auto_confirm}")
-        changed = True
-
-    if not changed:
+    if name is None and auto_confirm is None:
         print_error("Nothing to update. Use --name or --auto-confirm.")
         raise typer.Exit(1)
 
-    state.agent_store.save(agent)
-    print_success(f"Agent {str(agent.id)[:8]} updated")
-    print_agent_detail(agent)
+    try:
+        asyncio.run(state.agent_manager.update_agent(
+            str(agent.id), name=name, auto_confirm=auto_confirm,
+        ))
+    except Exception as e:
+        print_error(f"Failed to update agent: {e}")
+        raise typer.Exit(1)
+
+    if name is not None:
+        print_info(f"Updated name to: {name}")
+    if auto_confirm is not None:
+        print_info(f"Updated auto_confirm to: {auto_confirm}")
+
+    # Re-fetch to show updated state
+    agent = state.agent_store.get(agent_id)
+    if agent:
+        print_success(f"Agent {str(agent.id)[:8]} updated")
+        print_agent_detail(agent)
 
 
 # ---------------------------------------------------------------------------
