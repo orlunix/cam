@@ -62,6 +62,15 @@ def _is_same_host(hostname_a: str | None, hostname_b: str | None) -> bool:
         return False  # unknown → don't assume match (safe default for poller)
     if hostname_a == hostname_b:
         return True
+    # localhost/127.0.0.1 in machines.json means "this machine" — match
+    # against the real hostname that camc records via socket.gethostname().
+    _LOCAL = {"localhost", "127.0.0.1"}
+    if hostname_b in _LOCAL:
+        import socket
+        return hostname_a.split(".")[0] == socket.gethostname().split(".")[0]
+    if hostname_a in _LOCAL:
+        import socket
+        return hostname_b.split(".")[0] == socket.gethostname().split(".")[0]
     return hostname_a.split(".")[0] == hostname_b.split(".")[0]
 
 
@@ -198,6 +207,7 @@ class CamcPoller:
         if not machines:
             machines = self._machines_from_contexts()
         total = 0
+        seen_ids: set[str] = set()  # agent IDs seen across all machines this cycle
 
         for machine in machines:
             name = machine.get("name", "")
@@ -321,6 +331,7 @@ class CamcPoller:
                             self._event_bus.publish(event)
 
                 self._prev_states[agent_id] = status
+                seen_ids.add(agent_id)
                 total += 1
 
             # Poll events (incremental)
@@ -341,6 +352,32 @@ class CamcPoller:
                     self._event_bus.publish(agent_event)
             except Exception as e:
                 logger.debug("Failed to poll events from %s: %s", name, e)
+
+        # Stale agent cleanup: after polling ALL machines, any agent still
+        # marked running in cam DB but not reported by any camc is dead.
+        # All agents (local + remote) go through camc now, so camc is the
+        # single source of truth. Agents not in any camc list are zombies.
+        all_db_agents = self._agent_store.list()
+        for dba in all_db_agents:
+            if dba.status != AgentStatus.RUNNING:
+                continue
+            if str(dba.id) in seen_ids:
+                continue
+            self._agent_store.update_status(
+                str(dba.id), AgentStatus.COMPLETED,
+                exit_reason="Session gone (not in camc list)",
+            )
+            event = AgentEvent(
+                agent_id=str(dba.id),
+                event_type="status_change",
+                detail={"from": "running", "to": "completed"},
+            )
+            try:
+                self._agent_store.add_event(event)
+            except Exception:
+                pass
+            self._event_bus.publish(event)
+            logger.info("Cleaned stale agent %s (not in any camc)", dba.id)
 
         return total
 

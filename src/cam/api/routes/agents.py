@@ -183,11 +183,14 @@ async def update_agent(agent_id: str, body: UpdateAgentRequest, request: Request
             status_code=404, detail=f"Agent not found: {agent_id}"
         )
 
-    if body.name is not None:
-        agent.task.name = body.name
-    if body.auto_confirm is not None:
-        agent.task.auto_confirm = body.auto_confirm
-    state.agent_store.save(agent)
+    try:
+        await state.agent_manager.update_agent(
+            str(agent.id), name=body.name, auto_confirm=body.auto_confirm,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    agent = await state.agent_manager.get_agent(agent_id)
     return agent_to_response(agent)
 
 

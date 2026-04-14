@@ -313,14 +313,18 @@ def heal() -> None:
     healed_hosts: set[str] = set()  # track hosts we already healed
 
     for agent in agents:
-        context = state.context_store.get(str(agent.context_id))
-        if context is None:
-            continue
-
-        machine = context.machine
-        host = getattr(machine, "host", None)
-        user = getattr(machine, "user", None)
-        port = getattr(machine, "port", None)
+        # Use agent's own machine fields (set by poller), fall back to context
+        host = agent.machine_host
+        user = agent.machine_user
+        port = agent.machine_port
+        if not host and agent.context_id:
+            context = state.context_store.get(str(agent.context_id))
+            if context is None:
+                continue
+            machine = context.machine
+            host = getattr(machine, "host", None)
+            user = getattr(machine, "user", None)
+            port = getattr(machine, "port", None)
 
         # Deduplicate by host
         host_key = "%s@%s:%s" % (user or "", host or "local", port or "")
