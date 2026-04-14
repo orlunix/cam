@@ -290,34 +290,25 @@ class CamcPoller:
                     except Exception as e:
                         logger.warning("Failed to import agent %s: %s", agent_id, e)
                 else:
-                    # Correct machine fields: the hostname guard above already
-                    # ensures we only reach here when the agent's hostname
-                    # matches the machine we're polling, so it's safe to
-                    # overwrite — this self-heals any prior cross-contamination
-                    # (e.g. NFS shared agents.json assigned wrong host).
-                    if host and (not existing.machine_host
-                                 or existing.machine_host != host
-                                 or existing.machine_port != port):
-                        try:
-                            self._agent_store.db.execute(
-                                "UPDATE agents SET machine_host=?, machine_user=?, machine_port=? WHERE id=?",
-                                (host, user, port, agent_id),
-                            )
-                        except Exception:
-                            pass
+                    # Full sync from camc (source of truth). Rebuild the
+                    # complete Agent model and save() via UPSERT so all
+                    # mutable fields (name, context, path, status, state,
+                    # machine_host, etc.) are kept in sync every poll cycle.
+                    agent_fresh = _camc_agent_to_model(
+                        agent_data,
+                        machine_host=host,
+                        machine_user=user,
+                        machine_port=port,
+                    )
+                    # Preserve cam-local fields that camc doesn't populate
+                    agent_fresh.context_id = existing.context_id or agent_fresh.context_id
+                    self._agent_store.save(agent_fresh)
 
-                    # Update status if changed — trust agents.json as source of truth
+                    # Emit event on status change
                     prev_status = self._prev_states.get(agent_id)
                     if prev_status != status:
                         new_status = _STATUS_MAP.get(status)
                         if new_status and new_status != existing.status:
-                            exit_reason = agent_data.get("exit_reason")
-                            new_state = _STATE_MAP.get(agent_data.get("state", ""))
-                            self._agent_store.update_status(
-                                agent_id, new_status, state=new_state,
-                                exit_reason=exit_reason,
-                            )
-                            # Emit event
                             event = AgentEvent(
                                 agent_id=agent_id,
                                 event_type="status_change",
@@ -328,18 +319,6 @@ class CamcPoller:
                             except Exception:
                                 pass
                             self._event_bus.publish(event)
-
-                    # Sync state independently of status changes
-                    state_str = agent_data.get("state", "")
-                    new_state = _STATE_MAP.get(state_str)
-                    if new_state and new_state != existing.state:
-                        try:
-                            self._agent_store.db.execute(
-                                "UPDATE agents SET state = ? WHERE id = ?",
-                                (new_state.value, agent_id),
-                            )
-                        except Exception:
-                            pass
 
                 self._prev_states[agent_id] = status
                 total += 1
