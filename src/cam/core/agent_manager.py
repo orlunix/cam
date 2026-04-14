@@ -191,23 +191,12 @@ class AgentManager:
             logger.info("Agent %s is already in terminal state %s", agent_id, agent.status.value)
             return
 
-        from cam.core.camc_delegate import CamcDelegate
-
-        context = self._context_store.get(str(agent.context_id))
-        if context is None:
-            host = user = port = None
-        else:
-            machine = context.machine
-            host = getattr(machine, "host", None)
-            user = getattr(machine, "user", None)
-            port = getattr(machine, "port", None)
-
-        delegate = CamcDelegate(host=host, user=user, port=port)
+        agent, camc_id, delegate = self._resolve_agent_delegate(agent_id)
 
         if graceful:
-            ok = await asyncio.to_thread(delegate.stop_agent, agent.id)
+            ok = await asyncio.to_thread(delegate.stop_agent, camc_id)
         else:
-            ok = await asyncio.to_thread(delegate.kill_agent, agent.id)
+            ok = await asyncio.to_thread(delegate.kill_agent, camc_id)
 
         if not ok:
             logger.warning("camc stop/kill failed for agent %s, updating local state anyway", agent.id)

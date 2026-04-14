@@ -820,27 +820,13 @@ def rm(
 
     # Remove from remote/local agents.json via camc
     from cam.core.camc_delegate import CamcDelegate
-    host = agent.machine_host
-    if host and host != "localhost":
-        try:
-            delegate = CamcDelegate(
-                host=host, user=agent.machine_user, port=agent.machine_port)
-            delegate._run(["rm", str(agent.id)])
-        except Exception:
-            pass  # best-effort
-    else:
-        # Local agent — camc rm locally
-        import subprocess
-        try:
-            subprocess.run(["camc", "rm", str(agent.id)],
-                           capture_output=True, timeout=10)
-        except Exception:
-            pass
-        # Legacy fallback: context-based remote rm
-        if not host:
-            ctx = state.context_store.get(str(agent.context_id))
-            if ctx and ctx.machine.host:
-                _rm_remote_agent(state, ctx, aid)
+    try:
+        delegate = CamcDelegate(
+            host=agent.machine_host, user=agent.machine_user,
+            port=agent.machine_port)
+        delegate._run(["rm", str(agent.id)])
+    except Exception:
+        pass  # best-effort
 
     # Clean local files (logs, PIDs, sockets)
     _clean_agent_files([aid], [agent.tmux_session])
