@@ -27,7 +27,7 @@ import time
 # ===========================================================================
 
 __version__ = "1.1.0"
-__build__ = "bbe2572-dirty 2026-04-10 21:13"
+__build__ = "ba66479-dirty 2026-04-14 23:36"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -2861,6 +2861,9 @@ def _agent_to_cam_json(a):
             "auto_confirm": True,
             "auto_exit": a.get("auto_exit", False),
         }
+    # Ensure tags is always present (backward compat)
+    if "tags" not in task_out:
+        task_out["tags"] = []
 
     # Session name: unified = tmux_session, legacy = session
     session = a.get("tmux_session") or a.get("session", "")
@@ -3008,11 +3011,13 @@ def cmd_run(args):
     ctx_name = context.get("name", "") if isinstance(context, dict) else ""
     ctx_host = context.get("host") if isinstance(context, dict) else None
     transport = "ssh" if ctx_host and ctx_host not in ("localhost", "127.0.0.1") else "local"
+    tags = getattr(args, "tag", None) or []
     store = AgentStore()
     store.save({
         "id": agent_id,
         "task": {"name": name or "", "tool": tool, "prompt": prompt,
-                 "auto_confirm": True, "auto_exit": auto_exit},
+                 "auto_confirm": True, "auto_exit": auto_exit,
+                 "tags": tags},
         "context_id": "",
         "context_name": ctx_name,
         "context_path": workdir,
@@ -3111,8 +3116,21 @@ def cmd_list(args):
     if status_filter:
         agents = [a for a in agents if a.get("status") == status_filter]
 
-    # Sort by started_at descending
-    agents = sorted(agents, key=lambda x: x.get("started_at", ""), reverse=True)
+    tag_filter = getattr(args, "tag", None)
+    if tag_filter:
+        agents = [a for a in agents
+                  if tag_filter in (_tf(a, "tags") if isinstance(_tf(a, "tags"), list) else [])]
+
+    # Sort: tagged agents first (by tags[0] alpha), then untagged.
+    # Within each group, by started_at descending.
+    def _sort_key(a):
+        tags = _tf(a, "tags")
+        tags = tags if isinstance(tags, list) else []
+        first_tag = tags[0].lower() if tags else ""
+        started = a.get("started_at", "")
+        # tagged=0 (first), untagged=1 (after); then by tag alpha, then newest first
+        return (0 if tags else 1, first_tag, "" if not started else chr(127) + started[::-1])
+    agents = sorted(agents, key=_sort_key)
 
     # Limit
     last_n = getattr(args, "last", 50) or 50
@@ -3123,12 +3141,15 @@ def cmd_list(args):
         print(json.dumps([_agent_to_cam_json(a) for a in agents], indent=2))
         return
 
-    headers = ["ID", "NAME", "TOOL", "STATUS", "STATE", "PROMPT", "STARTED"]
+    headers = ["ID", "NAME", "TAG", "TOOL", "STATUS", "STATE", "PROMPT", "STARTED"]
     rows = []
     for a in agents:
+        tags = _tf(a, "tags")
+        tag_str = ",".join(tags) if isinstance(tags, list) else ""
         rows.append([
             a.get("id", "?")[:8],
             (_tf(a, "name") or "")[:16],
+            tag_str[:20],
             _tf(a, "tool", "?"),
             styled_status(a.get("status", "?")),
             styled_state(a.get("state")),
@@ -3136,7 +3157,7 @@ def cmd_list(args):
             _time_ago(a.get("started_at")),
         ])
     print_table(headers, rows, title="Agents",
-                col_styles={0: "dim", 1: "bold", 3: None, 6: "dim"})
+                col_styles={0: "dim", 1: "bold", 2: "cyan", 4: None, 7: "dim"})
 
 
 def cmd_logs(args):
@@ -3210,8 +3231,26 @@ def cmd_update(args):
         print_info("Updated auto_confirm to: %s" % args.auto_confirm)
         changed = True
 
+    # Tag operations
+    tags = task.get("tags", [])
+    if not isinstance(tags, list):
+        tags = []
+    add_tags = getattr(args, "tag", None) or []
+    rm_tags = getattr(args, "untag", None) or []
+    for t in add_tags:
+        if t not in tags:
+            tags.append(t)
+            print_info("Added tag: %s" % t)
+            changed = True
+    for t in rm_tags:
+        if t in tags:
+            tags.remove(t)
+            print_info("Removed tag: %s" % t)
+            changed = True
+    task["tags"] = tags
+
     if not changed:
-        print_error("Nothing to update. Use --name or --auto-confirm.")
+        print_error("Nothing to update. Use --name, --auto-confirm, --tag, or --untag.")
         sys.exit(1)
 
     a["task"] = task
@@ -4164,11 +4203,13 @@ examples:
     r.add_argument("--path", "-p", default=os.getcwd(), help="Working directory")
     r.add_argument("--name", "-n", default=None, help="Human-readable name")
     r.add_argument("--auto-exit", "-a", action="store_true", help="Auto-exit on completion")
+    r.add_argument("--tag", action="append", default=[], help="Add tag (repeatable)")
     r.add_argument("--no-inherit-env", action="store_true", help="Legacy mode: wrap command with bash -c and env_setup")
 
     # list
     ls = sub.add_parser("list", aliases=["ls"], help="List agents")
     ls.add_argument("--status", default=None, help="Filter by status")
+    ls.add_argument("--tag", default=None, help="Filter by tag")
     ls.add_argument("--last", "-n", type=int, default=50, help="Show last N agents [default: 50]")
 
     # logs
@@ -4191,6 +4232,8 @@ examples:
     up.add_argument("--name", default=None, help="Set agent name")
     up.add_argument("--auto-confirm", dest="auto_confirm", default=None,
                     type=lambda v: v.lower() in ("true", "1", "yes"), help="Enable/disable auto-confirm")
+    up.add_argument("--tag", action="append", default=[], help="Add tag (repeatable)")
+    up.add_argument("--untag", action="append", default=[], help="Remove tag (repeatable)")
 
     # add
     a = sub.add_parser("add", help="Adopt existing tmux session")
