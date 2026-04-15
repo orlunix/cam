@@ -209,11 +209,14 @@ def print_agent_list(agents: list[Agent]) -> None:
         return (0 if tags else 1, first_tag, "" if not started else chr(127) + started[::-1])
     agents = sorted(agents, key=_sort_key)
 
+    any_tags = any(a.task.tags for a in agents)
+
     table = Table(title="Agents", title_style="bold green")
     table.add_column("#", style="bold yellow", no_wrap=True)
     table.add_column("ID", style="dim", no_wrap=True)
     table.add_column("Name", style="bold")
-    table.add_column("Tag", style="cyan", no_wrap=True)
+    if any_tags:
+        table.add_column("Tag", style="cyan", no_wrap=True)
     table.add_column("Tool", style="bold")
     table.add_column("Status", no_wrap=True)
     table.add_column("State", no_wrap=True)
@@ -226,20 +229,23 @@ def print_agent_list(agents: list[Agent]) -> None:
         state_text = format_state(agent.state)
         duration_text = format_duration(agent.duration_seconds())
         transport_label = TRANSPORT_LABELS.get(agent.transport_type, "?")
-        tag_str = ",".join(agent.task.tags) if agent.task.tags else ""
 
-        table.add_row(
+        row = [
             str(idx),
             format_short_id(str(agent.id)),
             agent.task.name or "",
-            tag_str,
+        ]
+        if any_tags:
+            row.append(",".join(agent.task.tags) if agent.task.tags else "")
+        row += [
             agent.task.tool,
             status_text,
             state_text,
             agent.context_name,
             transport_label,
             duration_text,
-        )
+        ]
+        table.add_row(*row)
 
     console.print(table)
 

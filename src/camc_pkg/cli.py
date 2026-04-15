@@ -429,23 +429,32 @@ def cmd_list(args):
         print(json.dumps([_agent_to_cam_json(a) for a in agents], indent=2))
         return
 
-    headers = ["ID", "NAME", "TAG", "TOOL", "STATUS", "STATE", "PROMPT", "STARTED"]
+    any_tags = any(isinstance(_tf(a, "tags"), list) and _tf(a, "tags") for a in agents)
     rows = []
     for a in agents:
         tags = _tf(a, "tags")
         tag_str = ",".join(tags) if isinstance(tags, list) else ""
-        rows.append([
+        row = [
             a.get("id", "?")[:8],
             (_tf(a, "name") or "")[:16],
-            tag_str[:20],
+        ]
+        if any_tags:
+            row.append(tag_str[:20])
+        row += [
             _tf(a, "tool", "?"),
             styled_status(a.get("status", "?")),
             styled_state(a.get("state")),
             (_tf(a, "prompt") or "")[:24],
             _time_ago(a.get("started_at")),
-        ])
-    print_table(headers, rows, title="Agents",
-                col_styles={0: "dim", 1: "bold", 2: "cyan", 4: None, 7: "dim"})
+        ]
+        rows.append(row)
+    if any_tags:
+        headers = ["ID", "NAME", "TAG", "TOOL", "STATUS", "STATE", "PROMPT", "STARTED"]
+        col_styles = {0: "dim", 1: "bold", 2: "cyan", 4: None, 7: "dim"}
+    else:
+        headers = ["ID", "NAME", "TOOL", "STATUS", "STATE", "PROMPT", "STARTED"]
+        col_styles = {0: "dim", 1: "bold", 3: None, 6: "dim"}
+    print_table(headers, rows, title="Agents", col_styles=col_styles)
 
 
 def cmd_logs(args):
