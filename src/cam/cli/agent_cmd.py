@@ -143,6 +143,7 @@ def list(
     tool: Optional[str] = typer.Option(None, "--tool", help="Filter by tool"),
     ctx_name: Optional[str] = typer.Option(None, "--ctx", help="Filter by context"),
     machine: Optional[str] = typer.Option(None, "--machine", "-m", help="Filter by machine host (substring match)"),
+    tag: Optional[str] = typer.Option(None, "--tag", help="Filter by tag"),
     last: int = typer.Option(0, "--last", "-n", help="Show last N agents (0=all)"),
     watch: bool = typer.Option(False, "--watch", "-w", help="Auto-refresh every 2s"),
 ) -> None:
@@ -170,6 +171,8 @@ def list(
             machine=machine,
             limit=last,
         )
+        if tag:
+            agents = [a for a in agents if tag in (a.task.tags or [])]
         if not agents:
             print_info("No agents found.")
             return

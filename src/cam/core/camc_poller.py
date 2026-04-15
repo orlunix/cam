@@ -98,12 +98,14 @@ def _camc_agent_to_model(data: dict, context_name: str | None = None,
     # Task: new format has nested dict, legacy has flat fields
     task_data = data.get("task", {})
     if isinstance(task_data, dict) and task_data:
+        tags_raw = task_data.get("tags", [])
         task = TaskDefinition(
             name=task_data.get("name", ""),
             tool=task_data.get("tool", "claude"),
             prompt=task_data.get("prompt", ""),
             auto_confirm=task_data.get("auto_confirm", True),
             auto_exit=task_data.get("auto_exit", False),
+            tags=tags_raw if isinstance(tags_raw, list) else [],
         )
     else:
         # Legacy flat format

@@ -196,6 +196,7 @@ class TaskDefinition(BaseModel):
     on_complete: Optional[str] = None
     auto_confirm: Optional[bool] = None
     auto_exit: Optional[bool] = None
+    tags: list[str] = Field(default_factory=list)
 
     model_config = {
         "json_schema_extra": {
