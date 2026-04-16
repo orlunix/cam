@@ -684,15 +684,38 @@ def cmd_rm(args):
 
 
 def cmd_prune(args):
-    """Remove all non-running agents (stopped, killed, completed, failed)."""
+    """Remove all non-running agents (stopped, killed, completed, failed).
+
+    Skips agents whose tmux session is still alive — they may be
+    interactive agents that just finished a task but are still usable.
+    """
     store = AgentStore()
     agents = store.list()
     removed = 0
+    skipped = 0
     for a in agents:
         if a.get("status") not in ("running", "starting", "pending"):
+            # Check if tmux session is still alive before pruning
+            session = _sf(a, "tmux_session")
+            if session:
+                sock = _find_tmux_socket(session)
+                if sock:
+                    cmd = ["tmux", "-S", sock, "has-session", "-t", session]
+                    try:
+                        subprocess.run(cmd, check=True, capture_output=True, timeout=3)
+                        # Session alive — don't prune, fix status instead
+                        a["status"] = "running"
+                        store.save(a)
+                        skipped += 1
+                        continue
+                    except Exception:
+                        pass  # Session dead, safe to prune
             store.remove(a["id"])
             removed += 1
-    print("Pruned %d non-running agent%s" % (removed, "s" if removed != 1 else ""))
+    msg = "Pruned %d non-running agent%s" % (removed, "s" if removed != 1 else "")
+    if skipped:
+        msg += " (%d restored to running — tmux session still alive)" % skipped
+    print(msg)
 
 
 def cmd_attach(args):
