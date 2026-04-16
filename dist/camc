@@ -27,7 +27,7 @@ import time
 # ===========================================================================
 
 __version__ = "1.1.0"
-__build__ = "e27a649-dirty 2026-04-15 01:03"
+__build__ = "7de44d2 2026-04-16 03:49"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -303,6 +303,12 @@ pattern = "\\(y/n\\)|\\[Y/n\\]|\\[y/N\\]"
 response = "y"
 send_enter = true
 
+[[confirm]]
+# Multi-line paste confirmation: [Pasted text #1 +N lines]
+pattern = "Pasted text.*\\+\\d+ lines"
+response = ""
+send_enter = true
+
 [probe]
 char = "1"                    # smart probe char (also used for auto-confirm)
 wait = 0.3                    # seconds after probe before recapture
@@ -338,7 +344,7 @@ name = "codex"
 display_name = "OpenAI Codex"
 
 [launch]
-command = ["codex", "{prompt}"]
+command = ["codex", "--full-auto", "{prompt}"]
 prompt_after_launch = false
 startup_wait = 0.0
 
@@ -384,13 +390,9 @@ response = "1"
 send_enter = true
 
 [[confirm]]
-pattern = "(Apply|Accept|Approve|Continue|Proceed).*\\[Y/n\\]"
-flags = ["IGNORECASE"]
-response = "y"
-send_enter = true
-
-[[confirm]]
-pattern = "(Apply|Accept|Approve|Continue|Proceed).*\\[y/N\\]"
+# Any [Y/n] or [y/N] prompt — covers Apply, Accept, Approve, Continue,
+# Proceed, Run, Execute, Overwrite, Allow, and any future prompts
+pattern = "\\[Y/n\\]|\\[y/N\\]"
 flags = ["IGNORECASE"]
 response = "y"
 send_enter = true
@@ -2739,6 +2741,52 @@ def run_dag(graph, workdir=None, dry_run=False, poll_interval=5, timeout=None):
 # cli
 # ===========================================================================
 
+def _ensure_logs_on_scratch():
+    """Move ~/.cam/logs to scratch if available. Silent, idempotent."""
+    logs_dir = os.path.join(os.path.expanduser("~"), ".cam", "logs")
+    if os.path.islink(logs_dir):
+        return  # Already done
+    if not os.path.isdir(logs_dir):
+        return  # No logs dir yet
+    # Find scratch
+    user = os.environ.get("USER", "")
+    if not user:
+        return
+    scratch = None
+    # Try ypcat (NIS)
+    try:
+        out = subprocess.check_output(
+            ["ypcat", "-k", "auto.home"], timeout=5, stderr=subprocess.DEVNULL
+        ).decode("utf-8", errors="replace")
+        for line in out.splitlines():
+            if line.startswith("scratch.%s" % user):
+                scratch = "/home/%s" % line.split()[0]
+                break
+    except Exception:
+        pass
+    # Fallback: check common paths
+    if not scratch:
+        for suffix in ["_gpu", "", "_gpu_1", "_gpu_2"]:
+            candidate = "/home/scratch.%s%s" % (user, suffix)
+            if os.path.isdir(candidate):
+                scratch = candidate
+                break
+    if not scratch or not os.path.isdir(scratch):
+        return
+    dst = os.path.join(scratch, ".cam", "logs")
+    try:
+        os.makedirs(dst, exist_ok=True)
+        subprocess.run(["rsync", "-a", "--quiet", logs_dir + "/", dst + "/"],
+                       timeout=120, check=False)
+        tmp = "%s.old.%d" % (logs_dir, os.getpid())
+        os.rename(logs_dir, tmp)
+        os.symlink(dst, logs_dir)
+        subprocess.run(["rm", "-rf", tmp], timeout=30, check=False)
+        log.info("Moved logs to scratch: %s", dst)
+    except Exception:
+        pass  # Silent failure — don't break camc startup
+
+
 def _gen_agent_id():
     """Generate an 8-char agent ID from hostname + time + random."""
     raw = "%s-%s-%s" % (_sock.gethostname(), time.time(), uuid4().hex[:8])
@@ -3350,15 +3398,38 @@ def cmd_rm(args):
 
 
 def cmd_prune(args):
-    """Remove all non-running agents (stopped, killed, completed, failed)."""
+    """Remove all non-running agents (stopped, killed, completed, failed).
+
+    Skips agents whose tmux session is still alive — they may be
+    interactive agents that just finished a task but are still usable.
+    """
     store = AgentStore()
     agents = store.list()
     removed = 0
+    skipped = 0
     for a in agents:
         if a.get("status") not in ("running", "starting", "pending"):
+            # Check if tmux session is still alive before pruning
+            session = _sf(a, "tmux_session")
+            if session:
+                sock = _find_tmux_socket(session)
+                if sock:
+                    cmd = ["tmux", "-S", sock, "has-session", "-t", session]
+                    try:
+                        subprocess.run(cmd, check=True, capture_output=True, timeout=3)
+                        # Session alive — don't prune, fix status instead
+                        a["status"] = "running"
+                        store.save(a)
+                        skipped += 1
+                        continue
+                    except Exception:
+                        pass  # Session dead, safe to prune
             store.remove(a["id"])
             removed += 1
-    print("Pruned %d non-running agent%s" % (removed, "s" if removed != 1 else ""))
+    msg = "Pruned %d non-running agent%s" % (removed, "s" if removed != 1 else "")
+    if skipped:
+        msg += " (%d restored to running — tmux session still alive)" % skipped
+    print(msg)
 
 
 def cmd_attach(args):
@@ -4361,6 +4432,9 @@ examples:
     # Enable debug logging if --verbose
     if getattr(args, "verbose", False):
         logging.getLogger("camc").setLevel(logging.DEBUG)
+
+    # Auto-move logs to scratch if available (silent, one-time)
+    _ensure_logs_on_scratch()
 
     cmds = {
         "init": cmd_init,

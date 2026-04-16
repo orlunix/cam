@@ -88,6 +88,12 @@ pattern = "\\(y/n\\)|\\[Y/n\\]|\\[y/N\\]"
 response = "y"
 send_enter = true
 
+[[confirm]]
+# Multi-line paste confirmation: [Pasted text #1 +N lines]
+pattern = "Pasted text.*\\+\\d+ lines"
+response = ""
+send_enter = true
+
 [probe]
 char = "1"                    # smart probe char (also used for auto-confirm)
 wait = 0.3                    # seconds after probe before recapture

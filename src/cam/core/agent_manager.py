@@ -223,7 +223,9 @@ class AgentManager:
         logger.info("Stopped agent %s via camc", agent_id)
 
     async def update_agent(self, agent_id: str, name: str | None = None,
-                           auto_confirm: bool | None = None) -> None:
+                           auto_confirm: bool | None = None,
+                           tags: list[str] | None = None,
+                           untags: list[str] | None = None) -> None:
         """Update agent properties via camc (source of truth).
 
         Delegates to camc update on the remote machine. The poller will
@@ -236,6 +238,7 @@ class AgentManager:
 
         ok = await asyncio.to_thread(
             delegate.update_agent, camc_id, name=name, auto_confirm=auto_confirm,
+            tags=tags, untags=untags,
         )
         if not ok:
             raise AgentManagerError(f"camc update failed for agent {agent.id}")
@@ -248,6 +251,16 @@ class AgentManager:
             changed = True
         if auto_confirm is not None:
             agent.task.auto_confirm = auto_confirm
+            changed = True
+        if tags or untags:
+            current = list(agent.task.tags or [])
+            for t in (tags or []):
+                if t not in current:
+                    current.append(t)
+            for t in (untags or []):
+                if t in current:
+                    current.remove(t)
+            agent.task.tags = current
             changed = True
         if changed:
             self._agent_store.save(agent)
