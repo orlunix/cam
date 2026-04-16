@@ -321,12 +321,12 @@ def attach(
         ctx_name = getattr(agent, "context_name", "")
         if ctx_name:
             import json as _json
-            ctx = state.context_store.get_by_name(ctx_name)
-            if ctx and ctx.machine_config:
-                mc = ctx.machine_config if isinstance(ctx.machine_config, dict) else _json.loads(ctx.machine_config)
-                host = mc.get("host")
-                user = user or mc.get("user")
-                port = port or mc.get("port")
+            ctx = state.context_store.get(ctx_name)
+            if ctx and ctx.machine:
+                mc = ctx.machine
+                host = getattr(mc, "host", None) or host
+                user = user or getattr(mc, "user", None)
+                port = port or getattr(mc, "port", None)
 
     if host and host != "localhost":
         # Remote: SSH with -t for interactive tmux
@@ -469,6 +469,8 @@ def update(
     agent_id: str = typer.Argument(..., help="Agent ID (full or short)"),
     name: Optional[str] = typer.Option(None, "--name", help="Set agent name"),
     auto_confirm: Optional[bool] = typer.Option(None, "--auto-confirm", help="Enable/disable auto-confirm"),
+    tag: Optional[str] = typer.Option(None, "--tag", help="Add tag(s), comma-separated"),
+    untag: Optional[str] = typer.Option(None, "--untag", help="Remove tag(s), comma-separated"),
 ) -> None:
     """Update agent properties (syncs to remote camc)."""
     import asyncio
@@ -481,13 +483,17 @@ def update(
         print_error(f"Agent not found: {agent_id}")
         raise typer.Exit(1)
 
-    if name is None and auto_confirm is None:
-        print_error("Nothing to update. Use --name or --auto-confirm.")
+    tags = [t.strip() for t in tag.split(",") if t.strip()] if tag else []
+    untags = [t.strip() for t in untag.split(",") if t.strip()] if untag else []
+
+    if name is None and auto_confirm is None and not tags and not untags:
+        print_error("Nothing to update. Use --name, --auto-confirm, --tag, or --untag.")
         raise typer.Exit(1)
 
     try:
         asyncio.run(state.agent_manager.update_agent(
             str(agent.id), name=name, auto_confirm=auto_confirm,
+            tags=tags or None, untags=untags or None,
         ))
     except Exception as e:
         print_error(f"Failed to update agent: {e}")
@@ -497,6 +503,10 @@ def update(
         print_info(f"Updated name to: {name}")
     if auto_confirm is not None:
         print_info(f"Updated auto_confirm to: {auto_confirm}")
+    for t in tags:
+        print_info(f"Added tag: {t}")
+    for t in untags:
+        print_info(f"Removed tag: {t}")
 
     # Re-fetch to show updated state
     agent = state.agent_store.get(agent_id)

@@ -16,6 +16,45 @@ pytest -k "test_probe_echo"     # Run a specific test by name
 pytest -x                       # Stop on first failure
 ```
 
+## MANDATORY Smoke Tests Before Every Commit
+
+Unit tests do NOT catch CLI type annotation bugs or missing method calls.
+After ANY code change, run ALL of these before committing:
+
+```bash
+# 1. List works
+cam list --last 3
+
+# 2. Attach works (Ctrl+B D to detach)
+cam attach <any-running-agent-id>
+
+# 3. Status works
+cam status <any-agent-id>
+
+# 4. Update works
+cam update <any-agent-id> --name smoke-test
+cam update <any-agent-id> --name <original-name>
+
+# 5. If tag feature changed:
+cam update <any-agent-id> --tag SMOKE
+cam list --tag SMOKE
+cam update <any-agent-id> --untag SMOKE
+
+# 6. camc rebuild (if camc_pkg changed):
+python3 build_camc.py
+camc list
+```
+
+If ANY command crashes, fix it before committing.
+
+## Known Typer Pitfalls
+
+- **Never use `Optional[list[str]]`** with typer — crashes at import time.
+  Use `Optional[str]` and split commas in the function body.
+- **Never use `ContextStore.get_by_name()`** — does not exist. Use `get()`.
+- Test the actual CLI binary, not just Python imports — typer evaluates
+  type annotations at app startup, not at call time.
+
 The CLI entry point is `cam` (defined in `pyproject.toml` `[project.scripts]`).
 
 ```bash
