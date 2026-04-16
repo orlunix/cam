@@ -222,12 +222,45 @@ def logs(
     """View agent output logs."""
     from cam.cli.app import state
     from cam.cli.formatters import print_error, print_info
-    from cam.utils.logging import AgentLogger
 
     agent = state.agent_store.get(agent_id)
     if not agent:
         print_error(f"Agent not found: {agent_id}")
         raise typer.Exit(1)
+
+    # Remote agent: delegate to camc logs via SSH
+    host = agent.machine_host
+    if host and host not in ("localhost", "127.0.0.1"):
+        from cam.core.camc_delegate import CamcDelegate
+
+        delegate = CamcDelegate(
+            host=host, user=agent.machine_user, port=agent.machine_port)
+        camc_id = agent.tmux_session or str(agent.id)
+        if follow:
+            import time
+            print_info(f"Following logs on {host}... (Ctrl+C to stop)")
+            prev = ""
+            try:
+                while True:
+                    rc, out = delegate._run(["logs", camc_id, "-n", str(max(tail, 200))])
+                    if out and out != prev:
+                        import os
+                        os.system("clear")
+                        print(out)
+                        prev = out
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                pass
+        else:
+            rc, out = delegate._run(["logs", camc_id, "-n", str(tail)])
+            if rc == 0 and out.strip():
+                print(out)
+            else:
+                print_info(f"No logs available on {host}")
+        return
+
+    # Local agent: read log file directly
+    from cam.utils.logging import AgentLogger
 
     logger = AgentLogger(str(agent.id))
     if not logger.log_path.exists():
@@ -614,7 +647,40 @@ def prune(
             print_info("Cancelled.")
             return
 
-    # --- Delete ---
+    # --- Delegate camc prune to all unique machines ---
+    # camc is the source of truth. We just tell each machine to prune.
+    # The poller will sync the changes back to cam's local DB.
+    if agent_ids:
+        from cam.core.camc_delegate import CamcDelegate
+
+        seen_machines: set[str] = set()
+        pruned = 0
+        for aid in agent_ids:
+            agent = state.agent_store.get(aid)
+            if not agent:
+                continue
+            h = agent.machine_host or ""
+            u = agent.machine_user or ""
+            p = str(agent.machine_port or "")
+            key = "%s@%s:%s" % (u, h, p)
+            if key in seen_machines:
+                continue
+            seen_machines.add(key)
+            label = h or "local"
+            if agent.machine_port:
+                label += ":%s" % agent.machine_port
+            try:
+                delegate = CamcDelegate(
+                    host=agent.machine_host or None,
+                    user=agent.machine_user or None,
+                    port=agent.machine_port)
+                delegate._run(["prune"])
+                pruned += 1
+                print_info(f"Pruned on {label}")
+            except Exception as e:
+                print_warning(f"Failed to prune on {label}: {e}")
+
+    # --- Delete from local cam DB ---
     deleted_agents = 0
     if agent_ids:
         file_counts = _clean_agent_files(agent_ids, session_names)

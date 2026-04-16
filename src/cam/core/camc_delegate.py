@@ -121,7 +121,10 @@ class CamcDelegate:
         self._host = host
         self._user = user
         self._port = port
-        self._is_local = host is None or host in ("localhost", "127.0.0.1")
+        # localhost with a non-standard port is an SSH tunnel (e.g. VDI WSL
+        # at localhost:3222), treat as remote.
+        self._is_local = (host is None
+                          or (host in ("localhost", "127.0.0.1") and not port))
 
     def _run(self, args: list[str], timeout: float = 30) -> tuple[int, str]:
         if self._is_local:
@@ -249,13 +252,19 @@ class CamcDelegate:
     # ------------------------------------------------------------------
 
     def update_agent(self, agent_id: str, name: str | None = None,
-                     auto_confirm: bool | None = None) -> bool:
+                     auto_confirm: bool | None = None,
+                     tags: list[str] | None = None,
+                     untags: list[str] | None = None) -> bool:
         """Update agent properties via camc update."""
         args = ["update", agent_id]
         if name is not None:
             args += ["--name", name]
         if auto_confirm is not None:
             args += ["--auto-confirm", str(auto_confirm).lower()]
+        for t in (tags or []):
+            args += ["--tag", t]
+        for t in (untags or []):
+            args += ["--untag", t]
         rc, _ = self._run(args)
         return rc == 0
 
