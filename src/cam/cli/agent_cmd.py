@@ -316,17 +316,18 @@ def attach(
     user = getattr(agent, "machine_user", None)
     port = getattr(agent, "machine_port", None)
 
-    # Fallback: if machine_host is missing but agent is SSH-based, look up context
+    # Fallback: if machine_host is localhost but agent is SSH-based, the poller
+    # recorded the agent's local hostname instead of the SSH connection info.
+    # Override with context's machine config which has the correct external host/port.
     if (not host or host == "localhost") and getattr(agent, "transport_type", "") == "ssh":
         ctx_name = getattr(agent, "context_name", "")
         if ctx_name:
-            import json as _json
             ctx = state.context_store.get(ctx_name)
             if ctx and ctx.machine:
                 mc = ctx.machine
                 host = getattr(mc, "host", None) or host
-                user = user or getattr(mc, "user", None)
-                port = port or getattr(mc, "port", None)
+                user = getattr(mc, "user", None) or user
+                port = getattr(mc, "port", None) or port
 
     if host and host != "localhost":
         # Remote: SSH with -t for interactive tmux
