@@ -243,8 +243,11 @@ class CamcPoller:
                 # agents from ALL machines. Only claim agents whose hostname
                 # matches the machine we're currently polling — otherwise we'd
                 # assign the wrong SSH connection info (host/port).
+                # Skip guard for SSH-tunneled machines (localhost with a port):
+                # they have their own agents.json, not NFS-shared.
+                is_tunnel = host in ("localhost", "127.0.0.1") and port
                 agent_hostname = agent_data.get("hostname", "")
-                if agent_hostname and host and not _is_same_host(agent_hostname, host):
+                if not is_tunnel and agent_hostname and host and not _is_same_host(agent_hostname, host):
                     continue
 
                 # Check if agent already exists in our store (by ID)
