@@ -13,6 +13,52 @@ import socket as _sock
 from uuid import uuid4, uuid5, NAMESPACE_DNS as _UUID_NS
 
 
+def _ensure_logs_on_scratch():
+    """Move ~/.cam/logs to scratch if available. Silent, idempotent."""
+    logs_dir = os.path.join(os.path.expanduser("~"), ".cam", "logs")
+    if os.path.islink(logs_dir):
+        return  # Already done
+    if not os.path.isdir(logs_dir):
+        return  # No logs dir yet
+    # Find scratch
+    user = os.environ.get("USER", "")
+    if not user:
+        return
+    scratch = None
+    # Try ypcat (NIS)
+    try:
+        out = subprocess.check_output(
+            ["ypcat", "-k", "auto.home"], timeout=5, stderr=subprocess.DEVNULL
+        ).decode("utf-8", errors="replace")
+        for line in out.splitlines():
+            if line.startswith("scratch.%s" % user):
+                scratch = "/home/%s" % line.split()[0]
+                break
+    except Exception:
+        pass
+    # Fallback: check common paths
+    if not scratch:
+        for suffix in ["_gpu", "", "_gpu_1", "_gpu_2"]:
+            candidate = "/home/scratch.%s%s" % (user, suffix)
+            if os.path.isdir(candidate):
+                scratch = candidate
+                break
+    if not scratch or not os.path.isdir(scratch):
+        return
+    dst = os.path.join(scratch, ".cam", "logs")
+    try:
+        os.makedirs(dst, exist_ok=True)
+        subprocess.run(["rsync", "-a", "--quiet", logs_dir + "/", dst + "/"],
+                       timeout=120, check=False)
+        tmp = "%s.old.%d" % (logs_dir, os.getpid())
+        os.rename(logs_dir, tmp)
+        os.symlink(dst, logs_dir)
+        subprocess.run(["rm", "-rf", tmp], timeout=30, check=False)
+        log.info("Moved logs to scratch: %s", dst)
+    except Exception:
+        pass  # Silent failure — don't break camc startup
+
+
 def _gen_agent_id():
     """Generate an 8-char agent ID from hostname + time + random."""
     raw = "%s-%s-%s" % (_sock.gethostname(), time.time(), uuid4().hex[:8])
@@ -1664,6 +1710,9 @@ examples:
     # Enable debug logging if --verbose
     if getattr(args, "verbose", False):
         logging.getLogger("camc").setLevel(logging.DEBUG)
+
+    # Auto-move logs to scratch if available (silent, one-time)
+    _ensure_logs_on_scratch()
 
     cmds = {
         "init": cmd_init,
