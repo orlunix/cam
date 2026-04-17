@@ -351,3 +351,302 @@ fc8ce66 Add tag support to camc: --tag, --untag, filter, sort
 aa66452 Relay self-healing, camc preflight checks, poller shadow fix, permission-mode auto
 ```
 
+## v1.1.0  2a424f7-dirty 2026-04-16 18:20
+
+- Lines: 4697
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+7de44d2 Fix prune: skip agents with live tmux sessions
+68707d9 Auto-move logs to scratch at startup
+03aadbf Make TAG column conditional: hide when no agents have tags
+fc8ce66 Add tag support to camc: --tag, --untag, filter, sort
+aa66452 Relay self-healing, camc preflight checks, poller shadow fix, permission-mode auto
+```
+
+## v1.1.0  76bb698-dirty 2026-04-16 19:01
+
+- Lines: 4698
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+16a187a Add session ID tracking and agent reboot with session resume
+7de44d2 Fix prune: skip agents with live tmux sessions
+68707d9 Auto-move logs to scratch at startup
+03aadbf Make TAG column conditional: hide when no agents have tags
+fc8ce66 Add tag support to camc: --tag, --untag, filter, sort
+```
+
+## v1.1.0  6430e17-dirty 2026-04-16 19:33
+
+- Lines: 4701
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6430e17 Rename reboot → migrate, add --to flag for cross-machine moves
+16a187a Add session ID tracking and agent reboot with session resume
+7de44d2 Fix prune: skip agents with live tmux sessions
+68707d9 Auto-move logs to scratch at startup
+03aadbf Make TAG column conditional: hide when no agents have tags
+```
+
+## v1.1.0  05fce81-dirty 2026-04-16 19:41
+
+- Lines: 4702
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+05fce81 Keep reboot command, add migrate as alias with --to flag
+6430e17 Rename reboot → migrate, add --to flag for cross-machine moves
+16a187a Add session ID tracking and agent reboot with session resume
+7de44d2 Fix prune: skip agents with live tmux sessions
+68707d9 Auto-move logs to scratch at startup
+```
+
+## v1.1.0  a2e1c56 2026-04-16 20:02
+
+- Lines: 4702
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+a2e1c56 Rename cmd_reboot → cmd_migrate, reboot is alias
+05fce81 Keep reboot command, add migrate as alias with --to flag
+6430e17 Rename reboot → migrate, add --to flag for cross-machine moves
+16a187a Add session ID tracking and agent reboot with session resume
+7de44d2 Fix prune: skip agents with live tmux sessions
+```
+
+## v1.1.0  a2e1c56-dirty 2026-04-16 20:15
+
+- Lines: 4736
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+a2e1c56 Rename cmd_reboot → cmd_migrate, reboot is alias
+05fce81 Keep reboot command, add migrate as alias with --to flag
+6430e17 Rename reboot → migrate, add --to flag for cross-machine moves
+16a187a Add session ID tracking and agent reboot with session resume
+7de44d2 Fix prune: skip agents with live tmux sessions
+```
+
+## v1.1.0  a714bfb 2026-04-16 20:16
+
+- Lines: 4736
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+a714bfb Fix graceful_exit: use /exit command, kill process not tmux
+a2e1c56 Rename cmd_reboot → cmd_migrate, reboot is alias
+05fce81 Keep reboot command, add migrate as alias with --to flag
+6430e17 Rename reboot → migrate, add --to flag for cross-machine moves
+16a187a Add session ID tracking and agent reboot with session resume
+```
+
+## v1.1.0  a714bfb-dirty 2026-04-16 20:19
+
+- Lines: 4749
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+a714bfb Fix graceful_exit: use /exit command, kill process not tmux
+a2e1c56 Rename cmd_reboot → cmd_migrate, reboot is alias
+05fce81 Keep reboot command, add migrate as alias with --to flag
+6430e17 Rename reboot → migrate, add --to flag for cross-machine moves
+16a187a Add session ID tracking and agent reboot with session resume
+```
+
+## v1.1.0  a714bfb-dirty 2026-04-16 20:20
+
+- Lines: 4749
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+a714bfb Fix graceful_exit: use /exit command, kill process not tmux
+a2e1c56 Rename cmd_reboot → cmd_migrate, reboot is alias
+05fce81 Keep reboot command, add migrate as alias with --to flag
+6430e17 Rename reboot → migrate, add --to flag for cross-machine moves
+16a187a Add session ID tracking and agent reboot with session resume
+```
+
+## v1.1.0  a714bfb-dirty 2026-04-16 20:25
+
+- Lines: 4710
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+a714bfb Fix graceful_exit: use /exit command, kill process not tmux
+a2e1c56 Rename cmd_reboot → cmd_migrate, reboot is alias
+05fce81 Keep reboot command, add migrate as alias with --to flag
+6430e17 Rename reboot → migrate, add --to flag for cross-machine moves
+16a187a Add session ID tracking and agent reboot with session resume
+```
+
+## v1.1.0  a714bfb-dirty 2026-04-16 20:26
+
+- Lines: 4711
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+a714bfb Fix graceful_exit: use /exit command, kill process not tmux
+a2e1c56 Rename cmd_reboot → cmd_migrate, reboot is alias
+05fce81 Keep reboot command, add migrate as alias with --to flag
+6430e17 Rename reboot → migrate, add --to flag for cross-machine moves
+16a187a Add session ID tracking and agent reboot with session resume
+```
+
+## v1.1.0  a714bfb-dirty 2026-04-16 20:28
+
+- Lines: 4712
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+a714bfb Fix graceful_exit: use /exit command, kill process not tmux
+a2e1c56 Rename cmd_reboot → cmd_migrate, reboot is alias
+05fce81 Keep reboot command, add migrate as alias with --to flag
+6430e17 Rename reboot → migrate, add --to flag for cross-machine moves
+16a187a Add session ID tracking and agent reboot with session resume
+```
+
+## v1.1.0  a714bfb-dirty 2026-04-16 20:29
+
+- Lines: 4712
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+a714bfb Fix graceful_exit: use /exit command, kill process not tmux
+a2e1c56 Rename cmd_reboot → cmd_migrate, reboot is alias
+05fce81 Keep reboot command, add migrate as alias with --to flag
+6430e17 Rename reboot → migrate, add --to flag for cross-machine moves
+16a187a Add session ID tracking and agent reboot with session resume
+```
+
+## v1.1.0  a714bfb-dirty 2026-04-16 20:29
+
+- Lines: 4712
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+a714bfb Fix graceful_exit: use /exit command, kill process not tmux
+a2e1c56 Rename cmd_reboot → cmd_migrate, reboot is alias
+05fce81 Keep reboot command, add migrate as alias with --to flag
+6430e17 Rename reboot → migrate, add --to flag for cross-machine moves
+16a187a Add session ID tracking and agent reboot with session resume
+```
+
+## v1.1.0  0f21a08 2026-04-16 20:30
+
+- Lines: 4712
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+0f21a08 Fix reboot: reuse same tmux/agent ID, add --fork-session, relax state check
+a714bfb Fix graceful_exit: use /exit command, kill process not tmux
+a2e1c56 Rename cmd_reboot → cmd_migrate, reboot is alias
+05fce81 Keep reboot command, add migrate as alias with --to flag
+6430e17 Rename reboot → migrate, add --to flag for cross-machine moves
+```
+
+## v1.1.0  0f21a08-dirty 2026-04-16 20:33
+
+- Lines: 4713
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+0f21a08 Fix reboot: reuse same tmux/agent ID, add --fork-session, relax state check
+a714bfb Fix graceful_exit: use /exit command, kill process not tmux
+a2e1c56 Rename cmd_reboot → cmd_migrate, reboot is alias
+05fce81 Keep reboot command, add migrate as alias with --to flag
+6430e17 Rename reboot → migrate, add --to flag for cross-machine moves
+```
+
+## v1.1.0  2d0d948 2026-04-16 20:34
+
+- Lines: 4713
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+2d0d948 Reboot: Esc x3 + Ctrl+C + verify idle + /exit, remove state check
+0f21a08 Fix reboot: reuse same tmux/agent ID, add --fork-session, relax state check
+a714bfb Fix graceful_exit: use /exit command, kill process not tmux
+a2e1c56 Rename cmd_reboot → cmd_migrate, reboot is alias
+05fce81 Keep reboot command, add migrate as alias with --to flag
+```
+
+## v1.1.0  2d0d948-dirty 2026-04-16 20:36
+
+- Lines: 4717
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+2d0d948 Reboot: Esc x3 + Ctrl+C + verify idle + /exit, remove state check
+0f21a08 Fix reboot: reuse same tmux/agent ID, add --fork-session, relax state check
+a714bfb Fix graceful_exit: use /exit command, kill process not tmux
+a2e1c56 Rename cmd_reboot → cmd_migrate, reboot is alias
+05fce81 Keep reboot command, add migrate as alias with --to flag
+```
+
+## v1.1.0  3ea6ddf 2026-04-16 20:37
+
+- Lines: 4717
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+3ea6ddf Reboot: resume existing session ID, no fork
+2d0d948 Reboot: Esc x3 + Ctrl+C + verify idle + /exit, remove state check
+0f21a08 Fix reboot: reuse same tmux/agent ID, add --fork-session, relax state check
+a714bfb Fix graceful_exit: use /exit command, kill process not tmux
+a2e1c56 Rename cmd_reboot → cmd_migrate, reboot is alias
+```
+
+## v1.1.0  3ea6ddf-dirty 2026-04-16 20:44
+
+- Lines: 4733
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+3ea6ddf Reboot: resume existing session ID, no fork
+2d0d948 Reboot: Esc x3 + Ctrl+C + verify idle + /exit, remove state check
+0f21a08 Fix reboot: reuse same tmux/agent ID, add --fork-session, relax state check
+a714bfb Fix graceful_exit: use /exit command, kill process not tmux
+a2e1c56 Rename cmd_reboot → cmd_migrate, reboot is alias
+```
+
+## v1.1.0  b11a477 2026-04-16 20:45
+
+- Lines: 4733
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+b11a477 Reboot: cd to workdir before relaunch, verify Claude exited
+3ea6ddf Reboot: resume existing session ID, no fork
+2d0d948 Reboot: Esc x3 + Ctrl+C + verify idle + /exit, remove state check
+0f21a08 Fix reboot: reuse same tmux/agent ID, add --fork-session, relax state check
+a714bfb Fix graceful_exit: use /exit command, kill process not tmux
+```
+
+## v1.1.0  1996acf-dirty 2026-04-16 23:05
+
+- Lines: 4825
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+b11a477 Reboot: cd to workdir before relaunch, verify Claude exited
+3ea6ddf Reboot: resume existing session ID, no fork
+2d0d948 Reboot: Esc x3 + Ctrl+C + verify idle + /exit, remove state check
+0f21a08 Fix reboot: reuse same tmux/agent ID, add --fork-session, relax state check
+a714bfb Fix graceful_exit: use /exit command, kill process not tmux
+```
+
+## v1.1.0  1996acf-dirty 2026-04-16 23:09
+
+- Lines: 4839
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+b11a477 Reboot: cd to workdir before relaunch, verify Claude exited
+3ea6ddf Reboot: resume existing session ID, no fork
+2d0d948 Reboot: Esc x3 + Ctrl+C + verify idle + /exit, remove state check
+0f21a08 Fix reboot: reuse same tmux/agent ID, add --fork-session, relax state check
+a714bfb Fix graceful_exit: use /exit command, kill process not tmux
+```
+
