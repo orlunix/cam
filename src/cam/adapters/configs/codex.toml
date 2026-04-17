@@ -11,7 +11,7 @@ name = "codex"
 display_name = "OpenAI Codex"
 
 [launch]
-command = ["codex", "{prompt}"]
+command = ["codex", "--full-auto", "{prompt}"]
 prompt_after_launch = false
 startup_wait = 0.0
 
@@ -57,13 +57,9 @@ response = "1"
 send_enter = true
 
 [[confirm]]
-pattern = "(Apply|Accept|Approve|Continue|Proceed).*\\[Y/n\\]"
-flags = ["IGNORECASE"]
-response = "y"
-send_enter = true
-
-[[confirm]]
-pattern = "(Apply|Accept|Approve|Continue|Proceed).*\\[y/N\\]"
+# Any [Y/n] or [y/N] prompt — covers Apply, Accept, Approve, Continue,
+# Proceed, Run, Execute, Overwrite, Allow, and any future prompts
+pattern = "\\[Y/n\\]|\\[y/N\\]"
 flags = ["IGNORECASE"]
 response = "y"
 send_enter = true

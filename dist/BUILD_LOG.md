@@ -156,3 +156,198 @@ bbe2572 Add heal Phase 3: orphan tmux adoption, stale socket cleanup, Case 002 d
 6dbfb10 Fix auto-confirm scrollback re-triggering, add camc build versioning, track dist/camc
 ```
 
+## v1.1.0  e27a649-dirty 2026-04-15 01:03
+
+- Lines: 4398
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+fc8ce66 Add tag support to camc: --tag, --untag, filter, sort
+aa66452 Relay self-healing, camc preflight checks, poller shadow fix, permission-mode auto
+bbe2572 Add heal Phase 3: orphan tmux adoption, stale socket cleanup, Case 002 doc
+4f58db5 Fix monitor false session-death, deduplicate machines list, add machine management
+209bfe2 Rewrite monitor to pure screen-based design, add busy/done signals
+```
+
+## v1.1.0  03aadbf 2026-04-15 10:07
+
+- Lines: 4404
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+03aadbf Make TAG column conditional: hide when no agents have tags
+fc8ce66 Add tag support to camc: --tag, --untag, filter, sort
+aa66452 Relay self-healing, camc preflight checks, poller shadow fix, permission-mode auto
+bbe2572 Add heal Phase 3: orphan tmux adoption, stale socket cleanup, Case 002 doc
+4f58db5 Fix monitor false session-death, deduplicate machines list, add machine management
+```
+
+## v1.1.0  03aadbf 2026-04-15 17:23
+
+- Lines: 4404
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+03aadbf Make TAG column conditional: hide when no agents have tags
+fc8ce66 Add tag support to camc: --tag, --untag, filter, sort
+aa66452 Relay self-healing, camc preflight checks, poller shadow fix, permission-mode auto
+bbe2572 Add heal Phase 3: orphan tmux adoption, stale socket cleanup, Case 002 doc
+4f58db5 Fix monitor false session-death, deduplicate machines list, add machine management
+```
+
+## v1.1.0  03aadbf 2026-04-15 17:30
+
+- Lines: 4404
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+03aadbf Make TAG column conditional: hide when no agents have tags
+fc8ce66 Add tag support to camc: --tag, --untag, filter, sort
+aa66452 Relay self-healing, camc preflight checks, poller shadow fix, permission-mode auto
+bbe2572 Add heal Phase 3: orphan tmux adoption, stale socket cleanup, Case 002 doc
+4f58db5 Fix monitor false session-death, deduplicate machines list, add machine management
+```
+
+## v1.1.0  2e072cf 2026-04-15 19:43
+
+- Lines: 4404
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+03aadbf Make TAG column conditional: hide when no agents have tags
+fc8ce66 Add tag support to camc: --tag, --untag, filter, sort
+aa66452 Relay self-healing, camc preflight checks, poller shadow fix, permission-mode auto
+bbe2572 Add heal Phase 3: orphan tmux adoption, stale socket cleanup, Case 002 doc
+4f58db5 Fix monitor false session-death, deduplicate machines list, add machine management
+```
+
+## v1.1.0  2e072cf 2026-04-15 19:48
+
+- Lines: 4400
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+03aadbf Make TAG column conditional: hide when no agents have tags
+fc8ce66 Add tag support to camc: --tag, --untag, filter, sort
+aa66452 Relay self-healing, camc preflight checks, poller shadow fix, permission-mode auto
+bbe2572 Add heal Phase 3: orphan tmux adoption, stale socket cleanup, Case 002 doc
+4f58db5 Fix monitor false session-death, deduplicate machines list, add machine management
+```
+
+## v1.1.0  2e072cf 2026-04-15 20:04
+
+- Lines: 4400
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+03aadbf Make TAG column conditional: hide when no agents have tags
+fc8ce66 Add tag support to camc: --tag, --untag, filter, sort
+aa66452 Relay self-healing, camc preflight checks, poller shadow fix, permission-mode auto
+bbe2572 Add heal Phase 3: orphan tmux adoption, stale socket cleanup, Case 002 doc
+4f58db5 Fix monitor false session-death, deduplicate machines list, add machine management
+```
+
+## v1.1.0  2e072cf-dirty 2026-04-16 01:39
+
+- Lines: 4449
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+03aadbf Make TAG column conditional: hide when no agents have tags
+fc8ce66 Add tag support to camc: --tag, --untag, filter, sort
+aa66452 Relay self-healing, camc preflight checks, poller shadow fix, permission-mode auto
+bbe2572 Add heal Phase 3: orphan tmux adoption, stale socket cleanup, Case 002 doc
+4f58db5 Fix monitor false session-death, deduplicate machines list, add machine management
+```
+
+## v1.1.0  2e072cf-dirty 2026-04-16 01:39
+
+- Lines: 4449
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+03aadbf Make TAG column conditional: hide when no agents have tags
+fc8ce66 Add tag support to camc: --tag, --untag, filter, sort
+aa66452 Relay self-healing, camc preflight checks, poller shadow fix, permission-mode auto
+bbe2572 Add heal Phase 3: orphan tmux adoption, stale socket cleanup, Case 002 doc
+4f58db5 Fix monitor false session-death, deduplicate machines list, add machine management
+```
+
+## v1.1.0  68707d9 2026-04-16 01:40
+
+- Lines: 4449
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+68707d9 Auto-move logs to scratch at startup
+03aadbf Make TAG column conditional: hide when no agents have tags
+fc8ce66 Add tag support to camc: --tag, --untag, filter, sort
+aa66452 Relay self-healing, camc preflight checks, poller shadow fix, permission-mode auto
+bbe2572 Add heal Phase 3: orphan tmux adoption, stale socket cleanup, Case 002 doc
+```
+
+## v1.1.0  68707d9 2026-04-16 01:40
+
+- Lines: 4449
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+68707d9 Auto-move logs to scratch at startup
+03aadbf Make TAG column conditional: hide when no agents have tags
+fc8ce66 Add tag support to camc: --tag, --untag, filter, sort
+aa66452 Relay self-healing, camc preflight checks, poller shadow fix, permission-mode auto
+bbe2572 Add heal Phase 3: orphan tmux adoption, stale socket cleanup, Case 002 doc
+```
+
+## v1.1.0  68707d9-dirty 2026-04-16 03:44
+
+- Lines: 4472
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+68707d9 Auto-move logs to scratch at startup
+03aadbf Make TAG column conditional: hide when no agents have tags
+fc8ce66 Add tag support to camc: --tag, --untag, filter, sort
+aa66452 Relay self-healing, camc preflight checks, poller shadow fix, permission-mode auto
+bbe2572 Add heal Phase 3: orphan tmux adoption, stale socket cleanup, Case 002 doc
+```
+
+## v1.1.0  7de44d2 2026-04-16 03:49
+
+- Lines: 4472
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+7de44d2 Fix prune: skip agents with live tmux sessions
+68707d9 Auto-move logs to scratch at startup
+03aadbf Make TAG column conditional: hide when no agents have tags
+fc8ce66 Add tag support to camc: --tag, --untag, filter, sort
+aa66452 Relay self-healing, camc preflight checks, poller shadow fix, permission-mode auto
+```
+
+## v1.1.0  b23928b 2026-04-16 04:01
+
+- Lines: 4472
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+7de44d2 Fix prune: skip agents with live tmux sessions
+68707d9 Auto-move logs to scratch at startup
+03aadbf Make TAG column conditional: hide when no agents have tags
+fc8ce66 Add tag support to camc: --tag, --untag, filter, sort
+aa66452 Relay self-healing, camc preflight checks, poller shadow fix, permission-mode auto
+```
+
+## v1.1.0  0c943bd 2026-04-16 04:03
+
+- Lines: 4472
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+7de44d2 Fix prune: skip agents with live tmux sessions
+68707d9 Auto-move logs to scratch at startup
+03aadbf Make TAG column conditional: hide when no agents have tags
+fc8ce66 Add tag support to camc: --tag, --untag, filter, sort
+aa66452 Relay self-healing, camc preflight checks, poller shadow fix, permission-mode auto
+```
+
