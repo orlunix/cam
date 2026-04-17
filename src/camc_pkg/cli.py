@@ -872,6 +872,22 @@ def cmd_migrate(args):
             if not tmux_session_exists(old_session):
                 print_error("Tmux session lost. Use 'camc run' to start fresh.")
                 sys.exit(1)
+        # Wait for shell prompt to settle
+        time.sleep(2)
+    else:
+        print_warning("No tmux session found for agent")
+        sys.exit(1)
+
+    # Verify Claude is truly gone
+    if _find_claude_pid(old_session):
+        print_warning("Claude still running, killing process...")
+        pid = _find_claude_pid(old_session)
+        if pid:
+            try:
+                os.kill(pid, 9)
+            except Exception:
+                pass
+            time.sleep(1)
 
     # 2. Kill old monitor (will restart with new Claude)
     _kill_monitor(a)
@@ -888,9 +904,9 @@ def cmd_migrate(args):
         # No session to resume — assign new session ID
         launch_cmd += ["--session-id", new_session_uuid]
 
-    # Send the launch command into the existing tmux shell
+    # Send cd + launch command into the existing tmux shell
     import shlex
-    cmd_str = " ".join(shlex.quote(arg) for arg in launch_cmd)
+    cmd_str = "cd %s && %s" % (shlex.quote(workdir), " ".join(shlex.quote(arg) for arg in launch_cmd))
     tmux_send_input(old_session, cmd_str, send_enter=True)
 
     # 4. Update agent record (same ID, preserve session_id)
