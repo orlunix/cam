@@ -40,9 +40,13 @@ cam update <any-agent-id> --tag SMOKE
 cam list --tag SMOKE
 cam update <any-agent-id> --untag SMOKE
 
-# 6. camc rebuild (if camc_pkg changed):
+# 6. camc rebuild (if camc_pkg or configs changed):
 python3 build_camc.py
-camc list
+# Verify embedded configs exist:
+grep "claude.toml" dist/camc && grep "codex.toml" dist/camc && grep "cursor.toml" dist/camc
+# Verify camc runs:
+python3 dist/camc version
+python3 dist/camc list
 ```
 
 If ANY command crashes, fix it before committing.
