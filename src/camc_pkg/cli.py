@@ -784,7 +784,7 @@ def graceful_exit(session, timeout=15):
     return False
 
 
-def cmd_reboot(args):
+def cmd_migrate(args):
     """Restart an agent with session resume (preserves conversation history)."""
     store = AgentStore()
     a = store.get(args.id)
@@ -1673,7 +1673,7 @@ def cmd_sync(args):
     print("Sync complete: %d deployed, %d failed" % (total_ok, total_fail))
 
 
-def cmd_migrate(args):
+def cmd_db_migrate(args):
     """Migrate cam SQLite data to JSON format."""
     from camc_pkg.migrate import run_migrate
     db_path = getattr(args, "db", None)
@@ -1851,8 +1851,9 @@ examples:
     sub.add_parser("prune", help="Remove all non-running agents")
 
     # reboot / migrate
-    rb = sub.add_parser("reboot", help="Restart agent with session resume")
+    rb = sub.add_parser("reboot", help="Restart agent with session resume (alias for migrate)")
     rb.add_argument("id", help="Agent ID or name")
+    rb.add_argument("--to", default=None, help="Target machine (host:port). Omit for local reboot.")
     mig_a = sub.add_parser("migrate", help="Restart or move agent with session resume")
     mig_a.add_argument("id", help="Agent ID or name")
     mig_a.add_argument("--to", default=None, help="Target machine (host:port). Omit for local reboot.")
@@ -1975,8 +1976,8 @@ examples:
         "add": cmd_add,
         "rm": cmd_rm,
         "prune": cmd_prune,
-        "reboot": cmd_reboot,
-        "migrate": cmd_reboot,
+        "reboot": cmd_migrate,
+        "migrate": cmd_migrate,
         "attach": cmd_attach, "a": cmd_attach,
         "status": cmd_status,
         "apply": cmd_apply,
@@ -1988,7 +1989,7 @@ examples:
         "machine": cmd_machine,
         "context": cmd_context,
         "sync": cmd_sync,
-        "db-migrate": cmd_migrate,
+        "db-migrate": cmd_db_migrate,
         "version": cmd_version,
     }
     if args.command in cmds:
