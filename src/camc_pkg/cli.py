@@ -831,112 +831,88 @@ def cmd_migrate(args):
         print_error("Reboot with session resume only works with Claude agents (got: %s)" % tool)
         sys.exit(1)
 
-    if a.get("state") not in ("idle", None, ""):
+    busy_states = ("editing", "testing", "committing")
+    if a.get("state") in busy_states:
         print_error("Agent is %s — wait until idle before rebooting." % a.get("state"))
         sys.exit(1)
 
     old_id = a["id"]
     old_session = _sf(a, "tmux_session")
-    old_session_id = a.get("session_id", "")
     name = _tf(a, "name") or old_id
     workdir = _sf(a, "context_path", os.getcwd())
+    old_session_id = a.get("session_id", "")
+    # Fallback: find session ID from project dir if not tracked
+    if not old_session_id:
+        project_name = workdir.strip("/").replace("/", "-")
+        project_dir = os.path.join(os.path.expanduser("~"), ".claude", "projects", "-" + project_name)
+        if os.path.isdir(project_dir):
+            jsonls = sorted(
+                [f for f in os.listdir(project_dir) if f.endswith(".jsonl")],
+                key=lambda f: os.path.getmtime(os.path.join(project_dir, f)),
+                reverse=True,
+            )
+            if jsonls:
+                old_session_id = jsonls[0].replace(".jsonl", "")
+                log.info("Found session from project dir: %s", old_session_id)
     tags = _tf(a, "tags")
     tags = tags if isinstance(tags, list) else []
 
     print_info("Rebooting agent %s (%s)..." % (name, old_id))
 
-    # 1. Graceful exit
+    # 1. Graceful exit (Claude exits, shell stays in tmux)
     if old_session and tmux_session_exists(old_session):
         print_info("Sending graceful exit sequence...")
         clean = graceful_exit(old_session)
         if clean:
             print_info("Agent exited cleanly")
         else:
-            print_warning("Agent did not exit cleanly, tmux session killed")
+            print_warning("Agent did not exit cleanly")
+            # If tmux died during kill, can't reuse it
+            if not tmux_session_exists(old_session):
+                print_error("Tmux session lost. Use 'camc run' to start fresh.")
+                sys.exit(1)
 
-    # 2. Mark old agent as stopped
+    # 2. Kill old monitor (will restart with new Claude)
     _kill_monitor(a)
-    store.update(old_id, status="stopped", exit_reason="Rebooted", completed_at=_now_iso())
 
-    # 3. Launch new agent with --resume
-    new_id = _gen_agent_id()
-    new_session = "cam-%s" % new_id
-    new_session_uuid = "%s-0000-0000-0000-000000000000" % new_id
+    # 3. Relaunch Claude in the SAME tmux session
+    new_session_uuid = "%s-0000-0000-0000-000000000000" % old_id
 
     config = _load_config(tool)
     launch_cmd = _build_command(config, "", workdir)
     launch_cmd += ["--session-id", new_session_uuid]
     if old_session_id:
-        launch_cmd += ["--resume", old_session_id]
+        launch_cmd += ["--resume", old_session_id, "--fork-session"]
 
-    context = _load_default_context()
-    env_setup = context.get("env_setup") or None
+    # Send the launch command into the existing tmux shell
+    import shlex
+    cmd_str = " ".join(shlex.quote(arg) for arg in launch_cmd)
+    tmux_send_input(old_session, cmd_str, send_enter=True)
 
-    if not create_tmux_session(new_session, launch_cmd, workdir, env_setup=env_setup):
-        print_error("Failed to create tmux session")
-        sys.exit(1)
+    # 4. Update agent record (same ID, new session_id)
+    a["session_id"] = new_session_uuid
+    a["status"] = "running"
+    a["state"] = "initializing"
+    a.get("task", {})["prompt"] = "(resumed)"
+    store.save(a)
 
-    ctx_name = context.get("name", "") if isinstance(context, dict) else ""
-    ctx_host = context.get("host") if isinstance(context, dict) else None
-    transport = "ssh" if ctx_host and ctx_host not in ("localhost", "127.0.0.1") else "local"
-
-    store.save({
-        "id": new_id,
-        "session_id": new_session_uuid,
-        "task": {"name": name, "tool": tool, "prompt": "(resumed)",
-                 "auto_confirm": _tf(a, "auto_confirm", True),
-                 "auto_exit": _tf(a, "auto_exit", False),
-                 "tags": tags},
-        "context_id": "",
-        "context_name": ctx_name,
-        "context_path": workdir,
-        "transport_type": transport,
-        "status": "running",
-        "state": "initializing",
-        "tmux_session": new_session,
-        "tmux_socket": "",
-        "pid": None,
-        "hostname": _sock.gethostname(),
-        "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
-        "retry_count": 0, "cost_estimate": None, "files_changed": [],
-    })
-
-    # Startup: wait for readiness, auto-confirm
-    if config.prompt_after_launch:
-        elapsed = 0.0
-        while elapsed < config.startup_wait:
-            time.sleep(1)
-            elapsed += 1
-            output = capture_tmux(new_session)
-            if not output.strip():
-                continue
-            confirm = should_auto_confirm(output, config)
-            if confirm:
-                tmux_send_input(new_session, config.probe_char, send_enter=False)
-                time.sleep(3)
-                elapsed += 3
-                continue
-            if is_ready_for_input(output, config):
-                break
-
-    # Spawn monitor
+    # 5. Restart monitor
     try:
         proc = subprocess.Popen(
-            [sys.executable, _CAMC_SCRIPT, "_monitor", new_id] if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg", "_monitor", new_id],
+            [sys.executable, _CAMC_SCRIPT, "_monitor", old_id] if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg", "_monitor", old_id],
             stdout=subprocess.DEVNULL,
-            stderr=open(os.path.join(LOGS_DIR, "monitor-%s.stderr" % new_id), "a"),
+            stderr=open(os.path.join(LOGS_DIR, "monitor-%s.stderr" % old_id), "a"),
             start_new_session=True)
-        store.update(new_id, pid=proc.pid)
+        store.update(old_id, pid=proc.pid)
     except Exception as e:
         print_warning("Monitor failed to start: %s" % e)
 
-    print_success("Agent rebooted: %s → %s" % (old_id, new_id))
-    print("  Name: %s" % name)
-    print("  Session: %s" % new_session)
+    print_success("Agent rebooted: %s (%s)" % (name, old_id))
     if old_session_id:
         print("  Resumed from: %s" % old_session_id)
+    print("  Session ID: %s" % new_session_uuid)
     print()
-    print("  Attach: camc attach %s" % new_id)
+    print("  Attach: camc attach %s" % old_id)
 
 
 def cmd_attach(args):
