@@ -748,38 +748,72 @@ def cmd_prune(args):
     print(msg)
 
 
+def _find_claude_pid(session):
+    """Find the Claude process PID inside a tmux session. Returns int or None."""
+    sock = _find_tmux_socket(session)
+    if not sock:
+        return None
+    try:
+        rc, out = _run(["tmux", "-S", sock, "list-panes", "-t", session, "-F", "#{pane_pid}"])
+        if rc != 0 or not out.strip():
+            return None
+        pane_pid = out.strip()
+        result = subprocess.run(["pgrep", "-P", pane_pid], capture_output=True, timeout=3)
+        for child in result.stdout.decode().split():
+            child = child.strip()
+            if not child:
+                continue
+            try:
+                with open("/proc/%s/comm" % child) as f:
+                    if "claude" in f.read().lower():
+                        return int(child)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None
+
+
 def graceful_exit(session, timeout=15):
     """Safely exit Claude Code in a tmux session.
 
-    Sends Esc x3, waits, Esc x2, waits, Ctrl+C x2.
-    Returns True if exited cleanly, False if had to kill.
-    Does NOT touch agent metadata or agents.json.
+    Tries in order:
+      1. /exit command (Claude's built-in exit)
+      2. Esc x3 then /exit (in case stuck in sub-agent)
+      3. Kill Claude process directly (not tmux)
+    Returns True if exited cleanly, False if had to kill process.
+    Does NOT kill the tmux session. Does NOT touch agents.json.
     """
-    # Esc x3 (interval 0.5s)
+    # Step 1: Try /exit
+    tmux_send_input(session, "/exit", send_enter=True)
+    for _ in range(10):
+        time.sleep(1)
+        if not _find_claude_pid(session):
+            return True
+
+    # Step 2: Esc x3 then /exit (escape sub-agents/tools first)
     for _ in range(3):
         tmux_send_key(session, "Escape")
         time.sleep(0.5)
-    time.sleep(2)
-    if not tmux_session_exists(session):
-        return True
-    # Esc x2
-    for _ in range(2):
-        tmux_send_key(session, "Escape")
-        time.sleep(0.5)
     time.sleep(1)
-    if not tmux_session_exists(session):
-        return True
-    # Ctrl+C x2 (interval 0.5s)
-    for _ in range(2):
-        tmux_send_key(session, "C-c")
-        time.sleep(0.5)
-    # Wait for process exit
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if not tmux_session_exists(session):
+    tmux_send_input(session, "/exit", send_enter=True)
+    for _ in range(10):
+        time.sleep(1)
+        if not _find_claude_pid(session):
             return True
-        time.sleep(0.5)
-    # Still alive — force kill
+
+    # Step 3: Kill Claude process (not tmux)
+    pid = _find_claude_pid(session)
+    if pid:
+        try:
+            os.kill(pid, 9)
+            time.sleep(1)
+        except Exception:
+            pass
+        if not _find_claude_pid(session):
+            return False  # killed, not clean exit
+
+    # Last resort: kill tmux (should rarely reach here)
     tmux_kill_session(session)
     return False
 
