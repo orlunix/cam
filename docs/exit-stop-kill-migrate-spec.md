@@ -62,6 +62,12 @@ Add `--resume` to `camc run` parser. When specified:
 - Skip prompt injection (Claude will resume conversation)
 - Record session_id in agents.json
 
+**CRITICAL: The old Claude must be fully exited before resume.**
+Two Claude processes using the same session JSONL file will corrupt data.
+`camc run --resume` should verify no Claude process is writing to that
+session file. Check: find any running Claude with the same session-id
+and refuse to start if found.
+
 ```bash
 camc run --name l1tcm --path /home/hren --tag NR10 --resume d114c7c4-c500-4047-bd17-b42a57800b64
 ```
