@@ -239,7 +239,7 @@ def _agent_to_cam_json(a):
     }
 
 
-def _preflight(tool, tool_binary, workdir):
+def _preflight(tool, tool_binary, workdir, env_setup=None):
     """Run environment checks before launching an agent.
 
     Returns a list of (level, message) tuples where level is 'error' or 'warn'.
@@ -251,8 +251,9 @@ def _preflight(tool, tool_binary, workdir):
     if not shutil.which("tmux"):
         issues.append(("error", "tmux not found in PATH. Install: apt install tmux / brew install tmux"))
 
-    # 2. Tool binary in PATH?
-    if tool_binary and not shutil.which(tool_binary):
+    # 2. Tool binary in PATH? Skip if env_setup is configured — that script
+    # will set PATH inside tmux, so the caller's PATH is irrelevant.
+    if tool_binary and not env_setup and not shutil.which(tool_binary):
         hints = {
             "claude": "npm install -g @anthropic-ai/claude-code",
             "codex": "npm install -g @openai/codex",
@@ -309,9 +310,12 @@ def cmd_run(args):
     os.makedirs(workdir, exist_ok=True)
     config = _load_config(tool)
 
+    context = _load_default_context()
+    env_setup = context.get("env_setup") or None
+
     # Preflight environment checks
     tool_binary = config.command[0] if config.command else None
-    issues = _preflight(tool, tool_binary, workdir)
+    issues = _preflight(tool, tool_binary, workdir, env_setup=env_setup)
     has_error = False
     for level, msg in issues:
         if level == "error":
@@ -325,22 +329,36 @@ def cmd_run(args):
     agent_id = _gen_agent_id()
     session = "cam-%s" % agent_id
 
-    # Session ID tracking: deterministic UUID from agent ID (Claude only)
-    session_uuid = ""
     resume_session = getattr(args, "resume_session", None)
+
+    # Guard: refuse to resume a session if another Claude is still using it.
+    # Two Claude processes on the same session corrupt the same .jsonl file.
+    if resume_session and tool == "claude":
+        in_use = _find_session_in_use(resume_session)
+        if in_use:
+            print_error("Cannot resume: session %s is still in use by PID(s) %s" %
+                        (resume_session, ", ".join(str(p) for p in in_use)))
+            print_error("Run 'camc exit <id>' on the existing agent first.")
+            sys.exit(1)
+
+    # Session ID tracking: deterministic UUID from agent ID (Claude only).
+    # When resuming, we don't mint a new one — Claude reuses the resumed session.
+    session_uuid = ""
     if tool == "claude":
-        session_uuid = "%s-0000-0000-0000-000000000000" % agent_id
+        if resume_session:
+            session_uuid = resume_session
+        else:
+            session_uuid = "%s-0000-0000-0000-000000000000" % agent_id
 
     launch_cmd = _build_command(config, prompt, workdir)
 
-    # Inject --session-id and optionally --resume into Claude launch command
-    if tool == "claude" and session_uuid:
-        launch_cmd += ["--session-id", session_uuid]
+    # Inject --session-id or --resume into Claude launch command
+    if tool == "claude":
         if resume_session:
             launch_cmd += ["--resume", resume_session]
+        elif session_uuid:
+            launch_cmd += ["--session-id", session_uuid]
 
-    context = _load_default_context()
-    env_setup = context.get("env_setup") or None
     inherit_env = not getattr(args, "no_inherit_env", False)
     # Ensure dirs exist
     for d in (LOGS_DIR, PIDS_DIR):
@@ -558,25 +576,69 @@ def cmd_logs(args):
 
 
 def cmd_stop(args):
+    """Kill the tool process (e.g. Claude) but leave the tmux session alive.
+
+    The shell in tmux can then be reused with `camc run --resume` to pick up
+    the conversation, or adopted as a fresh agent. Use `camc kill` to also
+    tear down tmux.
+    """
     store = AgentStore()
     a = store.get(args.id)
     if not a:
         sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
+    session = _sf(a, "tmux_session")
+    killed_pid = None
+    if session and tmux_session_exists(session):
+        pid = _find_claude_pid(session)
+        if pid:
+            try:
+                os.kill(pid, 9)
+                killed_pid = pid
+            except OSError as e:
+                print_warning("Failed to kill PID %d: %s" % (pid, e))
+        else:
+            print_warning("No tool process found inside tmux session '%s'" % session)
+    else:
+        print_warning("tmux session not found; marking agent stopped anyway")
     _kill_monitor(a)
-    tmux_kill_session(_sf(a, "tmux_session"))
     store.update(a["id"], status="stopped", exit_reason="Stopped by user", completed_at=_now_iso())
-    print("Stopped agent %s" % a["id"])
+    if killed_pid:
+        print("Stopped agent %s (killed PID %d, tmux session still alive)" % (a["id"], killed_pid))
+    else:
+        print("Stopped agent %s" % a["id"])
+
+
+def cmd_exit(args):
+    """Gracefully ask the tool (Claude) to /exit. Leaves tmux alive so you can resume."""
+    store = AgentStore()
+    a = store.get(args.id)
+    if not a:
+        sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
+    session = _sf(a, "tmux_session")
+    if not session or not tmux_session_exists(session):
+        print_error("tmux session not found for agent %s" % a["id"])
+        sys.exit(1)
+    print_info("Sending graceful exit to agent %s..." % a["id"])
+    clean = graceful_exit(session)
+    _kill_monitor(a)
+    store.update(a["id"], status="stopped",
+                 exit_reason="Exited cleanly" if clean else "Exited (process killed)",
+                 completed_at=_now_iso())
+    if clean:
+        print_success("Agent %s exited cleanly (tmux session still alive)" % a["id"])
+    else:
+        print_warning("Agent %s did not exit cleanly; process was killed (tmux alive)" % a["id"])
 
 
 def cmd_kill(args):
-    """Force kill a running agent (sends SIGKILL to tmux session)."""
+    """Force kill a running agent (tears down entire tmux session)."""
     store = AgentStore()
     a = store.get(args.id)
     if not a:
         sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
     _kill_monitor(a)
     tmux_kill_session(_sf(a, "tmux_session"))
-    store.update(a["id"], status="stopped", exit_reason="Force killed by user", completed_at=_now_iso())
+    store.update(a["id"], status="killed", exit_reason="Force killed by user", completed_at=_now_iso())
     print("Killed agent %s" % a["id"])
 
 
@@ -748,6 +810,55 @@ def cmd_prune(args):
     print(msg)
 
 
+def _find_session_in_use(session_id):
+    """Return PIDs of any running claude process that has session_id as an arg.
+
+    Used to prevent resuming a Claude session that another process still owns —
+    two writers on the same .jsonl session file will corrupt it.
+
+    Match is strict: session_id must appear as a standalone argv entry (i.e.
+    the value side of `--session-id SID` / `--resume SID`), not as a substring.
+    This avoids false positives on shell wrappers that source files under
+    ~/.claude/ or happen to have the SID embedded in a larger eval string.
+    """
+    pids = []
+    if not session_id:
+        return pids
+    try:
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                with open("/proc/%s/cmdline" % entry, "rb") as f:
+                    raw = f.read().decode("utf-8", errors="replace")
+            except (OSError, IOError):
+                continue
+            parts = [p for p in raw.split("\x00") if p]
+            if not parts:
+                continue
+            # Session ID must be a standalone argv entry (the value of
+            # --session-id or --resume), not a substring of a larger arg.
+            if session_id not in parts:
+                continue
+            # And argv[0] must actually look like a claude launch — either
+            # the binary basename is "claude", or it's a node/python wrapper
+            # whose argv[1] ends in "claude".
+            exe_base = os.path.basename(parts[0]).lower()
+            looks_like_claude = (
+                exe_base == "claude"
+                or (len(parts) > 1 and os.path.basename(parts[1]).lower().endswith("claude"))
+            )
+            if not looks_like_claude:
+                continue
+            try:
+                pids.append(int(entry))
+            except ValueError:
+                pass
+    except OSError:
+        pass
+    return pids
+
+
 def _find_claude_pid(session):
     """Find the Claude process PID inside a tmux session. Returns int or None."""
     sock = _find_tmux_socket(session)
@@ -860,56 +971,43 @@ def cmd_migrate(args):
 
     print_info("Rebooting agent %s (%s)..." % (name, old_id))
 
-    # 1. Graceful exit (Claude exits, shell stays in tmux)
-    if old_session and tmux_session_exists(old_session):
-        print_info("Sending graceful exit sequence...")
-        clean = graceful_exit(old_session)
-        if clean:
-            print_info("Agent exited cleanly")
-        else:
-            print_warning("Agent did not exit cleanly")
-            # If tmux died during kill, can't reuse it
-            if not tmux_session_exists(old_session):
-                print_error("Tmux session lost. Use 'camc run' to start fresh.")
-                sys.exit(1)
-        # Wait for shell prompt to settle
-        time.sleep(2)
-    else:
-        print_warning("No tmux session found for agent")
+    # 1. Graceful exit — same as `camc exit`. Claude goes away, tmux stays.
+    if not (old_session and tmux_session_exists(old_session)):
+        print_error("No tmux session found for agent")
         sys.exit(1)
+    print_info("Sending graceful exit sequence...")
+    clean = graceful_exit(old_session)
+    print_info("Agent exited cleanly" if clean else "Agent killed (exit not clean)")
+    # Let the shell prompt settle before typing into it.
+    time.sleep(2)
 
-    # Verify Claude is truly gone
-    if _find_claude_pid(old_session):
-        print_warning("Claude still running, killing process...")
-        pid = _find_claude_pid(old_session)
-        if pid:
-            try:
-                os.kill(pid, 9)
-            except Exception:
-                pass
-            time.sleep(1)
+    # 2. Guard against the session file still being held. graceful_exit kills
+    # the process, but if anything else somehow is still writing that .jsonl,
+    # two writers will corrupt it. Same invariant as `camc run --resume`.
+    if old_session_id:
+        in_use = _find_session_in_use(old_session_id)
+        if in_use:
+            print_error("Cannot resume: session %s still in use by PID(s) %s" %
+                        (old_session_id, ", ".join(str(p) for p in in_use)))
+            sys.exit(1)
 
-    # 2. Kill old monitor (will restart with new Claude)
+    # 3. Kill old monitor (new one will be spawned after relaunch).
     _kill_monitor(a)
 
-    # 3. Relaunch Claude in the SAME tmux session
+    # 4. Relaunch Claude in the SAME tmux session: cd + claude --resume.
     new_session_uuid = "%s-0000-0000-0000-000000000000" % old_id
-
     config = _load_config(tool)
     launch_cmd = _build_command(config, "", workdir)
     if old_session_id:
-        # Resume existing session — don't specify --session-id, reuse the original
         launch_cmd += ["--resume", old_session_id]
     else:
-        # No session to resume — assign new session ID
         launch_cmd += ["--session-id", new_session_uuid]
 
-    # Send cd + launch command into the existing tmux shell
     import shlex
     cmd_str = "cd %s && %s" % (shlex.quote(workdir), " ".join(shlex.quote(arg) for arg in launch_cmd))
     tmux_send_input(old_session, cmd_str, send_enter=True)
 
-    # 4. Update agent record (same ID, preserve session_id)
+    # 5. Update agent record (same ID, preserve session_id).
     if not old_session_id:
         a["session_id"] = new_session_uuid
     a["status"] = "running"
@@ -1836,6 +1934,9 @@ examples:
     r.add_argument("--name", "-n", default=None, help="Human-readable name")
     r.add_argument("--auto-exit", "-a", action="store_true", help="Auto-exit on completion")
     r.add_argument("--tag", action="append", default=[], help="Add tag (repeatable)")
+    r.add_argument("--resume", dest="resume_session", default=None,
+                   metavar="SESSION_ID",
+                   help="Resume an existing Claude session by ID (adds --resume to claude, skips prompt injection)")
     r.add_argument("--no-inherit-env", action="store_true", help="Legacy mode: wrap command with bash -c and env_setup")
 
     # list
@@ -1850,12 +1951,16 @@ examples:
     l.add_argument("-f", "--follow", action="store_true", help="Follow output")
     l.add_argument("--tail", "-n", type=int, default=50, help="Last N lines [default: 50]")
 
-    # stop
-    s = sub.add_parser("stop", help="Gracefully stop a running agent")
+    # exit — graceful /exit, tmux stays alive
+    ex = sub.add_parser("exit", help="Gracefully exit Claude (tmux stays alive, can be resumed)")
+    ex.add_argument("id", help="Agent ID")
+
+    # stop — kill tool process, tmux stays alive
+    s = sub.add_parser("stop", help="Kill the tool process (tmux stays alive)")
     s.add_argument("id", help="Agent ID")
 
-    # kill
-    k = sub.add_parser("kill", help="Force kill a running agent")
+    # kill — nuke tmux session
+    k = sub.add_parser("kill", help="Force kill agent and tear down tmux session")
     k.add_argument("id", help="Agent ID")
 
     # update
@@ -2001,6 +2106,7 @@ examples:
         "run": cmd_run,
         "list": cmd_list, "ls": cmd_list,
         "logs": cmd_logs,
+        "exit": cmd_exit,
         "stop": cmd_stop,
         "kill": cmd_kill,
         "update": cmd_update,
