@@ -881,17 +881,21 @@ def cmd_migrate(args):
 
     config = _load_config(tool)
     launch_cmd = _build_command(config, "", workdir)
-    launch_cmd += ["--session-id", new_session_uuid]
     if old_session_id:
-        launch_cmd += ["--resume", old_session_id, "--fork-session"]
+        # Resume existing session — don't specify --session-id, reuse the original
+        launch_cmd += ["--resume", old_session_id]
+    else:
+        # No session to resume — assign new session ID
+        launch_cmd += ["--session-id", new_session_uuid]
 
     # Send the launch command into the existing tmux shell
     import shlex
     cmd_str = " ".join(shlex.quote(arg) for arg in launch_cmd)
     tmux_send_input(old_session, cmd_str, send_enter=True)
 
-    # 4. Update agent record (same ID, new session_id)
-    a["session_id"] = new_session_uuid
+    # 4. Update agent record (same ID, preserve session_id)
+    if not old_session_id:
+        a["session_id"] = new_session_uuid
     a["status"] = "running"
     a["state"] = "initializing"
     a.get("task", {})["prompt"] = "(resumed)"
