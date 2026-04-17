@@ -784,7 +784,7 @@ def graceful_exit(session, timeout=15):
     return False
 
 
-def cmd_reboot(args):
+def cmd_migrate_agent(args):
     """Restart an agent with session resume (preserves conversation history)."""
     store = AgentStore()
     a = store.get(args.id)
@@ -1673,7 +1673,7 @@ def cmd_sync(args):
     print("Sync complete: %d deployed, %d failed" % (total_ok, total_fail))
 
 
-def cmd_migrate(args):
+def cmd_db_migrate(args):
     """Migrate cam SQLite data to JSON format."""
     from camc_pkg.migrate import run_migrate
     db_path = getattr(args, "db", None)
@@ -1850,9 +1850,10 @@ examples:
     # prune
     sub.add_parser("prune", help="Remove all non-running agents")
 
-    # reboot
-    rb = sub.add_parser("reboot", help="Restart agent with session resume")
-    rb.add_argument("id", help="Agent ID or name")
+    # migrate (no --to = local reboot, --to host:port = cross-machine)
+    mig_a = sub.add_parser("migrate", help="Restart or move agent with session resume")
+    mig_a.add_argument("id", help="Agent ID or name")
+    mig_a.add_argument("--to", default=None, help="Target machine (host:port). Omit for local reboot.")
 
     # attach
     at = sub.add_parser("attach", help="Attach to an agent's TMUX session (interactive)")
@@ -1936,7 +1937,7 @@ examples:
     sy.add_argument("target", nargs="?", default=None, help="Machine name (omit for all SSH machines)")
 
     # migrate
-    mig = sub.add_parser("migrate", help="Migrate cam SQLite data to JSON")
+    mig = sub.add_parser("db-migrate", help="Migrate cam SQLite data to JSON")
     mig.add_argument("--db", default=None, help="Path to cam.db [default: ~/.local/share/cam/cam.db]")
     mig.add_argument("--dry-run", action="store_true", help="Show plan without writing files")
 
@@ -1972,7 +1973,7 @@ examples:
         "add": cmd_add,
         "rm": cmd_rm,
         "prune": cmd_prune,
-        "reboot": cmd_reboot,
+        "migrate": cmd_migrate_agent,
         "attach": cmd_attach, "a": cmd_attach,
         "status": cmd_status,
         "apply": cmd_apply,
@@ -1984,7 +1985,7 @@ examples:
         "machine": cmd_machine,
         "context": cmd_context,
         "sync": cmd_sync,
-        "migrate": cmd_migrate,
+        "db-migrate": cmd_db_migrate,
         "version": cmd_version,
     }
     if args.command in cmds:
