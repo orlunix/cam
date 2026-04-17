@@ -777,32 +777,40 @@ def _find_claude_pid(session):
 def graceful_exit(session, timeout=15):
     """Safely exit Claude Code in a tmux session.
 
-    Tries in order:
-      1. /exit command (Claude's built-in exit)
-      2. Esc x3 then /exit (in case stuck in sub-agent)
-      3. Kill Claude process directly (not tmux)
+    Sequence:
+      1. Esc x3 (interrupt sub-agents / tool calls)
+      2. Ctrl+C (interrupt generating response)
+      3. Wait, verify idle (❯ prompt on screen)
+      4. /exit (clean exit)
+      5. If still alive → kill Claude process (not tmux)
     Returns True if exited cleanly, False if had to kill process.
     Does NOT kill the tmux session. Does NOT touch agents.json.
     """
-    # Step 1: Try /exit
-    tmux_send_input(session, "/exit", send_enter=True)
-    for _ in range(10):
-        time.sleep(1)
-        if not _find_claude_pid(session):
-            return True
-
-    # Step 2: Esc x3 then /exit (escape sub-agents/tools first)
+    # Step 1: Esc x3 — interrupt any sub-agent / tool call
     for _ in range(3):
         tmux_send_key(session, "Escape")
         time.sleep(0.5)
-    time.sleep(1)
+
+    # Step 2: Ctrl+C — interrupt generating response
+    tmux_send_key(session, "C-c")
+    time.sleep(2)
+
+    # Step 3: Verify idle — check for ❯ prompt
+    output = capture_tmux(session)
+    lines = output.strip().splitlines() if output else []
+    last_lines = "\n".join(lines[-5:]) if lines else ""
+    if "❯" not in last_lines:
+        # Not idle yet, wait a bit more
+        time.sleep(3)
+
+    # Step 4: /exit
     tmux_send_input(session, "/exit", send_enter=True)
     for _ in range(10):
         time.sleep(1)
         if not _find_claude_pid(session):
             return True
 
-    # Step 3: Kill Claude process (not tmux)
+    # Step 5: Kill Claude process (not tmux)
     pid = _find_claude_pid(session)
     if pid:
         try:
@@ -813,8 +821,6 @@ def graceful_exit(session, timeout=15):
         if not _find_claude_pid(session):
             return False  # killed, not clean exit
 
-    # Last resort: kill tmux (should rarely reach here)
-    tmux_kill_session(session)
     return False
 
 
@@ -829,11 +835,6 @@ def cmd_migrate(args):
     tool = _tf(a, "tool", "claude")
     if tool != "claude":
         print_error("Reboot with session resume only works with Claude agents (got: %s)" % tool)
-        sys.exit(1)
-
-    busy_states = ("editing", "testing", "committing")
-    if a.get("state") in busy_states:
-        print_error("Agent is %s — wait until idle before rebooting." % a.get("state"))
         sys.exit(1)
 
     old_id = a["id"]
