@@ -218,6 +218,7 @@ def _agent_to_cam_json(a):
 
     return {
         "id": a.get("id", ""),
+        "session_id": a.get("session_id", ""),
         "task": task_out,
         "context_id": a.get("context_id", ""),
         "context_name": ctx_name,
@@ -323,7 +324,20 @@ def cmd_run(args):
 
     agent_id = _gen_agent_id()
     session = "cam-%s" % agent_id
+
+    # Session ID tracking: deterministic UUID from agent ID (Claude only)
+    session_uuid = ""
+    resume_session = getattr(args, "resume_session", None)
+    if tool == "claude":
+        session_uuid = "%s-0000-0000-0000-000000000000" % agent_id
+
     launch_cmd = _build_command(config, prompt, workdir)
+
+    # Inject --session-id and optionally --resume into Claude launch command
+    if tool == "claude" and session_uuid:
+        launch_cmd += ["--session-id", session_uuid]
+        if resume_session:
+            launch_cmd += ["--resume", resume_session]
 
     context = _load_default_context()
     env_setup = context.get("env_setup") or None
@@ -349,6 +363,7 @@ def cmd_run(args):
     store = AgentStore()
     store.save({
         "id": agent_id,
+        "session_id": session_uuid,
         "task": {"name": name or "", "tool": tool, "prompt": prompt,
                  "auto_confirm": True, "auto_exit": auto_exit,
                  "tags": tags},
@@ -417,6 +432,21 @@ def cmd_run(args):
     print()
     print("  Attach: camc attach %s" % agent_id)
     print("  Logs:   camc logs %s -f" % agent_id)
+
+
+def _fmt_size(nbytes):
+    """Format bytes as human-readable size."""
+    for unit in ("B", "KB", "MB", "GB"):
+        if nbytes < 1024:
+            return "%.0f %s" % (nbytes, unit) if unit == "B" else "%.1f %s" % (nbytes, unit)
+        nbytes /= 1024.0
+    return "%.1f TB" % nbytes
+
+
+def _iso_from_ts(ts):
+    """Convert a Unix timestamp to ISO 8601 string."""
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _is_same_host(a_hostname, my_hostname):
@@ -718,6 +748,163 @@ def cmd_prune(args):
     print(msg)
 
 
+def graceful_exit(session, timeout=15):
+    """Safely exit Claude Code in a tmux session.
+
+    Sends Esc x3, waits, Esc x2, waits, Ctrl+C x2.
+    Returns True if exited cleanly, False if had to kill.
+    Does NOT touch agent metadata or agents.json.
+    """
+    # Esc x3 (interval 0.5s)
+    for _ in range(3):
+        tmux_send_key(session, "Escape")
+        time.sleep(0.5)
+    time.sleep(2)
+    if not tmux_session_exists(session):
+        return True
+    # Esc x2
+    for _ in range(2):
+        tmux_send_key(session, "Escape")
+        time.sleep(0.5)
+    time.sleep(1)
+    if not tmux_session_exists(session):
+        return True
+    # Ctrl+C x2 (interval 0.5s)
+    for _ in range(2):
+        tmux_send_key(session, "C-c")
+        time.sleep(0.5)
+    # Wait for process exit
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not tmux_session_exists(session):
+            return True
+        time.sleep(0.5)
+    # Still alive — force kill
+    tmux_kill_session(session)
+    return False
+
+
+def cmd_reboot(args):
+    """Restart an agent with session resume (preserves conversation history)."""
+    store = AgentStore()
+    a = store.get(args.id)
+    if not a:
+        sys.stderr.write("Error: agent '%s' not found\n" % args.id)
+        sys.exit(1)
+
+    tool = _tf(a, "tool", "claude")
+    if tool != "claude":
+        print_error("Reboot with session resume only works with Claude agents (got: %s)" % tool)
+        sys.exit(1)
+
+    if a.get("state") not in ("idle", None, ""):
+        print_error("Agent is %s — wait until idle before rebooting." % a.get("state"))
+        sys.exit(1)
+
+    old_id = a["id"]
+    old_session = _sf(a, "tmux_session")
+    old_session_id = a.get("session_id", "")
+    name = _tf(a, "name") or old_id
+    workdir = _sf(a, "context_path", os.getcwd())
+    tags = _tf(a, "tags")
+    tags = tags if isinstance(tags, list) else []
+
+    print_info("Rebooting agent %s (%s)..." % (name, old_id))
+
+    # 1. Graceful exit
+    if old_session and tmux_session_exists(old_session):
+        print_info("Sending graceful exit sequence...")
+        clean = graceful_exit(old_session)
+        if clean:
+            print_info("Agent exited cleanly")
+        else:
+            print_warning("Agent did not exit cleanly, tmux session killed")
+
+    # 2. Mark old agent as stopped
+    _kill_monitor(a)
+    store.update(old_id, status="stopped", exit_reason="Rebooted", completed_at=_now_iso())
+
+    # 3. Launch new agent with --resume
+    new_id = _gen_agent_id()
+    new_session = "cam-%s" % new_id
+    new_session_uuid = "%s-0000-0000-0000-000000000000" % new_id
+
+    config = _load_config(tool)
+    launch_cmd = _build_command(config, "", workdir)
+    launch_cmd += ["--session-id", new_session_uuid]
+    if old_session_id:
+        launch_cmd += ["--resume", old_session_id]
+
+    context = _load_default_context()
+    env_setup = context.get("env_setup") or None
+
+    if not create_tmux_session(new_session, launch_cmd, workdir, env_setup=env_setup):
+        print_error("Failed to create tmux session")
+        sys.exit(1)
+
+    ctx_name = context.get("name", "") if isinstance(context, dict) else ""
+    ctx_host = context.get("host") if isinstance(context, dict) else None
+    transport = "ssh" if ctx_host and ctx_host not in ("localhost", "127.0.0.1") else "local"
+
+    store.save({
+        "id": new_id,
+        "session_id": new_session_uuid,
+        "task": {"name": name, "tool": tool, "prompt": "(resumed)",
+                 "auto_confirm": _tf(a, "auto_confirm", True),
+                 "auto_exit": _tf(a, "auto_exit", False),
+                 "tags": tags},
+        "context_id": "",
+        "context_name": ctx_name,
+        "context_path": workdir,
+        "transport_type": transport,
+        "status": "running",
+        "state": "initializing",
+        "tmux_session": new_session,
+        "tmux_socket": "",
+        "pid": None,
+        "hostname": _sock.gethostname(),
+        "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
+        "retry_count": 0, "cost_estimate": None, "files_changed": [],
+    })
+
+    # Startup: wait for readiness, auto-confirm
+    if config.prompt_after_launch:
+        elapsed = 0.0
+        while elapsed < config.startup_wait:
+            time.sleep(1)
+            elapsed += 1
+            output = capture_tmux(new_session)
+            if not output.strip():
+                continue
+            confirm = should_auto_confirm(output, config)
+            if confirm:
+                tmux_send_input(new_session, config.probe_char, send_enter=False)
+                time.sleep(3)
+                elapsed += 3
+                continue
+            if is_ready_for_input(output, config):
+                break
+
+    # Spawn monitor
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, _CAMC_SCRIPT, "_monitor", new_id] if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg", "_monitor", new_id],
+            stdout=subprocess.DEVNULL,
+            stderr=open(os.path.join(LOGS_DIR, "monitor-%s.stderr" % new_id), "a"),
+            start_new_session=True)
+        store.update(new_id, pid=proc.pid)
+    except Exception as e:
+        print_warning("Monitor failed to start: %s" % e)
+
+    print_success("Agent rebooted: %s → %s" % (old_id, new_id))
+    print("  Name: %s" % name)
+    print("  Session: %s" % new_session)
+    if old_session_id:
+        print("  Resumed from: %s" % old_session_id)
+    print()
+    print("  Attach: camc attach %s" % new_id)
+
+
 def cmd_attach(args):
     store = AgentStore()
     agent_id = getattr(args, "id", None)
@@ -774,6 +961,23 @@ def cmd_status(args):
         prompt = _tf(a, "prompt") or ""
         prompt_display = prompt[:80] + "..." if len(prompt) > 80 else prompt or "(interactive)"
         alive = tmux_session_exists(_sf(a, "tmux_session"))
+        # Session ID info
+        sid = a.get("session_id", "")
+        session_file_info = None
+        if sid:
+            # Build session file path: ~/.claude/projects/<dir-slug>/<session>.jsonl
+            ctx_path = _sf(a, "context_path", "")
+            if ctx_path:
+                slug = ctx_path.replace("/", "-").lstrip("-")
+                sf_path = os.path.expanduser("~/.claude/projects/%s/%s.jsonl" % (slug, sid))
+                if os.path.exists(sf_path):
+                    sz = os.path.getsize(sf_path)
+                    mtime = os.path.getmtime(sf_path)
+                    session_file_info = "%s (%s, %s)" % (
+                        sf_path, _fmt_size(sz), _time_ago(_iso_from_ts(mtime)))
+                else:
+                    session_file_info = "%s (not found)" % sf_path
+
         pairs = [
             ("ID", a.get("id", "?")),
             ("Name", _tf(a, "name")),
@@ -782,6 +986,8 @@ def cmd_status(args):
             ("State", a.get("state") or "-"),
             ("Path", _sf(a, "context_path", "?")),
             ("Session", _sf(a, "tmux_session", "?")),
+            ("Session ID", sid or None),
+            ("Session File", session_file_info),
             ("Started", a.get("started_at") or "-"),
             ("Completed", a.get("completed_at")),
             ("Exit", a.get("exit_reason")),
@@ -1008,6 +1214,20 @@ def cmd_heal(args):
     if skipped:
         msg += " (%d skipped, other host)" % skipped
     print(msg)
+
+    # --- Session file check (warning only) ---
+    for a in running:
+        sid = a.get("session_id", "")
+        if not sid:
+            continue
+        ctx_path = _sf(a, "context_path", "")
+        if not ctx_path:
+            continue
+        slug = ctx_path.replace("/", "-").lstrip("-")
+        sf_path = os.path.expanduser("~/.claude/projects/%s/%s.jsonl" % (slug, sid))
+        if not os.path.exists(sf_path):
+            name = _tf(a, "name") or a["id"]
+            log.warning("Session file missing for %s (%s): %s", name, a["id"], sf_path)
 
     # --- Phase 3: Adopt orphan tmux sessions not in agents.json ---
     # Scan socket directories for cam-* sessions that have no agent record.
@@ -1630,6 +1850,10 @@ examples:
     # prune
     sub.add_parser("prune", help="Remove all non-running agents")
 
+    # reboot
+    rb = sub.add_parser("reboot", help="Restart agent with session resume")
+    rb.add_argument("id", help="Agent ID or name")
+
     # attach
     at = sub.add_parser("attach", help="Attach to an agent's TMUX session (interactive)")
     at.add_argument("id", nargs="?", default=None, help="Agent number, name, or ID")
@@ -1748,6 +1972,7 @@ examples:
         "add": cmd_add,
         "rm": cmd_rm,
         "prune": cmd_prune,
+        "reboot": cmd_reboot,
         "attach": cmd_attach, "a": cmd_attach,
         "status": cmd_status,
         "apply": cmd_apply,
