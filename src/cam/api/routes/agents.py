@@ -604,9 +604,13 @@ async def upload_file(agent_id: str, body: UploadFileRequest, request: Request):
     if not agent.tmux_session or agent.is_terminal():
         raise HTTPException(status_code=400, detail="Agent is not running")
 
-    context = state.context_store.get(str(agent.context_id))
-    if not context:
-        raise HTTPException(status_code=400, detail="Agent context not found")
+    # Upload destination is derived from the agent itself, not a context record.
+    # Agents created via camc (most remote agents) have empty context_id, but
+    # always carry context_path and machine_host. Looking up context_store here
+    # would falsely block those agents from uploading.
+    context_path = agent.context_path
+    if not context_path:
+        raise HTTPException(status_code=400, detail="Agent has no working directory")
 
     # Decode base64 data
     try:
@@ -621,11 +625,31 @@ async def upload_file(agent_id: str, body: UploadFileRequest, request: Request):
 
     # Build path: {context_path}/.cam-images/{timestamp}-{filename}
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    dest_path = f"{context.path}/.cam-images/{timestamp}-{safe_name}"
+    dest_path = f"{context_path}/.cam-images/{timestamp}-{safe_name}"
 
+    # Pick a transport. Prefer the agent's own machine fields (always present
+    # for camc-imported agents). Fall back to the context record only if the
+    # agent is missing machine info (legacy local agents).
+    from cam.core.models import MachineConfig, TransportType
     from cam.transport.factory import TransportFactory
 
-    transport = TransportFactory.create(context.machine)
+    if agent.machine_host and agent.machine_host not in ("localhost", "127.0.0.1"):
+        machine_cfg = MachineConfig(
+            type=TransportType.SSH,
+            host=agent.machine_host,
+            user=agent.machine_user,
+            port=agent.machine_port,
+        )
+    elif agent.context_id:
+        ctx_record = state.context_store.get(str(agent.context_id))
+        if ctx_record:
+            machine_cfg = ctx_record.machine
+        else:
+            machine_cfg = MachineConfig(type=TransportType.LOCAL)
+    else:
+        machine_cfg = MachineConfig(type=TransportType.LOCAL)
+
+    transport = TransportFactory.create(machine_cfg)
     ok = await transport.write_file(dest_path, file_data)
 
     if not ok:
