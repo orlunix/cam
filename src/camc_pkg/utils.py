@@ -125,6 +125,10 @@ def _build_command(config, prompt, path):
                 part = part.replace(key, value)
                 break
         result.append(part)
+    # Inject --permission-mode auto if enabled in config
+    if getattr(config, "auto_permission_mode", False):
+        # Insert after the executable name (index 0)
+        result[1:1] = ["--permission-mode", "auto"]
     return result
 
 

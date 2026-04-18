@@ -18,6 +18,7 @@ display_name = "Claude Code"
 
 [launch]
 command = ["claude", "--allowed-tools", "Bash,Edit,Read,Write,Glob,Grep,WebFetch,TodoWrite,NotebookEdit"]
+auto_permission_mode = false    # set true to add --permission-mode auto to launch command
 prompt_after_launch = true
 startup_wait = 30.0
 strip_ansi = true
