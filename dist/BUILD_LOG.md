@@ -650,3 +650,42 @@ b11a477 Reboot: cd to workdir before relaunch, verify Claude exited
 a714bfb Fix graceful_exit: use /exit command, kill process not tmux
 ```
 
+## v1.1.0  c609910 2026-04-16 23:12
+
+- Lines: 4839
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+c609910 camc: split exit/stop/kill lifecycle, add run --resume
+b11a477 Reboot: cd to workdir before relaunch, verify Claude exited
+3ea6ddf Reboot: resume existing session ID, no fork
+2d0d948 Reboot: Esc x3 + Ctrl+C + verify idle + /exit, remove state check
+0f21a08 Fix reboot: reuse same tmux/agent ID, add --fork-session, relax state check
+```
+
+## v1.1.0  398457b 2026-04-18 01:16
+
+- Lines: 4839
+- Output: /home/hren/bin/camc
+- Recent changes:
+```
+c609910 camc: split exit/stop/kill lifecycle, add run --resume
+b11a477 Reboot: cd to workdir before relaunch, verify Claude exited
+3ea6ddf Reboot: resume existing session ID, no fork
+2d0d948 Reboot: Esc x3 + Ctrl+C + verify idle + /exit, remove state check
+0f21a08 Fix reboot: reuse same tmux/agent ID, add --fork-session, relax state check
+```
+
+## v1.1.0  398457b-dirty 2026-04-18 08:42
+
+- Lines: 4984
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+c609910 camc: split exit/stop/kill lifecycle, add run --resume
+b11a477 Reboot: cd to workdir before relaunch, verify Claude exited
+3ea6ddf Reboot: resume existing session ID, no fork
+2d0d948 Reboot: Esc x3 + Ctrl+C + verify idle + /exit, remove state check
+0f21a08 Fix reboot: reuse same tmux/agent ID, add --fork-session, relax state check
+```
+

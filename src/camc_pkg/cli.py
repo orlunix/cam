@@ -725,13 +725,19 @@ def cmd_add(args):
         context = _load_default_context()
         ctx_name = context.get("name", "") if isinstance(context, dict) else ""
         name = getattr(args, "name", None) or ""
+        cwd = os.getcwd()
+        # Capture Claude session UUID before any subsequent fallback logic
+        # (see cmd_heal for why — reboot needs it).
+        claude_pid = _find_claude_pid(args.session)
+        session_uuid = _find_session_id(agent_id, claude_pid, cwd) or ""
         store.save({
             "id": agent_id,
+            "session_id": session_uuid,
             "task": {"name": name, "tool": args.tool, "prompt": "(adopted)",
                      "auto_confirm": True, "auto_exit": False},
             "context_id": "",
             "context_name": ctx_name,
-            "context_path": os.getcwd(),
+            "context_path": cwd,
             "transport_type": "local",
             "status": "running",
             "state": None,
@@ -743,6 +749,8 @@ def cmd_add(args):
             "retry_count": 0, "cost_estimate": None, "files_changed": [],
         })
         print("Adopted '%s' as agent %s (tool=%s)" % (args.session, agent_id, args.tool))
+        if session_uuid:
+            print("  Session ID: %s" % session_uuid)
 
     # Spawn monitor (if not already running)
     existing_pid = (existing or {}).get("pid")
@@ -859,6 +867,135 @@ def _find_session_in_use(session_id):
     return pids
 
 
+_UUID_RE_STR = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+
+
+def _extract_session_from_fd(claude_pid):
+    """Layer 1: read Claude's open file descriptors for a session UUID.
+
+    Claude Code v2.1.114+ keeps ~/.claude/tasks/<uuid>/.lock open. Extract the
+    uuid from any fd target matching that pattern. Linux-only (/proc/*/fd).
+    Returns UUID string or None.
+    """
+    import re
+    if not claude_pid:
+        return None
+    fd_dir = "/proc/%s/fd" % claude_pid
+    try:
+        entries = os.listdir(fd_dir)
+    except OSError:
+        return None
+    pat = re.compile(r"\.claude/tasks/(" + _UUID_RE_STR + r")")
+    for fd in entries:
+        try:
+            target = os.readlink(os.path.join(fd_dir, fd))
+        except OSError:
+            continue
+        m = pat.search(target)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _project_dirs_for_workdir(workdir):
+    """Candidate ~/.claude/projects/<encoded>/ dirs for a given workdir.
+
+    Claude's encoding replaces '/' with '-', but there are at least two styles
+    observed for names containing dots (e.g. scratch.hren_gpu_1): one keeps
+    dots, another replaces dots with dashes. Try both.
+    """
+    wd = workdir.strip("/")
+    enc1 = "-" + wd.replace("/", "-")                       # dots kept
+    enc2 = "-" + wd.replace("/", "-").replace(".", "-")     # dots → dashes
+    base = os.path.join(os.path.expanduser("~"), ".claude", "projects")
+    seen, out = set(), []
+    for enc in (enc1, enc2):
+        path = os.path.join(base, enc)
+        if path not in seen:
+            seen.add(path)
+            out.append(path)
+    return out
+
+
+def _extract_session_from_project_dir(workdir):
+    """Layer 2: most-recently-modified <uuid>/ subdir under the project dir.
+
+    Each live Claude session creates ~/.claude/projects/<enc>/<uuid>/ (with
+    subagents/, tool-results/). Returns newest UUID or None.
+    """
+    import re
+    pat = re.compile(r"^" + _UUID_RE_STR + r"$")
+    best = None  # (mtime, uuid)
+    for proj_dir in _project_dirs_for_workdir(workdir):
+        if not os.path.isdir(proj_dir):
+            continue
+        try:
+            entries = os.listdir(proj_dir)
+        except OSError:
+            continue
+        for entry in entries:
+            if entry == "memory" or not pat.match(entry):
+                continue
+            full = os.path.join(proj_dir, entry)
+            if not os.path.isdir(full):
+                continue
+            try:
+                mtime = os.path.getmtime(full)
+            except OSError:
+                continue
+            if best is None or mtime > best[0]:
+                best = (mtime, entry)
+    return best[1] if best else None
+
+
+def _extract_session_from_jsonl(workdir):
+    """Layer 3: newest .jsonl file under the project dir (legacy fallback)."""
+    best = None  # (mtime, uuid)
+    for proj_dir in _project_dirs_for_workdir(workdir):
+        if not os.path.isdir(proj_dir):
+            continue
+        try:
+            entries = os.listdir(proj_dir)
+        except OSError:
+            continue
+        for f in entries:
+            if not f.endswith(".jsonl"):
+                continue
+            full = os.path.join(proj_dir, f)
+            try:
+                mtime = os.path.getmtime(full)
+            except OSError:
+                continue
+            uid = f[:-6]  # strip .jsonl
+            if best is None or mtime > best[0]:
+                best = (mtime, uid)
+    return best[1] if best else None
+
+
+def _find_session_id(agent_id, claude_pid, workdir):
+    """Find the Claude session UUID for an adopted/resumed agent.
+
+    Four-layer fallback:
+      1. /proc/<pid>/fd — Claude keeps the task lock fd open
+      2. project dir session subdirectory (newest mtime)
+      3. legacy .jsonl fallback (newest mtime)
+      4. synthesize deterministic UUID from agent_id
+    """
+    sid = _extract_session_from_fd(claude_pid) if claude_pid else None
+    if sid:
+        return sid
+    if workdir:
+        sid = _extract_session_from_project_dir(workdir)
+        if sid:
+            return sid
+        sid = _extract_session_from_jsonl(workdir)
+        if sid:
+            return sid
+    if agent_id:
+        return "%s-0000-0000-0000-000000000000" % agent_id
+    return None
+
+
 def _find_claude_pid(session):
     """Find the Claude process PID inside a tmux session. Returns int or None."""
     sock = _find_tmux_socket(session)
@@ -953,19 +1090,18 @@ def cmd_migrate(args):
     name = _tf(a, "name") or old_id
     workdir = _sf(a, "context_path", os.getcwd())
     old_session_id = a.get("session_id", "")
-    # Fallback: find session ID from project dir if not tracked
-    if not old_session_id:
-        project_name = workdir.strip("/").replace("/", "-")
-        project_dir = os.path.join(os.path.expanduser("~"), ".claude", "projects", "-" + project_name)
-        if os.path.isdir(project_dir):
-            jsonls = sorted(
-                [f for f in os.listdir(project_dir) if f.endswith(".jsonl")],
-                key=lambda f: os.path.getmtime(os.path.join(project_dir, f)),
-                reverse=True,
-            )
-            if jsonls:
-                old_session_id = jsonls[0].replace(".jsonl", "")
-                log.info("Found session from project dir: %s", old_session_id)
+    # If session_id is the synthetic deterministic form, treat it as absent so
+    # the 4-layer extractor can try to find the real Claude session UUID.
+    synthetic = old_session_id == "%s-0000-0000-0000-000000000000" % old_id
+    if not old_session_id or synthetic:
+        claude_pid = _find_claude_pid(old_session) if old_session else None
+        found = _find_session_id(old_id, claude_pid, workdir)
+        # _find_session_id returns the synthetic form as a last resort — accept
+        # only if it's a real session (either from fd, or at least a uuid that
+        # isn't all zeros after the agent-id prefix).
+        if found and found != "%s-0000-0000-0000-000000000000" % old_id:
+            old_session_id = found
+            log.info("Recovered session_id for %s via 4-layer extract: %s", old_id, old_session_id)
     tags = _tf(a, "tags")
     tags = tags if isinstance(tags, list) else []
 
@@ -1416,8 +1552,15 @@ def cmd_heal(args):
             tool = "claude"
             # Create adopted agent record
             agent_name = os.path.basename(cwd) if cwd else "orphan-%s" % aid[:4]
+            # Try to recover the Claude session UUID from the running process.
+            # Without this, `camc reboot` on an adopted agent falls back to
+            # workdir-based session lookup and picks the wrong session when
+            # multiple agents share a cwd (e.g. /home/hren).
+            claude_pid = _find_claude_pid(session)
+            session_uuid = _find_session_id(aid, claude_pid, cwd) or ""
             store.save({
                 "id": aid,
+                "session_id": session_uuid,
                 "task": {"name": agent_name, "tool": tool, "prompt": "",
                          "auto_confirm": True, "auto_exit": False},
                 "context_id": "",
@@ -1433,6 +1576,8 @@ def cmd_heal(args):
                 "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
                 "retry_count": 0, "cost_estimate": None, "files_changed": [],
             })
+            if session_uuid:
+                log.info("Adopted %s with session_id=%s", aid, session_uuid)
             # Spawn monitor for the adopted agent
             try:
                 proc = subprocess.Popen(
