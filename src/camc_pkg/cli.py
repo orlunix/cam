@@ -872,8 +872,40 @@ def _find_session_in_use(session_id):
 _UUID_RE_STR = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 
 
+def _extract_session_from_cmdline(claude_pid):
+    """Layer 1a: read --session-id / --resume argument from Claude's cmdline.
+
+    Most reliable per-process signal — cmdline is set at exec time and cannot
+    change. camc always passes one of these flags to Claude, so any Claude
+    process we manage will expose its session UUID here.
+    Returns UUID string or None.
+    """
+    import re
+    if not claude_pid:
+        return None
+    try:
+        with open("/proc/%s/cmdline" % claude_pid, "rb") as f:
+            raw = f.read().decode("utf-8", errors="replace")
+    except (OSError, IOError):
+        return None
+    parts = [p for p in raw.split("\x00") if p]
+    pat = re.compile(r"^" + _UUID_RE_STR + r"$")
+    for i, p in enumerate(parts):
+        # `--session-id=UUID` / `--resume=UUID`
+        if p.startswith("--session-id=") or p.startswith("--resume="):
+            val = p.split("=", 1)[1]
+            if pat.match(val):
+                return val
+        # `--session-id UUID` / `--resume UUID`
+        if p in ("--session-id", "--resume") and i + 1 < len(parts):
+            val = parts[i + 1]
+            if pat.match(val):
+                return val
+    return None
+
+
 def _extract_session_from_fd(claude_pid):
-    """Layer 1: read Claude's open file descriptors for a session UUID.
+    """Layer 1b: read Claude's open file descriptors for a session UUID.
 
     Claude Code v2.1.114+ keeps ~/.claude/tasks/<uuid>/.lock open. Extract the
     uuid from any fd target matching that pattern. Linux-only (/proc/*/fd).
@@ -1006,20 +1038,38 @@ def _extract_session_from_jsonl(workdir):
     return best[1] if best else None
 
 
+def _find_session_id_pid(claude_pid):
+    """Return a PID-authoritative session UUID, or None.
+
+    Only uses signals that identify *this specific* Claude process — cmdline
+    args and open fds. Never falls back to workdir-based guessing (which
+    collides when multiple agents share a cwd). Use this when the alternative
+    to "no answer" is "potentially wrong answer" — e.g. backfilling session
+    IDs for many agents in heal.
+    """
+    if not claude_pid:
+        return None
+    return (
+        _extract_session_from_cmdline(claude_pid)
+        or _extract_session_from_fd(claude_pid)
+    )
+
+
 def _find_session_id(agent_id, claude_pid, workdir=None, tmux_session=None):
     """Find the Claude session UUID for an adopted/resumed agent.
 
-    Layered fallback. Each workdir-based layer is tried against two candidate
-    workdirs (pane CWD first — live, reflects any `cd` Claude has done; then
-    the stored context_path).
+    Layered fallback. PID-based signals come first (authoritative for the
+    specific Claude process). Workdir-based signals are attempted last and
+    should be treated as best-effort guesses — two agents sharing a workdir
+    will appear identical to these layers.
 
-      1. /proc/<pid>/fd — Claude keeps the task lock fd open
-      2. ~/.claude/projects/<enc>/<uuid>/ subdirectory (newest mtime)
-      3. ~/.claude/projects/<enc>/<uuid>.jsonl (newest mtime)
-      4. synthesize deterministic UUID from agent_id
+      1a. /proc/<pid>/cmdline — --session-id / --resume arg
+      1b. /proc/<pid>/fd — ~/.claude/tasks/<uuid>/.lock
+      2.  ~/.claude/projects/<enc>/<uuid>/ subdirectory (newest mtime)
+      3.  ~/.claude/projects/<enc>/<uuid>.jsonl (newest mtime)
+      4.  synthesize deterministic UUID from agent_id
     """
-    # Layer 1: fd
-    sid = _extract_session_from_fd(claude_pid) if claude_pid else None
+    sid = _find_session_id_pid(claude_pid)
     if sid:
         return sid
 
@@ -1537,19 +1587,89 @@ def cmd_heal(args):
         msg += " (%d skipped, other host)" % skipped
     print(msg)
 
-    # --- Session file check (warning only) ---
+    # --- Phase 2.5: Backfill session_id for running local agents -------------
+    # Many agents were adopted/created before session_id tracking existed (or
+    # by older camc builds). Their session_id is empty or the synthetic
+    # <aid>-0000-... placeholder. Reboot then falls back to guessing and can
+    # pick the wrong session when multiple agents share a workdir.
+    #
+    # For backfill we deliberately use ONLY PID-authoritative signals
+    # (cmdline / fd). Workdir-based layers would silently assign the same
+    # UUID to multiple agents that happen to live in the same dir — worse
+    # than leaving the field empty, because reboot would then confidently
+    # resume the wrong session.
+    #
+    # Strategy: whenever we can read the Claude cmdline (authoritative), we
+    # *replace* the stored session_id with the cmdline value — even if the
+    # old one looks like a real UUID. This is the only way to repair past
+    # workdir-guess collisions (multiple agents in the same cwd all got
+    # backfilled to the same newest-subdir UUID). When cmdline is silent
+    # (Claude exited), we leave the stored value alone.
+    backfilled = 0
+    corrected = 0
+    bf_skipped_no_claude = 0
     for a in running:
+        agent_host = a.get("hostname")
+        if agent_host and not _is_same_host(agent_host, my_hostname):
+            continue
+        # Don't filter by transport_type — on NFS-shared agents.json clusters,
+        # the record's transport_type may say "ssh" even though tmux runs
+        # locally on this host. The real gate is tmux_session_exists.
+        aid = a["id"]
+        old_sid = a.get("session_id", "") or ""
+        session = _sf(a, "tmux_session")
+        if not session or not tmux_session_exists(session):
+            continue
+        claude_pid = _find_claude_pid(session)
+        if not claude_pid:
+            synthetic = old_sid == "%s-0000-0000-0000-000000000000" % aid
+            if not old_sid or synthetic:
+                bf_skipped_no_claude += 1
+            continue
+        # Cmdline is live truth — prefer it over anything we have stored.
+        found = _find_session_id_pid(claude_pid)
+        if not found or found == old_sid:
+            continue
+        store.update(aid, session_id=found)
+        name = _tf(a, "name") or aid
+        if old_sid:
+            log.info("Corrected session_id for %s (%s): %s → %s",
+                     name, aid, old_sid, found)
+            corrected += 1
+        else:
+            log.info("Backfilled session_id for %s (%s): %s", name, aid, found)
+            backfilled += 1
+    if backfilled:
+        print("Backfilled session_id for %d agent(s)" % backfilled)
+    if corrected:
+        print("Corrected wrong session_id on %d agent(s)" % corrected)
+    if bf_skipped_no_claude:
+        print("Backfill: %d agent(s) skipped (no live Claude process)" %
+              bf_skipped_no_claude)
+
+    # --- Session file check (warning only) ---
+    # Re-read running list so the check sees the session_ids we just backfilled.
+    running_recheck = [r for r in store.list() if r.get("status") == "running"]
+    for a in running_recheck:
         sid = a.get("session_id", "")
         if not sid:
             continue
         ctx_path = _sf(a, "context_path", "")
         if not ctx_path:
             continue
-        slug = ctx_path.replace("/", "-").lstrip("-")
-        sf_path = os.path.expanduser("~/.claude/projects/%s/%s.jsonl" % (slug, sid))
-        if not os.path.exists(sf_path):
-            name = _tf(a, "name") or a["id"]
-            log.warning("Session file missing for %s (%s): %s", name, a["id"], sf_path)
+        # Project-dir encoding matches _project_dirs_for_workdir: canonical
+        # '/ . _ → -' form. Previously used only '/ → -', which gave false
+        # "session file missing" warnings for every path containing dots or
+        # underscores (e.g. /home/scratch.hren_gpu_1/...).
+        name = _tf(a, "name") or a["id"]
+        proj_dirs = _project_dirs_for_workdir(ctx_path)
+        for proj_dir in proj_dirs:
+            sf_path = os.path.join(proj_dir, "%s.jsonl" % sid)
+            if os.path.exists(sf_path):
+                break
+        else:
+            log.warning("Session file missing for %s (%s): %s", name, a["id"],
+                        os.path.join(proj_dirs[0], "%s.jsonl" % sid))
 
     # --- Phase 3: Adopt orphan tmux sessions not in agents.json ---
     # Scan socket directories for cam-* sessions that have no agent record.

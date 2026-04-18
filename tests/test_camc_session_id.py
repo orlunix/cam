@@ -13,10 +13,12 @@ from unittest import mock
 import pytest
 
 from camc_pkg.cli import (
+    _extract_session_from_cmdline,
     _extract_session_from_fd,
     _extract_session_from_project_dir,
     _extract_session_from_jsonl,
     _find_session_id,
+    _find_session_id_pid,
     _project_dirs_for_workdir,
 )
 
@@ -51,7 +53,106 @@ def _mk_project(tmp_home, workdir, session_uuid, with_subdir=True, with_jsonl=Fa
 
 
 # ---------------------------------------------------------------------------
-# Layer 1: /proc/<pid>/fd
+# Layer 1a: /proc/<pid>/cmdline
+# ---------------------------------------------------------------------------
+
+
+def _fake_cmdline(monkeypatch, pid, parts):
+    """Install a fake /proc/<pid>/cmdline reader returning the given argv."""
+    real_open = open
+    payload = ("\x00".join(parts) + "\x00").encode()
+
+    class FakeFile:
+        def __init__(self, data):
+            self._data = data
+        def read(self):
+            return self._data
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            pass
+
+    def fake_open(path, *a, **kw):
+        if path == f"/proc/{pid}/cmdline":
+            return FakeFile(payload)
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", fake_open)
+
+
+class TestExtractFromCmdline:
+    def test_session_id_space_form(self, monkeypatch):
+        uid = "0d27cb26-0000-0000-0000-000000000000"
+        _fake_cmdline(monkeypatch, 42, ["claude", "--session-id", uid])
+        assert _extract_session_from_cmdline(42) == uid
+
+    def test_resume_form(self, monkeypatch):
+        uid = "12345678-1234-1234-1234-123456789012"
+        _fake_cmdline(monkeypatch, 42, ["claude", "--resume", uid])
+        assert _extract_session_from_cmdline(42) == uid
+
+    def test_session_id_equals_form(self, monkeypatch):
+        uid = "abcdef12-1111-2222-3333-444455556666"
+        _fake_cmdline(monkeypatch, 42, ["claude", f"--session-id={uid}"])
+        assert _extract_session_from_cmdline(42) == uid
+
+    def test_ignores_non_uuid_value(self, monkeypatch):
+        _fake_cmdline(monkeypatch, 42, ["claude", "--session-id", "not-a-uuid"])
+        assert _extract_session_from_cmdline(42) is None
+
+    def test_no_pid_returns_none(self):
+        assert _extract_session_from_cmdline(None) is None
+        assert _extract_session_from_cmdline(0) is None
+
+    def test_missing_pid_returns_none(self):
+        # Very unlikely pid
+        assert _extract_session_from_cmdline(999_999_999) is None
+
+
+# ---------------------------------------------------------------------------
+# _find_session_id_pid — PID-authoritative only, never falls through to workdir
+# ---------------------------------------------------------------------------
+
+
+class TestFindSessionIdPidOnly:
+    """Backfill must not propagate workdir-based guesses across agents that
+    happen to share a cwd. _find_session_id_pid returns None rather than
+    falling back to project-dir scanning.
+    """
+
+    def test_returns_cmdline_uuid(self, monkeypatch):
+        uid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        monkeypatch.setattr("camc_pkg.cli._extract_session_from_cmdline",
+                            lambda pid: uid if pid else None)
+        monkeypatch.setattr("camc_pkg.cli._extract_session_from_fd",
+                            lambda pid: None)
+        assert _find_session_id_pid(123) == uid
+
+    def test_falls_back_to_fd_when_cmdline_empty(self, monkeypatch):
+        uid = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+        monkeypatch.setattr("camc_pkg.cli._extract_session_from_cmdline",
+                            lambda pid: None)
+        monkeypatch.setattr("camc_pkg.cli._extract_session_from_fd",
+                            lambda pid: uid if pid else None)
+        assert _find_session_id_pid(123) == uid
+
+    def test_returns_none_when_both_pid_layers_empty(self, tmp_home, monkeypatch):
+        # Even with a project dir that would match under workdir-based layers,
+        # _find_session_id_pid must not consult it.
+        _mk_project(tmp_home, "/home/hren", "99999999-9999-9999-9999-999999999999")
+        monkeypatch.setattr("camc_pkg.cli._extract_session_from_cmdline",
+                            lambda pid: None)
+        monkeypatch.setattr("camc_pkg.cli._extract_session_from_fd",
+                            lambda pid: None)
+        assert _find_session_id_pid(123) is None
+
+    def test_no_pid_returns_none(self):
+        assert _find_session_id_pid(None) is None
+        assert _find_session_id_pid(0) is None
+
+
+# ---------------------------------------------------------------------------
+# Layer 1b: /proc/<pid>/fd
 # ---------------------------------------------------------------------------
 
 
@@ -198,22 +299,39 @@ class TestExtractFromJsonl:
 class TestFindSessionIdPriority:
     AGENT_ID = "abc12345"
 
+    def _no_pid_signals(self, monkeypatch):
+        monkeypatch.setattr("camc_pkg.cli._extract_session_from_cmdline", lambda pid: None)
+        monkeypatch.setattr("camc_pkg.cli._extract_session_from_fd", lambda pid: None)
+
+    def test_cmdline_wins_over_everything(self, tmp_home, monkeypatch):
+        """Layer 1a (cmdline) beats fd + project dir when all three exist."""
+        cmd_uuid = "11111111-1111-1111-1111-111111111111"
+        fd_uuid = "22222222-2222-2222-2222-222222222222"
+        proj_uuid = "33333333-3333-3333-3333-333333333333"
+        _mk_project(tmp_home, "/home/hren", proj_uuid)
+
+        monkeypatch.setattr("camc_pkg.cli._extract_session_from_cmdline",
+                            lambda pid: cmd_uuid if pid else None)
+        monkeypatch.setattr("camc_pkg.cli._extract_session_from_fd",
+                            lambda pid: fd_uuid if pid else None)
+
+        assert _find_session_id(self.AGENT_ID, 123, "/home/hren") == cmd_uuid
+
     def test_fd_wins_over_project_dir(self, tmp_home, monkeypatch):
-        """Layer 1 beats layer 2 — even if both exist, fd value is returned."""
         fd_uuid = "ffffffff-ffff-ffff-ffff-ffffffffffff"
         proj_uuid = "dddddddd-dddd-dddd-dddd-dddddddddddd"
         _mk_project(tmp_home, "/home/hren", proj_uuid)
 
-        monkeypatch.setattr(
-            "camc_pkg.cli._extract_session_from_fd",
-            lambda pid: fd_uuid if pid else None,
-        )
+        monkeypatch.setattr("camc_pkg.cli._extract_session_from_cmdline",
+                            lambda pid: None)
+        monkeypatch.setattr("camc_pkg.cli._extract_session_from_fd",
+                            lambda pid: fd_uuid if pid else None)
         assert _find_session_id(self.AGENT_ID, 123, "/home/hren") == fd_uuid
 
-    def test_project_dir_when_no_fd(self, tmp_home, monkeypatch):
+    def test_project_dir_when_no_pid_signals(self, tmp_home, monkeypatch):
         proj_uuid = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
         _mk_project(tmp_home, "/home/hren", proj_uuid)
-        monkeypatch.setattr("camc_pkg.cli._extract_session_from_fd", lambda pid: None)
+        self._no_pid_signals(monkeypatch)
 
         assert _find_session_id(self.AGENT_ID, 123, "/home/hren") == proj_uuid
 
@@ -222,19 +340,17 @@ class TestFindSessionIdPriority:
         proj.mkdir(parents=True)
         uuid = "99999999-9999-9999-9999-999999999999"
         (proj / f"{uuid}.jsonl").write_text("{}")
-
-        monkeypatch.setattr("camc_pkg.cli._extract_session_from_fd", lambda pid: None)
+        self._no_pid_signals(monkeypatch)
 
         assert _find_session_id(self.AGENT_ID, 0, "/home/hren") == uuid
 
     def test_synthetic_last_resort(self, tmp_home, monkeypatch):
-        monkeypatch.setattr("camc_pkg.cli._extract_session_from_fd", lambda pid: None)
-        # No project dir, no jsonl
+        self._no_pid_signals(monkeypatch)
         out = _find_session_id(self.AGENT_ID, 0, "/nowhere")
         assert out == f"{self.AGENT_ID}-0000-0000-0000-000000000000"
 
     def test_no_agent_id_and_nothing_found_returns_none(self, tmp_home, monkeypatch):
-        monkeypatch.setattr("camc_pkg.cli._extract_session_from_fd", lambda pid: None)
+        self._no_pid_signals(monkeypatch)
         assert _find_session_id("", 0, "/nowhere") is None
 
     def test_pane_cwd_beats_stored_workdir(self, tmp_home, monkeypatch):
@@ -244,7 +360,7 @@ class TestFindSessionIdPriority:
         _mk_project(tmp_home, "/home/hren", stored_uuid)
         _mk_project(tmp_home, "/home/hren/sub", live_uuid)
 
-        monkeypatch.setattr("camc_pkg.cli._extract_session_from_fd", lambda pid: None)
+        self._no_pid_signals(monkeypatch)
         monkeypatch.setattr(
             "camc_pkg.cli._get_tmux_pane_cwd",
             lambda session: "/home/hren/sub",
@@ -259,7 +375,7 @@ class TestFindSessionIdPriority:
         stored_uuid = "cccc0000-1111-2222-3333-444455556666"
         _mk_project(tmp_home, "/home/hren", stored_uuid)
 
-        monkeypatch.setattr("camc_pkg.cli._extract_session_from_fd", lambda pid: None)
+        self._no_pid_signals(monkeypatch)
         monkeypatch.setattr("camc_pkg.cli._get_tmux_pane_cwd", lambda session: None)
 
         out = _find_session_id(
@@ -297,3 +413,29 @@ class TestProjectDirsForWorkdir:
         dirs = _project_dirs_for_workdir("/home/scratch.hren_gpu_1/test/fn211")
         names = [os.path.basename(d) for d in dirs]
         assert "-home-scratch-hren-gpu-1-test-fn211" in names
+
+
+# ---------------------------------------------------------------------------
+# Session-file check in cmd_heal uses the canonical encoding
+# ---------------------------------------------------------------------------
+
+
+class TestSessionFileCheckEncoding:
+    """Regression: the session-file existence check in heal used to slug via
+    ctx_path.replace('/', '-'), which produced false 'missing' warnings for
+    every path containing a dot or underscore. It should now go through
+    _project_dirs_for_workdir and find the file under the canonical name."""
+
+    def test_finds_jsonl_via_canonical_encoding(self, tmp_home):
+        # File lives under the canonical encoding
+        uuid = "deadbeef-0000-0000-0000-000000000000"
+        proj = tmp_home / ".claude/projects/-home-scratch-hren-gpu-1-test"
+        proj.mkdir(parents=True)
+        (proj / f"{uuid}.jsonl").write_text("{}")
+
+        # The heal check builds the path via _project_dirs_for_workdir now,
+        # so the same helper should surface this directory first.
+        dirs = _project_dirs_for_workdir("/home/scratch.hren_gpu_1/test")
+        first = dirs[0]
+        found = os.path.exists(os.path.join(first, f"{uuid}.jsonl"))
+        assert found, f"expected file under {first}"
