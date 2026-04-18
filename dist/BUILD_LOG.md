@@ -689,3 +689,16 @@ b11a477 Reboot: cd to workdir before relaunch, verify Claude exited
 0f21a08 Fix reboot: reuse same tmux/agent ID, add --fork-session, relax state check
 ```
 
+## v1.1.0  dc78e41-dirty 2026-04-18 09:04
+
+- Lines: 5043
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+dc78e41 camc: record real Claude session ID on heal/adopt (4-layer extract)
+c609910 camc: split exit/stop/kill lifecycle, add run --resume
+b11a477 Reboot: cd to workdir before relaunch, verify Claude exited
+3ea6ddf Reboot: resume existing session ID, no fork
+2d0d948 Reboot: Esc x3 + Ctrl+C + verify idle + /exit, remove state check
+```
+

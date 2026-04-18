@@ -153,6 +153,20 @@ class TestExtractFromProjectDir:
             == uuid
         )
 
+    def test_handles_canonical_dot_underscore_encoding(self, tmp_home):
+        """Canonical Claude encoding replaces / . _ all with dashes."""
+        # /home/scratch.hren_gpu_1/test/fn211 → -home-scratch-hren-gpu-1-test-fn211
+        enc = "-home-scratch-hren-gpu-1-test-fn211"
+        proj = tmp_home / ".claude/projects" / enc
+        proj.mkdir(parents=True)
+        uuid = "11112222-3333-4444-5555-666677778888"
+        (proj / uuid).mkdir()
+
+        assert (
+            _extract_session_from_project_dir("/home/scratch.hren_gpu_1/test/fn211")
+            == uuid
+        )
+
 
 # ---------------------------------------------------------------------------
 # Layer 3: .jsonl fallback
@@ -223,6 +237,36 @@ class TestFindSessionIdPriority:
         monkeypatch.setattr("camc_pkg.cli._extract_session_from_fd", lambda pid: None)
         assert _find_session_id("", 0, "/nowhere") is None
 
+    def test_pane_cwd_beats_stored_workdir(self, tmp_home, monkeypatch):
+        """Pane CWD is tried before context_path — picks up post-`cd` session."""
+        stored_uuid = "aaaa0000-1111-2222-3333-444455556666"
+        live_uuid = "bbbb0000-1111-2222-3333-444455556666"
+        _mk_project(tmp_home, "/home/hren", stored_uuid)
+        _mk_project(tmp_home, "/home/hren/sub", live_uuid)
+
+        monkeypatch.setattr("camc_pkg.cli._extract_session_from_fd", lambda pid: None)
+        monkeypatch.setattr(
+            "camc_pkg.cli._get_tmux_pane_cwd",
+            lambda session: "/home/hren/sub",
+        )
+
+        out = _find_session_id(
+            self.AGENT_ID, 0, workdir="/home/hren", tmux_session="cam-abc",
+        )
+        assert out == live_uuid
+
+    def test_falls_back_to_stored_workdir_when_pane_cwd_empty(self, tmp_home, monkeypatch):
+        stored_uuid = "cccc0000-1111-2222-3333-444455556666"
+        _mk_project(tmp_home, "/home/hren", stored_uuid)
+
+        monkeypatch.setattr("camc_pkg.cli._extract_session_from_fd", lambda pid: None)
+        monkeypatch.setattr("camc_pkg.cli._get_tmux_pane_cwd", lambda session: None)
+
+        out = _find_session_id(
+            self.AGENT_ID, 0, workdir="/home/hren", tmux_session="cam-abc",
+        )
+        assert out == stored_uuid
+
 
 # ---------------------------------------------------------------------------
 # _project_dirs_for_workdir — encoding variants
@@ -230,13 +274,26 @@ class TestFindSessionIdPriority:
 
 
 class TestProjectDirsForWorkdir:
-    def test_emits_both_dot_and_dash_variants(self):
+    def test_emits_all_three_variants_for_dots_and_underscores(self):
+        """Canonical (/ . _ → -), conservative (/ . → -), minimal (/ → -)."""
         dirs = _project_dirs_for_workdir("/home/scratch.hren_gpu_1")
         names = [os.path.basename(d) for d in dirs]
-        assert "-home-scratch.hren_gpu_1" in names
-        assert "-home-scratch-hren_gpu_1" in names
+        assert "-home-scratch-hren-gpu-1" in names  # canonical
+        assert "-home-scratch-hren_gpu_1" in names  # dots only
+        assert "-home-scratch.hren_gpu_1" in names  # minimal
 
-    def test_no_dup_when_no_dots(self):
+    def test_canonical_first(self):
+        """Canonical encoding is tried first (picked up before legacy)."""
+        dirs = _project_dirs_for_workdir("/home/scratch.hren_gpu_1")
+        assert os.path.basename(dirs[0]) == "-home-scratch-hren-gpu-1"
+
+    def test_no_dup_when_no_dots_or_underscores(self):
         dirs = _project_dirs_for_workdir("/home/hren")
         assert len(dirs) == 1
         assert dirs[0].endswith("/-home-hren")
+
+    def test_complex_path_from_task_doc(self):
+        """Exact example from the task doc."""
+        dirs = _project_dirs_for_workdir("/home/scratch.hren_gpu_1/test/fn211")
+        names = [os.path.basename(d) for d in dirs]
+        assert "-home-scratch-hren-gpu-1-test-fn211" in names
