@@ -17,7 +17,7 @@ name = "claude"
 display_name = "Claude Code"
 
 [launch]
-command = ["claude", "--permission-mode", "auto", "--allowed-tools", "Bash,Edit,Read,Write,Glob,Grep,WebFetch,TodoWrite,NotebookEdit"]
+command = ["claude", "--allowed-tools", "Bash,Edit,Read,Write,Glob,Grep,WebFetch,TodoWrite,NotebookEdit"]
 prompt_after_launch = true
 startup_wait = 30.0
 strip_ansi = true
