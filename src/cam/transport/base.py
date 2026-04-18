@@ -131,11 +131,15 @@ class Transport(ABC):
             True if the file was written successfully.
         """
         from pathlib import Path
+        import logging
         try:
             Path(remote_path).parent.mkdir(parents=True, exist_ok=True)
             Path(remote_path).write_bytes(data)
             return True
-        except Exception:
+        except Exception as e:
+            logging.getLogger(__name__).error(
+                "LocalTransport.write_file failed for %s: %s", remote_path, e
+            )
             return False
 
     async def list_files(self, path: str) -> list[dict]:
