@@ -729,7 +729,9 @@ def cmd_add(args):
         # Capture Claude session UUID before any subsequent fallback logic
         # (see cmd_heal for why — reboot needs it).
         claude_pid = _find_claude_pid(args.session)
-        session_uuid = _find_session_id(agent_id, claude_pid, cwd) or ""
+        session_uuid = _find_session_id(
+            agent_id, claude_pid, workdir=cwd, tmux_session=args.session,
+        ) or ""
         store.save({
             "id": agent_id,
             "session_id": session_uuid,
@@ -900,21 +902,53 @@ def _extract_session_from_fd(claude_pid):
 def _project_dirs_for_workdir(workdir):
     """Candidate ~/.claude/projects/<encoded>/ dirs for a given workdir.
 
-    Claude's encoding replaces '/' with '-', but there are at least two styles
-    observed for names containing dots (e.g. scratch.hren_gpu_1): one keeps
-    dots, another replaces dots with dashes. Try both.
+    Claude's canonical encoding replaces every '/', '.', and '_' with '-'
+    (e.g. /home/scratch.hren_gpu_1/test → -home-scratch-hren-gpu-1-test).
+    Older sessions used more conservative encodings that kept dots and/or
+    underscores, so we also try those variants so heal/reboot can find
+    pre-existing project dirs.
     """
     wd = workdir.strip("/")
-    enc1 = "-" + wd.replace("/", "-")                       # dots kept
-    enc2 = "-" + wd.replace("/", "-").replace(".", "-")     # dots → dashes
+    # Ordered from most-aggressive (current) to most-conservative (legacy).
+    variants = [
+        wd.replace("/", "-").replace(".", "-").replace("_", "-"),  # canonical
+        wd.replace("/", "-").replace(".", "-"),                    # dots only
+        wd.replace("/", "-"),                                      # dashes only
+    ]
     base = os.path.join(os.path.expanduser("~"), ".claude", "projects")
     seen, out = set(), []
-    for enc in (enc1, enc2):
-        path = os.path.join(base, enc)
+    for enc in variants:
+        path = os.path.join(base, "-" + enc)
         if path not in seen:
             seen.add(path)
             out.append(path)
     return out
+
+
+def _get_tmux_pane_cwd(session):
+    """Return the live working directory of the tmux pane, or None.
+
+    Agents often `cd` during execution, so the pane's current path diverges
+    from the context_path recorded when the agent was created. This live
+    value is what Claude uses to pick its ~/.claude/projects/<enc>/ dir.
+    """
+    if not session:
+        return None
+    sock = _find_tmux_socket(session)
+    if not sock:
+        return None
+    try:
+        rc, out = _run(
+            ["tmux", "-S", sock, "display-message", "-t", session,
+             "-p", "#{pane_current_path}"],
+            timeout=5,
+        )
+    except Exception:
+        return None
+    if rc != 0:
+        return None
+    cwd = (out or "").strip()
+    return cwd or None
 
 
 def _extract_session_from_project_dir(workdir):
@@ -972,25 +1006,46 @@ def _extract_session_from_jsonl(workdir):
     return best[1] if best else None
 
 
-def _find_session_id(agent_id, claude_pid, workdir):
+def _find_session_id(agent_id, claude_pid, workdir=None, tmux_session=None):
     """Find the Claude session UUID for an adopted/resumed agent.
 
-    Four-layer fallback:
+    Layered fallback. Each workdir-based layer is tried against two candidate
+    workdirs (pane CWD first — live, reflects any `cd` Claude has done; then
+    the stored context_path).
+
       1. /proc/<pid>/fd — Claude keeps the task lock fd open
-      2. project dir session subdirectory (newest mtime)
-      3. legacy .jsonl fallback (newest mtime)
+      2. ~/.claude/projects/<enc>/<uuid>/ subdirectory (newest mtime)
+      3. ~/.claude/projects/<enc>/<uuid>.jsonl (newest mtime)
       4. synthesize deterministic UUID from agent_id
     """
+    # Layer 1: fd
     sid = _extract_session_from_fd(claude_pid) if claude_pid else None
     if sid:
         return sid
-    if workdir:
-        sid = _extract_session_from_project_dir(workdir)
+
+    # Gather candidate workdirs. Pane CWD is tried first because Claude
+    # often cd's into a sub-project after launch and writes its session file
+    # under the *new* workdir's project dir, not the one we recorded.
+    workdirs = []
+    pane_cwd = _get_tmux_pane_cwd(tmux_session) if tmux_session else None
+    if pane_cwd:
+        workdirs.append(pane_cwd)
+    if workdir and workdir not in workdirs:
+        workdirs.append(workdir)
+
+    # Layer 2: project subdir
+    for wd in workdirs:
+        sid = _extract_session_from_project_dir(wd)
         if sid:
             return sid
-        sid = _extract_session_from_jsonl(workdir)
+
+    # Layer 3: jsonl
+    for wd in workdirs:
+        sid = _extract_session_from_jsonl(wd)
         if sid:
             return sid
+
+    # Layer 4: synthetic last resort
     if agent_id:
         return "%s-0000-0000-0000-000000000000" % agent_id
     return None
@@ -1095,7 +1150,9 @@ def cmd_migrate(args):
     synthetic = old_session_id == "%s-0000-0000-0000-000000000000" % old_id
     if not old_session_id or synthetic:
         claude_pid = _find_claude_pid(old_session) if old_session else None
-        found = _find_session_id(old_id, claude_pid, workdir)
+        found = _find_session_id(
+            old_id, claude_pid, workdir=workdir, tmux_session=old_session,
+        )
         # _find_session_id returns the synthetic form as a last resort — accept
         # only if it's a real session (either from fd, or at least a uuid that
         # isn't all zeros after the agent-id prefix).
@@ -1557,7 +1614,9 @@ def cmd_heal(args):
             # workdir-based session lookup and picks the wrong session when
             # multiple agents share a cwd (e.g. /home/hren).
             claude_pid = _find_claude_pid(session)
-            session_uuid = _find_session_id(aid, claude_pid, cwd) or ""
+            session_uuid = _find_session_id(
+                aid, claude_pid, workdir=cwd, tmux_session=session,
+            ) or ""
             store.save({
                 "id": aid,
                 "session_id": session_uuid,
