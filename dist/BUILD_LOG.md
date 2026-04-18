@@ -702,3 +702,55 @@ b11a477 Reboot: cd to workdir before relaunch, verify Claude exited
 2d0d948 Reboot: Esc x3 + Ctrl+C + verify idle + /exit, remove state check
 ```
 
+## v1.1.0  3fcdc49-dirty 2026-04-18 09:20
+
+- Lines: 5090
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+3fcdc49 camc: canonical /.._ → - encoding + tmux pane CWD as session-id source
+dc78e41 camc: record real Claude session ID on heal/adopt (4-layer extract)
+c609910 camc: split exit/stop/kill lifecycle, add run --resume
+b11a477 Reboot: cd to workdir before relaunch, verify Claude exited
+3ea6ddf Reboot: resume existing session ID, no fork
+```
+
+## v1.1.0  3fcdc49-dirty 2026-04-18 09:23
+
+- Lines: 5142
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+3fcdc49 camc: canonical /.._ → - encoding + tmux pane CWD as session-id source
+dc78e41 camc: record real Claude session ID on heal/adopt (4-layer extract)
+c609910 camc: split exit/stop/kill lifecycle, add run --resume
+b11a477 Reboot: cd to workdir before relaunch, verify Claude exited
+3ea6ddf Reboot: resume existing session ID, no fork
+```
+
+## v1.1.0  3fcdc49-dirty 2026-04-18 09:28
+
+- Lines: 5148
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+3fcdc49 camc: canonical /.._ → - encoding + tmux pane CWD as session-id source
+dc78e41 camc: record real Claude session ID on heal/adopt (4-layer extract)
+c609910 camc: split exit/stop/kill lifecycle, add run --resume
+b11a477 Reboot: cd to workdir before relaunch, verify Claude exited
+3ea6ddf Reboot: resume existing session ID, no fork
+```
+
+## v1.1.0  3fcdc49-dirty 2026-04-18 09:30
+
+- Lines: 5163
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+3fcdc49 camc: canonical /.._ → - encoding + tmux pane CWD as session-id source
+dc78e41 camc: record real Claude session ID on heal/adopt (4-layer extract)
+c609910 camc: split exit/stop/kill lifecycle, add run --resume
+b11a477 Reboot: cd to workdir before relaunch, verify Claude exited
+3ea6ddf Reboot: resume existing session ID, no fork
+```
+
