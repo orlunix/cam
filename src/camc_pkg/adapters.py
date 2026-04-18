@@ -118,6 +118,7 @@ class AdapterConfig(object):
         launch = config.get("launch", {})
         self.strip_ansi = launch.get("strip_ansi", False)
         self.command = launch.get("command", [])
+        self.auto_permission_mode = launch.get("auto_permission_mode", False)
 
         rp = launch.get("ready_pattern")
         self.ready_pattern = compile_pattern(rp, launch.get("ready_flags")) if rp else None
