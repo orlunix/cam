@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import time
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
+
+logger = logging.getLogger(__name__)
 
 from cam.api.schemas import (
     AgentListResponse,
@@ -627,32 +630,38 @@ async def upload_file(agent_id: str, body: UploadFileRequest, request: Request):
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     dest_path = f"{context_path}/.cam-images/{timestamp}-{safe_name}"
 
-    # Pick a transport. Prefer the agent's own machine fields (always present
-    # for camc-imported agents). Fall back to the context record only if the
-    # agent is missing machine info (legacy local agents).
-    from cam.core.models import MachineConfig, TransportType
+    # Transport comes from the agent's context record — it's the authoritative
+    # source (has ssh/local type, host, port, env_setup, key_file). Context can
+    # be looked up by id or name; camc-imported agents have an empty context_id
+    # but always carry a context_name.
     from cam.transport.factory import TransportFactory
 
-    if agent.machine_host and agent.machine_host not in ("localhost", "127.0.0.1"):
-        machine_cfg = MachineConfig(
-            type=TransportType.SSH,
-            host=agent.machine_host,
-            user=agent.machine_user,
-            port=agent.machine_port,
+    ctx_record = (
+        state.context_store.get(str(agent.context_id)) if agent.context_id else None
+    ) or (state.context_store.get(agent.context_name) if agent.context_name else None)
+    if ctx_record is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No context found for agent (id={agent.context_id!r}, name={agent.context_name!r})",
         )
-    elif agent.context_id:
-        ctx_record = state.context_store.get(str(agent.context_id))
-        if ctx_record:
-            machine_cfg = ctx_record.machine
-        else:
-            machine_cfg = MachineConfig(type=TransportType.LOCAL)
-    else:
-        machine_cfg = MachineConfig(type=TransportType.LOCAL)
+    machine_cfg = ctx_record.machine
 
     transport = TransportFactory.create(machine_cfg)
-    ok = await transport.write_file(dest_path, file_data)
+    logger.info(
+        "upload_file: agent=%s transport=%s host=%s dest=%s size=%d",
+        agent_id, machine_cfg.type.value, machine_cfg.host or "-", dest_path, len(file_data),
+    )
+    try:
+        ok = await transport.write_file(dest_path, file_data)
+    except Exception as e:
+        logger.exception("upload_file: write_file raised for %s", dest_path)
+        raise HTTPException(status_code=500, detail=f"Upload exception: {e}")
 
     if not ok:
+        logger.error(
+            "upload_file: write_file returned False — agent=%s transport=%s host=%s dest=%s",
+            agent_id, machine_cfg.type.value, machine_cfg.host or "-", dest_path,
+        )
         raise HTTPException(status_code=500, detail="Failed to write file")
 
     return {"ok": True, "path": dest_path, "size": len(file_data)}
