@@ -27,7 +27,7 @@ import time
 # ===========================================================================
 
 __version__ = "1.1.0"
-__build__ = "d7f871b-dirty 2026-04-18 20:37"
+__build__ = "ba8c9ad-dirty 2026-04-18 20:41"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -3495,14 +3495,34 @@ def cmd_add(args):
 
 
 def cmd_rm(args):
+    """Remove an agent record. Always tears down the tmux session and socket.
+
+    Previously the caller had to pass --kill to also destroy tmux; without
+    it, the session and socket survived and would be re-adopted as an
+    orphan on the next `camc heal` pass. There's no sensible use case for
+    "forget the record but keep the session around" — if you want the
+    session, don't run rm. So kill is now unconditional, and --kill is
+    accepted but is a no-op for backward compatibility.
+    """
     store = AgentStore()
     a = store.get(args.id)
     if not a:
         sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
-    if args.kill:
-        _kill_monitor(a); tmux_kill_session(_sf(a, "tmux_session"))
+    _kill_monitor(a)
+    session = _sf(a, "tmux_session")
+    if session:
+        tmux_kill_session(session)
+        # tmux usually removes its socket when the server exits, but on some
+        # filesystems (NFS) the file lingers. Unlink explicitly so heal's
+        # orphan scan doesn't re-adopt the dead session later.
+        sock_path = _find_tmux_socket(session)
+        if sock_path:
+            try:
+                os.unlink(sock_path)
+            except OSError:
+                pass
     store.remove(a["id"])
-    print("Removed agent %s%s" % (a["id"], " (killed)" if args.kill else ""))
+    print("Removed agent %s" % a["id"])
 
 
 def cmd_prune(args):
@@ -5028,9 +5048,10 @@ examples:
     a.add_argument("--name", "-n", default=None, help="Human-readable name")
 
     # rm
-    rm = sub.add_parser("rm", help="Remove a single agent")
+    rm = sub.add_parser("rm", help="Remove a single agent (always kills tmux)")
     rm.add_argument("id", help="Agent ID")
-    rm.add_argument("--kill", "-k", action="store_true", help="Also kill the session")
+    rm.add_argument("--kill", "-k", action="store_true",
+                    help="[deprecated, no-op] tmux is always killed now")
 
     # prune
     sub.add_parser("prune", help="Remove all non-running agents")
