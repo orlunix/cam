@@ -819,3 +819,16 @@ d7f871b camc: add auto_permission_mode option (default off)
 dc78e41 camc: record real Claude session ID on heal/adopt (4-layer extract)
 ```
 
+## v1.1.0  d87d6cf 2026-04-19 06:20
+
+- Lines: 5215
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+f2f0b76 camc: rm always kills tmux session + socket
+ba8c9ad camc: disambiguate adopted orphan agent names by agent id
+d7f871b camc: add auto_permission_mode option (default off)
+7f1755e camc: backfill session_id in heal + fix session-file encoding
+3fcdc49 camc: canonical /.._ → - encoding + tmux pane CWD as session-id source
+```
+
