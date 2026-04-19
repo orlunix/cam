@@ -41,3 +41,14 @@ scripts/*.log
 
 # Images
 .cam-images/
+
+# Claude Code / sibling project workspaces (not part of cam)
+.claude/
+happy/
+src/camc_ts/
+
+# Demo runtime state
+demos/*/.claude/scheduled_tasks.lock
+
+# APK release artifacts
+web/assets/*.apk
