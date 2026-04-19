@@ -27,7 +27,7 @@ import time
 # ===========================================================================
 
 __version__ = "1.1.0"
-__build__ = "ba8c9ad-dirty 2026-04-18 20:41"
+__build__ = "d87d6cf 2026-04-19 06:20"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -322,7 +322,10 @@ idle_threshold = 2            # consecutive idle probes → confirmed idle
 [monitor]
 # Screen-bottom signals for definitive state detection (no other checks needed).
 # busy_pattern: agent is actively working (e.g. "Creating…", "Smooshing…")
-busy_pattern = "ing[.…]{1,3}"
+# Match: verb + 3 dots or Unicode ellipsis, at the start of a line (col 0).
+# The "3 dots or …" excludes URLs/filenames (promptengineering.org, testing.py).
+# The line-start anchor excludes indented sub-agent output and embedded prose.
+busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
 # done_pattern: task just finished (e.g. "Crunched for 36s", "Cogitated for 1m 8s")
 done_pattern = "ed\\s+for\\s+\\d+[smh]"
 confirm_cooldown = 5.0        # seconds between auto-confirm attempts
@@ -510,8 +513,10 @@ wait = 0.3
 idle_threshold = 2
 
 [monitor]
-# Cursor shows "Thinking..." while busy, "· X.Y%" usage after done
-busy_pattern = "ing[.…]{1,3}"
+# Cursor shows "Thinking..." while busy, "· X.Y%" usage after done.
+# Line-start anchor + 3-dot/ellipsis requirement avoids URL / filename
+# false positives (e.g. "promptengineering.org", "testing.py").
+busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
 confirm_cooldown = 5.0
 confirm_sleep = 0.5
 completion_stable = 3.0

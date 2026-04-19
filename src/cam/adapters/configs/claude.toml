@@ -103,7 +103,10 @@ idle_threshold = 2            # consecutive idle probes → confirmed idle
 [monitor]
 # Screen-bottom signals for definitive state detection (no other checks needed).
 # busy_pattern: agent is actively working (e.g. "Creating…", "Smooshing…")
-busy_pattern = "ing[.…]{1,3}"
+# Match: verb + 3 dots or Unicode ellipsis, at the start of a line (col 0).
+# The "3 dots or …" excludes URLs/filenames (promptengineering.org, testing.py).
+# The line-start anchor excludes indented sub-agent output and embedded prose.
+busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
 # done_pattern: task just finished (e.g. "Crunched for 36s", "Cogitated for 1m 8s")
 done_pattern = "ed\\s+for\\s+\\d+[smh]"
 confirm_cooldown = 5.0        # seconds between auto-confirm attempts
