@@ -832,3 +832,29 @@ d7f871b camc: add auto_permission_mode option (default off)
 3fcdc49 camc: canonical /.._ → - encoding + tmux pane CWD as session-id source
 ```
 
+## v1.2.0  60b01a6-dirty 2026-04-19 06:34
+
+- Lines: 5215
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+f2f0b76 camc: rm always kills tmux session + socket
+ba8c9ad camc: disambiguate adopted orphan agent names by agent id
+d7f871b camc: add auto_permission_mode option (default off)
+7f1755e camc: backfill session_id in heal + fix session-file encoding
+3fcdc49 camc: canonical /.._ → - encoding + tmux pane CWD as session-id source
+```
+
+## v1.2.0  cef8bcc 2026-04-19 06:34
+
+- Lines: 5215
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+cef8bcc release: camc v1.2.0
+f2f0b76 camc: rm always kills tmux session + socket
+ba8c9ad camc: disambiguate adopted orphan agent names by agent id
+d7f871b camc: add auto_permission_mode option (default off)
+7f1755e camc: backfill session_id in heal + fix session-file encoding
+```
+
