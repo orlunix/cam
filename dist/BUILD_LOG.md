@@ -754,3 +754,55 @@ b11a477 Reboot: cd to workdir before relaunch, verify Claude exited
 3ea6ddf Reboot: resume existing session ID, no fork
 ```
 
+## v1.1.0  7f1755e 2026-04-18 10:12
+
+- Lines: 5163
+- Output: /home/hren/bin/camc
+- Recent changes:
+```
+7f1755e camc: backfill session_id in heal + fix session-file encoding
+3fcdc49 camc: canonical /.._ → - encoding + tmux pane CWD as session-id source
+dc78e41 camc: record real Claude session ID on heal/adopt (4-layer extract)
+c609910 camc: split exit/stop/kill lifecycle, add run --resume
+b11a477 Reboot: cd to workdir before relaunch, verify Claude exited
+```
+
+## v1.1.0  0895c4d-dirty 2026-04-18 10:14
+
+- Lines: 5169
+- Output: /home/hren/bin/camc
+- Recent changes:
+```
+7f1755e camc: backfill session_id in heal + fix session-file encoding
+3fcdc49 camc: canonical /.._ → - encoding + tmux pane CWD as session-id source
+dc78e41 camc: record real Claude session ID on heal/adopt (4-layer extract)
+c609910 camc: split exit/stop/kill lifecycle, add run --resume
+b11a477 Reboot: cd to workdir before relaunch, verify Claude exited
+```
+
+## v1.1.0  d7f871b-dirty 2026-04-18 20:36
+
+- Lines: 5208
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+d7f871b camc: add auto_permission_mode option (default off)
+7f1755e camc: backfill session_id in heal + fix session-file encoding
+3fcdc49 camc: canonical /.._ → - encoding + tmux pane CWD as session-id source
+dc78e41 camc: record real Claude session ID on heal/adopt (4-layer extract)
+c609910 camc: split exit/stop/kill lifecycle, add run --resume
+```
+
+## v1.1.0  d7f871b-dirty 2026-04-18 20:37
+
+- Lines: 5189
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+d7f871b camc: add auto_permission_mode option (default off)
+7f1755e camc: backfill session_id in heal + fix session-file encoding
+3fcdc49 camc: canonical /.._ → - encoding + tmux pane CWD as session-id source
+dc78e41 camc: record real Claude session ID on heal/adopt (4-layer extract)
+c609910 camc: split exit/stop/kill lifecycle, add run --resume
+```
+
