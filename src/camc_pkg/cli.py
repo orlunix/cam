@@ -1675,11 +1675,21 @@ def cmd_heal(args):
     # Scan socket directories for cam-* sessions that have no agent record.
     # This catches agents created by cam server (SQLite) or other transports
     # whose monitors died — they'd otherwise be invisible to heal.
+    #
+    # Multiple agents in the same workdir is a legitimate pattern (parallel
+    # work on the same project), so we do NOT dedup by workdir — only by
+    # tmux session name. What we do enforce is that each agent record gets
+    # a unique display name; when basename(cwd) collides, we append the
+    # agent ID suffix ("falcon" → "falcon-852159c6").
     known_sessions = set()
+    known_names = set()
     for a in store.list():
         s = _sf(a, "tmux_session")
         if s:
             known_sessions.add(s)
+        name = _tf(a, "name") or ""
+        if name:
+            known_names.add(name)
 
     orphan_dirs = [
         SOCKETS_DIR,  # /tmp/cam-sockets
@@ -1727,8 +1737,18 @@ def cmd_heal(args):
                 pass
             # Default tool to claude (most common agent type)
             tool = "claude"
-            # Create adopted agent record
-            agent_name = os.path.basename(cwd) if cwd else "orphan-%s" % aid[:4]
+            # Give the adopted agent a name unique within the store: start
+            # with basename(cwd); if that collides with an existing name,
+            # append the agent-id suffix (e.g. falcon → falcon-852159c6).
+            # Multiple orphans sharing a workdir is OK; they just each get a
+            # unique display name.
+            base_name = os.path.basename(cwd) if cwd else "orphan-%s" % aid[:4]
+            agent_name = base_name
+            if agent_name in known_names:
+                agent_name = "%s-%s" % (base_name, aid[:8])
+                # Extremely unlikely, but if that's ALSO taken, keep the
+                # suffixed name regardless — the agent id guarantees uniqueness.
+            known_names.add(agent_name)
             # Try to recover the Claude session UUID from the running process.
             # Without this, `camc reboot` on an adopted agent falls back to
             # workdir-based session lookup and picks the wrong session when
