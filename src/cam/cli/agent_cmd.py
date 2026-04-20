@@ -349,10 +349,14 @@ def attach(
     user = getattr(agent, "machine_user", None)
     port = getattr(agent, "machine_port", None)
 
-    # Fallback: if machine_host is localhost but agent is SSH-based, the poller
-    # recorded the agent's local hostname instead of the SSH connection info.
-    # Override with context's machine config which has the correct external host/port.
-    if (not host or host == "localhost") and getattr(agent, "transport_type", "") == "ssh":
+    # Fallback: the record says localhost, but the real connection may be an
+    # SSH tunnel (host=localhost + non-22 port, e.g. vdi-wsl) OR a remote that
+    # the poller wrote with a misleading transport_type=local. If we have a
+    # context_name to look up, let the context's machine config override —
+    # it's the authoritative SSH info.
+    is_tunnel = host in (None, "", "localhost", "127.0.0.1") and port and int(port) != 22
+    record_says_ssh = getattr(agent, "transport_type", "") == "ssh"
+    if (is_tunnel or record_says_ssh):
         ctx_name = getattr(agent, "context_name", "")
         if ctx_name:
             ctx = state.context_store.get(ctx_name)
@@ -362,7 +366,14 @@ def attach(
                 user = getattr(mc, "user", None) or user
                 port = getattr(mc, "port", None) or port
 
-    if host and host != "localhost":
+    # Route the attach: any remote (real remote OR SSH tunnel to localhost)
+    # goes via ssh; true local stays local.
+    host_key = host or ""
+    port_i = int(port) if port else 22
+    is_remote = bool(host_key) and (
+        host_key not in ("localhost", "127.0.0.1") or port_i != 22
+    )
+    if is_remote:
         # Remote: SSH with -t for interactive tmux
         import hashlib
         conn_key = "%s@%s:%s" % (user or "default", host, port or 22)
