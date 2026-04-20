@@ -228,6 +228,7 @@ app.command(name="init", rich_help_panel=_SYSTEM)(system_cmd.init)
 app.command(name="sync", rich_help_panel=_SYSTEM)(system_cmd.sync)
 app.command(name="heal", rich_help_panel=_SYSTEM)(system_cmd.heal)
 app.command(name="migrate", rich_help_panel=_SYSTEM)(system_cmd.migrate)
+app.command(name="release", rich_help_panel=_SYSTEM)(system_cmd.release)
 
 # --- Subcommand groups ---
 from cam.cli import context_cmd  # noqa: E402
