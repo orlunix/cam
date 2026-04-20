@@ -988,3 +988,16 @@ fddb865 release: camc v1.2.0
 fddb865 release: camc v1.2.0
 ```
 
+## v1.2.0  a3fc6a9-dirty 2026-04-20 16:13
+
+- Lines: 6055
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+a3fc6a9 camc: archive list / info / paths / summary / show
+7ba5d3a camc: rm archives by default
+62bda87 camc: add archive command — one-agent .tar.gz bundle
+44daf89 camc: gate --auto-exit behind a hidden arming flag
+6c0c376 camc: clean up stale sockets on heal + clear error on attach
+```
+
