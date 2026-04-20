@@ -88,12 +88,20 @@ def _camc_agent_to_model(data: dict, context_name: str | None = None,
                          context_id: str | None = None,
                          machine_host: str | None = None,
                          machine_user: str | None = None,
-                         machine_port: int | None = None) -> Agent:
+                         machine_port: int | None = None,
+                         machine_type: str | None = None) -> Agent:
     """Convert a camc JSON agent dict to a cam Agent model.
 
     Supports both the unified schema (new format with nested task, tmux_session,
     context_path, pid) and legacy format (flat tool/prompt/name, session, path,
     monitor_pid). The unified format is a near pass-through.
+
+    ``machine_type`` — when provided (from ~/.cam/machines.json entry that this
+    agent came from), it overrides any transport hint in *data*. The remote
+    camc writes ``transport_type="local"`` from its own point of view, which
+    is wrong for agents that cam reaches via ssh (including tunneled ones
+    like vdi-wsl at localhost:3222). The machine's declared type is the only
+    authoritative answer.
     """
     # Task: new format has nested dict, legacy has flat fields
     task_data = data.get("task", {})
@@ -126,13 +134,23 @@ def _camc_agent_to_model(data: dict, context_name: str | None = None,
         ctx = data.get("context", {}) or {}
         ctx_name = ctx.get("name", "") if isinstance(ctx, dict) else ""
 
+    # Transport type: trust the machine-layer declaration when we have it;
+    # fall back to the agent's self-reported transport only for legacy callers
+    # that don't pass machine_type.
+    if machine_type == "ssh":
+        tport = TransportType.SSH
+    elif machine_type == "local":
+        tport = TransportType.LOCAL
+    else:
+        tport = TransportType.LOCAL if data.get("transport_type") == "local" else TransportType.SSH
+
     return Agent(
         id=data.get("id", ""),
         task=task,
         context_id=context_id or data.get("context_id", ""),
         context_name=ctx_name,
         context_path=data.get("context_path") or data.get("path", ""),
-        transport_type=TransportType.LOCAL if data.get("transport_type") == "local" else TransportType.SSH,
+        transport_type=tport,
         status=_STATUS_MAP.get(status_str, AgentStatus.RUNNING),
         state=_STATE_MAP.get(state_str, AgentState.INITIALIZING),
         tmux_session=data.get("tmux_session") or data.get("session", ""),
@@ -198,9 +216,14 @@ class CamcPoller:
             host = m.host if hasattr(m, "host") else None
             user = m.user if hasattr(m, "user") else None
             port = m.port if hasattr(m, "port") else None
+            mtype = getattr(m, "type", None)
+            # TransportType enum → string; default to "ssh" for unknown types
+            # since context-derived machines are virtually always ssh here.
+            mtype_str = getattr(mtype, "value", mtype) or "ssh"
             key = "%s@%s:%s" % (user or "", host or "local", port or "")
             if key not in seen:
-                seen[key] = {"name": ctx.name, "host": host, "user": user, "port": port}
+                seen[key] = {"name": ctx.name, "type": mtype_str,
+                             "host": host, "user": user, "port": port}
         return list(seen.values())
 
     async def poll_once(self) -> int:
@@ -216,6 +239,10 @@ class CamcPoller:
             host = machine.get("host")
             user = machine.get("user")
             port = machine.get("port")
+            # Authoritative transport classification comes from the machine
+            # entry, not from the remote camc's self-reported transport_type
+            # (which is always "local" from that host's own perspective).
+            mtype = machine.get("type")
 
             delegate = self._get_delegate(name, host, user, port)
 
@@ -309,6 +336,7 @@ class CamcPoller:
                             machine_host=host,
                             machine_user=user,
                             machine_port=port,
+                            machine_type=mtype,
                         )
                         self._agent_store.save(agent)
                         if tmux_sess:
@@ -326,6 +354,7 @@ class CamcPoller:
                         machine_host=host,
                         machine_user=user,
                         machine_port=port,
+                        machine_type=mtype,
                     )
                     # Preserve cam-local fields that camc doesn't populate
                     agent_fresh.context_id = existing.context_id or agent_fresh.context_id
