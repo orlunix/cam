@@ -27,7 +27,7 @@ import time
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "62bda87-dirty 2026-04-20 02:39"
+__build__ = "7ba5d3a-dirty 2026-04-20 02:52"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -3517,6 +3517,97 @@ def cmd_add(args):
         pass
 
 
+def _jsonl_summary(jsonl_bytes):
+    """Compute a per-prompt summary from a session.jsonl bytes blob.
+
+    Returns {"turns": [...], "totals": {...}, "line_count": N}. Each turn:
+        {
+          "idx": 1-based,
+          "line": 1-indexed line number of the user record in jsonl,
+          "ts": iso timestamp (first timestamp in the turn),
+          "end_ts": iso timestamp of the last assistant message in the turn,
+          "prompt": first 400 chars of the user text,
+          "reply":  first 300 chars of the first assistant text,
+          "tools":  [tool_name, ...] unique, in first-use order,
+          "files":  files touched via Edit/Write tool_use (unique),
+        }
+
+    Skips tool_result synthetic "user" records and meta/system records — only
+    real human user turns land in the output.
+    """
+    import json as _json
+    turns = []
+    current = None
+    for i, line in enumerate(jsonl_bytes.splitlines(), 1):
+        try:
+            o = _json.loads(line)
+        except Exception:
+            continue
+        msg = o.get("message") if isinstance(o.get("message"), dict) else {}
+        ts = o.get("timestamp") or (msg.get("timestamp") if isinstance(msg, dict) else None) or ""
+        ttype = o.get("type", "")
+        if ttype == "user" and not o.get("isMeta") and msg.get("role") == "user":
+            content = msg.get("content", "")
+            # A "user" record whose content is a list of tool_result is a
+            # synthetic turn from the tool-use loop, not a real user prompt.
+            if isinstance(content, list) and all(
+                isinstance(c, dict) and c.get("type") == "tool_result" for c in content
+            ):
+                continue
+            text = content if isinstance(content, str) else ""
+            if not text and isinstance(content, list):
+                for c in content:
+                    if isinstance(c, dict) and c.get("type") == "text":
+                        text = c.get("text", "")
+                        break
+            # Skip obviously non-human meta prompts (system-generated wrappers)
+            stripped = text.lstrip()
+            if stripped.startswith("<local-command-") or stripped.startswith("<command-"):
+                continue
+            if current is not None:
+                turns.append(current)
+            current = {
+                "idx": len(turns) + 1,
+                "line": i,
+                "ts": ts,
+                "end_ts": ts,
+                "prompt": text[:400],
+                "reply": "",
+                "tools": [],
+                "files": [],
+            }
+        elif ttype == "assistant" and current is not None:
+            content = msg.get("content", [])
+            if isinstance(content, list):
+                for c in content:
+                    if not isinstance(c, dict):
+                        continue
+                    ct = c.get("type")
+                    if ct == "tool_use":
+                        tool = c.get("name", "?")
+                        if tool not in current["tools"]:
+                            current["tools"].append(tool)
+                        if tool in ("Edit", "Write"):
+                            fp = (c.get("input") or {}).get("file_path")
+                            if fp and fp not in current["files"]:
+                                current["files"].append(fp)
+                    elif ct == "text" and not current["reply"]:
+                        current["reply"] = c.get("text", "")[:300]
+            if ts:
+                current["end_ts"] = ts
+    if current is not None:
+        turns.append(current)
+
+    totals = {
+        "prompts": len(turns),
+        "tool_uses": sum(len(t["tools"]) for t in turns),
+        "first_ts": turns[0]["ts"] if turns else None,
+        "last_ts": turns[-1]["end_ts"] if turns else None,
+    }
+    return {"turns": turns, "totals": totals,
+            "line_count": len(jsonl_bytes.splitlines())}
+
+
 def cmd_archive(args):
     """Bundle one agent's full history into a tar.gz for long-term storage.
 
@@ -3640,6 +3731,8 @@ def cmd_archive(args):
             log.warning("capture failed: %s", e)
 
     # Claude transcript — the main prize
+    jsonl_bytes = None
+    jsonl_source_path = None
     if sid and workdir:
         claude_dir = None
         for proj in _project_dirs_for_workdir(workdir):
@@ -3653,7 +3746,9 @@ def cmd_archive(args):
             if os.path.isfile(jsonl):
                 try:
                     with open(jsonl, "rb") as f:
-                        _add("claude/session.jsonl", f.read())
+                        jsonl_bytes = f.read()
+                    jsonl_source_path = jsonl
+                    _add("claude/session.jsonl", jsonl_bytes)
                 except OSError as e:
                     log.warning("read %s: %s", jsonl, e)
             else:
@@ -3670,6 +3765,18 @@ def cmd_archive(args):
                                 _add(os.path.join("claude/session-dir", rel), f.read())
                         except OSError:
                             pass
+
+    # summary.json — pre-computed per-prompt view for fast `archive summary`
+    # (avoids re-parsing the full jsonl every time the user lists turns).
+    if jsonl_bytes:
+        try:
+            summary = _jsonl_summary(jsonl_bytes)
+            # Record the live source path for `archive paths` / `info` later.
+            summary["source_jsonl"] = jsonl_source_path
+            _add("summary.json",
+                 _json.dumps(summary, indent=2).encode("utf-8"))
+        except Exception as e:
+            log.warning("summary build failed: %s", e)
 
     # MANIFEST last so it reflects everything
     manifest_bytes = _json.dumps(manifest, indent=2).encode("utf-8")
@@ -3702,6 +3809,423 @@ def cmd_archive(args):
     print("  session_id: %s" % (sid or "(not found)"))
     print("  files:      %d" % len(members))
     print("  size:       %s" % _fmt_size(size))
+
+
+# ---------------------------------------------------------------------------
+# Archive read-side: list / info / summary / show / paths / grep
+# ---------------------------------------------------------------------------
+
+
+_ARCHIVES_DIR = os.path.join(CAM_DIR, "archives")
+
+
+def _archives_dir():
+    return os.environ.get("CAMC_ARCHIVES_DIR") or _ARCHIVES_DIR
+
+
+def _list_archive_files():
+    d = _archives_dir()
+    if not os.path.isdir(d):
+        return []
+    return sorted(
+        os.path.join(d, f)
+        for f in os.listdir(d)
+        if f.endswith(".tar.gz")
+    )
+
+
+def _resolve_archive(ref):
+    """Accept an agent id prefix, an archive filename, or a full path. Return
+    the path to the newest-matching .tar.gz, or None."""
+    # Direct path (absolute or relative)
+    if os.path.isfile(ref):
+        return ref
+    d = _archives_dir()
+    direct = os.path.join(d, ref)
+    if os.path.isfile(direct):
+        return direct
+    # Prefix match on basename; newest wins
+    matches = [p for p in _list_archive_files() if os.path.basename(p).startswith(ref)]
+    if not matches:
+        return None
+    matches.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    return matches[0]
+
+
+def _read_archive_member(archive_path, arcname):
+    """Extract one member from a tar.gz into bytes, or None if missing."""
+    import gzip as _gzip
+    import tarfile as _tar
+    try:
+        with _gzip.open(archive_path, "rb") as gz:
+            with _tar.open(fileobj=gz, mode="r") as tar:
+                try:
+                    m = tar.getmember(arcname)
+                except KeyError:
+                    return None
+                f = tar.extractfile(m)
+                return f.read() if f else None
+    except (OSError, _tar.TarError):
+        return None
+
+
+def _load_archive_meta(archive_path):
+    """Return (manifest_dict, summary_dict) — both may be None if missing."""
+    import json as _json
+    mf_raw = _read_archive_member(archive_path, "MANIFEST.json")
+    sm_raw = _read_archive_member(archive_path, "summary.json")
+    mf = _json.loads(mf_raw) if mf_raw else None
+    sm = _json.loads(sm_raw) if sm_raw else None
+    return mf, sm
+
+
+def _fmt_dur_iso(a, b):
+    """Human-readable duration between two ISO timestamps, tolerant to
+    timezone suffixes. Returns '?' if anything's off."""
+    if not a or not b:
+        return "?"
+    try:
+        from datetime import datetime
+        def _p(s):
+            s = s.replace("Z", "+00:00")
+            return datetime.fromisoformat(s)
+        d = (_p(b) - _p(a)).total_seconds()
+        if d < 60:
+            return "%ds" % int(d)
+        if d < 3600:
+            return "%dm" % int(d / 60)
+        if d < 86400:
+            return "%dh" % int(d / 3600)
+        return "%dd" % int(d / 86400)
+    except Exception:
+        return "?"
+
+
+def _trunc(s, n):
+    if s is None:
+        s = ""
+    s = s.replace("\n", " ").strip()
+    return (s[: n - 1] + "…") if len(s) > n else s
+
+
+def cmd_archive_list(args):
+    """List archives in ~/.cam/archives/ as a table."""
+    archives = _list_archive_files()
+    if not archives:
+        print("No archives in %s" % _archives_dir())
+        return
+    rows = []
+    for p in archives:
+        mf, sm = _load_archive_meta(p)
+        if mf is None:
+            continue
+        turns = (sm or {}).get("totals", {}).get("prompts", 0) if sm else 0
+        tools = (sm or {}).get("totals", {}).get("tool_uses", 0) if sm else 0
+        rows.append({
+            "file": os.path.basename(p),
+            "id": mf.get("agent_id", ""),
+            "name": mf.get("agent_name", ""),
+            "sid": (mf.get("session_id") or "")[:8],
+            "created": (mf.get("created_at") or "")[:19].replace("T", " "),
+            "turns": turns,
+            "tools": tools,
+            "size": os.path.getsize(p),
+        })
+    rows.sort(key=lambda r: r["created"], reverse=True)
+
+    if getattr(args, "json", False):
+        print(_json_dump(rows))
+        return
+
+    headers = ["ID", "NAME", "SID", "CREATED", "TURNS", "TOOLS", "SIZE"]
+    table = []
+    for r in rows:
+        table.append([
+            r["id"],
+            _trunc(r["name"], 16),
+            r["sid"],
+            r["created"],
+            str(r["turns"]),
+            str(r["tools"]),
+            _fmt_size(r["size"]),
+        ])
+    print_table(headers, table, title="Archives (%s)" % _archives_dir())
+    total = sum(r["size"] for r in rows)
+    tt = sum(r["turns"] for r in rows)
+    tu = sum(r["tools"] for r in rows)
+    print("  total: %d archive(s), %s — %d prompts, %d tool uses"
+          % (len(rows), _fmt_size(total), tt, tu))
+
+
+def cmd_archive_info(args):
+    """Print archive header, file list, and (if present) JSONL record-type breakdown."""
+    path = _resolve_archive(args.ref)
+    if not path:
+        sys.stderr.write("Error: archive '%s' not found in %s\n" % (args.ref, _archives_dir()))
+        sys.exit(1)
+    mf, sm = _load_archive_meta(path)
+    if mf is None:
+        sys.stderr.write("Error: MANIFEST.json missing inside %s\n" % path)
+        sys.exit(1)
+    totals = (sm or {}).get("totals", {}) if sm else {}
+
+    print("archive info: %s" % os.path.basename(path))
+    print()
+    print("  AGENT")
+    print("    id         %s" % mf.get("agent_id", ""))
+    print("    name       %s" % mf.get("agent_name", ""))
+    print("    session    %s" % (mf.get("session_id") or "(none)"))
+    print()
+    print("  LOCATION")
+    print("    archive    %s" % path)
+    if sm and sm.get("source_jsonl"):
+        src = sm["source_jsonl"]
+        alive = os.path.isfile(src)
+        print("    source     %s" % src)
+        print("               (%s)" % ("still on disk" if alive else "no longer on disk"))
+    print()
+    print("  PROVENANCE")
+    print("    host       %s" % mf.get("hostname", ""))
+    print("    created    %s" % mf.get("created_at", ""))
+    print("    camc       v%s" % mf.get("camc_version", "?"))
+    print("    size       %s" % _fmt_size(os.path.getsize(path)))
+    print("    files      %d" % len(mf.get("files", [])))
+    print()
+    if totals:
+        dur = _fmt_dur_iso(totals.get("first_ts"), totals.get("last_ts"))
+        print("  SESSION")
+        print("    prompts    %d" % totals.get("prompts", 0))
+        print("    tool uses  %d" % totals.get("tool_uses", 0))
+        print("    started    %s" % (totals.get("first_ts") or "?"))
+        print("    last msg   %s   (%s active)" % (totals.get("last_ts") or "?", dur))
+        print()
+    print("  FILES")
+    for x in mf.get("files", []):
+        print("    %-48s  %s" % (x["path"], _fmt_size(x["size"])))
+
+
+def cmd_archive_paths(args):
+    """Print the archive path, the live-jsonl source path, and extraction hints."""
+    path = _resolve_archive(args.ref)
+    if not path:
+        sys.stderr.write("Error: archive '%s' not found\n" % args.ref)
+        sys.exit(1)
+    mf, sm = _load_archive_meta(path)
+    print("archive:  %s" % path)
+    if sm and sm.get("source_jsonl"):
+        src = sm["source_jsonl"]
+        alive = os.path.isfile(src)
+        note = "live on disk" if alive else "no longer on disk"
+        print("source:   %s   (%s)" % (src, note))
+    print("extract:  tar -xzf %s" % path)
+    print("          tar -xOzf %s claude/session.jsonl" % path)
+    print("          tar -xOzf %s claude/session.jsonl | sed -n NNNp" % path)
+
+
+def cmd_archive_summary(args):
+    """Per-prompt table from an archive's summary.json."""
+    path = _resolve_archive(args.ref)
+    if not path:
+        sys.stderr.write("Error: archive '%s' not found\n" % args.ref)
+        sys.exit(1)
+    mf, sm = _load_archive_meta(path)
+    if not sm:
+        sys.stderr.write("Error: %s has no summary.json (probably built by an older camc)\n" % os.path.basename(path))
+        sys.exit(1)
+
+    turns = sm.get("turns", [])
+    # Filters
+    search = getattr(args, "search", None)
+    if search:
+        needle = search.lower()
+        turns = [t for t in turns if needle in (t.get("prompt", "") or "").lower()]
+    tool_filter = getattr(args, "tool", None)
+    if tool_filter:
+        want = set(s.strip() for s in tool_filter.split(",") if s.strip())
+        turns = [t for t in turns if want & set(t.get("tools", []))]
+    limit = getattr(args, "limit", 10) or 10
+    if limit and limit > 0:
+        turns = turns[-limit:]
+
+    if getattr(args, "json", False):
+        print(_json_dump({"archive": os.path.basename(path), "turns": turns}))
+        return
+
+    header = "%s (%s)   sid %s   %d prompts" % (
+        (mf or {}).get("agent_name", ""),
+        (mf or {}).get("agent_id", ""),
+        ((mf or {}).get("session_id") or "")[:8],
+        sm.get("totals", {}).get("prompts", 0),
+    )
+    print(header)
+    src = sm.get("source_jsonl", "")
+    alive = src and os.path.isfile(src)
+    print("  archive:  %s" % path)
+    if src:
+        print("  source:   %s   (%s)" % (src, "live on disk" if alive else "no longer on disk"))
+    print()
+    rows = []
+    for t in turns:
+        when = (t.get("ts") or "")[:16].replace("T", " ")
+        rows.append([
+            str(t.get("idx", "")),
+            when,
+            _trunc(t.get("prompt", ""), 44),
+            _trunc(",".join(t.get("tools", [])), 20),
+            _fmt_dur_iso(t.get("ts"), t.get("end_ts")),
+            "L%d" % t.get("line", 0),
+        ])
+    print_table(
+        ["#", "WHEN", "PROMPT", "TOOLS", "DUR", "LINE"],
+        rows, title=None,
+    )
+    total = sm.get("totals", {}).get("prompts", 0)
+    if len(turns) < total:
+        print("  (showing %d of %d — pass --limit N or --limit 0 for all)"
+              % (len(turns), total))
+
+
+def cmd_archive_show(args):
+    """Pretty-print one turn (by --turn N) or one jsonl line (by --line N)."""
+    import json as _json
+    path = _resolve_archive(args.ref)
+    if not path:
+        sys.stderr.write("Error: archive '%s' not found\n" % args.ref)
+        sys.exit(1)
+    mf, sm = _load_archive_meta(path)
+    jsonl = _read_archive_member(path, "claude/session.jsonl")
+    if jsonl is None:
+        sys.stderr.write("Error: no claude/session.jsonl in %s\n" % path)
+        sys.exit(1)
+    lines = jsonl.splitlines()
+
+    line_no = getattr(args, "line", None)
+    turn_no = getattr(args, "turn", None)
+    if turn_no and sm:
+        found = None
+        for t in sm.get("turns", []):
+            if t.get("idx") == turn_no:
+                found = t
+                break
+        if not found:
+            sys.stderr.write("Error: turn %d not found (archive has %d turns)\n"
+                             % (turn_no, sm.get("totals", {}).get("prompts", 0)))
+            sys.exit(1)
+        line_no = found["line"]
+    elif not line_no:
+        # Default: show the last real user turn
+        if sm and sm.get("turns"):
+            line_no = sm["turns"][-1]["line"]
+        else:
+            sys.stderr.write("Error: no --line/--turn specified and no summary.json\n")
+            sys.exit(1)
+
+    if line_no > len(lines):
+        sys.stderr.write("Error: line %d out of range (file has %d lines)\n" % (line_no, len(lines)))
+        sys.exit(1)
+
+    # Print the user turn + all assistant messages up to the next user turn.
+    span_end = len(lines)
+    if sm:
+        # find next real user turn's line#
+        next_line = None
+        for t in sm.get("turns", []):
+            if t["line"] > line_no:
+                next_line = t["line"]
+                break
+        if next_line:
+            span_end = next_line - 1
+
+    if getattr(args, "json", False):
+        for raw in lines[line_no - 1: span_end]:
+            print(raw.decode("utf-8", errors="replace"))
+        return
+
+    print("archive: %s" % os.path.basename(path))
+    print("range:   L%d - L%d" % (line_no, span_end))
+    print()
+    for i, raw in enumerate(lines[line_no - 1: span_end], start=line_no):
+        try:
+            o = _json.loads(raw)
+        except Exception:
+            continue
+        ttype = o.get("type", "?")
+        msg = o.get("message") if isinstance(o.get("message"), dict) else {}
+        role = msg.get("role", "")
+        ts = (o.get("timestamp") or (msg.get("timestamp") if isinstance(msg, dict) else "") or "")[:19]
+        if ttype == "user" and role == "user":
+            content = msg.get("content", "")
+            text = content if isinstance(content, str) else ""
+            if not text and isinstance(content, list):
+                for c in content:
+                    if isinstance(c, dict) and c.get("type") == "text":
+                        text = c.get("text", "")
+                        break
+            if not text:
+                continue
+            print("─── USER  L%d  %s ───" % (i, ts))
+            print(text)
+            print()
+        elif ttype == "assistant":
+            content = msg.get("content", [])
+            if not isinstance(content, list):
+                continue
+            texts, calls = [], []
+            for c in content:
+                if not isinstance(c, dict):
+                    continue
+                if c.get("type") == "text":
+                    texts.append(c.get("text", ""))
+                elif c.get("type") == "tool_use":
+                    inp = c.get("input") or {}
+                    # Compact one-line summary of tool input
+                    if c.get("name") in ("Bash", "Edit", "Write", "Read"):
+                        snip = (inp.get("command") or inp.get("file_path")
+                                or inp.get("path") or "")
+                        calls.append("%s(%s)" % (c.get("name"), _trunc(str(snip), 60)))
+                    else:
+                        calls.append(c.get("name", "?"))
+            if texts or calls:
+                print("─── ASSISTANT  L%d  %s ───" % (i, ts))
+                for t in texts:
+                    if t.strip():
+                        print(t)
+                for call in calls:
+                    print("  ▸ %s" % call)
+                print()
+
+
+def _json_dump(obj):
+    import json as _json
+    return _json.dumps(obj, indent=2, default=str)
+
+
+def cmd_archive_dispatch(args):
+    """Entry point for the `camc archive …` multiplexer."""
+    sub = getattr(args, "archive_cmd", None)
+    if sub == "list":
+        cmd_archive_list(args)
+    elif sub == "info":
+        cmd_archive_info(args)
+    elif sub == "paths":
+        cmd_archive_paths(args)
+    elif sub == "summary":
+        cmd_archive_summary(args)
+    elif sub == "show":
+        cmd_archive_show(args)
+    elif sub == "create":
+        cmd_archive(args)
+    else:
+        sys.stderr.write(
+            "Usage:\n"
+            "  camc archive <id>               create an archive\n"
+            "  camc archive list               list all archives\n"
+            "  camc archive info <ref>         archive header + file list\n"
+            "  camc archive paths <ref>        archive + source paths\n"
+            "  camc archive summary <ref>      per-prompt table\n"
+            "  camc archive show <ref> --turn N | --line N\n"
+        )
+        sys.exit(1)
 
 
 def cmd_rm(args):
@@ -5310,16 +5834,57 @@ examples:
     rm.add_argument("--kill", "-k", action="store_true",
                     help="[deprecated, no-op] tmux is always killed now")
 
-    # archive
+    # archive — dual-mode: `camc archive <id>` creates a new archive;
+    #                       `camc archive <subcommand> …` inspects existing ones.
     ar = sub.add_parser(
         "archive",
-        help="Bundle one agent's history (logs + Claude transcript) into a .tar.gz",
+        help="Archive one agent's history OR list/inspect existing archives",
     )
-    ar.add_argument("id", help="Agent ID")
-    ar.add_argument("--output", "-o", default=None,
-                    help="Output directory (default: ~/.cam/archives/)")
-    ar.add_argument("--session-id", dest="session_id", default=None,
-                    help="Override session_id (skip auto-recovery)")
+    ar_sub = ar.add_subparsers(dest="archive_cmd")
+
+    # camc archive list
+    ar_list = ar_sub.add_parser("list", help="List all archives as a table")
+    ar_list.add_argument("--json", action="store_true", help="JSON output")
+
+    # camc archive info <ref>
+    ar_info = ar_sub.add_parser("info", help="Show archive header + file manifest")
+    ar_info.add_argument("ref", help="Agent id prefix, archive filename, or path")
+
+    # camc archive paths <ref>
+    ar_paths = ar_sub.add_parser("paths", help="Print archive + source jsonl paths and extract recipes")
+    ar_paths.add_argument("ref", help="Agent id prefix, archive filename, or path")
+
+    # camc archive summary <ref> …
+    ar_sum = ar_sub.add_parser("summary", help="Per-prompt table (with LINE column)")
+    ar_sum.add_argument("ref")
+    ar_sum.add_argument("--limit", "-n", type=int, default=10,
+                        help="Max prompts to show (0 = all, default 10)")
+    ar_sum.add_argument("--search", default=None, help="Substring filter on prompt text")
+    ar_sum.add_argument("--tool", default=None,
+                        help="Comma-separated tools; show only turns that used one of them")
+    ar_sum.add_argument("--json", action="store_true")
+
+    # camc archive show <ref> --turn/--line
+    ar_show = ar_sub.add_parser("show", help="Pretty-print one turn / jsonl range")
+    ar_show.add_argument("ref")
+    ar_show.add_argument("--turn", type=int, default=None,
+                         help="Turn index from `archive summary` (1-based)")
+    ar_show.add_argument("--line", type=int, default=None,
+                         help="Direct line number in claude/session.jsonl")
+    ar_show.add_argument("--json", action="store_true",
+                         help="Emit raw jsonl records instead of pretty print")
+
+    # camc archive create <id> — the default path when `camc archive <id>`
+    # is invoked (argv pre-processor injects `create`).
+    ar_create = ar_sub.add_parser(
+        "create",
+        help="Bundle one agent's history into a .tar.gz",
+    )
+    ar_create.add_argument("id", help="Agent ID")
+    ar_create.add_argument("--output", "-o", default=None,
+                           help="Output directory (default: ~/.cam/archives/)")
+    ar_create.add_argument("--session-id", dest="session_id", default=None,
+                           help="Override session_id (skip auto-recovery)")
 
     # prune
     sub.add_parser("prune", help="Remove all non-running agents")
@@ -5431,6 +5996,16 @@ examples:
     if len(sys.argv) > 1 and sys.argv[1] in _aliases:
         sys.argv[1] = _aliases[sys.argv[1]]
 
+    # Dual-mode `archive`: if no inspect-subcommand is given, inject
+    # `create` so `camc archive <id>` routes to the builder while
+    # `camc archive list/info/…` route to the readers.
+    _archive_subs = {"list", "info", "paths", "summary", "show", "create"}
+    if (len(sys.argv) > 1 and sys.argv[1] == "archive"
+            and (len(sys.argv) == 2 or (
+                sys.argv[2] not in _archive_subs
+                and not sys.argv[2].startswith("-")))):
+        sys.argv.insert(2, "create")
+
     args = p.parse_args()
     # Enable debug logging if --verbose
     if getattr(args, "verbose", False):
@@ -5450,7 +6025,7 @@ examples:
         "update": cmd_update,
         "add": cmd_add,
         "rm": cmd_rm,
-        "archive": cmd_archive,
+        "archive": cmd_archive_dispatch,
         "prune": cmd_prune,
         "reboot": cmd_migrate,
         "migrate": cmd_migrate,
