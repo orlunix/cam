@@ -964,19 +964,29 @@ def cmd_archive(args):
 
 
 def cmd_rm(args):
-    """Remove an agent record. Always tears down the tmux session and socket.
+    """Remove an agent record. Archives by default, then tears down tmux.
 
-    Previously the caller had to pass --kill to also destroy tmux; without
-    it, the session and socket survived and would be re-adopted as an
-    orphan on the next `camc heal` pass. There's no sensible use case for
-    "forget the record but keep the session around" — if you want the
-    session, don't run rm. So kill is now unconditional, and --kill is
-    accepted but is a no-op for backward compatibility.
+    Default behaviour (archive=True) captures the full history before the
+    record is gone — Claude transcript, monitor logs, events. Opt out with
+    --no-archive when you really just want to throw everything away. --kill
+    is a deprecated no-op: tmux is always killed on rm.
     """
     store = AgentStore()
     a = store.get(args.id)
     if not a:
         sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
+    # Archive first, while the record + logs + (maybe) tmux are still alive.
+    # Failing to archive should not block the rm — print a warning and carry on.
+    if getattr(args, "archive", True):
+        try:
+            archive_args = argparse.Namespace(
+                id=a["id"], output=None, session_id=None,
+            )
+            cmd_archive(archive_args)
+        except SystemExit:
+            print_warning("Archive step failed; proceeding with rm anyway.")
+        except Exception as e:
+            print_warning("Archive step raised %s; proceeding with rm anyway." % e)
     _kill_monitor(a)
     session = _sf(a, "tmux_session")
     if session:
@@ -2567,8 +2577,10 @@ examples:
     a.add_argument("--name", "-n", default=None, help="Human-readable name")
 
     # rm
-    rm = sub.add_parser("rm", help="Remove a single agent (always kills tmux)")
+    rm = sub.add_parser("rm", help="Archive + remove a single agent (kills tmux)")
     rm.add_argument("id", help="Agent ID")
+    rm.add_argument("--no-archive", dest="archive", action="store_false",
+                    default=True, help="Skip the pre-rm archive step")
     rm.add_argument("--kill", "-k", action="store_true",
                     help="[deprecated, no-op] tmux is always killed now")
 
