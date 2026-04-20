@@ -27,7 +27,7 @@ import time
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "6c0c376-dirty 2026-04-20 02:06"
+__build__ = "44daf89-dirty 2026-04-20 02:33"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -3517,6 +3517,193 @@ def cmd_add(args):
         pass
 
 
+def cmd_archive(args):
+    """Bundle one agent's full history into a tar.gz for long-term storage.
+
+    Layout of the archive (schema v1):
+        MANIFEST.json         — provenance + what the bundle contains
+        agent.json            — the agent record from agents.json
+        events.jsonl          — events for this agent, filtered from EventStore
+        monitor.log           — monitor log (if present)
+        monitor.stderr        — monitor stderr (if present)
+        capture.txt           — best-effort tmux capture-pane (only if alive)
+        claude/session.jsonl  — authoritative transcript from ~/.claude/projects/
+        claude/session-dir/   — per-session subdir (subagents, tool-results)
+
+    For older agents whose session_id was never tracked (or is the synthetic
+    <aid>-0000-… placeholder), we run the same 4-layer extractor `camc heal`
+    uses (cmdline → /proc/fd → project subdir → jsonl). When a real session_id
+    is recovered we persist it back into agents.json so next archive/reboot
+    can skip the search. If the extractor falls through to the synthetic form
+    we accept it (it's the actual session UUID for camc-run agents).
+    """
+    import gzip
+    import hashlib
+    import io
+    import json as _json
+    import tarfile
+
+    store = AgentStore()
+    a = store.get(args.id)
+    if not a:
+        sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
+
+    aid = a["id"]
+    name = _tf(a, "name") or aid
+    session = _sf(a, "tmux_session", "")
+    workdir = _sf(a, "context_path", "")
+
+    # --- Resolve session_id (heal-style extraction for old agents) -----------
+    sid = (a.get("session_id") or "").strip()
+    synthetic_form = "%s-0000-0000-0000-000000000000" % aid
+    override_sid = getattr(args, "session_id", None)
+    if override_sid:
+        sid = override_sid
+        log.info("Archive %s: using --session-id override %s", aid, sid)
+    elif not sid or sid == synthetic_form:
+        # Live Claude pid if the tmux session is still around
+        claude_pid = _find_claude_pid(session) if session and tmux_session_exists(session) else None
+        found = _find_session_id(aid, claude_pid, workdir=workdir, tmux_session=session)
+        if found:
+            sid = found
+            if not a.get("session_id"):
+                store.update(aid, session_id=sid)
+                log.info("Archive %s: backfilled session_id = %s", aid, sid)
+        else:
+            print_warning("Could not determine session_id; archive will omit Claude transcript")
+
+    # --- Pick output location ------------------------------------------------
+    out_dir = getattr(args, "output", None) or os.path.join(CAM_DIR, "archives")
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError as e:
+        print_error("Cannot create archive dir %s: %s" % (out_dir, e))
+        sys.exit(1)
+
+    from datetime import datetime, timezone
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    sid_tag = (sid[:8] if sid else "nosid")
+    out_path = os.path.join(out_dir, "%s-%s-%s.tar.gz" % (aid, sid_tag, ts))
+
+    # --- Collect artefacts ---------------------------------------------------
+    manifest = {
+        "schema": "camc-archive/1",
+        "agent_id": aid,
+        "agent_name": name,
+        "session_id": sid or None,
+        "hostname": _sock.gethostname(),
+        "camc_version": __version__,
+        "created_at": _now_iso(),
+        "files": [],  # filled below
+    }
+    members: list[tuple[str, bytes]] = []  # (arcname, bytes)
+
+    def _add(arcname: str, data: bytes) -> None:
+        members.append((arcname, data))
+        manifest["files"].append({
+            "path": arcname,
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        })
+
+    # agent.json
+    _add("agent.json",
+         _json.dumps(a, indent=2, sort_keys=True).encode("utf-8"))
+
+    # events.jsonl (filter)
+    try:
+        ev_lines: list[str] = []
+        for ev in EventStore().read(agent_id=aid, limit=10_000_000):
+            ev_lines.append(_json.dumps(ev, separators=(",", ":")))
+        if ev_lines:
+            _add("events.jsonl", ("\n".join(ev_lines) + "\n").encode("utf-8"))
+    except Exception as e:
+        log.warning("events read failed: %s", e)
+
+    # monitor logs
+    for base in ("monitor-%s.log", "monitor-%s.stderr"):
+        p = os.path.join(LOGS_DIR, base % aid)
+        if os.path.isfile(p):
+            try:
+                with open(p, "rb") as f:
+                    _add(base % aid, f.read())
+            except OSError:
+                pass
+
+    # live pane capture (best-effort)
+    if session and tmux_session_exists(session):
+        try:
+            cap = capture_tmux(session, lines=10_000)
+            if cap:
+                _add("capture.txt", cap.encode("utf-8", errors="replace"))
+        except Exception as e:
+            log.warning("capture failed: %s", e)
+
+    # Claude transcript — the main prize
+    if sid and workdir:
+        claude_dir = None
+        for proj in _project_dirs_for_workdir(workdir):
+            if os.path.isdir(proj):
+                claude_dir = proj
+                break
+        if claude_dir is None:
+            print_warning("No ~/.claude/projects/ dir for %s — skipping Claude transcript" % workdir)
+        else:
+            jsonl = os.path.join(claude_dir, "%s.jsonl" % sid)
+            if os.path.isfile(jsonl):
+                try:
+                    with open(jsonl, "rb") as f:
+                        _add("claude/session.jsonl", f.read())
+                except OSError as e:
+                    log.warning("read %s: %s", jsonl, e)
+            else:
+                print_warning("No transcript at %s — Claude may have never written one" % jsonl)
+            # Per-session subdir (subagents, tool-results, etc.)
+            subdir = os.path.join(claude_dir, sid)
+            if os.path.isdir(subdir):
+                for root, _dirs, files in os.walk(subdir):
+                    for fn in files:
+                        full = os.path.join(root, fn)
+                        rel = os.path.relpath(full, subdir)
+                        try:
+                            with open(full, "rb") as f:
+                                _add(os.path.join("claude/session-dir", rel), f.read())
+                        except OSError:
+                            pass
+
+    # MANIFEST last so it reflects everything
+    manifest_bytes = _json.dumps(manifest, indent=2).encode("utf-8")
+
+    # --- Write the tarball ---------------------------------------------------
+    tmp_path = out_path + ".partial"
+    try:
+        with gzip.open(tmp_path, "wb", compresslevel=6) as gz:
+            with tarfile.open(fileobj=gz, mode="w") as tar:
+                def _add_member(arcname: str, data: bytes) -> None:
+                    info = tarfile.TarInfo(name=arcname)
+                    info.size = len(data)
+                    info.mtime = int(time.time())
+                    info.mode = 0o644
+                    tar.addfile(info, io.BytesIO(data))
+                _add_member("MANIFEST.json", manifest_bytes)
+                for arcname, data in members:
+                    _add_member(arcname, data)
+        os.replace(tmp_path, out_path)
+    except Exception as e:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        print_error("Failed to write archive: %s" % e)
+        sys.exit(1)
+
+    size = os.path.getsize(out_path)
+    print_success("Archived agent %s (%s) → %s" % (aid, name, out_path))
+    print("  session_id: %s" % (sid or "(not found)"))
+    print("  files:      %d" % len(members))
+    print("  size:       %s" % _fmt_size(size))
+
+
 def cmd_rm(args):
     """Remove an agent record. Always tears down the tmux session and socket.
 
@@ -5111,6 +5298,17 @@ examples:
     rm.add_argument("--kill", "-k", action="store_true",
                     help="[deprecated, no-op] tmux is always killed now")
 
+    # archive
+    ar = sub.add_parser(
+        "archive",
+        help="Bundle one agent's history (logs + Claude transcript) into a .tar.gz",
+    )
+    ar.add_argument("id", help="Agent ID")
+    ar.add_argument("--output", "-o", default=None,
+                    help="Output directory (default: ~/.cam/archives/)")
+    ar.add_argument("--session-id", dest="session_id", default=None,
+                    help="Override session_id (skip auto-recovery)")
+
     # prune
     sub.add_parser("prune", help="Remove all non-running agents")
 
@@ -5240,6 +5438,7 @@ examples:
         "update": cmd_update,
         "add": cmd_add,
         "rm": cmd_rm,
+        "archive": cmd_archive,
         "prune": cmd_prune,
         "reboot": cmd_migrate,
         "migrate": cmd_migrate,
