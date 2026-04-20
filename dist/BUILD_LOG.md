@@ -858,3 +858,55 @@ d7f871b camc: add auto_permission_mode option (default off)
 7f1755e camc: backfill session_id in heal + fix session-file encoding
 ```
 
+## v1.2.0  fddb865 2026-04-19 20:30
+
+- Lines: 5215
+- Output: /home/hren/bin/camc
+- Recent changes:
+```
+fddb865 release: camc v1.2.0
+f2f0b76 camc: rm always kills tmux session + socket
+ba8c9ad camc: disambiguate adopted orphan agent names by agent id
+d7f871b camc: add auto_permission_mode option (default off)
+7f1755e camc: backfill session_id in heal + fix session-file encoding
+```
+
+## v1.2.0  a44e9c5-dirty 2026-04-20 00:53
+
+- Lines: 5236
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+fddb865 release: camc v1.2.0
+f2f0b76 camc: rm always kills tmux session + socket
+ba8c9ad camc: disambiguate adopted orphan agent names by agent id
+d7f871b camc: add auto_permission_mode option (default off)
+7f1755e camc: backfill session_id in heal + fix session-file encoding
+```
+
+## v1.2.0  a44e9c5-dirty 2026-04-20 00:54
+
+- Lines: 5241
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+fddb865 release: camc v1.2.0
+f2f0b76 camc: rm always kills tmux session + socket
+ba8c9ad camc: disambiguate adopted orphan agent names by agent id
+d7f871b camc: add auto_permission_mode option (default off)
+7f1755e camc: backfill session_id in heal + fix session-file encoding
+```
+
+## v1.2.0  a44e9c5-dirty 2026-04-20 00:55
+
+- Lines: 5244
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+fddb865 release: camc v1.2.0
+f2f0b76 camc: rm always kills tmux session + socket
+ba8c9ad camc: disambiguate adopted orphan agent names by agent id
+d7f871b camc: add auto_permission_mode option (default off)
+7f1755e camc: backfill session_id in heal + fix session-file encoding
+```
+

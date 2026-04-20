@@ -27,7 +27,7 @@ import time
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "cef8bcc 2026-04-19 06:34"
+__build__ = "a44e9c5-dirty 2026-04-20 00:55"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -4040,6 +4040,19 @@ def cmd_attach(args):
             sys.stderr.write("Error: agent '%s' not found\n" % agent_id); sys.exit(1)
     session = _sf(a, "tmux_session")
     sock = _find_tmux_socket(session)
+    # If the session is unreachable — socket missing, or socket present but
+    # the tmux server behind it is dead — say so instead of handing a bare
+    # `tmux attach` to the default socket (which just prints "no sessions"
+    # with no hint why).
+    if not tmux_session_exists(session):
+        aid = a.get("id", "")
+        reason = "stale tmux socket (server not running)" if sock \
+            else "tmux session '%s' not found" % session
+        sys.stderr.write(
+            "Error: agent '%s' — %s.\n"
+            "  Run 'camc heal' to clean up, or 'camc rm %s' to remove the record.\n"
+            % (aid, reason, aid))
+        sys.exit(1)
     if sock:
         os.execvp("tmux", ["tmux", "-u", "-S", sock, "attach", "-t", session])
     else:
@@ -4275,6 +4288,17 @@ def cmd_heal(args):
             state = a.get("state") or "initializing"
             status = "completed" if state not in ("initializing",) else "failed"
             store.update(aid, status=status, exit_reason="Session gone (heal)", completed_at=_now_iso())
+            # Unlink the dead session's socket too. Otherwise `camc attach`
+            # on this agent would find the stale .sock, hand it to tmux,
+            # and tmux would silently say "no sessions". The agent record
+            # stays around so the user can see history / run `camc rm`;
+            # only the dangling socket is removed.
+            sock_path = _find_tmux_socket(session)
+            if sock_path:
+                try:
+                    os.unlink(sock_path)
+                except OSError:
+                    pass
             print("  %s (%s): session dead, marked %s" % (name, aid, status))
             continue
 
@@ -4451,16 +4475,21 @@ def cmd_heal(args):
             if not fname.startswith("cam-") or not fname.endswith(".sock"):
                 continue
             session = fname[:-5]  # strip .sock → "cam-abc12345"
-            if session in known_sessions:
-                continue
-            # Verify session is actually alive
+            # A socket is stale whenever tmux has no live server behind it,
+            # regardless of whether an agent record still points at it.
+            # This catches terminal agents (completed/killed/failed) whose
+            # record survived but whose tmux died — without cleanup, the next
+            # `camc attach` would hand the dead .sock to tmux and get "no
+            # sessions" back with no hint why.
             if not tmux_session_exists(session):
-                # Stale socket — tmux server is gone, clean it up
                 try:
                     os.unlink(os.path.join(sock_dir, fname))
                     stale_cleaned += 1
                 except OSError:
                     pass
+                continue
+            # Live session with an existing agent record → skip orphan adopt.
+            if session in known_sessions:
                 continue
             # Extract agent ID from session name (cam-{id})
             aid = session[4:]  # strip "cam-"
