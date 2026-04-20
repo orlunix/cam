@@ -923,3 +923,29 @@ ba8c9ad camc: disambiguate adopted orphan agent names by agent id
 d7f871b camc: add auto_permission_mode option (default off)
 ```
 
+## v1.2.0  44daf89-dirty 2026-04-20 02:33
+
+- Lines: 5467
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+44daf89 camc: gate --auto-exit behind a hidden arming flag
+6c0c376 camc: clean up stale sockets on heal + clear error on attach
+fddb865 release: camc v1.2.0
+f2f0b76 camc: rm always kills tmux session + socket
+ba8c9ad camc: disambiguate adopted orphan agent names by agent id
+```
+
+## v1.2.0  44daf89-dirty 2026-04-20 02:33
+
+- Lines: 5467
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+44daf89 camc: gate --auto-exit behind a hidden arming flag
+6c0c376 camc: clean up stale sockets on heal + clear error on attach
+fddb865 release: camc v1.2.0
+f2f0b76 camc: rm always kills tmux session + socket
+ba8c9ad camc: disambiguate adopted orphan agent names by agent id
+```
+
