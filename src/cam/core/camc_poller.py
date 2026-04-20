@@ -288,7 +288,19 @@ class CamcPoller:
                         total += 1
                         continue
 
-                    # New agent discovered from camc — import it.
+                    # New agent discovered from camc. Only import running
+                    # ones; terminal-status records are either already-done
+                    # work whose monitor never cleaned up, or leftover from
+                    # camc's pre-prune history. Importing them just clutters
+                    # `cam list` with agents that immediately show as
+                    # completed/killed/failed and never do anything useful.
+                    new_status = _STATUS_MAP.get(status, AgentStatus.RUNNING)
+                    if new_status in _TERMINAL_STATUSES:
+                        logger.debug(
+                            "Skipping import of terminal agent %s (status=%s) from %s",
+                            agent_id, status, name,
+                        )
+                        continue
                     # Store source machine info so cam attach/capture can
                     # connect to the right host directly.
                     try:
