@@ -374,6 +374,7 @@ def cmd_run(args):
 
     name = getattr(args, "name", None) or os.path.basename(workdir) or "%s-%s" % (tool, uuid4().hex[:6])
     auto_exit = getattr(args, "auto_exit", False)
+    auto_exit_enable = getattr(args, "auto_exit_enable", False)
     ctx_name = context.get("name", "") if isinstance(context, dict) else ""
     ctx_host = context.get("host") if isinstance(context, dict) else None
     transport = "ssh" if ctx_host and ctx_host not in ("localhost", "127.0.0.1") else "local"
@@ -384,6 +385,7 @@ def cmd_run(args):
         "session_id": session_uuid,
         "task": {"name": name or "", "tool": tool, "prompt": prompt,
                  "auto_confirm": True, "auto_exit": auto_exit,
+                 "auto_exit_enable": auto_exit_enable,
                  "tags": tags},
         "context_id": "",
         "context_name": ctx_name,
@@ -2326,6 +2328,12 @@ examples:
     r.add_argument("--path", "-p", default=os.getcwd(), help="Working directory")
     r.add_argument("--name", "-n", default=None, help="Human-readable name")
     r.add_argument("--auto-exit", "-a", action="store_true", help="Auto-exit on completion")
+    # Hidden safety arm for --auto-exit. Without this, --auto-exit is a no-op
+    # in the monitor. Intentionally undocumented (argparse.SUPPRESS) — the
+    # idle detector is heuristic and the false-positive cost is lost work,
+    # so only callers who understand the risk should reach for this.
+    r.add_argument("--auto-exit-enable", dest="auto_exit_enable",
+                   action="store_true", help=argparse.SUPPRESS)
     r.add_argument("--tag", action="append", default=[], help="Add tag (repeatable)")
     r.add_argument("--resume", dest="resume_session", default=None,
                    metavar="SESSION_ID",

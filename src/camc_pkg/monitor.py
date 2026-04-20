@@ -236,14 +236,30 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 else:
                     agent_rec = store.get(agent_id)
                     ae = None
+                    aee = False  # auto_exit_enable — safety arm, default False
                     if agent_rec:
                         t = agent_rec.get("task")
                         if isinstance(t, dict):
                             ae = t.get("auto_exit")
+                            aee = bool(t.get("auto_exit_enable", False))
                         else:
                             ae = agent_rec.get("auto_exit")
+                            aee = bool(agent_rec.get("auto_exit_enable", False))
                     if ae is None:
                         ae = getattr(config, "auto_exit", False)
+                    # Two-key safety: auto_exit alone is treated as a no-op
+                    # unless the agent record also has auto_exit_enable=True.
+                    # The idle detector is heuristic (prompt visible + hash
+                    # stable 60s); "thinking for a minute" and "done" look
+                    # identical on screen, and the false-positive cost is
+                    # lost work. The arming flag is intentionally hidden
+                    # (only power-users who understand the trade-off should
+                    # reach for it) — keep this log at DEBUG so we don't
+                    # advertise it.
+                    if ae and not aee:
+                        log.debug("[%d] idle + auto_exit set, but not armed", cycle)
+                        time.sleep(1)
+                        continue
                     if ae:
                         exit_action = getattr(config, "exit_action", "kill_session")
                         log.info("Auto-exit: action=%s (idle_for=%.0fs)", exit_action, idle_for)

@@ -27,7 +27,7 @@ import time
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "a44e9c5-dirty 2026-04-20 00:55"
+__build__ = "6c0c376-dirty 2026-04-20 02:06"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -2313,14 +2313,30 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 else:
                     agent_rec = store.get(agent_id)
                     ae = None
+                    aee = False  # auto_exit_enable — safety arm, default False
                     if agent_rec:
                         t = agent_rec.get("task")
                         if isinstance(t, dict):
                             ae = t.get("auto_exit")
+                            aee = bool(t.get("auto_exit_enable", False))
                         else:
                             ae = agent_rec.get("auto_exit")
+                            aee = bool(agent_rec.get("auto_exit_enable", False))
                     if ae is None:
                         ae = getattr(config, "auto_exit", False)
+                    # Two-key safety: auto_exit alone is treated as a no-op
+                    # unless the agent record also has auto_exit_enable=True.
+                    # The idle detector is heuristic (prompt visible + hash
+                    # stable 60s); "thinking for a minute" and "done" look
+                    # identical on screen, and the false-positive cost is
+                    # lost work. The arming flag is intentionally hidden
+                    # (only power-users who understand the trade-off should
+                    # reach for it) — keep this log at DEBUG so we don't
+                    # advertise it.
+                    if ae and not aee:
+                        log.debug("[%d] idle + auto_exit set, but not armed", cycle)
+                        time.sleep(1)
+                        continue
                     if ae:
                         exit_action = getattr(config, "exit_action", "kill_session")
                         log.info("Auto-exit: action=%s (idle_for=%.0fs)", exit_action, idle_for)
@@ -3099,6 +3115,7 @@ def cmd_run(args):
 
     name = getattr(args, "name", None) or os.path.basename(workdir) or "%s-%s" % (tool, uuid4().hex[:6])
     auto_exit = getattr(args, "auto_exit", False)
+    auto_exit_enable = getattr(args, "auto_exit_enable", False)
     ctx_name = context.get("name", "") if isinstance(context, dict) else ""
     ctx_host = context.get("host") if isinstance(context, dict) else None
     transport = "ssh" if ctx_host and ctx_host not in ("localhost", "127.0.0.1") else "local"
@@ -3109,6 +3126,7 @@ def cmd_run(args):
         "session_id": session_uuid,
         "task": {"name": name or "", "tool": tool, "prompt": prompt,
                  "auto_confirm": True, "auto_exit": auto_exit,
+                 "auto_exit_enable": auto_exit_enable,
                  "tags": tags},
         "context_id": "",
         "context_name": ctx_name,
@@ -5036,6 +5054,12 @@ examples:
     r.add_argument("--path", "-p", default=os.getcwd(), help="Working directory")
     r.add_argument("--name", "-n", default=None, help="Human-readable name")
     r.add_argument("--auto-exit", "-a", action="store_true", help="Auto-exit on completion")
+    # Hidden safety arm for --auto-exit. Without this, --auto-exit is a no-op
+    # in the monitor. Intentionally undocumented (argparse.SUPPRESS) — the
+    # idle detector is heuristic and the false-positive cost is lost work,
+    # so only callers who understand the risk should reach for this.
+    r.add_argument("--auto-exit-enable", dest="auto_exit_enable",
+                   action="store_true", help=argparse.SUPPRESS)
     r.add_argument("--tag", action="append", default=[], help="Add tag (repeatable)")
     r.add_argument("--resume", dest="resume_session", default=None,
                    metavar="SESSION_ID",
