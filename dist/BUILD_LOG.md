@@ -949,3 +949,16 @@ f2f0b76 camc: rm always kills tmux session + socket
 ba8c9ad camc: disambiguate adopted orphan agent names by agent id
 ```
 
+## v1.2.0  62bda87-dirty 2026-04-20 02:39
+
+- Lines: 5479
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+62bda87 camc: add archive command — one-agent .tar.gz bundle
+44daf89 camc: gate --auto-exit behind a hidden arming flag
+6c0c376 camc: clean up stale sockets on heal + clear error on attach
+fddb865 release: camc v1.2.0
+f2f0b76 camc: rm always kills tmux session + socket
+```
+
