@@ -434,3 +434,47 @@ def migrate(
         print_success(f"Context '{ctx_name}' is now camc-managed.")
     else:
         print_error("Migration did not complete — no agents were adopted.")
+
+
+# ---------------------------------------------------------------------------
+# cam release
+# ---------------------------------------------------------------------------
+
+
+def release(
+    skip_tests: bool = typer.Option(False, "--skip-tests", help="Skip the pytest step."),
+    skip_build: bool = typer.Option(False, "--skip-build", help="Reuse the current dist/camc."),
+    only: str = typer.Option("", "--only", help="Comma-separated list of machine names to deploy to."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print planned actions, don't scp."),
+) -> None:
+    """Build, test, and deploy camc to every machine in ~/.cam/machines.json.
+
+    Thin wrapper around scripts/release.sh. Uses SSH ControlMaster sockets
+    (same scheme cam normally uses) so each scp/ssh reuses any already-
+    authenticated connection.
+    """
+    import os
+    import subprocess
+    from pathlib import Path
+
+    # Locate the repo root from this module's path: src/cam/cli/system_cmd.py.
+    here = Path(__file__).resolve()
+    repo_root = here.parents[3]  # .../cam
+    script = repo_root / "scripts" / "release.sh"
+    if not script.exists():
+        print_error(f"release script not found: {script}")
+        raise typer.Exit(1)
+
+    cmd = [str(script)]
+    if skip_tests:
+        cmd.append("--skip-tests")
+    if skip_build:
+        cmd.append("--skip-build")
+    if only:
+        cmd.extend(["--only", only])
+    if dry_run:
+        cmd.append("--dry-run")
+
+    # Stream output live, preserving the script's coloured log lines.
+    rc = subprocess.call(cmd, cwd=str(repo_root), env=os.environ.copy())
+    raise typer.Exit(rc)
