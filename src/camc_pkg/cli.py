@@ -1488,12 +1488,13 @@ def cmd_archive_dispatch(args):
 
 
 def cmd_rm(args):
-    """Remove an agent record. Archives by default, then tears down tmux.
+    """Remove an agent record, tear down tmux, delete the socket.
 
-    Default behaviour (archive=True) captures the full history before the
-    record is gone — Claude transcript, monitor logs, events. Opt out with
-    --no-archive when you really just want to throw everything away. --kill
-    is a deprecated no-op: tmux is always killed on rm.
+    Archive is opt-in via --archive. The default is OFF because workflows
+    tend to spawn many short-lived agents and auto-archiving every one
+    produces a lot of tarball noise. For agents you care about, either
+    pass --archive, or run `camc archive <id>` explicitly before rm.
+    --kill is a deprecated no-op: tmux is always killed on rm.
     """
     store = AgentStore()
     a = store.get(args.id)
@@ -1501,7 +1502,7 @@ def cmd_rm(args):
         sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
     # Archive first, while the record + logs + (maybe) tmux are still alive.
     # Failing to archive should not block the rm — print a warning and carry on.
-    if getattr(args, "archive", True):
+    if getattr(args, "archive", False):
         try:
             archive_args = argparse.Namespace(
                 id=a["id"], output=None, session_id=None,
@@ -3101,10 +3102,10 @@ examples:
     a.add_argument("--name", "-n", default=None, help="Human-readable name")
 
     # rm
-    rm = sub.add_parser("rm", help="Archive + remove a single agent (kills tmux)")
+    rm = sub.add_parser("rm", help="Remove a single agent (kills tmux; archive off by default)")
     rm.add_argument("id", help="Agent ID")
-    rm.add_argument("--no-archive", dest="archive", action="store_false",
-                    default=True, help="Skip the pre-rm archive step")
+    rm.add_argument("--archive", dest="archive", action="store_true",
+                    default=False, help="Archive history before removing")
     rm.add_argument("--kill", "-k", action="store_true",
                     help="[deprecated, no-op] tmux is always killed now")
 
