@@ -296,15 +296,19 @@ def resolve_agent(identifier: str):
     """
     from cam.cli.app import state
 
-    # 1. Numeric index
-    if identifier.isdigit():
+    # 1. Numeric index — only for small values that plausibly came from
+    #    `cam list`. An 8-char hex ID like "51531564" is all-digits too but
+    #    is NOT a list index; fall through to id/name resolution instead of
+    #    returning None when the number looks like an identifier.
+    if identifier.isdigit() and len(identifier) <= 3:
         idx = int(identifier)
         if idx < 1:
             return None
         agents = state.agent_store.list(limit=100)
         if 1 <= idx <= len(agents):
             return agents[idx - 1]
-        return None
+        # idx out of range → don't return None; an all-digit identifier
+        # that doesn't match the list might still be a real agent id.
 
     # 2. Name match
     agents = state.agent_store.list(limit=100)
@@ -312,7 +316,7 @@ def resolve_agent(identifier: str):
         if agent.task.name == identifier:
             return agent
 
-    # 3. ID prefix (existing behaviour)
+    # 3. ID prefix (existing behaviour). Handles all-hex and all-digit IDs.
     return state.agent_store.get(identifier)
 
 
