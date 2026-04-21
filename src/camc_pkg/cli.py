@@ -777,9 +777,13 @@ def cmd_add(args):
 
 
 def _jsonl_summary(jsonl_bytes):
-    """Compute a per-prompt summary from a session.jsonl bytes blob.
+    """Compute a full summary from a session.jsonl bytes blob.
 
-    Returns {"turns": [...], "totals": {...}, "line_count": N}. Each turn:
+    Returns {"turns": [...], "totals": {...}, "tool_calls": [...],
+             "files_changed": {...}, "last_assistant_text": str,
+             "line_count": N}.
+
+    Each turn:
         {
           "idx": 1-based,
           "line": 1-indexed line number of the user record in jsonl,
@@ -791,12 +795,76 @@ def _jsonl_summary(jsonl_bytes):
           "files":  files touched via Edit/Write tool_use (unique),
         }
 
-    Skips tool_result synthetic "user" records and meta/system records — only
-    real human user turns land in the output.
+    tool_calls: a flat list of every tool_use with its target. Each entry:
+        {"turn": int, "line": int, "tool": str, "target": str,
+         "ok": bool, "error": str|None}
+      target is a short, human-readable description of the input (file path,
+      bash command, etc.). `ok` + `error` come from the matching tool_result
+      record paired by toolUseID.
+
+    files_changed: {file_path: {"edits": int, "writes": int, "turns": [idx,…]}}
+      Aggregated across the whole session.
+
+    last_assistant_text: the last assistant message whose content had any
+      text (not just tool_use). This is Claude's final narrative reply
+      before the session ended — the natural "what did the agent conclude"
+      to surface in archive summaries.
+
+    Skips tool_result synthetic "user" records and system-wrapper prompts —
+    only real human user turns land in `turns`.
     """
     import json as _json
     turns = []
     current = None
+    tool_calls = []
+    tool_use_by_id = {}   # toolUseID → tool_calls[] index, for pairing results
+    files_changed = {}    # path → {"edits": int, "writes": int, "turns": set}
+    last_assistant_text = ""
+
+    def _short_target(tool, inp):
+        """One-line human-readable summary of a tool_use input."""
+        if not isinstance(inp, dict):
+            return ""
+        if tool == "Bash":
+            return (inp.get("command") or "").strip().splitlines()[0][:120]
+        if tool in ("Edit", "Write", "Read"):
+            return inp.get("file_path") or inp.get("path") or ""
+        if tool == "Glob":
+            return inp.get("pattern") or ""
+        if tool == "Grep":
+            return "%s%s" % (
+                inp.get("pattern") or "",
+                "  [in %s]" % inp.get("path") if inp.get("path") else "",
+            )[:120]
+        if tool in ("WebFetch", "WebSearch"):
+            return inp.get("url") or inp.get("query") or ""
+        if tool == "Task":
+            return (inp.get("description") or inp.get("prompt") or "")[:120]
+        if tool == "TodoWrite":
+            todos = inp.get("todos") or []
+            return "%d items" % len(todos) if isinstance(todos, list) else ""
+        # Fallback: first string value
+        for v in inp.values():
+            if isinstance(v, str):
+                return v[:120]
+        return ""
+
+    def _error_from_tool_result(c):
+        """Extract short error text from a tool_result content block."""
+        res = c.get("content")
+        if isinstance(res, str):
+            low = res.lower()
+            if "error" in low or "denied" in low or "not found" in low:
+                return res.strip().splitlines()[0][:160]
+        elif isinstance(res, list):
+            for x in res:
+                if isinstance(x, dict) and x.get("type") == "text":
+                    t = (x.get("text") or "").strip()
+                    low = t.lower()
+                    if "error" in low or "denied" in low:
+                        return t.splitlines()[0][:160]
+        return None
+
     for i, line in enumerate(jsonl_bytes.splitlines(), 1):
         try:
             o = _json.loads(line)
@@ -805,21 +873,32 @@ def _jsonl_summary(jsonl_bytes):
         msg = o.get("message") if isinstance(o.get("message"), dict) else {}
         ts = o.get("timestamp") or (msg.get("timestamp") if isinstance(msg, dict) else None) or ""
         ttype = o.get("type", "")
+
         if ttype == "user" and not o.get("isMeta") and msg.get("role") == "user":
             content = msg.get("content", "")
-            # A "user" record whose content is a list of tool_result is a
-            # synthetic turn from the tool-use loop, not a real user prompt.
+            # Tool-result synthetic user turn: pair results back to their calls
             if isinstance(content, list) and all(
                 isinstance(c, dict) and c.get("type") == "tool_result" for c in content
             ):
+                for c in content:
+                    tuid = c.get("tool_use_id") or c.get("toolUseId")
+                    if not tuid:
+                        continue
+                    idx = tool_use_by_id.get(tuid)
+                    if idx is None:
+                        continue
+                    is_error = bool(c.get("is_error"))
+                    err = _error_from_tool_result(c)
+                    tool_calls[idx]["ok"] = not (is_error or err)
+                    tool_calls[idx]["error"] = err
                 continue
+            # Real user prompt
             text = content if isinstance(content, str) else ""
             if not text and isinstance(content, list):
                 for c in content:
                     if isinstance(c, dict) and c.get("type") == "text":
                         text = c.get("text", "")
                         break
-            # Skip obviously non-human meta prompts (system-generated wrappers)
             stripped = text.lstrip()
             if stripped.startswith("<local-command-") or stripped.startswith("<command-"):
                 continue
@@ -837,21 +916,51 @@ def _jsonl_summary(jsonl_bytes):
             }
         elif ttype == "assistant" and current is not None:
             content = msg.get("content", [])
-            if isinstance(content, list):
-                for c in content:
-                    if not isinstance(c, dict):
-                        continue
-                    ct = c.get("type")
-                    if ct == "tool_use":
-                        tool = c.get("name", "?")
-                        if tool not in current["tools"]:
-                            current["tools"].append(tool)
-                        if tool in ("Edit", "Write"):
-                            fp = (c.get("input") or {}).get("file_path")
-                            if fp and fp not in current["files"]:
+            if not isinstance(content, list):
+                continue
+            turn_idx = current["idx"]
+            for c in content:
+                if not isinstance(c, dict):
+                    continue
+                ct = c.get("type")
+                if ct == "tool_use":
+                    tool = c.get("name", "?")
+                    if tool not in current["tools"]:
+                        current["tools"].append(tool)
+                    inp = c.get("input") or {}
+                    target = _short_target(tool, inp)
+                    entry = {
+                        "turn": turn_idx,
+                        "line": i,
+                        "tool": tool,
+                        "target": target,
+                        "ok": None,
+                        "error": None,
+                    }
+                    tuid = c.get("id")
+                    if tuid:
+                        tool_use_by_id[tuid] = len(tool_calls)
+                    tool_calls.append(entry)
+                    if tool in ("Edit", "Write"):
+                        fp = inp.get("file_path") or inp.get("path")
+                        if fp:
+                            if fp not in current["files"]:
                                 current["files"].append(fp)
-                    elif ct == "text" and not current["reply"]:
-                        current["reply"] = c.get("text", "")[:300]
+                            rec = files_changed.setdefault(
+                                fp, {"edits": 0, "writes": 0, "turns": []}
+                            )
+                            if tool == "Edit":
+                                rec["edits"] += 1
+                            else:
+                                rec["writes"] += 1
+                            if turn_idx not in rec["turns"]:
+                                rec["turns"].append(turn_idx)
+                elif ct == "text":
+                    txt = c.get("text") or ""
+                    if txt.strip():
+                        if not current["reply"]:
+                            current["reply"] = txt[:300]
+                        last_assistant_text = txt  # keeps overwriting → last wins
             if ts:
                 current["end_ts"] = ts
     if current is not None:
@@ -859,12 +968,18 @@ def _jsonl_summary(jsonl_bytes):
 
     totals = {
         "prompts": len(turns),
-        "tool_uses": sum(len(t["tools"]) for t in turns),
+        "tool_uses": len(tool_calls),
         "first_ts": turns[0]["ts"] if turns else None,
         "last_ts": turns[-1]["end_ts"] if turns else None,
     }
-    return {"turns": turns, "totals": totals,
-            "line_count": len(jsonl_bytes.splitlines())}
+    return {
+        "turns": turns,
+        "totals": totals,
+        "tool_calls": tool_calls,
+        "files_changed": files_changed,
+        "last_assistant_text": last_assistant_text,
+        "line_count": len(jsonl_bytes.splitlines()),
+    }
 
 
 def cmd_archive(args):
@@ -1281,19 +1396,9 @@ def cmd_archive_paths(args):
     print("          tar -xOzf %s claude/session.jsonl | sed -n NNNp" % path)
 
 
-def cmd_archive_summary(args):
-    """Per-prompt table from an archive's summary.json."""
-    path = _resolve_archive(args.ref)
-    if not path:
-        sys.stderr.write("Error: archive '%s' not found\n" % args.ref)
-        sys.exit(1)
-    mf, sm = _load_archive_meta(path)
-    if not sm:
-        sys.stderr.write("Error: %s has no summary.json (probably built by an older camc)\n" % os.path.basename(path))
-        sys.exit(1)
-
+def _print_archive_per_prompt(path, mf, sm, args):
+    """Legacy per-prompt table view (available via --per-prompt)."""
     turns = sm.get("turns", [])
-    # Filters
     search = getattr(args, "search", None)
     if search:
         needle = search.lower()
@@ -1342,6 +1447,178 @@ def cmd_archive_summary(args):
     if len(turns) < total:
         print("  (showing %d of %d — pass --limit N or --limit 0 for all)"
               % (len(turns), total))
+
+
+def cmd_archive_summary(args):
+    """Sectioned agent summary: info → prompts → actions → files → stats → session summary.
+
+    Default view for ALL agents (not just cam-flow). For the legacy
+    per-prompt table pass --per-prompt.
+    """
+    path = _resolve_archive(args.ref)
+    if not path:
+        sys.stderr.write("Error: archive '%s' not found\n" % args.ref)
+        sys.exit(1)
+    mf, sm = _load_archive_meta(path)
+    if not sm:
+        sys.stderr.write("Error: %s has no summary.json (probably built by an older camc)\n" % os.path.basename(path))
+        sys.exit(1)
+
+    if getattr(args, "per_prompt", False):
+        _print_archive_per_prompt(path, mf, sm, args)
+        return
+
+    if getattr(args, "json", False):
+        payload = {
+            "archive": os.path.basename(path),
+            "manifest": mf,
+            "summary": sm,
+        }
+        print(_json_dump(payload))
+        return
+
+    agent = {}
+    if mf:
+        agent = mf
+    # Pull agent.json from the tarball for tags/context
+    try:
+        import json as _json
+        aj = _read_archive_member(path, "agent.json")
+        agent_json = _json.loads(aj) if aj else {}
+    except Exception:
+        agent_json = {}
+
+    task = agent_json.get("task") or {}
+    tags = task.get("tags") or []
+    tool = task.get("tool") or "claude"
+    context_name = agent_json.get("context_name") or ""
+    context_path = agent_json.get("context_path") or ""
+    turns = sm.get("turns") or []
+    totals = sm.get("totals") or {}
+    tool_calls = sm.get("tool_calls") or []
+    files_changed = sm.get("files_changed") or {}
+    last_assistant = sm.get("last_assistant_text") or ""
+    src = sm.get("source_jsonl", "")
+
+    def _hdr(title):
+        print()
+        print("═══ %s " % title + "═" * max(1, 70 - len(title)))
+
+    # === AGENT =============================================================
+    _hdr("AGENT")
+    print("  id         %s" % agent.get("agent_id", ""))
+    print("  name       %s" % agent.get("agent_name", ""))
+    if tags:
+        print("  tags       %s" % ", ".join(tags))
+    print("  tool       %s" % tool)
+    if context_name or context_path:
+        print("  context    %s%s" % (
+            context_name, "  (%s)" % context_path if context_path else ""))
+    print("  session    %s" % (agent.get("session_id") or "(none)"))
+    print("  host       %s" % agent.get("hostname", ""))
+
+    # === SOURCE ============================================================
+    _hdr("SOURCE")
+    print("  archive    %s" % path)
+    if src:
+        alive = os.path.isfile(src)
+        print("  jsonl      %s" % src)
+        print("             (%s)" % ("live on disk" if alive else "no longer on disk"))
+
+    # === PROMPT ============================================================
+    _hdr("PROMPT")
+    if turns:
+        initial = turns[0].get("prompt", "")
+        # Show full initial prompt (could be long — trim to ~1000 chars)
+        print()
+        for para in (initial[:1000]).splitlines():
+            print("  " + para)
+        if len(initial) > 1000:
+            print("  … (truncated — %d chars total, see turn 1 for full)" % len(initial))
+        if len(turns) > 1:
+            print()
+            print("  + %d follow-up prompt(s). Most recent:" % (len(turns) - 1))
+            tail = turns[-1].get("prompt", "")
+            for para in tail[:500].splitlines():
+                print("    " + para)
+    else:
+        print("  (no prompts recorded)")
+
+    # === ACTIONS ===========================================================
+    _hdr("ACTIONS  (%d tool calls)" % len(tool_calls))
+    if tool_calls:
+        # Histogram + last N full calls
+        from collections import Counter
+        cnt = Counter(c["tool"] for c in tool_calls)
+        errcnt = Counter(c["tool"] for c in tool_calls if c.get("error"))
+        print()
+        print("  usage:")
+        for tn, n in cnt.most_common():
+            err = errcnt.get(tn, 0)
+            extra = "  (%d error%s)" % (err, "" if err == 1 else "s") if err else ""
+            print("    %-12s  %4d%s" % (tn, n, extra))
+        # Detail listing (default last 15, or --actions-limit)
+        alim = getattr(args, "actions_limit", 15) or 15
+        show = tool_calls if alim <= 0 else tool_calls[-alim:]
+        print()
+        print("  detail (last %d):" % len(show))
+        for c in show:
+            tgt = _trunc(c.get("target") or "", 80)
+            status = "✗" if c.get("error") else "·"
+            line = "    %s %-10s  %s" % (status, c.get("tool", "?"), tgt)
+            print(line[:140])
+            if c.get("error"):
+                print("      ↳ %s" % _trunc(c["error"], 100))
+    else:
+        print("  (no tool calls)")
+
+    # === FILES CHANGED =====================================================
+    _hdr("FILES CHANGED  (%d)" % len(files_changed))
+    if files_changed:
+        # Sort by total edits+writes desc
+        rows = sorted(
+            files_changed.items(),
+            key=lambda kv: (kv[1].get("edits", 0) + kv[1].get("writes", 0)),
+            reverse=True,
+        )
+        for fp, stat in rows[:50]:
+            edits = stat.get("edits", 0)
+            writes = stat.get("writes", 0)
+            mode = []
+            if writes:
+                mode.append("%d write%s" % (writes, "" if writes == 1 else "s"))
+            if edits:
+                mode.append("%d edit%s" % (edits, "" if edits == 1 else "s"))
+            print("  %s   (%s)" % (fp, ", ".join(mode)))
+        if len(rows) > 50:
+            print("  … and %d more" % (len(rows) - 50))
+    else:
+        print("  (no files touched)")
+
+    # === STATS =============================================================
+    _hdr("STATS")
+    dur = _fmt_dur_iso(totals.get("first_ts"), totals.get("last_ts"))
+    print("  prompts    %d" % totals.get("prompts", 0))
+    print("  tool uses  %d" % totals.get("tool_uses", 0))
+    errs = sum(1 for c in tool_calls if c.get("error"))
+    if errs:
+        print("  errors     %d" % errs)
+    print("  files      %d" % len(files_changed))
+    print("  started    %s" % (totals.get("first_ts") or "?"))
+    print("  last msg   %s   (%s active)" % (totals.get("last_ts") or "?", dur))
+    print("  size       %s" % _fmt_size(os.path.getsize(path)))
+    print("  jsonl      %d lines" % sm.get("line_count", 0))
+
+    # === SESSION SUMMARY ===================================================
+    _hdr("SESSION SUMMARY")
+    if last_assistant.strip():
+        # Print full text (it's the final narrative — what the user wanted)
+        print()
+        for para in last_assistant.splitlines():
+            print("  " + para)
+    else:
+        print("  (no text-bearing assistant reply in this session)")
+    print()
 
 
 def cmd_archive_show(args):
@@ -3130,14 +3407,24 @@ examples:
     ar_paths.add_argument("ref", help="Agent id prefix, archive filename, or path")
 
     # camc archive summary <ref> …
-    ar_sum = ar_sub.add_parser("summary", help="Per-prompt table (with LINE column)")
+    ar_sum = ar_sub.add_parser(
+        "summary",
+        help="Agent summary: info, prompt, actions, files, stats, session summary",
+    )
     ar_sum.add_argument("ref")
+    ar_sum.add_argument("--actions-limit", dest="actions_limit", type=int, default=15,
+                        help="Max tool-call detail lines (0 = all, default 15)")
+    # --per-prompt opens the legacy per-turn table with --limit/--search/--tool filters.
+    ar_sum.add_argument("--per-prompt", dest="per_prompt", action="store_true",
+                        help="Show the legacy per-prompt table instead of the agent summary")
     ar_sum.add_argument("--limit", "-n", type=int, default=10,
-                        help="Max prompts to show (0 = all, default 10)")
-    ar_sum.add_argument("--search", default=None, help="Substring filter on prompt text")
+                        help="[--per-prompt] max prompts to show (0 = all, default 10)")
+    ar_sum.add_argument("--search", default=None,
+                        help="[--per-prompt] substring filter on prompt text")
     ar_sum.add_argument("--tool", default=None,
-                        help="Comma-separated tools; show only turns that used one of them")
-    ar_sum.add_argument("--json", action="store_true")
+                        help="[--per-prompt] comma-separated tool filter")
+    ar_sum.add_argument("--json", action="store_true",
+                        help="Emit the full manifest + summary as JSON")
 
     # camc archive show <ref> --turn/--line
     ar_show = ar_sub.add_parser("show", help="Pretty-print one turn / jsonl range")
