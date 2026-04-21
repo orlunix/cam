@@ -3182,7 +3182,10 @@ def cmd_capture(args):
     if not session:
         print("Agent has no tmux session", file=sys.stderr)
         sys.exit(1)
-    lines = getattr(args, "lines", 100) or 100
+    # Default is full scrollback (capture-pane -S -). Pass --lines N to
+    # truncate to the last N lines. Tmux's history-limit (default 2000)
+    # caps the real amount either way; long runs drop off the top.
+    lines = getattr(args, "lines", 0) or 0
     output = capture_tmux(session, lines=lines)
     if _want_json(args):
         import hashlib
@@ -3433,7 +3436,8 @@ examples:
     # capture
     cap = sub.add_parser("capture", help="Capture agent tmux screen output")
     cap.add_argument("id", help="Agent ID (prefix match)")
-    cap.add_argument("--lines", "-n", type=int, default=100, help="Number of lines [default: 100]")
+    cap.add_argument("--lines", "-n", type=int, default=0,
+                     help="Tail last N lines (default: 0 = full scrollback)")
 
     # send
     snd = sub.add_parser("send", help="Send text input to agent tmux session")

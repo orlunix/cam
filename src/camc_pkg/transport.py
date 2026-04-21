@@ -23,14 +23,23 @@ def _tmux_base(session_id):
 
 
 def capture_tmux(session_id, lines=100):
+    """Capture tmux pane content.
+
+    lines > 0: last N lines (visible + scrollback up to N).
+    lines <= 0 (or None): full scrollback buffer (tmux -S -). The actual
+    amount returned is capped by tmux's history-limit (2000 by default).
+    """
     socket = _find_tmux_socket(session_id)
     target = "%s:0.0" % session_id
+    # `-S -`  = start of history; `-S -N` = N lines back. We pass one or
+    # the other based on the `lines` argument.
+    start_flag = "-" if not lines or lines <= 0 else "-%d" % lines
     if socket:
         args = ["tmux", "-u", "-S", socket, "capture-pane", "-p", "-J",
-                "-t", target, "-S", "-%d" % lines]
+                "-t", target, "-S", start_flag]
     else:
         args = ["tmux", "capture-pane", "-p", "-J",
-                "-t", target, "-S", "-%d" % lines]
+                "-t", target, "-S", start_flag]
     try:
         rc, output = _run(args)
         if len(output.strip()) < 20:
