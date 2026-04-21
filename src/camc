@@ -27,7 +27,7 @@ import time
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "571b3d6-dirty 2026-04-20 21:46"
+__build__ = "855dc5a-dirty 2026-04-21 00:45"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -761,14 +761,23 @@ def _tmux_base(session_id):
 
 
 def capture_tmux(session_id, lines=100):
+    """Capture tmux pane content.
+
+    lines > 0: last N lines (visible + scrollback up to N).
+    lines <= 0 (or None): full scrollback buffer (tmux -S -). The actual
+    amount returned is capped by tmux's history-limit (2000 by default).
+    """
     socket = _find_tmux_socket(session_id)
     target = "%s:0.0" % session_id
+    # `-S -`  = start of history; `-S -N` = N lines back. We pass one or
+    # the other based on the `lines` argument.
+    start_flag = "-" if not lines or lines <= 0 else "-%d" % lines
     if socket:
         args = ["tmux", "-u", "-S", socket, "capture-pane", "-p", "-J",
-                "-t", target, "-S", "-%d" % lines]
+                "-t", target, "-S", start_flag]
     else:
         args = ["tmux", "capture-pane", "-p", "-J",
-                "-t", target, "-S", "-%d" % lines]
+                "-t", target, "-S", start_flag]
     try:
         rc, output = _run(args)
         if len(output.strip()) < 20:
@@ -5923,7 +5932,10 @@ def cmd_capture(args):
     if not session:
         print("Agent has no tmux session", file=sys.stderr)
         sys.exit(1)
-    lines = getattr(args, "lines", 100) or 100
+    # Default is full scrollback (capture-pane -S -). Pass --lines N to
+    # truncate to the last N lines. Tmux's history-limit (default 2000)
+    # caps the real amount either way; long runs drop off the top.
+    lines = getattr(args, "lines", 0) or 0
     output = capture_tmux(session, lines=lines)
     if _want_json(args):
         import hashlib
@@ -6174,7 +6186,8 @@ examples:
     # capture
     cap = sub.add_parser("capture", help="Capture agent tmux screen output")
     cap.add_argument("id", help="Agent ID (prefix match)")
-    cap.add_argument("--lines", "-n", type=int, default=100, help="Number of lines [default: 100]")
+    cap.add_argument("--lines", "-n", type=int, default=0,
+                     help="Tail last N lines (default: 0 = full scrollback)")
 
     # send
     snd = sub.add_parser("send", help="Send text input to agent tmux session")
