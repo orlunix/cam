@@ -183,7 +183,22 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                     time.sleep(config.confirm_sleep)
                     continue
             else:
-                log.debug("[%d] Confirm cooldown (%.1fs remaining)", cycle, config.confirm_cooldown - confirm_cd)
+                # Report the REAL reason we skipped. Previously this always
+                # logged "cooldown (Xs remaining)" and printed negative values
+                # whenever the agent was actually being blocked by screen_busy
+                # or bare_prompt — hid the stuck case entirely.
+                if confirm_cd < config.confirm_cooldown:
+                    log.debug("[%d] Confirm cooldown (%.1fs remaining)",
+                              cycle, config.confirm_cooldown - confirm_cd)
+                else:
+                    reasons = []
+                    if screen_busy:
+                        reasons.append("screen_busy")
+                    if bare_prompt:
+                        reasons.append("bare_prompt")
+                    log.debug("[%d] Confirm skipped (%s; cooldown already elapsed %.0fs ago)",
+                              cycle, ",".join(reasons) or "unknown",
+                              confirm_cd - config.confirm_cooldown)
 
             # --- 4. State detection ---
             ns = detect_state(output, config)

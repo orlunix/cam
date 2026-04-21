@@ -1144,3 +1144,16 @@ a3fc6a9 camc: archive list / info / paths / summary / show
 7ba5d3a camc: rm archives by default
 ```
 
+## v1.2.0  571b3d6-dirty 2026-04-20 21:46
+
+- Lines: 6310
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+571b3d6 camc: archive show dumps whole conversation; summary gets SUMMARY column
+088df77 camc archive: 3 commands + name lookup + deterministic filename
+bad1557 camc: rework archive summary into a sectioned agent report
+da2a6ed camc: rm no longer archives by default
+a3fc6a9 camc: archive list / info / paths / summary / show
+```
+
