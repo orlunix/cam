@@ -1170,3 +1170,16 @@ bad1557 camc: rework archive summary into a sectioned agent report
 da2a6ed camc: rm no longer archives by default
 ```
 
+## v1.2.0  574935c-dirty 2026-04-21 02:19
+
+- Lines: 6354
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+574935c camc capture: default is now full scrollback, not last 100 lines
+688e7f3 monitor: honest confirm-skip log (no more "-500s remaining")
+571b3d6 camc: archive show dumps whole conversation; summary gets SUMMARY column
+088df77 camc archive: 3 commands + name lookup + deterministic filename
+bad1557 camc: rework archive summary into a sectioned agent report
+```
+
