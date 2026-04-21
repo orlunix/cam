@@ -19,6 +19,12 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MACHINES_FILE="${CAMC_MACHINES_FILE:-$HOME/.cam/machines.json}"
 DIST_BIN="$REPO_ROOT/dist/camc"
 REMOTE_PATH="~/.cam/camc"
+# Optional secondary destination. If this directory exists on a remote,
+# camc is also copied there for users whose PATH picks up the shared bin
+# before ~/.cam. Non-fatal — a missing dir or permission error is logged
+# and doesn't fail the release.
+SHARED_BIN_DIR="/home/prgn_share/bin"
+SHARED_BIN_PATH="$SHARED_BIN_DIR/camc"
 SSH_TIMEOUT=10
 
 SKIP_TESTS=0
@@ -168,6 +174,9 @@ while IFS=$'\t' read -r name host user port; do
   if [[ $DRY_RUN -eq 1 ]]; then
     printf '   scp %s %s %s:%s\n' "${SCP_OPTS[*]}" "$DIST_BIN" "$target" "$REMOTE_PATH"
     printf '   ssh %s %s %s\n' "${SSH_OPTS[*]}" "$target" "$REMOTE_PATH version"
+    printf '   ssh %s %s "test -w %s && cp %s %s/.camc.new.\$\$ && mv ... %s"\n' \
+           "${SSH_OPTS[*]}" "$target" "$SHARED_BIN_DIR" "$REMOTE_PATH" \
+           "$SHARED_BIN_DIR" "$SHARED_BIN_PATH"
     continue
   fi
 
@@ -202,6 +211,29 @@ while IFS=$'\t' read -r name host user port; do
     warn "   version mismatch: expected '$LOCAL_VERSION', got '$remote_ver'"
     failures+=("$name:mismatch")
     failed=$((failed + 1))
+  fi
+
+  # 4d: Also install to /home/prgn_share/bin/camc when that dir exists
+  # on the remote — shared NFS-ish location some NVIDIA containers have
+  # in $PATH. Non-fatal: missing dir / no write perm just logs and
+  # moves on. Uses the already-scp'd ~/.cam/camc as the source so we
+  # don't re-transfer. Atomic-ish via temp + mv so a concurrent reader
+  # never catches a half-written binary.
+  shared_check="test -d $SHARED_BIN_DIR -a -w $SHARED_BIN_DIR && echo YES || echo NO"
+  if [[ "$(ssh "${SSH_OPTS[@]}" "$target" "$shared_check" 2>/dev/null | tr -d '\r')" == "YES" ]]; then
+    tmp_path="$SHARED_BIN_DIR/.camc.new.$$"
+    install_cmd="cp -p $REMOTE_PATH $tmp_path && chmod 0755 $tmp_path && mv -f $tmp_path $SHARED_BIN_PATH && echo OK"
+    shared_out="$(ssh "${SSH_OPTS[@]}" "$target" "$install_cmd" 2>&1 | tr -d '\r')"
+    if [[ "$shared_out" == *OK* ]]; then
+      shared_ver="$(ssh "${SSH_OPTS[@]}" "$target" "$SHARED_BIN_PATH version" 2>/dev/null | head -1 | tr -d '\r' || true)"
+      if [[ "$shared_ver" == "$LOCAL_VERSION" ]]; then
+        ok "   shared: $SHARED_BIN_PATH → $shared_ver"
+      else
+        warn "   shared install verify mismatch: got '$shared_ver'"
+      fi
+    else
+      warn "   shared install failed: $(printf %s "$shared_out" | head -c 120)"
+    fi
   fi
 done <<< "$MACHINES"
 
