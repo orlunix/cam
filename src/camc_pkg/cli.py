@@ -820,6 +820,17 @@ def _jsonl_summary(jsonl_bytes):
     tool_use_by_id = {}   # toolUseID → tool_calls[] index, for pairing results
     files_changed = {}    # path → {"edits": int, "writes": int, "turns": set}
     last_assistant_text = ""
+    # Per-turn "last text block": the final text the assistant produced in the
+    # turn, overwritten as new text blocks arrive. Used downstream to extract
+    # a summary paragraph.
+    current_last_text = ""
+
+    def _last_paragraph(text):
+        """Return the last non-empty paragraph (split on \\n\\n)."""
+        if not text:
+            return ""
+        paras = [p.strip() for p in text.split("\n\n") if p.strip()]
+        return paras[-1] if paras else ""
 
     def _short_target(tool, inp):
         """One-line human-readable summary of a tool_use input."""
@@ -850,18 +861,19 @@ def _jsonl_summary(jsonl_bytes):
         return ""
 
     def _error_from_tool_result(c):
-        """Extract short error text from a tool_result content block."""
+        """Extract first line of error payload from a tool_result. Only
+        returns a string when the caller already knows is_error is True —
+        text-keyword heuristics falsely flag legitimate Read/Grep output
+        that happens to mention 'error' anywhere."""
         res = c.get("content")
         if isinstance(res, str):
-            low = res.lower()
-            if "error" in low or "denied" in low or "not found" in low:
-                return res.strip().splitlines()[0][:160]
-        elif isinstance(res, list):
+            s = res.strip()
+            return s.splitlines()[0][:160] if s else None
+        if isinstance(res, list):
             for x in res:
                 if isinstance(x, dict) and x.get("type") == "text":
                     t = (x.get("text") or "").strip()
-                    low = t.lower()
-                    if "error" in low or "denied" in low:
+                    if t:
                         return t.splitlines()[0][:160]
         return None
 
@@ -888,8 +900,8 @@ def _jsonl_summary(jsonl_bytes):
                     if idx is None:
                         continue
                     is_error = bool(c.get("is_error"))
-                    err = _error_from_tool_result(c)
-                    tool_calls[idx]["ok"] = not (is_error or err)
+                    err = _error_from_tool_result(c) if is_error else None
+                    tool_calls[idx]["ok"] = not is_error
                     tool_calls[idx]["error"] = err
                 continue
             # Real user prompt
@@ -903,6 +915,8 @@ def _jsonl_summary(jsonl_bytes):
             if stripped.startswith("<local-command-") or stripped.startswith("<command-"):
                 continue
             if current is not None:
+                # Closing-out previous turn: stamp its summary_paragraph.
+                current["summary_paragraph"] = _last_paragraph(current_last_text)
                 turns.append(current)
             current = {
                 "idx": len(turns) + 1,
@@ -913,7 +927,9 @@ def _jsonl_summary(jsonl_bytes):
                 "reply": "",
                 "tools": [],
                 "files": [],
+                "summary_paragraph": "",
             }
+            current_last_text = ""
         elif ttype == "assistant" and current is not None:
             content = msg.get("content", [])
             if not isinstance(content, list):
@@ -960,10 +976,12 @@ def _jsonl_summary(jsonl_bytes):
                     if txt.strip():
                         if not current["reply"]:
                             current["reply"] = txt[:300]
-                        last_assistant_text = txt  # keeps overwriting → last wins
+                        last_assistant_text = txt  # keeps overwriting → last wins (whole session)
+                        current_last_text = txt    # same, scoped to current turn
             if ts:
                 current["end_ts"] = ts
     if current is not None:
+        current["summary_paragraph"] = _last_paragraph(current_last_text)
         turns.append(current)
 
     totals = {
@@ -1045,13 +1063,18 @@ def cmd_archive(args):
         print_error("Cannot create archive dir %s: %s" % (out_dir, e))
         sys.exit(1)
 
-    # Deterministic filename: <aid>-<safe-name>.tar.gz. No timestamp, no sid —
-    # one archive per agent, re-archive overwrites. The name is included so
-    # `camc archive summary <name>` can resolve via filename prefix without
-    # having to crack open every tarball's MANIFEST.
+    # Filename: <aid>-<sid[:8]>-<timestamp>-<safe-name>.tar.gz
+    # Keep sid + timestamp so we never overwrite an earlier snapshot (each
+    # archive is an immutable point-in-time capture); append the name so
+    # `camc archive summary <name>` can resolve by filename substring.
+    from datetime import datetime, timezone
     import re as _re
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    sid_tag = (sid[:8] if sid else "nosid")
     safe_name = _re.sub(r"[^A-Za-z0-9._-]", "-", name) if name else "unnamed"
-    out_path = os.path.join(out_dir, "%s-%s.tar.gz" % (aid, safe_name))
+    out_path = os.path.join(
+        out_dir, "%s-%s-%s-%s.tar.gz" % (aid, sid_tag, ts, safe_name)
+    )
 
     # --- Collect artefacts ---------------------------------------------------
     manifest = {
@@ -1453,22 +1476,215 @@ def cmd_archive_summary(args):
     rows = []
     for t in turns:
         when = (t.get("ts") or "")[:16].replace("T", " ")
+        # SUMMARY: last paragraph of the final assistant text block in the
+        # turn. Capped at 48 chars for table-legibility; empty if the turn
+        # had no narrative reply (pure tool-use, or still-running).
+        summary = _trunc(t.get("summary_paragraph", "") or "", 48)
         rows.append([
             str(t.get("idx", "")),
             when,
-            _trunc(t.get("prompt", ""), 44),
-            _trunc(",".join(t.get("tools", [])), 20),
+            _trunc(t.get("prompt", ""), 40),
+            _trunc(",".join(t.get("tools", [])), 18),
             _fmt_dur_iso(t.get("ts"), t.get("end_ts")),
             "L%d" % t.get("line", 0),
+            summary,
         ])
     print_table(
-        ["#", "WHEN", "PROMPT", "TOOLS", "DUR", "LINE"],
+        ["#", "WHEN", "PROMPT", "TOOLS", "DUR", "LINE", "SUMMARY"],
         rows, title=None,
     )
     total = sm.get("totals", {}).get("prompts", 0)
     if len(turns) < total:
         print("  (showing %d of %d \u2014 pass --limit N or --limit 0 for all)"
               % (len(turns), total))
+
+
+def cmd_archive_show(args):
+    """Dump the full conversation in Q0/A0/Q1/A1/… order.
+
+    No filtering or turn selection — this is the "cat the whole transcript
+    in reading order" command. Pipe to less, or redirect to a file:
+      camc archive show teadev | less
+      camc archive show teadev > teadev-conversation.txt
+    """
+    import json as _json
+    path = _resolve_archive(args.ref)
+    if not path:
+        sys.stderr.write("Error: archive '%s' not found\n" % args.ref)
+        sys.exit(1)
+    mf, sm = _load_archive_meta(path)
+    if not sm:
+        sys.stderr.write("Error: %s has no summary.json\n" % os.path.basename(path))
+        sys.exit(1)
+    jsonl = _read_archive_member(path, "claude/session.jsonl")
+    if jsonl is None:
+        sys.stderr.write("Error: no claude/session.jsonl in %s\n" % path)
+        sys.exit(1)
+    lines = jsonl.splitlines()
+    turns = sm.get("turns") or []
+    if not turns:
+        print("(no turns in this archive)")
+        return
+
+    if getattr(args, "json", False):
+        # Dump every record in the jsonl, one per line. Not filtered — the
+        # user can `jq .` it downstream.
+        for raw in lines:
+            print(raw.decode("utf-8", errors="replace"))
+        return
+
+    def _short_target(name, inp):
+        """One-line summary of a tool_use input. Matches archive summary."""
+        if not isinstance(inp, dict):
+            return ""
+        if name == "Bash":
+            cmd = (inp.get("command") or "").strip()
+            return cmd.splitlines()[0] if cmd else ""
+        if name in ("Edit", "Write", "Read"):
+            return inp.get("file_path") or inp.get("path") or ""
+        if name in ("Glob", "Grep"):
+            return inp.get("pattern") or ""
+        if name in ("WebFetch", "WebSearch"):
+            return inp.get("url") or inp.get("query") or ""
+        if name == "Task":
+            return (inp.get("description") or inp.get("prompt") or "")
+        for v in inp.values():
+            if isinstance(v, str):
+                return v
+        return ""
+
+    # Pair tool_result to tool_use by id. Trust ONLY the is_error flag on
+    # the tool_result — text-based keyword heuristics are too loose (a
+    # Read of a README that mentions "error" anywhere would false-trip).
+    tool_status = {}  # tool_use_id → (ok: bool, err: str|None)
+    for raw in lines:
+        try:
+            o = _json.loads(raw)
+        except Exception:
+            continue
+        if o.get("type") != "user":
+            continue
+        msg = o.get("message") if isinstance(o.get("message"), dict) else {}
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(content, list):
+            continue
+        for c in content:
+            if not isinstance(c, dict) or c.get("type") != "tool_result":
+                continue
+            tuid = c.get("tool_use_id") or c.get("toolUseId")
+            if not tuid:
+                continue
+            is_err = bool(c.get("is_error"))
+            err_text = None
+            if is_err:
+                # Extract the first meaningful line of the error payload.
+                res = c.get("content")
+                if isinstance(res, str):
+                    err_text = res.strip().splitlines()[0][:200] if res.strip() else None
+                elif isinstance(res, list):
+                    for x in res:
+                        if isinstance(x, dict) and x.get("type") == "text":
+                            t = (x.get("text") or "").strip()
+                            if t:
+                                err_text = t.splitlines()[0][:200]
+                                break
+            tool_status[tuid] = (not is_err, err_text)
+
+    # Header
+    agent_name = (mf or {}).get("agent_name", "")
+    agent_id = (mf or {}).get("agent_id", "")
+    totals = sm.get("totals") or {}
+    first_ts = (totals.get("first_ts") or "")[:10]
+    last_ts = (totals.get("last_ts") or "")[:10]
+    print("=== %s (%s) · %d turns · %s → %s ===" % (
+        agent_name, agent_id, len(turns), first_ts, last_ts,
+    ))
+    print()
+
+    for t in turns:
+        idx = (t.get("idx") or 1) - 1  # 0-based Q0/A0 per user's format
+        ts = (t.get("ts") or "")[:16].replace("T", " ")
+        line_no = t.get("line") or 0
+
+        # Find range of this turn in the jsonl
+        next_line = None
+        for nt in turns:
+            if nt.get("line", 0) > line_no:
+                next_line = nt["line"]
+                break
+        end = (next_line - 1) if next_line else len(lines)
+
+        # Walk records in source order, label as Q then A
+        printed_q = False
+        a_header_printed = False
+        for i in range(line_no - 1, min(end, len(lines))):
+            try:
+                o = _json.loads(lines[i])
+            except Exception:
+                continue
+            ttype = o.get("type", "")
+            msg = o.get("message") if isinstance(o.get("message"), dict) else {}
+
+            if ttype == "user" and not o.get("isMeta") and msg.get("role") == "user":
+                content = msg.get("content")
+                # Skip tool_result synthetic user turns inside this span
+                if isinstance(content, list) and all(
+                    isinstance(c, dict) and c.get("type") == "tool_result"
+                    for c in content
+                ):
+                    continue
+                if printed_q:
+                    continue  # only one Q per turn
+                text = content if isinstance(content, str) else ""
+                if not text and isinstance(content, list):
+                    for c in content:
+                        if isinstance(c, dict) and c.get("type") == "text":
+                            text = c.get("text", "")
+                            break
+                stripped = text.lstrip()
+                if stripped.startswith("<local-command-") or stripped.startswith("<command-"):
+                    continue
+                print("## Q%d  %s  L%d" % (idx, ts, i + 1))
+                print(text.rstrip())
+                print()
+                printed_q = True
+
+            elif ttype == "assistant":
+                content = msg.get("content", [])
+                if not isinstance(content, list):
+                    continue
+                rec_ts = (o.get("timestamp")
+                          or (msg.get("timestamp") if isinstance(msg, dict) else "")
+                          or "")[:19].replace("T", " ")
+                if not a_header_printed:
+                    print("## A%d  %s" % (idx, rec_ts))
+                    a_header_printed = True
+                # Emit content items in source order so text and tool calls
+                # interleave the way Claude actually produced them.
+                for c in content:
+                    if not isinstance(c, dict):
+                        continue
+                    ct = c.get("type")
+                    if ct == "text":
+                        txt = c.get("text") or ""
+                        if txt.strip():
+                            print(txt.rstrip())
+                            print()
+                    elif ct == "tool_use":
+                        name = c.get("name", "?")
+                        inp = c.get("input") or {}
+                        target = _short_target(name, inp)
+                        tuid = c.get("id")
+                        ok, err = tool_status.get(tuid or "", (None, None))
+                        marker = "✗" if err else "▸"
+                        print("  %s %s(%s)" % (
+                            marker, name, _trunc(str(target), 120),
+                        ))
+                        if err:
+                            print("      └─ %s" % _trunc(err, 120))
+
+        # Spacer between turns
+        print()
 
 
 def _json_dump(obj):
@@ -1485,6 +1701,8 @@ def cmd_archive_dispatch(args):
         cmd_archive_info(args)
     elif sub == "summary":
         cmd_archive_summary(args)
+    elif sub == "show":
+        cmd_archive_show(args)
     elif sub == "create":
         cmd_archive(args)
     else:
@@ -1494,6 +1712,7 @@ def cmd_archive_dispatch(args):
             "  camc archive list                  list all archives\n"
             "  camc archive info <id|name>        header + last assistant text\n"
             "  camc archive summary <id|name>     per-prompt table\n"
+            "  camc archive show <id|name>        dump full conversation (Q/A order)\n"
         )
         sys.exit(1)
 
@@ -3126,7 +3345,9 @@ examples:
         "archive",
         help="Archive one agent's history OR list/inspect existing archives",
     )
-    ar_sub = ar.add_subparsers(dest="archive_cmd")
+    # metavar hides the full choice list (which would otherwise include
+    # the internal `create` subcommand) from the usage line.
+    ar_sub = ar.add_subparsers(dest="archive_cmd", metavar="{list,info,summary,show}")
 
     # camc archive list
     ar_list = ar_sub.add_parser("list", help="List all archives as a table")
@@ -3139,7 +3360,7 @@ examples:
     # camc archive summary <ref> — per-prompt table with LINE column
     ar_sum = ar_sub.add_parser(
         "summary",
-        help="Per-prompt table for one archive (with LINE column)",
+        help="Per-prompt table for one archive (with LINE + SUMMARY columns)",
     )
     ar_sum.add_argument("ref", help="Agent id prefix, agent name, or archive path")
     ar_sum.add_argument("--limit", "-n", type=int, default=10,
@@ -3151,17 +3372,31 @@ examples:
     ar_sum.add_argument("--json", action="store_true",
                         help="Emit the full payload as JSON")
 
-    # camc archive create <id> — the default path when `camc archive <id>`
-    # is invoked (argv pre-processor injects `create`).
-    ar_create = ar_sub.add_parser(
-        "create",
-        help="Bundle one agent's history into a .tar.gz",
+    # camc archive show <ref> — dump the whole conversation, Q0/A0/Q1/A1/...
+    ar_show = ar_sub.add_parser(
+        "show",
+        help="Dump the full conversation in Q/A order (pipe to less or redirect)",
     )
+    ar_show.add_argument("ref", help="Agent id prefix, agent name, or archive path")
+    ar_show.add_argument("--json", action="store_true",
+                         help="Emit raw jsonl records instead of pretty-print")
+
+    # camc archive create <id> — the default path when `camc archive <id>`
+    # is invoked (argv pre-processor injects `create`). Users only ever see
+    # the naked `camc archive <id>` form, so hide `create` from --help.
+    # Note: `help=argparse.SUPPRESS` on a subparser still prints the
+    # literal "==SUPPRESS==" in current Python (known arg-parse bug), so
+    # we also pop it from the subparsers action's choices-list manually.
+    ar_create = ar_sub.add_parser("create", help=argparse.SUPPRESS)
     ar_create.add_argument("id", help="Agent ID")
     ar_create.add_argument("--output", "-o", default=None,
                            help="Output directory (default: ~/.cam/archives/)")
     ar_create.add_argument("--session-id", dest="session_id", default=None,
                            help="Override session_id (skip auto-recovery)")
+    # Hide 'create' from the parent parser's subcommand listing.
+    for _act in list(ar_sub._choices_actions):
+        if _act.dest == "create":
+            ar_sub._choices_actions.remove(_act)
 
     # prune
     sub.add_parser("prune", help="Remove all non-running agents")
@@ -3276,11 +3511,14 @@ examples:
     # Dual-mode `archive`: if no inspect-subcommand is given, inject
     # `create` so `camc archive <id>` routes to the builder while
     # `camc archive list/info/…` route to the readers.
-    _archive_subs = {"list", "info", "summary", "create"}
-    if (len(sys.argv) > 1 and sys.argv[1] == "archive"
-            and (len(sys.argv) == 2 or (
-                sys.argv[2] not in _archive_subs
-                and not sys.argv[2].startswith("-")))):
+    _archive_subs = {"list", "info", "summary", "show", "create"}
+    if (len(sys.argv) > 2 and sys.argv[1] == "archive"
+            and sys.argv[2] not in _archive_subs
+            and not sys.argv[2].startswith("-")):
+        # Naked `camc archive <id>` form — route to the hidden `create`
+        # subparser. If argv has no extra token (just `camc archive`) we
+        # let argparse's subparser group print its normal usage/help
+        # instead of triggering a misleading "create needs id" error.
         sys.argv.insert(2, "create")
 
     args = p.parse_args()
