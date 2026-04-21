@@ -353,31 +353,10 @@ def attach(
     user = getattr(agent, "machine_user", None)
     port = getattr(agent, "machine_port", None)
 
-    # Context fallback is ONLY for agents whose machine_host is empty or
-    # literally localhost-at-default-port (no real connection info). For
-    # everything else, the agent record is authoritative — the poller keeps
-    # machine_host/port/user in sync with where the agent actually runs,
-    # whereas the context record can go stale (agent migrated to a new
-    # host, context was never updated). Previously we preferred context
-    # over the agent record and ended up SSH'ing to the OLD host.
-    #
-    # Tunnel case (host=localhost + non-default port, e.g. vdi-wsl at
-    # localhost:3222) is already complete in the agent record — the poller
-    # writes machine_port, so no fallback needed there.
-    need_fallback = (
-        not host                                  # nothing at all on the record
-        or (host in ("localhost", "127.0.0.1")    # localhost at default port
-            and (not port or int(port) == 22))
-    )
-    if need_fallback:
-        ctx_name = getattr(agent, "context_name", "")
-        if ctx_name:
-            ctx = state.context_store.get(ctx_name)
-            if ctx and ctx.machine:
-                mc = ctx.machine
-                host = getattr(mc, "host", None) or host
-                user = getattr(mc, "user", None) or user
-                port = getattr(mc, "port", None) or port
+    # No context fallback. agent.machine_host/port/user come from the
+    # poller and are the source of truth for where this agent actually runs.
+    # Context is just a path label now; looking it up for machine info would
+    # only re-introduce the "stale context overrides live record" bug.
 
     # Route the attach: any remote (real remote OR SSH tunnel to localhost)
     # goes via ssh; true local stays local.
