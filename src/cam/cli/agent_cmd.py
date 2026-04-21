@@ -202,7 +202,7 @@ def status(
     from cam.cli.app import state
     from cam.cli.formatters import print_agent_detail, print_error
 
-    agent = state.agent_store.get(agent_id)
+    agent = resolve_agent(agent_id)
     if not agent:
         print_error(f"Agent not found: {agent_id}")
         raise typer.Exit(1)
@@ -223,7 +223,7 @@ def logs(
     from cam.cli.app import state
     from cam.cli.formatters import print_error, print_info
 
-    agent = state.agent_store.get(agent_id)
+    agent = resolve_agent(agent_id)
     if not agent:
         print_error(f"Agent not found: {agent_id}")
         raise typer.Exit(1)
@@ -353,14 +353,23 @@ def attach(
     user = getattr(agent, "machine_user", None)
     port = getattr(agent, "machine_port", None)
 
-    # Fallback: the record says localhost, but the real connection may be an
-    # SSH tunnel (host=localhost + non-22 port, e.g. vdi-wsl) OR a remote that
-    # the poller wrote with a misleading transport_type=local. If we have a
-    # context_name to look up, let the context's machine config override —
-    # it's the authoritative SSH info.
-    is_tunnel = host in (None, "", "localhost", "127.0.0.1") and port and int(port) != 22
-    record_says_ssh = getattr(agent, "transport_type", "") == "ssh"
-    if (is_tunnel or record_says_ssh):
+    # Context fallback is ONLY for agents whose machine_host is empty or
+    # literally localhost-at-default-port (no real connection info). For
+    # everything else, the agent record is authoritative — the poller keeps
+    # machine_host/port/user in sync with where the agent actually runs,
+    # whereas the context record can go stale (agent migrated to a new
+    # host, context was never updated). Previously we preferred context
+    # over the agent record and ended up SSH'ing to the OLD host.
+    #
+    # Tunnel case (host=localhost + non-default port, e.g. vdi-wsl at
+    # localhost:3222) is already complete in the agent record — the poller
+    # writes machine_port, so no fallback needed there.
+    need_fallback = (
+        not host                                  # nothing at all on the record
+        or (host in ("localhost", "127.0.0.1")    # localhost at default port
+            and (not port or int(port) == 22))
+    )
+    if need_fallback:
         ctx_name = getattr(agent, "context_name", "")
         if ctx_name:
             ctx = state.context_store.get(ctx_name)
@@ -411,7 +420,7 @@ def stop(
     from cam.cli.app import state
     from cam.cli.formatters import print_error, print_success
 
-    agent = state.agent_store.get(agent_id)
+    agent = resolve_agent(agent_id)
     if not agent:
         print_error(f"Agent not found: {agent_id}")
         raise typer.Exit(1)
@@ -438,7 +447,7 @@ def kill(
     from cam.cli.app import state
     from cam.cli.formatters import print_error, print_success
 
-    agent = state.agent_store.get(agent_id)
+    agent = resolve_agent(agent_id)
     if not agent:
         print_error(f"Agent not found: {agent_id}")
         raise typer.Exit(1)
@@ -470,7 +479,7 @@ def retry(
     from cam.cli.formatters import print_agent_detail, print_error, print_info, print_success
     from cam.core.models import AgentStatus, Context, MachineConfig, TransportType
 
-    agent = state.agent_store.get(agent_id)
+    agent = resolve_agent(agent_id)
     if not agent:
         print_error(f"Agent not found: {agent_id}")
         raise typer.Exit(1)
@@ -527,7 +536,7 @@ def update(
     from cam.cli.app import state
     from cam.cli.formatters import print_agent_detail, print_error, print_info, print_success
 
-    agent = state.agent_store.get(agent_id)
+    agent = resolve_agent(agent_id)
     if not agent:
         print_error(f"Agent not found: {agent_id}")
         raise typer.Exit(1)
@@ -557,8 +566,9 @@ def update(
     for t in untags:
         print_info(f"Removed tag: {t}")
 
-    # Re-fetch to show updated state
-    agent = state.agent_store.get(agent_id)
+    # Re-fetch to show updated state. Use the already-resolved id so the
+    # re-read doesn't depend on the user's name-or-prefix input a second time.
+    agent = state.agent_store.get(str(agent.id))
     if agent:
         print_success(f"Agent {str(agent.id)[:8]} updated")
         print_agent_detail(agent)
