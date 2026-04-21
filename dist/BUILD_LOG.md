@@ -1027,3 +1027,120 @@ a3fc6a9 camc: archive list / info / paths / summary / show
 62bda87 camc: add archive command — one-agent .tar.gz bundle
 ```
 
+## v1.2.0  088df77-dirty 2026-04-20 20:30
+
+- Lines: 6062
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+088df77 camc archive: 3 commands + name lookup + deterministic filename
+bad1557 camc: rework archive summary into a sectioned agent report
+da2a6ed camc: rm no longer archives by default
+a3fc6a9 camc: archive list / info / paths / summary / show
+7ba5d3a camc: rm archives by default
+```
+
+## v1.2.0  088df77-dirty 2026-04-20 20:35
+
+- Lines: 6063
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+088df77 camc archive: 3 commands + name lookup + deterministic filename
+bad1557 camc: rework archive summary into a sectioned agent report
+da2a6ed camc: rm no longer archives by default
+a3fc6a9 camc: archive list / info / paths / summary / show
+7ba5d3a camc: rm archives by default
+```
+
+## v1.2.0  088df77-dirty 2026-04-20 20:35
+
+- Lines: 6067
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+088df77 camc archive: 3 commands + name lookup + deterministic filename
+bad1557 camc: rework archive summary into a sectioned agent report
+da2a6ed camc: rm no longer archives by default
+a3fc6a9 camc: archive list / info / paths / summary / show
+7ba5d3a camc: rm archives by default
+```
+
+## v1.2.0  088df77-dirty 2026-04-20 20:35
+
+- Lines: 6069
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+088df77 camc archive: 3 commands + name lookup + deterministic filename
+bad1557 camc: rework archive summary into a sectioned agent report
+da2a6ed camc: rm no longer archives by default
+a3fc6a9 camc: archive list / info / paths / summary / show
+7ba5d3a camc: rm archives by default
+```
+
+## v1.2.0  088df77-dirty 2026-04-20 20:51
+
+- Lines: 6223
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+088df77 camc archive: 3 commands + name lookup + deterministic filename
+bad1557 camc: rework archive summary into a sectioned agent report
+da2a6ed camc: rm no longer archives by default
+a3fc6a9 camc: archive list / info / paths / summary / show
+7ba5d3a camc: rm archives by default
+```
+
+## v1.2.0  088df77-dirty 2026-04-20 21:16
+
+- Lines: 6288
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+088df77 camc archive: 3 commands + name lookup + deterministic filename
+bad1557 camc: rework archive summary into a sectioned agent report
+da2a6ed camc: rm no longer archives by default
+a3fc6a9 camc: archive list / info / paths / summary / show
+7ba5d3a camc: rm archives by default
+```
+
+## v1.2.0  088df77-dirty 2026-04-20 21:17
+
+- Lines: 6292
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+088df77 camc archive: 3 commands + name lookup + deterministic filename
+bad1557 camc: rework archive summary into a sectioned agent report
+da2a6ed camc: rm no longer archives by default
+a3fc6a9 camc: archive list / info / paths / summary / show
+7ba5d3a camc: rm archives by default
+```
+
+## v1.2.0  088df77-dirty 2026-04-20 21:19
+
+- Lines: 6295
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+088df77 camc archive: 3 commands + name lookup + deterministic filename
+bad1557 camc: rework archive summary into a sectioned agent report
+da2a6ed camc: rm no longer archives by default
+a3fc6a9 camc: archive list / info / paths / summary / show
+7ba5d3a camc: rm archives by default
+```
+
+## v1.2.0  088df77-dirty 2026-04-20 21:19
+
+- Lines: 6295
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+088df77 camc archive: 3 commands + name lookup + deterministic filename
+bad1557 camc: rework archive summary into a sectioned agent report
+da2a6ed camc: rm no longer archives by default
+a3fc6a9 camc: archive list / info / paths / summary / show
+7ba5d3a camc: rm archives by default
+```
+
