@@ -15,6 +15,37 @@ from camc_pkg.utils import compile_pattern
 _EMBEDDED_CONFIGS = {}  # populated by build_camc.py
 
 
+def _load_dev_configs_fallback():
+    """When running camc from the dev source tree (python3 -m camc_pkg or
+    /data/venv/bin/camc from a `pip install -e .`), _EMBEDDED_CONFIGS is
+    empty because build_camc.py is what injects them. Walk up from this
+    module's path to find the repo's src/cam/adapters/configs/ and read
+    the TOML files from disk. Silent no-op outside the dev tree.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    # .../cam/src/camc_pkg/adapters.py → up twice to .../cam/, then into
+    # src/cam/adapters/configs/. build_camc.py uses the same path.
+    cfg_dir = os.path.normpath(
+        os.path.join(here, "..", "cam", "adapters", "configs"))
+    if not os.path.isdir(cfg_dir):
+        return
+    for fname in sorted(os.listdir(cfg_dir)):
+        if not fname.endswith(".toml"):
+            continue
+        try:
+            with open(os.path.join(cfg_dir, fname)) as f:
+                _EMBEDDED_CONFIGS[fname] = f.read()
+        except OSError:
+            pass
+
+
+# Populate from source tree on import when the build-time injection was
+# skipped (dev mode). Only fires if _EMBEDDED_CONFIGS stayed empty — a
+# built single-file camc with injected configs is unaffected.
+if not _EMBEDDED_CONFIGS:
+    _load_dev_configs_fallback()
+
+
 # ===========================================================================
 # Minimal TOML parser (subset: strings, bools, numbers, arrays, tables)
 # ===========================================================================
