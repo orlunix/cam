@@ -1183,3 +1183,55 @@ da2a6ed camc: rm no longer archives by default
 bad1557 camc: rework archive summary into a sectioned agent report
 ```
 
+## v1.2.0  80e2f7a 2026-04-21 09:34
+
+- Lines: 6354
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+80e2f7a camc: load adapter configs from source tree when run from dev
+574935c camc capture: default is now full scrollback, not last 100 lines
+688e7f3 monitor: honest confirm-skip log (no more "-500s remaining")
+571b3d6 camc: archive show dumps whole conversation; summary gets SUMMARY column
+088df77 camc archive: 3 commands + name lookup + deterministic filename
+```
+
+## v1.2.0  80e2f7a 2026-04-21 10:09
+
+- Lines: 6354
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+80e2f7a camc: load adapter configs from source tree when run from dev
+574935c camc capture: default is now full scrollback, not last 100 lines
+688e7f3 monitor: honest confirm-skip log (no more "-500s remaining")
+571b3d6 camc: archive show dumps whole conversation; summary gets SUMMARY column
+088df77 camc archive: 3 commands + name lookup + deterministic filename
+```
+
+## v1.2.0  80e2f7a-dirty 2026-04-22 09:30
+
+- Lines: 6368
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+80e2f7a camc: load adapter configs from source tree when run from dev
+574935c camc capture: default is now full scrollback, not last 100 lines
+688e7f3 monitor: honest confirm-skip log (no more "-500s remaining")
+571b3d6 camc: archive show dumps whole conversation; summary gets SUMMARY column
+088df77 camc archive: 3 commands + name lookup + deterministic filename
+```
+
+## v1.2.0  80e2f7a-dirty 2026-04-22 09:31
+
+- Lines: 6368
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+80e2f7a camc: load adapter configs from source tree when run from dev
+574935c camc capture: default is now full scrollback, not last 100 lines
+688e7f3 monitor: honest confirm-skip log (no more "-500s remaining")
+571b3d6 camc: archive show dumps whole conversation; summary gets SUMMARY column
+088df77 camc archive: 3 commands + name lookup + deterministic filename
+```
+
