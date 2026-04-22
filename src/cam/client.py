@@ -222,6 +222,7 @@ class AdapterConfig(object):
         self.ready_pattern = compile_pattern(rp, launch.get("ready_flags")) if rp else None
         self.prompt_after_launch = launch.get("prompt_after_launch", False)
         self.startup_wait = float(launch.get("startup_wait", 2.0))
+        self.prompt_submit_delay = float(launch.get("prompt_submit_delay", 0.0))
 
         state_cfg = config.get("state", {})
         self.state_strategy = state_cfg.get("strategy", "first")
