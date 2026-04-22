@@ -1,4 +1,4 @@
-# Codex adapter — interactive mode (no --full-auto, blocked by OpenAI cloud).
+# Codex adapter — interactive mode.
 # Auto-confirm handles the initial trust dialog and approval prompts.
 #
 # TUI markers:
@@ -11,9 +11,12 @@ name = "codex"
 display_name = "OpenAI Codex"
 
 [launch]
-command = ["codex", "--full-auto", "{prompt}"]
-prompt_after_launch = false
-startup_wait = 0.0
+command = ["codex"]
+prompt_after_launch = true
+startup_wait = 20.0
+ready_pattern = "^[›>]"
+ready_flags = ["MULTILINE"]
+prompt_submit_delay = 0.5
 
 [state]
 strategy = "first"

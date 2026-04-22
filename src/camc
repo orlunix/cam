@@ -339,7 +339,7 @@ probe_cooldown = 5.0          # seconds between probes
 exit_action = "kill_session"  # "kill_session", "send_exit", or "mark_only"
 exit_command = "/exit"        # command to send if exit_action = "send_exit"
 """,
-    "codex.toml": r"""# Codex adapter — interactive mode (no --full-auto, blocked by OpenAI cloud).
+    "codex.toml": r"""# Codex adapter — interactive mode.
 # Auto-confirm handles the initial trust dialog and approval prompts.
 #
 # TUI markers:
@@ -352,9 +352,12 @@ name = "codex"
 display_name = "OpenAI Codex"
 
 [launch]
-command = ["codex", "--full-auto", "{prompt}"]
-prompt_after_launch = false
-startup_wait = 0.0
+command = ["codex"]
+prompt_after_launch = true
+startup_wait = 20.0
+ready_pattern = "^[›>]"
+ready_flags = ["MULTILINE"]
+prompt_submit_delay = 0.5
 
 [state]
 strategy = "first"
@@ -671,6 +674,7 @@ class AdapterConfig(object):
         self.ready_pattern = compile_pattern(rp, launch.get("ready_flags")) if rp else None
         self.prompt_after_launch = launch.get("prompt_after_launch", False)
         self.startup_wait = float(launch.get("startup_wait", 2.0))
+        self.prompt_submit_delay = float(launch.get("prompt_submit_delay", 0.0))
 
         state_cfg = config.get("state", {})
         self.state_strategy = state_cfg.get("strategy", "first")
@@ -2680,7 +2684,12 @@ def _launch_agent(task, workdir):
             if is_ready_for_input(output, config):
                 break
         if prompt.strip():
-            tmux_send_input(session, prompt, send_enter=True)
+            if config.prompt_submit_delay > 0:
+                tmux_send_input(session, prompt, send_enter=False)
+                time.sleep(config.prompt_submit_delay)
+                tmux_send_key(session, "Enter")
+            else:
+                tmux_send_input(session, prompt, send_enter=True)
 
     store = AgentStore()
     import socket as _sock
@@ -3220,7 +3229,12 @@ def cmd_run(args):
             if is_ready_for_input(output, config):
                 break
         if prompt.strip():
-            tmux_send_input(session, prompt, send_enter=True)
+            if config.prompt_submit_delay > 0:
+                tmux_send_input(session, prompt, send_enter=False)
+                time.sleep(config.prompt_submit_delay)
+                tmux_send_key(session, "Enter")
+            else:
+                tmux_send_input(session, prompt, send_enter=True)
 
     # Spawn background monitor
     try:

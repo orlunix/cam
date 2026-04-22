@@ -12,6 +12,8 @@ import time
 import socket as _sock
 from uuid import uuid4, uuid5, NAMESPACE_DNS as _UUID_NS
 
+from camc_pkg import __build__
+
 
 def _ensure_logs_on_scratch():
     """Move ~/.cam/logs to scratch if available. Silent, idempotent."""
@@ -424,7 +426,12 @@ def cmd_run(args):
             if is_ready_for_input(output, config):
                 break
         if prompt.strip():
-            tmux_send_input(session, prompt, send_enter=True)
+            if config.prompt_submit_delay > 0:
+                tmux_send_input(session, prompt, send_enter=False)
+                time.sleep(config.prompt_submit_delay)
+                tmux_send_key(session, "Enter")
+            else:
+                tmux_send_input(session, prompt, send_enter=True)
 
     # Spawn background monitor
     try:
