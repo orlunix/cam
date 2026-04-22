@@ -213,7 +213,12 @@ def _launch_agent(task, workdir):
             if is_ready_for_input(output, config):
                 break
         if prompt.strip():
-            tmux_send_input(session, prompt, send_enter=True)
+            if config.prompt_submit_delay > 0:
+                tmux_send_input(session, prompt, send_enter=False)
+                time.sleep(config.prompt_submit_delay)
+                tmux_send_key(session, "Enter")
+            else:
+                tmux_send_input(session, prompt, send_enter=True)
 
     store = AgentStore()
     import socket as _sock
