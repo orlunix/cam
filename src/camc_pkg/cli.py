@@ -1779,14 +1779,24 @@ def cmd_rm(args):
     if session:
         tmux_kill_session(session)
         # tmux usually removes its socket when the server exits, but on some
-        # filesystems (NFS) the file lingers. Unlink explicitly so heal's
-        # orphan scan doesn't re-adopt the dead session later.
+        # filesystems (NFS) the file lingers. Unlink explicitly — but only
+        # after confirming no tmux server is still bound to that path. If
+        # kill didn't actually take (permissions, stuck server), leaving
+        # the socket is safer than orphaning a zombie.
+        from camc_pkg.transport import _tmux_server_pid_for_socket
         sock_path = _find_tmux_socket(session)
         if sock_path:
-            try:
-                os.unlink(sock_path)
-            except OSError:
-                pass
+            pid = _tmux_server_pid_for_socket(sock_path)
+            if pid:
+                log.warning(
+                    "rm %s: tmux server pid=%d still bound to %s; "
+                    "leaving socket (kill %d manually to free)",
+                    a["id"], pid, sock_path, pid)
+            else:
+                try:
+                    os.unlink(sock_path)
+                except OSError:
+                    pass
     store.remove(a["id"])
     print("Removed agent %s" % a["id"])
 
@@ -2422,6 +2432,71 @@ def _kill_all_monitors():
     return killed
 
 
+def cmd_zombie(args):
+    """List tmux servers whose socket file is gone (or report & optionally kill).
+
+    Symptom: `tmux attach` can't reach the session because the `.sock` file
+    was unlinked, but the server process is still running with an open but
+    now-unreachable listen socket. This happens when heal unlinks a socket
+    under transient `tmux has-session` timeouts. The fix in transport.py /
+    cli.py unlink guards prevents new zombies; this command cleans up
+    existing ones.
+    """
+    import subprocess as _sub
+
+    zombies = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open("/proc/%s/cmdline" % entry, "rb") as f:
+                cmdline = f.read().replace(b"\x00", b" ").decode(
+                    "utf-8", errors="replace").strip()
+        except (OSError, IOError):
+            continue
+        if "tmux" not in cmdline:
+            continue
+        # Extract -S path from argv
+        parts = cmdline.split()
+        sock_path = None
+        for i, p in enumerate(parts):
+            if p == "-S" and i + 1 < len(parts):
+                sock_path = parts[i + 1]
+                break
+        if not sock_path:
+            continue
+        if os.path.exists(sock_path):
+            continue  # socket file still there — not a zombie
+        # Server is alive (otherwise we wouldn't see the /proc entry),
+        # but its socket file is gone → zombie.
+        try:
+            with open("/proc/%s/status" % entry) as f:
+                etime_line = f.read()
+        except OSError:
+            etime_line = ""
+        zombies.append({
+            "pid": int(entry),
+            "sock": sock_path,
+            "cmdline": cmdline,
+        })
+
+    if not zombies:
+        print("No zombie tmux servers.")
+        return
+    print("%d zombie tmux server(s):" % len(zombies))
+    for z in zombies:
+        print("  pid=%d  sock=%s" % (z["pid"], z["sock"]))
+        print("    cmdline: %s" % _trunc(z["cmdline"], 200))
+
+    if getattr(args, "kill", False):
+        for z in zombies:
+            try:
+                os.kill(z["pid"], 15)  # SIGTERM
+                print("  → killed %d" % z["pid"])
+            except Exception as e:
+                print("  → kill %d failed: %s" % (z["pid"], e))
+
+
 def cmd_heal(args):
     """Check running agents and restart dead monitor daemons."""
     upgrade = getattr(args, "upgrade", False)
@@ -2554,12 +2629,27 @@ def cmd_heal(args):
             # and tmux would silently say "no sessions". The agent record
             # stays around so the user can see history / run `camc rm`;
             # only the dangling socket is removed.
+            #
+            # GUARD: if a tmux server process is still bound to this socket
+            # (we got here because tmux_session_exists said False, but that
+            # can false-negative on transient timeouts / NFS stalls), DO
+            # NOT unlink. Orphaning a running server turns it into a zombie
+            # nobody can ever reach. Log loudly so the user can kill it.
+            from camc_pkg.transport import _tmux_server_pid_for_socket
             sock_path = _find_tmux_socket(session)
             if sock_path:
-                try:
-                    os.unlink(sock_path)
-                except OSError:
-                    pass
+                pid = _tmux_server_pid_for_socket(sock_path)
+                if pid:
+                    log.warning(
+                        "heal %s: tmux_session_exists said dead but tmux server "
+                        "pid=%d still bound to %s — NOT unlinking "
+                        "(investigate and kill %d if truly dead)",
+                        aid, pid, sock_path, pid)
+                else:
+                    try:
+                        os.unlink(sock_path)
+                    except OSError:
+                        pass
             print("  %s (%s): session dead, marked %s" % (name, aid, status))
             continue
 
@@ -2737,15 +2827,27 @@ def cmd_heal(args):
             if not fname.startswith("cam-") or not fname.endswith(".sock"):
                 continue
             session = fname[:-5]  # strip .sock → "cam-abc12345"
+            sock_full = os.path.join(sock_dir, fname)
             # A socket is stale whenever tmux has no live server behind it,
-            # regardless of whether an agent record still points at it.
-            # This catches terminal agents (completed/killed/failed) whose
-            # record survived but whose tmux died — without cleanup, the next
-            # `camc attach` would hand the dead .sock to tmux and get "no
-            # sessions" back with no hint why.
+            # regardless of whether an agent record still points at it. BUT
+            # `tmux_session_exists` can false-negative on transient errors
+            # (ssh to remote socket timeout, NFS stall, permission glitch).
+            # Double-check with a process scan: if any tmux server argv
+            # references this exact socket path, it IS alive, socket is NOT
+            # stale, do NOT unlink. Previously we orphaned running servers
+            # this way — they'd keep running as zombies with no reachable
+            # filesystem endpoint.
             if not tmux_session_exists(session):
+                from camc_pkg.transport import _tmux_server_pid_for_socket
+                live_pid = _tmux_server_pid_for_socket(sock_full)
+                if live_pid:
+                    log.warning(
+                        "heal orphan-scan: tmux_session_exists said dead for %s "
+                        "but server pid=%d is bound to %s — NOT unlinking",
+                        session, live_pid, sock_full)
+                    continue
                 try:
-                    os.unlink(os.path.join(sock_dir, fname))
+                    os.unlink(sock_full)
                     stale_cleaned += 1
                 except OSError:
                     pass
@@ -3489,6 +3591,10 @@ examples:
     heal_p = sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
     heal_p.add_argument("--upgrade", action="store_true", help="Kill ALL monitors and restart with current camc binary")
 
+    # zombie — find tmux servers whose socket file was unlinked
+    zomb_p = sub.add_parser("zombie", help="Find (and optionally kill) tmux servers with unlinked sockets")
+    zomb_p.add_argument("--kill", action="store_true", help="SIGTERM each zombie server")
+
     # machine
     mp = sub.add_parser("machine", help="Manage remote machines")
     msub = mp.add_subparsers(dest="machine_cmd")
@@ -3591,6 +3697,7 @@ examples:
         "send": cmd_send,
         "key": cmd_key,
         "heal": cmd_heal,
+        "zombie": cmd_zombie,
         "machine": cmd_machine,
         "context": cmd_context,
         "sync": cmd_sync,
