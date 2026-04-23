@@ -1802,10 +1802,15 @@ def cmd_rm(args):
 
 
 def cmd_prune(args):
-    """Remove all non-running agents (stopped, killed, completed, failed).
+    """Remove non-running agent records AND orphan tmux servers.
 
-    Skips agents whose tmux session is still alive — they may be
-    interactive agents that just finished a task but are still usable.
+    Two-phase cleanup:
+      1. agents.json: drop non-running entries. If tmux session is still
+         alive, restore status to running (interactive agent).
+      2. /proc scan: any tmux server not referenced by a live agent record
+         is orphaned (rm/stop/kill should have taken it down but didn't, or
+         it was leaked by an old bug). SIGTERM the process and unlink its
+         socket.
     """
     store = AgentStore()
     agents = store.list()
@@ -1813,7 +1818,6 @@ def cmd_prune(args):
     skipped = 0
     for a in agents:
         if a.get("status") not in ("running", "starting", "pending"):
-            # Check if tmux session is still alive before pruning
             session = _sf(a, "tmux_session")
             if session:
                 sock = _find_tmux_socket(session)
@@ -1821,18 +1825,61 @@ def cmd_prune(args):
                     cmd = ["tmux", "-S", sock, "has-session", "-t", session]
                     try:
                         subprocess.run(cmd, check=True, capture_output=True, timeout=3)
-                        # Session alive — don't prune, fix status instead
                         a["status"] = "running"
                         store.save(a)
                         skipped += 1
                         continue
                     except Exception:
-                        pass  # Session dead, safe to prune
+                        pass
             store.remove(a["id"])
             removed += 1
+
+    live_sessions = set()
+    for a in store.list():
+        s = _sf(a, "tmux_session")
+        if s:
+            live_sessions.add(s)
+
+    orphan_killed = 0
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open("/proc/%s/cmdline" % entry, "rb") as f:
+                cmdline = f.read().replace(b"\x00", b" ").decode(
+                    "utf-8", errors="replace").strip()
+        except (OSError, IOError):
+            continue
+        if "tmux" not in cmdline or "new-session" not in cmdline:
+            continue
+        parts = cmdline.split()
+        sock_path = None
+        session_name = None
+        for i, p in enumerate(parts):
+            if p == "-S" and i + 1 < len(parts):
+                sock_path = parts[i + 1]
+            elif p == "-s" and i + 1 < len(parts):
+                session_name = parts[i + 1]
+        if not session_name or not session_name.startswith("cam-"):
+            continue
+        if session_name in live_sessions:
+            continue
+        try:
+            os.kill(int(entry), 15)
+            orphan_killed += 1
+        except (OSError, ValueError):
+            continue
+        if sock_path and os.path.exists(sock_path):
+            try:
+                os.unlink(sock_path)
+            except OSError:
+                pass
+
     msg = "Pruned %d non-running agent%s" % (removed, "s" if removed != 1 else "")
     if skipped:
         msg += " (%d restored to running — tmux session still alive)" % skipped
+    if orphan_killed:
+        msg += "; killed %d orphan tmux server%s" % (orphan_killed, "s" if orphan_killed != 1 else "")
     print(msg)
 
 
@@ -2430,71 +2477,6 @@ def _kill_all_monitors():
     except Exception:
         pass
     return killed
-
-
-def cmd_zombie(args):
-    """List tmux servers whose socket file is gone (or report & optionally kill).
-
-    Symptom: `tmux attach` can't reach the session because the `.sock` file
-    was unlinked, but the server process is still running with an open but
-    now-unreachable listen socket. This happens when heal unlinks a socket
-    under transient `tmux has-session` timeouts. The fix in transport.py /
-    cli.py unlink guards prevents new zombies; this command cleans up
-    existing ones.
-    """
-    import subprocess as _sub
-
-    zombies = []
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
-        try:
-            with open("/proc/%s/cmdline" % entry, "rb") as f:
-                cmdline = f.read().replace(b"\x00", b" ").decode(
-                    "utf-8", errors="replace").strip()
-        except (OSError, IOError):
-            continue
-        if "tmux" not in cmdline:
-            continue
-        # Extract -S path from argv
-        parts = cmdline.split()
-        sock_path = None
-        for i, p in enumerate(parts):
-            if p == "-S" and i + 1 < len(parts):
-                sock_path = parts[i + 1]
-                break
-        if not sock_path:
-            continue
-        if os.path.exists(sock_path):
-            continue  # socket file still there — not a zombie
-        # Server is alive (otherwise we wouldn't see the /proc entry),
-        # but its socket file is gone → zombie.
-        try:
-            with open("/proc/%s/status" % entry) as f:
-                etime_line = f.read()
-        except OSError:
-            etime_line = ""
-        zombies.append({
-            "pid": int(entry),
-            "sock": sock_path,
-            "cmdline": cmdline,
-        })
-
-    if not zombies:
-        print("No zombie tmux servers.")
-        return
-    print("%d zombie tmux server(s):" % len(zombies))
-    for z in zombies:
-        print("  pid=%d  sock=%s" % (z["pid"], z["sock"]))
-        print("    cmdline: %s" % _trunc(z["cmdline"], 200))
-
-    if getattr(args, "kill", False):
-        for z in zombies:
-            try:
-                os.kill(z["pid"], 15)  # SIGTERM
-                print("  → killed %d" % z["pid"])
-            except Exception as e:
-                print("  → kill %d failed: %s" % (z["pid"], e))
 
 
 def cmd_heal(args):
@@ -3539,7 +3521,7 @@ examples:
             ar_sub._choices_actions.remove(_act)
 
     # prune
-    sub.add_parser("prune", help="Remove all non-running agents")
+    sub.add_parser("prune", help="Remove non-running agents + kill orphan tmux servers")
 
     # reboot / migrate
     rb = sub.add_parser("reboot", help="Restart agent with session resume (alias for migrate)")
@@ -3590,10 +3572,6 @@ examples:
     # heal
     heal_p = sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
     heal_p.add_argument("--upgrade", action="store_true", help="Kill ALL monitors and restart with current camc binary")
-
-    # zombie — find tmux servers whose socket file was unlinked
-    zomb_p = sub.add_parser("zombie", help="Find (and optionally kill) tmux servers with unlinked sockets")
-    zomb_p.add_argument("--kill", action="store_true", help="SIGTERM each zombie server")
 
     # machine
     mp = sub.add_parser("machine", help="Manage remote machines")
@@ -3697,7 +3675,6 @@ examples:
         "send": cmd_send,
         "key": cmd_key,
         "heal": cmd_heal,
-        "zombie": cmd_zombie,
         "machine": cmd_machine,
         "context": cmd_context,
         "sync": cmd_sync,
