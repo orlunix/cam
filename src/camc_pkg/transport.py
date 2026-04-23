@@ -17,6 +17,36 @@ def _find_tmux_socket(session_id):
     return None
 
 
+def _tmux_server_pid_for_socket(sock_path):
+    """Return PID of a tmux server whose argv references this socket path,
+    or None. Used to guard os.unlink calls: a socket file may be missing
+    from ls while a tmux server process is still bound to it (then tmux
+    becomes a zombie unreachable via filesystem). Always check ps before
+    unlinking so we don't orphan a running server.
+    """
+    if not sock_path:
+        return None
+    try:
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                with open("/proc/%s/cmdline" % entry, "rb") as f:
+                    cmdline = f.read().replace(b"\x00", b" ").decode(
+                        "utf-8", errors="replace")
+            except (OSError, IOError):
+                continue
+            if "tmux" not in cmdline or sock_path not in cmdline:
+                continue
+            try:
+                return int(entry)
+            except ValueError:
+                return None
+    except OSError:
+        pass
+    return None
+
+
 def _tmux_base(session_id):
     socket = _find_tmux_socket(session_id)
     return ["tmux", "-u", "-S", socket] if socket else ["tmux"]
