@@ -87,6 +87,31 @@ from camc_pkg.formatters import (
 _CAMC_SCRIPT = os.path.abspath(sys.argv[0]) if os.path.isfile(sys.argv[0]) else None
 
 
+def _agent_tool(agent):
+    task = agent.get("task")
+    if isinstance(task, dict) and task.get("tool"):
+        return task.get("tool")
+    return agent.get("tool", "")
+
+
+def _tool_prompt_submit_delay(tool):
+    if not tool:
+        return 0.0
+    try:
+        return _load_config(tool).prompt_submit_delay
+    except Exception:
+        return 0.0
+
+
+def _send_with_submit_delay(session_id, text, send_enter=True, submit_delay=0.0):
+    if submit_delay > 0 and send_enter and text:
+        if not tmux_send_input(session_id, text, send_enter=False):
+            return False
+        time.sleep(submit_delay)
+        return tmux_send_key(session_id, "Enter")
+    return tmux_send_input(session_id, text, send_enter=send_enter)
+
+
 def cmd_init(args):
     """Interactive setup wizard."""
     print("camc v%s — Coding Agent Manager (standalone)" % __version__)
@@ -3214,7 +3239,10 @@ def cmd_send(args):
         print("Agent has no tmux session", file=sys.stderr)
         sys.exit(1)
     send_enter = not getattr(args, "no_enter", False)
-    tmux_send_input(session, args.text, send_enter=send_enter)
+    tool = _agent_tool(a) if a else ""
+    submit_delay = _tool_prompt_submit_delay(tool)
+    _send_with_submit_delay(session, args.text, send_enter=send_enter,
+                            submit_delay=submit_delay)
     print("Sent.")
 
 
