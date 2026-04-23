@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -34,6 +35,7 @@ from cam.transport.base import Transport
 from cam.transport.factory import TransportFactory
 
 logger = logging.getLogger(__name__)
+_CONFIGS_DIR = Path(__file__).parent.parent / "adapters" / "configs"
 
 
 class AgentManagerError(Exception):
@@ -756,15 +758,30 @@ class AgentManager:
         self, agent_id: str, text: str, *, send_enter: bool = True
     ) -> bool:
         """Send text input to an agent via camc."""
-        _agent, camc_id, delegate = self._resolve_agent_delegate(agent_id)
-        return await asyncio.to_thread(
-            delegate.send_input, camc_id, text, send_enter
-        )
+        agent, camc_id, delegate = self._resolve_agent_delegate(agent_id)
+        submit_delay = self._tool_prompt_submit_delay(agent.task.tool)
+        if submit_delay > 0 and send_enter and text:
+            ok = await asyncio.to_thread(delegate.send_input, camc_id, text, False)
+            if not ok:
+                return False
+            await asyncio.sleep(submit_delay)
+            return await asyncio.to_thread(delegate.send_key, camc_id, "Enter")
+        return await asyncio.to_thread(delegate.send_input, camc_id, text, send_enter)
 
     async def send_key(self, agent_id: str, key: str) -> bool:
         """Send a special key to an agent via camc."""
         _agent, camc_id, delegate = self._resolve_agent_delegate(agent_id)
         return await asyncio.to_thread(delegate.send_key, camc_id, key)
+
+    def _tool_prompt_submit_delay(self, tool: str) -> float:
+        if not tool:
+            return 0.0
+        try:
+            with open(_CONFIGS_DIR / f"{tool}.toml", "rb") as f:
+                data = tomllib.load(f)
+            return float(data.get("launch", {}).get("prompt_submit_delay", 0.0))
+        except Exception:
+            return 0.0
 
     async def _sync_toml_configs(
         self,
