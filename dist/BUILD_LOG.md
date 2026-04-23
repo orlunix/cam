@@ -1235,3 +1235,29 @@ bad1557 camc: rework archive summary into a sectioned agent report
 088df77 camc archive: 3 commands + name lookup + deterministic filename
 ```
 
+## v1.2.0  b9295ee 2026-04-22 09:34
+
+- Lines: 6368
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+b9295ee camc: fix codex launch and prompt submission
+80e2f7a camc: load adapter configs from source tree when run from dev
+574935c camc capture: default is now full scrollback, not last 100 lines
+688e7f3 monitor: honest confirm-skip log (no more "-500s remaining")
+571b3d6 camc: archive show dumps whole conversation; summary gets SUMMARY column
+```
+
+## v1.2.0  50f37a1-dirty 2026-04-23 10:20
+
+- Lines: 6530
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+13cd7ff camc: apply prompt submit delay to send paths
+b9295ee camc: fix codex launch and prompt submission
+80e2f7a camc: load adapter configs from source tree when run from dev
+574935c camc capture: default is now full scrollback, not last 100 lines
+688e7f3 monitor: honest confirm-skip log (no more "-500s remaining")
+```
+
