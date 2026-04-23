@@ -377,6 +377,15 @@ def tmux_send_key(session_id, key):
         return False
 
 
+def _send_with_submit_delay(session_id, text, send_enter=True, submit_delay=0.0):
+    if submit_delay > 0 and send_enter and text:
+        if not tmux_send_input(session_id, text, send_enter=False):
+            return False
+        time.sleep(submit_delay)
+        return tmux_send_key(session_id, "Enter")
+    return tmux_send_input(session_id, text, send_enter=send_enter)
+
+
 def tmux_kill_session(session_id):
     socket = _find_tmux_socket(session_id)
     if socket:
@@ -725,7 +734,12 @@ class ClientMonitor(object):
     def _execute_command(self, cmd):
         cmd_type = cmd.get("type")
         if cmd_type == "input":
-            tmux_send_input(self.session_id, cmd.get("text", ""), send_enter=cmd.get("send_enter", True))
+            _send_with_submit_delay(
+                self.session_id,
+                cmd.get("text", ""),
+                send_enter=cmd.get("send_enter", True),
+                submit_delay=self.config.prompt_submit_delay,
+            )
         elif cmd_type == "key":
             tmux_send_key(self.session_id, cmd.get("key", ""))
         elif cmd_type == "stop":
@@ -839,6 +853,34 @@ class AgentStore(object):
             return new
         self._modify(_do)
         return found[0]
+
+
+def _agent_tool(agent):
+    task = agent.get("task")
+    if isinstance(task, dict) and task.get("tool"):
+        return task.get("tool")
+    return agent.get("tool", "")
+
+
+def _tool_prompt_submit_delay(tool):
+    if not tool:
+        return 0.0
+    try:
+        toml_path = os.path.join(CONFIGS_DIR, "%s.toml" % tool)
+        return AdapterConfig(load_toml(toml_path)).prompt_submit_delay
+    except Exception:
+        return 0.0
+
+
+def _find_agent_by_session_or_id(session_or_id):
+    store = AgentStore()
+    agent = store.get(session_or_id)
+    if agent:
+        return agent
+    for candidate in store.list():
+        if candidate.get("tmux_session") == session_or_id or candidate.get("session") == session_or_id:
+            return candidate
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -996,7 +1038,14 @@ def _cmd_session_send():
         _json_out({"ok": False, "error": "Missing --id"})
         sys.exit(1)
 
-    ok = tmux_send_input(sid, text, send_enter=not no_enter)
+    agent = _find_agent_by_session_or_id(sid)
+    tool = _agent_tool(agent) if agent else ""
+    ok = _send_with_submit_delay(
+        sid,
+        text,
+        send_enter=not no_enter,
+        submit_delay=_tool_prompt_submit_delay(tool),
+    )
     _json_out({"ok": ok})
 
 
