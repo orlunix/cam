@@ -1352,3 +1352,29 @@ ecb5de4 tmux: preflight version gate + 150ms flush before Enter
 3a7f6fc camc: guard socket unlinks against live tmux servers, add 'camc zombie'
 ```
 
+## v1.2.0  22650e4-dirty 2026-04-23 22:29
+
+- Lines: 6590
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+22650e4 preflight: skip tool-binary check when env_setup is set
+f24d910 tmux: pin to /usr/bin/tmux on Rocky 8.9, simplify preflight
+ecb5de4 tmux: preflight version gate + 150ms flush before Enter
+4ad7399 Align cam/camc prune semantics around --orphans
+3ff7dd8 Fold zombie cleanup into camc prune
+```
+
+## v1.2.0  22650e4-dirty 2026-04-23 22:30
+
+- Lines: 6594
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+22650e4 preflight: skip tool-binary check when env_setup is set
+f24d910 tmux: pin to /usr/bin/tmux on Rocky 8.9, simplify preflight
+ecb5de4 tmux: preflight version gate + 150ms flush before Enter
+4ad7399 Align cam/camc prune semantics around --orphans
+3ff7dd8 Fold zombie cleanup into camc prune
+```
+
