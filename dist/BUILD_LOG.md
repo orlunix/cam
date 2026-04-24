@@ -1261,3 +1261,16 @@ b9295ee camc: fix codex launch and prompt submission
 688e7f3 monitor: honest confirm-skip log (no more "-500s remaining")
 ```
 
+## v1.2.0  3ff7dd8-dirty 2026-04-23 19:17
+
+- Lines: 6557
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+3ff7dd8 Fold zombie cleanup into camc prune
+3a7f6fc camc: guard socket unlinks against live tmux servers, add 'camc zombie'
+13cd7ff camc: apply prompt submit delay to send paths
+b9295ee camc: fix codex launch and prompt submission
+80e2f7a camc: load adapter configs from source tree when run from dev
+```
+
