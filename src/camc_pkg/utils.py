@@ -56,7 +56,7 @@ def compile_pattern(pattern, flags=None):
 # Subprocess helper (3.6 compat)
 # ---------------------------------------------------------------------------
 
-def _run(args, timeout=5, check=False):
+def _run(args, timeout=15, check=False):
     try:
         proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, _ = proc.communicate(timeout=timeout)
