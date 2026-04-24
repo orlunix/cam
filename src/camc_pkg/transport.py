@@ -112,6 +112,14 @@ def tmux_send_input(session_id, text, send_enter=True):
         if text:
             _run(base + ["send-keys", "-t", target, "-l", "--", text], check=True)
         if send_enter:
+            # Brief pause so the literal text is flushed into the pane
+            # buffer before Enter arrives. On some tmux builds (notably
+            # older ones over slow NFS/SSH) back-to-back subprocess
+            # send-keys can race, and Enter gets swallowed before the
+            # text lands — the prompt stays half-typed.
+            if text:
+                import time as _t
+                _t.sleep(0.15)
             _run(base + ["send-keys", "-t", target, "Enter"], check=True)
         return True
     except Exception as e:
@@ -187,11 +195,14 @@ def create_tmux_session(session_id, command, workdir, env_setup=None, inherit_en
                 return False
             _run(["tmux", "-u", "-S", socket, "set-option", "-t", session_id,
                   "history-limit", "50000"])
-            # Send the command via send-keys
+            # Send the command via send-keys. Small pause before Enter
+            # so the literal text flushes before Enter races in.
             inner_cmd = " ".join(shlex.quote(arg) for arg in command)
             target = "%s:0.0" % session_id
             _run(["tmux", "-u", "-S", socket, "send-keys", "-t", target,
                   "-l", "--", inner_cmd])
+            import time as _t
+            _t.sleep(0.15)
             _run(["tmux", "-u", "-S", socket, "send-keys", "-t", target, "Enter"])
             return True
         except subprocess.TimeoutExpired:

@@ -190,8 +190,12 @@ class LocalTransport(Transport):
             if not success:
                 return False
 
-        # Send Enter key separately if requested
+        # Send Enter key separately if requested. Short pause so the
+        # literal text has flushed before Enter lands — some tmux builds
+        # drop Enter if it arrives in the same tick as the -l payload.
         if send_enter:
+            if text:
+                await asyncio.sleep(0.15)
             enter_args = ["send-keys", "-t", target, "Enter"]
             success, _ = await self._run_tmux(enter_args, socket)
 
