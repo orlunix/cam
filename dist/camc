@@ -27,7 +27,7 @@ import time
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "ecb5de4-dirty 2026-04-23 20:28"
+__build__ = "f24d910-dirty 2026-04-23 22:02"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -3155,18 +3155,14 @@ def _preflight(tool, tool_binary, workdir, env_setup=None):
         except Exception:
             pass  # unparseable — don't block; launch will surface any real issue
 
-    # Tool binary in PATH (with env_setup respected for custom PATH)
-    if tool_binary:
-        if env_setup:
-            ok = subprocess.run(
-                ["bash", "-lc", "%s && command -v %s" % (env_setup, tool_binary)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3,
-            ).returncode == 0
-        else:
-            ok = bool(shutil.which(tool_binary))
-        if not ok:
-            hint = _TOOL_HINTS.get(tool, "ensure '%s' is in PATH" % tool_binary)
-            issues.append(("error", "'%s' not found. Install: %s" % (tool_binary, hint)))
+    # Tool binary in PATH. When env_setup is configured the caller has
+    # taken responsibility for PATH inside tmux — don't re-run login
+    # shell here (expensive on NFS-heavy hosts like pdx-110). If the
+    # binary is truly missing, the tmux session will exit and surface
+    # the real error immediately.
+    if tool_binary and not env_setup and not shutil.which(tool_binary):
+        hint = _TOOL_HINTS.get(tool, "ensure '%s' is in PATH" % tool_binary)
+        issues.append(("error", "'%s' not found. Install: %s" % (tool_binary, hint)))
 
     # workdir accessible
     try:
