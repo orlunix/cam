@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -266,6 +267,29 @@ def _agent_to_cam_json(a):
     }
 
 
+def _tmux_version(tmux_path):
+    """Parse `tmux -V` → (major, minor, patch, raw_string).
+
+    tmux versions can look like:
+      tmux 3.3a        → (3, 3, 'a')  — patch letter
+      tmux 2.7         → (2, 7, '')
+      tmux 3.4         → (3, 4, '')
+      tmux next-3.4    → (3, 4, '')
+      tmux master      → (None, None, None)
+    The patch letter goes up alphabetically (3.3 → 3.3a → 3.3b).
+    """
+    try:
+        out = subprocess.check_output(
+            [tmux_path, "-V"], stderr=subprocess.STDOUT, timeout=3
+        ).decode(errors="replace").strip()
+    except Exception:
+        return (None, None, None, "")
+    m = re.search(r"(\d+)\.(\d+)([a-z]*)", out)
+    if not m:
+        return (None, None, None, out)
+    return (int(m.group(1)), int(m.group(2)), m.group(3) or "", out)
+
+
 def _preflight(tool, tool_binary, workdir, env_setup=None):
     """Run environment checks before launching an agent.
 
@@ -274,9 +298,27 @@ def _preflight(tool, tool_binary, workdir, env_setup=None):
     """
     issues = []
 
-    # 1. tmux available?
-    if not shutil.which("tmux"):
+    # 1. tmux available and new enough?
+    # We lean on two flag combos that have a history of changing:
+    #   - `send-keys -l`               (literal mode, added in tmux 1.9)
+    #   - `capture-pane -p -J -a`      (join wrapped lines + alt-screen
+    #                                   fallback; `-a` is 2.4+)
+    # Below 2.4 the alt-screen fallback silently returns empty, which
+    # breaks Claude's "switch to alt buffer during streaming" case.
+    tmux_path = shutil.which("tmux")
+    if not tmux_path:
         issues.append(("error", "tmux not found in PATH. Install: apt install tmux / brew install tmux"))
+    else:
+        ver_major, ver_minor, ver_patch, ver_str = _tmux_version(tmux_path)
+        if ver_major is None:
+            issues.append(("warn", "tmux version unparseable (got %r); camc assumes >= 2.4" % ver_str))
+        elif (ver_major, ver_minor) < (2, 4):
+            issues.append((
+                "error",
+                "tmux %s is too old — camc needs >= 2.4 for "
+                "'send-keys -l', 'send-keys ... Enter', and "
+                "'capture-pane -a'. Upgrade: apt install tmux / "
+                "brew upgrade tmux" % ver_str))
 
     # 2. Tool binary in PATH? Skip if env_setup is configured — that script
     # will set PATH inside tmux, so the caller's PATH is irrelevant.
