@@ -688,9 +688,15 @@ def prune(
                     host=h or None, user=u or None, port=port)
                 rc, out = delegate._run(["prune"] + camc_flags)
                 pruned += 1
-                out = out.strip() if out else ""
-                if out:
-                    print_info(f"[{label}] {out}")
+                # Collapse the camc dry-run output (can be hundreds of
+                # "would remove" lines) to just the summary tail. The
+                # user wanted a quick per-machine view, not a wall of
+                # paths. Use --verbose or run camc prune directly for
+                # full detail.
+                tail_line = (out.strip().splitlines()[-1]
+                             if out and out.strip() else "")
+                if tail_line:
+                    print_info(f"{label}: {tail_line}")
                 else:
                     print_info(f"Pruned on {label}")
             except Exception as e:
