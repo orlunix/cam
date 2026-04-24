@@ -27,7 +27,7 @@ import time
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "3a7f6fc-dirty 2026-04-23 10:38"
+__build__ = "3ff7dd8-dirty 2026-04-23 19:17"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -4634,85 +4634,133 @@ def cmd_rm(args):
 
 
 def cmd_prune(args):
-    """Remove non-running agent records AND orphan tmux servers.
+    """Drift-fix by default; --orphans also deletes orphan records + files.
 
-    Two-phase cleanup:
-      1. agents.json: drop non-running entries. If tmux session is still
-         alive, restore status to running (interactive agent).
-      2. /proc scan: any tmux server not referenced by a live agent record
-         is orphaned (rm/stop/kill should have taken it down but didn't, or
-         it was leaked by an old bug). SIGTERM the process and unlink its
-         socket.
+    Default (no flags): scan agents.json. If a record's status says
+    not-running but tmux is actually alive, restore status to running.
+    Nothing is deleted.
+
+    --orphans: additionally delete records whose tmux session is dead
+    (delegates to cmd_rm for consistent cleanup: kill_monitor, unlink
+    socket with zombie guard, remove record). Also sweeps stale files
+    (monitor-<id>.log/.stderr, <id>.pid, dangling cam-*.sock) whose
+    agent ID or session name isn't in agents.json.
+
+    --dry-run: print actions without touching anything. Composable with
+    --orphans.
+
+    Note: this command does NOT kill tmux servers that aren't in
+    agents.json (the old "zombie" case). Pattern-match killing of
+    cam-* processes is too risky. The unlink guards in cmd_rm and
+    cmd_heal prevent new zombies; clean up residual ones manually.
     """
+    do_orphans = getattr(args, "orphans", False)
+    dry = getattr(args, "dry_run", False)
+
     store = AgentStore()
     agents = store.list()
-    removed = 0
-    skipped = 0
-    for a in agents:
-        if a.get("status") not in ("running", "starting", "pending"):
-            session = _sf(a, "tmux_session")
-            if session:
-                sock = _find_tmux_socket(session)
-                if sock:
-                    cmd = ["tmux", "-S", sock, "has-session", "-t", session]
-                    try:
-                        subprocess.run(cmd, check=True, capture_output=True, timeout=3)
-                        a["status"] = "running"
-                        store.save(a)
-                        skipped += 1
-                        continue
-                    except Exception:
-                        pass
-            store.remove(a["id"])
-            removed += 1
 
-    live_sessions = set()
-    for a in store.list():
+    drift_fixed = 0
+    orphan_removed = 0
+    files_cleaned = 0
+
+    known_ids = set()
+    known_sessions = set()
+
+    for a in agents:
+        known_ids.add(a["id"])
         s = _sf(a, "tmux_session")
         if s:
-            live_sessions.add(s)
+            known_sessions.add(s)
 
-    orphan_killed = 0
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
+        if a.get("status") in ("running", "starting", "pending"):
             continue
-        try:
-            with open("/proc/%s/cmdline" % entry, "rb") as f:
-                cmdline = f.read().replace(b"\x00", b" ").decode(
-                    "utf-8", errors="replace").strip()
-        except (OSError, IOError):
-            continue
-        if "tmux" not in cmdline or "new-session" not in cmdline:
-            continue
-        parts = cmdline.split()
-        sock_path = None
-        session_name = None
-        for i, p in enumerate(parts):
-            if p == "-S" and i + 1 < len(parts):
-                sock_path = parts[i + 1]
-            elif p == "-s" and i + 1 < len(parts):
-                session_name = parts[i + 1]
-        if not session_name or not session_name.startswith("cam-"):
-            continue
-        if session_name in live_sessions:
-            continue
-        try:
-            os.kill(int(entry), 15)
-            orphan_killed += 1
-        except (OSError, ValueError):
-            continue
-        if sock_path and os.path.exists(sock_path):
-            try:
-                os.unlink(sock_path)
-            except OSError:
-                pass
 
-    msg = "Pruned %d non-running agent%s" % (removed, "s" if removed != 1 else "")
-    if skipped:
-        msg += " (%d restored to running — tmux session still alive)" % skipped
-    if orphan_killed:
-        msg += "; killed %d orphan tmux server%s" % (orphan_killed, "s" if orphan_killed != 1 else "")
-    print(msg)
+        session = _sf(a, "tmux_session")
+        alive = False
+        if session:
+            sock = _find_tmux_socket(session)
+            if sock:
+                try:
+                    subprocess.run(
+                        ["tmux", "-S", sock, "has-session", "-t", session],
+                        check=True, capture_output=True, timeout=3)
+                    alive = True
+                except Exception:
+                    pass
+
+        if alive:
+            if dry:
+                print("would restore %s → running (tmux alive)" % a["id"])
+            else:
+                a["status"] = "running"
+                store.save(a)
+            drift_fixed += 1
+        elif do_orphans:
+            if dry:
+                print("would remove orphan record %s (tmux dead)" % a["id"])
+            else:
+                try:
+                    cmd_rm(argparse.Namespace(id=a["id"], archive=False))
+                except SystemExit:
+                    pass
+            orphan_removed += 1
+
+    if do_orphans:
+        # Stale file sweep: monitor logs/stderr, pid files, unreferenced sockets.
+        for base in (LOGS_DIR, PIDS_DIR):
+            if not os.path.isdir(base):
+                continue
+            for fname in os.listdir(base):
+                aid = None
+                if fname.startswith("monitor-") and (
+                        fname.endswith(".log") or fname.endswith(".stderr")):
+                    aid = fname[len("monitor-"):].rsplit(".", 1)[0]
+                elif fname.endswith(".pid"):
+                    aid = fname[:-4]
+                if aid and aid not in known_ids:
+                    p = os.path.join(base, fname)
+                    if dry:
+                        print("would remove stale %s" % p)
+                    else:
+                        try:
+                            os.unlink(p)
+                        except OSError:
+                            pass
+                    files_cleaned += 1
+
+        if os.path.isdir(SOCKETS_DIR):
+            for fname in os.listdir(SOCKETS_DIR):
+                if not fname.endswith(".sock"):
+                    continue
+                sess = fname[:-5]
+                if sess in known_sessions:
+                    continue
+                sock_path = os.path.join(SOCKETS_DIR, fname)
+                # Don't unlink if a tmux server is still bound to it.
+                if _tmux_server_pid_for_socket(sock_path):
+                    continue
+                if dry:
+                    print("would remove stale socket %s" % sock_path)
+                else:
+                    try:
+                        os.unlink(sock_path)
+                    except OSError:
+                        pass
+                files_cleaned += 1
+
+    parts = []
+    if drift_fixed:
+        parts.append("restored %d (tmux alive)" % drift_fixed)
+    if do_orphans:
+        parts.append("removed %d orphan%s" % (
+            orphan_removed, "s" if orphan_removed != 1 else ""))
+        parts.append("cleaned %d stale file%s" % (
+            files_cleaned, "s" if files_cleaned != 1 else ""))
+    if not parts:
+        parts.append("nothing to do")
+    prefix = "[dry-run] " if dry else ""
+    print(prefix + "; ".join(parts))
 
 
 def _find_session_in_use(session_id):
@@ -6336,7 +6384,9 @@ examples:
             ar_sub._choices_actions.remove(_act)
 
     # prune
-    sub.add_parser("prune", help="Remove non-running agents + kill orphan tmux servers")
+    prune_p = sub.add_parser("prune", help="Drift-fix (default); --orphans also removes records whose tmux is dead")
+    prune_p.add_argument("--orphans", action="store_true", help="Also remove orphan records (tmux dead) + stale files")
+    prune_p.add_argument("--dry-run", action="store_true", help="Print what would change without acting")
 
     # reboot / migrate
     rb = sub.add_parser("reboot", help="Restart agent with session resume (alias for migrate)")
