@@ -159,6 +159,7 @@ class AgentServer:
         await self._run_tmux(session_id, [
             "send-keys", "-t", target, "-l", "--", command_str,
         ])
+        await asyncio.sleep(0.15)
         await self._run_tmux(session_id, [
             "send-keys", "-t", target, "Enter",
         ])
@@ -175,6 +176,8 @@ class AgentServer:
             "send-keys", "-t", target, "-l", "--", text,
         ])
         if send_enter:
+            if text:
+                await asyncio.sleep(0.15)
             await self._run_tmux(session_id, [
                 "send-keys", "-t", target, "Enter",
             ])

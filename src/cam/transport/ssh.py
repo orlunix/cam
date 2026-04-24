@@ -258,6 +258,11 @@ class SSHTransport(Transport):
                 return False
 
         if send_enter:
+            # Pause briefly so the literal text payload lands in the
+            # pane buffer before Enter arrives — SSH round-trips + tmux
+            # buffering can swallow Enter otherwise.
+            if text:
+                await asyncio.sleep(0.15)
             enter_cmd = self._remote_tmux_cmd(session_id, [
                 "send-keys", "-t", target, "Enter",
             ])
