@@ -1300,3 +1300,42 @@ b9295ee camc: fix codex launch and prompt submission
 b9295ee camc: fix codex launch and prompt submission
 ```
 
+## v1.2.0  ecb5de4-dirty 2026-04-23 20:19
+
+- Lines: 6642
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+ecb5de4 tmux: preflight version gate + 150ms flush before Enter
+4ad7399 Align cam/camc prune semantics around --orphans
+3ff7dd8 Fold zombie cleanup into camc prune
+3a7f6fc camc: guard socket unlinks against live tmux servers, add 'camc zombie'
+13cd7ff camc: apply prompt submit delay to send paths
+```
+
+## v1.2.0  ecb5de4-dirty 2026-04-23 20:22
+
+- Lines: 6568
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+ecb5de4 tmux: preflight version gate + 150ms flush before Enter
+4ad7399 Align cam/camc prune semantics around --orphans
+3ff7dd8 Fold zombie cleanup into camc prune
+3a7f6fc camc: guard socket unlinks against live tmux servers, add 'camc zombie'
+13cd7ff camc: apply prompt submit delay to send paths
+```
+
+## v1.2.0  ecb5de4-dirty 2026-04-23 20:28
+
+- Lines: 6588
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+ecb5de4 tmux: preflight version gate + 150ms flush before Enter
+4ad7399 Align cam/camc prune semantics around --orphans
+3ff7dd8 Fold zombie cleanup into camc prune
+3a7f6fc camc: guard socket unlinks against live tmux servers, add 'camc zombie'
+13cd7ff camc: apply prompt submit delay to send paths
+```
+

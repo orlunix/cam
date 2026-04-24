@@ -267,107 +267,68 @@ def _agent_to_cam_json(a):
     }
 
 
-def _tmux_version(tmux_path):
-    """Parse `tmux -V` → (major, minor, patch, raw_string).
-
-    tmux versions can look like:
-      tmux 3.3a        → (3, 3, 'a')  — patch letter
-      tmux 2.7         → (2, 7, '')
-      tmux 3.4         → (3, 4, '')
-      tmux next-3.4    → (3, 4, '')
-      tmux master      → (None, None, None)
-    The patch letter goes up alphabetically (3.3 → 3.3a → 3.3b).
-    """
-    try:
-        out = subprocess.check_output(
-            [tmux_path, "-V"], stderr=subprocess.STDOUT, timeout=3
-        ).decode(errors="replace").strip()
-    except Exception:
-        return (None, None, None, "")
-    m = re.search(r"(\d+)\.(\d+)([a-z]*)", out)
-    if not m:
-        return (None, None, None, out)
-    return (int(m.group(1)), int(m.group(2)), m.group(3) or "", out)
+_TOOL_HINTS = {
+    "claude": "npm install -g @anthropic-ai/claude-code",
+    "codex": "npm install -g @openai/codex",
+}
 
 
 def _preflight(tool, tool_binary, workdir, env_setup=None):
-    """Run environment checks before launching an agent.
-
-    Returns a list of (level, message) tuples where level is 'error' or 'warn'.
-    'error' items should block startup; 'warn' items are advisory.
-    """
+    """Return a list of (level, message). 'error' blocks startup, 'warn' is advisory."""
     issues = []
 
-    # 1. tmux available and new enough?
-    # We lean on two flag combos that have a history of changing:
-    #   - `send-keys -l`               (literal mode, added in tmux 1.9)
-    #   - `capture-pane -p -J -a`      (join wrapped lines + alt-screen
-    #                                   fallback; `-a` is 2.4+)
-    # Below 2.4 the alt-screen fallback silently returns empty, which
-    # breaks Claude's "switch to alt buffer during streaming" case.
-    tmux_path = shutil.which("tmux")
-    if not tmux_path:
-        issues.append(("error", "tmux not found in PATH. Install: apt install tmux / brew install tmux"))
+    # tmux present and >= 2.4 (needs `send-keys -l` and `capture-pane -a`).
+    # Uses transport.TMUX_BIN so Rocky 8.9 boxes check the system /usr/bin/tmux
+    # rather than whatever user-custom tmux is earlier in PATH.
+    from camc_pkg.transport import TMUX_BIN
+    if not TMUX_BIN or not os.path.exists(TMUX_BIN) and not shutil.which(TMUX_BIN):
+        issues.append(("error", "tmux not found. Install: apt install tmux / brew install tmux"))
     else:
-        ver_major, ver_minor, ver_patch, ver_str = _tmux_version(tmux_path)
-        if ver_major is None:
-            issues.append(("warn", "tmux version unparseable (got %r); camc assumes >= 2.4" % ver_str))
-        elif (ver_major, ver_minor) < (2, 4):
-            issues.append((
-                "error",
-                "tmux %s is too old — camc needs >= 2.4 for "
-                "'send-keys -l', 'send-keys ... Enter', and "
-                "'capture-pane -a'. Upgrade: apt install tmux / "
-                "brew upgrade tmux" % ver_str))
-
-    # 2. Tool binary in PATH? Skip if env_setup is configured — that script
-    # will set PATH inside tmux, so the caller's PATH is irrelevant.
-    if tool_binary and not env_setup and not shutil.which(tool_binary):
-        hints = {
-            "claude": "npm install -g @anthropic-ai/claude-code",
-            "codex": "npm install -g @openai/codex",
-        }
-        hint = hints.get(tool, "ensure '%s' is in your PATH" % tool_binary)
-        issues.append(("error", "'%s' not found in PATH. Install: %s" % (tool_binary, hint)))
-
-    # 3. Working directory accessible?
-    if not os.path.isdir(workdir):
         try:
-            os.makedirs(workdir, exist_ok=True)
+            out = subprocess.check_output(
+                [TMUX_BIN, "-V"], stderr=subprocess.STDOUT, timeout=3
+            ).decode(errors="replace")
+            m = re.search(r"(\d+)\.(\d+)", out)
+            if m and (int(m.group(1)), int(m.group(2))) < (2, 4):
+                issues.append(("error", "tmux %s too old; need >= 2.4" % out.strip()))
+        except Exception:
+            pass  # unparseable — don't block; launch will surface any real issue
+
+    # Tool binary in PATH (with env_setup respected for custom PATH)
+    if tool_binary:
+        if env_setup:
+            ok = subprocess.run(
+                ["bash", "-lc", "%s && command -v %s" % (env_setup, tool_binary)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3,
+            ).returncode == 0
+        else:
+            ok = bool(shutil.which(tool_binary))
+        if not ok:
+            hint = _TOOL_HINTS.get(tool, "ensure '%s' is in PATH" % tool_binary)
+            issues.append(("error", "'%s' not found. Install: %s" % (tool_binary, hint)))
+
+    # workdir accessible
+    try:
+        os.makedirs(workdir, exist_ok=True)
+        if not os.access(workdir, os.R_OK):
+            issues.append(("error", "Working directory not readable: %s" % workdir))
+    except OSError as e:
+        issues.append(("error", "Cannot create working directory %s: %s" % (workdir, e)))
+
+    # writable dirs (sockets, logs, agents.json append)
+    for label, path in (("socket dir", SOCKETS_DIR), ("log dir", LOGS_DIR)):
+        try:
+            os.makedirs(path, exist_ok=True)
+            probe = os.path.join(path, ".preflight-test")
+            open(probe, "w").close()
+            os.remove(probe)
         except OSError as e:
-            issues.append(("error", "Cannot create working directory %s: %s" % (workdir, e)))
-    elif not os.access(workdir, os.R_OK):
-        issues.append(("error", "Working directory not readable: %s" % workdir))
-
-    # 4. Socket directory writable?
-    try:
-        os.makedirs(SOCKETS_DIR, exist_ok=True)
-        test_path = os.path.join(SOCKETS_DIR, ".preflight-test")
-        with open(test_path, "w") as f:
-            f.write("")
-        os.remove(test_path)
-    except OSError as e:
-        issues.append(("warn", "Socket directory not writable (%s): %s" % (SOCKETS_DIR, e)))
-
-    # 5. Log directory writable?
-    try:
-        os.makedirs(LOGS_DIR, exist_ok=True)
-        test_path = os.path.join(LOGS_DIR, ".preflight-test")
-        with open(test_path, "w") as f:
-            f.write("")
-        os.remove(test_path)
-    except OSError as e:
-        issues.append(("warn", "Log directory not writable (%s): %s — monitor logging will fail" % (LOGS_DIR, e)))
-
-    # 6. Agent store writable?
-    store_path = os.path.join(CAM_DIR, "agents.json")
+            issues.append(("warn", "%s not writable (%s): %s" % (label, path, e)))
     try:
         os.makedirs(CAM_DIR, exist_ok=True)
-        # Just check we can open for append (doesn't corrupt existing data)
-        with open(store_path, "a"):
-            pass
+        open(os.path.join(CAM_DIR, "agents.json"), "a").close()
     except OSError as e:
-        issues.append(("warn", "Agent store not writable (%s): %s" % (store_path, e)))
+        issues.append(("warn", "agents.json not writable: %s" % e))
 
     return issues
 
