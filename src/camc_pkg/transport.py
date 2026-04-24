@@ -10,19 +10,8 @@ from camc_pkg.utils import strip_ansi, _run
 
 
 def _detect_tmux_bin():
-    """Prefer `/usr/bin/tmux` on Rocky 8.9 — NVIDIA-managed baseline where
-    the system tmux (2.7) is verified. This locks out user-installed
-    newer tmux builds that we haven't validated. Everywhere else, fall
-    back to whatever `tmux` is on PATH.
-    """
-    if os.path.exists("/usr/bin/tmux"):
-        try:
-            with open("/etc/os-release") as f:
-                osr = f.read()
-            if 'ID="rocky"' in osr and 'VERSION_ID="8.9"' in osr:
-                return "/usr/bin/tmux"
-        except OSError:
-            pass
+    """Current `tmux` on PATH, used for new session creation and as the
+    last-resort fallback when we can't figure out a session's tmux."""
     return shutil.which("tmux") or "tmux"
 
 
@@ -68,9 +57,70 @@ def _tmux_server_pid_for_socket(sock_path):
     return None
 
 
+def _tmux_bin_from_exe(sock_path):
+    """Read the tmux binary from /proc/<server-pid>/exe. None if no live
+    server or exe is unreadable."""
+    pid = _tmux_server_pid_for_socket(sock_path)
+    if not pid:
+        return None
+    try:
+        exe = os.readlink("/proc/%d/exe" % pid)
+    except OSError:
+        return None
+    if not exe or exe.endswith(" (deleted)"):
+        return None
+    return exe
+
+
+def _tmux_bin_for_session(session_id):
+    """Resolve which tmux binary owns this session.
+
+    Mismatched tmux client/server versions fail silently (capture returns
+    empty, attach hangs). We avoid that by sticking with whatever binary
+    started the session:
+
+      1. agents.json record's `tmux_bin` (set at creation time, or
+         self-healed from a past /proc probe)
+      2. readlink(/proc/<server-pid>/exe)
+      3. TMUX_BIN (fallback: no record and no live server)
+
+    On a successful /proc probe we write the result (and `tmux -V`
+    string) back to the agent record — subsequent lookups skip the scan.
+    """
+    from camc_pkg.storage import AgentStore
+    store = AgentStore()
+    agent = store.get(session_id)
+    if agent:
+        rec = agent.get("tmux_bin")
+        if rec and os.path.exists(rec):
+            return rec
+
+    socket = _find_tmux_socket(session_id)
+    if socket:
+        detected = _tmux_bin_from_exe(socket)
+        if detected:
+            if agent:
+                agent["tmux_bin"] = detected
+                try:
+                    ver_out = subprocess.check_output(
+                        [detected, "-V"], stderr=subprocess.STDOUT, timeout=2
+                    ).decode(errors="replace").strip()
+                    if ver_out:
+                        agent["tmux_version"] = ver_out
+                except Exception:
+                    pass
+                try:
+                    store.save(agent)
+                except Exception:
+                    pass
+            return detected
+    return TMUX_BIN
+
+
 def _tmux_base(session_id):
     socket = _find_tmux_socket(session_id)
-    return [TMUX_BIN, "-u", "-S", socket] if socket else [TMUX_BIN]
+    tmux = _tmux_bin_for_session(session_id)
+    return [tmux, "-u", "-S", socket] if socket else [tmux]
 
 
 def capture_tmux(session_id, lines=100):
@@ -93,13 +143,14 @@ def capture_tmux(session_id, lines=100):
     # Users occasionally run many long-lived agents out of one workdir;
     # their scrollback can reach several MB. Give full-scroll captures
     # plenty of headroom — the operation is bounded and the caller is
-    # waiting on output anyway.
-    timeout = 60 if full_scroll else 5
+    # waiting on output anyway. Bounded captures use the _run default.
+    timeout = 60 if full_scroll else 15
+    tmux = _tmux_bin_for_session(session_id)
     if socket:
-        args = [TMUX_BIN, "-u", "-S", socket, "capture-pane", "-p", "-J",
+        args = [tmux, "-u", "-S", socket, "capture-pane", "-p", "-J",
                 "-t", target, "-S", start_flag]
     else:
-        args = [TMUX_BIN, "capture-pane", "-p", "-J",
+        args = [tmux, "capture-pane", "-p", "-J",
                 "-t", target, "-S", start_flag]
     try:
         rc, output = _run(args, timeout=timeout)
@@ -121,7 +172,7 @@ def _tmux_cmd():
 
 
 def tmux_session_exists(session_id):
-    tmux = TMUX_BIN
+    tmux = _tmux_bin_for_session(session_id)
     socket = _find_tmux_socket(session_id)
     if socket:
         args = [tmux, "-u", "-S", socket, "has-session", "-t", session_id]
@@ -184,10 +235,11 @@ def tmux_is_attached(session_id):
 
 def tmux_kill_session(session_id):
     socket = _find_tmux_socket(session_id)
+    tmux = _tmux_bin_for_session(session_id)
     if socket:
-        args = [TMUX_BIN, "-u", "-S", socket, "kill-session", "-t", session_id]
+        args = [tmux, "-u", "-S", socket, "kill-session", "-t", session_id]
     else:
-        args = [TMUX_BIN, "kill-session", "-t", session_id]
+        args = [tmux, "kill-session", "-t", session_id]
     rc, _ = _run(args)
     return rc == 0
 
