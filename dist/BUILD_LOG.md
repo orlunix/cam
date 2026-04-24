@@ -1378,3 +1378,42 @@ ecb5de4 tmux: preflight version gate + 150ms flush before Enter
 3ff7dd8 Fold zombie cleanup into camc prune
 ```
 
+## v1.2.0  d1ffa7c-dirty 2026-04-23 23:17
+
+- Lines: 6660
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+22650e4 preflight: skip tool-binary check when env_setup is set
+f24d910 tmux: pin to /usr/bin/tmux on Rocky 8.9, simplify preflight
+ecb5de4 tmux: preflight version gate + 150ms flush before Enter
+4ad7399 Align cam/camc prune semantics around --orphans
+```
+
+## v1.2.0  d1ffa7c-dirty 2026-04-23 23:18
+
+- Lines: 6660
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+22650e4 preflight: skip tool-binary check when env_setup is set
+f24d910 tmux: pin to /usr/bin/tmux on Rocky 8.9, simplify preflight
+ecb5de4 tmux: preflight version gate + 150ms flush before Enter
+4ad7399 Align cam/camc prune semantics around --orphans
+```
+
+## v1.2.0  d1ffa7c-dirty 2026-04-23 23:22
+
+- Lines: 6660
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+22650e4 preflight: skip tool-binary check when env_setup is set
+f24d910 tmux: pin to /usr/bin/tmux on Rocky 8.9, simplify preflight
+ecb5de4 tmux: preflight version gate + 150ms flush before Enter
+4ad7399 Align cam/camc prune semantics around --orphans
+```
+

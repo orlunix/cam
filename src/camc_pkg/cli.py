@@ -398,6 +398,20 @@ def cmd_run(args):
         print_info("Debug: tmux -u -S %s/%s.sock new-session -d -s %s -c %s" % (SOCKETS_DIR, session, session, workdir))
         sys.exit(1)
 
+    # Snapshot the tmux binary + version that actually started this server.
+    # tmux client/server protocol requires matching versions, so subsequent
+    # capture/send/kill on this session must use the same binary. Record at
+    # creation time — resolution order later: record → /proc/exe → fallback.
+    from camc_pkg.transport import TMUX_BIN
+    tmux_bin_used = TMUX_BIN
+    tmux_ver_used = ""
+    try:
+        tmux_ver_used = subprocess.check_output(
+            [tmux_bin_used, "-V"], stderr=subprocess.STDOUT, timeout=2
+        ).decode(errors="replace").strip()
+    except Exception:
+        pass
+
     name = getattr(args, "name", None) or os.path.basename(workdir) or "%s-%s" % (tool, uuid4().hex[:6])
     auto_exit = getattr(args, "auto_exit", False)
     auto_exit_enable = getattr(args, "auto_exit_enable", False)
@@ -421,6 +435,8 @@ def cmd_run(args):
         "state": "initializing",
         "tmux_session": session,
         "tmux_socket": "",
+        "tmux_bin": tmux_bin_used,
+        "tmux_version": tmux_ver_used,
         "pid": None,
         "hostname": _sock.gethostname(),
         "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
