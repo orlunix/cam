@@ -78,13 +78,23 @@ def capture_tmux(session_id, lines=100):
 
     lines > 0: last N lines (visible + scrollback up to N).
     lines <= 0 (or None): full scrollback buffer (tmux -S -). The actual
-    amount returned is capped by tmux's history-limit (2000 by default).
+    amount returned is capped by tmux's history-limit (50000 in our
+    created sessions). A full-scroll capture of a long-lived agent with
+    hundreds of KB of history can take several seconds, so we use a
+    generous timeout in that case — the default 5s kills mid-capture
+    and returns empty.
     """
     socket = _find_tmux_socket(session_id)
     target = "%s:0.0" % session_id
     # `-S -`  = start of history; `-S -N` = N lines back. We pass one or
     # the other based on the `lines` argument.
-    start_flag = "-" if not lines or lines <= 0 else "-%d" % lines
+    full_scroll = not lines or lines <= 0
+    start_flag = "-" if full_scroll else "-%d" % lines
+    # Users occasionally run many long-lived agents out of one workdir;
+    # their scrollback can reach several MB. Give full-scroll captures
+    # plenty of headroom — the operation is bounded and the caller is
+    # waiting on output anyway.
+    timeout = 60 if full_scroll else 5
     if socket:
         args = [TMUX_BIN, "-u", "-S", socket, "capture-pane", "-p", "-J",
                 "-t", target, "-S", start_flag]
@@ -92,11 +102,11 @@ def capture_tmux(session_id, lines=100):
         args = [TMUX_BIN, "capture-pane", "-p", "-J",
                 "-t", target, "-S", start_flag]
     try:
-        rc, output = _run(args)
+        rc, output = _run(args, timeout=timeout)
         if len(output.strip()) < 20:
             alt = list(args)
             alt.insert(alt.index("capture-pane") + 1, "-a")
-            rc2, alt_out = _run(alt)
+            rc2, alt_out = _run(alt, timeout=timeout)
             if len(alt_out.strip()) > len(output.strip()):
                 output = alt_out
         return strip_ansi(output).rstrip()
