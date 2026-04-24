@@ -25,6 +25,10 @@ REMOTE_PATH="~/.cam/camc"
 # and doesn't fail the release.
 SHARED_BIN_DIR="/home/prgn_share/bin"
 SHARED_BIN_PATH="$SHARED_BIN_DIR/camc"
+# Release archive on NFS-shared NVIDIA tools tree. Every successfully
+# deployed build gets copied here under camc-<version>-<hash>. Serves
+# as the rollback artifact store (see tools/release/RELEASE-STRATEGY.md).
+SHARED_RELEASES_DIR="/home/prgn_share/tools/camc/releases"
 SSH_TIMEOUT=10
 
 SKIP_TESTS=0
@@ -69,6 +73,16 @@ fi
 LOCAL_VERSION="$("$DIST_BIN" version 2>/dev/null | head -1)"
 [[ -n "$LOCAL_VERSION" ]] || { err "dist/camc didn't print a version"; exit 1; }
 ok "local: $LOCAL_VERSION"
+
+# Archive name for /home/prgn_share/tools/camc/releases/ — embeds the
+# camc version token (vX.Y.Z) and the commit short hash (if in a git
+# tree), so each rollback target is unambiguous.
+VER_TOKEN=$(printf '%s' "$LOCAL_VERSION" | awk '{print $2}')       # v1.2.0
+SHORT_HASH=""
+if git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  SHORT_HASH=$(git -C "$REPO_ROOT" rev-parse --short HEAD)
+fi
+ARCHIVE_NAME="camc-${VER_TOKEN:-unknown}${SHORT_HASH:+-$SHORT_HASH}"
 
 # ---------------------------------------------------------------------------
 # 2. Test
@@ -235,6 +249,20 @@ while IFS=$'\t' read -r name host user port; do
       warn "   shared install failed: $(printf %s "$shared_out" | head -c 120)"
     fi
   fi
+
+  # 4e: Archive this build into /home/prgn_share/tools/camc/releases/.
+  # One versioned copy per NFS mount acts as our rollback store. Creates
+  # the directory on demand; skip cleanly when the tree isn't writable.
+  if [[ -n "$ARCHIVE_NAME" ]]; then
+    archive_cmd="mkdir -p $SHARED_RELEASES_DIR && cp -p $REMOTE_PATH $SHARED_RELEASES_DIR/$ARCHIVE_NAME.tmp.\$\$ && chmod 0755 $SHARED_RELEASES_DIR/$ARCHIVE_NAME.tmp.\$\$ && mv -f $SHARED_RELEASES_DIR/$ARCHIVE_NAME.tmp.\$\$ $SHARED_RELEASES_DIR/$ARCHIVE_NAME && echo OK"
+    archive_out="$(ssh "${SSH_OPTS[@]}" "$target" "$archive_cmd" 2>&1 | tr -d '\r')"
+    if [[ "$archive_out" == *OK* ]]; then
+      ok "   archived: $SHARED_RELEASES_DIR/$ARCHIVE_NAME"
+    else
+      # Non-fatal (NFS may not be present on every host / dir may not be writable).
+      log "   (archive skipped: $SHARED_RELEASES_DIR not writable)"
+    fi
+  fi
 done <<< "$MACHINES"
 
 # ---------------------------------------------------------------------------
@@ -250,4 +278,29 @@ if (( ${#failures[@]} > 0 )); then
   printf '   failed hosts : %s\n' "${failures[*]}"
   exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# 6. Record deploy as a git tag
+# ---------------------------------------------------------------------------
+# Tag name sorts chronologically: deploy-YYYYMMDDHHMMSS
+# Annotated tags carry the host list + version in their message so
+# `git show deploy-<ts>` is the audit record.
+if [[ $DRY_RUN -eq 0 && $verified -gt 0 ]] && command -v git >/dev/null 2>&1 \
+    && git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  TS=$(date +%Y%m%d%H%M%S)
+  TAG="deploy-$TS"
+  HOSTS=$(printf '%s\n' "$MACHINES" | awk -F'\t' 'NF && $1 {print "   - " $1}')
+  TAG_MSG="camc deploy $TS
+
+version: $LOCAL_VERSION
+verified: $verified / failed: $failed
+hosts:
+$HOSTS"
+  if git -C "$REPO_ROOT" tag -a "$TAG" -m "$TAG_MSG" 2>/dev/null; then
+    ok "tagged: $TAG   (git show $TAG)"
+  else
+    warn "tag failed (tag may already exist): $TAG"
+  fi
+fi
+
 exit 0
