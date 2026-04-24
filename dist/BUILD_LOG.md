@@ -1339,3 +1339,16 @@ ecb5de4 tmux: preflight version gate + 150ms flush before Enter
 13cd7ff camc: apply prompt submit delay to send paths
 ```
 
+## v1.2.0  f24d910-dirty 2026-04-23 22:02
+
+- Lines: 6584
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+f24d910 tmux: pin to /usr/bin/tmux on Rocky 8.9, simplify preflight
+ecb5de4 tmux: preflight version gate + 150ms flush before Enter
+4ad7399 Align cam/camc prune semantics around --orphans
+3ff7dd8 Fold zombie cleanup into camc prune
+3a7f6fc camc: guard socket unlinks against live tmux servers, add 'camc zombie'
+```
+
