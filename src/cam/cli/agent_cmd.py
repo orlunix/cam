@@ -622,7 +622,10 @@ def prune(
         orphan_files = _find_orphan_files(state.agent_store)
 
     # --- Summary ---
-    if not agent_ids and not orphan_files:
+    # When --orphans is set we always delegate to every machine, even if the
+    # server-side agent/file scan turned up nothing — remote machines may
+    # still have orphan records/files to clean.
+    if not agent_ids and not orphan_files and not orphans:
         print_info("Nothing to prune.")
         return
 
@@ -639,50 +642,63 @@ def prune(
         if len(orphan_files) > 10:
             print_info(f"  ... and {len(orphan_files) - 10} more")
 
-    if dry_run:
-        print_info("")
-        print_success("Dry run — nothing was deleted")
-        return
-
-    # --- Confirm ---
-    if not force:
+    # --- Confirm (skip when --dry-run — delegation below is read-only) ---
+    if not dry_run and not force:
         confirm = typer.confirm("Proceed with deletion?")
         if not confirm:
             print_info("Cancelled.")
             return
 
     # --- Delegate camc prune to all unique machines ---
-    # camc is the source of truth. We just tell each machine to prune.
-    # The poller will sync the changes back to cam's local DB.
-    if agent_ids:
+    # Flag semantics mirror camc prune exactly: no flag = drift fix only;
+    # --orphans = also remove dead records + stale files.
+    if agent_ids or orphans:
         from cam.core.camc_delegate import CamcDelegate
 
-        seen_machines: set[str] = set()
-        pruned = 0
-        for aid in agent_ids:
-            agent = state.agent_store.get(aid)
+        camc_flags: list[str] = []
+        if orphans:
+            camc_flags.append("--orphans")
+        if dry_run:
+            camc_flags.append("--dry-run")
+
+        # Machine set: machines hosting any filtered agent, plus — when
+        # --orphans is set but no filter matched — every distinct machine
+        # in the DB, so orphan cleanup cascades everywhere.
+        machine_keys: dict[str, tuple[str, str, int | None]] = {}
+        agents_for_machines = [state.agent_store.get(aid) for aid in agent_ids]
+        if orphans and not agent_ids:
+            agents_for_machines = state.agent_store.list()
+        for agent in agents_for_machines:
             if not agent:
                 continue
             h = agent.machine_host or ""
             u = agent.machine_user or ""
             p = str(agent.machine_port or "")
             key = "%s@%s:%s" % (u, h, p)
-            if key in seen_machines:
-                continue
-            seen_machines.add(key)
+            if key not in machine_keys:
+                machine_keys[key] = (u, h, agent.machine_port)
+
+        pruned = 0
+        for key, (u, h, port) in machine_keys.items():
             label = h or "local"
-            if agent.machine_port:
-                label += ":%s" % agent.machine_port
+            if port:
+                label += ":%s" % port
             try:
                 delegate = CamcDelegate(
-                    host=agent.machine_host or None,
-                    user=agent.machine_user or None,
-                    port=agent.machine_port)
-                delegate._run(["prune"])
+                    host=h or None, user=u or None, port=port)
+                rc, out = delegate._run(["prune"] + camc_flags)
                 pruned += 1
-                print_info(f"Pruned on {label}")
+                out = out.strip() if out else ""
+                if out:
+                    print_info(f"[{label}] {out}")
+                else:
+                    print_info(f"Pruned on {label}")
             except Exception as e:
                 print_warning(f"Failed to prune on {label}: {e}")
+
+    if dry_run:
+        print_success("Dry run — nothing was deleted locally")
+        return
 
     # --- Delete from local cam DB ---
     deleted_agents = 0
