@@ -49,6 +49,12 @@ def poller_setup(monkeypatch):
             statuses[aid] = status
             if exit_reason is not None:
                 exit_reasons[aid] = exit_reason
+        def delete(self, aid):
+            existed = aid in saved
+            saved.pop(aid, None)
+            statuses.pop(aid, None)
+            exit_reasons.pop(aid, None)
+            return existed
         def add_event(self, ev):
             pass
 
@@ -129,9 +135,11 @@ def test_running_new_agent_is_imported(monkeypatch, poller_setup):
     assert statuses["run00001"] == AgentStatus.RUNNING
 
 
-def test_existing_agent_missing_from_camc_is_marked_session_gone(monkeypatch, poller_setup):
-    """Behavior 3: in cam DB but not in any camc list → mark completed with
-    'Session gone ...'. Not deleted."""
+def test_existing_agent_missing_from_camc_is_deleted_after_threshold(monkeypatch, poller_setup):
+    """Behavior 3: in cam DB but not in any camc list → after _MISS_THRESHOLD
+    consecutive misses, the row is *deleted* (not promoted to a zombie
+    `completed` record)."""
+    from cam.core.camc_poller import _MISS_THRESHOLD
     from cam.core.models import AgentStatus
     from cam.core.models import Agent, TaskDefinition, TransportType
     poller, store, saved, statuses, exit_reasons = poller_setup
@@ -156,11 +164,60 @@ def test_existing_agent_missing_from_camc_is_marked_session_gone(monkeypatch, po
         lambda *a, **kw: _stub_delegate([]),
     )
 
+    # Below threshold: no deletion, miss counter accumulates.
+    for i in range(_MISS_THRESHOLD - 1):
+        asyncio.run(poller.poll_once())
+        assert "stale001" in saved, f"agent deleted prematurely at poll {i + 1}"
+        assert statuses["stale001"] == AgentStatus.RUNNING
+
+    # The Nth consecutive miss triggers delete.
+    asyncio.run(poller.poll_once())
+    assert "stale001" not in saved, "stale agent must be deleted at threshold"
+
+
+def test_missing_then_seen_resets_miss_counter(monkeypatch, poller_setup):
+    """A transient SSH glitch (camc reports empty, then reports normally)
+    must NOT delete an agent that is in fact still alive. The miss
+    counter resets on every sighting."""
+    from cam.core.camc_poller import _MISS_THRESHOLD
+    from cam.core.models import AgentStatus
+    from cam.core.models import Agent, TaskDefinition, TransportType
+    poller, store, saved, statuses, _ = poller_setup
+
+    a = Agent(
+        id="flaky001",
+        task=TaskDefinition(name="alive", tool="claude", prompt=""),
+        context_id="",
+        context_name="",
+        context_path="/tmp",
+        transport_type=TransportType.LOCAL,
+        status=AgentStatus.RUNNING,
+        tmux_session="cam-flaky001",
+    )
+    store.save(a)
+
+    rows = [{"id": "flaky001", "status": "running",
+             "tmux_session": "cam-flaky001", "context_path": "/tmp",
+             "task": {"name": "alive", "tool": "claude", "prompt": ""}}]
+
+    # First _MISS_THRESHOLD - 1 polls: empty (close to deletion).
+    monkeypatch.setattr(poller, "_get_delegate",
+                        lambda *a, **kw: _stub_delegate([]))
+    for _ in range(_MISS_THRESHOLD - 1):
+        asyncio.run(poller.poll_once())
+    assert "flaky001" in saved
+
+    # Then camc returns normally — miss counter must reset.
+    monkeypatch.setattr(poller, "_get_delegate",
+                        lambda *a, **kw: _stub_delegate(rows))
     asyncio.run(poller.poll_once())
 
-    assert "stale001" in saved, "stale agent must NOT be deleted from cam DB"
-    assert statuses["stale001"] == AgentStatus.COMPLETED
-    assert "not in camc list" in (exit_reasons["stale001"] or "").lower()
+    # Now empty again for _MISS_THRESHOLD - 1 — still must not delete.
+    monkeypatch.setattr(poller, "_get_delegate",
+                        lambda *a, **kw: _stub_delegate([]))
+    for _ in range(_MISS_THRESHOLD - 1):
+        asyncio.run(poller.poll_once())
+    assert "flaky001" in saved, "miss counter must reset on successful sighting"
 
 
 def _stub_delegate(camc_rows):

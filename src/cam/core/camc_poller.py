@@ -49,6 +49,14 @@ _STATE_MAP = {
 # Terminal statuses — never promote back to RUNNING from these
 _TERMINAL_STATUSES = {AgentStatus.COMPLETED, AgentStatus.FAILED, AgentStatus.KILLED}
 
+# Stale-agent cleanup tolerance. A running agent in cam DB that's not
+# returned by any camc for this many consecutive polls is treated as
+# truly gone (camc rm'd it, monitor died, host went away) and removed
+# from the DB. 3 polls × 5s ≈ 15s, enough to outlast a transient SSH
+# glitch but short enough that ghost rows don't accumulate before the
+# next `cam prune` or workflow finalize.
+_MISS_THRESHOLD = 3
+
 
 def _is_same_host(hostname_a: str | None, hostname_b: str | None) -> bool:
     """Compare hostnames tolerating FQDN vs short name differences.
@@ -185,6 +193,10 @@ class CamcPoller:
         self._delegates: dict[str, CamcDelegate] = {}  # machine_name -> delegate
         self._last_event_ts: dict[str, str] = {}  # machine_name -> last event ts
         self._prev_states: dict[str, str] = {}  # agent_id -> previous status
+        # Consecutive-miss counter for the stale-cleanup pass below. We
+        # only act after `_MISS_THRESHOLD` polls in a row to ride out
+        # transient SSH glitches without flap-deleting live agents.
+        self._miss_counts: dict[str, int] = {}
 
     @staticmethod
     def _load_machines() -> list[dict]:
@@ -399,31 +411,51 @@ class CamcPoller:
             except Exception as e:
                 logger.debug("Failed to poll events from %s: %s", name, e)
 
-        # Stale agent cleanup: after polling ALL machines, any agent still
-        # marked running in cam DB but not reported by any camc is dead.
-        # All agents (local + remote) go through camc now, so camc is the
-        # single source of truth. Agents not in any camc list are zombies.
+        # Stale agent cleanup: camc is the single source of truth for the
+        # agent list. A running cam DB agent that no camc reports for
+        # _MISS_THRESHOLD polls in a row was either camc-rm'd, had its
+        # monitor die, or is on a host that's gone away — drop the row
+        # rather than promoting it to a zombie `completed` record. The
+        # consecutive-miss counter rides out transient SSH glitches.
         all_db_agents = self._agent_store.list()
         for dba in all_db_agents:
+            agent_id = str(dba.id)
+            if agent_id in seen_ids:
+                # Reset miss counter on every successful sighting.
+                if agent_id in self._miss_counts:
+                    del self._miss_counts[agent_id]
+                continue
             if dba.status != AgentStatus.RUNNING:
                 continue
-            if str(dba.id) in seen_ids:
+            n = self._miss_counts.get(agent_id, 0) + 1
+            self._miss_counts[agent_id] = n
+            if n < _MISS_THRESHOLD:
+                logger.debug(
+                    "Stale check: %s missed %d/%d polls (waiting before cleanup)",
+                    agent_id, n, _MISS_THRESHOLD,
+                )
                 continue
-            self._agent_store.update_status(
-                str(dba.id), AgentStatus.COMPLETED,
-                exit_reason="Session gone (not in camc list)",
-            )
+            # Confirmed gone — delete the row outright.
+            try:
+                self._agent_store.delete(agent_id)
+            except Exception as e:
+                logger.warning("Failed to delete stale agent %s: %s", agent_id, e)
+                continue
+            self._miss_counts.pop(agent_id, None)
+            self._prev_states.pop(agent_id, None)
             event = AgentEvent(
-                agent_id=str(dba.id),
-                event_type="status_change",
-                detail={"from": "running", "to": "completed"},
+                agent_id=agent_id,
+                event_type="deleted",
+                detail={"reason": "missing from camc for %d consecutive polls" % _MISS_THRESHOLD},
             )
             try:
-                self._agent_store.add_event(event)
+                self._event_bus.publish(event)
             except Exception:
                 pass
-            self._event_bus.publish(event)
-            logger.info("Cleaned stale agent %s (not in any camc)", dba.id)
+            logger.info(
+                "Deleted stale agent %s (not in any camc for %d polls)",
+                agent_id, _MISS_THRESHOLD,
+            )
 
         return total
 
