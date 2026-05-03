@@ -378,14 +378,23 @@ async def get_output(
 async def get_full_output(
     agent_id: str, request: Request, offset: int = 0
 ):
-    """Read full output log for an agent, supports incremental fetching.
+    """Return the full pane buffer for an agent.
 
-    Returns output from byte offset onwards. Client should track the
-    returned next_offset and pass it on subsequent calls to get only new data.
+    Original design used a per-agent pipe-pane raw log under
+    `LOG_DIR/output/<id>.log` for byte-offset incremental fetching.
+    Since the camc-only migration nothing writes that log (camc owns
+    the agent and only emits its own monitor log + shared events.jsonl),
+    so this endpoint silently returned `output: ""`.
 
-    For TUI apps (Cursor, Claude) that use alternate screen buffers, pyte
-    rendering collapses history into a single screen. In that case, falls
-    back to the JSONL monitor log which contains timestamped snapshots.
+    camc is the source of truth: tmux capture-pane reads directly from
+    the live pane buffer, which already includes the scrollback that
+    Claude/Codex's alternate-screen flows would otherwise collapse.
+    Delegate to `agent_manager.capture_output` (same path as `/output`
+    and `cam capture`) with `lines=0` for the full scrollback buffer.
+
+    `next_offset` is kept for API compatibility but the byte-offset
+    semantics are gone — clients can still hash + compare on output
+    length to detect changes.
     """
     state = await _require_auth(request)
 
@@ -395,142 +404,31 @@ async def get_full_output(
             status_code=404, detail=f"Agent not found: {agent_id}"
         )
 
-    from cam.constants import LOG_DIR
-    from cam.utils.terminal import render_raw_data, render_raw_log
-
-    log_path = LOG_DIR / "output" / f"{agent.id}.log"
-
-    # Try local log file first (works for local transport)
-    # Always render from the start — pyte needs the full terminal byte
-    # stream to correctly reconstruct screen state (cursor, clears, etc.).
-    # The offset is only used to detect whether the file has grown.
-    if log_path.exists():
-        try:
-            file_size = log_path.stat().st_size
-            if file_size > offset:
-                output = render_raw_log(log_path)
-                # TUI apps produce dense ANSI escape sequences that
-                # pyte collapses into just the visible screen.  JSONL
-                # monitor snapshots often contain far more scrollable
-                # history.  Always compare and pick the larger source.
-                jsonl_output = _build_jsonl_history(str(agent.id))
-                if jsonl_output and len(jsonl_output) > len(output):
-                    output = jsonl_output
-                return {
-                    "agent_id": str(agent.id),
-                    "output": output,
-                    "next_offset": file_size,
-                    "active": not agent.is_terminal(),
-                }
-        except Exception:
-            pass
-
-    # Fallback: read from transport (e.g. SSH remote log)
-    context = state.context_store.get(str(agent.context_id))
-    if context and agent.tmux_session:
-        from cam.transport.factory import TransportFactory
-
-        transport = TransportFactory.create(context.machine)
-        if hasattr(transport, 'read_output_log'):
-            try:
-                raw_data, next_offset = await transport.read_output_log(
-                    agent.tmux_session, 0, max_bytes=2_000_000
-                )
-                if raw_data and next_offset > offset:
-                    output = render_raw_data(raw_data)
-                    # Same as local: pick whichever source is larger
-                    jsonl_output = _build_jsonl_history(str(agent.id))
-                    if jsonl_output and len(jsonl_output) > len(output):
-                        output = jsonl_output
-                    return {
-                        "agent_id": str(agent.id),
-                        "output": output,
-                        "next_offset": next_offset,
-                        "active": not agent.is_terminal(),
-                    }
-            except Exception:
-                pass
-
-    # Last resort: try JSONL log directly (no pipe-pane log at all)
-    jsonl_output = _build_jsonl_history(str(agent.id))
-    if jsonl_output:
+    if not agent.tmux_session or agent.is_terminal():
         return {
             "agent_id": str(agent.id),
-            "output": jsonl_output,
+            "output": "",
             "next_offset": offset,
-            "active": not agent.is_terminal(),
+            "active": False,
         }
 
-    return {
-        "agent_id": str(agent.id),
-        "output": "",
-        "next_offset": offset,
-        "active": not agent.is_terminal(),
-    }
-
-
-def _build_jsonl_history(agent_id: str) -> str:
-    """Build scrollable output history from JSONL monitor log snapshots.
-
-    Reads the structured JSONL log, extracts output snapshots, deduplicates
-    consecutive identical outputs, and joins them with timestamp headers.
-    This provides full history for TUI apps where pyte rendering fails.
-
-    Returns:
-        Concatenated history text, or empty string if no log found.
-    """
-    from cam.utils.logging import AgentLogger
-
-    agent_logger = AgentLogger(agent_id)
-    entries = agent_logger.read_lines()
-    if not entries:
-        return ""
-
-    parts: list[str] = []
-    prev_output = ""
-    prev_len = 0
-    prev_hash = 0
-
-    for entry in entries:
-        etype = entry.get("type", "")
-        ts = entry.get("ts", "")[:19]
-
-        if etype == "output":
-            output = entry.get("output", "")
-            if not output or output == prev_output:
-                continue
-            # Cheap similarity check: compare length + first/last lines.
-            # Near-identical redraws (spinner, cursor blink) keep the same
-            # structure — only a few chars change. This catches ~95% of
-            # duplicates with zero allocation overhead.
-            cur_len = len(output)
-            # Hash first 80 + last 80 chars (stable across minor redraws)
-            cur_hash = hash(output[:80]) ^ hash(output[-80:])
-            if prev_hash:
-                len_ratio = min(cur_len, prev_len) / max(cur_len, prev_len) if max(cur_len, prev_len) else 1
-                if len_ratio > 0.9 and cur_hash == prev_hash:
-                    prev_output = output
-                    prev_len = cur_len
-                    continue
-            parts.append(f"--- {ts} ---\n{output}")
-            prev_output = output
-            prev_len = cur_len
-            prev_hash = cur_hash
-        elif etype == "state_change":
-            data = entry.get("data", {})
-            from_s = data.get("from", "")
-            to_s = data.get("to", "")
-            label = f"{from_s} → {to_s}" if from_s else to_s
-            parts.append(f"--- {ts} [State: {label}] ---")
-        elif etype == "auto_confirm":
-            parts.append(f"--- {ts} [Auto-confirmed] ---")
-        elif etype == "finalize":
-            data = entry.get("data", {})
-            status = data.get("status", "")
-            reason = data.get("reason", "")
-            parts.append(f"--- {ts} [Finished: {status} - {reason}] ---")
-
-    return "\n\n".join(parts)
+    try:
+        output, _output_hash = await state.agent_manager.capture_output(
+            str(agent.id), lines=0
+        )
+        return {
+            "agent_id": str(agent.id),
+            "output": output,
+            "next_offset": len(output),
+            "active": not agent.is_terminal(),
+        }
+    except Exception:
+        return {
+            "agent_id": str(agent.id),
+            "output": "",
+            "next_offset": offset,
+            "active": False,
+        }
 
 
 @router.post("/agents/{agent_id}/input")
