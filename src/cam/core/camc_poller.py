@@ -412,11 +412,11 @@ class CamcPoller:
                 logger.debug("Failed to poll events from %s: %s", name, e)
 
         # Stale agent cleanup: camc is the single source of truth for the
-        # agent list. A running cam DB agent that no camc reports for
-        # _MISS_THRESHOLD polls in a row was either camc-rm'd, had its
-        # monitor die, or is on a host that's gone away — drop the row
-        # rather than promoting it to a zombie `completed` record. The
-        # consecutive-miss counter rides out transient SSH glitches.
+        # agent list. A cam DB agent (any status) that no camc reports
+        # for _MISS_THRESHOLD polls in a row was either camc-rm'd, had
+        # its monitor die, or is on a host that's gone away — drop the
+        # row regardless of status. The consecutive-miss counter rides
+        # out transient SSH glitches.
         all_db_agents = self._agent_store.list()
         for dba in all_db_agents:
             agent_id = str(dba.id)
@@ -424,8 +424,6 @@ class CamcPoller:
                 # Reset miss counter on every successful sighting.
                 if agent_id in self._miss_counts:
                     del self._miss_counts[agent_id]
-                continue
-            if dba.status != AgentStatus.RUNNING:
                 continue
             n = self._miss_counts.get(agent_id, 0) + 1
             self._miss_counts[agent_id] = n
