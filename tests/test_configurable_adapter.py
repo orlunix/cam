@@ -127,7 +127,7 @@ class TestCodexToml:
         cmd = codex_adapter.get_launch_command(task, context)
         assert cmd[0] == "codex"
         assert "--full-auto" not in cmd
-        assert task.prompt in cmd
+        assert task.prompt not in cmd
 
     def test_launch_no_double_substitution(self):
         """Prompt containing {path} must not get replaced by context.path."""
@@ -144,10 +144,10 @@ class TestCodexToml:
         assert cmd == ["tool", "--prompt", "fix {path} in code"]
 
     def test_startup_wait(self, codex_adapter):
-        assert codex_adapter.get_startup_wait() == 0.0
+        assert codex_adapter.get_startup_wait() == 20.0
 
     def test_needs_prompt_after_launch(self, codex_adapter):
-        assert codex_adapter.needs_prompt_after_launch() is False
+        assert codex_adapter.needs_prompt_after_launch() is True
 
     # ── detect_state ──
 

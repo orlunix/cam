@@ -89,20 +89,15 @@ pattern = "\\\\(y/n\\\\)|\\\\[Y/n\\\\]|\\\\[y/N\\\\]"
 response = "y"
 send_enter = false
 
-[probe]
-char = "1"
-wait = 0.1
-idle_threshold = 2
-
 [monitor]
+busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
+done_pattern = "ed\\s+for\\s+\\d+[smh]"
 confirm_cooldown = 0.5
 confirm_sleep = 0.2
 completion_stable = 0.5
 health_check_interval = 1
 empty_threshold = 3
 auto_exit = false
-probe_stable = 0.5
-probe_cooldown = 0.5
 exit_action = "kill_session"
 exit_command = "/exit"
 """
@@ -117,13 +112,18 @@ def make_config():
 class MockStore:
     """Mock agent store that records updates."""
 
-    def __init__(self, agent_id="test-001", auto_exit=False):
+    def __init__(self, agent_id="test-001", auto_exit=False, auto_exit_enable=False):
         self.agent_id = agent_id
         self.auto_exit = auto_exit
         self.updates = []
         self.agent = {
             "id": agent_id,
-            "task": {"name": "test", "tool": "claude", "auto_exit": auto_exit},
+            "task": {
+                "name": "test",
+                "tool": "claude",
+                "auto_exit": auto_exit,
+                "auto_exit_enable": auto_exit_enable,
+            },
             "status": "running",
             "state": None,
         }
@@ -275,8 +275,8 @@ def run_monitor_steps(screens, store=None, config=None, auto_exit=False,
                       session_alive=True, max_cycles=None):
     """Run monitor loop with mocked transport. Returns (store, events).
 
-    Uses a fake clock so that timer-based logic (health check, probe cooldown,
-    confirm cooldown) advances properly even though real wall time barely moves.
+    Uses a fake clock so that timer-based logic (health check, confirm cooldown,
+    idle detection) advances properly even though real wall time barely moves.
     Each mock_sleep call advances the fake clock by the requested duration.
     """
     from camc_pkg.monitor import run_monitor_loop
@@ -492,143 +492,49 @@ class TestStep6OutputChange:
         assert len(idles) >= 1
 
 
-class TestStep7SmartProbe:
-    """Step 7: Smart probe — idle detection."""
+class TestStep7PureScreenIdle:
+    """Step 7: Pure screen idle detection."""
 
-    def test_probe_idle_same_screen(self):
-        """Stable identical output → probe → idle confirmed."""
+    def test_done_prompt_idle_same_screen(self):
+        """Done signal plus stable prompt fast-tracks idle confirmation."""
         screens = [screen_idle()] * 20
         store, events = run_monitor_steps(screens, max_cycles=25)
         idles = events.of_type("idle_confirmed")
         assert len(idles) >= 1
         assert store.last_state == "idle"
 
-    def test_probe_busy_changing_screen(self):
-        """Changing output → probe never fires (changed=True skips it)."""
+    def test_busy_changing_screen_not_idle(self):
+        """Changing output without a prompt is not considered idle."""
         screens = [screen_busy() for _ in range(20)]
         store, events = run_monitor_steps(screens, max_cycles=25)
-        probes = events.of_type("probe")
-        # Probes may fire but should return busy
         idles = events.of_type("idle_confirmed")
         assert len(idles) == 0
 
-    def test_probe_not_during_confirm(self):
-        """Confirm dialog → probe should not fire (confirm takes priority)."""
+    def test_confirm_takes_priority_over_idle(self):
+        """Confirm dialog should be handled before idle detection."""
         screens = [screen_confirm_proceed()] * 20
         store, events = run_monitor_steps(screens, max_cycles=25)
-        # Confirm fires and continues, probe is skipped
         confirms = events.of_type("auto_confirm")
         assert len(confirms) >= 1
-
-
-class TestSmartProbeBSpaceRetry:
-    """Smart probe BSpace cleanup retry — when BSpace fails to erase probe char."""
-
-    def _run_probe(self, capture_sequence):
-        """Run _smart_probe with a controlled sequence of captures.
-
-        capture_sequence: list of strings returned by successive capture_tmux calls.
-          [0] = baseline, [1] = after first BSpace, [2] = after retry BSpace, ...
-        """
-        from camc_pkg.monitor import _smart_probe
-
-        config = make_config()
-        captures = iter(capture_sequence)
-        bspace_count = [0]
-
-        def mock_capture(session):
-            return next(captures)
-
-        def mock_send_input(session, text, send_enter=False):
-            return True
-
-        def mock_send_key(session, key):
-            if key == "BSpace":
-                bspace_count[0] += 1
-            return True
-
-        def mock_sleep(duration):
-            pass
-
-        with patch("camc_pkg.monitor.capture_tmux", side_effect=mock_capture), \
-             patch("camc_pkg.monitor.tmux_send_input", side_effect=mock_send_input), \
-             patch("camc_pkg.monitor.tmux_send_key", side_effect=mock_send_key), \
-             patch("camc_pkg.monitor.time.sleep", side_effect=mock_sleep):
-            result = _smart_probe("test-session", config)
-
-        return result, bspace_count[0]
-
-    def test_bspace_works_first_try(self):
-        """BSpace erases probe char on first try → idle."""
-        baseline = "❯ \n────\n"
-        captures = [baseline, baseline]  # baseline, then clean after BSpace
-        result, bspace_count = self._run_probe(captures)
-        assert result == "idle"
-        assert bspace_count == 1  # only the initial BSpace
-
-    def test_bspace_fails_once_then_succeeds(self):
-        """BSpace fails first time (probe char still on screen), retries, succeeds."""
-        baseline = "❯ \n────\n"
-        with_probe_char = "❯ 1\n────\n"  # "1" still on screen after first BSpace
-        captures = [baseline, with_probe_char, baseline]  # baseline, fail, clean
-        result, bspace_count = self._run_probe(captures)
-        assert result == "idle"
-        assert bspace_count == 2  # initial + 1 retry
-
-    def test_bspace_fails_twice_then_succeeds(self):
-        """BSpace fails twice, third retry succeeds."""
-        baseline = "❯ \n────\n"
-        with_probe_char = "❯ 1\n────\n"
-        captures = [baseline, with_probe_char, with_probe_char, baseline]
-        result, bspace_count = self._run_probe(captures)
-        assert result == "idle"
-        assert bspace_count == 3  # initial + 2 retries
-
-    def test_bspace_fails_all_retries(self):
-        """BSpace fails all retries → still returns busy (gives up)."""
-        baseline = "❯ \n────\n"
-        with_probe_char = "❯ 1\n────\n"
-        # baseline + 4 failures (1 initial check + 3 retries)
-        captures = [baseline] + [with_probe_char] * 5
-        result, bspace_count = self._run_probe(captures)
-        assert result == "busy"
-        assert bspace_count == 5  # initial + 3 retries + final retry before giving up
-
-    def test_real_screen_change_no_retry(self):
-        """Screen changes with different content (not probe char) → busy, no retry."""
-        baseline = "❯ \n────\n"
-        new_output = "● Bash(\"ls\")\n  ⎿  Running...\n"  # agent started working
-        captures = [baseline, new_output]
-        result, bspace_count = self._run_probe(captures)
-        assert result == "busy"
-        assert bspace_count == 1  # only initial BSpace, no retries
-
-    def test_diff_only_probe_char_detection(self):
-        """Verify _diff_is_only_probe_char correctly identifies probe char residue."""
-        from camc_pkg.monitor import _diff_is_only_probe_char
-
-        baseline = "❯ \n────\n"
-        # Only probe char appended to prompt line
-        assert _diff_is_only_probe_char(baseline, "❯ 1\n────\n", "1") is True
-        # Different content entirely
-        assert _diff_is_only_probe_char(baseline, "● Bash(ls)\n────\n", "1") is False
-        # Multiple lines changed
-        assert _diff_is_only_probe_char(baseline, "❯ 1\n───x\n", "1") is False
-        # Different line count
-        assert _diff_is_only_probe_char(baseline, "❯ 1\n────\nextra\n", "1") is False
-        # No difference
-        assert _diff_is_only_probe_char(baseline, baseline, "1") is False
 
 
 class TestStep8AutoExit:
     """Step 8: Auto-exit on idle."""
 
-    def test_auto_exit_enabled(self):
+    def test_auto_exit_enabled_when_armed(self):
         screens = [screen_idle()] * 20
-        store = MockStore(auto_exit=True)
+        store = MockStore(auto_exit=True, auto_exit_enable=True)
         store, events = run_monitor_steps(screens, store=store, max_cycles=30)
         assert store.last_status == "completed"
-        assert any("auto-exit" in str(e.get("detail", "")) for e in events.events)
+        completed = events.of_type("completed")
+        assert any(e["detail"].get("reason") == "auto-exit" for e in completed)
+
+    def test_auto_exit_requires_safety_arm(self):
+        screens = [screen_idle()] * 80
+        store = MockStore(auto_exit=True, auto_exit_enable=False)
+        store, events = run_monitor_steps(screens, store=store, max_cycles=30)
+        assert events.of_type("idle_confirmed")
+        assert store.last_status is None or store.last_status != "completed"
 
     def test_auto_exit_disabled(self):
         screens = [screen_idle()] * 30

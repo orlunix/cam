@@ -147,7 +147,8 @@ class TestDetection:
 
     def test_auto_confirm(self):
         c = AdapterConfig({"confirm": [{"pattern": "Enter to confirm", "response": "", "send_enter": True}]})
-        assert should_auto_confirm("Enter to confirm", c) == ("", True)
+        confirm = should_auto_confirm("Enter to confirm", c)
+        assert confirm[:2] == ("", True)
         assert should_auto_confirm("nothing", c) is None
 
     def test_ready(self):
@@ -168,6 +169,52 @@ class TestBuildCommand:
     def test_no_placeholders(self):
         c = AdapterConfig({"launch": {"command": ["claude", "--flag"]}})
         assert _build_command(c, "p", "/t") == ["claude", "--flag"]
+
+
+# ---------------------------------------------------------------------------
+# tmux_send_input — bracketed-paste behavior for multi-line text
+# ---------------------------------------------------------------------------
+
+class TestTmuxSendInputBracketedPaste:
+    """Multi-line text must wrap with \\x1b[200~ ... \\x1b[201~ so the
+    receiving TUI treats it as one atomic paste, otherwise the trailing
+    Enter races with tmux's still-flushing literal-write and the input
+    sits unsubmitted (reproduced live: codex camflow-review d248e129)."""
+
+    def _capture_send_keys(self, text, send_enter=True):
+        """Run tmux_send_input against a mock _run; return list of arg lists
+        passed to subprocess so tests can inspect what was sent."""
+        from camc_pkg import transport
+        calls = []
+        orig = transport._run
+        try:
+            transport._run = lambda args, **kw: (calls.append(args), (0, ""))[1]
+            transport.tmux_send_input("nope", text, send_enter=send_enter)
+        finally:
+            transport._run = orig
+        return calls
+
+    def test_multiline_wrapped_with_bracketed_paste(self):
+        calls = self._capture_send_keys("line1\nline2\nline3")
+        # First call should be send-keys -l -- with bracketed-paste payload
+        first = calls[0]
+        assert first[-3] == "-l"
+        payload = first[-1]
+        assert payload.startswith("\x1b[200~")
+        assert payload.endswith("\x1b[201~")
+        assert "line1\nline2\nline3" in payload
+
+    def test_singleline_not_wrapped(self):
+        calls = self._capture_send_keys("just one line")
+        payload = calls[0][-1]
+        assert payload == "just one line"
+        assert "\x1b[200~" not in payload
+
+    def test_empty_text_only_sends_enter(self):
+        calls = self._capture_send_keys("", send_enter=True)
+        # Only the Enter call, no literal-write call
+        assert len(calls) == 1
+        assert calls[0][-1] == "Enter"
 
 
 # ---------------------------------------------------------------------------

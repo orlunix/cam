@@ -191,16 +191,27 @@ def tmux_send_input(session_id, text, send_enter=True):
     target = "%s:0.0" % session_id
     try:
         if text:
-            _run(base + ["send-keys", "-t", target, "-l", "--", text], check=True)
+            # Multi-line text: wrap with bracketed-paste markers so the
+            # receiving TUI (Claude/Codex Ink, etc.) treats it as one
+            # atomic paste rather than streamed keystrokes. Without
+            # this, embedded LFs get inserted as soft returns and the
+            # trailing Enter races with tmux's still-flushing literal
+            # write — long multi-line inputs sit unsubmitted in the
+            # input box. Bracketed paste also fixes the related case
+            # where the TUI shows a "[Pasted text #N +M lines]"
+            # collapsed preview that one Enter cleanly submits.
+            payload = ("\x1b[200~" + text + "\x1b[201~") if "\n" in text else text
+            _run(base + ["send-keys", "-t", target, "-l", "--", payload], check=True)
         if send_enter:
-            # Brief pause so the literal text is flushed into the pane
-            # buffer before Enter arrives. On some tmux builds (notably
-            # older ones over slow NFS/SSH) back-to-back subprocess
-            # send-keys can race, and Enter gets swallowed before the
-            # text lands — the prompt stays half-typed.
+            # Pause so the literal text is flushed into the pane buffer
+            # before Enter arrives. Scale with payload size — for big
+            # multi-line prompts (tens of KB), the fixed 0.15s window
+            # was too short and Enter raced ahead, leaving the input
+            # typed but unsubmitted. ~1ms per 50 chars, floor 0.15s,
+            # ceiling 2.0s.
             if text:
                 import time as _t
-                _t.sleep(0.15)
+                _t.sleep(min(2.0, max(0.15, len(text) / 50000.0 + 0.15)))
             _run(base + ["send-keys", "-t", target, "Enter"], check=True)
         return True
     except Exception as e:
