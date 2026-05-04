@@ -3179,12 +3179,15 @@ def cmd_msg(args):
         cmd_msg_show(args)
     elif sub == "list":
         cmd_msg_list(args)
+    elif sub == "wait":
+        cmd_msg_wait(args)
     else:
         sys.stderr.write(
-            "usage: camc msg {send,show,list} ...\n"
-            "  send <to> --text \"...\"   send and block on reply\n"
-            "  show <msg_id>           show ledger history for a message\n"
-            "  list [--for <to>]       list recent messages\n"
+            "usage: camc msg {send,wait,show,list} ...\n"
+            "  send <to> --text \"...\" [--no-wait]   send (block, or async with --no-wait)\n"
+            "  wait <msg_id> [--timeout N]          wait for reply to existing send\n"
+            "  show <msg_id>                        show ledger history for a message\n"
+            "  list [--for <to>]                    list recent messages\n"
         )
         sys.exit(1)
 
@@ -3244,32 +3247,19 @@ def cmd_msg_list(args):
         ))
 
 
-def cmd_msg_send(args):
-    """Send a message to another agent and block until its reply is stable.
+def _msg_resolve_session(to_arg):
+    """Resolve target name/id/short-id → (target_record_or_None, session_or_None, tool_busy).
 
-    Prints the reply on stdout (exit 0) or an error on stderr (exit 1).
-    Designed to be called from inside an agent's Bash tool — the natural
-    subprocess.wait() of the caller IS the block-and-wait mechanism.
+    Used by both blocking send and async wait. tool_busy is the adapter's
+    optional negative-only busy_pattern, used to suppress false-success
+    while the agent is mid-generation.
     """
-    text = args.text
-    timeout = max(int(getattr(args, "timeout", 600) or 600), 5)
-    poll = 5.0
-    stable_for = 4   # 4 × 5s = 20s settle window
-
-    # Resolve target name / short-id / full-id → tmux session
     store = AgentStore()
-    target = store.get(args.to)
+    target = store.get(to_arg)
     if target:
         session = _sf(target, "tmux_session")
     else:
-        session = args.to
-    if not session:
-        sys.stderr.write("camc msg: target '%s' has no tmux session\n" % args.to)
-        sys.exit(1)
-
-    # Optional: load adapter for negative-only busy_pattern guard. We
-    # never use it for positive completion detection; only as a "still
-    # busy, don't declare done yet" signal when known.
+        session = to_arg
     tool = _agent_tool(target) if target else ""
     tool_busy = None
     if tool:
@@ -3280,23 +3270,39 @@ def cmd_msg_send(args):
             tool_busy = None
         except Exception:
             tool_busy = None
+    return target, session, tool_busy
 
+
+def _msg_inject(session, to_label, text, timeout_s):
+    """Inject [camc msg#<id>]: marker into pane. Logs ledger sent/delivered.
+
+    Returns (msg_id, ok). On delivery failure, logs deliver_failed and
+    returns ok=False; caller decides the user-facing exit behavior.
+    """
     msg_id = uuid4().hex[:8]
     payload = "[camc msg#%s]: %s" % (msg_id, text)
-    anchor = re.compile(r"\[camc msg#%s\]:" % re.escape(msg_id))
-
     _msg_ledger_append({
-        "msg_id": msg_id, "to": args.to, "tmux_session": session,
-        "text": text, "status": "sent", "timeout_s": timeout,
+        "msg_id": msg_id, "to": to_label, "tmux_session": session,
+        "text": text, "status": "sent", "timeout_s": timeout_s,
     })
-
     if not tmux_send_input(session, payload, send_enter=True):
         _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
-        sys.stderr.write("camc msg: failed to deliver to '%s'\n" % args.to)
-        sys.exit(1)
+        return (msg_id, False)
     _msg_ledger_append({"msg_id": msg_id, "status": "delivered"})
+    return (msg_id, True)
 
-    deadline = time.time() + timeout
+
+def _msg_wait_loop(session, msg_id, timeout_s, tool_busy=None,
+                   poll=5.0, stable_for=4):
+    """Poll the target pane until the reply for msg_id stabilises.
+
+    Returns (reply_text, status):
+      ("...", "replied")          stable reply found
+      (None, "reply_not_stable")  timeout after the marker was at least once seen
+      (None, "no_marker")         timeout without ever seeing the marker
+    """
+    anchor = re.compile(r"\[camc msg#%s\]:" % re.escape(msg_id))
+    deadline = time.time() + timeout_s
     last_hash, stable_count, saw_marker_ever = None, 0, False
 
     while time.time() < deadline:
@@ -3366,30 +3372,123 @@ def cmd_msg_send(args):
             stable_count, last_hash = 0, h
 
         if stable_count >= stable_for:
-            _msg_ledger_append({
-                "msg_id": msg_id, "status": "replied", "reply": text_out,
-            })
-            sys.stdout.write(text_out + "\n")
-            sys.stdout.flush()
-            sys.exit(0)
+            return (text_out, "replied")
         time.sleep(poll)
-    saw_marker = saw_marker_ever
 
-    # Timeout — record + actionable message on stdout (so calling Claude tool sees it)
-    why = "reply not stable" if saw_marker else "no marker seen"
+    return (None, "reply_not_stable" if saw_marker_ever else "no_marker")
+
+
+def _msg_find_replied(msg_id):
+    """Scan ledger for a 'replied' record for msg_id. Return reply text or None."""
+    for rec in _msg_ledger_iter(msg_id=msg_id):
+        if rec.get("status") == "replied":
+            return rec.get("reply", "")
+    return None
+
+
+def _msg_lookup_sent_session(msg_id):
+    """Return (tmux_session, to_label) from the 'sent' ledger record, or (None, None)."""
+    for rec in _msg_ledger_iter(msg_id=msg_id):
+        if rec.get("status") == "sent":
+            return rec.get("tmux_session"), rec.get("to")
+    return None, None
+
+
+def _msg_finalize_wait(to_label, msg_id, timeout_s, reply, status):
+    """Append final ledger record, print user-facing output, exit.
+
+    Shared between blocking `send` and async `wait` paths so the
+    success/timeout surface stays identical (only the entry point differs).
+    On reply, the `replied` record is appended only if not already
+    present — protects against a parallel `wait` race or accidental
+    double-finalize.
+    """
+    if status == "replied":
+        if _msg_find_replied(msg_id) is None:
+            _msg_ledger_append({
+                "msg_id": msg_id, "status": "replied", "reply": reply,
+            })
+        sys.stdout.write(reply + "\n")
+        sys.stdout.flush()
+        sys.exit(0)
+    why = "reply not stable" if status == "reply_not_stable" else "no marker seen"
     _msg_ledger_append({
         "msg_id": msg_id, "status": "timeout", "reason": why,
-        "elapsed_s": timeout,
+        "elapsed_s": timeout_s,
     })
     sys.stdout.write(
         "[camc msg#%s] timed out after %ds (%s on '%s').\n"
         "  Check status later:  camc msg show %s\n"
         "  Recent messages:     camc msg list\n"
         "  Peek target's pane:  camc capture %s\n"
-        % (msg_id, timeout, why, args.to, msg_id, args.to)
+        % (msg_id, timeout_s, why, to_label, msg_id, to_label)
     )
     sys.stdout.flush()
     sys.exit(1)
+
+
+def cmd_msg_send(args):
+    """Send a message to another agent.
+
+    Default mode blocks until the reply is stable, then prints reply on
+    stdout and exits 0. With --no-wait, returns immediately after
+    delivery, printing MSG_ID=<8hex> + STATUS=sent. The async caller
+    then uses `camc msg wait <msg_id>` to retrieve the reply later.
+    """
+    text = args.text
+    timeout = max(int(getattr(args, "timeout", 600) or 600), 5)
+    no_wait = bool(getattr(args, "no_wait", False))
+
+    target, session, tool_busy = _msg_resolve_session(args.to)
+    if not session:
+        sys.stderr.write("camc msg: target '%s' has no tmux session\n" % args.to)
+        sys.exit(1)
+
+    msg_id, ok = _msg_inject(session, args.to, text, timeout)
+    if not ok:
+        sys.stderr.write("camc msg: failed to deliver to '%s'\n" % args.to)
+        sys.exit(1)
+
+    if no_wait:
+        # Async: only "delivered to tmux pane", NOT "received/read by target".
+        # Caller picks up reply later via `camc msg wait <msg_id>`.
+        sys.stdout.write("MSG_ID=%s\nSTATUS=sent\n" % msg_id)
+        sys.stdout.flush()
+        sys.exit(0)
+
+    reply, status = _msg_wait_loop(session, msg_id, timeout, tool_busy=tool_busy)
+    _msg_finalize_wait(args.to, msg_id, timeout, reply, status)
+
+
+def cmd_msg_wait(args):
+    """Wait for a reply to a previously-sent message id.
+
+    If the ledger already has a 'replied' record for this id, prints
+    that reply and exits 0 immediately. Otherwise polls the recorded
+    tmux session until the reply stabilises or the timeout elapses.
+    """
+    msg_id = args.msg_id
+    timeout = max(int(getattr(args, "timeout", 600) or 600), 5)
+
+    existing = _msg_find_replied(msg_id)
+    if existing is not None:
+        sys.stdout.write(existing + "\n")
+        sys.stdout.flush()
+        sys.exit(0)
+
+    session, to_label = _msg_lookup_sent_session(msg_id)
+    if not session:
+        sys.stderr.write(
+            "camc msg: no sent record for '%s' — nothing to wait on\n" % msg_id)
+        sys.exit(1)
+    to_label = to_label or msg_id
+
+    # Refresh tool_busy from current registry if target still resolvable.
+    # If not, tool_busy stays None and only the generic busy gate applies.
+    _, _, tool_busy = _msg_resolve_session(to_label)
+
+    reply, status = _msg_wait_loop(session, msg_id, timeout, tool_busy=tool_busy)
+    _msg_finalize_wait(to_label, msg_id, timeout, reply, status)
 
 
 # ===========================================================================
@@ -3957,10 +4056,16 @@ examples:
     # heal
     msg_p = sub.add_parser("msg", help="Inter-agent messaging (send + block on reply)")
     msg_sub = msg_p.add_subparsers(dest="msg_cmd")
-    msg_send = msg_sub.add_parser("send", help="Send to <to> and block until stable reply on stdout")
+    msg_send = msg_sub.add_parser("send", help="Send to <to>; default blocks for reply, --no-wait returns immediately")
     msg_send.add_argument("to", help="Target agent name or ID")
     msg_send.add_argument("--text", "-t", required=True, help="Message text")
     msg_send.add_argument("--timeout", type=int, default=600,
+                          help="Seconds to wait for stable reply [default: 600 = 10min]")
+    msg_send.add_argument("--no-wait", dest="no_wait", action="store_true",
+                          help="Inject and return immediately; reply retrieved later via `camc msg wait <msg_id>`")
+    msg_wait = msg_sub.add_parser("wait", help="Wait for reply to a previously-sent message id")
+    msg_wait.add_argument("msg_id", help="Message id (8-hex from `camc msg send --no-wait`)")
+    msg_wait.add_argument("--timeout", type=int, default=600,
                           help="Seconds to wait for stable reply [default: 600 = 10min]")
     msg_show = msg_sub.add_parser("show", help="Show ledger history for a message id")
     msg_show.add_argument("msg_id", help="Message id (8-hex from `camc msg send`)")
