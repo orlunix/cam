@@ -84,6 +84,20 @@ response = "1"
 send_enter = false
 
 [[confirm]]
+# Claude Code v2.1+ trust dialog — Ink select menu shown on first
+# launch in any new working directory. Two phrasings observed:
+#   "Enter to confirm · Esc to cancel"   (initial trust)
+#   "Allow once  Allow always"           (per-tool permission)
+# Press Enter to select the highlighted default (Trust this folder /
+# Allow once). Without this rule, the launch loop times out waiting
+# for ready_pattern (the dialog hides the ❯), then blasts the prompt
+# at the dialog — the body is consumed as keystrokes, the trailing
+# Enter confirms the dialog, and the prompt never reaches Claude.
+pattern = "Enter to confirm.*Esc to cancel|Allow once.*Allow always"
+response = ""
+send_enter = true
+
+[[confirm]]
 # y/n confirmation prompt
 pattern = "\\(y/n\\)|\\[Y/n\\]|\\[y/N\\]"
 response = "y"

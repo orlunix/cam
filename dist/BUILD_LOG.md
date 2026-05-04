@@ -1677,3 +1677,16 @@ d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
 d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
 ```
 
+## v1.2.0  aa4cf4f-dirty 2026-05-04 06:02
+
+- Lines: 7009
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+aa4cf4f camc msg: V0 final fixes — sync src/camc, tighten footer trim, integer-second timeout
+7e110dd camc msg: tool-aware turn-complete + footer trim for codex/cursor/etc.
+0af81cf camc msg: ledger persistence, msg show/list, default timeout 10min, helpful timeout output
+95564b8 camc: add `camc msg send` for inter-agent messaging
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+```
+
