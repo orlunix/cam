@@ -3086,6 +3086,39 @@ def cmd_history(args):
 # anchor is a deterministic uuid marker, not a fuzzy prompt match.
 
 _MSG_PROMPT_CHARS = "❯›>"
+_MSG_LEDGER_PATH = os.path.expanduser("~/.cam/messages.jsonl")
+
+
+def _msg_ledger_append(record):
+    """Append a JSON record to ~/.cam/messages.jsonl (best-effort)."""
+    record.setdefault("ts", _now_iso())
+    try:
+        os.makedirs(os.path.dirname(_MSG_LEDGER_PATH), exist_ok=True)
+        with open(_MSG_LEDGER_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def _msg_ledger_iter(msg_id=None):
+    """Yield ledger records, optionally filtered by msg_id."""
+    if not os.path.exists(_MSG_LEDGER_PATH):
+        return
+    try:
+        with open(_MSG_LEDGER_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except (ValueError, TypeError):
+                    continue
+                if msg_id and rec.get("msg_id") != msg_id:
+                    continue
+                yield rec
+    except OSError:
+        pass
 
 
 def cmd_msg(args):
@@ -3093,9 +3126,59 @@ def cmd_msg(args):
     sub = getattr(args, "msg_cmd", None)
     if sub == "send":
         cmd_msg_send(args)
+    elif sub == "show":
+        cmd_msg_show(args)
+    elif sub == "list":
+        cmd_msg_list(args)
     else:
-        sys.stderr.write("usage: camc msg send <to> --text \"...\"\n")
+        sys.stderr.write(
+            "usage: camc msg {send,show,list} ...\n"
+            "  send <to> --text \"...\"   send and block on reply\n"
+            "  show <msg_id>           show ledger history for a message\n"
+            "  list [--for <to>]       list recent messages\n"
+        )
         sys.exit(1)
+
+
+def cmd_msg_show(args):
+    """Print all ledger entries for a given msg_id."""
+    found = False
+    for rec in _msg_ledger_iter(msg_id=args.msg_id):
+        sys.stdout.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        found = True
+    if not found:
+        sys.stderr.write("camc msg: no ledger entries for '%s'\n" % args.msg_id)
+        sys.exit(1)
+
+
+def cmd_msg_list(args):
+    """List recent messages (last `--limit`, optionally filtered by `--for`)."""
+    limit = max(int(getattr(args, "limit", 50) or 50), 1)
+    only_to = getattr(args, "to", None)
+    # Index by msg_id, take latest known status
+    seen = {}
+    order = []
+    for rec in _msg_ledger_iter():
+        mid = rec.get("msg_id")
+        if not mid:
+            continue
+        if only_to and rec.get("to") and rec["to"] != only_to:
+            continue
+        if mid not in seen:
+            order.append(mid)
+        seen[mid] = {**seen.get(mid, {}), **rec}
+    rows = [seen[m] for m in order[-limit:]]
+    if not rows:
+        sys.stderr.write("camc msg: ledger empty\n")
+        return
+    for r in rows:
+        sys.stdout.write("%s  %s  to=%s  status=%s  text=%s\n" % (
+            (r.get("ts") or "")[:19],
+            r.get("msg_id", "?"),
+            r.get("to", "?"),
+            r.get("status", "?"),
+            (r.get("text") or "")[:60].replace("\n", " "),
+        ))
 
 
 def cmd_msg_send(args):
@@ -3106,7 +3189,7 @@ def cmd_msg_send(args):
     subprocess.wait() of the caller IS the block-and-wait mechanism.
     """
     text = args.text
-    timeout = max(int(getattr(args, "timeout", 300) or 300), 5)
+    timeout = max(int(getattr(args, "timeout", 600) or 600), 5)
     poll = 1.0
     stable_for = 2
 
@@ -3125,9 +3208,16 @@ def cmd_msg_send(args):
     payload = "[camc msg#%s]: %s" % (msg_id, text)
     anchor = re.compile(r"\[camc msg#%s\]:" % re.escape(msg_id))
 
+    _msg_ledger_append({
+        "msg_id": msg_id, "to": args.to, "tmux_session": session,
+        "text": text, "status": "sent", "timeout_s": timeout,
+    })
+
     if not tmux_send_input(session, payload, send_enter=True):
+        _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
         sys.stderr.write("camc msg: failed to deliver to '%s'\n" % args.to)
         sys.exit(1)
+    _msg_ledger_append({"msg_id": msg_id, "status": "delivered"})
 
     deadline = time.time() + timeout
     last_hash, stable_count, saw_marker = None, 0, False
@@ -3181,15 +3271,28 @@ def cmd_msg_send(args):
         complete = (empty_prompt or done_verb) and (status_idle or empty_prompt)
 
         if complete and stable_count >= stable_for:
+            _msg_ledger_append({
+                "msg_id": msg_id, "status": "replied", "reply": text_out,
+            })
             sys.stdout.write(text_out + "\n")
             sys.stdout.flush()
             sys.exit(0)
         time.sleep(poll)
 
-    if saw_marker:
-        sys.stderr.write("camc msg: timeout — reply not stable within %ds\n" % timeout)
-    else:
-        sys.stderr.write("camc msg: timeout — no marker seen on '%s' within %ds\n" % (to, timeout))
+    # Timeout — record + actionable message on stdout (so calling Claude tool sees it)
+    why = "reply not stable" if saw_marker else "no marker seen"
+    _msg_ledger_append({
+        "msg_id": msg_id, "status": "timeout", "reason": why,
+        "elapsed_s": timeout,
+    })
+    sys.stdout.write(
+        "[camc msg#%s] timed out after %ds (%s on '%s').\n"
+        "  Check status later:  camc msg show %s\n"
+        "  Recent messages:     camc msg list\n"
+        "  Peek target's pane:  camc capture %s\n"
+        % (msg_id, timeout, why, args.to, msg_id, args.to)
+    )
+    sys.stdout.flush()
     sys.exit(1)
 
 
@@ -3761,8 +3864,15 @@ examples:
     msg_send = msg_sub.add_parser("send", help="Send to <to> and block until stable reply on stdout")
     msg_send.add_argument("to", help="Target agent name or ID")
     msg_send.add_argument("--text", "-t", required=True, help="Message text")
-    msg_send.add_argument("--timeout", type=int, default=300,
-                          help="Seconds to wait for stable reply [default: 300]")
+    msg_send.add_argument("--timeout", type=int, default=600,
+                          help="Seconds to wait for stable reply [default: 600 = 10min]")
+    msg_show = msg_sub.add_parser("show", help="Show ledger history for a message id")
+    msg_show.add_argument("msg_id", help="Message id (8-hex from `camc msg send`)")
+    msg_list = msg_sub.add_parser("list", help="List recent messages from the ledger")
+    msg_list.add_argument("--for", "--to", dest="to", default=None,
+                          help="Filter: only messages sent to this agent")
+    msg_list.add_argument("--limit", "-n", type=int, default=50,
+                          help="Show last N messages [default: 50]")
 
     heal_p = sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
     heal_p.add_argument("--upgrade", action="store_true", help="Kill ALL monitors and restart with current camc binary")
