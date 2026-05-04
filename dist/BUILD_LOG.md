@@ -1508,3 +1508,42 @@ d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
 f24d910 tmux: pin to /usr/bin/tmux on Rocky 8.9, simplify preflight
 ```
 
+## v1.2.0  0af81cf-dirty 2026-05-03 19:12
+
+- Lines: 6927
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+0af81cf camc msg: ledger persistence, msg show/list, default timeout 10min, helpful timeout output
+95564b8 camc: add `camc msg send` for inter-agent messaging
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+22650e4 preflight: skip tool-binary check when env_setup is set
+```
+
+## v1.2.0  0af81cf-dirty 2026-05-03 19:15
+
+- Lines: 6931
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+0af81cf camc msg: ledger persistence, msg show/list, default timeout 10min, helpful timeout output
+95564b8 camc: add `camc msg send` for inter-agent messaging
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+22650e4 preflight: skip tool-binary check when env_setup is set
+```
+
+## v1.2.0  0af81cf-dirty 2026-05-03 19:16
+
+- Lines: 6939
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+0af81cf camc msg: ledger persistence, msg show/list, default timeout 10min, helpful timeout output
+95564b8 camc: add `camc msg send` for inter-agent messaging
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+22650e4 preflight: skip tool-binary check when env_setup is set
+```
+
