@@ -27,7 +27,7 @@ import time
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "0af81cf-dirty 2026-05-03 19:16"
+__build__ = "7e110dd-dirty 2026-05-03 21:22"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -6001,7 +6001,40 @@ def cmd_history(args):
 # anchor is a deterministic uuid marker, not a fuzzy prompt match.
 
 _MSG_PROMPT_CHARS = "❯›>"
+# TUI-only prompt chars that are safe to strip as a *prefix* (not just
+# bare). `❯` (Claude) and `›` (codex) are not used in markdown; codex
+# in particular rotates placeholder text after the prompt char ("›
+# Summarize recent commits", "› Improve documentation in @filename"),
+# which would otherwise never stabilize. ASCII `>` is excluded — it's
+# the markdown blockquote char and must NOT be prefix-stripped.
+_MSG_TUI_PROMPT_PREFIXES = "❯›"
 _MSG_LEDGER_PATH = os.path.expanduser("~/.cam/messages.jsonl")
+# Universal busy-tail regex: any of these in the visible tail means
+# the agent is mid-tool / mid-thought even if a partial answer is
+# stable above. Tool-agnostic — works for any TUI with a busy
+# indicator. Adapter busy_pattern (when known) is checked separately
+# as an additional negative-only guard.
+_MSG_GENERIC_BUSY_RE = re.compile(
+    # Strong signals that almost never appear in regular content:
+    r"esc to interrupt"
+    # Spinner glyphs (braille + circles) used by every TUI we know of:
+    r"|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|◐|◓|◑|◒"
+    # Generic progress words are too common in real replies ("working
+    # tree", "thinking model"). Only treat them as busy when they look
+    # like a TUI progress label with an ellipsis or elapsed timer.
+    r"|(?:^|\n)\s*[^\n]{0,40}\b(?:Generating|Thinking|Working|Cooking|"
+    r"Brewing|Cogitating|Sautéing|Crunching|Smooshing|Compiling|"
+    r"Churning|Distilling)(?:…|\.{3}|\s+\(\d+s)",
+    re.IGNORECASE,
+)
+_MSG_HRULE_RE = re.compile(r"^[─━═-]{4,}$")
+# Status-bar shape: indented (2+ leading spaces) "model · /path"-style line
+# at the very bottom of the input box. Anchored on:
+#   - leading whitespace (TUI footers are indented; reply content is not)
+#   - " · " separator (middle dot)
+#   - path-like trailing token (~, /, or .) — distinguishes from math/product
+#     lines like "F = m · a" or "5 · 3 = 15" that legitimately appear in reply.
+_MSG_STATUS_BAR_RE = re.compile(r"^\s{2,}\S+(?:\s\S+)*\s·\s[~/.]\S*\s*$")
 
 
 def _msg_ledger_append(record):
@@ -6067,17 +6100,31 @@ def cmd_msg_show(args):
 
 
 def cmd_msg_list(args):
-    """List recent messages (last `--limit`, optionally filtered by `--for`)."""
+    """List recent messages (last `--limit`, optionally filtered by `--for`).
+
+    The `--for <to>` filter binds at the FIRST record that has a `to`
+    field (the `sent` record). If no record for a msg_id matches, the
+    whole conversation is suppressed — including its `delivered`,
+    `replied`, and `timeout` follow-ups, which lack a `to` field on
+    their own.
+    """
     limit = max(int(getattr(args, "limit", 50) or 50), 1)
     only_to = getattr(args, "to", None)
-    # Index by msg_id, take latest known status
+    # Pass 1: compute which msg_ids match the --for filter (if any).
+    matching_ids = None
+    if only_to:
+        matching_ids = set()
+        for rec in _msg_ledger_iter():
+            if rec.get("to") == only_to and rec.get("msg_id"):
+                matching_ids.add(rec["msg_id"])
+    # Pass 2: fold each msg_id's records into one row, keep order seen.
     seen = {}
     order = []
     for rec in _msg_ledger_iter():
         mid = rec.get("msg_id")
         if not mid:
             continue
-        if only_to and rec.get("to") and rec["to"] != only_to:
+        if matching_ids is not None and mid not in matching_ids:
             continue
         if mid not in seen:
             order.append(mid)
@@ -6105,10 +6152,10 @@ def cmd_msg_send(args):
     """
     text = args.text
     timeout = max(int(getattr(args, "timeout", 600) or 600), 5)
-    poll = 1.0
-    stable_for = 2
+    poll = 5.0
+    stable_for = 4   # 4 × 5s = 20s settle window
 
-    # Resolve target name / short-id / full-id → tmux session (same path as `camc send`)
+    # Resolve target name / short-id / full-id → tmux session
     store = AgentStore()
     target = store.get(args.to)
     if target:
@@ -6119,17 +6166,19 @@ def cmd_msg_send(args):
         sys.stderr.write("camc msg: target '%s' has no tmux session\n" % args.to)
         sys.exit(1)
 
-    # Load target's tool adapter (claude/codex/cursor/...) so turn-complete
-    # detection uses the per-tool busy / done patterns instead of
-    # hardcoding Claude's "esc to interrupt" / "? for shortcuts".
+    # Optional: load adapter for negative-only busy_pattern guard. We
+    # never use it for positive completion detection; only as a "still
+    # busy, don't declare done yet" signal when known.
     tool = _agent_tool(target) if target else ""
-    tool_cfg = None
-    try:
-        tool_cfg = _load_config(tool) if tool else None
-    except SystemExit:
-        tool_cfg = None
-    except Exception:
-        tool_cfg = None
+    tool_busy = None
+    if tool:
+        try:
+            cfg = _load_config(tool)
+            tool_busy = getattr(cfg, "busy_pattern", None)
+        except SystemExit:
+            tool_busy = None
+        except Exception:
+            tool_busy = None
 
     msg_id = uuid4().hex[:8]
     payload = "[camc msg#%s]: %s" % (msg_id, text)
@@ -6147,85 +6196,75 @@ def cmd_msg_send(args):
     _msg_ledger_append({"msg_id": msg_id, "status": "delivered"})
 
     deadline = time.time() + timeout
-    last_hash, stable_count, saw_marker = None, 0, False
+    last_hash, stable_count, saw_marker_ever = None, 0, False
 
     while time.time() < deadline:
         cap = capture_tmux(session, lines=500)
         if not cap:
             time.sleep(poll); continue
 
+        # Per-tick gate (re-verified, NOT memoized): the marker MUST be
+        # in the current capture. If it scrolled off (very long reply
+        # past the 500-line window) we bail to "no marker" timeout
+        # instead of silently emitting an empty reply.
+        if not anchor.search(cap):
+            stable_count, last_hash = 0, None
+            time.sleep(poll); continue
+        saw_marker_ever = True
+
+        # Extract reply: lines after the marker line.
         lines = cap.splitlines()
         idx = -1
         for i, ln in enumerate(lines):
             if anchor.search(ln):
                 idx = i; break
-        if idx < 0:
-            time.sleep(poll); continue
-        saw_marker = True
-
-        # Trim header (lines after marker) + footer (UI noise + idle
-        # placeholder). Tool-specific: any line that matches the tool's
-        # prompt_pattern at the BOTTOM of the buffer is the input box
-        # placeholder (e.g. codex's "› Improve documentation in @filename")
-        # or the bare prompt awaiting input — neither is reply content.
         body = lines[idx + 1:]
+
+        # Universal footer trim — drop only well-known TUI ornaments so
+        # the hash tracks reply content. Tightened from "starts with
+        # prompt char" to "EXACTLY a prompt char", which preserves
+        # legitimate markdown blockquote (`> quote`) and codex
+        # placeholder content. Status-bar regex requires both leading
+        # indent AND a path-like suffix, which preserves math/product
+        # lines (`F = m · a`, `5 · 3 = 15`).
         while body:
-            t = body[-1].strip()
-            if (not t or t in _MSG_PROMPT_CHARS
+            raw = body[-1]
+            t = raw.strip()
+            if (not t
+                or t in _MSG_PROMPT_CHARS                    # bare ❯ / › / >  (exact)
+                or (t and t[0] in _MSG_TUI_PROMPT_PREFIXES)  # ❯/› + content (TUI placeholder)
                 or "for shortcuts" in t
                 or "esc to interrupt" in t
                 or "context left" in t
                 or "Press enter to continue" in t
-                or re.match(r"^[\w\-.]+(?:\s+[\w\-.]+)*\s+·\s+", t)  # codex status bar "model · path"
-                ):
-                body.pop(); continue
-            if tool_cfg and tool_cfg.prompt_pattern and tool_cfg.prompt_pattern.search(t):
+                or _MSG_STATUS_BAR_RE.match(raw)             # "  model · ~/path"
+                or _MSG_HRULE_RE.match(t)):                  # ─/━/═/-{4,}
                 body.pop(); continue
             break
         text_out = "\n".join(body).rstrip()
         if not text_out:
             time.sleep(poll); continue
 
-        # Stable check: same content for `stable_for` consecutive captures
+        # Generic busy-tail: any of these in the visible tail means the
+        # agent is mid-tool-call / mid-thought, even if a static partial
+        # reply is shown above. Block success.
+        tail = "\n".join(lines[-40:])
+        if _MSG_GENERIC_BUSY_RE.search(tail):
+            stable_count, last_hash = 0, None
+            time.sleep(poll); continue
+        if tool_busy is not None and tool_busy.search(tail):
+            stable_count, last_hash = 0, None
+            time.sleep(poll); continue
+
+        # Stability is tracked on the TRIMMED reply text. Status-bar
+        # redraws no longer reset the count, but real reply changes do.
         h = hashlib.md5(text_out.encode("utf-8")).hexdigest()
         if h == last_hash:
             stable_count += 1
         else:
             stable_count, last_hash = 0, h
 
-        # Turn-complete signal — delegate to the same logic the monitor
-        # uses, so it works across claude / codex / cursor / openclaude /
-        # aider / … out of the box. Each tool's adapter TOML defines the
-        # right prompt_pattern + busy_pattern + completion strategy.
-        # Belt-and-suspenders: verify busy indicator is absent too.
-        complete = False
-        if tool_cfg:
-            try:
-                if detect_completion(cap, tool_cfg) == "completed":
-                    complete = True
-            except Exception:
-                complete = False
-            if complete and tool_cfg.busy_pattern:
-                tail = "\n".join(lines[-40:])
-                if tool_cfg.busy_pattern.search(tail):
-                    complete = False
-        else:
-            # Unknown tool → fall back to "bare prompt at bottom + no
-            # generic busy indicator + stable hash". Works for most
-            # standard TUIs.
-            tail40 = "\n".join(lines[-40:])
-            bare = any(
-                len(l.strip()) == 1 and l.strip() in _MSG_PROMPT_CHARS
-                for l in lines[-40:]
-            )
-            busy = bool(re.search(
-                r"esc to interrupt|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|"
-                r"(?:Generating|Thinking|Working|Running)",
-                tail40, re.IGNORECASE,
-            ))
-            complete = bare and not busy
-
-        if complete and stable_count >= stable_for:
+        if stable_count >= stable_for:
             _msg_ledger_append({
                 "msg_id": msg_id, "status": "replied", "reply": text_out,
             })
@@ -6233,6 +6272,7 @@ def cmd_msg_send(args):
             sys.stdout.flush()
             sys.exit(0)
         time.sleep(poll)
+    saw_marker = saw_marker_ever
 
     # Timeout — record + actionable message on stdout (so calling Claude tool sees it)
     why = "reply not stable" if saw_marker else "no marker seen"
