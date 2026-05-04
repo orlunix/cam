@@ -139,22 +139,22 @@ class TestClaudeAdapter:
         result = adapter.should_auto_confirm("Do you want to proceed?")
         assert result is not None
         assert isinstance(result, ConfirmAction)
-        assert result.response == ""
-        assert result.send_enter is True
+        assert result.response == "1"
+        assert result.send_enter is False
 
     def test_auto_confirm_yes_menu(self):
         adapter = ClaudeAdapter()
         result = adapter.should_auto_confirm("1. Yes  2. Yes, don't ask again  3. No")
         assert result is not None
-        assert result.response == ""
-        assert result.send_enter is True
+        assert result.response == "1"
+        assert result.send_enter is False
 
     def test_auto_confirm_allow_menu(self):
         adapter = ClaudeAdapter()
         result = adapter.should_auto_confirm("1. Allow for this session")
         assert result is not None
-        assert result.response == ""
-        assert result.send_enter is True
+        assert result.response == "1"
+        assert result.send_enter is False
 
     def test_auto_confirm_strips_ansi(self):
         adapter = ClaudeAdapter()
@@ -162,9 +162,9 @@ class TestClaudeAdapter:
             "\x1B[1m1. Yes\x1B[0m  2. No"
         )
         assert result is not None
-        assert result.response == ""
+        assert result.response == "1"
 
-    def test_auto_confirm_plan_mode_interview(self):
+    def test_no_auto_confirm_plan_mode_interview(self):
         adapter = ClaudeAdapter()
         output = (
             "❯ 1. ~/confluence.token.txt\n"
@@ -172,9 +172,7 @@ class TestClaudeAdapter:
             "Enter to select · Tab/Arrow keys to navigate · Esc to cancel"
         )
         result = adapter.should_auto_confirm(output)
-        assert result is not None
-        assert result.response == ""
-        assert result.send_enter is True
+        assert result is None
 
     def test_no_auto_confirm(self):
         adapter = ClaudeAdapter()
@@ -190,8 +188,8 @@ class TestClaudeAdapter:
         adapter = ClaudeAdapter()
         result = adapter.should_auto_confirm("1. Yes, I trust this folder  2. No, exit")
         assert result is not None
-        assert result.response == ""
-        assert result.send_enter is True
+        assert result.response == "1"
+        assert result.send_enter is False
 
     def test_completion_returns_none_for_single_prompt(self):
         adapter = ClaudeAdapter()
@@ -275,11 +273,11 @@ class TestCodexAdapter:
         cmd = adapter.get_launch_command(task, context)
         assert cmd[0] == "codex"
         assert "--full-auto" not in cmd
-        assert task.prompt in cmd
+        assert task.prompt not in cmd
 
-    def test_not_interactive(self):
+    def test_interactive_prompt_after_launch(self):
         adapter = CodexAdapter()
-        assert not adapter.needs_prompt_after_launch()
+        assert adapter.needs_prompt_after_launch()
 
     def test_auto_confirm_trust_dialog(self):
         adapter = CodexAdapter()
