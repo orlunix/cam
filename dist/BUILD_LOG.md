@@ -1547,3 +1547,133 @@ d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
 22650e4 preflight: skip tool-binary check when env_setup is set
 ```
 
+## v1.2.0  7e110dd-dirty 2026-05-03 19:43
+
+- Lines: 6902
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+7e110dd camc msg: tool-aware turn-complete + footer trim for codex/cursor/etc.
+0af81cf camc msg: ledger persistence, msg show/list, default timeout 10min, helpful timeout output
+95564b8 camc: add `camc msg send` for inter-agent messaging
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+```
+
+## v1.2.0  7e110dd-dirty 2026-05-03 19:44
+
+- Lines: 6906
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+7e110dd camc msg: tool-aware turn-complete + footer trim for codex/cursor/etc.
+0af81cf camc msg: ledger persistence, msg show/list, default timeout 10min, helpful timeout output
+95564b8 camc: add `camc msg send` for inter-agent messaging
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+```
+
+## v1.2.0  7e110dd-dirty 2026-05-03 19:46
+
+- Lines: 6906
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+7e110dd camc msg: tool-aware turn-complete + footer trim for codex/cursor/etc.
+0af81cf camc msg: ledger persistence, msg show/list, default timeout 10min, helpful timeout output
+95564b8 camc: add `camc msg send` for inter-agent messaging
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+```
+
+## v1.2.0  7e110dd-dirty 2026-05-03 19:47
+
+- Lines: 6890
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+7e110dd camc msg: tool-aware turn-complete + footer trim for codex/cursor/etc.
+0af81cf camc msg: ledger persistence, msg show/list, default timeout 10min, helpful timeout output
+95564b8 camc: add `camc msg send` for inter-agent messaging
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+```
+
+## v1.2.0  7e110dd-dirty 2026-05-03 20:45
+
+- Lines: 6954
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+7e110dd camc msg: tool-aware turn-complete + footer trim for codex/cursor/etc.
+0af81cf camc msg: ledger persistence, msg show/list, default timeout 10min, helpful timeout output
+95564b8 camc: add `camc msg send` for inter-agent messaging
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+```
+
+## v1.2.0  7e110dd-dirty 2026-05-03 20:50
+
+- Lines: 6959
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+7e110dd camc msg: tool-aware turn-complete + footer trim for codex/cursor/etc.
+0af81cf camc msg: ledger persistence, msg show/list, default timeout 10min, helpful timeout output
+95564b8 camc: add `camc msg send` for inter-agent messaging
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+```
+
+## v1.2.0  7e110dd-dirty 2026-05-03 21:11
+
+- Lines: 6970
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+7e110dd camc msg: tool-aware turn-complete + footer trim for codex/cursor/etc.
+0af81cf camc msg: ledger persistence, msg show/list, default timeout 10min, helpful timeout output
+95564b8 camc: add `camc msg send` for inter-agent messaging
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+```
+
+## v1.2.0  7e110dd-dirty 2026-05-03 21:12
+
+- Lines: 6972
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+7e110dd camc msg: tool-aware turn-complete + footer trim for codex/cursor/etc.
+0af81cf camc msg: ledger persistence, msg show/list, default timeout 10min, helpful timeout output
+95564b8 camc: add `camc msg send` for inter-agent messaging
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+```
+
+## v1.2.0  7e110dd-dirty 2026-05-03 21:15
+
+- Lines: 6980
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+7e110dd camc msg: tool-aware turn-complete + footer trim for codex/cursor/etc.
+0af81cf camc msg: ledger persistence, msg show/list, default timeout 10min, helpful timeout output
+95564b8 camc: add `camc msg send` for inter-agent messaging
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+```
+
+## v1.2.0  7e110dd-dirty 2026-05-03 21:22
+
+- Lines: 6979
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+7e110dd camc msg: tool-aware turn-complete + footer trim for codex/cursor/etc.
+0af81cf camc msg: ledger persistence, msg show/list, default timeout 10min, helpful timeout output
+95564b8 camc: add `camc msg send` for inter-agent messaging
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+```
+
