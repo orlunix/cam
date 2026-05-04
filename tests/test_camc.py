@@ -195,14 +195,16 @@ class TestTmuxSendInputBracketedPaste:
         return calls
 
     def test_multiline_wrapped_with_bracketed_paste(self):
+        from camc_pkg.transport import _BRACKET_PASTE_OPEN, _BRACKET_PASTE_CLOSE
         calls = self._capture_send_keys("line1\nline2\nline3")
-        # First call should be send-keys -l -- with bracketed-paste payload
-        first = calls[0]
-        assert first[-3] == "-l"
-        payload = first[-1]
-        assert payload.startswith("\x1b[200~")
-        assert payload.endswith("\x1b[201~")
-        assert "line1\nline2\nline3" in payload
+        # Bracketed-paste structure: OPEN as its own call, body chunks,
+        # then CLOSE as its own call. Small body fits in one chunk →
+        # exactly 3 literal-write calls.
+        lit = [c for c in calls if "-l" in c]
+        assert lit[0][-1] == _BRACKET_PASTE_OPEN
+        assert lit[-1][-1] == _BRACKET_PASTE_CLOSE
+        body = "".join(c[-1] for c in lit[1:-1])
+        assert body == "line1\nline2\nline3"
 
     def test_singleline_not_wrapped(self):
         calls = self._capture_send_keys("just one line")
@@ -210,11 +212,210 @@ class TestTmuxSendInputBracketedPaste:
         assert payload == "just one line"
         assert "\x1b[200~" not in payload
 
+    def test_large_multiline_chunks_with_bracket_markers(self):
+        # tmux 3.4's send-keys -l rejects ~20KB+ payloads with "command
+        # too long". Multi-line inputs above the chunk size MUST be
+        # split into multiple send-keys calls, with the bracketed-paste
+        # OPEN as the first literal-write call and CLOSE as the last,
+        # so the receiving TUI still treats the body as one atomic paste.
+        from camc_pkg.transport import (
+            _TMUX_SEND_CHUNK, _BRACKET_PASTE_OPEN, _BRACKET_PASTE_CLOSE,
+        )
+        # Build a 21KB multi-line payload like camflow planner's prompt.
+        body = ("a" * 100 + "\n") * 210  # ~21K bytes, contains \n
+        assert len(body) > _TMUX_SEND_CHUNK
+        calls = self._capture_send_keys(body)
+        # Filter to literal-write calls only (-l flag); strip the Enter call.
+        lit = [c for c in calls if "-l" in c]
+        assert len(lit) >= 3, lit  # at least open + 1 chunk + close
+        assert lit[0][-1] == _BRACKET_PASTE_OPEN
+        assert lit[-1][-1] == _BRACKET_PASTE_CLOSE
+        # Body chunks in the middle: concatenated must equal original text.
+        assert "".join(c[-1] for c in lit[1:-1]) == body
+        # Each chunk must be <= the chunk size cap.
+        for c in lit[1:-1]:
+            assert len(c[-1]) <= _TMUX_SEND_CHUNK
+
+    def test_large_singleline_chunked_without_bracket_markers(self):
+        # Single-line very long input: chunk, but no bracketed-paste
+        # markers (no embedded LFs to compose).
+        from camc_pkg.transport import (
+            _TMUX_SEND_CHUNK, _BRACKET_PASTE_OPEN, _BRACKET_PASTE_CLOSE,
+        )
+        body = "x" * (_TMUX_SEND_CHUNK * 2 + 100)  # > 16KB, no \n
+        calls = self._capture_send_keys(body)
+        lit = [c for c in calls if "-l" in c]
+        assert len(lit) >= 2  # at least 2 chunks
+        # NO bracketed-paste markers
+        assert all(_BRACKET_PASTE_OPEN not in c[-1] for c in lit)
+        assert all(_BRACKET_PASTE_CLOSE not in c[-1] for c in lit)
+        # Reconstructs to original text
+        assert "".join(c[-1] for c in lit) == body
+
     def test_empty_text_only_sends_enter(self):
         calls = self._capture_send_keys("", send_enter=True)
         # Only the Enter call, no literal-write call
         assert len(calls) == 1
         assert calls[0][-1] == "Enter"
+
+
+# ---------------------------------------------------------------------------
+# camc msg — non-blocking send (--no-wait) + wait subcommand
+# ---------------------------------------------------------------------------
+
+class TestMsgNoWait:
+    """`camc msg send <to> -t "..." --no-wait` injects + returns immediately
+    with MSG_ID=<8hex>/STATUS=sent on stdout. The blocking default is
+    untouched."""
+
+    def _setup(self, monkeypatch, tmp_path, deliver_ok=True):
+        from camc_pkg import cli
+        ledger = tmp_path / "messages.jsonl"
+        monkeypatch.setattr(cli, "_MSG_LEDGER_PATH", str(ledger))
+        monkeypatch.setattr(cli, "_msg_resolve_session",
+                            lambda to: (None, "cam-fake", None))
+        sent_calls = []
+        monkeypatch.setattr(cli, "tmux_send_input",
+                            lambda s, t, send_enter=True: (sent_calls.append((s, t)), deliver_ok)[1])
+        return cli, ledger, sent_calls
+
+    def test_no_wait_returns_immediately(self, monkeypatch, tmp_path, capsys):
+        import argparse, re as _re
+        cli, ledger, sent_calls = self._setup(monkeypatch, tmp_path)
+        args = argparse.Namespace(to="fake", text="hello world",
+                                  timeout=600, no_wait=True)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_send(args)
+        assert ei.value.code == 0
+        out = capsys.readouterr().out
+        m = _re.search(r"MSG_ID=([0-9a-f]{8})", out)
+        assert m, "stdout missing MSG_ID=<8hex>"
+        msg_id = m.group(1)
+        assert "STATUS=sent" in out
+        # Marker injected, ledger has sent + delivered records for the same id
+        assert sent_calls and ("[camc msg#%s]:" % msg_id) in sent_calls[0][1]
+        statuses = [r["status"] for r in cli._msg_ledger_iter(msg_id=msg_id)]
+        assert statuses == ["sent", "delivered"]
+
+    def test_no_wait_deliver_failure_exits_1(self, monkeypatch, tmp_path, capsys):
+        import argparse
+        cli, ledger, _ = self._setup(monkeypatch, tmp_path, deliver_ok=False)
+        args = argparse.Namespace(to="fake", text="x", timeout=600, no_wait=True)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_send(args)
+        assert ei.value.code == 1
+        # stderr names the target; ledger has sent + deliver_failed
+        cap = capsys.readouterr()
+        assert "fake" in cap.err
+        statuses = [r["status"] for r in cli._msg_ledger_iter()]
+        assert "deliver_failed" in statuses
+
+
+class TestMsgWait:
+    """`camc msg wait <msg_id>` first checks ledger for an existing reply,
+    then falls back to a polling loop on the recorded session."""
+
+    def test_wait_returns_existing_replied_immediately(self, monkeypatch, tmp_path, capsys):
+        import argparse
+        from camc_pkg import cli
+        ledger = tmp_path / "messages.jsonl"
+        monkeypatch.setattr(cli, "_MSG_LEDGER_PATH", str(ledger))
+        # Pre-seed: sent → delivered → replied
+        cli._msg_ledger_append({"msg_id": "abc12345", "to": "fake",
+                                "tmux_session": "cam-fake", "text": "q",
+                                "status": "sent", "timeout_s": 600})
+        cli._msg_ledger_append({"msg_id": "abc12345", "status": "delivered"})
+        cli._msg_ledger_append({"msg_id": "abc12345", "status": "replied",
+                                "reply": "PRIOR_REPLY_FROM_LEDGER"})
+
+        args = argparse.Namespace(msg_id="abc12345", timeout=10)
+        # No capture_tmux mock — must not be called for ledger-hit path.
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_wait(args)
+        assert ei.value.code == 0
+        assert "PRIOR_REPLY_FROM_LEDGER" in capsys.readouterr().out
+
+    def test_wait_no_sent_record_exits_1(self, monkeypatch, tmp_path, capsys):
+        import argparse
+        from camc_pkg import cli
+        monkeypatch.setattr(cli, "_MSG_LEDGER_PATH", str(tmp_path / "messages.jsonl"))
+        args = argparse.Namespace(msg_id="00000000", timeout=10)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_wait(args)
+        assert ei.value.code == 1
+        assert "00000000" in capsys.readouterr().err
+
+    def test_finalize_does_not_double_append_replied(self, monkeypatch, tmp_path, capsys):
+        # Per peer spec: append `replied` only if not already present in
+        # ledger, so a re-wait or parallel wait can't add duplicates.
+        import argparse
+        from camc_pkg import cli
+        monkeypatch.setattr(cli, "_MSG_LEDGER_PATH", str(tmp_path / "messages.jsonl"))
+        cli._msg_ledger_append({"msg_id": "ddee0011", "to": "fake",
+                                "tmux_session": "cam-fake", "text": "q",
+                                "status": "sent", "timeout_s": 600})
+        cli._msg_ledger_append({"msg_id": "ddee0011", "status": "replied",
+                                "reply": "EXISTING"})
+        # Force the slow path (reply *just* arrived via polling) and
+        # confirm finalize is a no-op on the ledger when one already
+        # exists. Use sys.exit catcher.
+        with pytest.raises(SystemExit) as ei:
+            cli._msg_finalize_wait("fake", "ddee0011", 60,
+                                   "DUPLICATE_FROM_POLL", "replied")
+        assert ei.value.code == 0
+        records = list(cli._msg_ledger_iter(msg_id="ddee0011"))
+        replied = [r for r in records if r.get("status") == "replied"]
+        assert len(replied) == 1
+        assert replied[0]["reply"] == "EXISTING"
+
+
+class TestMsgWaitLoop:
+    """`_msg_wait_loop` polling logic — extracted helper, mockable."""
+
+    def test_finds_stable_reply(self, monkeypatch):
+        from camc_pkg import cli
+        pane = (
+            "previous content\n"
+            "› [camc msg#abc12345]: my question\n"
+            "\n"
+            "• short answer\n"
+            "\n"
+            "› placeholder\n"
+            "  gpt-5.5 xhigh fast · /tmp\n"
+        )
+        monkeypatch.setattr(cli, "capture_tmux", lambda s, lines=500: pane)
+        reply, status = cli._msg_wait_loop("cam-x", "abc12345",
+                                           timeout_s=5, tool_busy=None,
+                                           poll=0.02, stable_for=2)
+        assert status == "replied"
+        assert "short answer" in reply
+
+    def test_no_marker_returns_no_marker(self, monkeypatch):
+        from camc_pkg import cli
+        monkeypatch.setattr(cli, "capture_tmux",
+                            lambda s, lines=500: "no marker line in this pane\n")
+        reply, status = cli._msg_wait_loop("cam-x", "deadbeef",
+                                           timeout_s=0.2, tool_busy=None,
+                                           poll=0.02, stable_for=2)
+        assert reply is None
+        assert status == "no_marker"
+
+    def test_busy_tail_blocks_success(self, monkeypatch):
+        from camc_pkg import cli
+        pane = (
+            "› [camc msg#abc12345]: my question\n"
+            "\n"
+            "• partial answer being generated\n"
+            "esc to interrupt\n"
+        )
+        monkeypatch.setattr(cli, "capture_tmux", lambda s, lines=500: pane)
+        reply, status = cli._msg_wait_loop("cam-x", "abc12345",
+                                           timeout_s=0.2, tool_busy=None,
+                                           poll=0.02, stable_for=2)
+        # Marker IS in pane → not "no_marker"; busy tail prevents stable
+        # accumulation → "reply_not_stable" timeout.
+        assert reply is None
+        assert status == "reply_not_stable"
 
 
 # ---------------------------------------------------------------------------
