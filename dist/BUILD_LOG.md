@@ -1729,3 +1729,55 @@ aa4cf4f camc msg: V0 final fixes — sync src/camc, tighten footer trim, integer
 0af81cf camc msg: ledger persistence, msg show/list, default timeout 10min, helpful timeout output
 ```
 
+## v1.2.0  31d8278-dirty 2026-05-04 08:24
+
+- Lines: 7159
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+31d8278 camc: bracketed-paste multi-line send + scheduler ready-gate + test cleanup
+6ebba2c camc: fix TOML array parser shattering comma-strings into separate args
+2caca9c fix(claude adapter): delayed-send-after-ready + trust-dialog rule
+aa4cf4f camc msg: V0 final fixes — sync src/camc, tighten footer trim, integer-second timeout
+7e110dd camc msg: tool-aware turn-complete + footer trim for codex/cursor/etc.
+```
+
+## v1.2.0  31d8278-dirty 2026-05-04 08:26
+
+- Lines: 7159
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+31d8278 camc: bracketed-paste multi-line send + scheduler ready-gate + test cleanup
+6ebba2c camc: fix TOML array parser shattering comma-strings into separate args
+2caca9c fix(claude adapter): delayed-send-after-ready + trust-dialog rule
+aa4cf4f camc msg: V0 final fixes — sync src/camc, tighten footer trim, integer-second timeout
+7e110dd camc msg: tool-aware turn-complete + footer trim for codex/cursor/etc.
+```
+
+## v1.2.0  31d8278-dirty 2026-05-04 08:29
+
+- Lines: 7163
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+31d8278 camc: bracketed-paste multi-line send + scheduler ready-gate + test cleanup
+6ebba2c camc: fix TOML array parser shattering comma-strings into separate args
+2caca9c fix(claude adapter): delayed-send-after-ready + trust-dialog rule
+aa4cf4f camc msg: V0 final fixes — sync src/camc, tighten footer trim, integer-second timeout
+7e110dd camc msg: tool-aware turn-complete + footer trim for codex/cursor/etc.
+```
+
+## v1.2.0  31d8278-dirty 2026-05-04 08:48
+
+- Lines: 7191
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+31d8278 camc: bracketed-paste multi-line send + scheduler ready-gate + test cleanup
+6ebba2c camc: fix TOML array parser shattering comma-strings into separate args
+2caca9c fix(claude adapter): delayed-send-after-ready + trust-dialog rule
+aa4cf4f camc msg: V0 final fixes — sync src/camc, tighten footer trim, integer-second timeout
+7e110dd camc msg: tool-aware turn-complete + footer trim for codex/cursor/etc.
+```
+
