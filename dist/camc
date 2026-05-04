@@ -27,7 +27,7 @@ import time
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "d1ffa7c-dirty 2026-04-23 23:22"
+__build__ = "92c152a-dirty 2026-05-03 18:08"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -5989,6 +5989,126 @@ def cmd_history(args):
 
 
 # ===========================================================================
+# Inter-agent messaging — `camc msg send`
+# ===========================================================================
+#
+# Block-and-wait protocol: inject "[MSG#<id>]: <text>" into target's pane,
+# poll its tmux capture, extract everything after the marker, wait until
+# the response hash is stable for 2 captures and the tmux turn-complete
+# signal fires (empty prompt + done verb + status bar idle), print the
+# response on stdout, exit 0. Algorithm cribbed from TeaSpirit's
+# block_renderer (Python TeaSpirit assistant mode); simplified because our
+# anchor is a deterministic uuid marker, not a fuzzy prompt match.
+
+_MSG_PROMPT_CHARS = "❯›>"
+
+
+def cmd_msg(args):
+    """Inter-agent messaging dispatch."""
+    sub = getattr(args, "msg_cmd", None)
+    if sub == "send":
+        cmd_msg_send(args)
+    else:
+        sys.stderr.write("usage: camc msg send <to> --text \"...\"\n")
+        sys.exit(1)
+
+
+def cmd_msg_send(args):
+    """Send a message to another agent and block until its reply is stable.
+
+    Prints the reply on stdout (exit 0) or an error on stderr (exit 1).
+    Designed to be called from inside an agent's Bash tool — the natural
+    subprocess.wait() of the caller IS the block-and-wait mechanism.
+    """
+    text = args.text
+    timeout = max(int(getattr(args, "timeout", 300) or 300), 5)
+    poll = 1.0
+    stable_for = 2
+
+    # Resolve target name / short-id / full-id → tmux session (same path as `camc send`)
+    store = AgentStore()
+    target = store.get(args.to)
+    if target:
+        session = _sf(target, "tmux_session")
+    else:
+        session = args.to
+    if not session:
+        sys.stderr.write("camc msg: target '%s' has no tmux session\n" % args.to)
+        sys.exit(1)
+
+    msg_id = uuid4().hex[:8]
+    payload = "[camc msg#%s]: %s" % (msg_id, text)
+    anchor = re.compile(r"\[camc msg#%s\]:" % re.escape(msg_id))
+
+    if not tmux_send_input(session, payload, send_enter=True):
+        sys.stderr.write("camc msg: failed to deliver to '%s'\n" % args.to)
+        sys.exit(1)
+
+    deadline = time.time() + timeout
+    last_hash, stable_count, saw_marker = None, 0, False
+
+    while time.time() < deadline:
+        cap = capture_tmux(session, lines=500)
+        if not cap:
+            time.sleep(poll); continue
+
+        lines = cap.splitlines()
+        idx = -1
+        for i, ln in enumerate(lines):
+            if anchor.search(ln):
+                idx = i; break
+        if idx < 0:
+            time.sleep(poll); continue
+        saw_marker = True
+
+        # Trim header (lines after marker) + footer (UI noise)
+        body = lines[idx + 1:]
+        while body:
+            t = body[-1].strip()
+            if (not t or t in _MSG_PROMPT_CHARS
+                or "for shortcuts" in t
+                or "esc to interrupt" in t
+                or "context left" in t
+                or "Press enter to continue" in t):
+                body.pop(); continue
+            break
+        text_out = "\n".join(body).rstrip()
+        if not text_out:
+            time.sleep(poll); continue
+
+        # Stable check: same content for `stable_for` consecutive captures
+        h = hashlib.md5(text_out.encode("utf-8")).hexdigest()
+        if h == last_hash:
+            stable_count += 1
+        else:
+            stable_count, last_hash = 0, h
+
+        # Turn-complete signal (claude/codex): empty prompt at bottom
+        # + status bar idle ("? for shortcuts" present, "esc to interrupt" not)
+        tail40 = lines[-40:]
+        tail15 = "\n".join(lines[-15:])
+        empty_prompt = any(
+            len(l.strip()) == 1 and l.strip() in _MSG_PROMPT_CHARS
+            for l in tail40
+        )
+        done_verb = bool(re.search(r"\w+\s+for\s+\d+[sm]\b", "\n".join(tail40)))
+        status_idle = "? for shortcuts" in tail15 and "esc to interrupt" not in tail15
+        complete = (empty_prompt or done_verb) and (status_idle or empty_prompt)
+
+        if complete and stable_count >= stable_for:
+            sys.stdout.write(text_out + "\n")
+            sys.stdout.flush()
+            sys.exit(0)
+        time.sleep(poll)
+
+    if saw_marker:
+        sys.stderr.write("camc msg: timeout — reply not stable within %ds\n" % timeout)
+    else:
+        sys.stderr.write("camc msg: timeout — no marker seen on '%s' within %ds\n" % (to, timeout))
+    sys.exit(1)
+
+
+# ===========================================================================
 # Machine management
 # ===========================================================================
 
@@ -6538,6 +6658,14 @@ examples:
     ky.add_argument("--key", "-k", required=True, help="Key to send (e.g. C-c, Enter, Escape)")
 
     # heal
+    msg_p = sub.add_parser("msg", help="Inter-agent messaging (send + block on reply)")
+    msg_sub = msg_p.add_subparsers(dest="msg_cmd")
+    msg_send = msg_sub.add_parser("send", help="Send to <to> and block until stable reply on stdout")
+    msg_send.add_argument("to", help="Target agent name or ID")
+    msg_send.add_argument("--text", "-t", required=True, help="Message text")
+    msg_send.add_argument("--timeout", type=int, default=300,
+                          help="Seconds to wait for stable reply [default: 300]")
+
     heal_p = sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
     heal_p.add_argument("--upgrade", action="store_true", help="Kill ALL monitors and restart with current camc binary")
 
@@ -6642,6 +6770,7 @@ examples:
         "capture": cmd_capture,
         "send": cmd_send,
         "key": cmd_key,
+        "msg": cmd_msg,
         "heal": cmd_heal,
         "machine": cmd_machine,
         "context": cmd_context,
