@@ -194,15 +194,22 @@ def _launch_agent(task, workdir):
     if not create_tmux_session(session, launch_cmd, workdir, env_setup=env_setup, inherit_env=True):
         return None
 
-    # Startup: wait for readiness, auto-confirm, send prompt
+    # Startup: wait for readiness, auto-confirm, send prompt.
+    # Ready-gated injection (matches cmd_run): the prompt is sent ONLY
+    # when ready_pattern was actually observed. Sending the prompt at
+    # a non-ready screen (e.g. an unmatched trust dialog or still-
+    # loading welcome screen) consumes the body as keystrokes into the
+    # dialog and the trailing Enter confirms the dialog — the prompt
+    # never reaches the agent.
     if config.prompt_after_launch:
-        elapsed, confirmed = 0.0, False
+        elapsed, confirmed, ready = 0.0, False, False
         while elapsed < config.startup_wait:
             time.sleep(1); elapsed += 1
             output = capture_tmux(session)
             if not output.strip():
                 continue
             if confirmed and is_ready_for_input(output, config):
+                ready = True
                 break
             confirm = should_auto_confirm(output, config)
             if confirm:
@@ -211,8 +218,15 @@ def _launch_agent(task, workdir):
                 time.sleep(3); elapsed += 3
                 continue
             if is_ready_for_input(output, config):
+                ready = True
                 break
-        if prompt.strip():
+        if not ready:
+            log.warning(
+                "Ready prompt not detected after %ss; not injecting prompt. "
+                "Agent %s is alive in tmux session %s — inspect with: "
+                "camc capture %s",
+                int(config.startup_wait), agent_id, session, agent_id)
+        elif prompt.strip():
             if config.prompt_submit_delay > 0:
                 tmux_send_input(session, prompt, send_enter=False)
                 time.sleep(config.prompt_submit_delay)

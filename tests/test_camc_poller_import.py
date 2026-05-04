@@ -239,7 +239,6 @@ class TestTransportTypeFromMachine:
     agent behind an ssh tunnel."""
 
     def _row(self, remote_transport):
-        from tests.test_camc_poller_import import _mk_camc_row  # self-ref ok
         r = _mk_camc_row("abc12345", "running")
         r["transport_type"] = remote_transport
         return r
