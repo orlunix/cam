@@ -443,29 +443,45 @@ def cmd_run(args):
         "retry_count": 0, "cost_estimate": None, "files_changed": [],
     })
 
-    # Startup: wait for readiness, auto-confirm via "1"+BSpace, send prompt
+    # Startup: clear any confirm/trust dialogs, then wait for the ready
+    # prompt before injecting the user prompt.
+    #
+    # Robustness invariant (codex-camc-prompt-injection-design): the
+    # prompt is sent ONLY when ready_pattern is detected. Sending the
+    # prompt at a non-ready screen (e.g. an unmatched trust dialog)
+    # loses the prompt body — keystrokes are typed into the dialog and
+    # the trailing Enter confirms it. If ready never arrives within the
+    # budget, log a warning and skip injection; the agent stays alive
+    # in tmux for the operator to inspect via `camc capture`.
     if config.prompt_after_launch:
-        elapsed, confirmed = 0.0, False
+        elapsed = 0.0
+        ready = False
         while elapsed < config.startup_wait:
             time.sleep(1); elapsed += 1
             output = capture_tmux(session)
             if not output.strip():
                 continue
-            if confirmed and is_ready_for_input(output, config):
-                break
+            # Try clearing a confirm dialog first. should_auto_confirm
+            # returns (response, send_enter, pattern, match) or None;
+            # use the rule's response/send_enter (NOT probe_char — the
+            # rule is per-dialog: e.g. "1" without Enter for numbered
+            # menus, "" with Enter for Ink select dialogs).
             confirm = should_auto_confirm(output, config)
             if confirm:
-                # Pattern matched a confirm dialog — send probe_char to select
-                # option. No Enter (avoids side effects), no BSpace (dialog
-                # consumes the char). probe_char is "1" for Claude (selects
-                # option 1 = Yes/Allow), configurable per adapter.
-                tmux_send_input(session, config.probe_char, send_enter=False)
-                confirmed = True
+                response, send_enter = confirm[0], confirm[1]
+                tmux_send_input(session, response, send_enter=send_enter)
                 time.sleep(3); elapsed += 3
                 continue
             if is_ready_for_input(output, config):
+                ready = True
                 break
-        if prompt.strip():
+        if not ready:
+            print_warning(
+                "Ready prompt not detected after %ss; not injecting prompt. "
+                "Agent %s is alive in tmux session %s — inspect with: "
+                "camc capture %s" %
+                (int(config.startup_wait), agent_id, session, agent_id))
+        elif prompt.strip():
             if config.prompt_submit_delay > 0:
                 tmux_send_input(session, prompt, send_enter=False)
                 time.sleep(config.prompt_submit_delay)
