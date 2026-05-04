@@ -75,7 +75,7 @@ from camc_pkg.transport import (
     _find_tmux_socket, capture_tmux, tmux_session_exists,
     tmux_send_input, tmux_send_key, tmux_kill_session, create_tmux_session,
 )
-from camc_pkg.detection import should_auto_confirm, is_ready_for_input
+from camc_pkg.detection import should_auto_confirm, is_ready_for_input, detect_completion
 from camc_pkg.monitor import _run_monitor
 from camc_pkg.formatters import (
     print_table, print_panel, print_detail, print_success, print_error, print_warning,
@@ -3204,6 +3204,18 @@ def cmd_msg_send(args):
         sys.stderr.write("camc msg: target '%s' has no tmux session\n" % args.to)
         sys.exit(1)
 
+    # Load target's tool adapter (claude/codex/cursor/...) so turn-complete
+    # detection uses the per-tool busy / done patterns instead of
+    # hardcoding Claude's "esc to interrupt" / "? for shortcuts".
+    tool = _agent_tool(target) if target else ""
+    tool_cfg = None
+    try:
+        tool_cfg = _load_config(tool) if tool else None
+    except SystemExit:
+        tool_cfg = None
+    except Exception:
+        tool_cfg = None
+
     msg_id = uuid4().hex[:8]
     payload = "[camc msg#%s]: %s" % (msg_id, text)
     anchor = re.compile(r"\[camc msg#%s\]:" % re.escape(msg_id))
@@ -3236,7 +3248,11 @@ def cmd_msg_send(args):
             time.sleep(poll); continue
         saw_marker = True
 
-        # Trim header (lines after marker) + footer (UI noise)
+        # Trim header (lines after marker) + footer (UI noise + idle
+        # placeholder). Tool-specific: any line that matches the tool's
+        # prompt_pattern at the BOTTOM of the buffer is the input box
+        # placeholder (e.g. codex's "› Improve documentation in @filename")
+        # or the bare prompt awaiting input — neither is reply content.
         body = lines[idx + 1:]
         while body:
             t = body[-1].strip()
@@ -3244,7 +3260,11 @@ def cmd_msg_send(args):
                 or "for shortcuts" in t
                 or "esc to interrupt" in t
                 or "context left" in t
-                or "Press enter to continue" in t):
+                or "Press enter to continue" in t
+                or re.match(r"^[\w\-.]+(?:\s+[\w\-.]+)*\s+·\s+", t)  # codex status bar "model · path"
+                ):
+                body.pop(); continue
+            if tool_cfg and tool_cfg.prompt_pattern and tool_cfg.prompt_pattern.search(t):
                 body.pop(); continue
             break
         text_out = "\n".join(body).rstrip()
@@ -3258,17 +3278,37 @@ def cmd_msg_send(args):
         else:
             stable_count, last_hash = 0, h
 
-        # Turn-complete signal (claude/codex): empty prompt at bottom
-        # + status bar idle ("? for shortcuts" present, "esc to interrupt" not)
-        tail40 = lines[-40:]
-        tail15 = "\n".join(lines[-15:])
-        empty_prompt = any(
-            len(l.strip()) == 1 and l.strip() in _MSG_PROMPT_CHARS
-            for l in tail40
-        )
-        done_verb = bool(re.search(r"\w+\s+for\s+\d+[sm]\b", "\n".join(tail40)))
-        status_idle = "? for shortcuts" in tail15 and "esc to interrupt" not in tail15
-        complete = (empty_prompt or done_verb) and (status_idle or empty_prompt)
+        # Turn-complete signal — delegate to the same logic the monitor
+        # uses, so it works across claude / codex / cursor / openclaude /
+        # aider / … out of the box. Each tool's adapter TOML defines the
+        # right prompt_pattern + busy_pattern + completion strategy.
+        # Belt-and-suspenders: verify busy indicator is absent too.
+        complete = False
+        if tool_cfg:
+            try:
+                if detect_completion(cap, tool_cfg) == "completed":
+                    complete = True
+            except Exception:
+                complete = False
+            if complete and tool_cfg.busy_pattern:
+                tail = "\n".join(lines[-40:])
+                if tool_cfg.busy_pattern.search(tail):
+                    complete = False
+        else:
+            # Unknown tool → fall back to "bare prompt at bottom + no
+            # generic busy indicator + stable hash". Works for most
+            # standard TUIs.
+            tail40 = "\n".join(lines[-40:])
+            bare = any(
+                len(l.strip()) == 1 and l.strip() in _MSG_PROMPT_CHARS
+                for l in lines[-40:]
+            )
+            busy = bool(re.search(
+                r"esc to interrupt|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏|"
+                r"(?:Generating|Thinking|Working|Running)",
+                tail40, re.IGNORECASE,
+            ))
+            complete = bare and not busy
 
         if complete and stable_count >= stable_for:
             _msg_ledger_append({
