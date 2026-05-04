@@ -1417,3 +1417,81 @@ ecb5de4 tmux: preflight version gate + 150ms flush before Enter
 4ad7399 Align cam/camc prune semantics around --orphans
 ```
 
+## v1.2.0  0beb83f 2026-04-28 02:06
+
+- Lines: 6660
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+22650e4 preflight: skip tool-binary check when env_setup is set
+f24d910 tmux: pin to /usr/bin/tmux on Rocky 8.9, simplify preflight
+ecb5de4 tmux: preflight version gate + 150ms flush before Enter
+```
+
+## v1.2.0  92c152a-dirty 2026-05-03 09:46
+
+- Lines: 6779
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+22650e4 preflight: skip tool-binary check when env_setup is set
+f24d910 tmux: pin to /usr/bin/tmux on Rocky 8.9, simplify preflight
+ecb5de4 tmux: preflight version gate + 150ms flush before Enter
+```
+
+## v1.2.0  92c152a-dirty 2026-05-03 09:47
+
+- Lines: 6789
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+22650e4 preflight: skip tool-binary check when env_setup is set
+f24d910 tmux: pin to /usr/bin/tmux on Rocky 8.9, simplify preflight
+ecb5de4 tmux: preflight version gate + 150ms flush before Enter
+```
+
+## v1.2.0  92c152a-dirty 2026-05-03 18:00
+
+- Lines: 6789
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+22650e4 preflight: skip tool-binary check when env_setup is set
+f24d910 tmux: pin to /usr/bin/tmux on Rocky 8.9, simplify preflight
+ecb5de4 tmux: preflight version gate + 150ms flush before Enter
+```
+
+## v1.2.0  92c152a-dirty 2026-05-03 18:03
+
+- Lines: 6789
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+22650e4 preflight: skip tool-binary check when env_setup is set
+f24d910 tmux: pin to /usr/bin/tmux on Rocky 8.9, simplify preflight
+ecb5de4 tmux: preflight version gate + 150ms flush before Enter
+```
+
+## v1.2.0  92c152a-dirty 2026-05-03 18:08
+
+- Lines: 6789
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+22650e4 preflight: skip tool-binary check when env_setup is set
+f24d910 tmux: pin to /usr/bin/tmux on Rocky 8.9, simplify preflight
+ecb5de4 tmux: preflight version gate + 150ms flush before Enter
+```
+
