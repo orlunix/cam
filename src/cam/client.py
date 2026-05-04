@@ -105,6 +105,27 @@ def _parse_toml(text):
     return root
 
 
+def _split_toml_top_commas(s):
+    # Quote-aware comma split: don't shatter "Bash,Edit,Read,..." values.
+    parts, buf, i, in_str = [], [], 0, False
+    while i < len(s):
+        c = s[i]
+        if in_str:
+            if c == "\\" and i + 1 < len(s):
+                buf.append(c); buf.append(s[i + 1]); i += 2; continue
+            if c == '"':
+                in_str = False
+            buf.append(c); i += 1; continue
+        if c == '"':
+            in_str = True; buf.append(c); i += 1; continue
+        if c == ",":
+            parts.append("".join(buf)); buf = []; i += 1; continue
+        buf.append(c); i += 1
+    if buf:
+        parts.append("".join(buf))
+    return parts
+
+
 def _parse_toml_value(s):
     if s.startswith('"'):
         i, result = 1, []
@@ -129,7 +150,8 @@ def _parse_toml_value(s):
         inner = s[1:].rstrip()
         if inner.endswith("]"):
             inner = inner[:-1]
-        return [_parse_toml_value(p.strip()) for p in inner.split(",") if p.strip()]
+        return [_parse_toml_value(p.strip())
+                for p in _split_toml_top_commas(inner) if p.strip()]
     val = s.split("#")[0].strip()
     try:
         return float(val) if "." in val else int(val)

@@ -70,6 +70,20 @@ class TestParseToml:
         r = _parse_toml('[s]\nf = ["A", "B"]')
         assert r["s"]["f"] == ["A", "B"]
 
+    def test_array_string_with_inner_commas(self):
+        # Regression: claude.toml `command = ["claude", "--allowed-tools",
+        # "Bash,Edit,Read,..."]` was being shattered into 11 separate
+        # args because the array splitter was comma-naive. The third
+        # element must be preserved as a single comma-string.
+        r = _parse_toml(
+            '[launch]\ncommand = ["claude", "--allowed-tools", '
+            '"Bash,Edit,Read,Write,NotebookEdit"]'
+        )
+        assert r["launch"]["command"] == [
+            "claude", "--allowed-tools",
+            "Bash,Edit,Read,Write,NotebookEdit",
+        ]
+
     def test_real_config(self):
         r = _parse_toml("""
 [adapter]

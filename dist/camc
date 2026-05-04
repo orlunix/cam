@@ -27,7 +27,7 @@ import time
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "aa4cf4f-dirty 2026-05-04 06:02"
+__build__ = "2caca9c-dirty 2026-05-04 06:12"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -621,6 +621,29 @@ def _parse_toml(text):
     return root
 
 
+def _split_toml_top_commas(s):
+    # Split on commas that are NOT inside a double-quoted string.
+    # Naive .split(",") shatters elements like "Bash,Edit,Read,..." into
+    # separate args; this preserves them.
+    parts, buf, i, in_str = [], [], 0, False
+    while i < len(s):
+        c = s[i]
+        if in_str:
+            if c == "\\" and i + 1 < len(s):
+                buf.append(c); buf.append(s[i + 1]); i += 2; continue
+            if c == '"':
+                in_str = False
+            buf.append(c); i += 1; continue
+        if c == '"':
+            in_str = True; buf.append(c); i += 1; continue
+        if c == ",":
+            parts.append("".join(buf)); buf = []; i += 1; continue
+        buf.append(c); i += 1
+    if buf:
+        parts.append("".join(buf))
+    return parts
+
+
 def _parse_toml_value(s):
     if s.startswith('"'):
         i, result = 1, []
@@ -641,7 +664,8 @@ def _parse_toml_value(s):
         inner = s[1:].rstrip()
         if inner.endswith("]"):
             inner = inner[:-1]
-        return [_parse_toml_value(p.strip()) for p in inner.split(",") if p.strip()]
+        return [_parse_toml_value(p.strip())
+                for p in _split_toml_top_commas(inner) if p.strip()]
     # Strip inline comments before checking booleans/numbers
     val = s.split("#")[0].strip()
     if val == "true":
