@@ -186,6 +186,11 @@ def tmux_session_exists(session_id):
     return rc == 0
 
 
+_TMUX_SEND_CHUNK = 8192            # safely below tmux 3.4's ~16-20KB ARG_MAX
+_BRACKET_PASTE_OPEN = "\x1b[200~"
+_BRACKET_PASTE_CLOSE = "\x1b[201~"
+
+
 def tmux_send_input(session_id, text, send_enter=True):
     base = _tmux_base(session_id)
     target = "%s:0.0" % session_id
@@ -196,12 +201,35 @@ def tmux_send_input(session_id, text, send_enter=True):
             # atomic paste rather than streamed keystrokes. Without
             # this, embedded LFs get inserted as soft returns and the
             # trailing Enter races with tmux's still-flushing literal
-            # write — long multi-line inputs sit unsubmitted in the
-            # input box. Bracketed paste also fixes the related case
-            # where the TUI shows a "[Pasted text #N +M lines]"
-            # collapsed preview that one Enter cleanly submits.
-            payload = ("\x1b[200~" + text + "\x1b[201~") if "\n" in text else text
-            _run(base + ["send-keys", "-t", target, "-l", "--", payload], check=True)
+            # write — long multi-line inputs sit unsubmitted.
+            #
+            # Chunking: tmux 3.4's send-keys command-line ARG_MAX is
+            # ~16-20KB on Linux; payloads ≥20KB error out with
+            # "command too long" and the prompt is silently lost
+            # (camflow planner's 21KB workflow_designer prompt). Split
+            # the body into 8KB chunks. Bracketed paste guarantees the
+            # TUI buffers everything between OPEN/CLOSE atomically, so
+            # multi-call delivery is equivalent to a single send.
+            multiline = "\n" in text
+            if multiline:
+                _run(base + ["send-keys", "-t", target, "-l", "--",
+                             _BRACKET_PASTE_OPEN], check=True)
+                for i in range(0, len(text), _TMUX_SEND_CHUNK):
+                    chunk = text[i:i + _TMUX_SEND_CHUNK]
+                    _run(base + ["send-keys", "-t", target, "-l", "--",
+                                 chunk], check=True)
+                _run(base + ["send-keys", "-t", target, "-l", "--",
+                             _BRACKET_PASTE_CLOSE], check=True)
+            elif len(text) > _TMUX_SEND_CHUNK:
+                # Single-line very long input: chunk without bracketed
+                # paste (no embedded LFs to compose, just raw chars).
+                for i in range(0, len(text), _TMUX_SEND_CHUNK):
+                    chunk = text[i:i + _TMUX_SEND_CHUNK]
+                    _run(base + ["send-keys", "-t", target, "-l", "--",
+                                 chunk], check=True)
+            else:
+                _run(base + ["send-keys", "-t", target, "-l", "--",
+                             text], check=True)
         if send_enter:
             # Pause so the literal text is flushed into the pane buffer
             # before Enter arrives. Scale with payload size — for big
