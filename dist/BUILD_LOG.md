@@ -1495,3 +1495,16 @@ f24d910 tmux: pin to /usr/bin/tmux on Rocky 8.9, simplify preflight
 ecb5de4 tmux: preflight version gate + 150ms flush before Enter
 ```
 
+## v1.2.0  95564b8-dirty 2026-05-03 19:06
+
+- Lines: 6899
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+95564b8 camc: add `camc msg send` for inter-agent messaging
+8755702 camc: per-session tmux binary + release archive + timeout bumps
+d1ffa7c capture_tmux: bump timeout to 60s for full-scroll mode
+22650e4 preflight: skip tool-binary check when env_setup is set
+f24d910 tmux: pin to /usr/bin/tmux on Rocky 8.9, simplify preflight
+```
+
