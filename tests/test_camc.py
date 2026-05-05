@@ -417,6 +417,108 @@ class TestMsgWaitLoop:
         assert reply is None
         assert status == "reply_not_stable"
 
+    def test_marker_scrolled_out_falls_back_to_full_capture(self, monkeypatch):
+        from camc_pkg import cli
+        bounded = "\n".join("scrollback line %03d" % i for i in range(500))
+        full = (
+            "older pane content\n"
+            "› [camc msg#abc12345]: long request\n"
+            "\n"
+            "• final answer\n"
+            + "\n".join("tool output line %03d" % i for i in range(700)) +
+            "\n"
+            "✻ Churned for 6m 50s\n"
+            "\n"
+            "❯\n"
+        )
+        calls = []
+
+        def fake_capture(session, lines=500):
+            calls.append(lines)
+            return full if not lines or lines <= 0 else bounded
+
+        monkeypatch.setattr(cli, "capture_tmux", fake_capture)
+        reply, status = cli._msg_wait_loop("cam-x", "abc12345",
+                                           timeout_s=5, tool_busy=None,
+                                           poll=0.02, stable_for=2)
+        assert status == "replied"
+        assert "final answer" in reply
+        assert any(not lines or lines <= 0 for lines in calls)
+
+    def test_marker_seen_then_static_screen_completes(self, monkeypatch):
+        from camc_pkg import cli
+        marker_visible = (
+            "› [camc msg#abc12345]: long request\n"
+            "\n"
+            "• last extracted answer\n"
+            "tool output before marker scrolls away\n"
+        )
+        marker_gone_static = (
+            "tool output line 698\n"
+            "tool output line 699\n"
+            "✻ Churned for 6m 50s\n"
+            "\n"
+            "❯\n"
+        )
+        calls = []
+
+        def fake_capture(session, lines=500):
+            calls.append(lines)
+            if len(calls) == 1 and lines == 500:
+                return marker_visible
+            return marker_gone_static
+
+        monkeypatch.setattr(cli, "capture_tmux", fake_capture)
+        reply, status = cli._msg_wait_loop("cam-x", "abc12345",
+                                           timeout_s=5, tool_busy=None,
+                                           poll=0.02, stable_for=2)
+        assert status == "replied"
+        assert "last extracted answer" in reply
+
+    def test_marker_seen_then_cleared_screen_completes(self, monkeypatch):
+        from camc_pkg import cli
+        marker_visible = (
+            "› [camc msg#abc12345]: long request\n"
+            "\n"
+            "• answer before compact clears the pane\n"
+        )
+        calls = []
+
+        def fake_capture(session, lines=500):
+            calls.append(lines)
+            if len(calls) == 1 and lines == 500:
+                return marker_visible
+            return ""
+
+        monkeypatch.setattr(cli, "capture_tmux", fake_capture)
+        reply, status = cli._msg_wait_loop("cam-x", "abc12345",
+                                           timeout_s=5, tool_busy=None,
+                                           poll=0.02, stable_for=2)
+        assert status == "replied"
+        assert "answer before compact clears the pane" in reply
+
+    def test_marker_seen_then_changing_screen_does_not_complete(self, monkeypatch):
+        from camc_pkg import cli
+        marker_visible = (
+            "› [camc msg#abc12345]: long request\n"
+            "\n"
+            "• partial answer\n"
+        )
+        calls = []
+
+        def fake_capture(session, lines=500):
+            calls.append(lines)
+            if len(calls) == 1 and lines == 500:
+                return marker_visible
+            return "still changing heartbeat %03d\n" % len(calls)
+
+        monkeypatch.setattr(cli, "capture_tmux", fake_capture)
+        reply, status = cli._msg_wait_loop("cam-x", "abc12345",
+                                           timeout_s=0.2, tool_busy=None,
+                                           poll=0.02, stable_for=2)
+        assert reply is None
+        assert status == "reply_not_stable"
+
 
 # ---------------------------------------------------------------------------
 # AgentStore
