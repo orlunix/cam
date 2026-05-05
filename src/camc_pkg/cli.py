@@ -3304,20 +3304,55 @@ def _msg_wait_loop(session, msg_id, timeout_s, tool_busy=None,
     anchor = re.compile(r"\[camc msg#%s\]:" % re.escape(msg_id))
     deadline = time.time() + timeout_s
     last_hash, stable_count, saw_marker_ever = None, 0, False
+    last_reply_text = None
+    last_screen_hash, screen_stable_count = None, 0
+    full_capture_mode = False
+    tried_initial_full_capture = False
+
+    def _screen_static_enough(screen_text):
+        nonlocal last_screen_hash, screen_stable_count
+        screen_h = hashlib.md5((screen_text or "").encode("utf-8")).hexdigest()
+        if screen_h == last_screen_hash:
+            screen_stable_count += 1
+        else:
+            screen_stable_count, last_screen_hash = 0, screen_h
+        return screen_stable_count >= stable_for
 
     while time.time() < deadline:
-        cap = capture_tmux(session, lines=500)
+        cap = capture_tmux(session, lines=0 if full_capture_mode else 500)
         if not cap:
+            if saw_marker_ever and last_reply_text and _screen_static_enough(cap):
+                return (last_reply_text, "replied")
             time.sleep(poll); continue
 
         # Per-tick gate (re-verified, NOT memoized): the marker MUST be
         # in the current capture. If it scrolled off (very long reply
-        # past the 500-line window) we bail to "no marker" timeout
-        # instead of silently emitting an empty reply.
+        # past the 500-line window), fall back to full scrollback capture
+        # and stay there for this wait. This preserves the fast path for
+        # normal replies while allowing long tool-heavy replies to settle.
         if not anchor.search(cap):
-            stable_count, last_hash = 0, None
-            time.sleep(poll); continue
+            should_try_full = saw_marker_ever or not tried_initial_full_capture
+            if (not full_capture_mode) and should_try_full:
+                tried_initial_full_capture = True
+                full_cap = capture_tmux(session, lines=0)
+                if full_cap and anchor.search(full_cap):
+                    full_capture_mode = True
+                    cap = full_cap
+                else:
+                    cap_for_static = full_cap or cap
+                    if (saw_marker_ever and last_reply_text
+                            and _screen_static_enough(cap_for_static)):
+                        return (last_reply_text, "replied")
+                    stable_count, last_hash = 0, None
+                    time.sleep(poll); continue
+            else:
+                if (saw_marker_ever and last_reply_text
+                        and _screen_static_enough(cap)):
+                    return (last_reply_text, "replied")
+                stable_count, last_hash = 0, None
+                time.sleep(poll); continue
         saw_marker_ever = True
+        last_screen_hash, screen_stable_count = None, 0
 
         # Extract reply: lines after the marker line.
         lines = cap.splitlines()
@@ -3351,6 +3386,7 @@ def _msg_wait_loop(session, msg_id, timeout_s, tool_busy=None,
         text_out = "\n".join(body).rstrip()
         if not text_out:
             time.sleep(poll); continue
+        last_reply_text = text_out
 
         # Generic busy-tail: any of these in the visible tail means the
         # agent is mid-tool-call / mid-thought, even if a static partial
