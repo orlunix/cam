@@ -1781,3 +1781,29 @@ aa4cf4f camc msg: V0 final fixes — sync src/camc, tighten footer trim, integer
 7e110dd camc msg: tool-aware turn-complete + footer trim for codex/cursor/etc.
 ```
 
+## v1.2.0  0acf882-dirty 2026-05-04 23:27
+
+- Lines: 7205
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+0acf882 camc msg: add no-wait send and wait
+31d8278 camc: bracketed-paste multi-line send + scheduler ready-gate + test cleanup
+6ebba2c camc: fix TOML array parser shattering comma-strings into separate args
+2caca9c fix(claude adapter): delayed-send-after-ready + trust-dialog rule
+aa4cf4f camc msg: V0 final fixes — sync src/camc, tighten footer trim, integer-second timeout
+```
+
+## v1.2.0  0acf882-dirty 2026-05-04 23:35
+
+- Lines: 7227
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+0acf882 camc msg: add no-wait send and wait
+31d8278 camc: bracketed-paste multi-line send + scheduler ready-gate + test cleanup
+6ebba2c camc: fix TOML array parser shattering comma-strings into separate args
+2caca9c fix(claude adapter): delayed-send-after-ready + trust-dialog rule
+aa4cf4f camc msg: V0 final fixes — sync src/camc, tighten footer trim, integer-second timeout
+```
+
