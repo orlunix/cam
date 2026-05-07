@@ -288,7 +288,7 @@ class TestCodexAdapter:
         assert result is not None
         assert isinstance(result, ConfirmAction)
         assert result.response == "1"
-        assert result.send_enter is True
+        assert result.send_enter is False
 
     def test_auto_confirm_new_trust_directory_dialog(self):
         adapter = CodexAdapter()
@@ -301,8 +301,8 @@ class TestCodexAdapter:
         )
         assert result is not None
         assert isinstance(result, ConfirmAction)
-        assert result.response == ""
-        assert result.send_enter is True
+        assert result.response == "1"
+        assert result.send_enter is False
 
     def test_auto_confirm_new_trust_directory_dialog_bottom_menu(self):
         adapter = CodexAdapter()
@@ -319,8 +319,8 @@ class TestCodexAdapter:
         )
         assert result is not None
         assert isinstance(result, ConfirmAction)
-        assert result.response == ""
-        assert result.send_enter is True
+        assert result.response == "1"
+        assert result.send_enter is False
 
     def test_auto_confirm_retry_without_sandbox(self):
         adapter = CodexAdapter()
@@ -333,8 +333,8 @@ class TestCodexAdapter:
         )
         assert result is not None
         assert isinstance(result, ConfirmAction)
-        assert result.response == ""
-        assert result.send_enter is True
+        assert result.response == "1"
+        assert result.send_enter is False
 
     def test_no_auto_confirm_press_enter_stale_scrollback(self):
         adapter = CodexAdapter()
