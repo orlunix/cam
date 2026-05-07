@@ -1807,3 +1807,68 @@ aa4cf4f camc msg: V0 final fixes — sync src/camc, tighten footer trim, integer
 aa4cf4f camc msg: V0 final fixes — sync src/camc, tighten footer trim, integer-second timeout
 ```
 
+## v1.2.0  f862461 2026-05-05 08:32
+
+- Lines: 7227
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+0acf882 camc msg: add no-wait send and wait
+31d8278 camc: bracketed-paste multi-line send + scheduler ready-gate + test cleanup
+6ebba2c camc: fix TOML array parser shattering comma-strings into separate args
+2caca9c fix(claude adapter): delayed-send-after-ready + trust-dialog rule
+```
+
+## v1.2.0  f862461 2026-05-05 08:32
+
+- Lines: 7227
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+0acf882 camc msg: add no-wait send and wait
+31d8278 camc: bracketed-paste multi-line send + scheduler ready-gate + test cleanup
+6ebba2c camc: fix TOML array parser shattering comma-strings into separate args
+2caca9c fix(claude adapter): delayed-send-after-ready + trust-dialog rule
+```
+
+## v1.2.0  f862461 2026-05-05 08:35
+
+- Lines: 7227
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+0acf882 camc msg: add no-wait send and wait
+31d8278 camc: bracketed-paste multi-line send + scheduler ready-gate + test cleanup
+6ebba2c camc: fix TOML array parser shattering comma-strings into separate args
+2caca9c fix(claude adapter): delayed-send-after-ready + trust-dialog rule
+```
+
+## v1.2.0  f862461 2026-05-05 08:42
+
+- Lines: 7227
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+0acf882 camc msg: add no-wait send and wait
+31d8278 camc: bracketed-paste multi-line send + scheduler ready-gate + test cleanup
+6ebba2c camc: fix TOML array parser shattering comma-strings into separate args
+2caca9c fix(claude adapter): delayed-send-after-ready + trust-dialog rule
+```
+
+## v1.2.0  0c79304 2026-05-06 21:29
+
+- Lines: 7237
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+0acf882 camc msg: add no-wait send and wait
+31d8278 camc: bracketed-paste multi-line send + scheduler ready-gate + test cleanup
+6ebba2c camc: fix TOML array parser shattering comma-strings into separate args
+2caca9c fix(claude adapter): delayed-send-after-ready + trust-dialog rule
+```
+
