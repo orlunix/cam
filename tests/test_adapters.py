@@ -290,6 +290,20 @@ class TestCodexAdapter:
         assert result.response == "1"
         assert result.send_enter is True
 
+    def test_auto_confirm_new_trust_directory_dialog(self):
+        adapter = CodexAdapter()
+        result = adapter.should_auto_confirm(
+            "Do you trust the contents of this directory?\n\n"
+            "You are in /tmp/project\n\n"
+            "> 1. Yes, continue\n"
+            "  2. No, quit\n\n"
+            "Press enter to continue"
+        )
+        assert result is not None
+        assert isinstance(result, ConfirmAction)
+        assert result.response == ""
+        assert result.send_enter is True
+
     def test_auto_confirm_apply(self):
         adapter = CodexAdapter()
         result = adapter.should_auto_confirm("Apply changes? [Y/n]")

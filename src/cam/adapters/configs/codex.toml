@@ -60,6 +60,16 @@ response = "1"
 send_enter = true
 
 [[confirm]]
+# Trust dialog (Codex 0.55+):
+#   "Do you trust the contents of this directory?"
+#   "1. Yes, continue"
+# Press Enter to accept the highlighted default.
+pattern = "Do\\s+you\\s+trust\\s+the\\s+contents\\s+of\\s+this\\s+directory\\?.*Yes,?\\s+continue"
+flags = ["IGNORECASE", "DOTALL"]
+response = ""
+send_enter = true
+
+[[confirm]]
 # Any [Y/n] or [y/N] prompt — covers Apply, Accept, Approve, Continue,
 # Proceed, Run, Execute, Overwrite, Allow, and any future prompts
 pattern = "\\[Y/n\\]|\\[y/N\\]"
