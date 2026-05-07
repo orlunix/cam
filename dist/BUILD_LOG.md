@@ -1872,3 +1872,16 @@ f862461 camc msg wait: full-scrollback fallback when marker scrolls off
 2caca9c fix(claude adapter): delayed-send-after-ready + trust-dialog rule
 ```
 
+## v1.2.0  5017d0f 2026-05-06 21:35
+
+- Lines: 7233
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+5017d0f fix(camc): send key through tmux transport helper
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+0acf882 camc msg: add no-wait send and wait
+31d8278 camc: bracketed-paste multi-line send + scheduler ready-gate + test cleanup
+6ebba2c camc: fix TOML array parser shattering comma-strings into separate args
+```
+
