@@ -205,7 +205,24 @@ class TestCodexToml:
         output = "1. Yes, allow Codex to work in this folder\n2. No"
         result = codex_adapter.should_auto_confirm(output)
         assert result.response == "1"
-        assert result.send_enter is True
+        assert result.send_enter is False
+
+    def test_trust_continue_menu_sends_1(self, codex_adapter):
+        output = "1. Yes, continue\n2. No, quit\nPress Enter to continue"
+        result = codex_adapter.should_auto_confirm(output)
+        assert result.response == "1"
+        assert result.send_enter is False
+
+    def test_retry_without_sandbox_sends_1(self, codex_adapter):
+        output = (
+            "Reason: command failed; retry without sandbox?\n"
+            "1. Yes, proceed (y)\n"
+            "2. No, and tell Codex what to do differently (esc)\n"
+            "Press enter to confirm or esc to cancel"
+        )
+        result = codex_adapter.should_auto_confirm(output)
+        assert result.response == "1"
+        assert result.send_enter is False
 
     # ── detect_completion (prompt_count strategy) ──
 
