@@ -27,7 +27,7 @@ import time
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "0acf882-dirty 2026-05-04 23:35"
+__build__ = "0c79304 2026-05-06 21:29"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -412,6 +412,16 @@ error_flags = ["IGNORECASE"]
 pattern = "1\\.\\s*(Yes,?\\s*)?allow Codex to work"
 flags = ["IGNORECASE"]
 response = "1"
+send_enter = true
+
+[[confirm]]
+# Trust dialog (Codex 0.55+):
+#   "Do you trust the contents of this directory?"
+#   "1. Yes, continue"
+# Press Enter to accept the highlighted default.
+pattern = "Do\\s+you\\s+trust\\s+the\\s+contents\\s+of\\s+this\\s+directory\\?.*Yes,?\\s+continue"
+flags = ["IGNORECASE", "DOTALL"]
+response = ""
 send_enter = true
 
 [[confirm]]
