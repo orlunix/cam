@@ -304,6 +304,50 @@ class TestCodexAdapter:
         assert result.response == ""
         assert result.send_enter is True
 
+    def test_auto_confirm_new_trust_directory_dialog_bottom_menu(self):
+        adapter = CodexAdapter()
+        result = adapter.should_auto_confirm(
+            "╭────────────────────────────────────────╮\n"
+            "│ >_ OpenAI Codex                        │\n"
+            "│ model: gpt-5.5                         │\n"
+            "│ directory: /tmp/project                │\n"
+            "╰────────────────────────────────────────╯\n"
+            "Tip: Press Tab to queue a message.\n\n"
+            "› 1. Yes, continue\n"
+            "  2. No, quit\n\n"
+            "  Press enter to continue"
+        )
+        assert result is not None
+        assert isinstance(result, ConfirmAction)
+        assert result.response == ""
+        assert result.send_enter is True
+
+    def test_auto_confirm_retry_without_sandbox(self):
+        adapter = CodexAdapter()
+        result = adapter.should_auto_confirm(
+            "Reason: command failed; retry without sandbox?\n"
+            "› 1. Yes, proceed (y)\n"
+            "  2. Yes, and don't ask again for these files (a)\n"
+            "  3. No, and tell Codex what to do differently (esc)\n"
+            "Press enter to confirm or esc to cancel"
+        )
+        assert result is not None
+        assert isinstance(result, ConfirmAction)
+        assert result.response == ""
+        assert result.send_enter is True
+
+    def test_no_auto_confirm_press_enter_stale_scrollback(self):
+        adapter = CodexAdapter()
+        result = adapter.should_auto_confirm(
+            "  Press enter to continue\n\n"
+            "╭────────────────────────────────────────╮\n"
+            "│ >_ OpenAI Codex                        │\n"
+            "╰────────────────────────────────────────╯\n"
+            "Tip: Press Tab to queue a message.\n\n"
+            "› Improve documentation in @filename"
+        )
+        assert result is None
+
     def test_auto_confirm_apply(self):
         adapter = CodexAdapter()
         result = adapter.should_auto_confirm("Apply changes? [Y/n]")

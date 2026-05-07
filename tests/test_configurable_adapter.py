@@ -190,7 +190,8 @@ class TestCodexToml:
         ("Continue with changes? [Y/n]", True),
         ("Proceed? [Y/n]", True),
         ("Apply changes? [y/N]", True),
-        ("Press Enter to continue", True),
+        ("1. Yes, continue\n2. No, quit\nPress Enter to continue", True),
+        ("Press Enter to continue", False),
         ("Just some normal output", False),
     ])
     def test_auto_confirm(self, codex_adapter, output, expect_match):
