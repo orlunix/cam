@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import sys
+from types import SimpleNamespace
 import pytest
 
 from cam.camc import _time_ago, _build_command
@@ -691,3 +692,41 @@ class TestCmdSessionCapture:
         captured = capsys.readouterr()
         # Should only have the hash line, no content
         assert captured.out == "hash:%s\n" % h
+
+
+class TestCmdKey:
+    def test_cmd_key_uses_tmux_send_key_helper(self, monkeypatch, capsys):
+        from camc_pkg import cli
+
+        class FakeStore:
+            def get(self, agent_id):
+                assert agent_id == "abc123"
+                return {"tmux_session": "cam-abc123"}
+
+        calls = []
+        monkeypatch.setattr(cli, "AgentStore", lambda: FakeStore())
+        monkeypatch.setattr(
+            cli, "tmux_send_key",
+            lambda session, key: calls.append((session, key)) or True,
+        )
+
+        cli.cmd_key(SimpleNamespace(id="abc123", key="Enter"))
+
+        assert calls == [("cam-abc123", "Enter")]
+        assert "Sent key: Enter" in capsys.readouterr().out
+
+    def test_cmd_key_exits_on_send_failure(self, monkeypatch, capsys):
+        from camc_pkg import cli
+
+        class FakeStore:
+            def get(self, agent_id):
+                return None
+
+        monkeypatch.setattr(cli, "AgentStore", lambda: FakeStore())
+        monkeypatch.setattr(cli, "tmux_send_key", lambda session, key: False)
+
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_key(SimpleNamespace(id="cam-missing", key="Enter"))
+
+        assert ei.value.code == 1
+        assert "Failed to send key" in capsys.readouterr().err
