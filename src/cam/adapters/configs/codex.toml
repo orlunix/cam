@@ -70,17 +70,27 @@ response = ""
 send_enter = true
 
 [[confirm]]
+# Same trust dialog, but match the bottom menu. The question text can be
+# above the last 8 lines captured by should_auto_confirm(), while these
+# menu lines remain visible at the bottom.
+pattern = "1\\.\\s*Yes,?\\s+continue\\s*\\n\\s*2\\.\\s*No,\\s+quit\\s*\\n\\s*Press\\s+enter\\s+to\\s+continue"
+flags = ["IGNORECASE"]
+response = ""
+send_enter = true
+
+[[confirm]]
+# Retry command outside the sandbox after a failed command.
+pattern = "1\\.\\s*Yes,\\s*proceed.*Press\\s+enter\\s+to\\s+confirm"
+flags = ["IGNORECASE", "DOTALL"]
+response = ""
+send_enter = true
+
+[[confirm]]
 # Any [Y/n] or [y/N] prompt — covers Apply, Accept, Approve, Continue,
 # Proceed, Run, Execute, Overwrite, Allow, and any future prompts
 pattern = "\\[Y/n\\]|\\[y/N\\]"
 flags = ["IGNORECASE"]
 response = "y"
-send_enter = true
-
-[[confirm]]
-pattern = "Press Enter"
-flags = ["IGNORECASE"]
-response = ""
 send_enter = true
 
 [probe]
