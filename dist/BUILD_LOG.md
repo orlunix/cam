@@ -1911,3 +1911,81 @@ f862461 camc msg wait: full-scrollback fallback when marker scrolls off
 6ebba2c camc: fix TOML array parser shattering comma-strings into separate args
 ```
 
+## v1.2.0  2e54b6e-dirty 2026-05-07 00:06
+
+- Lines: 7319
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+5017d0f fix(camc): send key through tmux transport helper
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+0acf882 camc msg: add no-wait send and wait
+31d8278 camc: bracketed-paste multi-line send + scheduler ready-gate + test cleanup
+6ebba2c camc: fix TOML array parser shattering comma-strings into separate args
+```
+
+## v1.2.0  2e54b6e-dirty 2026-05-07 00:31
+
+- Lines: 7371
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+5017d0f fix(camc): send key through tmux transport helper
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+0acf882 camc msg: add no-wait send and wait
+31d8278 camc: bracketed-paste multi-line send + scheduler ready-gate + test cleanup
+6ebba2c camc: fix TOML array parser shattering comma-strings into separate args
+```
+
+## v1.2.0  2e54b6e-dirty 2026-05-07 00:36
+
+- Lines: 7374
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+5017d0f fix(camc): send key through tmux transport helper
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+0acf882 camc msg: add no-wait send and wait
+31d8278 camc: bracketed-paste multi-line send + scheduler ready-gate + test cleanup
+6ebba2c camc: fix TOML array parser shattering comma-strings into separate args
+```
+
+## v1.2.0  2e54b6e-dirty 2026-05-07 01:15
+
+- Lines: 7534
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+5017d0f fix(camc): send key through tmux transport helper
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+0acf882 camc msg: add no-wait send and wait
+31d8278 camc: bracketed-paste multi-line send + scheduler ready-gate + test cleanup
+6ebba2c camc: fix TOML array parser shattering comma-strings into separate args
+```
+
+## v1.2.0  2e54b6e-dirty 2026-05-07 01:21
+
+- Lines: 7543
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+5017d0f fix(camc): send key through tmux transport helper
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+0acf882 camc msg: add no-wait send and wait
+31d8278 camc: bracketed-paste multi-line send + scheduler ready-gate + test cleanup
+6ebba2c camc: fix TOML array parser shattering comma-strings into separate args
+```
+
+## v1.2.0  9d7cf9c 2026-05-07 01:43
+
+- Lines: 7543
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+9d7cf9c camc msg: add expected-reply async protocol
+5017d0f fix(camc): send key through tmux transport helper
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+0acf882 camc msg: add no-wait send and wait
+31d8278 camc: bracketed-paste multi-line send + scheduler ready-gate + test cleanup
+```
+
