@@ -275,6 +275,8 @@ class TestMsgNoWait:
         monkeypatch.setattr(cli, "_MSG_LEDGER_PATH", str(ledger))
         monkeypatch.setattr(cli, "_msg_resolve_session",
                             lambda to: (None, "cam-fake", None))
+        monkeypatch.setattr(cli, "_msg_sender_identity", lambda: None)
+        monkeypatch.setattr(cli, "_msg_target_identity", lambda to: None)
         sent_calls = []
         monkeypatch.setattr(cli, "tmux_send_input",
                             lambda s, t, send_enter=True: (sent_calls.append((s, t)), deliver_ok)[1])
@@ -298,6 +300,151 @@ class TestMsgNoWait:
         statuses = [r["status"] for r in cli._msg_ledger_iter(msg_id=msg_id)]
         assert statuses == ["sent", "delivered"]
 
+    def test_send_bare_anchor_when_neither_resolves(self, monkeypatch, tmp_path, capsys):
+        # Neither sender nor target resolvable → wire payload has NO
+        # attribution blocks and NO extra leading space; reduces to the
+        # bare-anchor form `[camc msg#<id>]: <text>`.
+        import argparse, re as _re
+        cli, ledger, sent_calls = self._setup(monkeypatch, tmp_path)
+        args = argparse.Namespace(to="cam-rawsession", text="bare ping",
+                                  timeout=600, no_wait=True)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_send(args)
+        assert ei.value.code == 0
+        msg_id = _re.search(r"MSG_ID=([0-9a-f]{8})",
+                            capsys.readouterr().out).group(1)
+        assert sent_calls[0][1] == "[camc msg#%s]: bare ping" % msg_id
+
+    def test_send_includes_sender_identity_when_known(self, monkeypatch, tmp_path, capsys):
+        import argparse, re as _re
+        cli, ledger, sent_calls = self._setup(monkeypatch, tmp_path)
+        monkeypatch.setattr(cli, "_msg_sender_identity", lambda: {
+            "sender_name": "camflow-review",
+            "sender_id": "5f765953",
+            "sender_tmux_session": "cam-5f765953",
+        })
+        args = argparse.Namespace(to="fake", text="review the patch",
+                                  timeout=600, no_wait=True)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_send(args)
+        assert ei.value.code == 0
+        out = capsys.readouterr().out
+        msg_id = _re.search(r"MSG_ID=([0-9a-f]{8})", out).group(1)
+        assert sent_calls[0][1] == (
+            "[camc msg#%s]: [from:camflow-review#5f765953] review the patch"
+            % msg_id
+        )
+        sent = next(r for r in cli._msg_ledger_iter(msg_id=msg_id)
+                    if r["status"] == "sent")
+        assert sent["text"] == "review the patch"
+        assert sent["sender_name"] == "camflow-review"
+        assert sent["sender_id"] == "5f765953"
+        assert sent["sender_tmux_session"] == "cam-5f765953"
+
+    def test_send_includes_target_identity_when_known(self, monkeypatch, tmp_path, capsys):
+        # Visible target attribution: when the target resolves to a known
+        # agent, the wire payload includes a [to ...] block alongside the
+        # existing [from ...] block. Anchor stays unchanged so old-format
+        # replies still extract correctly.
+        import argparse, re as _re
+        cli, ledger, sent_calls = self._setup(monkeypatch, tmp_path)
+        monkeypatch.setattr(cli, "_msg_sender_identity", lambda: {
+            "sender_name": "camflow-review",
+            "sender_id": "5f765953",
+            "sender_tmux_session": "cam-5f765953",
+        })
+        monkeypatch.setattr(cli, "_msg_target_identity", lambda to: {
+            "target_name": "camflow-dev",
+            "target_id": "836208f0",
+            "target_tmux_session": "cam-836208f0",
+        })
+        args = argparse.Namespace(to="camflow-dev", text="please review",
+                                  timeout=600, no_wait=True)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_send(args)
+        assert ei.value.code == 0
+        msg_id = _re.search(r"MSG_ID=([0-9a-f]{8})",
+                            capsys.readouterr().out).group(1)
+        # Both blocks adjacent, no inter-block space; exactly one space
+        # before the user text.
+        assert sent_calls[0][1] == (
+            "[camc msg#%s]: [from:camflow-review#5f765953]"
+            "[to:camflow-dev#836208f0] please review" % msg_id
+        )
+        sent = next(r for r in cli._msg_ledger_iter(msg_id=msg_id)
+                    if r["status"] == "sent")
+        assert sent["target_name"] == "camflow-dev"
+        assert sent["target_id"] == "836208f0"
+        assert sent["target_tmux_session"] == "cam-836208f0"
+        # `to` label (the user-supplied argument) is NOT overwritten.
+        assert sent["to"] == "camflow-dev"
+        # Sender fields remain untouched.
+        assert sent["sender_name"] == "camflow-review"
+
+    def test_send_omits_target_block_when_unresolved(self, monkeypatch, tmp_path, capsys):
+        # Raw tmux session / unknown name: no [to ...] block, no target_*
+        # fields in the ledger record. Wire payload looks the same as
+        # before this feature shipped.
+        import argparse, re as _re
+        cli, ledger, sent_calls = self._setup(monkeypatch, tmp_path)
+        monkeypatch.setattr(cli, "_msg_sender_identity", lambda: {
+            "sender_name": "camflow-review",
+            "sender_id": "5f765953",
+            "sender_tmux_session": "cam-5f765953",
+        })
+        # _msg_target_identity already mocked to None in _setup.
+        args = argparse.Namespace(to="cam-rawsession", text="ping",
+                                  timeout=600, no_wait=True)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_send(args)
+        assert ei.value.code == 0
+        msg_id = _re.search(r"MSG_ID=([0-9a-f]{8})",
+                            capsys.readouterr().out).group(1)
+        # Sender resolves, target does not → only [from:…] block, single
+        # space before user text.
+        assert sent_calls[0][1] == (
+            "[camc msg#%s]: [from:camflow-review#5f765953] ping" % msg_id
+        )
+        sent = next(r for r in cli._msg_ledger_iter(msg_id=msg_id)
+                    if r["status"] == "sent")
+        assert "target_name" not in sent
+        assert "target_id" not in sent
+        assert "target_tmux_session" not in sent
+
+    def test_target_identity_resolves_known_agent(self, monkeypatch):
+        # _msg_target_identity should look up via AgentStore and return a
+        # normalized dict. Mirrors the sender-side resolver.
+        from camc_pkg import cli
+
+        class FakeStore:
+            def get(self, key):
+                assert key == "camflow-dev"
+                return {
+                    "id": "836208f0",
+                    "task": {"name": "camflow-dev"},
+                    "tmux_session": "cam-836208f0",
+                }
+
+        monkeypatch.setattr(cli, "AgentStore", lambda: FakeStore())
+        target = cli._msg_target_identity("camflow-dev")
+        assert target == {
+            "target_id": "836208f0",
+            "target_name": "camflow-dev",
+            "target_tmux_session": "cam-836208f0",
+        }
+
+    def test_target_identity_unknown_returns_none(self, monkeypatch):
+        from camc_pkg import cli
+
+        class FakeStore:
+            def get(self, key):
+                return None
+
+        monkeypatch.setattr(cli, "AgentStore", lambda: FakeStore())
+        assert cli._msg_target_identity("not-an-agent") is None
+        assert cli._msg_target_identity("") is None
+        assert cli._msg_target_identity(None) is None
+
     def test_no_wait_deliver_failure_exits_1(self, monkeypatch, tmp_path, capsys):
         import argparse
         cli, ledger, _ = self._setup(monkeypatch, tmp_path, deliver_ok=False)
@@ -310,6 +457,280 @@ class TestMsgNoWait:
         assert "fake" in cap.err
         statuses = [r["status"] for r in cli._msg_ledger_iter()]
         assert "deliver_failed" in statuses
+
+    def test_sender_identity_resolves_current_tmux_agent(self, monkeypatch):
+        from camc_pkg import cli
+        monkeypatch.setenv("TMUX", "/tmp/cam-agent-sockets/cam-abcd1234.sock,1,0")
+        monkeypatch.setenv("TMUX_PANE", "%7")
+        seen = {}
+        monkeypatch.setattr(cli, "_run", lambda args, timeout=2:
+                            (seen.setdefault("args", args) and 0, "cam-abcd1234\n"))
+
+        class FakeStore:
+            def get(self, key):
+                assert key == "cam-abcd1234"
+                return {
+                    "id": "abcd1234",
+                    "task": {"name": "sender-agent"},
+                    "tmux_session": "cam-abcd1234",
+                }
+
+        monkeypatch.setattr(cli, "AgentStore", lambda: FakeStore())
+        sender = cli._msg_sender_identity()
+        assert sender == {
+            "sender_id": "abcd1234",
+            "sender_name": "sender-agent",
+            "sender_tmux_session": "cam-abcd1234",
+        }
+        assert "-S" in seen["args"]
+        assert "%7" in seen["args"]
+
+
+class TestMsgExpectReply:
+    """`--expect-reply` Phase 1 async: receiver instruction appended to
+    wire, sent record flagged, `wait` switches to ledger-poll, and
+    `camc msg reply <id>` commits the reply + (when sender resolves)
+    fires a notification correlated by `[reply_to:<orig_id>]`."""
+
+    def _setup(self, monkeypatch, tmp_path, deliver_ok=True):
+        from camc_pkg import cli
+        ledger = tmp_path / "messages.jsonl"
+        monkeypatch.setattr(cli, "_MSG_LEDGER_PATH", str(ledger))
+        monkeypatch.setattr(cli, "_msg_resolve_session",
+                            lambda to: (None, "cam-fake", None))
+        monkeypatch.setattr(cli, "_msg_sender_identity", lambda: None)
+        monkeypatch.setattr(cli, "_msg_target_identity", lambda to: None)
+        sent_calls = []
+        monkeypatch.setattr(cli, "tmux_send_input",
+                            lambda s, t, send_enter=True: (sent_calls.append((s, t)), deliver_ok)[1])
+        return cli, ledger, sent_calls
+
+    def test_expect_reply_no_wait_appends_instruction(self, monkeypatch, tmp_path, capsys):
+        import argparse, re as _re
+        cli, ledger, sent_calls = self._setup(monkeypatch, tmp_path)
+        args = argparse.Namespace(to="fake", text="please review src/foo.py",
+                                  timeout=600, no_wait=True, expect_reply=True)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_send(args)
+        assert ei.value.code == 0
+        out = capsys.readouterr().out
+        msg_id = _re.search(r"MSG_ID=([0-9a-f]{8})", out).group(1)
+        assert "STATUS=sent" in out
+        assert "EXPECT_REPLY=yes" in out
+        # Wire payload contains the user text AND the reply-via instruction.
+        wire = sent_calls[0][1]
+        assert "please review src/foo.py" in wire
+        assert ('[Reply via: camc msg reply %s -t "<your final answer>"]' % msg_id) in wire
+        # Sent record carries expect_reply=true. Ledger `text` is the
+        # original (instruction is wire-only, not stored as user text).
+        sent = next(r for r in cli._msg_ledger_iter(msg_id=msg_id)
+                    if r["status"] == "sent")
+        assert sent["expect_reply"] is True
+        assert sent["text"] == "please review src/foo.py"
+
+    def test_blocking_expect_reply_polls_ledger(self, monkeypatch, tmp_path, capsys):
+        # Without --no-wait + --expect-reply: send injects, then blocks
+        # on ledger polling. Simulate the receiver running `msg reply`
+        # by pre-seeding a `replied` record before send is called → the
+        # poll should see it on the first tick and return immediately.
+        import argparse
+        from camc_pkg import cli
+        cli_mod, ledger, sent_calls = self._setup(monkeypatch, tmp_path)
+        # Force _msg_inject to use a deterministic msg_id so we can
+        # pre-seed the replied record.
+        monkeypatch.setattr(cli_mod, "uuid4",
+                            lambda: type("U", (), {"hex": "deadbeefcafe1111"})())
+        # Pre-seed: a replied record will be on disk by the time the
+        # blocking-send finishes inject and enters wait.
+        # We need to seed AFTER send writes its own `sent` record but
+        # ledger is append-only so order doesn't actually matter for
+        # _msg_find_replied. Pre-seed now:
+        cli_mod._msg_ledger_append({
+            "msg_id": "deadbeef", "status": "replied", "reply": "RECORDED",
+        })
+        args = argparse.Namespace(to="fake", text="ping", timeout=10,
+                                  no_wait=False, expect_reply=True)
+        with pytest.raises(SystemExit) as ei:
+            cli_mod.cmd_msg_send(args)
+        assert ei.value.code == 0
+        assert "RECORDED" in capsys.readouterr().out
+
+
+class TestMsgReply:
+    """`camc msg reply <msg_id> -t "..."` commits the reply against the
+    original ledger entry and (if sender resolves) fires a correlated
+    notification message."""
+
+    def _setup(self, monkeypatch, tmp_path):
+        from camc_pkg import cli
+        ledger = tmp_path / "messages.jsonl"
+        monkeypatch.setattr(cli, "_MSG_LEDGER_PATH", str(ledger))
+        # _msg_inject path: mock so notification injection succeeds without
+        # real tmux. _msg_resolve_session decides whether sender is reachable.
+        monkeypatch.setattr(cli, "_msg_sender_identity", lambda: None)
+        monkeypatch.setattr(cli, "_msg_target_identity", lambda to: None)
+        sent_calls = []
+        monkeypatch.setattr(cli, "tmux_send_input",
+                            lambda s, t, send_enter=True: (sent_calls.append((s, t)), True)[1])
+        return cli, ledger, sent_calls
+
+    def test_reply_unknown_id_exits_1(self, monkeypatch, tmp_path, capsys):
+        import argparse
+        cli, _, _ = self._setup(monkeypatch, tmp_path)
+        # Empty ledger; no sent record for this id.
+        args = argparse.Namespace(msg_id="00000000", text="x", timeout=10)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_reply(args)
+        assert ei.value.code == 1
+        assert "00000000" in capsys.readouterr().err
+
+    def test_reply_idempotent_when_already_replied(self, monkeypatch, tmp_path, capsys):
+        import argparse
+        cli, _, sent_calls = self._setup(monkeypatch, tmp_path)
+        cli._msg_ledger_append({"msg_id": "abc12345", "to": "x",
+                                "tmux_session": "cam-x", "text": "q",
+                                "status": "sent", "timeout_s": 600})
+        cli._msg_ledger_append({"msg_id": "abc12345", "status": "replied",
+                                "reply": "FIRST_REPLY"})
+        args = argparse.Namespace(msg_id="abc12345", text="duplicate", timeout=10)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_reply(args)
+        assert ei.value.code == 0
+        assert "FIRST_REPLY" in capsys.readouterr().out
+        # No new injection happened.
+        assert sent_calls == []
+        # Only the original replied record exists.
+        replied = [r for r in cli._msg_ledger_iter(msg_id="abc12345")
+                   if r.get("status") == "replied"]
+        assert len(replied) == 1
+
+    def test_reply_resolves_sender_id_before_name(self, monkeypatch, tmp_path, capsys):
+        # Routing preference: sender_id > sender_tmux_session > sender_name.
+        # sender_id is the stable primary key — names can be renamed.
+        import argparse, re as _re
+        cli, _, sent_calls = self._setup(monkeypatch, tmp_path)
+        # Resolver succeeds ONLY for the id, not for tmux_session or name.
+        # Records the order of lookup attempts to confirm id is tried first.
+        resolved_with = []
+        def _resolver(label):
+            resolved_with.append(label)
+            if label == "5f765953":
+                return (None, "cam-orig-sender", None)
+            return (None, None, None)
+        monkeypatch.setattr(cli, "_msg_resolve_session", _resolver)
+        cli._msg_ledger_append({
+            "msg_id": "abc12345", "to": "camflow-dev",
+            "tmux_session": "cam-camflow-dev", "text": "please review",
+            "status": "sent", "timeout_s": 600,
+            "sender_name": "camflow-review", "sender_id": "5f765953",
+            "sender_tmux_session": "cam-5f765953",
+            "expect_reply": True,
+        })
+        args = argparse.Namespace(msg_id="abc12345", text="LGTM, ship it", timeout=10)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_reply(args)
+        assert ei.value.code == 0
+        # First candidate tried MUST be sender_id — and since it resolves,
+        # no further candidates should be probed.
+        assert resolved_with[0] == "5f765953"
+        assert resolved_with == ["5f765953"]
+        out = capsys.readouterr().out
+        m = _re.search(r"REPLY_MSG_ID=([0-9a-f]{8})", out)
+        assert m, "stdout missing REPLY_MSG_ID for fired notification"
+        new_id = m.group(1)
+        wire = sent_calls[0][1]
+        assert ("[camc msg#%s]:" % new_id) in wire
+        assert "[reply_to:abc12345]" in wire
+        assert "LGTM, ship it" in wire
+        replied = next(r for r in cli._msg_ledger_iter(msg_id="abc12345")
+                       if r.get("status") == "replied")
+        assert replied["reply_msg_id"] == new_id
+
+    def test_reply_falls_back_to_session_then_name(self, monkeypatch, tmp_path, capsys):
+        # When sender_id doesn't resolve, fall through to sender_tmux_session;
+        # when neither resolves, fall through to sender_name. Probe order is
+        # exactly [id, tmux_session, name] and we stop at the first hit.
+        import argparse
+        cli, _, sent_calls = self._setup(monkeypatch, tmp_path)
+        resolved_with = []
+        def _resolver(label):
+            resolved_with.append(label)
+            # Only the tmux_session resolves; id and name don't.
+            if label == "cam-5f765953":
+                return (None, "cam-orig-sender", None)
+            return (None, None, None)
+        monkeypatch.setattr(cli, "_msg_resolve_session", _resolver)
+        cli._msg_ledger_append({
+            "msg_id": "abc12345", "to": "camflow-dev",
+            "tmux_session": "cam-camflow-dev", "text": "please review",
+            "status": "sent", "timeout_s": 600,
+            "sender_name": "camflow-review", "sender_id": "5f765953",
+            "sender_tmux_session": "cam-5f765953",
+        })
+        args = argparse.Namespace(msg_id="abc12345", text="thx", timeout=10)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_reply(args)
+        assert ei.value.code == 0
+        # Probed id (miss) → tmux_session (HIT, stop). sender_name should
+        # NEVER be probed because tmux_session resolved first.
+        assert resolved_with == ["5f765953", "cam-5f765953"]
+        # Notification was sent → ledger has reply_msg_id.
+        replied = next(r for r in cli._msg_ledger_iter(msg_id="abc12345")
+                       if r.get("status") == "replied")
+        assert "reply_msg_id" in replied
+        assert sent_calls, "notification message was not injected"
+
+    def test_reply_with_unresolvable_sender_only_appends_ledger(self, monkeypatch, tmp_path, capsys):
+        # Sender is in the original sent record but resolver returns no
+        # session — just commit the ledger reply without sending a
+        # notification. wait <id> still finds it via ledger-poll.
+        import argparse
+        cli, _, sent_calls = self._setup(monkeypatch, tmp_path)
+        monkeypatch.setattr(cli, "_msg_resolve_session",
+                            lambda to: (None, None, None))  # no session
+        cli._msg_ledger_append({
+            "msg_id": "abc12345", "to": "camflow-dev",
+            "tmux_session": "cam-camflow-dev", "text": "q",
+            "status": "sent", "timeout_s": 600,
+            "sender_name": "ghost-sender", "sender_id": "deadbeef",
+        })
+        args = argparse.Namespace(msg_id="abc12345", text="silent reply", timeout=10)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_reply(args)
+        assert ei.value.code == 0
+        out = capsys.readouterr().out
+        assert "REPLIED_TO=abc12345" in out
+        assert "REPLY_MSG_ID=" not in out
+        assert sent_calls == []
+        replied = next(r for r in cli._msg_ledger_iter(msg_id="abc12345")
+                       if r.get("status") == "replied")
+        assert replied["reply"] == "silent reply"
+        assert "reply_msg_id" not in replied
+
+    def test_wait_with_expect_reply_uses_ledger_polling(self, monkeypatch, tmp_path, capsys):
+        # When the original sent record has expect_reply=true, `camc msg
+        # wait` polls the ledger — never calls capture_tmux. Pre-seed a
+        # `replied` record so wait returns on the first tick.
+        import argparse
+        from camc_pkg import cli
+        monkeypatch.setattr(cli, "_MSG_LEDGER_PATH", str(tmp_path / "messages.jsonl"))
+        cli._msg_ledger_append({
+            "msg_id": "abc12345", "to": "x", "tmux_session": "cam-x",
+            "text": "q", "status": "sent", "timeout_s": 600,
+            "expect_reply": True,
+        })
+        # capture_tmux MUST NOT be called on the ledger-poll path.
+        def _explode(*_a, **_kw):
+            raise AssertionError("capture_tmux called on ledger-poll path")
+        monkeypatch.setattr(cli, "capture_tmux", _explode)
+        # Seed the reply that ledger-poll will find.
+        cli._msg_ledger_append({"msg_id": "abc12345", "status": "replied",
+                                "reply": "ASYNC_REPLY"})
+        args = argparse.Namespace(msg_id="abc12345", timeout=10)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_wait(args)
+        assert ei.value.code == 0
+        assert "ASYNC_REPLY" in capsys.readouterr().out
 
 
 class TestMsgWait:

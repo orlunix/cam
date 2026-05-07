@@ -3181,11 +3181,16 @@ def cmd_msg(args):
         cmd_msg_list(args)
     elif sub == "wait":
         cmd_msg_wait(args)
+    elif sub == "reply":
+        cmd_msg_reply(args)
     else:
         sys.stderr.write(
-            "usage: camc msg {send,wait,show,list} ...\n"
-            "  send <to> --text \"...\" [--no-wait]   send (block, or async with --no-wait)\n"
+            "usage: camc msg {send,wait,reply,show,list} ...\n"
+            "  send <to> --text \"...\" [--no-wait] [--expect-reply]\n"
+            "                                       send (block, or async with --no-wait;\n"
+            "                                       --expect-reply tells receiver to use msg reply)\n"
             "  wait <msg_id> [--timeout N]          wait for reply to existing send\n"
+            "  reply <msg_id> --text \"...\"          reply to a received message id (async commit)\n"
             "  show <msg_id>                        show ledger history for a message\n"
             "  list [--for <to>]                    list recent messages\n"
         )
@@ -3273,18 +3278,175 @@ def _msg_resolve_session(to_arg):
     return target, session, tool_busy
 
 
-def _msg_inject(session, to_label, text, timeout_s):
+def _msg_clean_header_value(value):
+    """Keep protocol metadata on one bracketed line."""
+    return (str(value or "")
+            .replace("\r", " ")
+            .replace("\n", " ")
+            .replace("]", ")")
+            .strip())
+
+
+def _msg_sender_identity():
+    """Infer the sending camc agent from this process's tmux pane.
+
+    `camc msg send` is usually invoked from inside an agent's Bash tool.
+    In that case tmux provides TMUX/TMUX_PANE, and agents.json maps the
+    current tmux session back to a stable camc agent id/name. If the
+    command is run from a normal shell, return None and keep the wire
+    payload unchanged apart from the msg marker.
+    """
+    tmux_env = os.environ.get("TMUX", "")
+    pane = os.environ.get("TMUX_PANE", "")
+    if not tmux_env and not pane:
+        return None
+    sock = tmux_env.split(",", 1)[0] if tmux_env else ""
+    try:
+        from camc_pkg.transport import TMUX_BIN
+        args = [TMUX_BIN, "-u"]
+        if sock:
+            args += ["-S", sock]
+        args += ["display-message", "-p"]
+        if pane:
+            args += ["-t", pane]
+        args.append("#{session_name}")
+        rc, out = _run(args, timeout=2)
+        if rc != 0 or not out.strip():
+            return None
+        session = out.strip().splitlines()[-1].strip()
+    except Exception:
+        return None
+
+    try:
+        agent = AgentStore().get(session)
+    except Exception:
+        agent = None
+    if not agent:
+        return None
+    agent_id = _msg_clean_header_value(agent.get("id", ""))
+    agent_name = _msg_clean_header_value(_tf(agent, "name", "") or agent_id)
+    if not agent_id and not agent_name:
+        return None
+    return {
+        "sender_id": agent_id,
+        "sender_name": agent_name,
+        "sender_tmux_session": _msg_clean_header_value(
+            _sf(agent, "tmux_session", session) or session),
+    }
+
+
+def _msg_sender_prefix(sender):
+    if not sender:
+        return ""
+    name = _msg_clean_header_value(sender.get("sender_name", ""))
+    agent_id = _msg_clean_header_value(sender.get("sender_id", ""))
+    if name and agent_id:
+        return "[from:%s#%s]" % (name, agent_id)
+    if name:
+        return "[from:%s]" % name
+    if agent_id:
+        return "[from:#%s]" % agent_id
+    return ""
+
+
+def _msg_target_identity(to_arg):
+    """Resolve the target agent identity from a name / short-id / full-id.
+
+    Returns {target_id, target_name, target_tmux_session} when the target
+    resolves to a known agent record. Returns None when the input is a
+    raw tmux session name with no matching agent (so the wire payload
+    omits the [to ...] block rather than inventing values).
+    """
+    if not to_arg:
+        return None
+    try:
+        agent = AgentStore().get(to_arg)
+    except Exception:
+        agent = None
+    if not agent:
+        return None
+    target_id = _msg_clean_header_value(agent.get("id", ""))
+    target_name = _msg_clean_header_value(_tf(agent, "name", "") or target_id)
+    if not target_id and not target_name:
+        return None
+    return {
+        "target_id": target_id,
+        "target_name": target_name,
+        "target_tmux_session": _msg_clean_header_value(
+            _sf(agent, "tmux_session", "") or ""),
+    }
+
+
+def _msg_target_prefix(target):
+    if not target:
+        return ""
+    name = _msg_clean_header_value(target.get("target_name", ""))
+    agent_id = _msg_clean_header_value(target.get("target_id", ""))
+    if name and agent_id:
+        return "[to:%s#%s]" % (name, agent_id)
+    if name:
+        return "[to:%s]" % name
+    if agent_id:
+        return "[to:#%s]" % agent_id
+    return ""
+
+
+_MSG_REPLY_INSTRUCTION = (
+    '\n\n[Reply via: camc msg reply %s -t "<your final answer>"]'
+)
+
+
+def _msg_inject(session, to_label, text, timeout_s,
+                expect_reply=False, reply_to=None):
     """Inject [camc msg#<id>]: marker into pane. Logs ledger sent/delivered.
 
     Returns (msg_id, ok). On delivery failure, logs deliver_failed and
     returns ok=False; caller decides the user-facing exit behavior.
+
+    Wire format:
+      [camc msg#<id>]: [from:<name>#<id>][to:<name>#<id>][reply_to:<id>] <text>
+    Each attribution block is omitted independently when the corresponding
+    identity can't be resolved. When blocks resolve they sit adjacent
+    (no inter-block space). When at least one resolves there is exactly
+    one space before the user text. When none resolve, the payload
+    reduces to the bare anchor form `[camc msg#<id>]: <text>`.
+    The `[camc msg#<id>]:` anchor is invariant so existing reply
+    extraction stays compatible with old messages.
+
+    If `expect_reply` is True, the wire payload also appends a
+    receiver-facing instruction line telling the agent to finish via
+    `camc msg reply <msg_id> -t "..."` rather than chatting back. The
+    sent ledger record records `expect_reply: true` so `camc msg wait`
+    can switch to ledger-polling instead of pane-scrape.
+
+    If `reply_to=<original_msg_id>` is set, the wire includes a
+    `[reply_to:<id>]` correlation block (used by `camc msg reply`'s
+    notification message), and the sent record records `reply_to`.
     """
     msg_id = uuid4().hex[:8]
-    payload = "[camc msg#%s]: %s" % (msg_id, text)
-    _msg_ledger_append({
+    sender = _msg_sender_identity()
+    target = _msg_target_identity(to_label)
+    prefix = _msg_sender_prefix(sender) + _msg_target_prefix(target)
+    if reply_to:
+        prefix += "[reply_to:%s]" % _msg_clean_header_value(reply_to)
+    body = text
+    if expect_reply:
+        body = body + (_MSG_REPLY_INSTRUCTION % msg_id)
+    wire_text = (prefix + " " + body) if prefix else body
+    payload = "[camc msg#%s]: %s" % (msg_id, wire_text)
+    sent_record = {
         "msg_id": msg_id, "to": to_label, "tmux_session": session,
         "text": text, "status": "sent", "timeout_s": timeout_s,
-    })
+    }
+    if sender:
+        sent_record.update(sender)
+    if target:
+        sent_record.update(target)
+    if expect_reply:
+        sent_record["expect_reply"] = True
+    if reply_to:
+        sent_record["reply_to"] = reply_to
+    _msg_ledger_append(sent_record)
     if not tmux_send_input(session, payload, send_enter=True):
         _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
         return (msg_id, False)
@@ -3430,6 +3592,35 @@ def _msg_lookup_sent_session(msg_id):
     return None, None
 
 
+def _msg_find_sent(msg_id):
+    """Return the full 'sent' ledger record for msg_id, or None."""
+    for rec in _msg_ledger_iter(msg_id=msg_id):
+        if rec.get("status") == "sent":
+            return rec
+    return None
+
+
+def _msg_wait_ledger(msg_id, timeout_s, poll=2.0):
+    """Poll the ledger for a `replied` record on msg_id (Phase 1 async).
+
+    Returns (reply_text, status):
+      ("...", "replied")              recorded by `camc msg reply`
+      (None, "reply_not_recorded")    timeout: receiver never ran reply
+
+    Used when the original sent record has expect_reply=true. Cheaper
+    and more deterministic than pane-scrape because the receiver agent
+    explicitly commits the reply via `camc msg reply <id>` rather than
+    leaving us to mine its UI.
+    """
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        existing = _msg_find_replied(msg_id)
+        if existing is not None:
+            return (existing, "replied")
+        time.sleep(poll)
+    return (None, "reply_not_recorded")
+
+
 def _msg_finalize_wait(to_label, msg_id, timeout_s, reply, status):
     """Append final ledger record, print user-facing output, exit.
 
@@ -3447,7 +3638,11 @@ def _msg_finalize_wait(to_label, msg_id, timeout_s, reply, status):
         sys.stdout.write(reply + "\n")
         sys.stdout.flush()
         sys.exit(0)
-    why = "reply not stable" if status == "reply_not_stable" else "no marker seen"
+    why = (
+        "reply not stable" if status == "reply_not_stable"
+        else "no reply recorded" if status == "reply_not_recorded"
+        else "no marker seen"
+    )
     _msg_ledger_append({
         "msg_id": msg_id, "status": "timeout", "reason": why,
         "elapsed_s": timeout_s,
@@ -3470,17 +3665,26 @@ def cmd_msg_send(args):
     stdout and exits 0. With --no-wait, returns immediately after
     delivery, printing MSG_ID=<8hex> + STATUS=sent. The async caller
     then uses `camc msg wait <msg_id>` to retrieve the reply later.
+
+    With --expect-reply, the wire payload appends a receiver-facing
+    instruction telling the agent to finish the round-trip via `camc
+    msg reply <msg_id>`; the sent record gets `expect_reply: true`,
+    and any subsequent `camc msg wait` switches to ledger-polling
+    instead of pane-scrape. Combines with --no-wait (Phase 1 async
+    "fire-and-later"); without --no-wait, we send + block on ledger.
     """
     text = args.text
     timeout = max(int(getattr(args, "timeout", 600) or 600), 5)
     no_wait = bool(getattr(args, "no_wait", False))
+    expect_reply = bool(getattr(args, "expect_reply", False))
 
     target, session, tool_busy = _msg_resolve_session(args.to)
     if not session:
         sys.stderr.write("camc msg: target '%s' has no tmux session\n" % args.to)
         sys.exit(1)
 
-    msg_id, ok = _msg_inject(session, args.to, text, timeout)
+    msg_id, ok = _msg_inject(session, args.to, text, timeout,
+                             expect_reply=expect_reply)
     if not ok:
         sys.stderr.write("camc msg: failed to deliver to '%s'\n" % args.to)
         sys.exit(1)
@@ -3488,11 +3692,19 @@ def cmd_msg_send(args):
     if no_wait:
         # Async: only "delivered to tmux pane", NOT "received/read by target".
         # Caller picks up reply later via `camc msg wait <msg_id>`.
-        sys.stdout.write("MSG_ID=%s\nSTATUS=sent\n" % msg_id)
+        out = "MSG_ID=%s\nSTATUS=sent\n" % msg_id
+        if expect_reply:
+            out += "EXPECT_REPLY=yes\n"
+        sys.stdout.write(out)
         sys.stdout.flush()
         sys.exit(0)
 
-    reply, status = _msg_wait_loop(session, msg_id, timeout, tool_busy=tool_busy)
+    # Blocking: ledger-poll for expect_reply, pane-scrape otherwise.
+    if expect_reply:
+        reply, status = _msg_wait_ledger(msg_id, timeout)
+    else:
+        reply, status = _msg_wait_loop(session, msg_id, timeout,
+                                       tool_busy=tool_busy)
     _msg_finalize_wait(args.to, msg_id, timeout, reply, status)
 
 
@@ -3500,8 +3712,10 @@ def cmd_msg_wait(args):
     """Wait for a reply to a previously-sent message id.
 
     If the ledger already has a 'replied' record for this id, prints
-    that reply and exits 0 immediately. Otherwise polls the recorded
-    tmux session until the reply stabilises or the timeout elapses.
+    that reply and exits 0 immediately. Otherwise: when the original
+    sent record has `expect_reply: true`, polls the LEDGER for a
+    `replied` record (Phase 1 async); otherwise scrapes the recorded
+    tmux session pane until the reply stabilises or timeout.
     """
     msg_id = args.msg_id
     timeout = max(int(getattr(args, "timeout", 600) or 600), 5)
@@ -3512,19 +3726,99 @@ def cmd_msg_wait(args):
         sys.stdout.flush()
         sys.exit(0)
 
-    session, to_label = _msg_lookup_sent_session(msg_id)
-    if not session:
+    sent_record = _msg_find_sent(msg_id)
+    if not sent_record:
         sys.stderr.write(
             "camc msg: no sent record for '%s' — nothing to wait on\n" % msg_id)
         sys.exit(1)
-    to_label = to_label or msg_id
+    to_label = sent_record.get("to") or msg_id
+    expect_reply = bool(sent_record.get("expect_reply"))
 
-    # Refresh tool_busy from current registry if target still resolvable.
-    # If not, tool_busy stays None and only the generic busy gate applies.
-    _, _, tool_busy = _msg_resolve_session(to_label)
+    if expect_reply:
+        reply, status = _msg_wait_ledger(msg_id, timeout)
+    else:
+        session = sent_record.get("tmux_session")
+        if not session:
+            sys.stderr.write(
+                "camc msg: no tmux session in sent record for '%s'\n" % msg_id)
+            sys.exit(1)
+        # Refresh tool_busy from current registry if target still resolvable.
+        _, _, tool_busy = _msg_resolve_session(to_label)
+        reply, status = _msg_wait_loop(session, msg_id, timeout, tool_busy=tool_busy)
 
-    reply, status = _msg_wait_loop(session, msg_id, timeout, tool_busy=tool_busy)
     _msg_finalize_wait(to_label, msg_id, timeout, reply, status)
+
+
+def cmd_msg_reply(args):
+    """Reply to a previously-received message id (Phase 1 async).
+
+    Bookkeeping wrapper:
+      1. Look up the original `sent` record; exit 1 if missing.
+      2. If a `replied` record already exists, print it and exit 0
+         (idempotent — re-running `reply` doesn't double-notify).
+      3. If the original has resolvable sender metadata, send a
+         notification message back via the normal no-wait transport
+         with `[reply_to:<orig_id>]` correlation in the payload.
+      4. Append a `replied` record to the ORIGINAL msg_id (with
+         `reply_msg_id` when notification was actually sent).
+    """
+    orig_msg_id = args.msg_id
+    text = args.text
+    timeout = max(int(getattr(args, "timeout", 600) or 600), 5)
+
+    sent_record = _msg_find_sent(orig_msg_id)
+    if not sent_record:
+        sys.stderr.write(
+            "camc msg: no sent record for '%s' — nothing to reply to\n"
+            % orig_msg_id)
+        sys.exit(1)
+
+    # Idempotency: prior replied record → just print and exit 0.
+    existing = _msg_find_replied(orig_msg_id)
+    if existing is not None:
+        sys.stdout.write(existing + "\n")
+        sys.stdout.flush()
+        sys.exit(0)
+
+    # Notify original sender via no-wait transport when resolvable.
+    # Resolution preference: sender_id (stable primary key) > sender_tmux_session
+    # (next most specific) > sender_name (human label, can be renamed/ambiguous).
+    # First candidate that resolves to a session via _msg_resolve_session wins.
+    reply_msg_id = None
+    candidates = [
+        sent_record.get("sender_id"),
+        sent_record.get("sender_tmux_session"),
+        sent_record.get("sender_name"),
+    ]
+    for label in candidates:
+        if not label:
+            continue
+        _, sender_session, _ = _msg_resolve_session(label)
+        if not sender_session:
+            continue
+        new_id, ok = _msg_inject(
+            sender_session, label, text, timeout,
+            reply_to=orig_msg_id,
+        )
+        if ok:
+            reply_msg_id = new_id
+        break
+
+    # Always commit the replied record on the ORIGINAL msg_id —
+    # `camc msg wait` (ledger-poll path) keys off this.
+    record = {
+        "msg_id": orig_msg_id, "status": "replied", "reply": text,
+    }
+    if reply_msg_id:
+        record["reply_msg_id"] = reply_msg_id
+    _msg_ledger_append(record)
+
+    out = "REPLIED_TO=%s\n" % orig_msg_id
+    if reply_msg_id:
+        out += "REPLY_MSG_ID=%s\n" % reply_msg_id
+    sys.stdout.write(out)
+    sys.stdout.flush()
+    sys.exit(0)
 
 
 # ===========================================================================
@@ -4095,10 +4389,17 @@ examples:
                           help="Seconds to wait for stable reply [default: 600 = 10min]")
     msg_send.add_argument("--no-wait", dest="no_wait", action="store_true",
                           help="Inject and return immediately; reply retrieved later via `camc msg wait <msg_id>`")
+    msg_send.add_argument("--expect-reply", dest="expect_reply", action="store_true",
+                          help="Append `camc msg reply <msg_id>` instruction to the wire payload; later `wait` polls the ledger instead of pane-scrape")
     msg_wait = msg_sub.add_parser("wait", help="Wait for reply to a previously-sent message id")
     msg_wait.add_argument("msg_id", help="Message id (8-hex from `camc msg send --no-wait`)")
     msg_wait.add_argument("--timeout", type=int, default=600,
                           help="Seconds to wait for stable reply [default: 600 = 10min]")
+    msg_reply = msg_sub.add_parser("reply", help="Reply to a previously-received message id")
+    msg_reply.add_argument("msg_id", help="Original message id you are replying to")
+    msg_reply.add_argument("--text", "-t", required=True, help="Reply text")
+    msg_reply.add_argument("--timeout", type=int, default=600,
+                           help="Seconds to wait for the notification message to deliver [default: 600]")
     msg_show = msg_sub.add_parser("show", help="Show ledger history for a message id")
     msg_show.add_argument("msg_id", help="Message id (8-hex from `camc msg send`)")
     msg_list = msg_sub.add_parser("list", help="List recent messages from the ledger")
