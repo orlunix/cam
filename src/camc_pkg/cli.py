@@ -3859,13 +3859,9 @@ def cmd_key(args):
     if not session:
         print("Agent has no tmux session", file=sys.stderr)
         sys.exit(1)
-    sock = _find_tmux_socket(session)
-    cmd = ["tmux"]
-    if sock:
-        cmd += ["-S", sock]
-    cmd += ["send-keys", "-t", session, args.key]
     try:
-        subprocess.run(cmd, check=True, capture_output=True, timeout=5)
+        if not tmux_send_key(session, args.key):
+            raise RuntimeError("tmux_send_key returned false")
         print("Sent key: %s" % args.key)
     except Exception as e:
         print("Failed to send key: %s" % e, file=sys.stderr)
