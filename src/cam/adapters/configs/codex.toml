@@ -57,17 +57,17 @@ error_flags = ["IGNORECASE"]
 pattern = "1\\.\\s*(Yes,?\\s*)?allow Codex to work"
 flags = ["IGNORECASE"]
 response = "1"
-send_enter = true
+send_enter = false
 
 [[confirm]]
 # Trust dialog (Codex 0.55+):
 #   "Do you trust the contents of this directory?"
 #   "1. Yes, continue"
-# Press Enter to accept the highlighted default.
+# Send "1" to select the numbered affirmative option.
 pattern = "Do\\s+you\\s+trust\\s+the\\s+contents\\s+of\\s+this\\s+directory\\?.*Yes,?\\s+continue"
 flags = ["IGNORECASE", "DOTALL"]
-response = ""
-send_enter = true
+response = "1"
+send_enter = false
 
 [[confirm]]
 # Same trust dialog, but match the bottom menu. The question text can be
@@ -75,15 +75,15 @@ send_enter = true
 # menu lines remain visible at the bottom.
 pattern = "1\\.\\s*Yes,?\\s+continue\\s*\\n\\s*2\\.\\s*No,\\s+quit\\s*\\n\\s*Press\\s+enter\\s+to\\s+continue"
 flags = ["IGNORECASE"]
-response = ""
-send_enter = true
+response = "1"
+send_enter = false
 
 [[confirm]]
 # Retry command outside the sandbox after a failed command.
 pattern = "1\\.\\s*Yes,\\s*proceed.*Press\\s+enter\\s+to\\s+confirm"
 flags = ["IGNORECASE", "DOTALL"]
-response = ""
-send_enter = true
+response = "1"
+send_enter = false
 
 [[confirm]]
 # Any [Y/n] or [y/N] prompt — covers Apply, Accept, Approve, Continue,
