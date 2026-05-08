@@ -1794,3 +1794,70 @@ class TestCmdKey:
 
         assert ei.value.code == 1
         assert "Failed to send key" in capsys.readouterr().err
+
+
+class TestCliArgParsing:
+    @pytest.mark.parametrize("argv", [
+        ["camc", "run", "-name", "install-ts"],
+        ["camc", "run", "-name=install-ts"],
+    ])
+    def test_rejects_single_dash_long_name_typo(
+            self, argv, monkeypatch, capsys):
+        from camc_pkg import cli
+
+        calls = []
+        monkeypatch.setattr(sys, "argv", argv)
+        monkeypatch.setattr(cli, "cmd_run", lambda args: calls.append(args))
+
+        with pytest.raises(SystemExit) as ei:
+            cli.main()
+
+        assert ei.value.code == 2
+        assert calls == []
+        err = capsys.readouterr().err
+        assert "unknown option '-name'" in err
+        assert "--name" in err
+        assert "-n" in err
+
+    def test_accepts_run_short_name_flag(self, monkeypatch):
+        from camc_pkg import cli
+
+        calls = []
+        monkeypatch.setattr(
+            sys, "argv", ["camc", "run", "-n", "install-ts"])
+        monkeypatch.setattr(cli, "_ensure_logs_on_scratch", lambda: None)
+        monkeypatch.setattr(cli, "cmd_run", lambda args: calls.append(args))
+
+        cli.main()
+
+        assert len(calls) == 1
+        assert calls[0].name == "install-ts"
+
+    def test_accepts_run_long_name_flag(self, monkeypatch):
+        from camc_pkg import cli
+
+        calls = []
+        monkeypatch.setattr(
+            sys, "argv", ["camc", "run", "--name", "install-ts"])
+        monkeypatch.setattr(cli, "_ensure_logs_on_scratch", lambda: None)
+        monkeypatch.setattr(cli, "cmd_run", lambda args: calls.append(args))
+
+        cli.main()
+
+        assert len(calls) == 1
+        assert calls[0].name == "install-ts"
+
+    def test_does_not_reject_inline_option_value_for_other_command(
+            self, monkeypatch):
+        from camc_pkg import cli
+
+        calls = []
+        monkeypatch.setattr(
+            sys, "argv", ["camc", "send", "agent1", "--text=-name"])
+        monkeypatch.setattr(cli, "_ensure_logs_on_scratch", lambda: None)
+        monkeypatch.setattr(cli, "cmd_send", lambda args: calls.append(args))
+
+        cli.main()
+
+        assert len(calls) == 1
+        assert calls[0].text == "-name"
