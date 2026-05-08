@@ -3183,14 +3183,18 @@ def cmd_msg(args):
         cmd_msg_wait(args)
     elif sub == "reply":
         cmd_msg_reply(args)
+    elif sub == "read":
+        cmd_msg_read(args)
     else:
         sys.stderr.write(
-            "usage: camc msg {send,wait,reply,show,list} ...\n"
+            "usage: camc msg {send,wait,reply,read,show,list} ...\n"
             "  send <to> --text \"...\" [--no-wait] [--expect-reply]\n"
             "                                       send (block, or async with --no-wait;\n"
             "                                       --expect-reply tells receiver to use msg reply)\n"
             "  wait <msg_id> [--timeout N]          wait for reply to existing send\n"
-            "  reply <msg_id> --text \"...\"          reply to a received message id (async commit)\n"
+            "  reply <msg_id> --text \"...\"          append a turn to a thread (V0 mailbox)\n"
+            "  read [<msg_id>] [--next] [--mark] [--all] [--for L] [--json]\n"
+            "                                       inbox listing / replay thread / next-unread\n"
             "  show <msg_id>                        show ledger history for a message\n"
             "  list [--for <to>]                    list recent messages\n"
         )
@@ -3420,8 +3424,11 @@ def _msg_inject(session, to_label, text, timeout_s,
     can switch to ledger-polling instead of pane-scrape.
 
     If `reply_to=<original_msg_id>` is set, the wire includes a
-    `[reply_to:<id>]` correlation block (used by `camc msg reply`'s
-    notification message), and the sent record records `reply_to`.
+    `[reply_to:<id>]` correlation block and the sent record records
+    `reply_to`. NOTE: V0 mailbox/thread `camc msg reply` no longer uses
+    this — replies reuse the same [camc msg#<thread>] anchor instead of
+    minting a new id. The kwarg is kept for legacy callers / forward
+    compat with non-thread inter-process correlation.
     """
     msg_id = uuid4().hex[:8]
     sender = _msg_sender_identity()
@@ -3447,6 +3454,30 @@ def _msg_inject(session, to_label, text, timeout_s,
     if reply_to:
         sent_record["reply_to"] = reply_to
     _msg_ledger_append(sent_record)
+
+    # V0 thread/mailbox: append turn(seq=1) + delivery to the recipient
+    # mailbox. These are append-only and source-of-truth for `camc msg
+    # read`; the legacy sent/delivered status records above are kept for
+    # backward compatibility with `wait`/`show`/`list`.
+    from_id = (sender or {}).get("sender_id", "") if sender else ""
+    from_name = (sender or {}).get("sender_name", "") if sender else ""
+    to_id = (target or {}).get("target_id", "") if target else ""
+    to_name = (target or {}).get("target_name", "") if target else ""
+    mailbox_id = _msg_mailbox_id_for_target(target, session, to_label)
+    _msg_ledger_append({
+        "record": "turn", "schema": _MSG_SCHEMA,
+        "msg_id": msg_id, "seq": 1, "kind": "message",
+        "from_id": from_id, "from_name": from_name,
+        "to_id": to_id, "to_name": to_name,
+        "text": text,
+    })
+    _msg_ledger_append({
+        "record": "delivery", "schema": _MSG_SCHEMA,
+        "msg_id": msg_id, "seq": 1,
+        "mailbox_id": mailbox_id,
+        "to_id": to_id, "to_name": to_name,
+    })
+
     if not tmux_send_input(session, payload, send_enter=True):
         _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
         return (msg_id, False)
@@ -3584,6 +3615,199 @@ def _msg_find_replied(msg_id):
     return None
 
 
+# -- V0 mailbox/thread (camc-msg/1) ----------------------------------------
+#
+# msg_id is the THREAD id. seq increments under the same msg_id for each
+# new turn (send=1, reply=2, follow-up=3, …). Existing status records
+# (sent/delivered/replied/timeout) stay alongside the new record types so
+# legacy `wait`/`show`/`list` keep working.
+
+_MSG_SCHEMA = "camc-msg/1"
+
+
+def _msg_thread_seq(msg_id):
+    """Return the highest existing turn seq for msg_id (0 if no turn record)."""
+    high = 0
+    for rec in _msg_ledger_iter(msg_id=msg_id):
+        if rec.get("record") == "turn":
+            try:
+                s = int(rec.get("seq", 0))
+            except (TypeError, ValueError):
+                s = 0
+            if s > high:
+                high = s
+    return high
+
+
+def _msg_thread_turns(msg_id):
+    """Return all turn records for msg_id, sorted by seq ascending."""
+    turns = [rec for rec in _msg_ledger_iter(msg_id=msg_id)
+             if rec.get("record") == "turn"]
+    turns.sort(key=lambda r: int(r.get("seq", 0) or 0))
+    return turns
+
+
+def _msg_lookup_turn(msg_id, seq):
+    """Return the turn record matching (msg_id, seq), or None."""
+    for rec in _msg_ledger_iter(msg_id=msg_id):
+        if rec.get("record") == "turn" and rec.get("seq") == seq:
+            return rec
+    return None
+
+
+def _msg_mailbox_id_for_target(target_record, session, to_label):
+    """Pick a mailbox_id for a delivery, preferring stable identifiers.
+
+    Preference: agent:<id> > session:<tmux_session> > label:<arg-or-name>.
+    """
+    if target_record:
+        tid = target_record.get("target_id") or ""
+        if tid:
+            return "agent:%s" % tid
+    if session:
+        return "session:%s" % session
+    return "label:%s" % (to_label or "unknown")
+
+
+def _msg_current_mailbox_candidates():
+    """Return mailbox_id candidates for the CURRENT process / agent.
+
+    Reuses _msg_sender_identity (TMUX env → agents.json). When no identity
+    can be inferred (running from a normal shell), returns []; the caller
+    decides whether to ask for `--for <mailbox>` explicitly.
+    """
+    sender = _msg_sender_identity()
+    if not sender:
+        return []
+    cands = []
+    sid = sender.get("sender_id") or ""
+    sess = sender.get("sender_tmux_session") or ""
+    name = sender.get("sender_name") or ""
+    if sid:
+        cands.append("agent:%s" % sid)
+    if sess:
+        cands.append("session:%s" % sess)
+    if name:
+        cands.append("label:%s" % name)
+    return cands
+
+
+def _msg_resolve_mailbox(label):
+    """Turn an explicit `--for <label>` arg into a list of mailbox_id candidates.
+
+    Tries to resolve the label as an agent (id prefix / name) first; falls
+    back to interpreting the raw label as both a session name and a free
+    label so the caller can match deliveries addressed via any of those.
+    """
+    if not label:
+        return []
+    cands = []
+    try:
+        agent = AgentStore().get(label)
+    except Exception:
+        agent = None
+    if agent:
+        aid = (agent.get("id") or "").strip()
+        sess = (_sf(agent, "tmux_session", "") or "").strip()
+        name = (_tf(agent, "name", "") or aid).strip()
+        if aid:
+            cands.append("agent:%s" % aid)
+        if sess:
+            cands.append("session:%s" % sess)
+        if name:
+            cands.append("label:%s" % name)
+    else:
+        # AgentStore couldn't resolve — caller may have passed a raw
+        # agent_id, tmux session name, or free label. Cover all three so
+        # deliveries written via any of those keys still match.
+        cands.append("agent:%s" % label)
+        cands.append("session:%s" % label)
+        cands.append("label:%s" % label)
+    return cands
+
+
+def _msg_inbox(mailbox_candidates, include_read=False):
+    """Walk the ledger once and return [(delivery, turn, is_read), …] for mailbox.
+
+    Default: unread only. With include_read=True: every delivery for the
+    mailbox. Sorted oldest-first by delivery ts (insertion order is a fine
+    fallback when ts is missing).
+    """
+    if not mailbox_candidates:
+        return []
+    cand_set = set(mailbox_candidates)
+    deliveries = []
+    reads = set()
+    turns_by_key = {}
+    for rec in _msg_ledger_iter():
+        rt = rec.get("record")
+        if rt == "delivery" and rec.get("mailbox_id") in cand_set:
+            deliveries.append(rec)
+        elif rt == "read" and rec.get("mailbox_id") in cand_set:
+            reads.add((rec.get("msg_id"), rec.get("seq"), rec.get("mailbox_id")))
+        elif rt == "turn":
+            turns_by_key[(rec.get("msg_id"), rec.get("seq"))] = rec
+    out = []
+    for d in deliveries:
+        key = (d.get("msg_id"), d.get("seq"), d.get("mailbox_id"))
+        is_read = key in reads
+        if include_read or not is_read:
+            turn = turns_by_key.get((d.get("msg_id"), d.get("seq")))
+            out.append((d, turn, is_read))
+    out.sort(key=lambda t: t[0].get("ts") or "")
+    return out
+
+
+def _msg_mark_read(msg_id, seq, mailbox_id):
+    """Append a read record (idempotent at the wire level — duplicates are OK)."""
+    _msg_ledger_append({
+        "record": "read", "schema": _MSG_SCHEMA,
+        "msg_id": msg_id, "seq": seq, "mailbox_id": mailbox_id,
+    })
+
+
+def _msg_other_side_recipient(msg_id, current_sender):
+    """Determine the recipient (id, name, optional session) for the next reply.
+
+    Rule: pick the OTHER party of the highest-seq turn record (NOT just
+    insertion order — out-of-order ledger appends would otherwise route
+    to the wrong party). If the current agent is the `from` of that turn,
+    recipient is its `to`; otherwise recipient is its `from` (the common
+    case — we received that turn and are replying to its sender). Falls
+    back to the original sent record's `sender_*` fields when no turn
+    records exist (legacy ledger), so we keep working on threads that
+    pre-date the V0 schema.
+    """
+    turns = _msg_thread_turns(msg_id)  # sorted ascending by seq
+    last_turn = turns[-1] if turns else None
+    if last_turn is None:
+        sent = _msg_find_sent(msg_id)
+        if not sent:
+            return None
+        return {
+            "id": sent.get("sender_id") or "",
+            "name": sent.get("sender_name") or "",
+            "session": sent.get("sender_tmux_session") or "",
+        }
+    cur_id = (current_sender or {}).get("sender_id") or ""
+    cur_name = (current_sender or {}).get("sender_name") or ""
+    is_from = (
+        (cur_id and cur_id == last_turn.get("from_id"))
+        or (cur_name and cur_name == last_turn.get("from_name"))
+    )
+    if is_from:
+        return {
+            "id": last_turn.get("to_id") or "",
+            "name": last_turn.get("to_name") or "",
+            "session": "",
+        }
+    return {
+        "id": last_turn.get("from_id") or "",
+        "name": last_turn.get("from_name") or "",
+        "session": "",
+    }
+
+
 def _msg_lookup_sent_session(msg_id):
     """Return (tmux_session, to_label) from the 'sent' ledger record, or (None, None)."""
     for rec in _msg_ledger_iter(msg_id=msg_id):
@@ -3629,12 +3853,58 @@ def _msg_finalize_wait(to_label, msg_id, timeout_s, reply, status):
     On reply, the `replied` record is appended only if not already
     present — protects against a parallel `wait` race or accidental
     double-finalize.
+
+    V0 mailbox/thread: pane-scraped replies must also be recorded as a
+    turn(seq=N+1) + delivery so `camc msg read <msg_id>` can replay the
+    full thread. Derive from/to from the original sent record (original
+    target → original sender), and skip if a reply turn already exists.
     """
     if status == "replied":
         if _msg_find_replied(msg_id) is None:
             _msg_ledger_append({
                 "msg_id": msg_id, "status": "replied", "reply": reply,
             })
+        # V0 thread: append a reply turn + delivery to original sender's
+        # mailbox iff one isn't there yet. The sent record carries the
+        # original sender_*/target_* metadata we need to flip the from/to.
+        sent = _msg_find_sent(msg_id)
+        if sent is not None:
+            existing_seqs = {
+                r.get("seq") for r in _msg_ledger_iter(msg_id=msg_id)
+                if r.get("record") == "turn"
+            }
+            # Only add a reply turn if seq=1 was the only thing recorded.
+            # If a downstream `camc msg reply` already wrote seq=2+, we
+            # do not want to double-append a synthetic pane-scrape turn.
+            if existing_seqs == {1} or not existing_seqs:
+                next_seq = (max(existing_seqs) + 1) if existing_seqs else 2
+                # original target → from (us, the responder)
+                # original sender → to (recipient of the pane reply)
+                from_id = sent.get("target_id", "") or ""
+                from_name = sent.get("target_name", "") or ""
+                to_id = sent.get("sender_id", "") or ""
+                to_name = sent.get("sender_name", "") or ""
+                if to_id:
+                    mailbox_id = "agent:%s" % to_id
+                elif sent.get("sender_tmux_session"):
+                    mailbox_id = "session:%s" % sent.get("sender_tmux_session")
+                elif to_name:
+                    mailbox_id = "label:%s" % to_name
+                else:
+                    mailbox_id = "label:unknown"
+                _msg_ledger_append({
+                    "record": "turn", "schema": _MSG_SCHEMA,
+                    "msg_id": msg_id, "seq": next_seq, "kind": "message",
+                    "from_id": from_id, "from_name": from_name,
+                    "to_id": to_id, "to_name": to_name,
+                    "text": reply,
+                })
+                _msg_ledger_append({
+                    "record": "delivery", "schema": _MSG_SCHEMA,
+                    "msg_id": msg_id, "seq": next_seq,
+                    "mailbox_id": mailbox_id,
+                    "to_id": to_id, "to_name": to_name,
+                })
         sys.stdout.write(reply + "\n")
         sys.stdout.flush()
         sys.exit(0)
@@ -3750,73 +4020,258 @@ def cmd_msg_wait(args):
 
 
 def cmd_msg_reply(args):
-    """Reply to a previously-received message id (Phase 1 async).
+    """Reply to a thread under msg_id — append seq=N+1 turn + delivery.
 
-    Bookkeeping wrapper:
-      1. Look up the original `sent` record; exit 1 if missing.
-      2. If a `replied` record already exists, print it and exit 0
-         (idempotent — re-running `reply` doesn't double-notify).
-      3. If the original has resolvable sender metadata, send a
-         notification message back via the normal no-wait transport
-         with `[reply_to:<orig_id>]` correlation in the payload.
-      4. Append a `replied` record to the ORIGINAL msg_id (with
-         `reply_msg_id` when notification was actually sent).
+    V0 mailbox/thread semantics:
+      - msg_id is the THREAD id; replies do NOT mint a new logical id.
+      - Compute next_seq = max(turn.seq for msg_id) + 1.
+      - Recipient is the OTHER party of the most recent turn (falls back
+        to the original sent record's sender_* for legacy ledgers that
+        pre-date the V0 schema).
+      - Append turn(seq=N+1) and delivery records — these are the
+        source of truth for `camc msg read`.
+      - For first reply only, also append legacy status=replied so
+        existing `wait` keeps working. Subsequent replies just append
+        another turn — no idempotency block.
+      - Best-effort tmux notification reuses the SAME [camc msg#<id>]
+        thread marker (no new logical id, no `reply_to:` block).
     """
     orig_msg_id = args.msg_id
     text = args.text
-    timeout = max(int(getattr(args, "timeout", 600) or 600), 5)
 
     sent_record = _msg_find_sent(orig_msg_id)
-    if not sent_record:
+    has_turn = any(r.get("record") == "turn"
+                   for r in _msg_ledger_iter(msg_id=orig_msg_id))
+    if not sent_record and not has_turn:
         sys.stderr.write(
             "camc msg: no sent record for '%s' — nothing to reply to\n"
             % orig_msg_id)
         sys.exit(1)
 
-    # Idempotency: prior replied record → just print and exit 0.
-    existing = _msg_find_replied(orig_msg_id)
-    if existing is not None:
-        sys.stdout.write(existing + "\n")
+    current_sender = _msg_sender_identity()
+    from_id = (current_sender or {}).get("sender_id", "")
+    from_name = (current_sender or {}).get("sender_name", "")
+
+    recipient = _msg_other_side_recipient(orig_msg_id, current_sender) or {}
+    to_id = recipient.get("id", "")
+    to_name = recipient.get("name", "")
+
+    next_seq = _msg_thread_seq(orig_msg_id) + 1
+
+    # Resolve recipient to a session for the best-effort wire injection.
+    # Preference: id > session > name (stable → human-readable). First
+    # candidate that yields a session wins.
+    recipient_session = None
+    target_for_inject = None
+    for label in (recipient.get("id"),
+                  recipient.get("session"),
+                  recipient.get("name")):
+        if not label:
+            continue
+        _, sess, _ = _msg_resolve_session(label)
+        if sess:
+            recipient_session = sess
+            target_for_inject = _msg_target_identity(label)
+            break
+
+    # Build mailbox_id for the delivery record. Same preference order.
+    if to_id:
+        mailbox_id = "agent:%s" % to_id
+    elif recipient_session:
+        mailbox_id = "session:%s" % recipient_session
+    elif to_name:
+        mailbox_id = "label:%s" % to_name
+    else:
+        mailbox_id = "label:unknown"
+
+    # 1) Source-of-truth records for `camc msg read`.
+    _msg_ledger_append({
+        "record": "turn", "schema": _MSG_SCHEMA,
+        "msg_id": orig_msg_id, "seq": next_seq, "kind": "message",
+        "from_id": from_id, "from_name": from_name,
+        "to_id": to_id, "to_name": to_name,
+        "text": text,
+    })
+    _msg_ledger_append({
+        "record": "delivery", "schema": _MSG_SCHEMA,
+        "msg_id": orig_msg_id, "seq": next_seq,
+        "mailbox_id": mailbox_id,
+        "to_id": to_id, "to_name": to_name,
+    })
+
+    # 2) Legacy first-reply compat: `wait` looks for status=replied.
+    #    Subsequent replies do NOT add another replied record.
+    is_first_reply = _msg_find_replied(orig_msg_id) is None
+    if is_first_reply:
+        _msg_ledger_append({
+            "msg_id": orig_msg_id, "status": "replied", "reply": text,
+        })
+
+    # 3) Best-effort wire notification: SAME thread msg_id (no new id,
+    #    no [reply_to:…] block — the marker IS the thread). Failure is
+    #    non-fatal because the mailbox already has the message.
+    if recipient_session:
+        prefix = (_msg_sender_prefix(current_sender)
+                  + _msg_target_prefix(target_for_inject))
+        wire_text = (prefix + " " + text) if prefix else text
+        payload = "[camc msg#%s]: %s" % (orig_msg_id, wire_text)
+        try:
+            tmux_send_input(recipient_session, payload, send_enter=True)
+        except Exception:
+            pass
+
+    sys.stdout.write(
+        "REPLIED_TO=%s\nSEQ=%d\nMAILBOX=%s\n"
+        % (orig_msg_id, next_seq, mailbox_id)
+    )
+    sys.stdout.flush()
+    sys.exit(0)
+
+
+def cmd_msg_read(args):
+    """Inbox / thread replay / next-unread for V0 mailbox.
+
+    Forms:
+      camc msg read                      list unread for current mailbox
+      camc msg read --all                include read messages in listing
+      camc msg read --next [--mark]      print body of oldest unread
+      camc msg read <msg_id> [--mark]    replay full thread, oldest first
+      camc msg read --for <label>        explicit mailbox (id/name/session)
+      camc msg read --json               stable JSON for tests
+    """
+    json_out = bool(getattr(args, "json_out", False))
+    mark = bool(getattr(args, "mark", False))
+    next_msg = bool(getattr(args, "next_msg", False))
+    all_msgs = bool(getattr(args, "all_msgs", False))
+    msg_id_arg = getattr(args, "msg_id", None)
+    for_label = getattr(args, "for_label", None)
+
+    # Resolve mailbox candidates lazily — pure thread replay (msg_id given,
+    # no --mark) does NOT require a mailbox identity, so humans/scripts
+    # outside tmux can `camc msg read <msg_id>` without --for. Only inbox
+    # listing, --next, and --mark need a mailbox.
+    if for_label:
+        cands = _msg_resolve_mailbox(for_label)
+    else:
+        cands = _msg_current_mailbox_candidates()
+
+    needs_mailbox = (not msg_id_arg) or mark
+    if needs_mailbox and not cands:
+        sys.stderr.write(
+            "camc msg: no mailbox identity for current process; "
+            "specify --for <agent>\n")
+        sys.exit(1)
+
+    # ---- thread replay (msg_id given) -----------------------------------
+    if msg_id_arg:
+        turns = _msg_thread_turns(msg_id_arg)
+        if not turns:
+            sys.stderr.write("camc msg: no thread for '%s'\n" % msg_id_arg)
+            sys.exit(1)
+        if json_out:
+            sys.stdout.write(json.dumps([
+                {"msg_id": t.get("msg_id"), "seq": t.get("seq"),
+                 "from_id": t.get("from_id", ""),
+                 "from_name": t.get("from_name", ""),
+                 "to_id": t.get("to_id", ""),
+                 "to_name": t.get("to_name", ""),
+                 "text": t.get("text", ""),
+                 "ts": t.get("ts", "")}
+                for t in turns
+            ], ensure_ascii=False) + "\n")
+        else:
+            for t in turns:
+                fl = t.get("from_name") or t.get("from_id") or "?"
+                tl = t.get("to_name") or t.get("to_id") or "?"
+                sys.stdout.write("--- seq=%s %s -> %s [%s] ---\n%s\n\n"
+                                 % (t.get("seq", "?"), fl, tl,
+                                    (t.get("ts") or "")[:19],
+                                    t.get("text", "")))
+        if mark:
+            cand_set = set(cands)
+            already = set()
+            for rec in _msg_ledger_iter(msg_id=msg_id_arg):
+                if (rec.get("record") == "read"
+                        and rec.get("mailbox_id") in cand_set):
+                    already.add((rec.get("seq"), rec.get("mailbox_id")))
+            for rec in _msg_ledger_iter(msg_id=msg_id_arg):
+                if (rec.get("record") == "delivery"
+                        and rec.get("mailbox_id") in cand_set):
+                    key = (rec.get("seq"), rec.get("mailbox_id"))
+                    if key not in already:
+                        _msg_mark_read(msg_id_arg, rec.get("seq"),
+                                       rec.get("mailbox_id"))
+                        already.add(key)
         sys.stdout.flush()
         sys.exit(0)
 
-    # Notify original sender via no-wait transport when resolvable.
-    # Resolution preference: sender_id (stable primary key) > sender_tmux_session
-    # (next most specific) > sender_name (human label, can be renamed/ambiguous).
-    # First candidate that resolves to a session via _msg_resolve_session wins.
-    reply_msg_id = None
-    candidates = [
-        sent_record.get("sender_id"),
-        sent_record.get("sender_tmux_session"),
-        sent_record.get("sender_name"),
-    ]
-    for label in candidates:
-        if not label:
-            continue
-        _, sender_session, _ = _msg_resolve_session(label)
-        if not sender_session:
-            continue
-        new_id, ok = _msg_inject(
-            sender_session, label, text, timeout,
-            reply_to=orig_msg_id,
-        )
-        if ok:
-            reply_msg_id = new_id
-        break
+    # ---- inbox listing / --next ----------------------------------------
+    inbox = _msg_inbox(cands, include_read=all_msgs)
 
-    # Always commit the replied record on the ORIGINAL msg_id —
-    # `camc msg wait` (ledger-poll path) keys off this.
-    record = {
-        "msg_id": orig_msg_id, "status": "replied", "reply": text,
-    }
-    if reply_msg_id:
-        record["reply_msg_id"] = reply_msg_id
-    _msg_ledger_append(record)
+    if next_msg:
+        unread = [(d, t) for d, t, is_read in inbox if not is_read]
+        if not unread:
+            sys.stderr.write("camc msg: no unread messages\n")
+            sys.exit(1)
+        d, t = unread[0]
+        text = (t or {}).get("text", "")
+        from_label = ((t or {}).get("from_name")
+                      or (t or {}).get("from_id") or "")
+        if json_out:
+            sys.stdout.write(json.dumps({
+                "msg_id": d.get("msg_id"), "seq": d.get("seq"),
+                "from_id": (t or {}).get("from_id", ""),
+                "from_name": (t or {}).get("from_name", ""),
+                "text": text, "ts": (t or {}).get("ts", ""),
+            }, ensure_ascii=False) + "\n")
+        else:
+            sys.stdout.write(
+                "MSG_ID=%s\nSEQ=%s\nFROM=%s\nTS=%s\nTEXT=\n%s\n"
+                % (d.get("msg_id"), d.get("seq"), from_label,
+                   (t or {}).get("ts") or "", text)
+            )
+        if mark:
+            _msg_mark_read(d.get("msg_id"), d.get("seq"),
+                           d.get("mailbox_id"))
+        sys.stdout.flush()
+        sys.exit(0)
 
-    out = "REPLIED_TO=%s\n" % orig_msg_id
-    if reply_msg_id:
-        out += "REPLY_MSG_ID=%s\n" % reply_msg_id
-    sys.stdout.write(out)
+    # plain listing (with or without --all)
+    if json_out:
+        sys.stdout.write(json.dumps([
+            {"msg_id": d.get("msg_id"), "seq": d.get("seq"),
+             "from_id": (t or {}).get("from_id", ""),
+             "from_name": (t or {}).get("from_name", ""),
+             "ts": (t or {}).get("ts") or "",
+             "preview": ((t or {}).get("text", "") or "").replace("\n", " ")[:80],
+             "read": is_read}
+            for d, t, is_read in inbox
+        ], ensure_ascii=False) + "\n")
+    else:
+        if not inbox:
+            sys.stdout.write("(inbox empty)\n")
+        else:
+            sys.stdout.write("%-1s  %-9s  %-4s  %-19s  %-25s  %s\n"
+                             % ("R", "MSG_ID", "SEQ", "TS", "FROM", "PREVIEW"))
+            for d, t, is_read in inbox:
+                marker = "*" if is_read else " "
+                preview = ((t or {}).get("text", "") or "").splitlines()
+                preview = (preview[0] if preview else "")[:50]
+                from_label = ((t or {}).get("from_name")
+                              or (t or {}).get("from_id") or "")[:25]
+                sys.stdout.write("%-1s  %-9s  %-4s  %-19s  %-25s  %s\n" % (
+                    marker, (d.get("msg_id") or "")[:9],
+                    d.get("seq", ""),
+                    ((t or {}).get("ts") or "")[:19],
+                    from_label, preview,
+                ))
+    # --mark applies to whichever output mode (json or plain): mark every
+    # currently-unread item we just listed.
+    if mark:
+        for d, _, is_read in inbox:
+            if not is_read:
+                _msg_mark_read(d.get("msg_id"), d.get("seq"),
+                               d.get("mailbox_id"))
     sys.stdout.flush()
     sys.exit(0)
 
@@ -4395,11 +4850,24 @@ examples:
     msg_wait.add_argument("msg_id", help="Message id (8-hex from `camc msg send --no-wait`)")
     msg_wait.add_argument("--timeout", type=int, default=600,
                           help="Seconds to wait for stable reply [default: 600 = 10min]")
-    msg_reply = msg_sub.add_parser("reply", help="Reply to a previously-received message id")
-    msg_reply.add_argument("msg_id", help="Original message id you are replying to")
+    msg_reply = msg_sub.add_parser("reply", help="Reply to a previously-received message id (appends a thread turn)")
+    msg_reply.add_argument("msg_id", help="Thread id you are replying to (preserved as the same logical id)")
     msg_reply.add_argument("--text", "-t", required=True, help="Reply text")
     msg_reply.add_argument("--timeout", type=int, default=600,
                            help="Seconds to wait for the notification message to deliver [default: 600]")
+    msg_read = msg_sub.add_parser("read", help="Inbox: list unread / replay thread / read --next")
+    msg_read.add_argument("msg_id", nargs="?", default=None,
+                          help="Thread id to replay (omit for inbox listing)")
+    msg_read.add_argument("--next", dest="next_msg", action="store_true",
+                          help="Print body of oldest unread for current mailbox")
+    msg_read.add_argument("--mark", action="store_true",
+                          help="Append read records for the messages just listed/printed")
+    msg_read.add_argument("--all", dest="all_msgs", action="store_true",
+                          help="Include already-read messages in the inbox listing")
+    msg_read.add_argument("--for", dest="for_label", default=None,
+                          help="Explicit mailbox label (agent name/id, tmux session, or raw label)")
+    msg_read.add_argument("--json", dest="json_out", action="store_true",
+                          help="Emit stable JSON for tests/automation")
     msg_show = msg_sub.add_parser("show", help="Show ledger history for a message id")
     msg_show.add_argument("msg_id", help="Message id (8-hex from `camc msg send`)")
     msg_list = msg_sub.add_parser("list", help="List recent messages from the ledger")
