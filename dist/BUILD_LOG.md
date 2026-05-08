@@ -2001,3 +2001,15 @@ fddb770 camc msg: add mailbox thread read API
 f862461 camc msg wait: full-scrollback fallback when marker scrolls off
 0acf882 camc msg: add no-wait send and wait
 ```
+## v1.2.0  b4e09ff 2026-05-08 01:30
+
+- Lines: 8055
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+b4e09ff camc: reject single-dash long option typos
+fddb770 camc msg: add mailbox thread read API
+9d7cf9c camc msg: add expected-reply async protocol
+5017d0f fix(camc): send key through tmux transport helper
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+```

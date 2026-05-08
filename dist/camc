@@ -27,7 +27,7 @@ import time
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "fddb770 2026-05-07 20:16"
+__build__ = "b4e09ff 2026-05-08 01:30"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -7633,8 +7633,47 @@ def cmd_key(args):
 # Main
 # ===========================================================================
 
+def _format_option_suggestion(option_strings):
+    long_opts = [opt for opt in option_strings if opt.startswith("--")]
+    short_opts = [
+        opt for opt in option_strings
+        if opt.startswith("-") and not opt.startswith("--")
+    ]
+    suggestions = long_opts[:1] + short_opts[:1]
+    if len(suggestions) == 1:
+        return "'%s'" % suggestions[0]
+    return "'%s' or '%s'" % (suggestions[0], suggestions[1])
+
+
+class CamArgumentParser(argparse.ArgumentParser):
+    """argparse with a guard for single-dash long-option typos."""
+
+    def _single_dash_long_option_typos(self):
+        typos = {}
+        for action in getattr(self, "_actions", []):
+            long_opts = [
+                opt for opt in getattr(action, "option_strings", [])
+                if opt.startswith("--") and len(opt) > 2
+            ]
+            if long_opts and getattr(action, "help", None) != argparse.SUPPRESS:
+                typo = "-" + long_opts[0][2:]
+                typos.setdefault(typo, list(action.option_strings))
+        return typos
+
+    def _parse_optional(self, arg_string):
+        if arg_string and arg_string.startswith("-") and not arg_string.startswith("--"):
+            key = arg_string.split("=", 1)[0]
+            typos = self._single_dash_long_option_typos()
+            if key in typos:
+                self.error(
+                    "unknown option '%s' (did you mean %s?)" %
+                    (key, _format_option_suggestion(typos[key]))
+                )
+        return argparse.ArgumentParser._parse_optional(self, arg_string)
+
+
 def main():
-    p = argparse.ArgumentParser(
+    p = CamArgumentParser(
         prog="camc",
         description="CAM Client — Standalone coding agent manager. PM2 for AI coding agents.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -7664,7 +7703,7 @@ examples:
   camc version                        Show version info""")
     p.add_argument("--json", action="store_true", help="Output as JSON")
     p.add_argument("--verbose", "-v", action="store_true", help="Verbose output (debug logging)")
-    sub = p.add_subparsers(dest="command")
+    sub = p.add_subparsers(dest="command", parser_class=CamArgumentParser)
 
     # init
     init_p = sub.add_parser("init", help="First-time setup")
@@ -7744,7 +7783,9 @@ examples:
     )
     # metavar hides the full choice list (which would otherwise include
     # the internal `create` subcommand) from the usage line.
-    ar_sub = ar.add_subparsers(dest="archive_cmd", metavar="{list,info,summary,show}")
+    ar_sub = ar.add_subparsers(
+        dest="archive_cmd", metavar="{list,info,summary,show}",
+        parser_class=CamArgumentParser)
 
     # camc archive list
     ar_list = ar_sub.add_parser("list", help="List all archives as a table")
@@ -7848,7 +7889,8 @@ examples:
 
     # heal
     msg_p = sub.add_parser("msg", help="Inter-agent messaging (send + block on reply)")
-    msg_sub = msg_p.add_subparsers(dest="msg_cmd")
+    msg_sub = msg_p.add_subparsers(
+        dest="msg_cmd", parser_class=CamArgumentParser)
     msg_send = msg_sub.add_parser("send", help="Send to <to>; default blocks for reply, --no-wait returns immediately")
     msg_send.add_argument("to", help="Target agent name or ID")
     msg_send.add_argument("--text", "-t", required=True, help="Message text")
@@ -7893,7 +7935,8 @@ examples:
 
     # machine
     mp = sub.add_parser("machine", help="Manage remote machines")
-    msub = mp.add_subparsers(dest="machine_cmd")
+    msub = mp.add_subparsers(
+        dest="machine_cmd", parser_class=CamArgumentParser)
     msub.add_parser("list", help="List machines")
     ma = msub.add_parser("add", help="Add a machine")
     ma.add_argument("name", help="Machine name")
@@ -7918,7 +7961,8 @@ examples:
 
     # context
     cp = sub.add_parser("context", help="Manage project contexts")
-    csub = cp.add_subparsers(dest="context_cmd")
+    csub = cp.add_subparsers(
+        dest="context_cmd", parser_class=CamArgumentParser)
     csub.add_parser("list", help="List contexts")
     ca = csub.add_parser("add", help="Add a context")
     ca.add_argument("name", help="Context name")
