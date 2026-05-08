@@ -295,9 +295,11 @@ class TestMsgNoWait:
         assert m, "stdout missing MSG_ID=<8hex>"
         msg_id = m.group(1)
         assert "STATUS=sent" in out
-        # Marker injected, ledger has sent + delivered records for the same id
+        # Marker injected, ledger has sent + delivered status records (V0 also
+        # writes turn/delivery records that don't carry a `status` key).
         assert sent_calls and ("[camc msg#%s]:" % msg_id) in sent_calls[0][1]
-        statuses = [r["status"] for r in cli._msg_ledger_iter(msg_id=msg_id)]
+        statuses = [r["status"] for r in cli._msg_ledger_iter(msg_id=msg_id)
+                    if "status" in r]
         assert statuses == ["sent", "delivered"]
 
     def test_send_bare_anchor_when_neither_resolves(self, monkeypatch, tmp_path, capsys):
@@ -455,7 +457,8 @@ class TestMsgNoWait:
         # stderr names the target; ledger has sent + deliver_failed
         cap = capsys.readouterr()
         assert "fake" in cap.err
-        statuses = [r["status"] for r in cli._msg_ledger_iter()]
+        statuses = [r["status"] for r in cli._msg_ledger_iter()
+                    if "status" in r]
         assert "deliver_failed" in statuses
 
     def test_sender_identity_resolves_current_tmux_agent(self, monkeypatch):
@@ -556,6 +559,12 @@ class TestMsgExpectReply:
         assert "RECORDED" in capsys.readouterr().out
 
 
+def _replied_count(cli, msg_id):
+    """How many legacy `status=replied` records exist for msg_id."""
+    return sum(1 for r in cli._msg_ledger_iter(msg_id=msg_id)
+               if r.get("status") == "replied")
+
+
 class TestMsgReply:
     """`camc msg reply <msg_id> -t "..."` commits the reply against the
     original ledger entry and (if sender resolves) fires a correlated
@@ -584,128 +593,209 @@ class TestMsgReply:
         assert ei.value.code == 1
         assert "00000000" in capsys.readouterr().err
 
-    def test_reply_idempotent_when_already_replied(self, monkeypatch, tmp_path, capsys):
+    def test_reply_appends_seq_2_under_same_msg_id(self, monkeypatch, tmp_path, capsys):
+        # V0 mailbox/thread: msg_id is the THREAD id. Reply does NOT mint a
+        # new logical id — it appends a turn(seq=2) and a delivery to the
+        # original sender's mailbox under the SAME msg_id.
         import argparse
         cli, _, sent_calls = self._setup(monkeypatch, tmp_path)
-        cli._msg_ledger_append({"msg_id": "abc12345", "to": "x",
-                                "tmux_session": "cam-x", "text": "q",
-                                "status": "sent", "timeout_s": 600})
-        cli._msg_ledger_append({"msg_id": "abc12345", "status": "replied",
-                                "reply": "FIRST_REPLY"})
-        args = argparse.Namespace(msg_id="abc12345", text="duplicate", timeout=10)
-        with pytest.raises(SystemExit) as ei:
-            cli.cmd_msg_reply(args)
-        assert ei.value.code == 0
-        assert "FIRST_REPLY" in capsys.readouterr().out
-        # No new injection happened.
-        assert sent_calls == []
-        # Only the original replied record exists.
-        replied = [r for r in cli._msg_ledger_iter(msg_id="abc12345")
-                   if r.get("status") == "replied"]
-        assert len(replied) == 1
-
-    def test_reply_resolves_sender_id_before_name(self, monkeypatch, tmp_path, capsys):
-        # Routing preference: sender_id > sender_tmux_session > sender_name.
-        # sender_id is the stable primary key — names can be renamed.
-        import argparse, re as _re
-        cli, _, sent_calls = self._setup(monkeypatch, tmp_path)
-        # Resolver succeeds ONLY for the id, not for tmux_session or name.
-        # Records the order of lookup attempts to confirm id is tried first.
-        resolved_with = []
-        def _resolver(label):
-            resolved_with.append(label)
-            if label == "5f765953":
-                return (None, "cam-orig-sender", None)
-            return (None, None, None)
-        monkeypatch.setattr(cli, "_msg_resolve_session", _resolver)
+        # Original send (seq=1) records — turn + delivery + sent status.
         cli._msg_ledger_append({
             "msg_id": "abc12345", "to": "camflow-dev",
             "tmux_session": "cam-camflow-dev", "text": "please review",
             "status": "sent", "timeout_s": 600,
             "sender_name": "camflow-review", "sender_id": "5f765953",
             "sender_tmux_session": "cam-5f765953",
-            "expect_reply": True,
+            "target_name": "camflow-dev", "target_id": "836208f0",
+        })
+        cli._msg_ledger_append({
+            "record": "turn", "schema": "camc-msg/1",
+            "msg_id": "abc12345", "seq": 1, "kind": "message",
+            "from_id": "5f765953", "from_name": "camflow-review",
+            "to_id": "836208f0", "to_name": "camflow-dev",
+            "text": "please review",
+        })
+        # Resolver: original sender's id resolves to a session (best-effort
+        # notification will fire); also stub _msg_target_identity for the
+        # [to:…] prefix lookup of the SAME id.
+        monkeypatch.setattr(cli, "_msg_resolve_session",
+                            lambda lbl: (None, "cam-5f765953", None) if lbl == "5f765953" else (None, None, None))
+        monkeypatch.setattr(cli, "_msg_target_identity", lambda lbl: {
+            "target_name": "camflow-review", "target_id": "5f765953",
+            "target_tmux_session": "cam-5f765953",
+        } if lbl == "5f765953" else None)
+        # Current sender = the original target (camflow-dev).
+        monkeypatch.setattr(cli, "_msg_sender_identity", lambda: {
+            "sender_name": "camflow-dev", "sender_id": "836208f0",
+            "sender_tmux_session": "cam-camflow-dev",
         })
         args = argparse.Namespace(msg_id="abc12345", text="LGTM, ship it", timeout=10)
         with pytest.raises(SystemExit) as ei:
             cli.cmd_msg_reply(args)
         assert ei.value.code == 0
-        # First candidate tried MUST be sender_id — and since it resolves,
-        # no further candidates should be probed.
-        assert resolved_with[0] == "5f765953"
-        assert resolved_with == ["5f765953"]
         out = capsys.readouterr().out
-        m = _re.search(r"REPLY_MSG_ID=([0-9a-f]{8})", out)
-        assert m, "stdout missing REPLY_MSG_ID for fired notification"
-        new_id = m.group(1)
+        # New stdout shape — no REPLY_MSG_ID, just SEQ + MAILBOX.
+        assert "REPLIED_TO=abc12345" in out
+        assert "SEQ=2" in out
+        assert "MAILBOX=agent:5f765953" in out
+        assert "REPLY_MSG_ID=" not in out
+        # New turn under SAME msg_id with seq=2, recipient=original sender.
+        turns = [r for r in cli._msg_ledger_iter(msg_id="abc12345")
+                 if r.get("record") == "turn"]
+        assert [t["seq"] for t in turns] == [1, 2]
+        t2 = turns[1]
+        assert t2["from_id"] == "836208f0"     # current agent
+        assert t2["to_id"] == "5f765953"       # original sender
+        assert t2["text"] == "LGTM, ship it"
+        # Delivery to original sender's mailbox.
+        deliveries = [r for r in cli._msg_ledger_iter(msg_id="abc12345")
+                      if r.get("record") == "delivery"]
+        assert any(d["seq"] == 2 and d["mailbox_id"] == "agent:5f765953"
+                   for d in deliveries)
+        # Best-effort wire injection on the SAME thread marker — no new id.
+        assert sent_calls, "best-effort notification not injected"
         wire = sent_calls[0][1]
-        assert ("[camc msg#%s]:" % new_id) in wire
-        assert "[reply_to:abc12345]" in wire
+        assert "[camc msg#abc12345]:" in wire   # SAME logical id
+        assert "[reply_to:" not in wire         # no legacy correlation block
         assert "LGTM, ship it" in wire
-        replied = next(r for r in cli._msg_ledger_iter(msg_id="abc12345")
-                       if r.get("status") == "replied")
-        assert replied["reply_msg_id"] == new_id
+        # Legacy first-reply compat: status=replied should also exist.
+        assert _replied_count(cli, "abc12345") == 1
 
-    def test_reply_falls_back_to_session_then_name(self, monkeypatch, tmp_path, capsys):
-        # When sender_id doesn't resolve, fall through to sender_tmux_session;
-        # when neither resolves, fall through to sender_name. Probe order is
-        # exactly [id, tmux_session, name] and we stop at the first hit.
+    def test_third_reply_appends_seq_3_even_when_replied_exists(
+            self, monkeypatch, tmp_path, capsys):
+        # V0 spec: "second reply/follow-up appends seq=3 under same msg_id
+        # even if status=replied already exists." No idempotency block.
         import argparse
         cli, _, sent_calls = self._setup(monkeypatch, tmp_path)
-        resolved_with = []
-        def _resolver(label):
-            resolved_with.append(label)
-            # Only the tmux_session resolves; id and name don't.
-            if label == "cam-5f765953":
-                return (None, "cam-orig-sender", None)
-            return (None, None, None)
-        monkeypatch.setattr(cli, "_msg_resolve_session", _resolver)
+        # Pre-seed: send (seq=1), first reply already committed (seq=2 +
+        # legacy status=replied).
         cli._msg_ledger_append({
-            "msg_id": "abc12345", "to": "camflow-dev",
-            "tmux_session": "cam-camflow-dev", "text": "please review",
-            "status": "sent", "timeout_s": 600,
-            "sender_name": "camflow-review", "sender_id": "5f765953",
-            "sender_tmux_session": "cam-5f765953",
+            "msg_id": "abc12345", "to": "B", "tmux_session": "cam-B",
+            "text": "q", "status": "sent", "timeout_s": 600,
+            "sender_name": "A", "sender_id": "aaaa1111",
         })
-        args = argparse.Namespace(msg_id="abc12345", text="thx", timeout=10)
+        cli._msg_ledger_append({
+            "record": "turn", "schema": "camc-msg/1",
+            "msg_id": "abc12345", "seq": 1, "kind": "message",
+            "from_id": "aaaa1111", "from_name": "A",
+            "to_id": "bbbb2222", "to_name": "B",
+            "text": "q",
+        })
+        cli._msg_ledger_append({
+            "record": "turn", "schema": "camc-msg/1",
+            "msg_id": "abc12345", "seq": 2, "kind": "message",
+            "from_id": "bbbb2222", "from_name": "B",
+            "to_id": "aaaa1111", "to_name": "A",
+            "text": "first reply",
+        })
+        cli._msg_ledger_append({"msg_id": "abc12345", "status": "replied",
+                                "reply": "first reply"})
+        # Now A follows up (seq=3 under SAME msg_id).
+        monkeypatch.setattr(cli, "_msg_sender_identity", lambda: {
+            "sender_name": "A", "sender_id": "aaaa1111",
+            "sender_tmux_session": "cam-A",
+        })
+        # Recipient session unresolvable — that's fine, mailbox still
+        # records the delivery.
+        monkeypatch.setattr(cli, "_msg_resolve_session",
+                            lambda lbl: (None, None, None))
+        args = argparse.Namespace(msg_id="abc12345", text="follow-up", timeout=10)
         with pytest.raises(SystemExit) as ei:
             cli.cmd_msg_reply(args)
         assert ei.value.code == 0
-        # Probed id (miss) → tmux_session (HIT, stop). sender_name should
-        # NEVER be probed because tmux_session resolved first.
-        assert resolved_with == ["5f765953", "cam-5f765953"]
-        # Notification was sent → ledger has reply_msg_id.
-        replied = next(r for r in cli._msg_ledger_iter(msg_id="abc12345")
-                       if r.get("status") == "replied")
-        assert "reply_msg_id" in replied
-        assert sent_calls, "notification message was not injected"
+        out = capsys.readouterr().out
+        assert "SEQ=3" in out
+        # Three turns under the SAME msg_id.
+        turns = [r for r in cli._msg_ledger_iter(msg_id="abc12345")
+                 if r.get("record") == "turn"]
+        assert [t["seq"] for t in turns] == [1, 2, 3]
+        # Other side of seq=2 was A; A is replying; recipient is `from`
+        # of seq=2 NOT — wait: A is the from_id of last turn (seq=2 was
+        # B→A). A is the TO of seq=2, so other side = from = B. Reply
+        # goes to B.
+        assert turns[2]["to_id"] == "bbbb2222"
+        # Subsequent reply does NOT add another legacy `replied` record.
+        assert _replied_count(cli, "abc12345") == 1
 
-    def test_reply_with_unresolvable_sender_only_appends_ledger(self, monkeypatch, tmp_path, capsys):
-        # Sender is in the original sent record but resolver returns no
-        # session — just commit the ledger reply without sending a
-        # notification. wait <id> still finds it via ledger-poll.
+    def test_reply_routing_prefers_id_then_session_then_name(
+            self, monkeypatch, tmp_path, capsys):
+        # Routing preference is preserved from prior implementation:
+        # id > session > name. id resolves first → no further probes.
         import argparse
         cli, _, sent_calls = self._setup(monkeypatch, tmp_path)
-        monkeypatch.setattr(cli, "_msg_resolve_session",
-                            lambda to: (None, None, None))  # no session
         cli._msg_ledger_append({
-            "msg_id": "abc12345", "to": "camflow-dev",
-            "tmux_session": "cam-camflow-dev", "text": "q",
-            "status": "sent", "timeout_s": 600,
-            "sender_name": "ghost-sender", "sender_id": "deadbeef",
+            "msg_id": "abc12345", "to": "B", "tmux_session": "cam-B",
+            "text": "q", "status": "sent", "timeout_s": 600,
+            "sender_name": "A", "sender_id": "aaaa1111",
+            "sender_tmux_session": "cam-A",
         })
-        args = argparse.Namespace(msg_id="abc12345", text="silent reply", timeout=10)
+        cli._msg_ledger_append({
+            "record": "turn", "schema": "camc-msg/1",
+            "msg_id": "abc12345", "seq": 1, "kind": "message",
+            "from_id": "aaaa1111", "from_name": "A",
+            "to_id": "bbbb2222", "to_name": "B",
+            "text": "q",
+        })
+        probes = []
+        def _resolver(lbl):
+            probes.append(lbl)
+            return (None, "cam-A", None) if lbl == "aaaa1111" else (None, None, None)
+        monkeypatch.setattr(cli, "_msg_resolve_session", _resolver)
+        monkeypatch.setattr(cli, "_msg_target_identity",
+                            lambda lbl: {"target_name": "A", "target_id": "aaaa1111",
+                                         "target_tmux_session": "cam-A"})
+        monkeypatch.setattr(cli, "_msg_sender_identity", lambda: {
+            "sender_name": "B", "sender_id": "bbbb2222",
+            "sender_tmux_session": "cam-B",
+        })
+        args = argparse.Namespace(msg_id="abc12345", text="ack", timeout=10)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_reply(args)
+        assert ei.value.code == 0
+        # id resolved on the first probe → no fallback to session/name.
+        assert probes == ["aaaa1111"]
+
+    def test_reply_with_unresolvable_recipient_still_records_thread(
+            self, monkeypatch, tmp_path, capsys):
+        # No reachable session for the recipient: wire injection skipped,
+        # but turn + delivery still go into the ledger so `read` works.
+        import argparse
+        cli, _, sent_calls = self._setup(monkeypatch, tmp_path)
+        cli._msg_ledger_append({
+            "msg_id": "abc12345", "to": "B", "tmux_session": "cam-B",
+            "text": "q", "status": "sent", "timeout_s": 600,
+            "sender_name": "ghost", "sender_id": "deadbeef",
+        })
+        cli._msg_ledger_append({
+            "record": "turn", "schema": "camc-msg/1",
+            "msg_id": "abc12345", "seq": 1, "kind": "message",
+            "from_id": "deadbeef", "from_name": "ghost",
+            "to_id": "bbbb2222", "to_name": "B",
+            "text": "q",
+        })
+        monkeypatch.setattr(cli, "_msg_resolve_session",
+                            lambda lbl: (None, None, None))
+        monkeypatch.setattr(cli, "_msg_sender_identity", lambda: {
+            "sender_name": "B", "sender_id": "bbbb2222",
+            "sender_tmux_session": "cam-B",
+        })
+        args = argparse.Namespace(msg_id="abc12345", text="silent", timeout=10)
         with pytest.raises(SystemExit) as ei:
             cli.cmd_msg_reply(args)
         assert ei.value.code == 0
         out = capsys.readouterr().out
         assert "REPLIED_TO=abc12345" in out
-        assert "REPLY_MSG_ID=" not in out
-        assert sent_calls == []
-        replied = next(r for r in cli._msg_ledger_iter(msg_id="abc12345")
-                       if r.get("status") == "replied")
-        assert replied["reply"] == "silent reply"
-        assert "reply_msg_id" not in replied
+        assert "SEQ=2" in out
+        # Mailbox falls back to agent:<id> since to_id is known.
+        assert "MAILBOX=agent:deadbeef" in out
+        assert sent_calls == []   # no wire injection
+        # turn + delivery still recorded.
+        turns = [r for r in cli._msg_ledger_iter(msg_id="abc12345")
+                 if r.get("record") == "turn"]
+        deliveries = [r for r in cli._msg_ledger_iter(msg_id="abc12345")
+                      if r.get("record") == "delivery"]
+        assert len(turns) == 2
+        assert any(d["seq"] == 2 for d in deliveries)
 
     def test_wait_with_expect_reply_uses_ledger_polling(self, monkeypatch, tmp_path, capsys):
         # When the original sent record has expect_reply=true, `camc msg
@@ -940,6 +1030,559 @@ class TestMsgWaitLoop:
                                            poll=0.02, stable_for=2)
         assert reply is None
         assert status == "reply_not_stable"
+
+
+# ---------------------------------------------------------------------------
+# camc msg V0 mailbox/thread — send writes turn/delivery + camc msg read
+# ---------------------------------------------------------------------------
+
+class TestMsgSendMailbox:
+    """`camc msg send` writes turn(seq=1) + delivery(mailbox_id=…) records
+    alongside the legacy sent/delivered status records for backward
+    compatibility."""
+
+    def _setup(self, monkeypatch, tmp_path):
+        from camc_pkg import cli
+        ledger = tmp_path / "messages.jsonl"
+        monkeypatch.setattr(cli, "_MSG_LEDGER_PATH", str(ledger))
+        monkeypatch.setattr(cli, "_msg_resolve_session",
+                            lambda to: (None, "cam-fake", None))
+        sent_calls = []
+        monkeypatch.setattr(cli, "tmux_send_input",
+                            lambda s, t, send_enter=True: (sent_calls.append((s, t)), True)[1])
+        return cli, ledger, sent_calls
+
+    def test_send_writes_turn_seq1_and_delivery(self, monkeypatch, tmp_path, capsys):
+        # When both sender and target resolve, the mailbox_id should be
+        # `agent:<target_id>` and the turn record carries from/to ids.
+        import argparse, re as _re
+        cli, _, sent_calls = self._setup(monkeypatch, tmp_path)
+        monkeypatch.setattr(cli, "_msg_sender_identity", lambda: {
+            "sender_name": "A", "sender_id": "aaaa1111",
+            "sender_tmux_session": "cam-A",
+        })
+        monkeypatch.setattr(cli, "_msg_target_identity", lambda lbl: {
+            "target_name": "B", "target_id": "bbbb2222",
+            "target_tmux_session": "cam-B",
+        })
+        args = argparse.Namespace(to="B", text="hello",
+                                  timeout=600, no_wait=True, expect_reply=False)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_send(args)
+        assert ei.value.code == 0
+        msg_id = _re.search(r"MSG_ID=([0-9a-f]{8})",
+                            capsys.readouterr().out).group(1)
+        turns = [r for r in cli._msg_ledger_iter(msg_id=msg_id)
+                 if r.get("record") == "turn"]
+        assert len(turns) == 1
+        t = turns[0]
+        assert t["seq"] == 1
+        assert t["kind"] == "message"
+        assert t["from_id"] == "aaaa1111"
+        assert t["to_id"] == "bbbb2222"
+        assert t["text"] == "hello"
+        assert t.get("schema") == "camc-msg/1"
+        deliveries = [r for r in cli._msg_ledger_iter(msg_id=msg_id)
+                      if r.get("record") == "delivery"]
+        assert len(deliveries) == 1
+        d = deliveries[0]
+        assert d["seq"] == 1
+        assert d["mailbox_id"] == "agent:bbbb2222"
+        # Legacy sent/delivered status records still present.
+        statuses = [r.get("status") for r in cli._msg_ledger_iter(msg_id=msg_id)
+                    if "status" in r]
+        assert "sent" in statuses
+        assert "delivered" in statuses
+
+    def test_send_mailbox_falls_back_to_session_then_label(
+            self, monkeypatch, tmp_path, capsys):
+        # No target identity but session is known → mailbox = session:<…>.
+        import argparse, re as _re
+        cli, _, _ = self._setup(monkeypatch, tmp_path)
+        monkeypatch.setattr(cli, "_msg_sender_identity", lambda: None)
+        monkeypatch.setattr(cli, "_msg_target_identity", lambda lbl: None)
+        args = argparse.Namespace(to="cam-rawsession", text="ping",
+                                  timeout=600, no_wait=True, expect_reply=False)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_send(args)
+        assert ei.value.code == 0
+        msg_id = _re.search(r"MSG_ID=([0-9a-f]{8})",
+                            capsys.readouterr().out).group(1)
+        d = next(r for r in cli._msg_ledger_iter(msg_id=msg_id)
+                 if r.get("record") == "delivery")
+        # Resolver mock returned session=cam-fake; that beats the label.
+        assert d["mailbox_id"] == "session:cam-fake"
+
+
+class TestMsgRead:
+    """`camc msg read` — inbox listing, --next, thread replay, --mark."""
+
+    def _setup(self, monkeypatch, tmp_path, current_id="bbbb2222"):
+        from camc_pkg import cli
+        ledger = tmp_path / "messages.jsonl"
+        monkeypatch.setattr(cli, "_MSG_LEDGER_PATH", str(ledger))
+        # Current agent identity (drives mailbox candidates).
+        monkeypatch.setattr(cli, "_msg_sender_identity", lambda: {
+            "sender_id": current_id, "sender_name": "B",
+            "sender_tmux_session": "cam-B",
+        })
+        return cli
+
+    def _seed_thread(self, cli, msg_id, my_id="bbbb2222"):
+        # Send (seq=1) + delivery to my mailbox.
+        cli._msg_ledger_append({
+            "msg_id": msg_id, "to": "B", "tmux_session": "cam-B",
+            "text": "q", "status": "sent", "timeout_s": 600,
+        })
+        cli._msg_ledger_append({
+            "record": "turn", "schema": "camc-msg/1",
+            "msg_id": msg_id, "seq": 1, "kind": "message",
+            "from_id": "aaaa1111", "from_name": "A",
+            "to_id": my_id, "to_name": "B",
+            "text": "q-text",
+        })
+        cli._msg_ledger_append({
+            "record": "delivery", "schema": "camc-msg/1",
+            "msg_id": msg_id, "seq": 1,
+            "mailbox_id": "agent:%s" % my_id,
+            "to_id": my_id, "to_name": "B",
+        })
+
+    def test_read_lists_unread_for_current_mailbox(
+            self, monkeypatch, tmp_path, capsys):
+        import argparse
+        cli = self._setup(monkeypatch, tmp_path)
+        self._seed_thread(cli, "abc11111")
+        self._seed_thread(cli, "def22222")
+        args = argparse.Namespace(msg_id=None, next_msg=False, mark=False,
+                                  all_msgs=False, for_label=None, json_out=True)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_read(args)
+        assert ei.value.code == 0
+        rows = json.loads(capsys.readouterr().out)
+        assert {r["msg_id"] for r in rows} == {"abc11111", "def22222"}
+        assert all(r["read"] is False for r in rows)
+        assert all(r["seq"] == 1 for r in rows)
+
+    def test_read_mark_then_subsequent_omits_marked(
+            self, monkeypatch, tmp_path, capsys):
+        import argparse
+        cli = self._setup(monkeypatch, tmp_path)
+        self._seed_thread(cli, "abc11111")
+        self._seed_thread(cli, "def22222")
+        # First call with --mark records reads for both.
+        args1 = argparse.Namespace(msg_id=None, next_msg=False, mark=True,
+                                   all_msgs=False, for_label=None, json_out=True)
+        with pytest.raises(SystemExit):
+            cli.cmd_msg_read(args1)
+        capsys.readouterr()
+        # Subsequent unread listing should be empty.
+        args2 = argparse.Namespace(msg_id=None, next_msg=False, mark=False,
+                                   all_msgs=False, for_label=None, json_out=True)
+        with pytest.raises(SystemExit):
+            cli.cmd_msg_read(args2)
+        rows2 = json.loads(capsys.readouterr().out)
+        assert rows2 == []
+        # `--all` includes already-read messages.
+        args3 = argparse.Namespace(msg_id=None, next_msg=False, mark=False,
+                                   all_msgs=True, for_label=None, json_out=True)
+        with pytest.raises(SystemExit):
+            cli.cmd_msg_read(args3)
+        rows3 = json.loads(capsys.readouterr().out)
+        assert {r["msg_id"] for r in rows3} == {"abc11111", "def22222"}
+        assert all(r["read"] is True for r in rows3)
+
+    def test_read_next_prints_oldest_unread_with_header(
+            self, monkeypatch, tmp_path, capsys):
+        import argparse, time
+        cli = self._setup(monkeypatch, tmp_path)
+        # Seed two threads at distinct timestamps so the OLDEST is
+        # deterministic. `_msg_ledger_append` stamps ts at write time so
+        # natural insertion order matches age order.
+        self._seed_thread(cli, "old11111")
+        time.sleep(0.01)
+        self._seed_thread(cli, "new22222")
+        args = argparse.Namespace(msg_id=None, next_msg=True, mark=False,
+                                  all_msgs=False, for_label=None, json_out=True)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_read(args)
+        assert ei.value.code == 0
+        body = json.loads(capsys.readouterr().out)
+        assert body["msg_id"] == "old11111"
+        assert body["seq"] == 1
+        assert body["from_id"] == "aaaa1111"
+        assert body["text"] == "q-text"
+
+    def test_read_next_with_mark_marks_just_that_one(
+            self, monkeypatch, tmp_path, capsys):
+        import argparse, time
+        cli = self._setup(monkeypatch, tmp_path)
+        self._seed_thread(cli, "old11111")
+        time.sleep(0.01)
+        self._seed_thread(cli, "new22222")
+        args = argparse.Namespace(msg_id=None, next_msg=True, mark=True,
+                                  all_msgs=False, for_label=None, json_out=True)
+        with pytest.raises(SystemExit):
+            cli.cmd_msg_read(args)
+        capsys.readouterr()
+        # After --mark, only old11111 is marked read; new22222 remains unread.
+        reads = [r for r in cli._msg_ledger_iter()
+                 if r.get("record") == "read"]
+        marked = {r["msg_id"] for r in reads}
+        assert marked == {"old11111"}
+
+    def test_read_thread_replays_ordered_by_seq(
+            self, monkeypatch, tmp_path, capsys):
+        import argparse
+        cli = self._setup(monkeypatch, tmp_path)
+        # Build a 3-turn thread: A→B (seq=1), B→A (seq=2), A→B (seq=3).
+        # Insert seq=3 BEFORE seq=2 to confirm sort orders by seq, not
+        # by ledger insertion order.
+        cli._msg_ledger_append({
+            "record": "turn", "schema": "camc-msg/1",
+            "msg_id": "abc12345", "seq": 1, "kind": "message",
+            "from_id": "aaaa1111", "from_name": "A",
+            "to_id": "bbbb2222", "to_name": "B", "text": "first",
+        })
+        cli._msg_ledger_append({
+            "record": "turn", "schema": "camc-msg/1",
+            "msg_id": "abc12345", "seq": 3, "kind": "message",
+            "from_id": "aaaa1111", "from_name": "A",
+            "to_id": "bbbb2222", "to_name": "B", "text": "third",
+        })
+        cli._msg_ledger_append({
+            "record": "turn", "schema": "camc-msg/1",
+            "msg_id": "abc12345", "seq": 2, "kind": "message",
+            "from_id": "bbbb2222", "from_name": "B",
+            "to_id": "aaaa1111", "to_name": "A", "text": "second",
+        })
+        args = argparse.Namespace(msg_id="abc12345", next_msg=False, mark=False,
+                                  all_msgs=False, for_label=None, json_out=True)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_read(args)
+        assert ei.value.code == 0
+        rows = json.loads(capsys.readouterr().out)
+        assert [r["seq"] for r in rows] == [1, 2, 3]
+        assert [r["text"] for r in rows] == ["first", "second", "third"]
+
+    def test_read_thread_with_mark_marks_unread_in_thread(
+            self, monkeypatch, tmp_path, capsys):
+        import argparse
+        cli = self._setup(monkeypatch, tmp_path)
+        # Seed deliveries to my mailbox for two seqs; pre-mark one as read.
+        for seq, text in ((1, "first"), (2, "second")):
+            cli._msg_ledger_append({
+                "record": "turn", "schema": "camc-msg/1",
+                "msg_id": "abc12345", "seq": seq, "kind": "message",
+                "from_id": "aaaa1111", "from_name": "A",
+                "to_id": "bbbb2222", "to_name": "B", "text": text,
+            })
+            cli._msg_ledger_append({
+                "record": "delivery", "schema": "camc-msg/1",
+                "msg_id": "abc12345", "seq": seq,
+                "mailbox_id": "agent:bbbb2222",
+                "to_id": "bbbb2222", "to_name": "B",
+            })
+        cli._msg_ledger_append({
+            "record": "read", "schema": "camc-msg/1",
+            "msg_id": "abc12345", "seq": 1,
+            "mailbox_id": "agent:bbbb2222",
+        })
+        args = argparse.Namespace(msg_id="abc12345", next_msg=False, mark=True,
+                                  all_msgs=False, for_label=None, json_out=True)
+        with pytest.raises(SystemExit):
+            cli.cmd_msg_read(args)
+        capsys.readouterr()
+        reads = [r for r in cli._msg_ledger_iter(msg_id="abc12345")
+                 if r.get("record") == "read"
+                 and r.get("mailbox_id") == "agent:bbbb2222"]
+        seqs_marked = sorted({r["seq"] for r in reads})
+        assert seqs_marked == [1, 2]
+
+    def test_read_thread_replay_works_without_mailbox_identity(
+            self, monkeypatch, tmp_path, capsys):
+        # FINDING 1: thread replay must NOT require a mailbox identity.
+        # Humans/scripts running outside tmux should be able to
+        # `camc msg read <msg_id>` without --for. Only inbox listing,
+        # --next, and --mark need a mailbox.
+        import argparse
+        from camc_pkg import cli
+        monkeypatch.setattr(cli, "_MSG_LEDGER_PATH",
+                            str(tmp_path / "messages.jsonl"))
+        # No current agent identity (running outside tmux).
+        monkeypatch.setattr(cli, "_msg_sender_identity", lambda: None)
+        cli._msg_ledger_append({
+            "record": "turn", "schema": "camc-msg/1",
+            "msg_id": "abc12345", "seq": 1, "kind": "message",
+            "from_id": "aaaa1111", "from_name": "A",
+            "to_id": "bbbb2222", "to_name": "B", "text": "first",
+        })
+        args = argparse.Namespace(msg_id="abc12345", next_msg=False, mark=False,
+                                  all_msgs=False, for_label=None, json_out=True)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_read(args)
+        assert ei.value.code == 0  # replay succeeded — no mailbox needed
+        rows = json.loads(capsys.readouterr().out)
+        assert [r["text"] for r in rows] == ["first"]
+
+    def test_read_thread_with_mark_still_requires_mailbox_identity(
+            self, monkeypatch, tmp_path, capsys):
+        # Counterpart to the above: --mark DOES need a mailbox so we
+        # know whose read records to append. No identity → exit 1 with
+        # a clear stderr.
+        import argparse
+        from camc_pkg import cli
+        monkeypatch.setattr(cli, "_MSG_LEDGER_PATH",
+                            str(tmp_path / "messages.jsonl"))
+        monkeypatch.setattr(cli, "_msg_sender_identity", lambda: None)
+        cli._msg_ledger_append({
+            "record": "turn", "schema": "camc-msg/1",
+            "msg_id": "abc12345", "seq": 1, "kind": "message",
+            "from_id": "aaaa1111", "from_name": "A",
+            "to_id": "bbbb2222", "to_name": "B", "text": "first",
+        })
+        args = argparse.Namespace(msg_id="abc12345", next_msg=False, mark=True,
+                                  all_msgs=False, for_label=None, json_out=True)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_read(args)
+        assert ei.value.code == 1
+        assert "mailbox" in capsys.readouterr().err.lower()
+
+    def test_resolve_mailbox_unknown_label_includes_agent_fallback(
+            self, monkeypatch, tmp_path):
+        # FINDING 3: when AgentStore can't resolve `--for <id>`, the
+        # fallback must include `agent:<label>` (not just session/label),
+        # otherwise deliveries to a stable agent_id are invisible.
+        from camc_pkg import cli
+
+        class _S:
+            def get(self, key):
+                return None  # unresolvable
+
+        monkeypatch.setattr(cli, "AgentStore", lambda: _S())
+        cands = cli._msg_resolve_mailbox("abcd1234")
+        assert "agent:abcd1234" in cands
+        assert "session:abcd1234" in cands
+        assert "label:abcd1234" in cands
+
+    def test_other_side_recipient_uses_highest_seq_not_insertion_order(
+            self, monkeypatch, tmp_path):
+        # FINDING 4: out-of-order ledger inserts (seq=3 written before
+        # seq=2) must not confuse recipient selection. _msg_thread_turns
+        # already sorts by seq, so the recipient is determined by the
+        # last turn BY SEQ, not by position in the file.
+        from camc_pkg import cli
+        monkeypatch.setattr(cli, "_MSG_LEDGER_PATH",
+                            str(tmp_path / "messages.jsonl"))
+        # Insert seq=1 (A→B) and then seq=3 (A→B) and seq=2 (B→A).
+        # If we used insertion order, last would be seq=2 (B→A) and the
+        # recipient for the next reply (replying as A) would be B's
+        # other side = A's id, which is wrong. With max-seq logic, last
+        # turn is seq=3 (A→B), and a reply from B should target A.
+        for seq, fid, fname, tid, tname in [
+            (1, "aaaa1111", "A", "bbbb2222", "B"),
+            (3, "aaaa1111", "A", "bbbb2222", "B"),
+            (2, "bbbb2222", "B", "aaaa1111", "A"),
+        ]:
+            cli._msg_ledger_append({
+                "record": "turn", "schema": "camc-msg/1",
+                "msg_id": "abc12345", "seq": seq, "kind": "message",
+                "from_id": fid, "from_name": fname,
+                "to_id": tid, "to_name": tname, "text": "t-%d" % seq,
+            })
+        # Replying as B (we are TO of seq=3, since seq=3 is A→B): the
+        # recipient must be A (from of seq=3), not whatever the last-
+        # inserted record points to (seq=2 B→A → would say recipient=A
+        # too coincidentally; pick a flip case below).
+        as_b = {"sender_id": "bbbb2222", "sender_name": "B"}
+        rec = cli._msg_other_side_recipient("abc12345", as_b)
+        assert rec is not None
+        assert rec["id"] == "aaaa1111"   # A — the from of highest-seq turn
+        # Replying as A: we are FROM of seq=3, so other side = TO = B.
+        as_a = {"sender_id": "aaaa1111", "sender_name": "A"}
+        rec2 = cli._msg_other_side_recipient("abc12345", as_a)
+        assert rec2["id"] == "bbbb2222"
+
+    def test_read_for_label_routes_to_explicit_mailbox(
+            self, monkeypatch, tmp_path, capsys):
+        # `--for <label>` overrides the current-process inference.
+        import argparse
+        cli = self._setup(monkeypatch, tmp_path,
+                          current_id="caller-not-the-recipient")
+        self._seed_thread(cli, "abc12345", my_id="bbbb2222")
+        # Without --for, current mailbox doesn't match agent:bbbb2222 →
+        # listing is empty.
+        a0 = argparse.Namespace(msg_id=None, next_msg=False, mark=False,
+                                all_msgs=False, for_label=None, json_out=True)
+        with pytest.raises(SystemExit):
+            cli.cmd_msg_read(a0)
+        assert json.loads(capsys.readouterr().out) == []
+        # With --for routing to the right agent label, _msg_resolve_mailbox
+        # uses AgentStore.get(label). Mock to return that agent.
+        class _S:
+            def get(self, key):
+                if key == "B":
+                    return {"id": "bbbb2222", "task": {"name": "B"},
+                            "tmux_session": "cam-B"}
+                return None
+        monkeypatch.setattr(cli, "AgentStore", lambda: _S())
+        a1 = argparse.Namespace(msg_id=None, next_msg=False, mark=False,
+                                all_msgs=False, for_label="B", json_out=True)
+        with pytest.raises(SystemExit):
+            cli.cmd_msg_read(a1)
+        rows = json.loads(capsys.readouterr().out)
+        assert [r["msg_id"] for r in rows] == ["abc12345"]
+
+
+class TestMsgFinalizeWaitReplay:
+    """FINDING 2: pane-scraped replies via _msg_finalize_wait must be
+    replayable via `camc msg read <msg_id>`. Default `camc msg send <to>`
+    blocks on a pane scrape; when the answer arrives, finalize must
+    append the V0 turn + delivery records (not just legacy status=replied)
+    so the thread is fully reconstructable."""
+
+    def test_finalize_appends_seq_2_turn_and_delivery_to_sender_mailbox(
+            self, monkeypatch, tmp_path):
+        from camc_pkg import cli
+        monkeypatch.setattr(cli, "_MSG_LEDGER_PATH",
+                            str(tmp_path / "messages.jsonl"))
+        # Seed: send (sent record + seq=1 turn). No prior reply.
+        cli._msg_ledger_append({
+            "msg_id": "abc12345", "to": "B", "tmux_session": "cam-B",
+            "text": "Q", "status": "sent", "timeout_s": 600,
+            "sender_name": "A", "sender_id": "aaaa1111",
+            "sender_tmux_session": "cam-A",
+            "target_name": "B", "target_id": "bbbb2222",
+        })
+        cli._msg_ledger_append({
+            "record": "turn", "schema": "camc-msg/1",
+            "msg_id": "abc12345", "seq": 1, "kind": "message",
+            "from_id": "aaaa1111", "from_name": "A",
+            "to_id": "bbbb2222", "to_name": "B", "text": "Q",
+        })
+        # Drive finalize as if the pane-scrape wait succeeded.
+        with pytest.raises(SystemExit) as ei:
+            cli._msg_finalize_wait("B", "abc12345", 600, "ANSWER", "replied")
+        assert ei.value.code == 0
+        # V0 turn(seq=2) + delivery(mailbox=agent:<sender_id>) appended.
+        turns = [r for r in cli._msg_ledger_iter(msg_id="abc12345")
+                 if r.get("record") == "turn"]
+        assert [t["seq"] for t in turns] == [1, 2]
+        t2 = turns[1]
+        # Original target → from; original sender → to.
+        assert t2["from_id"] == "bbbb2222"
+        assert t2["from_name"] == "B"
+        assert t2["to_id"] == "aaaa1111"
+        assert t2["to_name"] == "A"
+        assert t2["text"] == "ANSWER"
+        deliveries = [r for r in cli._msg_ledger_iter(msg_id="abc12345")
+                      if r.get("record") == "delivery"]
+        assert any(d["seq"] == 2 and d["mailbox_id"] == "agent:aaaa1111"
+                   for d in deliveries)
+        # Legacy status=replied still recorded.
+        assert cli._msg_find_replied("abc12345") == "ANSWER"
+
+    def test_finalize_does_not_double_append_when_reply_turn_exists(
+            self, monkeypatch, tmp_path):
+        # If `camc msg reply` has already written seq=2 (or any seq>1),
+        # _msg_finalize_wait must NOT append another synthetic reply turn
+        # — that would duplicate the message in the thread.
+        from camc_pkg import cli
+        monkeypatch.setattr(cli, "_MSG_LEDGER_PATH",
+                            str(tmp_path / "messages.jsonl"))
+        cli._msg_ledger_append({
+            "msg_id": "abc12345", "to": "B", "tmux_session": "cam-B",
+            "text": "Q", "status": "sent", "timeout_s": 600,
+            "sender_name": "A", "sender_id": "aaaa1111",
+            "target_name": "B", "target_id": "bbbb2222",
+        })
+        for seq, fid, fname, tid, tname, text in [
+            (1, "aaaa1111", "A", "bbbb2222", "B", "Q"),
+            (2, "bbbb2222", "B", "aaaa1111", "A", "FROM-REPLY-CMD"),
+        ]:
+            cli._msg_ledger_append({
+                "record": "turn", "schema": "camc-msg/1",
+                "msg_id": "abc12345", "seq": seq, "kind": "message",
+                "from_id": fid, "from_name": fname,
+                "to_id": tid, "to_name": tname, "text": text,
+            })
+        with pytest.raises(SystemExit):
+            cli._msg_finalize_wait("B", "abc12345", 600, "PANE-SCRAPE", "replied")
+        turns = [r for r in cli._msg_ledger_iter(msg_id="abc12345")
+                 if r.get("record") == "turn"]
+        # No phantom seq=3 — reply was already on the thread.
+        assert [t["seq"] for t in turns] == [1, 2]
+        assert turns[1]["text"] == "FROM-REPLY-CMD"
+
+    def test_read_replays_pane_scraped_reply(
+            self, monkeypatch, tmp_path, capsys):
+        # End-to-end shape: send → finalize_wait writes turn → read
+        # replays both turns.
+        import argparse
+        from camc_pkg import cli
+        monkeypatch.setattr(cli, "_MSG_LEDGER_PATH",
+                            str(tmp_path / "messages.jsonl"))
+        cli._msg_ledger_append({
+            "msg_id": "abc12345", "to": "B", "tmux_session": "cam-B",
+            "text": "Q", "status": "sent", "timeout_s": 600,
+            "sender_name": "A", "sender_id": "aaaa1111",
+            "target_name": "B", "target_id": "bbbb2222",
+        })
+        cli._msg_ledger_append({
+            "record": "turn", "schema": "camc-msg/1",
+            "msg_id": "abc12345", "seq": 1, "kind": "message",
+            "from_id": "aaaa1111", "from_name": "A",
+            "to_id": "bbbb2222", "to_name": "B", "text": "Q",
+        })
+        with pytest.raises(SystemExit):
+            cli._msg_finalize_wait("B", "abc12345", 600, "ANSWER", "replied")
+        capsys.readouterr()  # discard finalize stdout
+        # Replay (no mailbox needed per FINDING 1 fix).
+        monkeypatch.setattr(cli, "_msg_sender_identity", lambda: None)
+        args = argparse.Namespace(msg_id="abc12345", next_msg=False, mark=False,
+                                  all_msgs=False, for_label=None, json_out=True)
+        with pytest.raises(SystemExit):
+            cli.cmd_msg_read(args)
+        rows = json.loads(capsys.readouterr().out)
+        assert [r["text"] for r in rows] == ["Q", "ANSWER"]
+        assert [r["seq"] for r in rows] == [1, 2]
+
+
+class TestMsgLegacyCompat:
+    """Existing send/wait/show paths still work after V0 mailbox/thread
+    records are added alongside legacy status records."""
+
+    def test_first_replied_status_still_recorded(self, monkeypatch, tmp_path):
+        # `wait` (and any external scripts) read `status=replied`. Even
+        # though V0 mailbox is the source-of-truth, the FIRST reply must
+        # still write that legacy status for backward compat.
+        import argparse
+        from camc_pkg import cli
+        ledger = tmp_path / "messages.jsonl"
+        monkeypatch.setattr(cli, "_MSG_LEDGER_PATH", str(ledger))
+        cli._msg_ledger_append({
+            "msg_id": "abc12345", "to": "B", "tmux_session": "cam-B",
+            "text": "q", "status": "sent", "timeout_s": 600,
+            "sender_name": "A", "sender_id": "aaaa1111",
+        })
+        cli._msg_ledger_append({
+            "record": "turn", "schema": "camc-msg/1",
+            "msg_id": "abc12345", "seq": 1, "kind": "message",
+            "from_id": "aaaa1111", "from_name": "A",
+            "to_id": "bbbb2222", "to_name": "B", "text": "q",
+        })
+        monkeypatch.setattr(cli, "_msg_sender_identity", lambda: {
+            "sender_name": "B", "sender_id": "bbbb2222",
+            "sender_tmux_session": "cam-B",
+        })
+        monkeypatch.setattr(cli, "_msg_resolve_session",
+                            lambda lbl: (None, None, None))
+        args = argparse.Namespace(msg_id="abc12345", text="ack", timeout=10)
+        with pytest.raises(SystemExit) as ei:
+            cli.cmd_msg_reply(args)
+        assert ei.value.code == 0
+        # Legacy status is what `_msg_find_replied` checks; must be present.
+        assert cli._msg_find_replied("abc12345") == "ack"
 
 
 # ---------------------------------------------------------------------------
