@@ -1989,3 +1989,15 @@ f862461 camc msg wait: full-scrollback fallback when marker scrolls off
 31d8278 camc: bracketed-paste multi-line send + scheduler ready-gate + test cleanup
 ```
 
+## v1.2.0  fddb770 2026-05-07 20:16
+
+- Lines: 8011
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+fddb770 camc msg: add mailbox thread read API
+9d7cf9c camc msg: add expected-reply async protocol
+5017d0f fix(camc): send key through tmux transport helper
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+0acf882 camc msg: add no-wait send and wait
+```
