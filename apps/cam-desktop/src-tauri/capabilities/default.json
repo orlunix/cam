@@ -1,0 +1,7 @@
+{
+  "identifier": "default",
+  "description": "Default permissions for Cam Desktop",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
+
