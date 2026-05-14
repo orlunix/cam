@@ -30,6 +30,7 @@ MODULE_ORDER = [
     "formatters",
     "monitor",
     "scheduler",
+    "cron",
     "cli",
 ]
 
