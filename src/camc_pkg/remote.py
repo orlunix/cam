@@ -50,7 +50,8 @@ def ssh_run(machine, remote_cmd, timeout=30, input_data=None):
         cmd += [target, remote_cmd]
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout,
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True, timeout=timeout,
             input=input_data,
         )
         output = proc.stdout
@@ -119,7 +120,9 @@ def sync_file(machine, local_path, remote_path, timeout=30):
         local_path, "%s:%s" % (target, remote_path),
     ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
+        proc = subprocess.run(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=timeout)
         return proc.returncode == 0
     except Exception:
         return False

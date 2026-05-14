@@ -2099,3 +2099,15 @@ fddb770 camc msg: add mailbox thread read API
 5017d0f fix(camc): send key through tmux transport helper
 f862461 camc msg wait: full-scrollback fallback when marker scrolls off
 ```
+## v1.2.0  8d5020b-dirty 2026-05-14 00:01
+
+- Lines: 9413
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+8d5020b camc cron: add scheduled jobs and list command
+b4e09ff camc: reject single-dash long option typos
+fddb770 camc msg: add mailbox thread read API
+9d7cf9c camc msg: add expected-reply async protocol
+5017d0f fix(camc): send key through tmux transport helper
+```

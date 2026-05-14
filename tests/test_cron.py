@@ -837,8 +837,10 @@ class TestCmdCron:
         # Empty registry → exit 0, valid JSON {count:0, jobs:[]}.
         env = dict(os.environ)
         env["HOME"] = str(tmp_path)
-        r = subprocess.run([camc, "cron", "list", "--json"],
-                           capture_output=True, text=True, env=env, timeout=15)
+        r = subprocess.run(
+            [camc, "cron", "list", "--json"], stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, universal_newlines=True, env=env,
+            timeout=15)
         assert r.returncode == 0, (
             "standalone `cron list --json` failed:\nstdout=%s\nstderr=%s"
             % (r.stdout, r.stderr))
@@ -856,8 +858,10 @@ class TestCmdCron:
         (cam / "cron.json").write_text("not json {{{")
         env = dict(os.environ)
         env["HOME"] = str(tmp_path)
-        r = subprocess.run([camc, "cron", "list", "--json"],
-                           capture_output=True, text=True, env=env, timeout=15)
+        r = subprocess.run(
+            [camc, "cron", "list", "--json"], stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, universal_newlines=True, env=env,
+            timeout=15)
         assert r.returncode == 1
         assert "corrupt" in r.stderr.lower()
         assert r.stdout == ""
