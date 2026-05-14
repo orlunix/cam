@@ -1899,7 +1899,8 @@ def cmd_prune(args):
                 try:
                     subprocess.run(
                         ["tmux", "-S", sock, "has-session", "-t", session],
-                        check=True, capture_output=True, timeout=3)
+                        check=True, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, timeout=3)
                     alive = True
                 except Exception:
                     pass
@@ -2270,7 +2271,9 @@ def _find_claude_pid(session):
         if rc != 0 or not out.strip():
             return None
         pane_pid = out.strip()
-        result = subprocess.run(["pgrep", "-P", pane_pid], capture_output=True, timeout=3)
+        result = subprocess.run(
+            ["pgrep", "-P", pane_pid], stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=3)
         for child in result.stdout.decode().split():
             child = child.strip()
             if not child:

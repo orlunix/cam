@@ -562,7 +562,8 @@ def _read_user_crontab(runner=None):
     an injectable subprocess.run for tests."""
     runner = runner or subprocess.run
     try:
-        r = runner(["crontab", "-l"], capture_output=True, text=True,
+        r = runner(["crontab", "-l"], stdout=subprocess.PIPE,
+                   stderr=subprocess.PIPE, universal_newlines=True,
                    timeout=10)
     except (OSError, subprocess.SubprocessError) as e:
         raise CrontabUnavailable(str(e))
@@ -577,8 +578,9 @@ def _read_user_crontab(runner=None):
 def _write_user_crontab(text, runner=None):
     runner = runner or subprocess.run
     try:
-        r = runner(["crontab", "-"], input=text, capture_output=True,
-                   text=True, timeout=10)
+        r = runner(["crontab", "-"], input=text, stdout=subprocess.PIPE,
+                   stderr=subprocess.PIPE, universal_newlines=True,
+                   timeout=10)
     except (OSError, subprocess.SubprocessError) as e:
         raise CrontabUnavailable(str(e))
     if r.returncode != 0:
@@ -888,10 +890,12 @@ def _run_command(cmd, *, timeout, cwd, runner=None):
     start = time.time()
     try:
         if isinstance(cmd, list):
-            r = runner(cmd, cwd=cwd, capture_output=True, text=True,
+            r = runner(cmd, cwd=cwd, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, universal_newlines=True,
                        timeout=timeout)
         else:
-            r = runner(cmd, cwd=cwd, capture_output=True, text=True,
+            r = runner(cmd, cwd=cwd, stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, universal_newlines=True,
                        timeout=timeout, shell=True)
         return r.returncode, time.time() - start, None
     except subprocess.TimeoutExpired:
