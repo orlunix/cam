@@ -259,14 +259,48 @@ def serve(
         help="SSH tunnel to relay (e.g. hlren.duckdns.org:8001 or user@host:port). "
              "Auto-connects and replaces --relay with the tunnel.",
     ),
+    poll: bool = typer.Option(
+        False, "--poll",
+        help="Run ONLY the CamcPoller (populates SQLite from remote camc "
+             "instances) — no FastAPI / no port. Useful on headless boxes "
+             "where you just want `cam list` to reflect fleet state.",
+    ),
+    poll_interval: float = typer.Option(
+        5.0, "--poll-interval",
+        help="Poller interval in seconds (default 5.0).",
+    ),
 ) -> None:
-    """Start the CAM API server."""
+    """Start the CAM API server (or only the poller with --poll)."""
+    # Poller-only path: skip uvicorn/FastAPI entirely. Build the
+    # CamcPoller directly from the AppState singletons so SQLite path,
+    # contexts, and event bus match what `cam serve` would have created.
+    if poll:
+        import asyncio
+
+        from cam.cli.formatters import print_info
+        from cam.core.camc_poller import CamcPoller
+
+        poller = CamcPoller(
+            agent_store=state.agent_store,
+            context_store=state.context_store,
+            event_bus=state.event_bus,
+        )
+        print_info(
+            f"Starting poller-only mode (interval={poll_interval}s, no HTTP port). "
+            "Ctrl-C to stop."
+        )
+        try:
+            asyncio.run(poller.run(interval=poll_interval))
+        except KeyboardInterrupt:
+            print_info("Poller stopped.")
+        return
+
     try:
         import uvicorn  # noqa: F401
     except ImportError:
         from rich import print as rprint
 
-        rprint("[red]API server requires:[/red] pip install cam[server]")
+        rprint(r"[red]API server requires:[/red] pip install 'cam\[server]'")
         raise typer.Exit(1)
 
     from cam.api.server import create_app
