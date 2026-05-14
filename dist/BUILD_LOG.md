@@ -2111,3 +2111,15 @@ fddb770 camc msg: add mailbox thread read API
 9d7cf9c camc msg: add expected-reply async protocol
 5017d0f fix(camc): send key through tmux transport helper
 ```
+## v1.2.0  9c82cd4 2026-05-14 00:02
+
+- Lines: 9413
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+9c82cd4 camc: keep cron deploy compatible with Python 3.6
+8d5020b camc cron: add scheduled jobs and list command
+b4e09ff camc: reject single-dash long option typos
+fddb770 camc msg: add mailbox thread read API
+9d7cf9c camc msg: add expected-reply async protocol
+```
