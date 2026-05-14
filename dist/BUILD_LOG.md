@@ -2013,3 +2013,89 @@ fddb770 camc msg: add mailbox thread read API
 5017d0f fix(camc): send key through tmux transport helper
 f862461 camc msg wait: full-scrollback fallback when marker scrolls off
 ```
+## v1.2.0  a3bf91d-dirty 2026-05-11 04:35
+
+- Lines: 8256
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+b4e09ff camc: reject single-dash long option typos
+fddb770 camc msg: add mailbox thread read API
+9d7cf9c camc msg: add expected-reply async protocol
+5017d0f fix(camc): send key through tmux transport helper
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+```
+## v1.2.0  a3bf91d-dirty 2026-05-11 04:45
+
+- Lines: 8265
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+b4e09ff camc: reject single-dash long option typos
+fddb770 camc msg: add mailbox thread read API
+9d7cf9c camc msg: add expected-reply async protocol
+5017d0f fix(camc): send key through tmux transport helper
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+```
+## v1.2.0  a3bf91d-dirty 2026-05-11 04:52
+
+- Lines: 8272
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+b4e09ff camc: reject single-dash long option typos
+fddb770 camc msg: add mailbox thread read API
+9d7cf9c camc msg: add expected-reply async protocol
+5017d0f fix(camc): send key through tmux transport helper
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+```
+## v1.2.0  a3bf91d-dirty 2026-05-11 09:16
+
+- Lines: 8358
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+b4e09ff camc: reject single-dash long option typos
+fddb770 camc msg: add mailbox thread read API
+9d7cf9c camc msg: add expected-reply async protocol
+5017d0f fix(camc): send key through tmux transport helper
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+```
+## v1.2.0  a3bf91d-dirty 2026-05-11 09:23
+
+- Lines: 8365
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+b4e09ff camc: reject single-dash long option typos
+fddb770 camc msg: add mailbox thread read API
+9d7cf9c camc msg: add expected-reply async protocol
+5017d0f fix(camc): send key through tmux transport helper
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+```
+
+## v1.2.0  a3bf91d-dirty 2026-05-11 09:24
+
+- Lines: 9396
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+b4e09ff camc: reject single-dash long option typos
+fddb770 camc msg: add mailbox thread read API
+9d7cf9c camc msg: add expected-reply async protocol
+5017d0f fix(camc): send key through tmux transport helper
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+```
+
+## v1.2.0  a3bf91d-dirty 2026-05-11 09:25
+
+- Lines: 9403
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+b4e09ff camc: reject single-dash long option typos
+fddb770 camc msg: add mailbox thread read API
+9d7cf9c camc msg: add expected-reply async protocol
+5017d0f fix(camc): send key through tmux transport helper
+f862461 camc msg wait: full-scrollback fallback when marker scrolls off
+```
