@@ -77,6 +77,22 @@ from camc_pkg.transport import (
 )
 from camc_pkg.detection import should_auto_confirm, is_ready_for_input
 from camc_pkg.monitor import _run_monitor
+# Cron module: bare names (no `as` aliases). build_camc.py strips this
+# import line during bundling; the names then live at the top level of
+# the single-file build because the bundler inlines cron.py before
+# cli.py. Aliased imports would not survive the strip — `as <alias>`
+# names simply vanish from the bundled namespace. Keep bare names and
+# rely on the fact that cron.py exports unique identifiers (no clash
+# with anything else in cli.py).
+from camc_pkg.cron import (
+    CronConfig, CronStore,
+    DuplicateJobName, CorruptCronJSON, CorruptCronConfig,
+    AmbiguousJobKey, CrontabUnavailable,
+    install_tick, remove_tick, ensure_tick_if_needed, tick,
+    parse_every, parse_daily, parse_at, parse_in,
+    build_job, DEFAULT_TIMEOUT_SECONDS,
+    _archive_job, _append_runs, _emit_event,
+)
 from camc_pkg.formatters import (
     print_table, print_panel, print_detail, print_success, print_error, print_warning,
     print_info, styled_status, styled_state, _c, _HAS_RICH,
@@ -3014,6 +3030,26 @@ def cmd_heal(args):
     except OSError:
         pass
 
+    # Cron tick block: install/repair iff enabled jobs exist; remove if none.
+    try:
+        result = ensure_tick_if_needed()
+        if isinstance(result, tuple) and result[0] == "crontab_unavailable":
+            print("Cron: repair failed: %s" % result[1])
+        elif isinstance(result, tuple) and result[0] == "cron_json_corrupt":
+            print("Cron: registry is corrupt at %s — refused to touch crontab;"
+                  " inspect manually." % result[1])
+        elif result in ("installed", "repaired"):
+            enabled = [j for j in CronStore().jobs()
+                       if j.get("enabled", True)]
+            print("Cron: %s tick entry (%d enabled job(s))"
+                  % ("installed missing" if result == "installed"
+                     else "repaired", len(enabled)))
+        elif result == "removed":
+            print("Cron: removed stale tick entry (no enabled jobs)")
+        # "ok" / "noop" → quiet
+    except Exception as e:
+        log.warning("cron: heal hook failed: %s", e)
+
 
 def cmd_apply(args):
     """Apply tasks from a YAML file (DAG scheduler)."""
@@ -4277,6 +4313,250 @@ def cmd_msg_read(args):
 
 
 # ===========================================================================
+# Cron (P0)
+# ===========================================================================
+
+def cmd_cron(args):
+    """Cron dispatch: add / rm / list / tick."""
+    sub = getattr(args, "cron_cmd", None)
+    if sub == "add":
+        cmd_cron_add(args)
+    elif sub == "rm":
+        cmd_cron_rm(args)
+    elif sub == "list":
+        cmd_cron_list(args)
+    elif sub == "tick":
+        cmd_cron_tick(args)
+    else:
+        sys.stderr.write(
+            "usage: camc cron {add,rm,list,tick} ...\n"
+            "  add --name NAME (--every DUR | --daily HH:MM | --at TIME | --in DUR)\n"
+            "      [--ttl-days N | --expires-at T | --no-expire] [--max-attempts N]\n"
+            "      [--timeout S] [--cwd P] [--host H] (--shell \"CMD\" | -- COMMAND...)\n"
+            "  rm <id-or-name>\n"
+            "  list [--json]                 read-only listing of active jobs\n"
+            "  tick   (system entrypoint; invoked by crontab)\n"
+        )
+        sys.exit(1)
+
+
+def cmd_cron_add(args):
+    """Build a job from cli args, persist, then ensure the tick crontab block."""
+    # Resolve schedule preset
+    try:
+        if args.every:
+            schedule = parse_every(args.every)
+        elif args.daily:
+            schedule = parse_daily(args.daily)
+        elif args.at_time:
+            schedule = parse_at(args.at_time)
+        elif args.in_dur:
+            schedule = parse_in(args.in_dur)
+        else:
+            sys.stderr.write("camc cron add: a schedule preset is required\n")
+            sys.exit(1)
+    except ValueError as e:
+        sys.stderr.write("camc cron add: %s\n" % e)
+        sys.exit(1)
+
+    # Resolve command — exactly one of argv (from after --) or --shell.
+    # argparse.REMAINDER may include the literal `--` separator as the
+    # first token. Strip ONLY that leading separator; later `--` tokens
+    # are part of the user's argv and must be preserved verbatim
+    # (e.g. `cron add ... -- prog -- flag` → ["prog", "--", "flag"]).
+    #
+    # The dest is `cmd_argv`, NOT `command`, because the top-level
+    # subparsers use dest="command" and an argparse positional named
+    # `command` would clobber it on `camc cron add` invocations.
+    raw_argv = list(getattr(args, "cmd_argv", None) or [])
+    if raw_argv and raw_argv[0] == "--":
+        raw_argv = raw_argv[1:]
+    argv = raw_argv
+    if args.shell_cmd and argv:
+        sys.stderr.write(
+            "camc cron add: --shell is mutually exclusive with -- COMMAND...\n")
+        sys.exit(1)
+    if not args.shell_cmd and not argv:
+        sys.stderr.write(
+            "camc cron add: a command is required — pass `-- argv...` or --shell\n")
+        sys.exit(1)
+    cwd = os.path.abspath(args.cwd) if args.cwd else os.getcwd()
+    timeout = args.timeout if args.timeout is not None else DEFAULT_TIMEOUT_SECONDS
+    if argv:
+        command = {"argv": argv, "cwd": cwd, "timeout_seconds": int(timeout)}
+    else:
+        command = {"shell": args.shell_cmd, "cwd": cwd,
+                   "timeout_seconds": int(timeout)}
+
+    # Build + persist
+    CronConfig().ensure()
+    try:
+        job = build_job(
+            args.name, schedule, command,
+            ttl_days=args.ttl_days,
+            expires_at=args.expires_at,
+            no_expire=args.no_expire,
+            max_attempts=args.max_attempts,
+            host=args.host,
+        )
+    except ValueError as e:
+        sys.stderr.write("camc cron add: %s\n" % e)
+        sys.exit(1)
+    try:
+        CronStore().add(job)
+    except DuplicateJobName:
+        sys.stderr.write(
+            "camc cron add: a job named '%s' already exists\n" % args.name)
+        sys.exit(1)
+    except CorruptCronJSON as e:
+        sys.stderr.write(
+            "camc cron add: cron.json is corrupt and was NOT modified (%s).\n"
+            "  Inspect manually before adding new jobs.\n" % e)
+        sys.exit(1)
+
+    sys.stdout.write("added cron job %s (%s)\n" % (job["name"], job["id"]))
+
+    # Ensure tick crontab block (best-effort; warn on failure but keep
+    # the job saved per spec).
+    try:
+        install_tick()
+        sys.stdout.write("tick: installed\n")
+    except CrontabUnavailable as e:
+        sys.stderr.write(
+            "ERROR: failed to install system cron tick: %s\n"
+            "Run `camc heal` after fixing crontab access.\n" % e)
+        sys.exit(1)
+    sys.exit(0)
+
+
+def cmd_cron_rm(args):
+    """Remove + archive a job. Remove the tick block when no enabled jobs remain."""
+    try:
+        removed = CronStore().remove(args.id_or_name)
+    except CorruptCronJSON as e:
+        sys.stderr.write(
+            "camc cron rm: cron.json is corrupt and was NOT modified (%s).\n" % e)
+        sys.exit(1)
+    except AmbiguousJobKey as e:
+        sys.stderr.write(
+            "camc cron rm: ambiguous job key %r — %s.\n"
+            "  Re-run with a longer prefix or the exact name.\n"
+            % (e.key, ", ".join(e.matches)))
+        sys.exit(1)
+    if not removed:
+        sys.stderr.write("camc cron rm: no job matched '%s'\n" % args.id_or_name)
+        sys.exit(1)
+    archive_path = _archive_job(removed, "manual_remove")
+    _append_runs({
+        "event": "job_removed", "job_id": removed.get("id"),
+        "job_name": removed.get("name"),
+        "archive_path": archive_path or "",
+    })
+    _emit_event("cron_job_recycled", job_id=removed.get("id"),
+                     reason="manual_remove")
+    sys.stdout.write(
+        "removed cron job %s (%s)\n" % (removed.get("name"), removed.get("id")))
+    # If no enabled jobs remain, take down the tick block.
+    enabled = [j for j in CronStore().jobs() if j.get("enabled", True)]
+    if not enabled:
+        try:
+            if remove_tick():
+                sys.stdout.write("tick: removed (no enabled jobs remain)\n")
+        except CrontabUnavailable as e:
+            sys.stderr.write(
+                "WARN: failed to remove cron tick block: %s\n" % e)
+    sys.exit(0)
+
+
+def cmd_cron_tick(args):
+    """System entrypoint: one scheduler step. Always exits 0 unless internal error."""
+    result = tick()
+    # Tick is invoked by the OS cron daemon — keep stdout sparse.
+    if result.get("ran"):
+        sys.stdout.write("cron tick: ran %d job(s)\n" % result["ran"])
+    sys.exit(0)
+
+
+def cmd_cron_list(args):
+    """Read-only listing of active cron jobs.
+
+    Does NOT install/remove the crontab block, does NOT tick, and does
+    NOT mutate cron.json / cron-runs.jsonl / cron-archive. Fails closed
+    (exit 1, stderr) when cron.json exists but is corrupt — silent
+    "empty" output would mask the failure.
+    """
+    json_out = bool(getattr(args, "json_out", False))
+
+    store = CronStore()
+    if store.is_corrupt():
+        sys.stderr.write(
+            "camc cron list: cron.json is corrupt at %s — refusing to list.\n"
+            "  Inspect the file before adding/removing jobs.\n" % store._path)
+        sys.exit(1)
+
+    jobs = list(store.jobs())
+
+    def _sched_str(j):
+        s = j.get("schedule") or {}
+        t = s.get("type", "?")
+        if t == "interval":
+            n = int(s.get("every_seconds") or 0)
+            if n and n % 3600 == 0:
+                return "every %dh" % (n // 3600)
+            if n:
+                return "every %dm" % (n // 60)
+            return "interval"
+        if t == "daily":
+            return "daily %s" % (s.get("time") or "??:??")
+        if t == "once":
+            return "once @ %s" % (s.get("run_at") or "?")
+        return t
+
+    if json_out:
+        out = {
+            "count": len(jobs),
+            "jobs": [
+                {
+                    "id": j.get("id"),
+                    "name": j.get("name"),
+                    "enabled": bool(j.get("enabled", True)),
+                    "kind": j.get("kind"),
+                    "schedule": j.get("schedule"),
+                    "host": j.get("host"),
+                    "expires_at": j.get("expires_at"),
+                    "max_attempts": j.get("max_attempts"),
+                    "attempts": j.get("attempts", 0),
+                    "last_status": j.get("last_status"),
+                    "last_due_at": j.get("last_due_at"),
+                }
+                for j in jobs
+            ],
+        }
+        sys.stdout.write(json.dumps(out, ensure_ascii=False) + "\n")
+        sys.exit(0)
+
+    if not jobs:
+        sys.stdout.write("No cron jobs.\n")
+        sys.exit(0)
+
+    header = ("%-9s  %-20s  %-18s  %-3s  %-15s  %-19s  %-7s  %s\n" % (
+        "ID", "NAME", "SCHED", "EN", "HOST", "EXPIRES", "ATT/MAX", "LAST"))
+    sys.stdout.write(header)
+    for j in jobs:
+        sys.stdout.write("%-9s  %-20s  %-18s  %-3s  %-15s  %-19s  %-7s  %s\n" % (
+            (j.get("id") or "")[:9],
+            (j.get("name") or "")[:20],
+            _sched_str(j)[:18],
+            "y" if j.get("enabled", True) else "n",
+            (j.get("host") or "")[:15],
+            (j.get("expires_at") or "-")[:19],
+            "%s/%s" % (j.get("attempts", 0), j.get("max_attempts", "?")),
+            j.get("last_status") or "-",
+        ))
+    sys.exit(0)
+
+
+# ===========================================================================
 # Machine management
 # ===========================================================================
 
@@ -4921,6 +5201,51 @@ examples:
     heal_p = sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
     heal_p.add_argument("--upgrade", action="store_true", help="Kill ALL monitors and restart with current camc binary")
 
+    # cron — scheduled jobs (P0)
+    cron_p = sub.add_parser("cron", help="Scheduled jobs (add/rm/tick)")
+    cron_sub = cron_p.add_subparsers(dest="cron_cmd", parser_class=CamArgumentParser)
+    cadd = cron_sub.add_parser("add", help="Add a scheduled job")
+    cadd.add_argument("--name", required=True, help="Unique job name")
+    sched_grp = cadd.add_mutually_exclusive_group(required=True)
+    sched_grp.add_argument("--every", default=None,
+                           help="Interval (e.g. 30m, 2h)")
+    sched_grp.add_argument("--daily", default=None,
+                           help="Daily local time HH:MM")
+    sched_grp.add_argument("--at", dest="at_time", default=None,
+                           help="Absolute ISO timestamp for one-time job")
+    sched_grp.add_argument("--in", dest="in_dur", default=None,
+                           help="Delay from now (e.g. 45m) for one-time job")
+    cadd.add_argument("--ttl-days", dest="ttl_days", type=int, default=None,
+                      help="Recycle after N days [default: config / 7]")
+    cadd.add_argument("--expires-at", dest="expires_at", default=None,
+                      help="Recycle at an absolute ISO timestamp")
+    cadd.add_argument("--no-expire", dest="no_expire", action="store_true",
+                      help="Job never auto-expires")
+    cadd.add_argument("--max-attempts", dest="max_attempts", type=int, default=None,
+                      help="Recycle after N failed attempts [default: config / 3]")
+    cadd.add_argument("--timeout", dest="timeout", type=int, default=None,
+                      help="Per-attempt timeout in seconds [default: 60]")
+    cadd.add_argument("--cwd", default=None,
+                      help="Command working directory [default: current dir]")
+    cadd.add_argument("--host", default=None,
+                      help="Execution host (or 'any') [default: current hostname]")
+    cadd.add_argument("--shell", dest="shell_cmd", default=None,
+                      help="Shell command (mutually exclusive with -- COMMAND...)")
+    # Positional dest is `cmd_argv` (NOT `command`) to avoid clobbering
+    # the top-level subparsers' `dest='command'` when this subparser is
+    # selected — that collision turned `args.command` into a list of
+    # argv tokens and crashed `args.command in cmds` in main().
+    cadd.add_argument("cmd_argv", nargs=argparse.REMAINDER,
+                      help="argv after `--` (preferred). Mutually exclusive with --shell.")
+    crm = cron_sub.add_parser("rm", help="Remove (and archive) a scheduled job")
+    crm.add_argument("id_or_name", help="Job id, id prefix, or exact name")
+    clist = cron_sub.add_parser("list",
+                                help="Read-only listing of active cron jobs")
+    clist.add_argument("--json", dest="json_out", action="store_true",
+                       help="Emit machine-readable JSON instead of a table")
+    cron_sub.add_parser("tick",
+                        help="(system) scheduler entrypoint — called by crontab")
+
     # machine
     mp = sub.add_parser("machine", help="Manage remote machines")
     msub = mp.add_subparsers(
@@ -5026,6 +5351,7 @@ examples:
         "key": cmd_key,
         "msg": cmd_msg,
         "heal": cmd_heal,
+        "cron": cmd_cron,
         "machine": cmd_machine,
         "context": cmd_context,
         "sync": cmd_sync,
