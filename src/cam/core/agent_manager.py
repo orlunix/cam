@@ -12,7 +12,10 @@ import asyncio
 import hashlib
 import json
 import logging
-import tomllib
+try:
+    import tomllib  # stdlib in Python 3.11+
+except ImportError:  # pragma: no cover — 3.10 fallback
+    import tomli as tomllib  # type: ignore[no-redef]
 from datetime import datetime, timezone
 from pathlib import Path
 
