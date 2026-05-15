@@ -163,7 +163,23 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 l.strip() in ("\u276f", ">", "\u203a")  # ❯  >  ›
                 for l in tail_lines
             )
-            skip_confirm = screen_busy or bare_prompt
+            # busy_pattern (the "...ing…" gerund spinner) used to be a
+            # hard veto here, on the assumption "spinner = agent working,
+            # not at a dialog." That assumption broke: as of mid-May 2026
+            # Claude's TUI now renders the spinner CONCURRENTLY with
+            # permission dialogs (todoskill 383e73be: "Nucleating… (6m
+            # 44s · …)" running while "Do you want to proceed? / 1.
+            # Yes / 2. No" is the actual blocking state). We disable
+            # the brake by commenting `screen_busy` out — auto-confirm
+            # now fires whenever a [[confirm]] rule matches, regardless
+            # of the spinner. KNOWN regression: pane scrollback containing
+            # dialog-shaped text (e.g. an attached human reading a chat
+            # transcript that quotes dialog wording) can trigger stray
+            # auto-confirms every cooldown until the text scrolls off
+            # the last-N-lines window in should_auto_confirm(). When
+            # that becomes a problem, replace this line with a screen-
+            # stability gate (camc msg send's reply-detection primitive).
+            skip_confirm = bare_prompt  # was: screen_busy or bare_prompt
             if confirm_cd >= config.confirm_cooldown and not skip_confirm:
                 confirm = should_auto_confirm(output, config)
                 if confirm:
