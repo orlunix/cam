@@ -163,10 +163,15 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 l.strip() in ("\u276f", ">", "\u203a")  # ❯  >  ›
                 for l in tail_lines
             )
-            skip_confirm = screen_busy or bare_prompt
-            if confirm_cd >= config.confirm_cooldown and not skip_confirm:
-                confirm = should_auto_confirm(output, config)
-                if confirm:
+            # A matched [[confirm]] rule is a stronger signal than busy_pattern
+            # — Claude renders the "Nucleating…" / "Crunching…" spinner
+            # concurrently with permission dialogs. Without this veto, the
+            # spinner would suppress auto-confirm forever and the agent
+            # would sit at the dialog until the user pressed `1` manually.
+            confirm = (should_auto_confirm(output, config)
+                       if confirm_cd >= config.confirm_cooldown else None)
+            skip_confirm = (screen_busy or bare_prompt) and not confirm
+            if confirm and not skip_confirm:
                     response, send_enter, pat_str, matched = confirm
                     log.info("Auto-confirm: pattern=%r matched=%r -> %r (enter=%s)",
                              pat_str, matched, response, send_enter)
