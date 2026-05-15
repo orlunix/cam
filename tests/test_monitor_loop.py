@@ -423,6 +423,35 @@ class TestStep4AutoConfirm:
         # With 0.5s cooldown and fast test timing, should be limited
         assert len(confirms) >= 1
 
+    def test_confirm_wins_over_busy_pattern(self):
+        # Regression for the `todoskill` stuck-forever bug: Claude renders
+        # its "Nucleating…" thinking spinner CONCURRENTLY with a permission
+        # dialog. The spinner matches busy_pattern; before the fix, that
+        # caused auto-confirm to be permanently skipped and the agent
+        # would sit at the dialog until the user pressed `1` by hand.
+        # A matched [[confirm]] rule must veto the busy-pattern skip.
+        screen_busy_plus_dialog = (
+            "● Bash(\"find /tmp -name '*.py'\")\n\n"
+            "────\n"
+            " Bash command\n\n"
+            "   find /tmp -name '*.py' | head -50\n\n"
+            " Permission rule Bash requires confirmation.\n\n"
+            " Do you want to proceed?\n"
+            " ❯ 1. Yes\n"
+            "   2. No\n\n"
+            " Esc to cancel\n"
+            "\n"
+            "✻ Nucleating… (6m 44s · ↓ 422 tokens · almost done thinking)\n"
+        )
+        screens = [screen_busy_plus_dialog] * 5
+        store, events = run_monitor_steps(screens, max_cycles=10)
+        confirms = events.of_type("auto_confirm")
+        assert len(confirms) >= 1, (
+            "auto-confirm did not fire despite a matching dialog; "
+            "busy_pattern likely suppressed it (the todoskill regression)"
+        )
+        assert confirms[0]["detail"]["response"] == "1"
+
     def test_no_confirm_on_false_positive(self):
         # Agent prose with confirm keywords — should NOT trigger
         # (depends on last-32-lines filter and pattern specificity)
