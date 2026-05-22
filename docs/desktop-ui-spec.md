@@ -1,7 +1,11 @@
 # CAM Desktop UI Spec
 
-Status: draft for review
+Status: v2 — Electron + WebUI reuse, Phase 2A backend readiness
 Owner split: `camui-rev` writes and reviews this spec; `camui-dev` implements after approval.
+
+Canonical requirement IDs live in `docs/desktop/requirements.md`. This file is
+a milestone/product spec; implementation tasks and review replies should cite
+the requirement IDs rather than treating this document as a checklist.
 
 ## Summary
 
@@ -15,28 +19,62 @@ agent-management loop visible and low-friction:
 - see all agents and their state
 - inspect one agent's live output
 - send direct input or special keys to the selected tmux session
-- keep working when `cam serve` is unavailable by falling back to direct `camc`
+
+Desktop v2 is a thin **client** of the existing CAM HTTP/WebSocket API.
+It does not start, supervise, or bootstrap any CAM or relay server. The
+operating model matches the mobile/PWA app: connect to an existing direct
+endpoint (e.g. `cam serve` running in WSL, Linux, macOS, or a remote host)
+or to an existing relay endpoint, using the same direct/relay settings the
+WebUI already supports.
 
 V1 is intentionally narrower than the earlier preserve-first draft: **agent
 list, selected-agent output, and selected-agent input are the only product
-surface**. Other scaffold features may remain in code if useful, but they
-should not be visible in the first default UI.
+surface**, plus a minimal connection profile needed to reach the backend.
+Other scaffold features may remain in code if useful, but they should not be
+visible in the first default UI.
 
 ## Framework Decision
 
-Use the existing `apps/cam-desktop` scaffold: **Tauri 2 + React + TypeScript**.
+Use **Electron** as the desktop shell, loading the bundled WebUI-derived
+`web/desktop.html`. The runtime under `apps/cam-desktop/` is Electron going
+forward.
 
 Rationale:
 
-- The repository already contains a Tauri/React desktop app with a typed
-  `CamBackend` abstraction and a Rust command bridge for direct `camc` calls.
-- Tauri is a good fit for a developer desktop tool because it can safely bridge
-  to local commands without carrying Electron's runtime size.
-- React/TypeScript keeps the UI portable: the domain components can later share
-  patterns with the existing `web/` client or a future browser app.
+- The existing `web/` directory already implements direct/relay connection,
+  agent list, agent detail/output/input/key, contexts, and PWA behavior.
+  Reusing this code gives Desktop v2 immediate feature parity with the
+  mobile/PWA app and one place to evolve UI.
+- Electron is intentionally chosen over Tauri so future iterations can host
+  Node-side primitives such as `node-pty`, `ssh2`, or `xterm.js` for
+  embedded terminal/SSH — capabilities Tauri cannot supply natively in the
+  same form. Embedded terminal/SSH is **out of scope for Phase 1**, but
+  framework selection should not block it later.
+- React/TypeScript components from the earlier Tauri scaffold may remain in
+  the tree for reference, but are not the future product direction and must
+  not be expanded.
 
-Do not introduce Electron, Flutter, Qt, or another desktop stack for this
-iteration.
+Do not introduce Flutter, Qt, or another desktop stack for this iteration.
+
+## Backend / Server Boundary
+
+The desktop binary is primarily a client:
+
+- It does **not** install CAM, Python, WSL, Docker, or any backend runtime,
+  in Phase 1 or Phase 2A. Bootstrapping is reserved for Phase 2B+.
+- It does **not** manage the relay server. No relay control panel, no
+  relay lifecycle UI.
+- Direct and relay are connection endpoints. The UI surfaces them as
+  profile settings (server URL + token, relay URL + token), reusing the
+  existing WebUI `CamApi` connect flow.
+- Phase 2A is allowed to **detect** an already-installed local backend and
+  optionally **start** it (e.g. `cam serve --port 8420` on Linux/macOS, or
+  `wsl -d <distro> -- cam serve --port 8420` on Windows). It must not
+  install or upgrade anything. If CAM is not present locally, Phase 2A
+  shows a setup hint only; full setup belongs to Phase 2B/2C/2D.
+- Future versions may add an embedded terminal or SSH client, but Phase 1
+  and Phase 2A must not include terminal UI, terminal tabs, or terminal
+  transport code.
 
 ## Existing Repository Context
 
@@ -47,67 +85,93 @@ Relevant files already present:
 - `src/cam/api/ws.py`: WebSocket event/status stream.
 - `src/cam/api/routes/contexts.py`: context REST endpoints.
 - `src/cam/api/routes/system.py`: health/config endpoints.
-- `apps/cam-desktop/src/`: current React desktop UI scaffold.
-- `apps/cam-desktop/src-tauri/src/main.rs`: Tauri command bridge.
-- `apps/cam-desktop/SPEC.md`: earlier scaffold-level spec, useful background.
+- `web/`: production WebUI/PWA. Implements direct/relay connection,
+  agent list, agent detail, output/input/key, contexts, settings, machines.
+- `web/js/api.js`: `CamApi` — direct HTTP + relay-over-WebSocket client.
+- `web/js/state.js`: `AppState` — reactive state store.
+- `apps/cam-desktop/`: desktop app workspace. Phase 1 hosts the Electron
+  shell. The earlier Tauri/React files remain as reference but are dormant.
 - `baseline/chatshell-desktop/`: ChatShell reference app.
 - `docs/chatshell-reference-evaluation.md`: feature mapping and reuse
   recommendation.
 
-Current scaffold coverage in `apps/cam-desktop`:
-
-- health via `camc version`
-- agent list via `camc --json list`
-- run agent
-- capture selected agent
-- send direct text
-- list/read/send/reply `camc msg` threads
-- local / WSL / SSH backend profiles
-
-This spec supersedes the scaffold spec for product direction, but the existing
-code should be evolved in place rather than recreated.
-
 ## Backend Model
 
-The UI depends on a typed `CamBackend` interface. React components must call
-domain methods, not build command strings or REST paths directly.
+Phase 1 reuses the existing WebUI `CamApi` (`web/js/api.js`) as the only
+backend seam. The Electron renderer loads `web/desktop.html`, which imports
+the same `api.js` and `state.js` modules used by `web/index.html`. The UI
+calls domain methods on `CamApi` — it must not build raw REST paths.
 
-The important architectural choice is to keep the first UI small while putting
-one stable seam between the UI and CAM operations. The first release should not
-try to expose all of CAM. It should prove this loop:
+The first release should prove this loop:
 
 ```text
 select agent -> read current output -> send input/key -> refresh output
 ```
 
-Initial implementation order:
+Connection modes:
 
-1. **CLI adapter, first implementation path**
-   - Uses the existing Tauri Rust bridge to run `camc` with argv.
-   - Supports local Linux/macOS first.
-   - Keeps WSL and SSH profiles available because the scaffold already has the
-     shape, but they are not blockers for the first usable Linux build.
-   - Matches CAM's current source-of-truth model: per-machine `camc` owns tmux,
-     agent state, logs, and message ledger.
+1. **Direct** — `serverUrl + token` against a reachable `cam serve` (local
+   Linux/macOS, WSL, or remote host).
+2. **Relay** — `relayUrl + relayToken` against a reachable relay; CAM server
+   sits behind the relay.
 
-2. **API adapter, later online/multi-machine path**
-   - Connects to `cam serve`.
-   - Uses REST for agent/context/actions.
-   - Uses WebSocket for agent status/event updates.
-   - Uses output polling for live tmux output because the current WS endpoint
-     streams events/status, not raw terminal bytes.
-   - Best mode for multi-machine aggregated state after the direct `camc` loop
-     is stable.
+`CamApi.connect()` races both options if configured; the winner is used.
+Profiles are stored in `localStorage` exactly as the WebUI does. The
+Electron shell does not introduce a separate profile store.
 
-This gives the project a simple start without painting the architecture into a
-corner: future API/WS work changes the adapter, not the main UI.
+Native bridge (`window.CamBridge`) is intentionally narrow and must not
+duplicate CAM product behavior:
 
-Default profile behavior:
+Phase 1:
 
-- Linux/macOS P0: direct local `camc`.
-- Windows P0: direct WSL `camc` where available.
-- API mode: opt-in until the UI's direct `camc` interaction loop is solid.
-- Manual profile switch is always available.
+- `getPlatform()` — `"win32" | "darwin" | "linux"`.
+- `getAppVersion()` — Electron app version string.
+- `openExternal(url)` — open an http(s) URL in the system browser.
+- `restartApp(route?)` — restart the renderer (matches the existing WebView
+  contract used by the mobile wrapper).
+
+Phase 2A additions (local backend readiness only):
+
+- `checkBackendReadiness()` — returns a `BackendReadiness` snapshot:
+  - `platform`: `"win32" | "darwin" | "linux"`.
+  - `hasWsl`: WSL is usable on this host (Windows only).
+  - `wslDistros`: array of distro names detected via `wsl -l -q`.
+  - `selectedDistro`: the distro the bridge would target (first non-
+    `docker-desktop*`), or `null`.
+  - `hasPython`: a usable Python interpreter is reachable from the same
+    shell the bridge would use to launch `cam`.
+  - `hasCam`: the `cam` CLI is reachable from that same shell.
+  - `localServerRunning`: a CAM server is confirmed listening at
+    `http://127.0.0.1:8420/api/system/health` — the probe must require
+    HTTP 200 and that the JSON body contains CAM's known shape
+    (`version` plus `adapters` or `agents_running`), so a foreign HTTP
+    responder cannot be mistaken for CAM.
+  - `localPortOccupiedByOther`: port 8420 has *some* HTTP responder but
+    it does not look like CAM.
+  - `suggestedCommand`: a copy-friendly command (e.g.
+    `pip install --user "cam[server]" && cam serve --port 8420`).
+  - `message`: short, human-readable summary.
+- `startLocalBackend()` — optional; only the bridge attempts a start when
+  `hasCam` is true, `localServerRunning` is false, and the port is not
+  occupied by a non-CAM service. The main process **generates a fresh
+  random token** (URL-safe base64, 24 bytes) and launches `cam serve
+  --port 8420 --token <token>`. It never parses stdout. On success it
+  returns `{ ok: true, url, token, message }`; the renderer persists the
+  token in `localStorage.cam_token`, fills `serverUrl` with the local URL
+  if blank, and reconnects via `CamApi`. On Windows the spawn target is
+  `wsl.exe -d <distro> -- bash -lc "cam serve --port 8420 --token <token>"`;
+  on Linux/macOS it is `bash -lc "cam serve --port 8420 --token <token>"`.
+  If a CAM server is already running, the bridge refuses with
+  `ok: false` because it cannot know the existing token from outside the
+  process — the user must either supply that token or stop the existing
+  server.
+
+Both methods are exposed via `ipcMain.handle` / `ipcRenderer.invoke` and
+execute argv directly with `child_process.execFile` / `spawn`. They never
+take user-provided command strings — the renderer cannot pass a command
+to run.
+
+Anything beyond the above lives in HTTP/WS calls through `CamApi`.
 
 ## API Contract
 
@@ -134,32 +198,9 @@ only the server URL and token in local app settings. It must not log tokens.
 
 ## CLI Contract
 
-The CLI adapter maps to `camc`, because `camc` is authoritative per machine.
-Minimum commands:
-
-- Health: `camc version`
-- Agent list: `camc --json list`
-- Agent detail: `camc --json status <agent>`
-- Run: `camc run --name <name> --path <path> --tool <tool> <prompt>`
-- Capture: `camc capture <agent> --lines <n>`
-- Logs: `camc logs <agent> --tail <n>`
-- Direct text: `camc send <agent> --text <text>`
-- Key: `camc key <agent> --key <key>`
-- Stop: `camc stop <agent>`
-- Kill: `camc kill <agent>`
-- Remove: `camc rm <agent> [--archive]`
-- Retry/resume: `camc reboot <agent>`
-- History: `camc history <agent> --limit <n>`
-- Heal: `camc heal`
-- Context list: `camc context list`
-- Messaging inbox: `camc msg read --json`
-- Messaging thread: `camc msg read <msg_id> --json`
-- Messaging send: `camc msg send <to> -t <text> --no-wait [--expect-reply]`
-- Messaging reply: `camc msg reply <msg_id> -t <text>`
-
-The Tauri bridge must continue to use argv for local and WSL execution. SSH may
-use shell quoting until a safer remote protocol exists, but host validation and
-clear error reporting are required.
+Phase 1 has no in-app CLI adapter. The desktop does not exec `camc` from
+the renderer or main process. Direct `camc` access is reserved for a later
+phase and is not part of this iteration.
 
 ## Scope Strategy
 
@@ -248,20 +289,14 @@ Required views:
   - Do not show a separate metadata inspector in V1.
   - No lifecycle controls are required for P0.
 
-P0 backend interface should be this small:
+P0 acceptance depends on these `CamApi` methods (already implemented in
+`web/js/api.js`):
 
-```ts
-interface CamBackend {
-  health(): Promise<BackendHealth>;
-  listAgents(): Promise<AgentSummary[]>;
-  captureAgent(id: string, lines?: number): Promise<CaptureResult>;
-  sendToAgent(id: string, text: string, opts?: SendOptions): Promise<void>;
-  sendKey(id: string, key: string): Promise<void>;
-}
-```
-
-The interface may contain future methods, but P0 acceptance depends only on the
-five methods above.
+- `health()` — `GET /api/system/health`
+- `listAgents()` — `GET /api/agents`
+- `agentOutput(id, lines, hash)` — `GET /api/agents/{id}/output`
+- `sendInput(id, text, sendEnter)` — `POST /api/agents/{id}/input`
+- `sendKey(id, key)` — `POST /api/agents/{id}/key`
 
 ## P1 / Later Scope
 
@@ -310,12 +345,15 @@ five methods above.
 
 ## Security Requirements
 
-- Renderer code must not execute arbitrary commands.
-- Tauri commands expose typed backend operations or a constrained `camc` argv
-  execution path.
-- No shell for local or WSL command execution.
+- Renderer runs with `contextIsolation: true`, `nodeIntegration: false`, and
+  `sandbox: true`. No Node primitives in the renderer.
+- The preload script exposes only the narrow `window.CamBridge` surface
+  listed in **Backend Model**. It does not expose `child_process`, `fs`,
+  shell, or arbitrary IPC.
+- `openExternal` accepts only `http(s)://` URLs.
 - No passwords in profiles.
-- Tokens are stored only in local app settings and never logged.
+- Tokens live only in `localStorage`, exactly as the WebUI handles them,
+  and must not be logged.
 - Destructive actions require explicit confirmation:
   - kill
   - remove
@@ -323,65 +361,112 @@ five methods above.
   - retry/reboot when it may replace a running session
   - stop for an actively running agent
 
+## Roadmap / Milestones
+
+Phase 1 — **Electron client (approved)**
+
+- Workbench shell with mode navigation (Agents, Settings, placeholders).
+- Agent list + selected-agent output + textarea composer + quick keys.
+- Direct / relay profile reuse from the WebUI.
+- No terminal UI, no server-lifecycle UI.
+
+Phase 2A — **Backend readiness (this milestone)**
+
+- Saved direct/relay profile reconnect on launch (Phase 1 already does
+  this — Phase 2A keeps it and surfaces a richer "checking / connected /
+  disconnected" state in the connection bar).
+- `CamBridge.checkBackendReadiness()` for local detection (Python, cam
+  CLI, WSL distros on Windows, listening local server).
+- `CamBridge.startLocalBackend()` for one-click start when `cam` is
+  installed but no server is listening. Polls `/api/system/health` to
+  confirm.
+- Settings mode gains a **Local backend readiness** section that drives
+  these probes, surfaces actionable status, and offers a "Start backend"
+  button only when starting is appropriate.
+- Does not install, upgrade, or bootstrap any runtime.
+
+Phase 2B — **Existing WSL bootstrap (deferred)**
+
+- Install CAM into an existing WSL distro the user already has. Pip
+  install, environment validation, first-run `cam serve` setup.
+- Out of scope for Phase 2A.
+
+Phase 2C — **Full Windows setup (deferred)**
+
+- Handle the case where the user has no usable WSL distro yet. Guided
+  WSL feature enablement, distro install, then drop into 2B.
+- Out of scope for Phase 2A.
+
+Phase 2D — **Offline / bundled bootstrap (deferred)**
+
+- Internal-mirror / offline-bundle installation flows for environments
+  without public registry access. Likely combined with signed MSI from
+  Phase 1's documented packaging path.
+- Out of scope for Phase 2A.
+
 ## Implementation Plan After Approval
 
-The first implementation task for `camui-dev` should be narrowly bounded:
-
-1. Keep the existing Tauri/React app.
-2. Make Core P0 reliable: health, list, capture, direct send, key.
-3. Hide all visible non-core surfaces from the default V1 UI, including
-   metadata inspector, advanced panel, run-agent form, message inbox, TaskHub,
-   Tree, and Diff. Prefer not deleting existing scaffold/ChatShell-derived code
-   unless keeping it creates build failures, dead imports, or user-visible
-   confusion.
-4. Split the current app into small components/stores if the implementation is
-   changing `App.tsx` substantially.
-5. Complete local CLI-backed behavior first.
-6. Keep UI state and parsing isolated in `src/lib`.
-7. Do not modify core Python CAM behavior unless a desktop blocker proves the
-   API contract is wrong.
+1. Add the WebUI-derived desktop entry under `web/` (HTML + CSS + JS),
+   reusing `web/js/api.js` and `web/js/state.js`. Do not touch
+   `web/index.html`, which still serves the mobile/PWA app.
+2. Add an Electron shell under `apps/cam-desktop/electron/` that loads
+   `web/desktop.html`. Preload exposes only the narrow `CamBridge` surface.
+3. The Phase 1 default screen is: agent list, selected-agent output,
+   bottom composer, quick-key buttons (Enter, Esc, Ctrl-C, Backspace), and
+   a minimal connection bar with a settings dialog backed by the existing
+   `localStorage` keys.
+4. Do not add terminal UI, terminal tabs, terminal transport, embedded
+   PTY/SSH, relay/server lifecycle UI, or server bootstrap in this phase.
+5. The earlier Tauri scaffold under `apps/cam-desktop/src/` and
+   `apps/cam-desktop/src-tauri/` may remain as reference but must not be
+   wired to the Electron build and must not be the future direction.
 
 Expected touched area:
 
-- `apps/cam-desktop/src/lib/*`
-- `apps/cam-desktop/src/App.tsx`
-- `apps/cam-desktop/src/styles.css`
-- `apps/cam-desktop/src-tauri/src/main.rs` only if new bridge commands are
-  required
-- tests/config files only when needed for build verification
+- `web/desktop.html`, `web/css/desktop.css`
+- `web/js/desktop/app.js`, `web/js/desktop/shell.js`, optional
+  `web/js/desktop/agent-console.js`
+- `apps/cam-desktop/electron/main.js`, `apps/cam-desktop/electron/preload.js`
+- `apps/cam-desktop/package.json` (Electron deps + scripts)
+- `docs/desktop-ui-spec.md` (this file)
 
 ## Verification
 
 Before review, `camui-dev` must report:
 
-- `npm run build:web` from `apps/cam-desktop`
-- `npm audit --audit-level=high` from `apps/cam-desktop`
-- focused manual smoke result for local `camc` profile:
-  - health loads
-  - agent list loads
-  - selecting agent shows capture/output
-  - direct send path works or returns a clear backend error
-  - key path works or returns a clear backend error
-  - no non-core panels are visible in the default V1 UI
-- Tauri build result if Rust platform deps are installed:
-  - `npm run build`
+- `node -c apps/cam-desktop/electron/main.js` and `node -c
+  apps/cam-desktop/electron/preload.js` (syntax check, no Electron install
+  required).
+- A static check that `web/index.html` and `web/js/app.js` are untouched
+  by the desktop work, so the mobile/PWA entry still loads.
+- If `npm install` / `npm run build` succeeds in `apps/cam-desktop`,
+  report it; if it fails due to no network/registry access, report the
+  exact command and the gap.
+- Packaging gap: Phase 1 ships the runnable Electron entry. MSI packaging
+  via `electron-builder` is the intended Windows artifact but may be
+  deferred if dependency install is blocked — in which case document the
+  next packaging command (e.g. `npm install electron electron-builder &&
+  npm run dist:win`) and leave it for a follow-up task.
 
-If a command cannot run because of missing system dependencies, the reply must
-include the exact failure and the next command a human should run.
+If a command cannot run because of missing system dependencies or no
+network access, the reply must include the exact failure and the next
+command a human should run.
 
 ## Acceptance Criteria
 
 P0 is acceptable when:
 
-- The app builds with TypeScript/Vite.
-- The app can list agents from at least one backend profile.
-- The selected agent output pane works without blocking the UI.
-- Direct text and special-key controls are wired to the backend.
+- `web/desktop.html` loads in a normal browser against an existing direct
+  or relay endpoint without any Electron involvement (proves the WebUI
+  reuse story).
+- The Electron main + preload pass `node -c` syntax check.
+- The default screen shows: agent list (left), selected-agent output
+  (main pane), composer with quick-key buttons (bottom), and a minimal
+  connection status / settings entry.
+- Direct text and special-key controls call `sendInput` / `sendKey` from
+  `web/js/api.js`.
 - Selecting a different agent switches the output and input target.
-- The default UI contains only connection/list, selected output, and composer.
-- Dormant scaffold features, if kept in code, do not appear in V1 UI and do
-  not affect the main loop.
-- The UI remains simple enough that future TaskHub, Tree/Diff, lifecycle, run,
-  messaging, context, and API features can be added later without rewriting the
-  backend abstraction.
+- The default UI contains no terminal, no relay/server lifecycle UI, no
+  TaskHub, no Tree, and no Diff.
+- `web/index.html` and the existing PWA stay loadable and unchanged.
 - All errors are visible and actionable.

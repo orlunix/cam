@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src *;">
+  <title>CAM Desktop</title>
+  <meta name="cam-version" content="v0.64.0">
+  <link rel="icon" href="assets/icon-192.png">
+  <link rel="stylesheet" href="css/style.css?v=0.64.0">
+  <link rel="stylesheet" href="css/desktop.css?v=0.64.0">
+  <link rel="modulepreload" href="js/api.js?v=0.64.0">
+  <link rel="modulepreload" href="js/state.js?v=0.64.0">
+  <link rel="modulepreload" href="js/desktop/app.js?v=0.64.0">
+  <link rel="modulepreload" href="js/desktop/shell.js?v=0.64.0">
+  <link rel="modulepreload" href="js/desktop/agent-console.js?v=0.64.0">
+  <link rel="modulepreload" href="js/desktop/settings-mode.js?v=0.64.0">
+  <link rel="modulepreload" href="js/desktop/start-agent-mode.js?v=0.64.0">
+  <link rel="modulepreload" href="js/desktop/agent-edit-mode.js?v=0.64.0">
+</head>
+<body class="desktop">
+  <div id="desktop-app" class="desktop-layout">
+    <aside id="sidebar" class="desktop-sidebar">
+      <div class="sidebar-header">
+        <span class="sidebar-logo">CAM</span>
+        <span class="sidebar-sub">Desktop</span>
+      </div>
+
+      <nav class="mode-nav" id="mode-nav" aria-label="Workspace modes">
+        <button class="mode-nav-btn" data-mode="agents" aria-pressed="true">
+          <span class="mode-nav-icon">&#9632;</span>
+          <span class="mode-nav-label">Agents</span>
+        </button>
+        <button class="mode-nav-btn" data-mode="start" aria-pressed="false">
+          <span class="mode-nav-icon">+</span>
+          <span class="mode-nav-label">Start</span>
+        </button>
+        <button class="mode-nav-btn" data-mode="settings" aria-pressed="false">
+          <span class="mode-nav-icon">&#9881;</span>
+          <span class="mode-nav-label">Settings</span>
+        </button>
+        <button class="mode-nav-btn mode-nav-placeholder" disabled
+          title="Coming in a later phase">
+          <span class="mode-nav-icon">&#9776;</span>
+          <span class="mode-nav-label">Contexts</span>
+        </button>
+        <button class="mode-nav-btn mode-nav-placeholder" disabled
+          title="Coming in a later phase">
+          <span class="mode-nav-icon">&#9635;</span>
+          <span class="mode-nav-label">Nodes</span>
+        </button>
+      </nav>
+
+      <div class="conn-bar" id="conn-bar"
+        title="Edit connection in Settings mode">
+        <span class="conn-dot disconnected" id="conn-status"></span>
+        <span class="conn-label" id="conn-label">disconnected</span>
+      </div>
+
+      <div class="sidebar-mode-content" id="sidebar-agents-content">
+        <div class="filter-bar sidebar-filters">
+          <select id="filter-status" class="filter-select">
+            <option value="">All status</option>
+            <option value="running">Running</option>
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
+            <option value="killed">Killed</option>
+          </select>
+          <select id="filter-tool" class="filter-select">
+            <option value="">All tools</option>
+          </select>
+        </div>
+        <div class="agent-list-wrap" id="agent-list-wrap">
+          <div class="empty-state">Connecting…</div>
+        </div>
+      </div>
+
+      <div class="sidebar-mode-content" id="sidebar-settings-content" hidden>
+        <div class="sidebar-help">
+          Configure how CAM Desktop reaches an existing CAM endpoint.
+          Direct connects to <code>cam serve</code>; relay connects via a
+          relay server. Endpoints are external and managed elsewhere.
+        </div>
+      </div>
+    </aside>
+
+    <main id="main" class="desktop-main">
+      <!-- Agents mode -->
+      <section class="mode-panel" id="mode-agents" data-mode="agents">
+        <div class="agent-header" id="agent-header">
+          <div class="agent-header-title" id="agent-header-title">No agent selected</div>
+          <div class="agent-header-meta" id="agent-header-meta"></div>
+          <div class="agent-header-tools">
+            <button type="button" class="agent-edit-btn" id="agent-edit-btn"
+              title="Edit selected agent" disabled>Edit</button>
+            <div class="output-mode-toggle" role="group" aria-label="Output mode">
+              <button type="button" class="output-mode-btn" data-mode="plain" aria-pressed="true">Plain</button>
+              <button type="button" class="output-mode-btn" data-mode="rich"  aria-pressed="false">Rich</button>
+            </div>
+          </div>
+        </div>
+        <div class="agent-output-wrap">
+          <pre class="agent-output"      id="agent-output"></pre>
+          <pre class="agent-output-rich" id="agent-output-rich" hidden></pre>
+        </div>
+        <div class="agent-composer" id="agent-composer">
+          <div class="quick-keys">
+            <button class="btn-quick" data-key="Enter" title="Enter">&#8629;</button>
+            <button class="btn-quick" data-key="Escape" title="Escape">Esc</button>
+            <button class="btn-quick" data-key="C-c" title="Ctrl-C">^C</button>
+            <button class="btn-quick" data-key="BSpace" title="Backspace">&#9003;</button>
+          </div>
+          <div class="composer-row">
+            <button class="btn-attach" id="composer-attach"
+              title="Attach an image to the selected agent" disabled
+              aria-label="Attach image">&#128206;</button>
+            <input type="file" id="composer-file-input" accept="image/*" hidden>
+            <textarea id="composer-input"
+              class="composer-input"
+              rows="2"
+              placeholder="Send input to selected agent…  (Enter to send, Shift+Enter for newline)"
+              autocomplete="off" autocorrect="off" autocapitalize="off"
+              spellcheck="false"></textarea>
+            <button class="btn-primary" id="composer-send">Send</button>
+          </div>
+          <div class="composer-upload-status" id="composer-upload-status" hidden aria-live="polite"></div>
+        </div>
+      </section>
+
+      <!-- Settings mode -->
+      <section class="mode-panel" id="mode-settings" data-mode="settings" hidden>
+        <div class="settings-header">
+          <h2>Settings</h2>
+          <p class="settings-help">
+            CAM Desktop is a client of an existing CAM endpoint. Configure
+            <strong>Direct</strong> (<code>cam serve</code>) or
+            <strong>Relay</strong> below; the renderer reuses these settings
+            with the same WebUI API client.
+          </p>
+        </div>
+        <form id="settings-form" class="settings-form-pane">
+          <div class="settings-section">
+            <h3>Connection health</h3>
+            <div class="health-summary" id="health-summary">
+              <span class="conn-dot disconnected" id="health-dot"></span>
+              <span class="health-label" id="health-label">Not connected.</span>
+            </div>
+            <div class="health-detail" id="health-detail">
+              Configure a direct or relay endpoint below, then click
+              <strong>Save &amp; Connect</strong>.
+            </div>
+          </div>
+
+          <div class="settings-section" id="readiness-section">
+            <h3>Local backend readiness</h3>
+            <div class="readiness-grid" id="readiness-grid">
+              <div class="readiness-empty">
+                Click <strong>Check backend</strong> to scan the local
+                environment for a usable CAM install. Phase 2A only
+                <em>detects</em> a local backend — it does not install
+                anything.
+              </div>
+            </div>
+            <div class="readiness-actions">
+              <button type="button" id="readiness-check" class="btn-secondary">Check backend</button>
+              <button type="button" id="readiness-start" class="btn-primary" disabled>Start backend</button>
+            </div>
+            <div class="readiness-hint" id="readiness-hint" aria-live="polite"></div>
+            <pre class="readiness-cmd" id="readiness-cmd" hidden></pre>
+          </div>
+
+          <div class="settings-section">
+            <h3>Direct connection</h3>
+            <label>Server URL
+              <input type="url" id="set-server-url" placeholder="http://host:8420" autocomplete="off">
+            </label>
+            <label>API token
+              <input type="password" id="set-token" placeholder="Bearer token" autocomplete="off">
+            </label>
+          </div>
+          <div class="settings-section">
+            <h3>Relay connection</h3>
+            <label>Relay URL
+              <input type="url" id="set-relay-url" placeholder="wss://relay:8443" autocomplete="off">
+            </label>
+            <label>Relay token
+              <input type="password" id="set-relay-token" placeholder="Shared secret" autocomplete="off">
+            </label>
+          </div>
+          <div class="settings-actions">
+            <button type="button" id="settings-test" class="btn-secondary">Test direct</button>
+            <button type="submit" class="btn-primary">Save &amp; Connect</button>
+          </div>
+          <div class="settings-status" id="settings-status" aria-live="polite"></div>
+        </form>
+      </section>
+
+      <!-- Start Agent mode (CAM-DESK-RUN-010..015) -->
+      <section class="mode-panel" id="mode-start" data-mode="start" hidden>
+        <div class="settings-header">
+          <h2>Start agent</h2>
+          <p class="settings-help">
+            Launch a new agent through the connected CAM endpoint.
+            Desktop calls <code>POST /api/agents</code>; it does not run
+            <code>camc run</code> locally.
+          </p>
+        </div>
+        <form id="start-form" class="settings-form-pane">
+          <div class="settings-section">
+            <h3>Task</h3>
+            <label>Tool
+              <select id="start-tool" required></select>
+            </label>
+            <label>Context
+              <select id="start-context" required>
+                <option value="">Select context…</option>
+              </select>
+            </label>
+            <label>Prompt (optional)
+              <textarea id="start-prompt" rows="6"
+                placeholder="Describe the task…"
+                autocomplete="off" autocorrect="off"
+                autocapitalize="off" spellcheck="false"></textarea>
+            </label>
+          </div>
+          <div class="settings-section">
+            <h3>Behavior</h3>
+            <label class="form-checkbox">
+              <input type="checkbox" id="start-autoconfirm" checked>
+              <span>Auto-confirm</span>
+              <span class="form-hint">Automatically respond to permission prompts.</span>
+            </label>
+            <label class="form-checkbox">
+              <input type="checkbox" id="start-autoexit">
+              <span>Auto-exit</span>
+              <span class="form-hint">Finalize agent when task completes.</span>
+            </label>
+          </div>
+          <div class="settings-section">
+            <h3>Advanced</h3>
+            <label>Task name (optional)
+              <input type="text" id="start-name" placeholder="auto-generated" autocomplete="off">
+            </label>
+            <label>Timeout (optional)
+              <input type="text" id="start-timeout" placeholder="e.g. 30m, 1h" autocomplete="off">
+            </label>
+            <label>Retries
+              <input type="number" id="start-retry" value="0" min="0" max="5">
+            </label>
+          </div>
+          <div class="settings-actions">
+            <button type="submit" id="start-submit" class="btn-primary">Start agent</button>
+          </div>
+          <div class="settings-status" id="start-status" aria-live="polite"></div>
+        </form>
+        <div class="start-disconnected" id="start-disconnected" hidden>
+          <p>Connect to a CAM endpoint in <strong>Settings</strong> before
+          starting an agent.</p>
+        </div>
+      </section>
+
+      <!-- Edit Agent subview (CAM-DESK-EDIT-010..015) -->
+      <section class="mode-panel" id="mode-edit" data-mode="edit" hidden>
+        <div class="settings-header">
+          <h2>Edit agent</h2>
+          <p class="settings-help" id="edit-subject">
+            Editing the selected agent.
+          </p>
+        </div>
+        <form id="edit-form" class="settings-form-pane">
+          <div class="settings-section">
+            <h3>Task</h3>
+            <label>Name
+              <input type="text" id="edit-name" required placeholder="agent label" autocomplete="off">
+            </label>
+            <label class="form-checkbox">
+              <input type="checkbox" id="edit-autoconfirm">
+              <span>Auto-confirm</span>
+              <span class="form-hint">Automatically respond to permission prompts.</span>
+            </label>
+          </div>
+          <div class="settings-actions">
+            <button type="button" id="edit-cancel" class="btn-secondary">Cancel</button>
+            <button type="submit" id="edit-save" class="btn-primary">Save changes</button>
+          </div>
+          <div class="settings-status" id="edit-status" aria-live="polite"></div>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="js/desktop/app.js?v=0.64.0"></script>
+</body>
+</html>

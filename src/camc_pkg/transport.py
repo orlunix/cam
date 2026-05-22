@@ -123,7 +123,7 @@ def _tmux_base(session_id):
     return [tmux, "-u", "-S", socket] if socket else [tmux]
 
 
-def capture_tmux(session_id, lines=100):
+def capture_tmux(session_id, lines=100, preserve_ansi=False):
     """Capture tmux pane content.
 
     lines > 0: last N lines (visible + scrollback up to N).
@@ -133,6 +133,16 @@ def capture_tmux(session_id, lines=100):
     hundreds of KB of history can take several seconds, so we use a
     generous timeout in that case — the default 5s kills mid-capture
     and returns empty.
+
+    preserve_ansi=False (default): tmux capture-pane plain text;
+        output is stripped of any residual ANSI escape sequences before
+        return. This is the default used by monitor/detection, mobile,
+        and any caller that wants searchable, copy-friendly text.
+
+    preserve_ansi=True: tmux capture-pane is invoked with `-e` so SGR
+        colour/style sequences are kept; strip_ansi is bypassed. Used by
+        the rich-output API path. Does not change visible cursor or
+        movement escapes — tmux only emits SGR in this mode.
     """
     socket = _find_tmux_socket(session_id)
     target = "%s:0.0" % session_id
@@ -146,12 +156,13 @@ def capture_tmux(session_id, lines=100):
     # waiting on output anyway. Bounded captures use the _run default.
     timeout = 60 if full_scroll else 15
     tmux = _tmux_bin_for_session(session_id)
+    base_flags = ["capture-pane", "-p", "-J"]
+    if preserve_ansi:
+        base_flags.append("-e")
     if socket:
-        args = [tmux, "-u", "-S", socket, "capture-pane", "-p", "-J",
-                "-t", target, "-S", start_flag]
+        args = [tmux, "-u", "-S", socket] + base_flags + ["-t", target, "-S", start_flag]
     else:
-        args = [tmux, "capture-pane", "-p", "-J",
-                "-t", target, "-S", start_flag]
+        args = [tmux] + base_flags + ["-t", target, "-S", start_flag]
     try:
         rc, output = _run(args, timeout=timeout)
         if len(output.strip()) < 20:
@@ -160,6 +171,8 @@ def capture_tmux(session_id, lines=100):
             rc2, alt_out = _run(alt, timeout=timeout)
             if len(alt_out.strip()) > len(output.strip()):
                 output = alt_out
+        if preserve_ansi:
+            return output.rstrip()
         return strip_ansi(output).rstrip()
     except Exception as e:
         log.debug("capture_tmux failed: %s", e)
