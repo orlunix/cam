@@ -746,14 +746,20 @@ class AgentManager:
         return agent, camc_id, delegate
 
     async def capture_output(
-        self, agent_id: str, *, lines: int = 100
+        self, agent_id: str, *, lines: int = 100, fmt: str = "plain"
     ) -> tuple[str, str]:
         """Capture agent screen output via camc.
 
-        Returns (output_text, md5_hash_prefix).
+        fmt: "plain" (default, ANSI stripped) or "ansi" (preserve SGR
+        style escapes). Forwarded to CamcDelegate.capture.
+
+        Returns (output_text, md5_hash_prefix). The hash is computed
+        over the returned bytes, so plain and ansi captures of the
+        same pane will hash differently (which is the desired behavior
+        for the format-aware API cache).
         """
         _agent, camc_id, delegate = self._resolve_agent_delegate(agent_id)
-        output = await asyncio.to_thread(delegate.capture, camc_id, lines)
+        output = await asyncio.to_thread(delegate.capture, camc_id, lines, fmt)
         output_hash = hashlib.md5(output.encode()).hexdigest()[:8]
         return output, output_hash
 

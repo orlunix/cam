@@ -25,12 +25,20 @@ from cam.api.schemas import (
 
 router = APIRouter(tags=["agents"])
 
-# Output cache: {(agent_id, lines): (response_dict, timestamp)}
-_output_cache: dict[tuple[str, int], tuple[dict, float]] = {}
+# Output cache: {(agent_id, lines, fmt): (response_dict, timestamp)}.
+# `fmt` is "plain" (default, ANSI stripped) or "ansi" (rich, SGR
+# preserved). Including the format in the cache key prevents a
+# plain-text hash from incorrectly suppressing an ANSI response and
+# vice versa (CAM-DESK-OUT-013).
+_output_cache: dict[tuple[str, int, str], tuple[dict, float]] = {}
 _OUTPUT_CACHE_TTL = 2.0  # seconds
 # Lock per cache key to prevent thundering herd on cache miss —
-# only one SSH capture_output in flight per agent at a time.
-_output_locks: dict[tuple[str, int], asyncio.Lock] = {}
+# only one SSH capture_output in flight per agent + lines + fmt.
+_output_locks: dict[tuple[str, int, str], asyncio.Lock] = {}
+
+# Supported output formats. Default is "plain" so all existing
+# (mobile/PWA) callers see the unchanged behavior.
+_OUTPUT_FORMATS = ("plain", "ansi")
 
 
 def _cleanup_output_caches(agent_id: str) -> None:
@@ -308,14 +316,29 @@ async def get_logs(agent_id: str, request: Request, tail: int = 50):
 
 @router.get("/agents/{agent_id}/output")
 async def get_output(
-    agent_id: str, request: Request, lines: int = 50, hash: str | None = None
+    agent_id: str, request: Request, lines: int = 50,
+    hash: str | None = None, format: str = "plain",
 ):
     """Capture live TMUX output for an agent.
 
     If `hash` is provided and matches the current output, returns
     `unchanged: true` with no output body (~50 bytes vs ~7KB).
+
+    `format` (default "plain") selects the capture format. "plain"
+    returns ANSI-stripped text and is the only mode mobile/PWA uses.
+    "ansi" returns tmux capture-pane -e output with SGR style escapes
+    preserved, for the Desktop rich-output renderer (CAM-DESK-OUT-011).
+    The cache key, lock key, and response all carry the format, so a
+    plain hash cannot suppress an ansi response or vice versa.
     """
     state = await _require_auth(request)
+
+    fmt = (format or "plain").lower()
+    if fmt not in _OUTPUT_FORMATS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"format must be one of {_OUTPUT_FORMATS}",
+        )
 
     agent = await state.agent_manager.get_agent(agent_id)
     if not agent:
@@ -325,31 +348,41 @@ async def get_output(
 
     if not agent.tmux_session or agent.is_terminal():
         _cleanup_output_caches(str(agent.id))
-        return {"agent_id": str(agent.id), "output": "", "active": False}
+        return {
+            "agent_id": str(agent.id), "output": "", "active": False,
+            "format": fmt,
+        }
 
-    # cam-client path: return client-pushed output if available and fresh
+    # cam-client path: return client-pushed output if available and fresh.
+    # Client-pushed output is always plain — cam-client uses the original
+    # strip_ansi capture path. For format=ansi we skip the cache and hit
+    # tmux directly via camc so the rich renderer sees real SGR escapes.
     aid = str(agent.id)
-    if aid in state.client_agents and aid in state.client_output:
+    if fmt == "plain" and aid in state.client_agents and aid in state.client_output:
         c_output, c_hash, c_ts = state.client_output[aid]
         if time.monotonic() - c_ts < 10.0:  # Stale after 10s → fall through to SSH
             if hash and c_hash == hash:
-                return {"agent_id": aid, "unchanged": True, "active": True, "hash": c_hash}
+                return {"agent_id": aid, "unchanged": True, "active": True,
+                        "hash": c_hash, "format": fmt}
             import hashlib as _hl
             out_hash = c_hash or _hl.md5(c_output.encode()).hexdigest()[:8]
-            return {"agent_id": aid, "output": c_output, "active": True, "hash": out_hash}
+            return {"agent_id": aid, "output": c_output, "active": True,
+                    "hash": out_hash, "format": fmt}
 
-    # Check cache — always stores full output + hash
-    cache_key = (str(agent.id), lines)
+    # Cache key includes lines + format so plain vs ansi never collide.
+    cache_key = (str(agent.id), lines, fmt)
     cached = _output_cache.get(cache_key)
     if cached:
         cached_resp, cached_ts = cached
         if time.monotonic() - cached_ts < _OUTPUT_CACHE_TTL:
             if hash and cached_resp.get("hash") == hash:
-                return {"agent_id": str(agent.id), "unchanged": True, "active": True, "hash": hash}
+                return {"agent_id": str(agent.id), "unchanged": True,
+                        "active": True, "hash": hash, "format": fmt}
             return cached_resp
 
     # Acquire per-key lock to prevent thundering herd: only one SSH
-    # capture in flight per agent.  Other requests wait then hit cache.
+    # capture in flight per (agent, lines, fmt). Other requests wait
+    # then hit cache.
     lock = _output_locks.setdefault(cache_key, asyncio.Lock())
     async with lock:
         # Re-check cache — another coroutine may have refreshed it while we waited
@@ -358,25 +391,32 @@ async def get_output(
             cached_resp, cached_ts = cached
             if time.monotonic() - cached_ts < _OUTPUT_CACHE_TTL:
                 if hash and cached_resp.get("hash") == hash:
-                    return {"agent_id": str(agent.id), "unchanged": True, "active": True, "hash": hash}
+                    return {"agent_id": str(agent.id), "unchanged": True,
+                            "active": True, "hash": hash, "format": fmt}
                 return cached_resp
 
         try:
             output, output_hash = await state.agent_manager.capture_output(
-                str(agent.id), lines=lines
+                str(agent.id), lines=lines, fmt=fmt,
             )
-            resp = {"agent_id": str(agent.id), "output": output, "active": True, "hash": output_hash}
+            resp = {
+                "agent_id": str(agent.id), "output": output,
+                "active": True, "hash": output_hash, "format": fmt,
+            }
             _output_cache[cache_key] = (resp, time.monotonic())
             if hash and output_hash == hash:
-                return {"agent_id": str(agent.id), "unchanged": True, "active": True, "hash": output_hash}
+                return {"agent_id": str(agent.id), "unchanged": True,
+                        "active": True, "hash": output_hash, "format": fmt}
             return resp
         except Exception:
-            return {"agent_id": str(agent.id), "output": "", "active": False}
+            return {"agent_id": str(agent.id), "output": "", "active": False,
+                    "format": fmt}
 
 
 @router.get("/agents/{agent_id}/fulloutput")
 async def get_full_output(
-    agent_id: str, request: Request, offset: int = 0
+    agent_id: str, request: Request, offset: int = 0,
+    format: str = "plain",
 ):
     """Return the full pane buffer for an agent.
 
@@ -398,6 +438,13 @@ async def get_full_output(
     """
     state = await _require_auth(request)
 
+    fmt = (format or "plain").lower()
+    if fmt not in _OUTPUT_FORMATS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"format must be one of {_OUTPUT_FORMATS}",
+        )
+
     agent = await state.agent_manager.get_agent(agent_id)
     if not agent:
         raise HTTPException(
@@ -410,17 +457,19 @@ async def get_full_output(
             "output": "",
             "next_offset": offset,
             "active": False,
+            "format": fmt,
         }
 
     try:
         output, _output_hash = await state.agent_manager.capture_output(
-            str(agent.id), lines=0
+            str(agent.id), lines=0, fmt=fmt,
         )
         return {
             "agent_id": str(agent.id),
             "output": output,
             "next_offset": len(output),
             "active": not agent.is_terminal(),
+            "format": fmt,
         }
     except Exception:
         return {
@@ -428,6 +477,7 @@ async def get_full_output(
             "output": "",
             "next_offset": offset,
             "active": False,
+            "format": fmt,
         }
 
 
