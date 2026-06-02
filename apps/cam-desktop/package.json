@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
-  "description": "CAM Desktop — Electron shell loading the WebUI-derived desktop entry (web/desktop.html). Connects to an existing CAM direct or relay endpoint.",
+  "description": "CAM Desktop \u2014 Electron shell with an embedded Direct CAM Hub and Relay support.",
   "author": {
     "name": "CAM Project",
     "email": "hren@nvidia.com"
@@ -16,7 +16,8 @@
     "build:win": "electron-builder --win",
     "build:win-msi": "electron-builder --win msi --config.win.signAndEditExecutable=false --config.win.verifyUpdateCodeSignature=false",
     "dist": "electron-builder",
-    "lint:electron": "node --check electron/main.cjs && node --check electron/preload.cjs",
+    "cli": "node cli/camui-cli.cjs",
+    "lint:electron": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/ssh-transport.cjs && node --check electron/embedded-hub.cjs && node --check electron/credential-store.cjs && node --check cli/camui-cli.cjs",
     "legacy:tauri:dev": "tauri dev",
     "legacy:tauri:build": "tauri build",
     "legacy:tauri:build-web": "tsc --noEmit && vite build"
@@ -24,7 +25,8 @@
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
     "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "react-dom": "^18.2.0",
+    "ssh2": "^1.16.0"
   },
   "devDependencies": {
     "electron": "^31.0.0",
@@ -44,31 +46,51 @@
     },
     "files": [
       "electron/**/*",
+      "cli/**/*",
       "package.json"
+    ],
+    "asarUnpack": [
+      "**/node_modules/ssh2/**",
+      "**/node_modules/cpu-features/**"
     ],
     "extraResources": [
       {
         "from": "../../web",
         "to": "web"
+      },
+      {
+        "from": "../../src/camc",
+        "to": "camc/camc"
       }
     ],
     "win": {
       "target": [
-        { "target": "msi", "arch": ["x64"] }
+        {
+          "target": "msi",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "icon": "src-tauri/icons/icon.ico",
       "publisherName": "CAM Project",
       "signAndEditExecutable": false,
-      "verifyUpdateCodeSignature": false
+      "verifyUpdateCodeSignature": false,
+      "artifactName": "CAM-Desktop-${version}.${ext}"
     },
     "msi": {
-      "perMachine": false
+      "perMachine": false,
+      "artifactName": "CAM-Desktop-${version}.${ext}"
     },
     "linux": {
-      "target": ["AppImage"]
+      "target": [
+        "AppImage"
+      ]
     },
     "mac": {
-      "target": ["dmg"]
+      "target": [
+        "dmg"
+      ]
     }
   }
 }

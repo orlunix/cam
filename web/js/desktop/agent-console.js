@@ -424,10 +424,19 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
         }
         if (!data?.unchanged && data?.output) {
           applyOutput(agent.id, data.output, fetchMode);
+        } else if (
+          activePane().textContent === 'Loading…' ||
+          (activePane().classList.contains('placeholder') && !activePane().textContent)
+        ) {
+          renderPlaceholder('(waiting for output)');
         }
       }
     } catch (e) {
       if (api.mode !== 'disconnected') console.warn('agentOutput failed:', e);
+      if (activePane().textContent === 'Loading…') {
+        const msg = e?.message || String(e);
+        renderPlaceholder(`Output unavailable: ${msg}`);
+      }
     } finally {
       inflightOutput = false;
     }
