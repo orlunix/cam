@@ -18,6 +18,7 @@
   <link rel="modulepreload" href="js/desktop/settings-mode.js?v=0.64.0">
   <link rel="modulepreload" href="js/desktop/start-agent-mode.js?v=0.64.0">
   <link rel="modulepreload" href="js/desktop/agent-edit-mode.js?v=0.64.0">
+  <link rel="modulepreload" href="js/desktop/nodes-mode.js?v=0.64.0">
 </head>
 <body class="desktop">
   <div id="desktop-app" class="desktop-layout">
@@ -40,15 +41,14 @@
           <span class="mode-nav-icon">&#9881;</span>
           <span class="mode-nav-label">Settings</span>
         </button>
+        <button class="mode-nav-btn" data-mode="nodes" aria-pressed="false">
+          <span class="mode-nav-icon">&#9635;</span>
+          <span class="mode-nav-label">Nodes</span>
+        </button>
         <button class="mode-nav-btn mode-nav-placeholder" disabled
           title="Coming in a later phase">
           <span class="mode-nav-icon">&#9776;</span>
           <span class="mode-nav-label">Contexts</span>
-        </button>
-        <button class="mode-nav-btn mode-nav-placeholder" disabled
-          title="Coming in a later phase">
-          <span class="mode-nav-icon">&#9635;</span>
-          <span class="mode-nav-label">Nodes</span>
         </button>
       </nav>
 
@@ -70,6 +70,9 @@
           <select id="filter-tool" class="filter-select">
             <option value="">All tools</option>
           </select>
+          <select id="filter-machine" class="filter-select">
+            <option value="">All nodes</option>
+          </select>
         </div>
         <div class="agent-list-wrap" id="agent-list-wrap">
           <div class="empty-state">Connecting…</div>
@@ -78,9 +81,10 @@
 
       <div class="sidebar-mode-content" id="sidebar-settings-content" hidden>
         <div class="sidebar-help">
-          Configure how CAM Desktop reaches an existing CAM endpoint.
-          Direct connects to <code>cam serve</code>; relay connects via a
-          relay server. Endpoints are external and managed elsewhere.
+          Configure how CAM Desktop reaches CAM. <strong>Direct</strong>
+          runs an app-managed CAM Hub on this machine and connects to it
+          on loopback; the Hub manages all remote nodes. <strong>Relay</strong>
+          connects to an existing Hub through a relay endpoint.
         </div>
       </div>
     </aside>
@@ -128,72 +132,102 @@
         </div>
       </section>
 
-      <!-- Settings mode -->
+      <!-- Settings mode — active connection modes are Direct (app-managed
+           local Hub, CAM-DESK-DIRECT-010..019) and Relay (external relay,
+           CAM-DESK-REMOTE-012). No separate Local tab. -->
       <section class="mode-panel" id="mode-settings" data-mode="settings" hidden>
         <div class="settings-header">
           <h2>Settings</h2>
           <p class="settings-help">
-            CAM Desktop is a client of an existing CAM endpoint. Configure
-            <strong>Direct</strong> (<code>cam serve</code>) or
-            <strong>Relay</strong> below; the renderer reuses these settings
-            with the same WebUI API client.
+            Choose how CAM Desktop reaches CAM. <strong>Direct</strong>
+            starts an app-managed CAM Hub on this machine and connects
+            to it on loopback — the Hub manages your remote nodes. Use
+            <strong>Relay</strong> when an existing CAM Hub is reachable
+            only through a relay endpoint.
           </p>
         </div>
-        <form id="settings-form" class="settings-form-pane">
-          <div class="settings-section">
-            <h3>Connection health</h3>
-            <div class="health-summary" id="health-summary">
-              <span class="conn-dot disconnected" id="health-dot"></span>
-              <span class="health-label" id="health-label">Not connected.</span>
-            </div>
-            <div class="health-detail" id="health-detail">
-              Configure a direct or relay endpoint below, then click
-              <strong>Save &amp; Connect</strong>.
-            </div>
-          </div>
 
-          <div class="settings-section" id="readiness-section">
-            <h3>Local backend readiness</h3>
-            <div class="readiness-grid" id="readiness-grid">
-              <div class="readiness-empty">
-                Click <strong>Check backend</strong> to scan the local
-                environment for a usable CAM install. Phase 2A only
-                <em>detects</em> a local backend — it does not install
-                anything.
+        <div class="settings-tabs" role="tablist" aria-label="Connection mode">
+          <button type="button" class="settings-tab" data-tab="direct"
+            role="tab" aria-pressed="true">Direct</button>
+          <button type="button" class="settings-tab" data-tab="relay"
+            role="tab" aria-pressed="false">Relay</button>
+        </div>
+
+        <!-- ── Direct tab (CAM-DESK-DIRECT-010..019: app-managed Hub) ── -->
+        <div class="settings-tab-panel" id="settings-tab-direct" data-tab="direct">
+          <div class="settings-form-pane">
+            <div class="settings-section">
+              <h3>CAM Hub on this machine</h3>
+              <div class="direct-state-row">
+                <span class="direct-state-badge state-stopped" id="direct-state-badge">unknown</span>
+                <span class="direct-state-detail" id="direct-state-detail">
+                  Click <strong>Check</strong> to inspect the embedded Hub, or <strong>Start</strong> to launch it.
+                </span>
               </div>
+              <div class="direct-target" id="direct-target"></div>
+              <div class="direct-actions">
+                <button type="button" id="direct-check"   class="btn-secondary">Check</button>
+                <button type="button" id="direct-start"   class="btn-primary"   disabled>Start</button>
+                <button type="button" id="direct-stop"    class="btn-secondary" disabled>Stop</button>
+                <button type="button" id="direct-restart" class="btn-secondary" disabled>Restart</button>
+              </div>
+              <div class="direct-hint" id="direct-hint" aria-live="polite"></div>
             </div>
-            <div class="readiness-actions">
-              <button type="button" id="readiness-check" class="btn-secondary">Check backend</button>
-              <button type="button" id="readiness-start" class="btn-primary" disabled>Start backend</button>
-            </div>
-            <div class="readiness-hint" id="readiness-hint" aria-live="polite"></div>
-            <pre class="readiness-cmd" id="readiness-cmd" hidden></pre>
-          </div>
 
-          <div class="settings-section">
-            <h3>Direct connection</h3>
-            <label>Server URL
-              <input type="url" id="set-server-url" placeholder="http://host:8420" autocomplete="off">
-            </label>
-            <label>API token
-              <input type="password" id="set-token" placeholder="Bearer token" autocomplete="off">
-            </label>
+            <!-- Diagnostics: internal URL/token/port details hidden by
+                 default (CAM-DESK-DIRECT-012). Tokens shown only as
+                 redacted sha256 fingerprints. -->
+            <details class="settings-section settings-diag" id="direct-diag">
+              <summary>Advanced / Diagnostics</summary>
+              <div class="diag-grid" id="direct-diag-grid">
+                (no data yet — click Check)
+              </div>
+              <div class="diag-logs">
+                <h4>Recent Hub logs</h4>
+                <pre class="diag-logs-pre" id="direct-diag-logs">(none)</pre>
+                <div class="diag-logs-actions">
+                  <button type="button" id="direct-diag-refresh" class="btn-secondary">Refresh logs</button>
+                </div>
+              </div>
+              <p class="diag-note">
+                Tokens are shown only as redacted fingerprints
+                (sha256 prefix). The Hub binds to <code>127.0.0.1</code>
+                only — never to a routable interface.
+              </p>
+            </details>
+
+            <div class="settings-status" id="direct-status" aria-live="polite"></div>
           </div>
-          <div class="settings-section">
-            <h3>Relay connection</h3>
-            <label>Relay URL
-              <input type="url" id="set-relay-url" placeholder="wss://relay:8443" autocomplete="off">
-            </label>
-            <label>Relay token
-              <input type="password" id="set-relay-token" placeholder="Shared secret" autocomplete="off">
-            </label>
-          </div>
-          <div class="settings-actions">
-            <button type="button" id="settings-test" class="btn-secondary">Test direct</button>
-            <button type="submit" class="btn-primary">Save &amp; Connect</button>
-          </div>
-          <div class="settings-status" id="settings-status" aria-live="polite"></div>
-        </form>
+        </div>
+
+        <!-- ── Relay tab ── -->
+        <div class="settings-tab-panel" id="settings-tab-relay" data-tab="relay" hidden>
+          <form id="settings-form-relay" class="settings-form-pane">
+            <div class="settings-section">
+              <h3>External relay</h3>
+              <p class="settings-help">
+                Connect Desktop to an existing CAM Hub through a relay
+                endpoint. The relay forwards REST/WS to a Hub you cannot
+                reach directly — you still need that Hub's API token so
+                the proxied requests authenticate.
+              </p>
+              <label>Relay URL
+                <input type="url" id="set-relay-url" placeholder="wss://relay:8443" autocomplete="off">
+              </label>
+              <label>Relay token
+                <input type="password" id="set-relay-token" placeholder="Relay shared secret" autocomplete="off">
+              </label>
+              <label>CAM API token
+                <input type="password" id="set-relay-cam-token" placeholder="Token of the CAM Hub behind the relay" autocomplete="off">
+              </label>
+            </div>
+            <div class="settings-actions">
+              <button type="submit" class="btn-primary">Save &amp; Connect</button>
+            </div>
+            <div class="settings-status" id="settings-status-relay" aria-live="polite"></div>
+          </form>
+        </div>
       </section>
 
       <!-- Start Agent mode (CAM-DESK-RUN-010..015) -->
@@ -258,6 +292,159 @@
           <p>Connect to a CAM endpoint in <strong>Settings</strong> before
           starting an agent.</p>
         </div>
+      </section>
+
+      <!-- Nodes workspace (CAM-DESK-NODEUI-010..017,
+           CAM-DESK-DIRECT-014..018) — default view is the node list;
+           Add Host opens an inline manage panel with Manual / Import
+           tabs. -->
+      <section class="mode-panel" id="mode-nodes" data-mode="nodes" hidden>
+        <div class="settings-header">
+          <h2>Nodes</h2>
+          <p class="settings-help">
+            Hosts the embedded Hub knows about. Click a host card to
+            expand its actions and contexts, or <strong>Add Host</strong>
+            to register a new one.
+          </p>
+        </div>
+
+        <div class="nodes-actions" id="nodes-actions">
+          <button type="button" class="btn-primary" id="nodes-add-toggle">Add Host</button>
+        </div>
+
+        <div id="nodes-manage-panel" class="nodes-manage-panel" hidden>
+          <div class="nodes-manage-tabs" role="tablist" aria-label="Add host source">
+            <button type="button" class="nodes-manage-tab" data-subtab="manual"
+              role="tab" aria-pressed="true">Add manually</button>
+            <button type="button" class="nodes-manage-tab" data-subtab="import"
+              role="tab" aria-pressed="false">Import from SSH config</button>
+            <button type="button" class="btn-secondary nodes-manage-close"
+              id="nodes-manage-close" title="Close">Close</button>
+          </div>
+
+          <!-- Manual tab -->
+          <form id="nodes-add-form" class="nodes-add-form settings-form-pane" data-subtab="manual">
+            <div class="settings-section">
+              <h3 id="nodes-add-heading">Add host manually</h3>
+              <p class="settings-help">
+                Register a remote node by SSH. The embedded Hub stores
+                host/user/port/path/env locally; the private key file
+                is referenced by path only — its contents are never
+                read or copied (CAM-DESK-DIRECT-018).
+              </p>
+              <label data-host-edit-hide="1">Name
+                <input type="text" id="nodes-add-name" required placeholder="my-node" autocomplete="off"
+                  pattern="[A-Za-z0-9_-]{1,64}" title="Letters, digits, underscore, hyphen (1–64 chars)">
+              </label>
+              <label data-ctx-edit-readonly="1" data-add-ctx-hide="1">Host
+                <input type="text" id="nodes-add-host" required placeholder="host.example.com" autocomplete="off">
+              </label>
+              <label data-ctx-edit-readonly="1" data-add-ctx-hide="1">User
+                <input type="text" id="nodes-add-user" required placeholder="hren" autocomplete="off">
+              </label>
+              <label data-ctx-edit-readonly="1" data-add-ctx-hide="1">Port
+                <input type="number" id="nodes-add-port" min="1" max="65535" value="22">
+              </label>
+              <label data-host-edit-hide="1">Remote path
+                <input type="text" id="nodes-add-path" required placeholder="/home/&lt;user&gt;" autocomplete="off">
+              </label>
+              <label data-ctx-edit-readonly="1" data-add-ctx-hide="1">Auth method
+                <select id="nodes-add-auth">
+                  <option value="key">SSH key</option>
+                  <option value="password">Password</option>
+                  <option value="agent">SSH agent / default</option>
+                </select>
+              </label>
+
+              <div class="nodes-auth-section" id="nodes-auth-key" data-auth="key" data-ctx-edit-hide="1" data-add-ctx-hide="1">
+                <label>Private key file
+                  <div class="nodes-auth-keyfile-row">
+                    <input type="text" id="nodes-add-keyfile" placeholder="~/.ssh/id_ed25519" autocomplete="off">
+                    <button type="button" class="btn-secondary" id="nodes-add-browse">Browse&hellip;</button>
+                  </div>
+                </label>
+                <label>Passphrase (optional)
+                  <input type="password" id="nodes-add-passphrase" autocomplete="new-password"
+                    placeholder="leave blank if key is unencrypted">
+                </label>
+                <label class="form-checkbox">
+                  <input type="checkbox" id="nodes-add-remember-passphrase">
+                  <span>Remember passphrase</span>
+                  <span class="form-hint">Encrypted with the OS keychain (Electron safeStorage). Never stored in plaintext.</span>
+                </label>
+              </div>
+
+              <div class="nodes-auth-section" id="nodes-auth-password" data-auth="password" data-ctx-edit-hide="1" hidden>
+                <label>Password
+                  <input type="password" id="nodes-add-password" autocomplete="new-password">
+                </label>
+                <label class="form-checkbox">
+                  <input type="checkbox" id="nodes-add-remember-password">
+                  <span>Remember password</span>
+                  <span class="form-hint">Encrypted with the OS keychain (Electron safeStorage). Never stored in plaintext.</span>
+                </label>
+              </div>
+
+              <div class="nodes-auth-section" id="nodes-auth-agent" data-auth="agent" data-ctx-edit-hide="1" data-add-ctx-hide="1" hidden>
+                <p class="form-hint">
+                  Use the running SSH agent or the default key search
+                  (<code>~/.ssh/id_*</code>). No key file or password
+                  is stored by Desktop in this mode.
+                </p>
+              </div>
+
+              <label data-host-edit-hide="1">Env setup (optional)
+                <input type="text" id="nodes-add-env" placeholder="source ~/.bashrc" autocomplete="off">
+              </label>
+              <p class="form-hint" data-host-edit-only="1" hidden>
+                Editing host fields applies to <strong id="nodes-host-edit-scope-count">all</strong>
+                context(s) on this host. Workspace fields (name,
+                remote path, env setup) are managed per context and are
+                not changed by this form.
+              </p>
+              <p class="form-hint" data-ctx-edit-only="1" hidden>
+                Editing context "<strong id="nodes-ctx-edit-scope-name">…</strong>".
+                Context name is read-only. Remote path and env setup are
+                changed here. Host fields are shown locked/grey because
+                contexts are bound to their host; use
+                <strong>Edit Host</strong> to change host settings.
+              </p>
+              <p class="form-hint" data-add-ctx-only="1" hidden>
+                Adding a new context under host
+                "<strong id="nodes-add-ctx-scope-host">…</strong>".
+                Host fields (host, user, port, auth, key file) are
+                inherited from the existing host. For password-auth
+                hosts you must enter the password again — the embedded
+                Hub does not auto-clone credential references to new
+                contexts.
+              </p>
+            </div>
+            <div class="settings-actions">
+              <button type="button" class="btn-secondary" id="nodes-add-cancel">Cancel</button>
+              <button type="submit"  class="btn-primary" id="nodes-add-submit">Add</button>
+            </div>
+            <div class="settings-status" id="nodes-add-status" aria-live="polite"></div>
+          </form>
+
+          <!-- Import tab -->
+          <div id="nodes-import-pane" class="nodes-import-pane settings-form-pane" data-subtab="import" hidden>
+            <div class="settings-section">
+              <h3>Import from SSH config</h3>
+              <p class="settings-help" id="nodes-import-source">
+                Reading <code>~/.ssh/config</code>&hellip;
+              </p>
+              <div id="nodes-import-list" class="nodes-import-list">
+                <div class="empty-state">Loading&hellip;</div>
+              </div>
+              <div class="settings-status" id="nodes-import-status" aria-live="polite"></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="nodes-list-wrap" class="nodes-list-wrap">
+          <div class="empty-state">Loading hosts&hellip;</div>
+        </div>
+        <div class="settings-status" id="nodes-status" aria-live="polite"></div>
       </section>
 
       <!-- Edit Agent subview (CAM-DESK-EDIT-010..015) -->
