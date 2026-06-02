@@ -15,19 +15,29 @@ import { mountAgentConsole } from './agent-console.js?v=0.64.0';
 import { mountSettingsMode } from './settings-mode.js?v=0.64.0';
 import { mountStartAgentMode } from './start-agent-mode.js?v=0.64.0';
 import { mountAgentEditMode } from './agent-edit-mode.js?v=0.64.0';
+import { mountNodesMode } from './nodes-mode.js?v=0.64.0';
 
 const POLL_INTERVAL_MS = 5000;
+const PROFILE_KIND_KEY = 'cam_profile_kind';
 // `edit` is a transient subview reachable only from the agent header;
-// `start` is a real left-nav workspace mode like `agents`/`settings`.
-const MODES = ['agents', 'settings', 'start', 'edit'];
+// `start`/`nodes` are real left-nav workspace modes like
+// `agents`/`settings`. `nodes` shows hub-provided controllers/nodes
+// (CAM-DESK-NODEUI-010..017) and is not a connection mode.
+const MODES = ['agents', 'settings', 'start', 'nodes', 'edit'];
 const DEFAULT_MODE = 'agents';
 
 function readConfig() {
+  let profileKind = '';
+  try {
+    const stored = localStorage.getItem(PROFILE_KIND_KEY);
+    if (stored === 'direct' || stored === 'relay') profileKind = stored;
+  } catch {}
   return {
     serverUrl: localStorage.getItem('cam_server_url') || '',
     token: localStorage.getItem('cam_token') || '',
     relayUrl: localStorage.getItem('cam_relay_url') || '',
     relayToken: localStorage.getItem('cam_relay_token') || '',
+    profileKind,
   };
 }
 
@@ -36,6 +46,52 @@ function saveConfig(cfg) {
   localStorage.setItem('cam_token', cfg.token || '');
   localStorage.setItem('cam_relay_url', cfg.relayUrl || '');
   localStorage.setItem('cam_relay_token', cfg.relayToken || '');
+}
+
+function resolveConnectionConfig(cfg) {
+  let kind = cfg.profileKind;
+  if (kind !== 'direct' && kind !== 'relay') {
+    // Backward-compatible inference for profiles saved before
+    // cam_profile_kind existed. Relay wins when both sets are present
+    // because Settings also opens the Relay tab in that case.
+    if (cfg.relayUrl && cfg.relayToken) kind = 'relay';
+    else if (cfg.serverUrl && cfg.token) kind = 'direct';
+    else kind = 'unset';
+  }
+
+  if (kind === 'relay') {
+    return {
+      profileKind: 'relay',
+      serverUrl: '',
+      token: cfg.token || '',
+      relayUrl: cfg.relayUrl || '',
+      relayToken: cfg.relayToken || '',
+    };
+  }
+
+  if (kind === 'direct') {
+    return {
+      profileKind: 'direct',
+      serverUrl: cfg.serverUrl || '',
+      token: cfg.token || '',
+      relayUrl: '',
+      relayToken: '',
+    };
+  }
+
+  return {
+    profileKind: 'unset',
+    serverUrl: '',
+    token: '',
+    relayUrl: '',
+    relayToken: '',
+  };
+}
+
+function hasConnectionConfig(cfg) {
+  if (cfg.profileKind === 'relay') return !!(cfg.relayUrl && cfg.relayToken && cfg.token);
+  if (cfg.profileKind === 'direct') return !!(cfg.serverUrl && cfg.token);
+  return false;
 }
 
 function updateConnectionDot(mode) {
@@ -110,8 +166,8 @@ async function loadContextsAndAdapters() {
 }
 
 async function connect() {
-  const cfg = readConfig();
-  if (!cfg.serverUrl && !cfg.relayUrl) {
+  const cfg = resolveConnectionConfig(readConfig());
+  if (!hasConnectionConfig(cfg)) {
     state.set('connectionMode', 'disconnected');
     updateConnectionDot('disconnected');
     return 'disconnected';
@@ -159,7 +215,7 @@ function handleEvent(event) {
 // drops back to Agents with the agent list visible and a nav-button
 // highlighted, rather than stranding the user on an Edit form with no
 // nav indicator.
-const PERSISTENT_MODES = new Set(['agents', 'settings', 'start']);
+const PERSISTENT_MODES = new Set(['agents', 'settings', 'start', 'nodes']);
 
 function setMode(next) {
   if (!MODES.includes(next)) next = DEFAULT_MODE;
@@ -207,6 +263,89 @@ function wireModeNav() {
   });
 }
 
+/* ────────── Direct auto-start ──────────
+ *
+ * CAM-DESK-DIRECT-010..013: Direct is the default mode and runs the
+ * embedded CAM Hub from Electron main with no host runtime. On a
+ * cold launch with no saved profile, autoStartConnection() starts
+ * the Hub via CamBridge.directHub.start(), persists the generated
+ * loopback URL + token into the shared Direct localStorage keys,
+ * then calls connect(). If a saved profile exists, that profile is
+ * honored. A saved Direct profile that fails to connect against a
+ * loopback URL gets one auto-restart attempt (the Hub may have been
+ * stopped by a previous Settings → Stop). */
+
+function bridgeDirectHubLocal() {
+  const b = typeof window !== 'undefined' ? window.CamBridge : null;
+  return (b && b.directHub) || null;
+}
+
+function isLoopbackUrl(u) {
+  try {
+    const h = new URL(u).hostname;
+    return h === '127.0.0.1' || h === 'localhost' || h === '::1';
+  } catch { return false; }
+}
+
+async function startEmbeddedHubAndPersist() {
+  const bridge = bridgeDirectHubLocal();
+  if (!bridge) return false;
+  let res;
+  try { res = await bridge.start(); }
+  catch (e) { console.warn('directHub.start failed:', e); return false; }
+  if (!res || res.ok !== true || !res.apiUrl || !res.apiToken) return false;
+  saveConfig({
+    serverUrl:  res.apiUrl,
+    token:      res.apiToken,
+    relayUrl:   '',
+    relayToken: '',
+  });
+  try { localStorage.setItem('cam_profile_kind', 'direct'); } catch {}
+  return true;
+}
+
+async function autoStartConnection() {
+  const raw = readConfig();
+  const cfg = resolveConnectionConfig(raw);
+
+  // Relay profile present — honor it; do NOT auto-start Direct on top.
+  if (cfg.profileKind === 'relay' && hasConnectionConfig(cfg)) {
+    await connect();
+    return;
+  }
+
+  // Direct profile present — try it, with one auto-restart attempt if
+  // the Hub turns out to be stopped and we own the bridge + the URL
+  // is loopback. Guards against infinite loops by trying start at
+  // most once per launch.
+  if (cfg.profileKind === 'direct' && hasConnectionConfig(cfg)) {
+    const mode = await connect();
+    if (mode !== 'disconnected') return;
+    if (bridgeDirectHubLocal() && isLoopbackUrl(cfg.serverUrl)) {
+      if (await startEmbeddedHubAndPersist()) {
+        await connect();
+      }
+    }
+    return;
+  }
+
+  // No profile at all. If we have the Electron bridge, start the
+  // embedded Hub by default. Otherwise (browser/dev mode) drop to
+  // Settings so the user can configure Relay manually.
+  if (bridgeDirectHubLocal()) {
+    if (await startEmbeddedHubAndPersist()) {
+      await connect();
+      return;
+    }
+    // Embedded start failed (e.g. all loopback ports taken). Fall
+    // through to Settings so the user can see the Direct panel and
+    // act, rather than spinning silently.
+  }
+  state.set('connectionMode', 'disconnected');
+  updateConnectionDot('disconnected');
+  setMode('settings');
+}
+
 /* ────────── Init ────────── */
 
 async function init() {
@@ -252,16 +391,20 @@ async function init() {
   });
   mountStartAgentMode({ api, state, showToast, setMode, loadAgents });
   mountAgentEditMode({ api, state, showToast, setMode, loadAgents });
+  mountNodesMode({
+    api, state, showToast, setMode,
+    loadContextsAndAdapters, loadAgents,
+  });
 
-  // First connection attempt — if nothing configured, jump to Settings.
-  const initialCfg = readConfig();
-  if (!initialCfg.serverUrl && !initialCfg.relayUrl) {
-    state.set('connectionMode', 'disconnected');
-    updateConnectionDot('disconnected');
-    setMode('settings');
-  } else {
-    await connect();
-  }
+  // First connection attempt.
+  //
+  // CAM-DESK-DIRECT-010..013: Direct mode (embedded CAM Hub) is the
+  // default and must start automatically when no Relay profile and
+  // no Direct profile are present. The user should never have to
+  // open Settings just to get a working app — Direct on an empty
+  // embedded Hub with contexts=[] and agents=[] is a valid running
+  // state.
+  await autoStartConnection();
 
   // Agent list refreshes every POLL_INTERVAL_MS. Contexts / adapters
   // change much less frequently (only when the operator creates a
@@ -271,8 +414,8 @@ async function init() {
   let pollTick = 0;
   setInterval(async () => {
     if (state.get('connectionMode') === 'disconnected') {
-      const cfg = readConfig();
-      if (cfg.serverUrl || cfg.relayUrl) await connect();
+      const cfg = resolveConnectionConfig(readConfig());
+      if (hasConnectionConfig(cfg)) await connect();
       return;
     }
     pollTick = (pollTick + 1) % 6;

@@ -1,90 +1,81 @@
-# Cam Desktop
+# CAM Desktop
 
-Cam Desktop is the Windows-first desktop client for `camc`.
+CAM Desktop is a thin UI/client for CAM, the agent control plane.
 
-Start with the product/API spec before implementation changes:
+## Where to read
 
-- [SPEC.md](SPEC.md) - required P0/P1 Cam function coverage, backend
-  interface, UI requirements, and acceptance criteria.
-- [CHATSHELL_ANALYSIS.md](CHATSHELL_ANALYSIS.md) - analysis of the cloned
-  ChatShell baseline and what Cam should keep/drop.
-- [docs-chatshell-baseline.md](docs-chatshell-baseline.md) - what we borrow
-  from ChatShell as a reference product shape.
+Authoritative documentation lives under `docs/desktop/`. Start there:
 
-This app follows the same broad product shape as ChatShell-style desktop
-agent clients:
+- [`docs/desktop/README.md`](../../docs/desktop/README.md) — architecture
+  in one screen plus a file index.
+- [`docs/desktop/requirements.md`](../../docs/desktop/requirements.md) —
+  canonical requirement registry with stable IDs (read first).
+- [`docs/desktop-ui-spec.md`](../../docs/desktop-ui-spec.md) — current
+  milestone / product spec.
+- [`docs/desktop/local-integrated-mode-spec.md`](../../docs/desktop/local-integrated-mode-spec.md)
+  and
+  [`docs/desktop/local-runtime-user-guide.md`](../../docs/desktop/local-runtime-user-guide.md)
+  — **SUPERSEDED / historical** notes for the old separate Local tab
+  experiment. The app-managed Hub lifecycle now belongs to Direct;
+  these files are preserved only for requirement-ID stability.
 
-- Tauri 2 shell with a Rust native boundary.
-- React/TypeScript renderer for the chat and agent UI.
-- A typed backend interface between the UI and execution backends.
-- `camc` remains the source of truth for agents, messages, tmux, and
-  lifecycle operations.
-
-The desktop app does not parse terminal screens as a primary API. It calls
-`camc` through a small command bridge today, and the adapter can later be
-swapped to `camc api serve --stdio` without changing UI components.
-
-## Backend Profiles
-
-Supported profile shapes:
-
-```ts
-type BackendProfile =
-  | { kind: "local"; camcPath?: string }
-  | { kind: "wsl"; distro?: string; camcPath?: string }
-  | { kind: "ssh"; host: string; user?: string; port?: number; camcPath?: string };
-```
-
-Default Windows path should be WSL:
+## Architecture in one paragraph
 
 ```text
-wsl.exe --exec /usr/bin/env camc ...
+Desktop UI  ──HTTP/WS──▶  CAM Hub/API  ──poll/route──▶  Remote Controller/Node  ──spawns──▶  tmux + agent runtime
 ```
 
-Default Linux/macOS path should be local:
+Coding agents run on the controller/node, never inside Desktop. The hub
+aggregates the node/agent/context tables and routes commands. Desktop is
+the Electron app under this folder; it loads the WebUI-derived renderer
+from `../../web/desktop.html` and reuses `web/js/api.js` as its API
+client. In Direct mode, Electron main starts an embedded Node/Electron CAM
+Hub and the renderer connects to it through the same `CamApi` path. The
+installed app must not require WSL, local Python, a host shell, local
+`cam`, or local `cam serve`. tmux and agent CLI dependencies live on the
+remote controller/node.
 
-```text
-camc ...
-```
+## Settings tabs
 
-SSH is available for remote Linux hosts, but a future stdio API will be
-more robust for long-running streams.
+Active Settings exposes two connection modes (canonical IDs in
+`docs/desktop/requirements.md`):
+
+- **Direct** (`DIRECT-010..019`) — default app-managed embedded CAM Hub.
+  Electron main checks readiness, starts the Node/Electron Hub on
+  loopback, generates the API token, and connects the renderer to that
+  Hub. The normal UI does not ask the user to type a Hub URL, run
+  terminal commands, install WSL/Python, or install `cam`.
+- **Relay** (`REMOTE-012`) — relay URL + relay token + CAM API token,
+  for unreachable hubs.
+
+Future and deferred modes (not active Settings tabs):
+
+- **SSH attach / transport** (`SSH-010..013`) — future, for terminal
+  attach to the selected agent's controller. Status `proposed`.
+- **Local tab** (`LOC-010..024`) — superseded. Old separate Local
+  experiment; its useful lifecycle pieces moved into Direct. See the
+  historical docs linked above.
 
 ## Development
 
-Prerequisites:
+Build / run / package commands live under this folder; see `package.json`.
+The `electron/` subdirectory contains the main + preload entry points;
+`scripts/` carries small helpers (`copy-vendor.cjs` etc.); the renderer
+lives at `../../web/` and is bundled via electron-builder
+`extraResources`.
 
-- Node.js 20+
-- Rust stable
-- Tauri prerequisites for the current OS
+## Non-Goals
 
-Install and run:
+- Running agents natively inside Desktop. Agents still run on
+  controller/nodes; Direct only runs the embedded Hub/control-plane code.
+- Owning SSH keys, vendor credentials, or agent CLI logins. The future
+  SSH attach path (SSH-010..013) is server-mediated.
+- Becoming a second machine registry. Remotes are existing CAM
+  contexts/nodes from the hub.
 
-```bash
-npm install
-npm run dev
-```
+## Legacy folders
 
-Build:
-
-```bash
-npm run build
-```
-
-## MVP Scope
-
-See [SPEC.md](SPEC.md). P0 is not just chat: the desktop app must cover the
-basic Cam lifecycle surface:
-
-- backend health
-- list/status/detail
-- run/capture/send/key/logs
-- stop/kill/remove/reboot/update/history/heal
-- inbox/thread/send/reply/mark-read messaging
-
-## Non-Goals For MVP
-
-- Bundling `camc` on Windows.
-- Replacing tmux.
-- Running agents natively on Windows.
-- Building a new cam daemon before the CLI adapter proves the UX.
+Earlier iterations explored a Tauri scaffold (`src/`, `src-tauri/`) and
+a ChatShell-style baseline (`baseline/chatshell-desktop/` at the repo
+root). Those remain as reference but are no longer the product direction.
+The active runtime is Electron under `apps/cam-desktop/electron/`.
