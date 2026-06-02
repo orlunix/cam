@@ -1,37 +1,115 @@
 # CAM Desktop UI Spec
 
-Status: v2 — Electron + WebUI reuse, Phase 2A backend readiness
+Status: v2 — Electron + WebUI reuse, hub/controller architecture, active Settings modes **Direct + Relay** (Direct = self-contained embedded Electron Hub; Relay = external relay)
 Owner split: `camui-rev` writes and reviews this spec; `camui-dev` implements after approval.
 
 Canonical requirement IDs live in `docs/desktop/requirements.md`. This file is
 a milestone/product spec; implementation tasks and review replies should cite
 the requirement IDs rather than treating this document as a checklist.
 
+## Architecture
+
+CAM is a **hub / control plane** product. Coding agents always run on a
+remote controller/node — never inside the Desktop process. Desktop is a
+thin UI/client over the hub API.
+
+```text
+Desktop UI  ──HTTP/WS──▶  CAM Hub/API  ──poll/route──▶  Remote Controller/Node  ──spawns──▶  tmux + agent runtime
+```
+
+Terminology used throughout this spec:
+
+- **Node / Controller** — the machine/runtime where agents actually run
+  (Python, tmux, controller adapter / `camc`, agent CLIs).
+- **Hub** — the CAM control plane. Aggregates node/agent/context tables
+  and routes user actions back to the right controller. In Direct mode
+  this Hub is embedded in Electron/Node; in Relay mode it is external.
+- **Desktop** — the Electron app in `apps/cam-desktop/`. In Direct mode
+  it starts an embedded Node/Electron CAM Hub and renders that Hub's
+  tables. In Relay mode it reaches a Hub through an external relay
+  endpoint.
+- **Local Node** — a node that happens to be reachable on `localhost` /
+  WSL / a local Mac. It is a special case of Node, not a separate
+  Settings mode.
+
+See `docs/desktop/requirements.md` for the canonical
+ARCH/HUB/NODE/DIRECT/REMOTE requirement IDs.
+
 ## Summary
 
-CAM Desktop is a desktop control surface for CAM, the "PM2 for AI coding
-agents". It manages Claude Code, Codex, Cursor, and other CLI agents that run
-inside tmux sessions through `cam` / `camc`.
+CAM Desktop is a desktop control surface for CAM. It manages Claude Code,
+Codex, Cursor, and other CLI agents that run inside tmux sessions on a
+controller/node through `cam` / `camc`.
 
-The desktop app must not replace `camc` or tmux. It should make the common
+The desktop app must not replace `camc` or tmux. It must not require any
+of them to live on the user's machine. It should make the common
 agent-management loop visible and low-friction:
 
-- see all agents and their state
+- see all agents and their state across every controller the hub knows about
 - inspect one agent's live output
-- send direct input or special keys to the selected tmux session
+- send input or special keys to the selected agent's tmux session via the
+  hub
 
-Desktop v2 is a thin **client** of the existing CAM HTTP/WebSocket API.
-It does not start, supervise, or bootstrap any CAM or relay server. The
-operating model matches the mobile/PWA app: connect to an existing direct
-endpoint (e.g. `cam serve` running in WSL, Linux, macOS, or a remote host)
-or to an existing relay endpoint, using the same direct/relay settings the
-WebUI already supports.
+Desktop v2 renders the CAM hub's existing HTTP/WebSocket API. The
+renderer stays a client in all modes. In Direct mode, Electron main owns
+the embedded CAM Hub lifecycle through a narrow fixed IPC surface; the
+renderer never becomes a command runner.
+
+The operating model is straightforward: Direct starts an embedded
+Electron/Node CAM Hub and connects the renderer to it; Relay connects to
+a CAM Hub through an external relay endpoint. In both cases, the Hub presents managed
+controllers/nodes and their agents. Desktop reuses the same `CamApi`
+client once connected.
+
+Active Settings exposes exactly two connection modes:
+
+```text
+Direct / Relay  ·  (SSH attach, future)
+```
+
+- **Direct** — Desktop-managed embedded CAM Hub. Electron main checks
+  readiness, starts the Node/Electron Hub on loopback, generates/persists
+  the API token, and connects the renderer directly to that Hub. Direct
+  has no local WSL, Python, shell, `cam`, or `cam serve` prerequisite.
+- **Relay** — relay URL + relay token + CAM API token, used when the
+  hub is unreachable.
+- **SSH attach** (future) — server-mediated WebSocket attach
+  to the selected agent's controller. See TERM-001..005 + SSH-010..013.
+
+Direct mode must not require the user to open a terminal or install local
+runtime bits. Node/remote management happens through the embedded Hub:
+import SSH config, add/edit
+nodes, test connection, sync, and start agents through Hub APIs. Desktop
+does not expose raw private keys to the renderer.
+
+Settings exposes exactly the two active modes; tokens are never
+displayed in plaintext.
+
+The left-nav workspace modes are: **Agents** (default — list/output/
+composer), **Start** (start a new agent), **Settings** (Direct + Relay
+profile), and **Nodes** (a read-mostly node/remote list built from
+hub-provided contexts + agents, peer of the mobile/PWA Machines view).
+Selecting a workspace mode swaps the main pane to that feature; the
+Agent list/composer is hidden outside Agents. Contexts remains a
+disabled placeholder until a dedicated requirement is approved.
+Workspace modes are not connection modes — Nodes does not affect how
+Desktop reaches the hub (CAM-DESK-NODEUI-010..017).
 
 V1 is intentionally narrower than the earlier preserve-first draft: **agent
 list, selected-agent output, and selected-agent input are the only product
 surface**, plus a minimal connection profile needed to reach the backend.
 Other scaffold features may remain in code if useful, but they should not be
 visible in the first default UI.
+
+**Direct starts by default** (CAM-DESK-DIRECT-013). On a cold launch
+with no Relay profile and no saved Direct profile, `app.js`
+auto-starts the embedded CAM Hub via `CamBridge.directHub.start()`,
+persists the generated loopback URL + token, and calls `connect()`.
+The user is never sent to Settings just because the app has not been
+configured. An empty `contexts:[]` / `agents:[]` Hub is a valid
+running state — Add Host and Import SSH Config on the Nodes page
+register remote nodes after the fact
+(CAM-DESK-DIRECT-014..017).
 
 ## Framework Decision
 
@@ -58,29 +136,35 @@ Do not introduce Flutter, Qt, or another desktop stack for this iteration.
 
 ## Backend / Server Boundary
 
-The desktop binary is primarily a client:
+The desktop binary is primarily a client of the **hub**:
 
-- It does **not** install CAM, Python, WSL, Docker, or any backend runtime,
-  in Phase 1 or Phase 2A. Bootstrapping is reserved for Phase 2B+.
-- It does **not** manage the relay server. No relay control panel, no
-  relay lifecycle UI.
-- Direct and relay are connection endpoints. The UI surfaces them as
-  profile settings (server URL + token, relay URL + token), reusing the
-  existing WebUI `CamApi` connect flow.
-- Phase 2A is allowed to **detect** an already-installed local backend and
-  optionally **start** it (e.g. `cam serve --port 8420` on Linux/macOS, or
-  `wsl -d <distro> -- cam serve --port 8420` on Windows). It must not
-  install or upgrade anything. If CAM is not present locally, Phase 2A
-  shows a setup hint only; full setup belongs to Phase 2B/2C/2D.
-- Future versions may add an embedded terminal or SSH client, but Phase 1
-  and Phase 2A must not include terminal UI, terminal tabs, or terminal
-  transport code.
+- The active Direct flow starts/owns an embedded Electron/Node CAM Hub and
+  connects to it over loopback. Desktop does not ask the user to run
+  terminal commands and does not depend on local WSL, Python, `cam`, or
+  `cam serve`.
+- The renderer is sandboxed and never executes shell commands. Electron
+  main may start the embedded Hub only through fixed, typed IPC methods.
+  Controller-side operations go through Hub REST/WS calls (CamApi).
+- Public relay infrastructure is not Desktop's concern. External relay
+  remains a user-provided endpoint, surfaced under the Relay tab as
+  relay URL + relay token + CAM API token (CAM-DESK-REMOTE-012).
+- Direct Hub lifecycle is active scope (CAM-DESK-DIRECT-010..019):
+  embedded-hub readiness, start, stop/restart, generated token,
+  Advanced/Diagnostics, and Nodes/Remotes management through Hub APIs.
+- Future versions may add an embedded terminal, but the terminal must
+  connect to the **selected agent's controller** through hub-provided
+  attach metadata (HUB-013 + TERM-001..005 + SSH-010..013). Desktop must
+  not assume local tmux. The v3 local-PTY experiment on
+  `camui-desktop-v3` is preserved as reference code; the matching
+  TERM-010..017 IDs are marked `superseded` for that reason.
 
 ## Existing Repository Context
 
 Relevant files already present:
 
-- `src/cam/api/server.py`: FastAPI app, `cam serve` entry point.
+- `src/cam/api/server.py`: FastAPI app, `cam serve` entry point for the
+  external/Python hub implementation. Direct Desktop must not require it
+  at runtime; use it only as behavioral reference for endpoint shapes.
 - `src/cam/api/routes/agents.py`: agent REST endpoints.
 - `src/cam/api/ws.py`: WebSocket event/status stream.
 - `src/cam/api/routes/contexts.py`: context REST endpoints.
@@ -102,74 +186,59 @@ backend seam. The Electron renderer loads `web/desktop.html`, which imports
 the same `api.js` and `state.js` modules used by `web/index.html`. The UI
 calls domain methods on `CamApi` — it must not build raw REST paths.
 
-The first release should prove this loop:
+The first release proves this loop end-to-end against a hub:
 
 ```text
 select agent -> read current output -> send input/key -> refresh output
 ```
 
-Connection modes:
+Active connection modes (canonical IDs in DIRECT-010..019 and REMOTE-012..014):
 
-1. **Direct** — `serverUrl + token` against a reachable `cam serve` (local
-   Linux/macOS, WSL, or remote host).
-2. **Relay** — `relayUrl + relayToken` against a reachable relay; CAM server
-   sits behind the relay.
+1. **Direct** (DIRECT-010..019) — app-managed embedded Electron/Node CAM
+   Hub. URL/token are internal generated profile state; users manage
+   Nodes/Remotes rather than typing a Hub URL.
+2. **Relay** (REMOTE-012) — relay URL + relay token + CAM API token.
+   The relay proxies REST/WS for an unreachable hub. The CAM API token
+   is required because proxied REST still needs bearer auth.
 
-`CamApi.connect()` races both options if configured; the winner is used.
+A previously-explored separate **Local** tab (LOC-010..024) is
+superseded. Its lifecycle pieces now belong to Direct.
+
+`CamApi.connect()` must use the active profile kind. Direct uses the
+app-managed local Hub profile; Relay uses relay fields. It must not race
+stale Direct fields against Relay or vice versa.
 Profiles are stored in `localStorage` exactly as the WebUI does. The
-Electron shell does not introduce a separate profile store.
+Electron shell does not introduce a separate profile store. The Settings
+tabs distinguish Direct and Relay; there is no Managed tab (Managed = preconfigured Direct) and no Local-managed
+profile in the active product. (A legacy `cam_profile_kind` localStorage
+marker may still be present in code as `local | direct | relay`; new
+code must not branch on `local`.)
 
-Native bridge (`window.CamBridge`) is intentionally narrow and must not
-duplicate CAM product behavior:
-
-Phase 1:
+Native bridge (`window.CamBridge`) is intentionally narrow. It may own
+the embedded Direct Hub lifecycle, but it must not become a general command
+runner or duplicate hub/controller product behavior:
 
 - `getPlatform()` — `"win32" | "darwin" | "linux"`.
 - `getAppVersion()` — Electron app version string.
 - `openExternal(url)` — open an http(s) URL in the system browser.
 - `restartApp(route?)` — restart the renderer (matches the existing WebView
   contract used by the mobile wrapper).
+- `directHub.check()` — returns embedded Direct Hub readiness and ownership state.
+- `directHub.start()` — generates an API token, starts the embedded
+  loopback Node/Electron Hub, polls health, and returns the internal Direct
+  profile `{ apiUrl, apiToken }`.
+- `directHub.stop()` / `directHub.restart()` — affect only the embedded
+  Hub owned by the current app process.
+- `directHub.logs()` / `directHub.getProfile()` — Diagnostics-only,
+  redacted output.
 
-Phase 2A additions (local backend readiness only):
-
-- `checkBackendReadiness()` — returns a `BackendReadiness` snapshot:
-  - `platform`: `"win32" | "darwin" | "linux"`.
-  - `hasWsl`: WSL is usable on this host (Windows only).
-  - `wslDistros`: array of distro names detected via `wsl -l -q`.
-  - `selectedDistro`: the distro the bridge would target (first non-
-    `docker-desktop*`), or `null`.
-  - `hasPython`: a usable Python interpreter is reachable from the same
-    shell the bridge would use to launch `cam`.
-  - `hasCam`: the `cam` CLI is reachable from that same shell.
-  - `localServerRunning`: a CAM server is confirmed listening at
-    `http://127.0.0.1:8420/api/system/health` — the probe must require
-    HTTP 200 and that the JSON body contains CAM's known shape
-    (`version` plus `adapters` or `agents_running`), so a foreign HTTP
-    responder cannot be mistaken for CAM.
-  - `localPortOccupiedByOther`: port 8420 has *some* HTTP responder but
-    it does not look like CAM.
-  - `suggestedCommand`: a copy-friendly command (e.g.
-    `pip install --user "cam[server]" && cam serve --port 8420`).
-  - `message`: short, human-readable summary.
-- `startLocalBackend()` — optional; only the bridge attempts a start when
-  `hasCam` is true, `localServerRunning` is false, and the port is not
-  occupied by a non-CAM service. The main process **generates a fresh
-  random token** (URL-safe base64, 24 bytes) and launches `cam serve
-  --port 8420 --token <token>`. It never parses stdout. On success it
-  returns `{ ok: true, url, token, message }`; the renderer persists the
-  token in `localStorage.cam_token`, fills `serverUrl` with the local URL
-  if blank, and reconnects via `CamApi`. On Windows the spawn target is
-  `wsl.exe -d <distro> -- bash -lc "cam serve --port 8420 --token <token>"`;
-  on Linux/macOS it is `bash -lc "cam serve --port 8420 --token <token>"`.
-  If a CAM server is already running, the bridge refuses with
-  `ok: false` because it cannot know the existing token from outside the
-  process — the user must either supply that token or stop the existing
-  server.
-
-Both methods are exposed via `ipcMain.handle` / `ipcRenderer.invoke` and
-execute argv directly with `child_process.execFile` / `spawn`. They never
-take user-provided command strings — the renderer cannot pass a command
-to run.
+The old Phase 2A `checkBackendReadiness` / `startLocalBackend` names and
+the old separate-Local `localBackend.*` renderer wiring are historical.
+The prior Python `cam serve` Direct prototype is superseded. The active
+UI should present Direct Hub management backed by the embedded Electron
+Hub, not a Local tab and not a local Python process.
+Terminal IPC surfaces explored in the v3 stash remain deferred (TERM /
+SSH requirements).
 
 Anything beyond the above lives in HTTP/WS calls through `CamApi`.
 
@@ -255,21 +324,27 @@ attention.
 Required views:
 
 - **Connection Bar**
-  - Shows current backend mode: local `camc`, WSL, or SSH.
+  - Shows current hub connection state and the active connection kind
+    (Direct or Relay) — not a local CLI/WSL/SSH mode. Desktop is a
+    client over the hub; the controller-side runtime lives on the Node,
+    not on the user's machine.
   - Shows health/version, connection errors, and last refresh time.
   - Lets the user retry connection.
   - Profile switching may remain if already implemented, but it should be
     visually secondary to the list/output/input loop.
 
 - **Agent List**
-  - Dense, scannable list of agents.
+  - Dense, scannable list of agents (across every controller the hub
+    knows about — there is no separate Desktop-only registry).
   - Fields: name, short id, tool, status, state, context/path, host.
   - Selecting an agent updates the interaction surface.
   - Poll every 2-5 seconds.
 
 - **Interaction Surface**
-  - Primary pane displays current captured output from the selected agent.
-  - CLI mode uses `camc capture <agent> --lines <n>`.
+  - Primary pane displays current captured output for the selected
+    agent, read through `CamApi` (`/api/agents/{id}/output`,
+    `/api/agents/{id}/fulloutput`). There is no Desktop CLI mode —
+    output always comes through the hub API.
   - Refresh button is required.
   - Auto-refresh is optional and must be easy to pause.
   - Borrow ChatShell's scroll rule: auto-scroll only if the user is already
@@ -304,10 +379,10 @@ P0 acceptance depends on these `CamApi` methods (already implemented in
 - Tree view and Diff view.
 - `camc msg` inbox/thread/reply panel.
 - Run-agent form.
-- API adapter for `cam serve` online/multi-machine mode.
+- Hub API evolution: managed node discovery, multi-controller aggregation.
 - Agent lifecycle controls: stop, kill, retry/reboot, remove.
 - Log tab from `camc logs` / `/logs`.
-- Attach session via external terminal or copyable command.
+- Attach session via hub-mediated terminal stream.
 - Minimal context selector.
 - Polished settings/profile dialog with app-data persistence.
 - Rich rendering for message threads and final summaries.
@@ -318,7 +393,9 @@ P0 acceptance depends on these `CamApi` methods (already implemented in
 - Archive browser.
 - Prune/orphan cleanup UI.
 - Embedded terminal/PTY.
-- Server auto-start and tray daemon lifecycle.
+- Direct Hub lifecycle refinements: persistent ownership marker,
+  optional user-level service registration, tray affordances, and
+  packaged/runtime setup improvements.
 - App auto-update and signed installers.
 - Rich diff/file-change browser.
 - Multi-agent batch operations.
@@ -370,39 +447,24 @@ Phase 1 — **Electron client (approved)**
 - Direct / relay profile reuse from the WebUI.
 - No terminal UI, no server-lifecycle UI.
 
-Phase 2A — **Backend readiness (this milestone)**
+Phase 2E — **Direct embedded CAM Hub (approved)**
 
-- Saved direct/relay profile reconnect on launch (Phase 1 already does
-  this — Phase 2A keeps it and surfaces a richer "checking / connected /
-  disconnected" state in the connection bar).
-- `CamBridge.checkBackendReadiness()` for local detection (Python, cam
-  CLI, WSL distros on Windows, listening local server).
-- `CamBridge.startLocalBackend()` for one-click start when `cam` is
-  installed but no server is listening. Polls `/api/system/health` to
-  confirm.
-- Settings mode gains a **Local backend readiness** section that drives
-  these probes, surfaces actionable status, and offers a "Start backend"
-  button only when starting is appropriate.
-- Does not install, upgrade, or bootstrap any runtime.
+- Direct is the default Settings mode.
+- Electron main starts/owns the embedded Node/Electron Hub on loopback
+  through a narrow typed bridge.
+- Renderer connects to that local Hub through the existing `CamApi`
+  path.
+- Server URL, generated token, and logs are hidden under Advanced /
+  Diagnostics with redaction.
+- Nodes/Remotes management goes through Hub APIs; Desktop never stores
+  raw private keys in the renderer.
 
-Phase 2B — **Existing WSL bootstrap (deferred)**
+Phase 2A / 2B / 2C / 2D — **Deferred / historical**
 
-- Install CAM into an existing WSL distro the user already has. Pip
-  install, environment validation, first-run `cam serve` setup.
-- Out of scope for Phase 2A.
-
-Phase 2C — **Full Windows setup (deferred)**
-
-- Handle the case where the user has no usable WSL distro yet. Guided
-  WSL feature enablement, distro install, then drop into 2B.
-- Out of scope for Phase 2A.
-
-Phase 2D — **Offline / bundled bootstrap (deferred)**
-
-- Internal-mirror / offline-bundle installation flows for environments
-  without public registry access. Likely combined with signed MSI from
-  Phase 1's documented packaging path.
-- Out of scope for Phase 2A.
+The earlier detect-only backend-readiness probe, WSL bootstrap,
+full Windows setup, and offline bootstrap are deferred. The separate
+Local tab experiment is historical; its app-managed-Hub lifecycle was
+promoted into Direct and is tracked by CAM-DESK-DIRECT-010..019.
 
 ## Implementation Plan After Approval
 
@@ -411,12 +473,11 @@ Phase 2D — **Offline / bundled bootstrap (deferred)**
    `web/index.html`, which still serves the mobile/PWA app.
 2. Add an Electron shell under `apps/cam-desktop/electron/` that loads
    `web/desktop.html`. Preload exposes only the narrow `CamBridge` surface.
-3. The Phase 1 default screen is: agent list, selected-agent output,
-   bottom composer, quick-key buttons (Enter, Esc, Ctrl-C, Backspace), and
-   a minimal connection bar with a settings dialog backed by the existing
-   `localStorage` keys.
+3. The Direct Settings tab owns the local Hub lifecycle UI: Check /
+   Start / Stop / Restart, status, and Advanced / Diagnostics. It does
+   not ask the user to type an external URL in the normal path.
 4. Do not add terminal UI, terminal tabs, terminal transport, embedded
-   PTY/SSH, relay/server lifecycle UI, or server bootstrap in this phase.
+   PTY/SSH, or relay-server lifecycle UI in this phase.
 5. The earlier Tauri scaffold under `apps/cam-desktop/src/` and
    `apps/cam-desktop/src-tauri/` may remain as reference but must not be
    wired to the Electron build and must not be the future direction.

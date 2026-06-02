@@ -625,6 +625,226 @@ body.desktop textarea {
 .settings-status.is-error { color: var(--red); }
 .settings-status.is-ok { color: var(--green); }
 
+/* ───────── Settings tabs (Phase 2E Local / Direct / Relay) ───────── */
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.settings-tab {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 8px 14px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.settings-tab:hover {
+  color: var(--text);
+}
+.settings-tab[aria-pressed="true"] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+.tab-badge {
+  font-size: 10px;
+  background: var(--bg-input);
+  color: var(--text-muted);
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-weight: normal;
+}
+.tab-badge-rec {
+  background: rgba(74, 158, 255, 0.15);
+  color: var(--accent);
+}
+.settings-tab-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.settings-tab-panel[hidden] { display: none; }
+
+/* ── Local panel ── */
+.direct-state-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+.direct-state-detail {
+  color: var(--text-dim);
+  font-size: 12px;
+  flex: 1;
+  min-width: 200px;
+}
+.direct-state-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-weight: 600;
+}
+.state-stopped       { background: rgba(136, 136, 136, 0.18); color: var(--text-dim); }
+.state-checking      { background: rgba(210, 153, 34, 0.18);  color: var(--yellow);   }
+.state-starting      { background: rgba(210, 153, 34, 0.18);  color: var(--yellow);   }
+.state-running       { background: rgba(61, 214, 140, 0.18);  color: var(--green);    }
+.state-degraded      { background: rgba(227, 134, 58, 0.18);  color: var(--orange);   }
+.state-port-conflict { background: rgba(248, 81, 73, 0.18);   color: var(--red);      }
+.state-cam-missing   { background: rgba(248, 81, 73, 0.18);   color: var(--red);      }
+.state-error         { background: rgba(248, 81, 73, 0.18);   color: var(--red);      }
+
+.direct-target {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.direct-target code {
+  background: var(--bg-input);
+  padding: 0 4px;
+  border-radius: 3px;
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text);
+}
+.direct-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+.direct-actions .btn-primary,
+.direct-actions .btn-secondary {
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+}
+.direct-actions .btn-primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.direct-actions .btn-primary:disabled,
+.direct-actions .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
+.direct-actions .btn-secondary {
+  background: var(--bg-input);
+  color: var(--text);
+}
+.direct-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  min-height: 1em;
+  line-height: 1.5;
+}
+.direct-hint.is-error { color: var(--red); }
+.direct-hint.is-ok    { color: var(--green); }
+
+/* Remotes */
+.remotes-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.remotes-count {
+  font-size: 20px;
+  color: var(--accent);
+  font-weight: 700;
+  min-width: 1.5em;
+  text-align: center;
+}
+.remotes-detail {
+  color: var(--text-dim);
+  font-size: 12px;
+  flex: 1;
+}
+.remotes-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.remotes-list {
+  margin-top: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.remotes-list[hidden] { display: none; }
+.remote-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px;
+  padding: 4px 0;
+}
+.remote-row .remote-name { color: var(--text); font-weight: 600; }
+.remote-row .remote-meta { color: var(--text-muted); font-size: 11px; }
+
+/* Diagnostics */
+.settings-diag summary {
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 4px 0;
+}
+.settings-diag summary:hover { color: var(--text); }
+.diag-grid {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 4px 12px;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: var(--bg-input);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+.diag-grid .diag-key { color: var(--text); }
+.diag-logs {
+  margin-top: 8px;
+}
+.diag-logs h4 {
+  margin: 0 0 4px 0;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+.diag-logs-pre {
+  margin: 0;
+  background: #0d1117;
+  color: #c9d1d9;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow: auto;
+  -webkit-user-select: text;
+  user-select: text;
+}
+.diag-logs-actions { margin-top: 6px; }
+.diag-note {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-top: 6px;
+}
+
 /* Health summary (Phase 2A) */
 .health-summary {
   display: flex;
@@ -731,5 +951,589 @@ body.desktop textarea {
 @media (max-width: 720px) {
   .desktop-layout {
     grid-template-columns: 220px 1fr;
+  }
+}
+
+/* ── Nodes mode (CAM-DESK-NODEUI-010..017) ──
+ * Reuses .context-card, .context-card-header, .context-name,
+ * .context-type-badge, .context-chevron, .context-card-body,
+ * .context-detail-rows, .context-detail-row, .context-detail-label,
+ * .context-detail-value, .machine-agent-badge from web/css/style.css.
+ * Only the panel-level layout is added here. */
+#mode-nodes .nodes-list-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 16px 24px;
+}
+#mode-nodes .context-card { margin-bottom: 8px; }
+#mode-nodes .context-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+#mode-nodes .btn-sm {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text);
+  cursor: pointer;
+}
+#mode-nodes .btn-sm:hover { background: var(--bg-hover, rgba(255,255,255,0.04)); }
+#mode-nodes .btn-sm[disabled] { opacity: 0.5; cursor: not-allowed; }
+#mode-nodes .btn-danger {
+  border-color: rgba(248,113,113,0.45);
+  color: #fecaca;
+}
+#mode-nodes .btn-danger:hover {
+  background: rgba(248,113,113,0.12);
+}
+#mode-nodes .settings-status { padding: 8px 16px; }
+
+/* Top action bar + Add/Import forms */
+#mode-nodes .nodes-actions {
+  display: flex;
+  gap: 8px;
+  padding: 0 16px 12px;
+  flex-wrap: wrap;
+}
+#mode-nodes .nodes-add-form,
+#mode-nodes .nodes-import-pane {
+  padding: 0 16px 16px;
+}
+#mode-nodes .nodes-add-form .settings-section,
+#mode-nodes .nodes-import-pane .settings-section {
+  padding: 12px 14px;
+}
+#mode-nodes .nodes-import-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+}
+#mode-nodes .nodes-import-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 2px 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+}
+#mode-nodes .nodes-import-name {
+  font-weight: 600;
+  font-size: 14px;
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#mode-nodes .nodes-import-meta {
+  font-size: 12px;
+  color: var(--text-dim);
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#mode-nodes .nodes-import-btn {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+/* Add Host manage panel: segment tabs + auth-method sections */
+#mode-nodes .nodes-manage-panel {
+  padding: 0 16px 16px;
+}
+#mode-nodes .nodes-manage-tabs {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 6px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 10px;
+}
+#mode-nodes .nodes-manage-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  padding: 6px 12px;
+  font-size: 13px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+#mode-nodes .nodes-manage-tab[aria-pressed="true"] {
+  background: rgba(255,255,255,0.06);
+  border-color: var(--border);
+  color: var(--text);
+}
+#mode-nodes .nodes-manage-tab:hover { color: var(--text); }
+#mode-nodes .nodes-manage-close {
+  margin-left: auto;
+}
+#mode-nodes .nodes-auth-section {
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+  margin-top: 4px;
+}
+#mode-nodes .nodes-auth-keyfile-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+#mode-nodes .nodes-auth-keyfile-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+#mode-nodes [hidden] {
+  display: none !important;
+}
+#mode-nodes label.is-context-locked {
+  color: var(--text-dim);
+  opacity: 0.72;
+}
+#mode-nodes label.is-context-locked input,
+#mode-nodes label.is-context-locked select,
+#mode-nodes label.is-context-locked textarea {
+  color: var(--text-dim);
+  background: rgba(255,255,255,0.03);
+  border-color: var(--border);
+  cursor: not-allowed;
+}
+
+/* Per-context rows inside the expanded node card. Each row carries
+ * the context name + path on the left, a persistent last-sync
+ * diagnostic badge on the right. Context rows are read-only
+ * diagnostics; Edit/Delete/Sync are node-level (Edit Host, Delete
+ * Host, Sync Host) and live in `.context-actions` below this list.
+ * The diagnostic column survives toast disappearance so the user
+ * can read failure codes long after sync ran. */
+#mode-nodes .nodes-ctx-list {
+  margin: 10px 0 4px;
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+}
+#mode-nodes .nodes-ctx-list-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+#mode-nodes .nodes-ctx-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) auto;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  margin-bottom: 6px;
+}
+#mode-nodes .nodes-ctx-row-actions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+#mode-nodes .btn-xs {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+#mode-nodes .btn-xs:hover  { background: var(--bg-hover, rgba(255,255,255,0.04)); }
+#mode-nodes .btn-xs[disabled] { opacity: 0.5; cursor: not-allowed; }
+#mode-nodes .btn-xs.btn-xs-danger {
+  border-color: rgba(248,113,113,0.45);
+  color: #fecaca;
+}
+#mode-nodes .btn-xs.btn-xs-danger:hover {
+  background: rgba(248,113,113,0.12);
+}
+#mode-nodes .nodes-ctx-row-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+#mode-nodes .nodes-ctx-env {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#mode-nodes .nodes-ctx-env-label {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 10px;
+  margin-right: 4px;
+  color: var(--text-dim);
+  opacity: 0.7;
+}
+#mode-nodes .nodes-ctx-name {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#mode-nodes .nodes-ctx-path {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#mode-nodes .nodes-ctx-row-sync {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+#mode-nodes .nodes-ctx-sync-state {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  align-self: flex-start;
+  text-transform: lowercase;
+  letter-spacing: 0.2px;
+}
+#mode-nodes .nodes-ctx-sync-state.state-never {
+  background: rgba(255,255,255,0.04);
+  color: var(--text-dim);
+}
+#mode-nodes .nodes-ctx-sync-detail {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#mode-nodes .nodes-ctx-sync-time {
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
+#mode-nodes input[readonly] {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+/* Host-card list: each card folds/unfolds. Collapsed cards show
+ * just the header (host identity + counts); expanded cards reveal
+ * the host-action stack plus the contexts list. */
+#mode-nodes .nodes-list-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+#mode-nodes .host-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+#mode-nodes .host-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+#mode-nodes .host-card.expanded {
+  border-color: var(--accent, #38bdf8);
+}
+#mode-nodes .host-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+#mode-nodes .host-card-header:hover {
+  background: var(--bg-hover, rgba(255,255,255,0.04));
+}
+#mode-nodes .host-chevron {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--text-dim);
+  transform: rotate(0deg);
+  transition: transform 120ms ease;
+  width: 12px;
+  text-align: center;
+}
+#mode-nodes .host-card.expanded .host-chevron {
+  transform: rotate(90deg);
+  color: var(--accent, #38bdf8);
+}
+#mode-nodes .host-short {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+}
+#mode-nodes .host-id {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-family: SFMono-Regular, Consolas, monospace;
+}
+#mode-nodes .host-ctx-chip {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  opacity: 0.85;
+}
+#mode-nodes .host-card-body {
+  padding: 6px 12px 12px;
+  border-top: 1px dashed var(--border);
+}
+#mode-nodes .host-card-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 8px 0;
+}
+#mode-nodes .host-card-agents {
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+#mode-nodes .host-card-contexts {
+  margin-top: 8px;
+}
+#mode-nodes .host-card-ctx-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+/* Context rows inside an expanded host card. Each row also folds
+ * — collapsed shows name/path + edit/delete, expanded reveals env
+ * and the full last-sync diagnostic. */
+#mode-nodes .ctx-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  margin-bottom: 6px;
+  overflow: hidden;
+}
+#mode-nodes .ctx-row.expanded {
+  border-color: var(--border);
+  background: var(--bg-card);
+}
+#mode-nodes .ctx-row-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+#mode-nodes .ctx-row-header:hover {
+  background: var(--bg-hover, rgba(255,255,255,0.04));
+}
+#mode-nodes .ctx-row-chevron {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--text-dim);
+  transform: rotate(0deg);
+  transition: transform 120ms ease;
+  width: 10px;
+}
+#mode-nodes .ctx-row.expanded .ctx-row-chevron {
+  transform: rotate(90deg);
+  color: var(--accent, #38bdf8);
+}
+#mode-nodes .ctx-row-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+#mode-nodes .ctx-row-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+#mode-nodes .ctx-name {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+#mode-nodes .ctx-path {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: SFMono-Regular, Consolas, monospace;
+}
+#mode-nodes .ctx-row-sub {
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#mode-nodes .ctx-row-body {
+  padding: 4px 8px 8px 26px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+#mode-nodes .ctx-row-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text);
+}
+#mode-nodes .ctx-meta-label {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.7;
+  font-weight: 600;
+}
+#mode-nodes .ctx-meta-val {
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text);
+}
+#mode-nodes .dim { color: var(--text-dim); }
+
+/* Persistent last-sync diagnostic inside the expanded context body. */
+#mode-nodes .ctx-last-sync {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  text-transform: lowercase;
+  letter-spacing: 0.2px;
+}
+#mode-nodes .ctx-last-sync.state-never {
+  background: rgba(255,255,255,0.04);
+  color: var(--text-dim);
+}
+#mode-nodes .ctx-last-sync-detail {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: normal;
+}
+#mode-nodes .ctx-last-sync-time {
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
+
+
+/* Adaptive host-card Nodes layout. Keep long host/context values from
+ * forcing the card wider than the viewport; stack action buttons on
+ * narrow windows. */
+#mode-nodes .host-card,
+#mode-nodes .ctx-row {
+  min-width: 0;
+  max-width: 100%;
+}
+#mode-nodes .host-card-header > *,
+#mode-nodes .ctx-row-header > * {
+  min-width: 0;
+}
+#mode-nodes .host-id {
+  flex: 1 1 240px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#mode-nodes .host-card-actions {
+  max-width: 100%;
+}
+#mode-nodes .host-card-actions .btn-sm,
+#mode-nodes .ctx-row-actions .btn-xs {
+  white-space: nowrap;
+}
+#mode-nodes .ctx-row-actions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+}
+#mode-nodes .ctx-row-title {
+  min-width: 0;
+}
+#mode-nodes .ctx-path,
+#mode-nodes .ctx-meta-val {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  #mode-nodes .nodes-list-wrap {
+    padding: 8px;
+  }
+  #mode-nodes .host-card-header {
+    gap: 6px;
+  }
+  #mode-nodes .host-id {
+    flex-basis: 100%;
+    margin-left: 20px;
+  }
+  #mode-nodes .host-card-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+    gap: 6px;
+  }
+  #mode-nodes .host-card-actions .btn-sm {
+    width: 100%;
+  }
+  #mode-nodes .ctx-row-header {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+  }
+  #mode-nodes .ctx-row-actions {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+  #mode-nodes .ctx-row-title {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+  #mode-nodes .ctx-row-body {
+    padding-left: 22px;
   }
 }

@@ -1,13 +1,29 @@
 /**
  * Desktop Settings mode — full main-pane configuration view that
- * replaces the Agent Console when mode = 'settings'. Reuses the same
- * localStorage keys as the WebUI (cam_server_url, cam_token,
- * cam_relay_url, cam_relay_token), then re-runs `api.connect()`.
+ * replaces the Agent Console when mode = 'settings'.
  *
- * Phase 2A additions:
- *  - Connection health summary tied to AppState.connectionMode.
- *  - Local backend readiness section (Check / Start) driven by
- *    window.CamBridge.checkBackendReadiness() and startLocalBackend().
+ * Active Settings exposes exactly two connection modes
+ * (CAM-DESK-REMOTE-014):
+ *
+ *   Direct — app-managed embedded CAM Hub. Electron main runs a
+ *            Node HTTP server on 127.0.0.1:8420 (see
+ *            apps/cam-desktop/electron/embedded-hub.cjs), generates
+ *            an API token, and Desktop connects to it through the
+ *            normal CamApi REST surface (CAM-DESK-DIRECT-010..019,
+ *            CAM-DESK-HUB-010..012). No host `cam` CLI, Python, or
+ *            WSL is involved. The renderer never sees or edits the
+ *            Hub URL or API token in the normal path; tokens are
+ *            only shown as redacted sha256 fingerprints inside
+ *            Advanced / Diagnostics.
+ *
+ *   Relay  — external relay endpoint that proxies to an existing Hub
+ *            (CAM-DESK-REMOTE-012). User-typed relay URL + relay
+ *            token + CAM API token.
+ *
+ * The earlier separate "Local" tab and the user-typed Direct URL/token
+ * form are retired. Their safe main-process lifecycle code is reused
+ * via CamBridge.directHub.* (IPC handler names on the main side are
+ * still `local:*` for internal compatibility).
  */
 
 function escapeHtml(s) {
@@ -16,370 +32,423 @@ function escapeHtml(s) {
   return d.innerHTML;
 }
 
-function bridge() {
-  return typeof window !== 'undefined' ? window.CamBridge : null;
+const PROFILE_KIND_KEY = 'cam_profile_kind';
+
+function _profileKind() {
+  try {
+    const v = localStorage.getItem(PROFILE_KIND_KEY);
+    if (v === 'direct' || v === 'relay') return v;
+  } catch {}
+  try {
+    if (localStorage.getItem('cam_relay_url') && localStorage.getItem('cam_relay_token')) return 'relay';
+    if (localStorage.getItem('cam_server_url') && localStorage.getItem('cam_token')) return 'direct';
+  } catch {}
+  return 'unset';
 }
 
-function bridgeSupportsReadiness() {
-  const b = bridge();
-  return !!(b && typeof b.checkBackendReadiness === 'function');
+function _setProfileKind(kind) {
+  try {
+    if (kind === 'direct' || kind === 'relay') {
+      localStorage.setItem(PROFILE_KIND_KEY, kind);
+    } else {
+      localStorage.removeItem(PROFILE_KIND_KEY);
+    }
+  } catch {}
 }
 
-function bridgeSupportsStart() {
-  const b = bridge();
-  return !!(b && typeof b.startLocalBackend === 'function');
+function shortRedact(fp) {
+  if (!fp) return '(none)';
+  if (typeof fp !== 'string') return '(?)';
+  return fp.length > 24 ? fp.slice(0, 24) + '…' : fp;
 }
 
-const DEFAULT_LOCAL_URL = 'http://127.0.0.1:8420';
+/** Argv-only narrow bridge to the Electron-main Direct Hub supervisor.
+ *  Exposes only `check / start / stop / restart / logs / getProfile`;
+ *  no command/argv/path/env passed from renderer. The renderer cannot
+ *  reach this surface in a browser tab — it lives on
+ *  `window.CamBridge.directHub`. See preload.cjs. */
+function bridgeDirectHub() {
+  const b = typeof window !== 'undefined' ? window.CamBridge : null;
+  return (b && b.directHub) || null;
+}
 
 export function mountSettingsMode({ state, showToast, readConfig, saveConfig, connect }) {
   const panel = document.getElementById('mode-settings');
   if (!panel) return;
 
-  const form = panel.querySelector('#settings-form');
-  const serverUrl = panel.querySelector('#set-server-url');
-  const token = panel.querySelector('#set-token');
-  const relayUrl = panel.querySelector('#set-relay-url');
-  const relayToken = panel.querySelector('#set-relay-token');
-  const statusEl = panel.querySelector('#settings-status');
-  const testBtn = panel.querySelector('#settings-test');
+  /* ────────── Legacy profile migration ──────────
+   * If a previous build left `cam_profile_kind === 'local'` (old Local
+   * Node experiment marker), fold it into Direct so existing
+   * serverUrl+token state keeps working under the renamed mode. */
+  try {
+    if (localStorage.getItem(PROFILE_KIND_KEY) === 'local') {
+      const cfg = readConfig();
+      if (cfg.serverUrl && cfg.token) {
+        localStorage.setItem(PROFILE_KIND_KEY, 'direct');
+      } else {
+        localStorage.removeItem(PROFILE_KIND_KEY);
+      }
+    }
+  } catch {}
 
-  const healthDot = panel.querySelector('#health-dot');
-  const healthLabel = panel.querySelector('#health-label');
-  const healthDetail = panel.querySelector('#health-detail');
+  /* ────────── Settings tabs (Direct / Relay only) ──────────
+   * CAM-DESK-REMOTE-014: active Settings has exactly two tabs.
+   * Unknown saved tab values (e.g. legacy 'local') are clamped to
+   * 'direct' so existing users do not crash on an unrendered tab. */
+  const tabButtons = panel.querySelectorAll('.settings-tab[data-tab]');
+  const tabPanels  = panel.querySelectorAll('.settings-tab-panel[data-tab]');
+  const TAB_KEY    = 'cam_desktop_settings_tab';
 
-  const readinessGrid = panel.querySelector('#readiness-grid');
-  const readinessHint = panel.querySelector('#readiness-hint');
-  const readinessCmd = panel.querySelector('#readiness-cmd');
-  const checkBtn = panel.querySelector('#readiness-check');
-  const startBtn = panel.querySelector('#readiness-start');
-
-  let lastReadiness = null;
-
-  /* ── Form helpers ── */
-
-  function loadIntoForm() {
-    const cfg = readConfig();
-    serverUrl.value = cfg.serverUrl;
-    token.value = cfg.token;
-    relayUrl.value = cfg.relayUrl;
-    relayToken.value = cfg.relayToken;
+  function applyTab(name) {
+    if (name !== 'direct' && name !== 'relay') name = 'direct';
+    tabButtons.forEach((b) => {
+      const active = b.dataset.tab === name;
+      b.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    tabPanels.forEach((p) => {
+      const active = p.dataset.tab === name;
+      if (active) p.removeAttribute('hidden');
+      else p.setAttribute('hidden', '');
+    });
+    try { localStorage.setItem(TAB_KEY, name); } catch {}
   }
 
-  function readForm() {
-    return {
-      serverUrl: serverUrl.value.trim(),
-      token: token.value.trim(),
-      relayUrl: relayUrl.value.trim(),
-      relayToken: relayToken.value.trim(),
-    };
+  function pickInitialTab() {
+    try {
+      const saved = localStorage.getItem(TAB_KEY);
+      if (saved === 'direct' || saved === 'relay') return saved;
+    } catch {}
+    if (_profileKind() === 'relay') return 'relay';
+    return 'direct';
   }
 
+  tabButtons.forEach((b) => {
+    b.addEventListener('click', () => applyTab(b.dataset.tab));
+  });
+  applyTab(pickInitialTab());
+
+  /* ────────── Direct tab — app-managed Hub lifecycle ────────── */
+  mountDirectTab({ panel, state, showToast, saveConfig, connect });
+
+  /* ────────── Relay tab ──────────
+   * The Relay user-mode points at an external relay endpoint that
+   * proxies REST traffic to an existing CAM Hub. Because the proxied
+   * requests still hit a token-protected /api/* surface, we need
+   * THREE inputs: relay URL + relay shared secret + the CAM Hub's API
+   * token. Without the third, the websocket connects but every proxied
+   * REST call fails 401. */
+  mountRelayTab({ panel, readConfig, saveConfig, connect, showToast });
+}
+
+/* ───────── Direct tab controller (CAM-DESK-DIRECT-010..019) ───────── */
+
+function mountDirectTab({ panel, state, showToast, saveConfig, connect }) {
+  const tabPanel = panel.querySelector('#settings-tab-direct');
+  if (!tabPanel) return;
+
+  const badgeEl   = tabPanel.querySelector('#direct-state-badge');
+  const detailEl  = tabPanel.querySelector('#direct-state-detail');
+  const targetEl  = tabPanel.querySelector('#direct-target');
+  const hintEl    = tabPanel.querySelector('#direct-hint');
+  const statusEl  = tabPanel.querySelector('#direct-status');
+  const checkBtn  = tabPanel.querySelector('#direct-check');
+  const startBtn  = tabPanel.querySelector('#direct-start');
+  const stopBtn   = tabPanel.querySelector('#direct-stop');
+  const restartBt = tabPanel.querySelector('#direct-restart');
+  const diagGrid  = tabPanel.querySelector('#direct-diag-grid');
+  const diagLogs  = tabPanel.querySelector('#direct-diag-logs');
+  const diagRefr  = tabPanel.querySelector('#direct-diag-refresh');
+
+  function setBadge(summary) {
+    badgeEl.className = 'direct-state-badge state-' + (summary || 'stopped');
+    badgeEl.textContent = (summary || 'stopped').replace('-', ' ');
+  }
+  function setHint(text, cls = '') {
+    hintEl.textContent = text || '';
+    hintEl.classList.remove('is-error', 'is-ok');
+    if (cls) hintEl.classList.add(cls);
+  }
   function setStatus(text, cls = '') {
+    if (!statusEl) return;
     statusEl.textContent = text || '';
     statusEl.classList.remove('is-error', 'is-ok');
     if (cls) statusEl.classList.add(cls);
   }
 
-  /* ── Connection health summary ── */
-
-  function renderHealth() {
-    const mode = state.get('connectionMode') || 'disconnected';
-    healthDot.className = 'conn-dot ' + mode;
-    if (mode === 'direct') {
-      healthLabel.textContent = 'Connected (direct).';
-      healthDetail.innerHTML =
-        `Using <strong>${escapeHtml(readConfig().serverUrl || '(unset)')}</strong>. ` +
-        'Switch to <strong>Agents</strong> to use the connection.';
-    } else if (mode === 'relay') {
-      healthLabel.textContent = 'Connected (via relay).';
-      healthDetail.innerHTML =
-        `Using relay <strong>${escapeHtml(readConfig().relayUrl || '(unset)')}</strong>. ` +
-        'Switch to <strong>Agents</strong> to use the connection.';
-    } else if (mode === 'checking') {
-      healthLabel.textContent = 'Checking endpoint…';
-      healthDetail.textContent = 'Waiting for direct or relay to respond.';
-    } else {
-      healthLabel.textContent = 'Not connected.';
-      healthDetail.innerHTML =
-        'Configure a direct or relay endpoint below, then click ' +
-        '<strong>Save &amp; Connect</strong>. If you have CAM installed ' +
-        'locally, you can use <strong>Check backend</strong> to detect or ' +
-        'start a local server.';
+  function summaryDetail(r) {
+    if (!r) return '';
+    switch (r.summary) {
+      case 'running':       return 'Embedded CAM Hub is running on this machine.';
+      case 'starting':      return 'Embedded CAM Hub is starting…';
+      case 'port-conflict': return `All candidate loopback ports (${r.apiPort}+) are in use. Free one of them and click Check again.`;
+      case 'stopped':       return 'Embedded CAM Hub is stopped. Click Start to launch it.';
+      case 'error':         return r.lastError || 'Embedded CAM Hub failed to start.';
+      default:              return r.summary || '';
     }
   }
 
-  /* ── Readiness rendering ── */
-
-  function renderReadinessRows(r) {
-    if (!r) {
-      readinessGrid.innerHTML =
-        '<div class="readiness-empty">Click <strong>Check backend</strong> to scan the local environment.</div>';
-      return;
-    }
-    const rows = [];
-    rows.push({
-      key: 'Platform',
-      val: r.platform || 'unknown',
-      cls: 'is-info',
-      mark: '·',
-    });
-    if (r.platform === 'win32') {
-      rows.push({
-        key: 'WSL',
-        val: r.hasWsl
-          ? (r.wslDistros && r.wslDistros.length
-              ? `available · ${r.wslDistros.length} distro${r.wslDistros.length === 1 ? '' : 's'} · selected: ${r.selectedDistro || '—'}`
-              : 'available · no distro detected')
-          : 'not available',
-        cls: r.hasWsl ? 'is-ok' : 'is-err',
-        mark: r.hasWsl ? '✓' : '✗',
-      });
-    }
-    rows.push({
-      key: 'Python',
-      val: r.hasPython ? 'detected' : 'not detected',
-      cls: r.hasPython ? 'is-ok' : 'is-err',
-      mark: r.hasPython ? '✓' : '✗',
-    });
-    rows.push({
-      key: 'CAM CLI',
-      val: r.hasCam ? 'detected' : 'not detected',
-      cls: r.hasCam ? 'is-ok' : 'is-err',
-      mark: r.hasCam ? '✓' : '✗',
-    });
-    let serverVal;
-    let serverCls;
-    let serverMark;
-    if (r.localServerRunning) {
-      serverVal = 'CAM listening on 127.0.0.1:8420';
-      serverCls = 'is-ok';
-      serverMark = '✓';
-    } else if (r.localPortOccupiedByOther) {
-      serverVal = 'port 8420 occupied by non-CAM service';
-      serverCls = 'is-err';
-      serverMark = '!';
-    } else {
-      serverVal = 'not running';
-      serverCls = 'is-err';
-      serverMark = '✗';
-    }
-    rows.push({ key: 'Local server', val: serverVal, cls: serverCls, mark: serverMark });
-    readinessGrid.innerHTML = rows
-      .map((row) =>
-        `<div class="readiness-row ${row.cls}">` +
-          `<span class="mark">${escapeHtml(row.mark)}</span>` +
-          `<span class="key">${escapeHtml(row.key)}</span>` +
-          `<span class="val">${escapeHtml(row.val)}</span>` +
-        '</div>',
-      )
-      .join('');
+  function renderTarget(r) {
+    if (!r) { targetEl.textContent = ''; return; }
+    // The embedded Hub runs inside the Electron Node process — no
+    // WSL, no host Python, no host `cam` CLI required
+    // (CAM-DESK-DIRECT-011 / DIRECT-013).
+    const plat = r.platform ? ` · ${escapeHtml(r.platform)}` : '';
+    targetEl.innerHTML = `Runtime: <strong>embedded</strong> (Electron Node${plat})`;
   }
 
-  function setHint(text, cls = '') {
-    readinessHint.textContent = text || '';
-    readinessHint.classList.remove('is-error', 'is-ok');
-    if (cls) readinessHint.classList.add(cls);
+  function renderDiagnostics(r) {
+    if (!r) { diagGrid.textContent = '(no data)'; return; }
+    const portState = r.apiPortStatus && r.apiPortStatus.state;
+    const rows = [
+      ['Runtime',        'embedded (Electron Node)'],
+      ['Platform',       r.platform || '—'],
+      ['API port',       `${r.apiPort}${portState ? ' — ' + portState : ''}`],
+      ['Profile kind',   _profileKind()],
+    ];
+    if (r.state && r.state.server) {
+      const s = r.state.server;
+      rows.push(
+        ['Hub owned',          String(!!s.owned)],
+        ['Hub PID',            s.pid || '—'],
+        ['Hub token (sha256)', shortRedact(s.tokenFingerprint)],
+      );
+    }
+    if (r.lastError) {
+      rows.push(['Last error', r.lastError]);
+    }
+    diagGrid.innerHTML = rows.map(([k, v]) =>
+      `<div class="diag-key">${escapeHtml(k)}</div><div class="diag-val">${escapeHtml(String(v))}</div>`,
+    ).join('');
   }
 
-  function setCmd(text) {
-    if (text) {
-      readinessCmd.textContent = text;
-      readinessCmd.hidden = false;
-    } else {
-      readinessCmd.textContent = '';
-      readinessCmd.hidden = true;
-    }
+  function applyButtonState(r) {
+    const supported = !!bridgeDirectHub();
+    const owned    = !!(r && r.state && r.state.server && r.state.server.owned);
+    const summary  = r && r.summary;
+    checkBtn.disabled = !supported;
+    // The embedded Hub is built in — there is no local-runtime
+    // gate. Start is only blocked when the whole candidate port range
+    // is exhausted (summary === 'port-conflict'). The hub-side
+    // start() does its own scan and will pick 8421..8429 if 8420 is
+    // taken, so a single foreign listener on 8420 must not block UI.
+    startBtn.disabled = !supported || owned || summary === 'port-conflict';
+    stopBtn.disabled    = !supported || !owned;
+    restartBt.disabled  = !supported || !owned;
   }
 
-  function updateStartEnabled() {
-    const r = lastReadiness;
-    const canStart =
-      bridgeSupportsStart() &&
-      !!r &&
-      r.hasCam &&
-      !r.localServerRunning &&
-      !r.localPortOccupiedByOther;
-    startBtn.disabled = !canStart;
-    let title;
-    if (canStart) {
-      title = 'Launch cam serve and reconnect.';
-    } else if (!bridgeSupportsStart()) {
-      title = 'Start requires the Electron desktop app.';
-    } else if (r && r.localPortOccupiedByOther) {
-      title = 'Port 8420 is occupied by a non-CAM service. Free the port and try again.';
-    } else if (r && r.localServerRunning) {
-      title = 'A CAM server is already running. Enter its token below or stop it first.';
-    } else if (r && !r.hasCam) {
-      title = 'Backend cannot be started until CAM is installed locally.';
-    } else {
-      title = 'Run Check backend first to detect the local environment.';
+  async function refreshCheck() {
+    if (!bridgeDirectHub()) {
+      setBadge('error');
+      detailEl.textContent = 'Direct Hub requires CAM Desktop (Electron). Open the installed app to use Direct.';
+      checkBtn.disabled = true;
+      startBtn.disabled = stopBtn.disabled = restartBt.disabled = true;
+      return null;
     }
-    startBtn.title = title;
-  }
-
-  /* ── Actions ── */
-
-  async function runCheck() {
-    if (!bridgeSupportsReadiness()) {
-      renderReadinessRows(null);
-      setHint('Backend readiness checks require the Electron desktop app.', 'is-error');
-      setCmd('');
-      lastReadiness = null;
-      updateStartEnabled();
-      return;
-    }
-    checkBtn.disabled = true;
-    const orig = checkBtn.textContent;
-    checkBtn.textContent = 'Checking…';
-    setHint('Scanning local environment…');
-    setCmd('');
+    setBadge('checking');
+    detailEl.textContent = 'Checking embedded Hub state…';
+    let r;
     try {
-      const r = await bridge().checkBackendReadiness();
-      lastReadiness = r || null;
-      renderReadinessRows(lastReadiness);
-      if (lastReadiness?.message) {
-        const cls = lastReadiness.localServerRunning
-          ? 'is-ok'
-          : (lastReadiness.hasCam ? '' : 'is-error');
-        setHint(lastReadiness.message, cls);
-      } else {
-        setHint('', '');
-      }
-      setCmd(lastReadiness?.suggestedCommand || '');
+      r = await bridgeDirectHub().check();
     } catch (e) {
-      lastReadiness = null;
-      renderReadinessRows(null);
-      setHint(`Check failed: ${e?.message || e}`, 'is-error');
-      setCmd('');
-    } finally {
-      checkBtn.disabled = false;
-      checkBtn.textContent = orig;
-      updateStartEnabled();
+      setBadge('error');
+      detailEl.textContent = `Check failed: ${e?.message || e}`;
+      return null;
     }
+    setBadge(r.summary);
+    detailEl.textContent = summaryDetail(r);
+    renderTarget(r);
+    renderDiagnostics(r);
+    applyButtonState(r);
+    return r;
   }
 
-  async function runStart() {
-    if (!bridgeSupportsStart()) {
-      setHint('Start requires the Electron desktop app.', 'is-error');
-      return;
-    }
-    startBtn.disabled = true;
-    const orig = startBtn.textContent;
-    startBtn.textContent = 'Starting…';
-    setHint('Starting local backend…');
+  async function doStart() {
+    if (!bridgeDirectHub()) return;
+    setStatus('Starting embedded Hub…');
+    setBadge('starting');
+    startBtn.disabled = stopBtn.disabled = restartBt.disabled = true;
+    let res;
     try {
-      const res = await bridge().startLocalBackend();
-      if (res?.ok) {
-        // Phase 2A one-click path: main process generated a fresh token
-        // and started cam serve with it. Fill direct-connection fields and
-        // reconnect automatically.
-        serverUrl.value = res.url || DEFAULT_LOCAL_URL;
-        if (res.token) token.value = res.token;
-        saveConfig(readForm());
-        setHint(res.message || 'Backend started.', 'is-ok');
-        const mode = await connect();
-        if (mode !== 'disconnected') {
-          showToast(`Connected (${mode})`, 'success');
-        } else {
-          showToast('Backend started but client could not connect.', 'warning', 6000);
-        }
-        // Refresh readiness view to reflect the now-running server.
-        await runCheck();
-      } else {
-        setHint(res?.message || 'Start failed.', 'is-error');
-        // If main reported a known URL (e.g. an existing CAM server) but
-        // refused to start because we don't know its token, fill the URL
-        // so the user only needs to paste a token to connect.
-        if (res?.url && !readConfig().serverUrl) {
-          serverUrl.value = res.url;
-        }
-      }
+      res = await bridgeDirectHub().start();
     } catch (e) {
-      setHint(`Start failed: ${e?.message || e}`, 'is-error');
-    } finally {
-      startBtn.textContent = orig;
-      updateStartEnabled();
-    }
-  }
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const cfg = readForm();
-    if (!cfg.serverUrl && !cfg.relayUrl) {
-      setStatus('Set a server URL or relay URL.', 'is-error');
+      setStatus(`Start failed: ${e?.message || e}`, 'is-error');
+      await refreshCheck();
       return;
     }
-    saveConfig(cfg);
+    if (!res || res.ok !== true) {
+      setStatus(res && res.error ? res.error : 'Start failed.', 'is-error');
+      setHint(res && res.error ? res.error : 'See Diagnostics for details.', 'is-error');
+      await refreshCheck();
+      return;
+    }
+    // The generated internal profile is Direct-compatible (CAM-DESK-DIRECT-012):
+    // store apiUrl + apiToken in the shared localStorage keys, clear the
+    // Relay fields, and mark the profile kind. Downstream code uses
+    // CamApi.connect via the existing Direct wire shape — no branching
+    // on transport. Token never leaves Diagnostics in plaintext.
+    saveConfig({
+      serverUrl:  res.apiUrl,
+      token:      res.apiToken,
+      relayUrl:   '',
+      relayToken: '',
+    });
+    _setProfileKind('direct');
     setStatus('Connecting…');
     const mode = await connect();
     if (mode !== 'disconnected') {
       setStatus(`Connected (${mode}).`, 'is-ok');
-      showToast(`Connected (${mode})`, 'success');
+      setHint('Embedded Hub is running and Desktop is connected.', 'is-ok');
+      showToast('Embedded Hub started', 'success');
     } else {
-      setStatus('Connection failed — check URL and token.', 'is-error');
-      showToast('Connection failed', 'error', 5000);
+      setStatus('Hub started but client could not connect.', 'is-error');
+      setHint('Hub started but client could not connect.', 'is-error');
     }
-  });
+    await refreshCheck();
+  }
 
-  testBtn.addEventListener('click', async () => {
-    const cfg = readForm();
-    if (!cfg.serverUrl) {
-      setStatus('Set a server URL to test direct.', 'is-error');
+  async function doStop() {
+    if (!bridgeDirectHub()) return;
+    setStatus('Stopping embedded Hub…');
+    try {
+      await bridgeDirectHub().stop();
+    } catch (e) {
+      setStatus(`Stop failed: ${e?.message || e}`, 'is-error');
       return;
     }
-    testBtn.disabled = true;
-    const originalText = testBtn.textContent;
-    testBtn.textContent = 'Testing…';
-    setStatus('Testing direct connection…');
+    // Disable the Direct profile entirely. We clear both the
+    // profile-kind marker AND the internal Direct serverUrl/token,
+    // then call connect() so AppState transitions to disconnected.
+    // Without this, app.js' resolveConnectionConfig() infers a Direct
+    // profile from the still-present serverUrl+token and the
+    // POLL_INTERVAL reconnect loop hammers a stopped Hub every 5s.
+    // The next Start round will generate a fresh token anyway, so
+    // there's nothing useful to preserve here.
+    saveConfig({ serverUrl: '', token: '', relayUrl: '', relayToken: '' });
+    _setProfileKind(null);
+    setStatus('Stopped.', 'is-ok');
+    setHint('');
+    await connect();
+    await refreshCheck();
+  }
+
+  async function doRestart() {
+    if (!bridgeDirectHub()) return;
+    setStatus('Restarting embedded Hub…');
+    setBadge('starting');
     try {
-      const headers = {};
-      if (cfg.token) headers['Authorization'] = `Bearer ${cfg.token}`;
-      const resp = await fetch(`${cfg.serverUrl.replace(/\/$/, '')}/api/contexts`, {
-        headers,
-        signal: AbortSignal.timeout(10000),
-      });
-      if (resp.ok) {
-        setStatus('Direct OK — server reachable and token accepted.', 'is-ok');
-      } else if (resp.status === 401) {
-        setStatus('Server reachable, but the token was rejected.', 'is-error');
+      const res = await bridgeDirectHub().restart();
+      if (!res || res.ok !== true) {
+        setStatus((res && res.error) || 'Restart failed.', 'is-error');
       } else {
-        setStatus(`Server responded with HTTP ${resp.status}.`, 'is-error');
+        saveConfig({
+          serverUrl:  res.apiUrl,
+          token:      res.apiToken,
+          relayUrl:   '',
+          relayToken: '',
+        });
+        _setProfileKind('direct');
+        const mode = await connect();
+        if (mode !== 'disconnected') {
+          setStatus(`Reconnected (${mode}).`, 'is-ok');
+        } else {
+          setStatus('Restarted but reconnect failed.', 'is-error');
+        }
       }
     } catch (e) {
-      setStatus(`Direct test failed: ${e.message}`, 'is-error');
-    } finally {
-      testBtn.disabled = false;
-      testBtn.textContent = originalText;
+      setStatus(`Restart failed: ${e?.message || e}`, 'is-error');
     }
-  });
-
-  checkBtn.addEventListener('click', runCheck);
-  startBtn.addEventListener('click', runStart);
-
-  if (!bridgeSupportsReadiness()) {
-    checkBtn.disabled = true;
-    checkBtn.title = 'Backend readiness checks require the Electron desktop app.';
+    await refreshCheck();
   }
-  updateStartEnabled();
 
-  // Re-render form + health whenever Settings becomes the active mode.
-  let prevMode = state.get('mode');
-  let prevConn = state.get('connectionMode');
-  loadIntoForm();
-  renderHealth();
-  renderReadinessRows(null);
+  async function refreshLogs() {
+    if (!bridgeDirectHub()) return;
+    let out;
+    try { out = await bridgeDirectHub().logs(); }
+    catch (e) { diagLogs.textContent = `(logs unavailable: ${e?.message || e})`; return; }
+    const lines = (out && out.server) || [];
+    diagLogs.textContent =
+      `=== embedded Hub (${lines.length} lines) ===\n` +
+      lines.map((l) => `[${l.kind}] ${l.text}`).join('\n');
+  }
 
-  state.subscribe(() => {
-    const m = state.get('mode');
-    const c = state.get('connectionMode');
-    if (m !== prevMode) {
-      prevMode = m;
-      if (m === 'settings') loadIntoForm();
+  checkBtn.addEventListener('click',  refreshCheck);
+  startBtn.addEventListener('click',  doStart);
+  stopBtn.addEventListener('click',   doStop);
+  restartBt.addEventListener('click', doRestart);
+  diagRefr.addEventListener('click',  refreshLogs);
+
+  // Initial render — don't auto-check at mount; let the user click
+  // Check. But disable the buttons when the bridge isn't available
+  // (e.g. opened in a browser tab against the WebUI dev mode).
+  if (!bridgeDirectHub()) {
+    setBadge('error');
+    detailEl.textContent = 'Direct Hub requires CAM Desktop (Electron). Open the installed app to use Direct.';
+    [checkBtn, startBtn, stopBtn, restartBt].forEach(b => { b.disabled = true; });
+  } else {
+    setBadge('stopped');
+    detailEl.textContent = 'Click Check to inspect the embedded Hub, or Start to launch it.';
+  }
+}
+
+/* ───────── Relay tab controller (CAM-DESK-REMOTE-012) ───────── */
+
+function mountRelayTab({ panel, readConfig, saveConfig, connect, showToast }) {
+  const relayForm   = panel.querySelector('#settings-form-relay');
+  const relayStatus = panel.querySelector('#settings-status-relay');
+  if (!relayForm) return;
+
+  const relayUrlEl   = panel.querySelector('#set-relay-url');
+  const relayTokenEl = panel.querySelector('#set-relay-token');
+  const camTokenEl   = panel.querySelector('#set-relay-cam-token');
+
+  // Initial fill from existing localStorage.
+  const cfg = readConfig();
+  if (relayUrlEl)   relayUrlEl.value   = cfg.relayUrl || '';
+  if (relayTokenEl) relayTokenEl.value = cfg.relayToken || '';
+  if (camTokenEl)   camTokenEl.value   = cfg.token || '';
+
+  function relaySetStatus(text, cls = '') {
+    if (!relayStatus) return;
+    relayStatus.textContent = text || '';
+    relayStatus.classList.remove('is-error', 'is-ok');
+    if (cls) relayStatus.classList.add(cls);
+  }
+
+  relayForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const ru = relayUrlEl   ? relayUrlEl.value.trim()   : '';
+    const rt = relayTokenEl ? relayTokenEl.value.trim() : '';
+    const ct = camTokenEl   ? camTokenEl.value.trim()   : '';
+    if (!ru || !rt) {
+      relaySetStatus('Set both relay URL and relay token.', 'is-error');
+      return;
     }
-    if (c !== prevConn) {
-      prevConn = c;
-      renderHealth();
+    if (!ct) {
+      relaySetStatus(
+        'Set the CAM API token of the CAM Hub behind the relay. ' +
+        'Without it, proxied /api requests will be unauthenticated.',
+        'is-error',
+      );
+      return;
+    }
+    // Tab-isolation: Relay clears the Direct serverUrl so CamApi does
+    // not race Direct vs Relay, but keeps the CAM token under `token`
+    // because CamApi.request() needs it for Authorization on proxied
+    // REST calls (web/js/api.js).
+    saveConfig({
+      serverUrl:  '',
+      token:      ct,
+      relayUrl:   ru,
+      relayToken: rt,
+    });
+    _setProfileKind('relay');
+    relaySetStatus('Connecting…');
+    const mode = await connect();
+    if (mode !== 'disconnected') {
+      relaySetStatus(`Connected (${mode}).`, 'is-ok');
+      showToast(`Connected (${mode})`, 'success');
+    } else {
+      relaySetStatus('Connection failed — check relay URL, relay token, and CAM token.', 'is-error');
     }
   });
 }
