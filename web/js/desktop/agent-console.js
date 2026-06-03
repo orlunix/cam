@@ -703,7 +703,7 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
     expandKeysBtn.addEventListener('click', () => {
       if (expandKeysBtn.disabled) return;
       const hidden = extraKeysEl.classList.toggle('hidden');
-      expandKeysBtn.textContent = hidden ? 'More' : 'Less';
+      expandKeysBtn.textContent = hidden ? '...' : 'x';
       expandKeysBtn.setAttribute('aria-expanded', hidden ? 'false' : 'true');
     });
   }
