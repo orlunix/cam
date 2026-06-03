@@ -20,18 +20,91 @@ function timeSince(dateStr) {
   return `${Math.floor(s / 86400)}d`;
 }
 
+function agentName(agent) {
+  return String(agent?.task_name || agent?.task?.name || agent?.id?.slice(0, 8) || '');
+}
+
+function _dateMs(raw) {
+  if (!raw) return 0;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function agentDateMs(agent) {
+  // Legacy: best-available recency stamp.
+  return _dateMs(agent?.started_at) || _dateMs(agent?.updated_at)
+      || _dateMs(agent?.completed_at) || _dateMs(agent?.created_at);
+}
+
+function agentUpdatedMs(agent) {
+  return _dateMs(agent?.updated_at) || _dateMs(agent?.completed_at)
+      || _dateMs(agent?.started_at) || _dateMs(agent?.created_at);
+}
+
+function agentCreatedMs(agent) {
+  return _dateMs(agent?.created_at) || _dateMs(agent?.started_at)
+      || _dateMs(agent?.updated_at) || _dateMs(agent?.completed_at);
+}
+
+// Sort string is stored in filters.sort as "<field>-<dir>". Legacy
+// values 'date-desc' / 'date-asc' migrate to 'updated-desc' / 'updated-asc'
+// so existing AppState snapshots keep working without a flag day.
+const SORT_DEFAULT = 'updated-desc';
+function parseSort(s) {
+  let raw = String(s || SORT_DEFAULT);
+  if (raw === 'date-desc') raw = 'updated-desc';
+  if (raw === 'date-asc')  raw = 'updated-asc';
+  const idx = raw.lastIndexOf('-');
+  const field = idx > 0 ? raw.slice(0, idx) : 'updated';
+  const dir   = idx > 0 ? raw.slice(idx + 1) : 'desc';
+  const f = ['updated', 'created', 'name'].includes(field) ? field : 'updated';
+  const d = dir === 'asc' ? 'asc' : 'desc';
+  return { field: f, dir: d, value: `${f}-${d}` };
+}
+
+function agentTags(agent) {
+  const tags = [];
+  if (Array.isArray(agent?.tags)) tags.push(...agent.tags);
+  if (Array.isArray(agent?.task?.tags)) tags.push(...agent.task.tags);
+  if (Array.isArray(agent?.task_tags)) tags.push(...agent.task_tags);
+  return [...new Set(tags.map(t => String(t || '').trim()).filter(Boolean))];
+}
+
 export function mountShell({ state }) {
   const listWrap = document.getElementById('agent-list-wrap');
   const statusSel = document.getElementById('filter-status');
   const toolSel = document.getElementById('filter-tool');
   const machineSel = document.getElementById('filter-machine');
+  const tagSel = document.getElementById('filter-tag');
+  const sortFieldSel = document.getElementById('sort-field');
+  const sortDirSel = document.getElementById('sort-dir');
+  const menuBtn = document.getElementById('agents-menu-btn');
+  const popover = document.getElementById('agents-menu-popover');
+  const chipsEl = document.getElementById('agents-filter-chips');
+  const clearBtn = document.getElementById('agents-menu-clear');
 
   // Restore filter state if AppState already had a value from prior view.
-  const filters = state.get('filters') || { status: '', tool: '', machine: '' };
+  // Legacy 'date-desc'/'date-asc' is migrated transparently by parseSort.
+  const stored = state.get('filters') || {};
+  const initialSort = parseSort(stored.sort).value;
+  const filters = {
+    status: '', tool: '', machine: '', tag: '',
+    ...stored,
+    sort: initialSort,
+  };
   if (filters.status) statusSel.value = filters.status;
   if (filters.tool) toolSel.value = filters.tool;
-  // machineSel value is restored inside refreshMachineFilterOptions()
-  // after the option list is populated from the current agent set.
+  if (sortFieldSel && sortDirSel) {
+    const { field, dir } = parseSort(initialSort);
+    sortFieldSel.value = field;
+    sortDirSel.value = dir;
+  }
+  // Write back the migrated sort so any other consumer sees the new value.
+  if (initialSort !== stored.sort) {
+    state.set('filters', { ...stored, sort: initialSort });
+  }
+  // machine/tag values are restored inside refresh*FilterOptions()
+  // after the option lists are populated from the current agent set.
 
   statusSel.addEventListener('change', () => {
     state.set('filters', { ...state.get('filters'), status: statusSel.value });
@@ -44,9 +117,125 @@ export function mountShell({ state }) {
       state.set('filters', { ...state.get('filters'), machine: machineSel.value });
     });
   }
+  if (tagSel) {
+    tagSel.addEventListener('change', () => {
+      state.set('filters', { ...state.get('filters'), tag: tagSel.value });
+    });
+  }
+  function commitSort() {
+    const field = (sortFieldSel && sortFieldSel.value) || 'updated';
+    const dir = (sortDirSel && sortDirSel.value) || 'desc';
+    state.set('filters', { ...state.get('filters'), sort: `${field}-${dir}` });
+  }
+  if (sortFieldSel) sortFieldSel.addEventListener('change', commitSort);
+  if (sortDirSel) sortDirSel.addEventListener('change', commitSort);
+
+  /* ── Popover open/close ── */
+  function openPopover() {
+    if (!popover || !menuBtn) return;
+    popover.hidden = false;
+    menuBtn.setAttribute('aria-expanded', 'true');
+  }
+  function closePopover() {
+    if (!popover || !menuBtn) return;
+    popover.hidden = true;
+    menuBtn.setAttribute('aria-expanded', 'false');
+  }
+  function togglePopover() {
+    if (!popover) return;
+    if (popover.hidden) openPopover(); else closePopover();
+  }
+  if (menuBtn) {
+    menuBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      togglePopover();
+    });
+  }
+  if (popover) {
+    // Clicks inside the popover should not close it.
+    popover.addEventListener('click', (e) => e.stopPropagation());
+  }
+  // Click outside → close.
+  document.addEventListener('click', (e) => {
+    if (!popover || popover.hidden) return;
+    if (e.target === menuBtn || (menuBtn && menuBtn.contains(e.target))) return;
+    if (popover.contains(e.target)) return;
+    closePopover();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && popover && !popover.hidden) closePopover();
+  });
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      // Clear filter dimensions; keep current sort.
+      const cur = state.get('filters') || {};
+      state.set('filters', {
+        ...cur, status: '', tool: '', machine: '', tag: '',
+      });
+      statusSel.value = '';
+      toolSel.value = '';
+      if (machineSel) machineSel.value = '';
+      if (tagSel) tagSel.value = '';
+    });
+  }
+
+  /* ── Active-filter chips ── */
+  function chipHtml(key, label, value, display) {
+    return (
+      '<span class="filter-chip" data-key="' + escapeHtml(key) + '">' +
+        '<span class="chip-label">' + escapeHtml(label) + ':</span>' +
+        '<span class="chip-value">' + escapeHtml(display || value) + '</span>' +
+        '<button type="button" class="chip-clear" aria-label="Clear ' +
+          escapeHtml(label) + ' filter">&times;</button>' +
+      '</span>'
+    );
+  }
+  function renderChips() {
+    if (!chipsEl) return;
+    const f = state.get('filters') || {};
+    const parts = [];
+    if (f.tag)     parts.push(chipHtml('tag',     'Tag',    f.tag,     '#' + f.tag));
+    if (f.status)  parts.push(chipHtml('status',  'Status', f.status));
+    if (f.tool)    parts.push(chipHtml('tool',    'Tool',   f.tool));
+    if (f.machine) {
+      const lbl = f.machine === 'local' ? 'local' : String(f.machine).split('.')[0];
+      parts.push(chipHtml('machine', 'Node', f.machine, lbl));
+    }
+    const { field, dir, value } = parseSort(f.sort);
+    if (value !== SORT_DEFAULT) {
+      const label = field === 'name' ? 'Name' : (field.charAt(0).toUpperCase() + field.slice(1));
+      const arrow = dir === 'asc' ? ' ↑' : ' ↓';
+      parts.push(chipHtml('sort', 'Sort', value, label + arrow));
+    }
+    if (parts.length === 0) {
+      chipsEl.hidden = true;
+      chipsEl.innerHTML = '';
+      return;
+    }
+    chipsEl.hidden = false;
+    chipsEl.innerHTML = parts.join('');
+    chipsEl.querySelectorAll('.filter-chip').forEach(chip => {
+      const key = chip.getAttribute('data-key');
+      const clearBtnEl = chip.querySelector('.chip-clear');
+      if (!clearBtnEl) return;
+      clearBtnEl.addEventListener('click', () => {
+        const cur = state.get('filters') || {};
+        if (key === 'sort') {
+          state.set('filters', { ...cur, sort: SORT_DEFAULT });
+          if (sortFieldSel) sortFieldSel.value = 'updated';
+          if (sortDirSel) sortDirSel.value = 'desc';
+        } else {
+          state.set('filters', { ...cur, [key]: '' });
+          const sel = { status: statusSel, tool: toolSel, machine: machineSel, tag: tagSel }[key];
+          if (sel) sel.value = '';
+        }
+      });
+    });
+  }
 
   function applyFilters(agents) {
-    const f = state.get('filters') || {};
+    const cur = state.get('filters') || {};
+    const f = { sort: SORT_DEFAULT, ...cur };
     let out = agents.slice();
     if (f.status) out = out.filter(a => a.status === f.status);
     if (f.tool) out = out.filter(a => a.tool === f.tool);
@@ -57,12 +246,19 @@ export function mountShell({ state }) {
         return host === f.machine;
       });
     }
-    // Sort: running first, then by started_at desc.
+    if (f.tag) out = out.filter(a => agentTags(a).includes(f.tag));
+
+    const { field, dir } = parseSort(f.sort);
     out.sort((a, b) => {
-      const aRun = a.status === 'running' ? 0 : 1;
-      const bRun = b.status === 'running' ? 0 : 1;
-      if (aRun !== bRun) return aRun - bRun;
-      return new Date(b.started_at || 0) - new Date(a.started_at || 0);
+      if (field === 'name') {
+        const cmp = agentName(a).localeCompare(agentName(b), undefined, { sensitivity: 'base' });
+        if (cmp !== 0) return dir === 'asc' ? cmp : -cmp;
+        return agentUpdatedMs(b) - agentUpdatedMs(a);
+      }
+      const getMs = field === 'created' ? agentCreatedMs : agentUpdatedMs;
+      const delta = getMs(a) - getMs(b);
+      if (delta !== 0) return dir === 'asc' ? delta : -delta;
+      return agentName(a).localeCompare(agentName(b), undefined, { sensitivity: 'base' });
     });
     return out;
   }
@@ -106,11 +302,31 @@ export function mountShell({ state }) {
     }
   }
 
+  function refreshTagFilterOptions(agents) {
+    if (!tagSel) return;
+    const tags = [...new Set(agents.flatMap(agentTags))].sort((a, b) => a.localeCompare(b));
+    const desired = (state.get('filters') || {}).tag || '';
+    tagSel.innerHTML =
+      '<option value="">All tags</option>' +
+      tags.map(t => `<option value="${escapeHtml(t)}">#${escapeHtml(t)}</option>`).join('');
+    if (desired && tags.includes(desired)) {
+      tagSel.value = desired;
+    } else if (desired) {
+      const opt = document.createElement('option');
+      opt.value = desired;
+      opt.textContent = `#${desired}`;
+      tagSel.appendChild(opt);
+      tagSel.value = desired;
+    }
+  }
+
   function render() {
     const agents = state.get('agents') || [];
     const selectedId = state.get('selectedAgentId');
     refreshToolFilterOptions(agents);
     refreshMachineFilterOptions(agents);
+    refreshTagFilterOptions(agents);
+    renderChips();
     const filtered = applyFilters(agents);
 
     if (filtered.length === 0) {
@@ -122,19 +338,26 @@ export function mountShell({ state }) {
     }
 
     const html = filtered.map(agent => {
-      const name = escapeHtml(agent.task_name || agent.id?.slice(0, 8) || '');
+      const name = escapeHtml(agentName(agent));
       const tool = escapeHtml(agent.tool || '');
       const ctx = agent.context_name ? ' · ' + escapeHtml(agent.context_name) : '';
       const status = escapeHtml(agent.status || 'unknown');
       const host = agent.machine_host ? ' · ' + escapeHtml(agent.machine_host.split('.')[0]) : '';
       const t = timeSince(agent.started_at);
       const sel = agent.id === selectedId ? ' selected' : '';
+      // CAMC task tags — appended inline so the row-meta's
+      // text-overflow:ellipsis truncates them naturally when the
+      // line is too narrow. Each tag becomes "#tag" text.
+      const tags = agentTags(agent);
+      const tagText = tags.length
+        ? ' · ' + tags.map(tg => '#' + escapeHtml(tg)).join(' ')
+        : '';
       return `
         <div class="desktop-agent-row${sel}" data-id="${escapeHtml(agent.id)}">
           <span class="dot ${escapeHtml(agent.status || '')}"></span>
           <div class="row-body">
             <div class="row-name">${name}</div>
-            <div class="row-meta">${tool}${ctx}${host} · ${status}</div>
+            <div class="row-meta">${tool}${ctx}${host} · ${status}${tagText}</div>
           </div>
           <div class="row-time">${t}</div>
         </div>`;

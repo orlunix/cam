@@ -22,8 +22,8 @@
  *   GET  /api/agents/:id/logs     — empty logs shape
  *
  * Mutating endpoints (POST /api/agents, PATCH /api/agents/:id,
- * DELETE /api/agents/:id, /input, /key, /upload, /restart, and any
- * /api/contexts write) return 501 Not Implemented with a JSON error
+ * DELETE /api/agents/:id, /restart, and context-copy cleanup paths
+ * still return 501 Not Implemented with a JSON error
  * body so the renderer can surface it cleanly. They will be wired in
  * a later pass that pins down DIRECT-015..018 (node management +
  * credential references) and a remote-controller transport.
@@ -269,7 +269,7 @@ function send400(res, detail, code) {
   sendJson(res, 400, { error: code || 'bad_request', detail });
 }
 
-const REQ_BODY_MAX = 64 * 1024;   // 64 KiB plenty for context records
+const REQ_BODY_MAX = 25 * 1024 * 1024; // upload payloads are base64 JSON
 
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -860,7 +860,8 @@ function _contextForAgent(agentId) {
 
 /** Run `~/.cam/camc <args>` on a remote context via the injected SSH
  *  transport. Bootstraps the bundled camc to that exact path first
- *  when the remote file is missing or not executable.
+ *  when the remote file is missing, not executable, or hash-different
+ *  from the bundled copy.
  *  Returns `{ ok: true, stdout, stderr }` or `{ ok: false, error,
  *  detail }`. Pure execution helper — does not mutate the store. */
 function _bundledCamcPath() {
@@ -879,7 +880,14 @@ function _bundledCamcPath() {
 function _readBundledCamc() {
   const p = _bundledCamcPath();
   if (!p) return { error: 'bundled_camc_missing', detail: 'bundled camc was not found in resources/camc/camc, src/camc, or dist/camc' };
-  try { return { content: fs.readFileSync(p), path: p }; }
+  try {
+    const content = fs.readFileSync(p);
+    return {
+      content,
+      path: p,
+      hash: crypto.createHash('md5').update(content).digest('hex').slice(0, 12),
+    };
+  }
   catch (e) { return { error: 'bundled_camc_read_failed', detail: e && e.message }; }
 }
 
@@ -891,11 +899,17 @@ async function _ensureRemoteCamc(baseOpts) {
     return { ok: true, skipped: 'writeRemoteFile_unavailable' };
   }
 
-  const exists = await _sshTransport.execRemote({ ...baseOpts, command: `test -x ${REMOTE_CAMC}` });
-  if (exists && exists.ok) return { ok: true, present: true };
-
   const local = _readBundledCamc();
   if (local.error) return { ok: false, error: local.error, detail: local.detail };
+
+  const remoteHash = await _sshTransport.execRemote({
+    ...baseOpts,
+    command: `bash -c 'test -x ${REMOTE_CAMC} && md5sum ${REMOTE_CAMC} 2>/dev/null | cut -c1-12'`,
+  });
+  const remote = remoteHash && remoteHash.ok ? String(remoteHash.stdout || '').trim() : '';
+  if (remote && remote === local.hash) {
+    return { ok: true, present: true, hash: remote };
+  }
 
   const mkdir = await _sshTransport.execRemote({ ...baseOpts, command: 'mkdir -p ~/.cam' });
   if (!mkdir || !mkdir.ok) {
@@ -920,12 +934,130 @@ async function _ensureRemoteCamc(baseOpts) {
   if (!verify || !verify.ok) {
     return { ok: false, error: verify && verify.error || 'remote_camc_verify_failed', detail: verify && (verify.detail || verify.stderr) || '~/.cam/camc is not executable after upload' };
   }
-  pushLog('info', `installed bundled camc on ${baseOpts.user}@${baseOpts.host}:${baseOpts.port || 22}`);
-  return { ok: true, installed: true };
+  const action = remote ? 'updated' : 'installed';
+  pushLog('info', `${action} bundled camc on ${baseOpts.user}@${baseOpts.host}:${baseOpts.port || 22}`);
+  return { ok: true, installed: !remote, updated: !!remote, hash: local.hash };
 }
 
 function _shellQuote(s) {
   return `'${String(s == null ? '' : s).replace(/'/g, `'\\''`)}'`;
+}
+
+
+function _timestampCompact() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+
+function _safeUploadFilename(name) {
+  let safe = String(name || '').replace(/[^A-Za-z0-9_.-]/g, '_');
+  safe = safe.replace(/^\.+/, '').slice(0, 160);
+  return safe || 'image.png';
+}
+
+function _decodeUploadData(data) {
+  const raw = String(data || '').replace(/\s+/g, '');
+  if (!raw) return { error: 'missing_data', detail: 'data is required' };
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(raw) || raw.length % 4 === 1) {
+    return { error: 'invalid_base64', detail: 'Invalid base64 data' };
+  }
+  try {
+    const buf = Buffer.from(raw, 'base64');
+    if (!buf.length) return { error: 'invalid_base64', detail: 'Invalid base64 data' };
+    return { content: buf };
+  } catch (e) {
+    return { error: 'invalid_base64', detail: e && e.message || 'Invalid base64 data' };
+  }
+}
+
+function _sshBaseOptsForContext(ctx, timeoutMs = SYNC_DEFAULT_TIMEOUT_MS) {
+  if (!ctx || !ctx.machine || ctx.machine.type !== 'ssh') {
+    return { error: 'not_ssh', detail: `context "${(ctx && ctx.name) || '?'}" is not an SSH context` };
+  }
+  if (!_sshTransport || typeof _sshTransport.execRemote !== 'function') {
+    return { error: 'ssh_transport_unavailable', detail: 'embedded Hub has no SSH transport configured' };
+  }
+  const m = ctx.machine;
+  const opts = {
+    host:        m.host,
+    user:        m.user,
+    port:        m.port || 22,
+    auth_method: m.auth_method || (m.key_file ? 'key' : 'agent'),
+    key_file:    m.key_file || '',
+    timeout_ms:  timeoutMs,
+  };
+  if (opts.auth_method === 'password') {
+    const pw = _credentialFor(ctx);
+    if (pw == null || pw === '') {
+      return { error: 'credential_missing', detail: 'password auth is configured but no remembered password is available' };
+    }
+    opts.password = pw;
+  } else if (opts.auth_method === 'key') {
+    const pp = _credentialFor(ctx);
+    if (pp != null) opts.passphrase = pp;
+  }
+  return { opts };
+}
+
+
+function _validTmuxKey(key) {
+  return /^[A-Za-z0-9_-]{1,32}$/.test(String(key || ''));
+}
+
+async function _sendAgentKey(agentId, key) {
+  const k = String(key || '').trim();
+  if (!k) return { ok: false, error: 'missing_key', detail: 'key is required' };
+  if (!_validTmuxKey(k)) return { ok: false, error: 'invalid_key', detail: `invalid key: ${k}` };
+  const resolved = _contextForAgent(agentId);
+  if (resolved.error) return { ok: false, error: resolved.error, detail: `Key unavailable: ${resolved.error}` };
+  const agent = resolved.agent || {};
+  const terminal = ['completed', 'failed', 'timeout', 'killed'].includes(String(agent.status || '').toLowerCase());
+  if (terminal) return { ok: false, error: 'agent_not_running', detail: 'Agent is not running' };
+  const exec = await _execCamcOnContext(resolved.ctx, ['key', agentId, '--key', k], { timeoutMs: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000) });
+  if (!exec.ok) return { ok: false, error: exec.error || 'send_key_failed', detail: exec.detail || exec.stderr || 'failed to send key' };
+  return { ok: true, stdout: exec.stdout || '', stderr: exec.stderr || '' };
+}
+
+async function _uploadAgentFile(agentId, body) {
+  const resolved = _contextForAgent(agentId);
+  if (resolved.error) return { ok: false, error: resolved.error, detail: `Upload unavailable: ${resolved.error}` };
+  const agent = resolved.agent || {};
+  const ctx = resolved.ctx;
+  const terminal = ['completed', 'failed', 'timeout', 'killed'].includes(String(agent.status || '').toLowerCase());
+  if (terminal) return { ok: false, error: 'agent_not_running', detail: 'Agent is not running' };
+  if (!_sshTransport || typeof _sshTransport.writeRemoteFile !== 'function') {
+    return { ok: false, error: 'ssh_upload_unavailable', detail: 'embedded Hub SSH transport cannot upload files' };
+  }
+
+  const filename = body && body.filename != null ? String(body.filename) : '';
+  if (!filename.trim()) return { ok: false, error: 'missing_filename', detail: 'filename is required' };
+  const decoded = _decodeUploadData(body && body.data);
+  if (decoded.error) return { ok: false, error: decoded.error, detail: decoded.detail };
+
+  const contextPath = String(agent.context_path || agent.path || (ctx && ctx.path) || '').replace(/\/+$/, '');
+  if (!contextPath) return { ok: false, error: 'working_dir_missing', detail: 'Agent has no working directory' };
+
+  const baseBuilt = _sshBaseOptsForContext(ctx, Math.max(SYNC_DEFAULT_TIMEOUT_MS, 60000));
+  if (baseBuilt.error) return { ok: false, error: baseBuilt.error, detail: baseBuilt.detail };
+  const baseOpts = baseBuilt.opts;
+  const dir = `${contextPath}/.cam-images`;
+  const destPath = `${dir}/${_timestampCompact()}-${_safeUploadFilename(filename)}`;
+
+  const mkdir = await _sshTransport.execRemote({ ...baseOpts, command: `mkdir -p ${_shellQuote(dir)}` });
+  if (!mkdir || !mkdir.ok) {
+    return { ok: false, error: mkdir && mkdir.error || 'remote_mkdir_failed', detail: mkdir && (mkdir.detail || mkdir.stderr) || 'failed to create remote upload directory' };
+  }
+  const wrote = await _sshTransport.writeRemoteFile({
+    ...baseOpts,
+    remotePath: destPath,
+    content:    decoded.content,
+  });
+  if (!wrote || !wrote.ok) {
+    return { ok: false, error: wrote && wrote.error || 'remote_upload_failed', detail: wrote && wrote.detail || 'failed to write remote file' };
+  }
+  pushLog('info', `upload ${agentId}: ${destPath} (${decoded.content.length} bytes)`);
+  return { ok: true, path: destPath, size: decoded.content.length };
 }
 
 function _captureArgs(id, lines, format, withFormat = true) {
@@ -1414,8 +1546,33 @@ async function handle(req, res) {
       }
       return sendJson(res, 200, { ok: true });
     }
-    if (method === 'POST'  && sub === '/key')              return send501(res, 'send key');
-    if (method === 'POST'  && sub === '/upload')           return send501(res, 'upload');
+    if (method === 'POST'  && sub === '/key') {
+      let body;
+      try { body = await readJsonBody(req); }
+      catch (e) { return send400(res, e.message); }
+      const key = body && body.key != null ? String(body.key) : '';
+      const sent = await _sendAgentKey(agentMatch[1], key);
+      if (!sent.ok) {
+        pushLog('warn', `key ${agentMatch[1]} failed: ${sent.error}`);
+        const bad = new Set(['missing_key', 'invalid_key', 'agent_not_running', 'not_ssh', 'credential_missing']);
+        const status = sent.error === 'agent_not_found' ? 404 : (bad.has(sent.error) ? 400 : 502);
+        return sendJson(res, status, { error: sent.error || 'send_key_failed', detail: sent.detail || 'send key failed' });
+      }
+      return sendJson(res, 200, { ok: true });
+    }
+    if (method === 'POST'  && sub === '/upload') {
+      let body;
+      try { body = await readJsonBody(req); }
+      catch (e) { return send400(res, e.message, e.message === 'body_too_large' ? 'body_too_large' : 'bad_request'); }
+      const uploaded = await _uploadAgentFile(agentMatch[1], body || {});
+      if (!uploaded.ok) {
+        pushLog('warn', `upload ${agentMatch[1]} failed: ${uploaded.error}`);
+        const bad = new Set(['missing_filename', 'missing_data', 'invalid_base64', 'working_dir_missing', 'agent_not_running', 'not_ssh', 'credential_missing']);
+        const status = uploaded.error === 'agent_not_found' ? 404 : (bad.has(uploaded.error) ? 400 : 502);
+        return sendJson(res, status, { error: uploaded.error || 'upload_failed', detail: uploaded.detail || 'upload failed' });
+      }
+      return sendJson(res, 200, uploaded);
+    }
     if (method === 'GET'   && sub === '/logs')             return sendJson(res, 200, { logs: '', truncated: false });
     if (method === 'GET'   && sub === '/output') {
       const id = agentMatch[1];

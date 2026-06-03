@@ -235,6 +235,8 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
   const sendBtn = document.getElementById('composer-send');
   const composer = document.getElementById('agent-composer');
   const quickKeyBtns = composer.querySelectorAll('.btn-quick');
+  const expandKeysBtn = document.getElementById('expand-keys');
+  const extraKeysEl = document.getElementById('extra-keys');
   const modeBtns = document.querySelectorAll('.output-mode-btn');
   const editBtn = document.getElementById('agent-edit-btn');
   const attachBtn = document.getElementById('composer-attach');
@@ -565,6 +567,79 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
     });
   }
 
+  // Map a paste-event MIME type to a friendly extension for clipboard
+  // items that have no filename (most commonly a screenshot from the
+  // OS shortcut — Chromium / WebKit deliver such items as a File with
+  // an empty `.name`). Anything we don't know about falls back to
+  // 'bin' so the upload still goes through.
+  const MIME_EXT = {
+    'image/png':'png', 'image/jpeg':'jpg', 'image/jpg':'jpg',
+    'image/gif':'gif', 'image/webp':'webp', 'image/svg+xml':'svg',
+    'image/bmp':'bmp',
+    'application/pdf':'pdf',
+    'text/plain':'txt', 'text/markdown':'md', 'text/csv':'csv',
+    'application/json':'json',
+  };
+  function generatePastedFilename(mime, index = 0) {
+    const ext = MIME_EXT[String(mime || '').toLowerCase()] || 'bin';
+    // ISO → YYYYMMDD-HHMMSS (UTC), e.g. 20260602-113045
+    const ts = new Date().toISOString()
+      .replace(/[-:]/g, '')
+      .replace(/\..*/, '')
+      .replace('T', '-');
+    const suffix = index > 0 ? `-${index + 1}` : '';
+    return `pasted-image-${ts}${suffix}.${ext}`;
+  }
+
+  // Single-file upload helper used by both the paperclip click path and
+  // the paste-to-attach path. Returns a promise that resolves whether
+  // the upload succeeded or failed — the caller (sequential loop for
+  // paste) does not need to branch. Status text and toasts are updated
+  // here; typed composer text is never touched (CAM-DESK-INP-013).
+  async function uploadFileAndSend(file, { displayName, progressText } = {}) {
+    const agent = selectedAgent();
+    if (!agent || !file) return { ok: false, error: 'no_agent_or_file' };
+    if (!isAgentsMode() || !isConnected()) {
+      setUploadStatus('Cannot upload: agent not active or disconnected.', 'is-error');
+      return { ok: false, error: 'not_active' };
+    }
+    const filename = displayName || file.name || generatePastedFilename(file.type);
+    if (attachBtn) attachBtn.disabled = true;
+    setUploadStatus(progressText || `Uploading ${filename}…`);
+    try {
+      // CAM-DESK-INP-015: only the user-chosen filename + base64 bytes
+      // leave the browser. We never serialize a local filesystem path.
+      const b64 = await fileToBase64(file);
+      const resp = await api.uploadFile(agent.id, filename, b64);
+      // CAM-DESK-INP-012: send the returned workspace path (matching
+      // mobile behavior: send without Enter so the agent sees just the
+      // path string and the user can wrap it with prose if they want).
+      if (resp && resp.path) {
+        await api.sendInput(agent.id, resp.path, false);
+        setUploadStatus(`Sent ${filename} -> ${resp.path}`, 'is-ok');
+      } else {
+        setUploadStatus(`Uploaded ${filename} (no path returned)`, 'is-ok');
+      }
+      setTimeout(() => {
+        if (uploadStatusEl && uploadStatusEl.classList.contains('is-ok')) {
+          setUploadStatus('');
+        }
+      }, 4000);
+      return { ok: true, path: resp && resp.path };
+    } catch (err) {
+      const msg = err?.message || String(err);
+      setUploadStatus(`Upload failed: ${msg}`, 'is-error');
+      showToast(`Upload failed: ${msg}`, 'error', 5000);
+      return { ok: false, error: msg };
+    } finally {
+      const agentNow = selectedAgent();
+      if (attachBtn) {
+        attachBtn.disabled = !(agentNow && isActiveStatus(agentNow.status)
+          && isAgentsMode() && isConnected());
+      }
+    }
+  }
+
   if (attachBtn && fileInput) {
     attachBtn.addEventListener('click', () => {
       const agent = selectedAgent();
@@ -572,56 +647,91 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
       fileInput.click();
     });
     fileInput.addEventListener('change', async () => {
-      const agent = selectedAgent();
       const file = fileInput.files && fileInput.files[0];
-      // Clear the picker right away so picking the same file twice works.
-      fileInput.value = '';
-      if (!agent || !file) return;
-      if (!isAgentsMode() || !isConnected()) {
-        setUploadStatus('Cannot upload: agent not active or disconnected.', 'is-error');
+      fileInput.value = '';   // allow re-picking the same file
+      if (!file) return;
+      await uploadFileAndSend(file);
+    });
+  }
+
+  // CAM-DESK-INP-016: paste-to-attach. When the user pastes content
+  // that contains image/file items (e.g. a screenshot from the OS
+  // shortcut, or a file copied in the host file manager), upload each
+  // file through the same paperclip path and send the returned
+  // workspace path. Ordinary text paste is left untouched — we only
+  // intercept when at least one file item is present. Typed text in
+  // the composer is preserved across the upload (we never mutate
+  // inputEl.value here).
+  if (inputEl) {
+    inputEl.addEventListener('paste', async (e) => {
+      const cd = e.clipboardData || window.clipboardData;
+      if (!cd || !cd.items || !cd.items.length) return;
+      const files = [];
+      for (let i = 0; i < cd.items.length; i++) {
+        const item = cd.items[i];
+        if (item && item.kind === 'file') {
+          const f = item.getAsFile && item.getAsFile();
+          if (f) files.push(f);
+        }
+      }
+      if (!files.length) return;   // plain-text paste → default behavior
+      // Suppress default paste so the browser does not try to insert a
+      // blob URL string into the textarea.
+      e.preventDefault();
+      const agent = selectedAgent();
+      if (!agent || (attachBtn && attachBtn.disabled)) {
+        setUploadStatus('Cannot upload pasted content: agent not active or disconnected.', 'is-error');
         return;
       }
-      attachBtn.disabled = true;
-      setUploadStatus(`Uploading ${file.name}…`);
-      try {
-        // CAM-DESK-INP-015: only the user-chosen filename + base64 bytes
-        // leave the browser. We never serialize a local filesystem path.
-        const b64 = await fileToBase64(file);
-        const resp = await api.uploadFile(agent.id, file.name, b64);
-        // CAM-DESK-INP-012: send the returned workspace path (matching
-        // mobile behavior: send without Enter so the agent sees just the
-        // path string and the user can wrap it with prose if they want).
-        if (resp && resp.path) {
-          await api.sendInput(agent.id, resp.path, false);
-          setUploadStatus(`Sent ${file.name} -> ${resp.path}`, 'is-ok');
-        } else {
-          setUploadStatus(`Uploaded ${file.name} (no path returned)`, 'is-ok');
-        }
-        // CAM-DESK-INP-013: do not touch inputEl.value — the user's
-        // typed-but-unsent composer text remains as they left it.
-        setTimeout(() => {
-          // Auto-clear the success line after a short hold.
-          if (uploadStatusEl && uploadStatusEl.classList.contains('is-ok')) {
-            setUploadStatus('');
-          }
-        }, 4000);
-      } catch (err) {
-        const msg = err?.message || String(err);
-        setUploadStatus(`Upload failed: ${msg}`, 'is-error');
-        showToast(`Upload failed: ${msg}`, 'error', 5000);
-      } finally {
-        const agentNow = selectedAgent();
-        attachBtn.disabled = !(agentNow && isActiveStatus(agentNow.status)
-          && isAgentsMode() && isConnected());
+      // Sequential to keep status text legible and avoid hammering the
+      // upload endpoint. Each call independently updates status; the
+      // last successful one stays on screen until the auto-clear.
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const name = file.name || generatePastedFilename(file.type, i);
+        const progressText = files.length > 1
+          ? `Uploading pasted file ${i + 1}/${files.length}: ${name}…`
+          : '';
+        // eslint-disable-next-line no-await-in-loop
+        await uploadFileAndSend(file, { displayName: name, progressText });
       }
     });
   }
 
   /* ── Quick keys ── */
-  quickKeyBtns.forEach(btn => {
+  if (expandKeysBtn && extraKeysEl) {
+    expandKeysBtn.addEventListener('click', () => {
+      if (expandKeysBtn.disabled) return;
+      const hidden = extraKeysEl.classList.toggle('hidden');
+      expandKeysBtn.textContent = hidden ? '...' : 'x';
+      expandKeysBtn.setAttribute('aria-expanded', hidden ? 'false' : 'true');
+    });
+  }
+
+  function restoreQuickBtn(btn, agent) {
+    btn.disabled = !(agent && isActiveStatus(agent.status) && isAgentsMode());
+  }
+
+  composer.querySelectorAll('.btn-quick[data-input]').forEach(btn => {
     btn.addEventListener('click', async () => {
       const agent = selectedAgent();
-      if (!agent || !isAgentsMode()) return;
+      if (!agent || !isAgentsMode() || btn.disabled) return;
+      const text = btn.dataset.input || '';
+      btn.disabled = true;
+      try {
+        await api.sendInput(agent.id, text, false);
+      } catch (e) {
+        showToast(`Input failed: ${e.message}`, 'error', 5000);
+      } finally {
+        restoreQuickBtn(btn, selectedAgent() || agent);
+      }
+    });
+  });
+
+  composer.querySelectorAll('.btn-quick[data-key]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const agent = selectedAgent();
+      if (!agent || !isAgentsMode() || btn.disabled) return;
       const key = btn.dataset.key;
       btn.disabled = true;
       try {
@@ -629,7 +739,7 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
       } catch (e) {
         showToast(`Key failed: ${e.message}`, 'error', 5000);
       } finally {
-        btn.disabled = !(isActiveStatus(agent.status) && isAgentsMode());
+        restoreQuickBtn(btn, selectedAgent() || agent);
       }
     });
   });
