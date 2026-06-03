@@ -394,7 +394,10 @@ body.desktop textarea {
 .agent-output-rich .ansi-inverse  { filter: invert(1); }
 
 .agent-composer {
-  --quick-key-width: clamp(54px, 7.5vw, 92px);
+  --quick-key-width: clamp(56px, 6vw, 84px);
+  --composer-attach-col: 42px;
+  --composer-send-col: 72px;
+  --composer-row-height: 44px;
   border-top: 1px solid var(--border);
   padding: 8px 12px 10px 12px;
   background: var(--bg-card);
@@ -404,15 +407,24 @@ body.desktop textarea {
 }
 .quick-keys,
 .quick-row {
-  display: flex;
+  display: grid;
+  justify-content: center;
+  width: max-content;
+  max-width: 100%;
+  margin: 0 auto;
   gap: 6px;
   align-items: center;
-  flex-wrap: wrap;
+}
+.quick-keys {
+  grid-template-columns: repeat(8, var(--quick-key-width));
+}
+.quick-row {
+  grid-template-columns: repeat(6, var(--quick-key-width));
 }
 .quick-actions-extra {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: center;
   gap: 6px;
 }
 .quick-actions-extra.hidden { display: none; }
@@ -420,8 +432,7 @@ body.desktop textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 var(--quick-key-width);
-  width: var(--quick-key-width);
+  width: 100%;
   background: var(--bg-input);
   border: 1px solid var(--border);
   color: var(--text);
@@ -447,9 +458,10 @@ body.desktop textarea {
 }
 
 .composer-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--composer-attach-col) minmax(0, 1fr) var(--composer-send-col);
   gap: 6px;
-  align-items: flex-end;
+  align-items: stretch;
 }
 .btn-attach {
   display: inline-flex;
@@ -461,9 +473,9 @@ body.desktop textarea {
   padding: 0;
   font-size: 15px;
   line-height: 1;
-  width: 42px;
-  min-width: 42px;
-  height: 36px;
+  width: 100%;
+  min-width: 0;
+  min-height: var(--composer-row-height);
   border-radius: var(--radius-sm);
   cursor: pointer;
   align-self: stretch;
@@ -484,16 +496,18 @@ body.desktop textarea {
 .composer-upload-status.is-error { color: var(--red); }
 .composer-upload-status.is-ok    { color: var(--green); }
 .composer-input {
-  flex: 1;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   background: var(--bg-input);
   border: 1px solid var(--border);
   color: var(--text);
-  padding: 6px 10px;
+  padding: 7px 10px;
   border-radius: var(--radius-sm);
   font-family: inherit;
-  line-height: 1.4;
+  line-height: 1.35;
   resize: vertical;
-  min-height: 36px;
+  min-height: var(--composer-row-height);
   max-height: 160px;
 }
 .composer-input:disabled {
@@ -506,14 +520,18 @@ body.desktop textarea {
   border-color: var(--accent);
 }
 .agent-composer .btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: var(--accent);
   border: none;
   color: #fff;
-  padding: 6px 14px;
+  padding: 0 14px;
   border-radius: var(--radius-sm);
   font-weight: 600;
   cursor: pointer;
   align-self: stretch;
+  min-height: var(--composer-row-height);
 }
 .agent-composer .btn-primary:hover:not(:disabled) {
   background: var(--accent-hover);
