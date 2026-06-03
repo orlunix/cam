@@ -30,15 +30,23 @@ function _dateMs(raw) {
   return Number.isFinite(ms) ? ms : 0;
 }
 
+function agentUpdatedAt(agent) {
+  // CAMC currently exposes started_at/completed_at. Newer Hub/CAMC
+  // builds may add true activity timestamps; prefer those when present,
+  // then fall back to the newest lifecycle timestamp so Updated behaves
+  // like a practical recency sort instead of preserving sync order.
+  return agent?.updated_at || agent?.last_active_at || agent?.last_seen_at
+      || agent?.activity_at || agent?.modified_at || agent?.mtime
+      || agent?.completed_at || agent?.started_at || agent?.created_at || '';
+}
+
 function agentDateMs(agent) {
   // Legacy: best-available recency stamp.
-  return _dateMs(agent?.started_at) || _dateMs(agent?.updated_at)
-      || _dateMs(agent?.completed_at) || _dateMs(agent?.created_at);
+  return agentUpdatedMs(agent);
 }
 
 function agentUpdatedMs(agent) {
-  return _dateMs(agent?.updated_at) || _dateMs(agent?.completed_at)
-      || _dateMs(agent?.started_at) || _dateMs(agent?.created_at);
+  return _dateMs(agentUpdatedAt(agent));
 }
 
 function agentCreatedMs(agent) {
@@ -343,7 +351,7 @@ export function mountShell({ state }) {
       const ctx = agent.context_name ? ' · ' + escapeHtml(agent.context_name) : '';
       const status = escapeHtml(agent.status || 'unknown');
       const host = agent.machine_host ? ' · ' + escapeHtml(agent.machine_host.split('.')[0]) : '';
-      const t = timeSince(agent.started_at);
+      const t = timeSince(agentUpdatedAt(agent));
       const sel = agent.id === selectedId ? ' selected' : '';
       // CAMC task tags — appended inline so the row-meta's
       // text-overflow:ellipsis truncates them naturally when the
