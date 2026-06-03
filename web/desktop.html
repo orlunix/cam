@@ -59,20 +59,74 @@
       </div>
 
       <div class="sidebar-mode-content" id="sidebar-agents-content">
-        <div class="filter-bar sidebar-filters">
-          <select id="filter-status" class="filter-select">
-            <option value="">All status</option>
-            <option value="running">Running</option>
-            <option value="completed">Completed</option>
-            <option value="failed">Failed</option>
-            <option value="killed">Killed</option>
-          </select>
-          <select id="filter-tool" class="filter-select">
-            <option value="">All tools</option>
-          </select>
-          <select id="filter-machine" class="filter-select">
-            <option value="">All nodes</option>
-          </select>
+        <header class="sidebar-section-header">
+          <h2 class="sidebar-section-title">Projects</h2>
+          <button type="button" class="sidebar-section-menu-btn"
+                  id="agents-menu-btn"
+                  aria-haspopup="true" aria-expanded="false"
+                  aria-controls="agents-menu-popover"
+                  title="Filter & sort">
+            <span aria-hidden="true">&#x22EF;</span>
+            <span class="sr-only">Filter and sort options</span>
+          </button>
+        </header>
+        <div class="sidebar-filter-chips" id="agents-filter-chips" hidden
+             aria-label="Active filters and sort"></div>
+        <div class="sidebar-popover" id="agents-menu-popover" hidden
+             role="menu" aria-labelledby="agents-menu-btn">
+          <div class="popover-section">
+            <h3 class="popover-section-title">Filter</h3>
+            <label class="popover-row">
+              <span class="popover-label">Tag</span>
+              <select id="filter-tag" class="filter-select">
+                <option value="">All tags</option>
+              </select>
+            </label>
+            <label class="popover-row">
+              <span class="popover-label">Status</span>
+              <select id="filter-status" class="filter-select">
+                <option value="">All status</option>
+                <option value="running">Running</option>
+                <option value="completed">Completed</option>
+                <option value="failed">Failed</option>
+                <option value="killed">Killed</option>
+              </select>
+            </label>
+            <label class="popover-row">
+              <span class="popover-label">Tool</span>
+              <select id="filter-tool" class="filter-select">
+                <option value="">All tools</option>
+              </select>
+            </label>
+            <label class="popover-row">
+              <span class="popover-label">Node</span>
+              <select id="filter-machine" class="filter-select">
+                <option value="">All nodes</option>
+              </select>
+            </label>
+          </div>
+          <div class="popover-section">
+            <h3 class="popover-section-title">Sort by</h3>
+            <label class="popover-row">
+              <span class="popover-label">Field</span>
+              <select id="sort-field" class="filter-select">
+                <option value="updated">Updated</option>
+                <option value="created">Created</option>
+                <option value="name">Name</option>
+              </select>
+            </label>
+            <label class="popover-row">
+              <span class="popover-label">Direction</span>
+              <select id="sort-dir" class="filter-select">
+                <option value="desc">Descending</option>
+                <option value="asc">Ascending</option>
+              </select>
+            </label>
+          </div>
+          <div class="popover-footer">
+            <button type="button" class="popover-clear"
+                    id="agents-menu-clear">Clear filters</button>
+          </div>
         </div>
         <div class="agent-list-wrap" id="agent-list-wrap">
           <div class="empty-state">Connecting…</div>
@@ -110,10 +164,47 @@
         </div>
         <div class="agent-composer" id="agent-composer">
           <div class="quick-keys">
+            <button class="btn-quick" data-input="y" title="Type y">y</button>
+            <button class="btn-quick" data-input="n" title="Type n">n</button>
+            <button class="btn-quick" data-input="1" title="Type 1">1</button>
             <button class="btn-quick" data-key="Enter" title="Enter">&#8629;</button>
             <button class="btn-quick" data-key="Escape" title="Escape">Esc</button>
             <button class="btn-quick" data-key="C-c" title="Ctrl-C">^C</button>
             <button class="btn-quick" data-key="BSpace" title="Backspace">&#9003;</button>
+            <button class="btn-quick btn-quick-expand" id="expand-keys" title="More keys" aria-expanded="false">...</button>
+          </div>
+          <div class="quick-actions-extra hidden" id="extra-keys">
+            <div class="quick-row">
+              <button class="btn-quick" data-input="2" title="Type 2">2</button>
+              <button class="btn-quick" data-input="3" title="Type 3">3</button>
+              <button class="btn-quick" data-key="Tab" title="Tab">Tab</button>
+              <button class="btn-quick" data-key="BTab" title="Shift-Tab">S-Tab</button>
+              <button class="btn-quick" data-key="DC" title="Delete">Del</button>
+            </div>
+            <div class="quick-row">
+              <button class="btn-quick" data-key="Left" title="Left">&larr;</button>
+              <button class="btn-quick" data-key="Up" title="Up">&uarr;</button>
+              <button class="btn-quick" data-key="Down" title="Down">&darr;</button>
+              <button class="btn-quick" data-key="Right" title="Right">&rarr;</button>
+              <button class="btn-quick" data-key="Home" title="Home">Home</button>
+              <button class="btn-quick" data-key="End" title="End">End</button>
+            </div>
+            <div class="quick-row">
+              <button class="btn-quick" data-key="PPage" title="Page Up">PgUp</button>
+              <button class="btn-quick" data-key="NPage" title="Page Down">PgDn</button>
+              <button class="btn-quick" data-input="/" title="Type /">/</button>
+              <button class="btn-quick" data-input="~" title="Type ~">~</button>
+              <button class="btn-quick" data-input="@" title="Type @">@</button>
+              <button class="btn-quick" data-input="*" title="Type *">*</button>
+            </div>
+            <div class="quick-row">
+              <button class="btn-quick" data-input="$" title="Type $">$</button>
+              <button class="btn-quick" data-input="{" title="Type {">{</button>
+              <button class="btn-quick" data-input="}" title="Type }">}</button>
+              <button class="btn-quick" data-input="[" title="Type [">[</button>
+              <button class="btn-quick" data-input="]" title="Type ]">]</button>
+              <button class="btn-quick" data-input="|" title="Type |">|</button>
+            </div>
           </div>
           <div class="composer-row">
             <button class="btn-attach" id="composer-attach"
