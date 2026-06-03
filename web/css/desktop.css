@@ -394,9 +394,6 @@ body.desktop textarea {
 .agent-output-rich .ansi-inverse  { filter: invert(1); }
 
 .agent-composer {
-  --composer-attach-col: 44px;
-  --composer-send-col: 72px;
-  --composer-gap: 8px;
   border-top: 1px solid var(--border);
   padding: 8px 12px 10px 12px;
   background: var(--bg-card);
@@ -407,21 +404,14 @@ body.desktop textarea {
 .quick-keys,
 .quick-row {
   display: grid;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
+  grid-template-columns: repeat(8, minmax(38px, 1fr));
   gap: 6px;
   align-items: center;
-}
-.quick-keys,
-.quick-actions-extra {
-  width: calc(100% - var(--composer-attach-col) - var(--composer-gap));
-  margin-left: calc(var(--composer-attach-col) + var(--composer-gap));
-  min-width: 0;
 }
 .quick-actions-extra {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 6px 0 2px;
 }
 .quick-actions-extra.hidden { display: none; }
 .agent-composer .btn-quick {
@@ -429,21 +419,21 @@ body.desktop textarea {
   align-items: center;
   justify-content: center;
   width: 100%;
-  min-width: 0;
   background: var(--bg-input);
   border: 1px solid var(--border);
   color: var(--text);
-  height: 32px;
   padding: 0 8px;
   border-radius: var(--radius-sm);
-  font-family: inherit;
   font-size: 12px;
   font-weight: 600;
-  line-height: 1;
+  height: 28px;
+  min-width: 0;
   cursor: pointer;
 }
 .agent-composer .btn-quick-expand {
   color: var(--text-dim);
+  letter-spacing: 1px;
+  min-width: 44px;
 }
 .agent-composer .btn-quick:hover:not(:disabled) {
   background: var(--bg-hover);
@@ -454,21 +444,17 @@ body.desktop textarea {
 }
 
 .composer-row {
-  display: grid;
-  grid-template-columns: var(--composer-attach-col) minmax(0, 1fr) var(--composer-send-col);
-  gap: var(--composer-gap);
-  align-items: stretch;
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
 }
 .btn-attach {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   background: var(--bg-input);
   border: 1px solid var(--border);
   color: var(--text-dim);
-  padding: 0;
+  padding: 0 10px;
   font-size: 15px;
-  min-height: 48px;
+  height: 36px;
   border-radius: var(--radius-sm);
   cursor: pointer;
   align-self: stretch;
@@ -489,18 +475,16 @@ body.desktop textarea {
 .composer-upload-status.is-error { color: var(--red); }
 .composer-upload-status.is-ok    { color: var(--green); }
 .composer-input {
-  width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
+  flex: 1;
   background: var(--bg-input);
   border: 1px solid var(--border);
   color: var(--text);
-  padding: 8px 10px;
+  padding: 6px 10px;
   border-radius: var(--radius-sm);
   font-family: inherit;
   line-height: 1.4;
   resize: vertical;
-  min-height: 48px;
+  min-height: 36px;
   max-height: 160px;
 }
 .composer-input:disabled {
@@ -513,18 +497,14 @@ body.desktop textarea {
   border-color: var(--accent);
 }
 .agent-composer .btn-primary {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   background: var(--accent);
   border: none;
   color: #fff;
-  padding: 0 14px;
+  padding: 6px 14px;
   border-radius: var(--radius-sm);
   font-weight: 600;
   cursor: pointer;
   align-self: stretch;
-  min-height: 48px;
 }
 .agent-composer .btn-primary:hover:not(:disabled) {
   background: var(--accent-hover);
@@ -532,21 +512,6 @@ body.desktop textarea {
 .agent-composer .btn-primary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-@media (max-width: 720px) {
-  .agent-composer {
-    --composer-attach-col: 40px;
-    --composer-send-col: 64px;
-  }
-  .quick-keys,
-  .quick-row {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-  .quick-keys,
-  .quick-actions-extra {
-    width: 100%;
-    margin-left: 0;
-  }
 }
 
 /* ── Settings mode panel ── */
