@@ -394,7 +394,7 @@ body.desktop textarea {
 .agent-output-rich .ansi-inverse  { filter: invert(1); }
 
 .agent-composer {
-  --quick-key-width: clamp(56px, 6vw, 84px);
+  --quick-key-width: minmax(0, 1fr);
   --composer-attach-col: 42px;
   --composer-send-col: 72px;
   --composer-row-height: 44px;
@@ -409,8 +409,7 @@ body.desktop textarea {
 .quick-row {
   display: grid;
   justify-content: center;
-  width: max-content;
-  max-width: 100%;
+  width: 100%;
   margin: 0 auto;
   gap: 6px;
   align-items: center;
@@ -419,7 +418,7 @@ body.desktop textarea {
   grid-template-columns: repeat(8, var(--quick-key-width));
 }
 .quick-row {
-  grid-template-columns: repeat(6, var(--quick-key-width));
+  grid-template-columns: repeat(12, var(--quick-key-width));
 }
 .quick-actions-extra {
   display: flex;
