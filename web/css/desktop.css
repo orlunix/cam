@@ -415,10 +415,13 @@ body.desktop textarea {
   align-items: center;
 }
 .quick-keys {
-  grid-template-columns: repeat(8, var(--quick-key-width));
+  grid-template-columns: repeat(12, var(--quick-key-width));
 }
 .quick-row {
   grid-template-columns: repeat(12, var(--quick-key-width));
+}
+.quick-row .btn-quick:first-child {
+  grid-column-start: 3;
 }
 .quick-actions-extra {
   display: flex;
