@@ -394,6 +394,7 @@ body.desktop textarea {
 .agent-output-rich .ansi-inverse  { filter: invert(1); }
 
 .agent-composer {
+  --quick-key-width: clamp(54px, 7.5vw, 92px);
   border-top: 1px solid var(--border);
   padding: 8px 12px 10px 12px;
   background: var(--bg-card);
@@ -403,14 +404,15 @@ body.desktop textarea {
 }
 .quick-keys,
 .quick-row {
-  display: grid;
-  grid-template-columns: repeat(8, minmax(38px, 1fr));
+  display: flex;
   gap: 6px;
   align-items: center;
+  flex-wrap: wrap;
 }
 .quick-actions-extra {
   display: flex;
   flex-direction: column;
+  align-items: flex-start;
   gap: 6px;
 }
 .quick-actions-extra.hidden { display: none; }
@@ -418,7 +420,8 @@ body.desktop textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 100%;
+  flex: 0 0 var(--quick-key-width);
+  width: var(--quick-key-width);
   background: var(--bg-input);
   border: 1px solid var(--border);
   color: var(--text);
@@ -449,11 +452,17 @@ body.desktop textarea {
   align-items: flex-end;
 }
 .btn-attach {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: var(--bg-input);
   border: 1px solid var(--border);
   color: var(--text-dim);
-  padding: 0 10px;
+  padding: 0;
   font-size: 15px;
+  line-height: 1;
+  width: 42px;
+  min-width: 42px;
   height: 36px;
   border-radius: var(--radius-sm);
   cursor: pointer;
