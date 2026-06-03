@@ -406,9 +406,9 @@ body.desktop textarea {
 }
 .quick-keys,
 .quick-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
   gap: 6px;
-  flex-wrap: wrap;
   align-items: center;
 }
 .quick-keys,
@@ -425,24 +425,25 @@ body.desktop textarea {
 }
 .quick-actions-extra.hidden { display: none; }
 .agent-composer .btn-quick {
-  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 100%;
+  min-width: 0;
   background: var(--bg-input);
   border: 1px solid var(--border);
   color: var(--text);
-  height: 30px;
-  min-width: 44px;
-  padding: 0 12px;
+  height: 32px;
+  padding: 0 8px;
   border-radius: var(--radius-sm);
+  font-family: inherit;
   font-size: 12px;
+  font-weight: 600;
   line-height: 1;
   cursor: pointer;
 }
 .agent-composer .btn-quick-expand {
   color: var(--text-dim);
-  min-width: 56px;
 }
 .agent-composer .btn-quick:hover:not(:disabled) {
   background: var(--bg-hover);
@@ -536,6 +537,10 @@ body.desktop textarea {
   .agent-composer {
     --composer-attach-col: 40px;
     --composer-send-col: 64px;
+  }
+  .quick-keys,
+  .quick-row {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
   .quick-keys,
   .quick-actions-extra {
