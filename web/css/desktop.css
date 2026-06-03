@@ -413,8 +413,7 @@ body.desktop textarea {
 }
 .quick-keys,
 .quick-actions-extra {
-  width: fit-content;
-  max-width: calc(100% - var(--composer-attach-col) - var(--composer-gap));
+  width: calc(100% - var(--composer-attach-col) - var(--composer-gap));
   margin-left: calc(var(--composer-attach-col) + var(--composer-gap));
   min-width: 0;
 }
@@ -422,10 +421,7 @@ body.desktop textarea {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 6px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  padding: 6px 0 2px;
 }
 .quick-actions-extra.hidden { display: none; }
 .agent-composer .btn-quick {
@@ -436,9 +432,9 @@ body.desktop textarea {
   background: var(--bg-input);
   border: 1px solid var(--border);
   color: var(--text);
-  height: 28px;
-  min-width: 32px;
-  padding: 0 10px;
+  height: 30px;
+  min-width: 44px;
+  padding: 0 12px;
   border-radius: var(--radius-sm);
   font-size: 12px;
   line-height: 1;
@@ -543,7 +539,7 @@ body.desktop textarea {
   }
   .quick-keys,
   .quick-actions-extra {
-    max-width: 100%;
+    width: 100%;
     margin-left: 0;
   }
 }
