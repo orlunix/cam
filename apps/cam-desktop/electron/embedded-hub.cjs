@@ -642,15 +642,15 @@ function _normalizeAgent(rec, ctx) {
     tmux_socket:    rec.tmux_socket || '',
     pid:            rec.pid || null,
     hostname:       rec.hostname || '',
-    created_at:      rec.created_at || null,
-    updated_at:      rec.updated_at || rec.last_active_at || rec.last_seen_at || rec.activity_at || rec.modified_at || rec.mtime || null,
-    last_active_at:  rec.last_active_at || null,
-    last_seen_at:    rec.last_seen_at || null,
-    activity_at:     rec.activity_at || null,
-    modified_at:     rec.modified_at || null,
-    mtime:           rec.mtime || null,
-    started_at:      rec.started_at   || null,
-    completed_at:    rec.completed_at || null,
+    created_at:      rec.created_at || t.created_at || null,
+    updated_at:      rec.updated_at || t.updated_at || rec.last_active_at || t.last_active_at || rec.last_seen_at || t.last_seen_at || rec.activity_at || t.activity_at || rec.modified_at || t.modified_at || rec.mtime || t.mtime || null,
+    last_active_at:  rec.last_active_at || t.last_active_at || null,
+    last_seen_at:    rec.last_seen_at || t.last_seen_at || null,
+    activity_at:     rec.activity_at || t.activity_at || null,
+    modified_at:     rec.modified_at || t.modified_at || null,
+    mtime:           rec.mtime || t.mtime || null,
+    started_at:      rec.started_at || t.started_at || null,
+    completed_at:    rec.completed_at || t.completed_at || null,
     exit_reason:     rec.exit_reason  || null,
     retry_count:    rec.retry_count  || 0,
     cost_estimate:  rec.cost_estimate || null,
@@ -822,7 +822,7 @@ async function _syncContextAgents(ctx, overrides = {}) {
   // results: 'updated' when the imported set differs in any way from
   // the previous snapshot, 'unchanged' otherwise. Order-independent
   // shallow comparison keyed on id+status+state.
-  function fp(a) { return `${a.id}|${a.status}|${a.state}|${a.task_name}`; }
+  function fp(a) { return `${a.id}|${a.status}|${a.state}|${a.task_name}|${a.updated_at || ''}`; }
   const prevSig = new Set(prev.map(fp));
   const newSig  = new Set(normalized.map(fp));
   const same = (prevSig.size === newSig.size)
