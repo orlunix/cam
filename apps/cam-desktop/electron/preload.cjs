@@ -94,4 +94,34 @@ contextBridge.exposeInMainWorld('CamBridge', {
       return ipcRenderer.invoke('files:pickPrivateKey');
     },
   },
+
+  // Terminal mode (CAM-DESK-TERM-001..005). The renderer xterm.js
+  // never opens its own SSH — every channel goes through main, which
+  // resolves the agent's owning context, decrypts the remembered
+  // credential, and opens an ssh2 PTY channel via the existing
+  // connection pool. The renderer only ever sees the opaque sessionId
+  // and the UTF-8 byte stream.
+  //
+  //   open({agentId, cols, rows}) → {ok, sessionId} | {ok:false, error, detail}
+  //   input({sessionId, data})    → {ok}
+  //   resize({sessionId, cols, rows}) → {ok}
+  //   close({sessionId})          → {ok}
+  //   onData(cb)                  → unsubscribe(); cb({sessionId, data:string})
+  //   onStatus(cb)                → unsubscribe(); cb({sessionId, kind, code, signal})
+  term: {
+    open(payload)   { return ipcRenderer.invoke('term:open',   payload || {}); },
+    input(payload)  { return ipcRenderer.invoke('term:input',  payload || {}); },
+    resize(payload) { return ipcRenderer.invoke('term:resize', payload || {}); },
+    close(payload)  { return ipcRenderer.invoke('term:close',  payload || {}); },
+    onData(cb) {
+      const listener = (_evt, msg) => { try { cb && cb(msg); } catch { /* noop */ } };
+      ipcRenderer.on('term:data', listener);
+      return () => ipcRenderer.removeListener('term:data', listener);
+    },
+    onStatus(cb) {
+      const listener = (_evt, msg) => { try { cb && cb(msg); } catch { /* noop */ } };
+      ipcRenderer.on('term:status', listener);
+      return () => ipcRenderer.removeListener('term:status', listener);
+    },
+  },
 });

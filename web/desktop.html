@@ -10,6 +10,12 @@
   <link rel="icon" href="assets/icon-192.png">
   <link rel="stylesheet" href="css/style.css?v=0.64.0">
   <link rel="stylesheet" href="css/desktop.css?v=0.64.0">
+  <link rel="stylesheet" href="vendor/xterm/xterm.css?v=0.64.0">
+  <!-- CAM-DESK-TERM-002: xterm UMD bundles expose window.Terminal and
+       window.FitAddon. Loaded before any module so agent-console.js
+       sees them at mount time. -->
+  <script src="vendor/xterm/xterm.js?v=0.64.0"></script>
+  <script src="vendor/xterm/addon-fit.js?v=0.64.0"></script>
   <link rel="modulepreload" href="js/api.js?v=0.64.0">
   <link rel="modulepreload" href="js/state.js?v=0.64.0">
   <link rel="modulepreload" href="js/desktop/app.js?v=0.64.0">
@@ -17,7 +23,6 @@
   <link rel="modulepreload" href="js/desktop/agent-console.js?v=0.64.0">
   <link rel="modulepreload" href="js/desktop/settings-mode.js?v=0.64.0">
   <link rel="modulepreload" href="js/desktop/start-agent-mode.js?v=0.64.0">
-  <link rel="modulepreload" href="js/desktop/agent-edit-mode.js?v=0.64.0">
   <link rel="modulepreload" href="js/desktop/nodes-mode.js?v=0.64.0">
 </head>
 <body class="desktop">
@@ -150,17 +155,17 @@
           <div class="agent-header-title" id="agent-header-title">No agent selected</div>
           <div class="agent-header-meta" id="agent-header-meta"></div>
           <div class="agent-header-tools">
-            <button type="button" class="agent-edit-btn" id="agent-edit-btn"
-              title="Edit selected agent" disabled>Edit</button>
             <div class="output-mode-toggle" role="group" aria-label="Output mode">
               <button type="button" class="output-mode-btn" data-mode="plain" aria-pressed="true">Plain</button>
               <button type="button" class="output-mode-btn" data-mode="rich"  aria-pressed="false">Rich</button>
+              <button type="button" class="output-mode-btn" data-mode="terminal" aria-pressed="false" title="Interactive attach via SSH">Terminal</button>
             </div>
           </div>
         </div>
         <div class="agent-output-wrap">
-          <pre class="agent-output"      id="agent-output"></pre>
-          <pre class="agent-output-rich" id="agent-output-rich" hidden></pre>
+          <pre class="agent-output"      id="agent-output" tabindex="0" aria-label="Agent output"></pre>
+          <pre class="agent-output-rich" id="agent-output-rich" tabindex="0" aria-label="Agent rich output" hidden></pre>
+          <div class="agent-terminal" id="agent-terminal" tabindex="0" aria-label="Agent terminal" hidden></div>
         </div>
         <div class="agent-composer" id="agent-composer">
           <div class="quick-keys">
@@ -541,33 +546,6 @@
         <div class="settings-status" id="nodes-status" aria-live="polite"></div>
       </section>
 
-      <!-- Edit Agent subview (CAM-DESK-EDIT-010..015) -->
-      <section class="mode-panel" id="mode-edit" data-mode="edit" hidden>
-        <div class="settings-header">
-          <h2>Edit agent</h2>
-          <p class="settings-help" id="edit-subject">
-            Editing the selected agent.
-          </p>
-        </div>
-        <form id="edit-form" class="settings-form-pane">
-          <div class="settings-section">
-            <h3>Task</h3>
-            <label>Name
-              <input type="text" id="edit-name" required placeholder="agent label" autocomplete="off">
-            </label>
-            <label class="form-checkbox">
-              <input type="checkbox" id="edit-autoconfirm">
-              <span>Auto-confirm</span>
-              <span class="form-hint">Automatically respond to permission prompts.</span>
-            </label>
-          </div>
-          <div class="settings-actions">
-            <button type="button" id="edit-cancel" class="btn-secondary">Cancel</button>
-            <button type="submit" id="edit-save" class="btn-primary">Save changes</button>
-          </div>
-          <div class="settings-status" id="edit-status" aria-live="polite"></div>
-        </form>
-      </section>
     </main>
   </div>
 
