@@ -7,18 +7,99 @@ body.desktop {
   user-select: auto;
   --desktop-rail-form: 720px;
   --desktop-rail-wide: 1200px;
+  --ui-font-size: 13px;
+  --output-font-size: 13px;
+  --output-bg: #0d1117;
+  --output-text: #c9d1d9;
+  --output-selection-bg: rgba(74, 158, 255, 0.35);
+  --output-selection-text: #ffffff;
+  --output-code-bg: rgba(1, 4, 9, 0.72);
+  --output-code-text: #d6dee8;
+  --output-code-border: rgba(139, 148, 158, 0.28);
+  --rich-shell-command: #e6edf3;
+  --rich-cmd-name: #ffffff;
+  --rich-cmd-flag: #b48dff;
+  --rich-cmd-flag-val: #d8c4ff;
+  --rich-cmd-env: #6cc0a7;
+  --rich-cmd-env-val: #b3dccc;
+  --rich-cmd-path: #f0c674;
+  --rich-code-comment: #6a737d;
+  --rich-code-string: #a5d6a7;
+  --rich-code-kw: #c39bd3;
+  --rich-code-diff-add-bg: rgba(70, 149, 74, 0.18);
+  --rich-code-diff-add-text: #b6e3b6;
+  --rich-code-diff-del-bg: rgba(189, 84, 84, 0.18);
+  --rich-code-diff-del-text: #f4b6b6;
+  --rich-code-diff-meta: #8b949e;
+  --output-float-bg: rgba(22, 27, 34, 0.92);
+  --output-float-bg-hover: rgba(33, 38, 45, 0.96);
+  --output-float-shadow: rgba(0, 0, 0, 0.35);
+  --terminal-bg: #0d1117;
+  --terminal-fg: #e6edf3;
+  --terminal-selection-bg: #1f6feb66;
+  color-scheme: dark;
   height: 100vh;
   overflow: hidden;
   background: var(--bg);
   color: var(--text);
+  font-size: var(--ui-font-size);
+}
+
+body.desktop[data-theme="light"] {
+  --bg: #f6f8fa;
+  --bg-card: #ffffff;
+  --bg-input: #f0f3f6;
+  --bg-hover: #eaeef2;
+  --border: #d0d7de;
+  --text: #1f2328;
+  --text-dim: #57606a;
+  --text-muted: #6e7781;
+  --accent: #0969da;
+  --accent-hover: #0757b8;
+  --green: #1a7f37;
+  --blue: #0969da;
+  --red: #cf222e;
+  --yellow: #9a6700;
+  --orange: #bc4c00;
+  --output-bg: #ffffff;
+  --output-text: #1f2328;
+  --output-selection-bg: rgba(9, 105, 218, 0.22);
+  --output-selection-text: #1f2328;
+  --output-code-bg: #f6f8fa;
+  --output-code-text: #24292f;
+  --output-code-border: #d0d7de;
+  --rich-shell-command: #24292f;
+  --rich-cmd-name: #0969da;
+  --rich-cmd-flag: #8250df;
+  --rich-cmd-flag-val: #6639ba;
+  --rich-cmd-env: #116329;
+  --rich-cmd-env-val: #1a7f37;
+  --rich-cmd-path: #9a6700;
+  --rich-code-comment: #6e7781;
+  --rich-code-string: #116329;
+  --rich-code-kw: #8250df;
+  --rich-code-diff-add-bg: rgba(26, 127, 55, 0.12);
+  --rich-code-diff-add-text: #1a7f37;
+  --rich-code-diff-del-bg: rgba(207, 34, 46, 0.10);
+  --rich-code-diff-del-text: #cf222e;
+  --rich-code-diff-meta: #6e7781;
+  --output-float-bg: rgba(255, 255, 255, 0.94);
+  --output-float-bg-hover: rgba(246, 248, 250, 0.98);
+  --output-float-shadow: rgba(31, 35, 40, 0.16);
+  --terminal-bg: #ffffff;
+  --terminal-fg: #1f2328;
+  --terminal-selection-bg: #0969da33;
+  color-scheme: light;
 }
 
 /* Re-enable readable input font on desktop — style.css forced 16px for mobile.
-   Keep inputs at a comfortable desktop size. */
+   Keep inputs at a comfortable desktop size. `--ui-font-size` is set by
+   `applyAppearance()` (web/js/desktop/settings-mode.js) and defaults to
+   13px when not present. */
 body.desktop input,
 body.desktop select,
 body.desktop textarea {
-  font-size: 13px !important;
+  font-size: var(--ui-font-size, 13px) !important;
 }
 
 .desktop-layout {
@@ -309,7 +390,7 @@ body.desktop textarea {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: #0d1117;
+  background: var(--output-bg);
   overflow: hidden;
   flex: 1;
   -webkit-user-select: text;
@@ -338,10 +419,10 @@ body.desktop textarea {
   margin: 0;
   padding: 12px 16px;
   overflow: auto;
-  background: #0d1117;
-  color: #c9d1d9;
+  background: var(--output-bg);
+  color: var(--output-text);
   font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 12.5px;
+  font-size: var(--output-font-size, 13px);
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
@@ -350,8 +431,8 @@ body.desktop textarea {
   user-select: text;
 }
 .agent-output::selection {
-  background: rgba(74, 158, 255, 0.35);
-  color: #ffffff;
+  background: var(--output-selection-bg);
+  color: var(--output-selection-text);
 }
 .agent-output.placeholder {
   color: var(--text-muted);
@@ -366,10 +447,10 @@ body.desktop textarea {
   margin: 0;
   padding: 12px 16px;
   overflow: auto;
-  background: #0d1117;
-  color: #c9d1d9;
+  background: var(--output-bg);
+  color: var(--output-text);
   font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 12.5px;
+  font-size: var(--output-font-size, 13px);
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
@@ -378,8 +459,8 @@ body.desktop textarea {
   user-select: text;
 }
 .agent-output-rich::selection {
-  background: rgba(74, 158, 255, 0.35);
-  color: #ffffff;
+  background: var(--output-selection-bg);
+  color: var(--output-selection-text);
 }
 .agent-output-rich[hidden] { display: none; }
 .agent-output-rich .ansi-bold     { font-weight: 700; }
@@ -438,10 +519,10 @@ body.desktop textarea {
   letter-spacing: 0.04em;
 }
 .agent-output-rich .rich-code {
-  background: rgba(1, 4, 9, 0.72);
-  border: 1px solid rgba(139, 148, 158, 0.28);
+  background: var(--output-code-bg);
+  border: 1px solid var(--output-code-border);
   border-radius: var(--radius-sm);
-  color: #d6dee8;
+  color: var(--output-code-text);
   overflow-x: auto;
   padding: 8px 10px;
   white-space: pre;
@@ -458,7 +539,7 @@ body.desktop textarea {
   flex: 0 0 auto;
 }
 .agent-output-rich .rich-shell-command {
-  color: #e6edf3;
+  color: var(--rich-shell-command);
   font-weight: 600;
   min-width: 0;
 }
@@ -468,23 +549,23 @@ body.desktop textarea {
  * already reads as bold; tokens just nudge contrast.
  */
 .agent-output-rich .rich-cmd-name {
-  color: #fff;
+  color: var(--rich-cmd-name);
   font-weight: 700;
 }
 .agent-output-rich .rich-cmd-flag {
-  color: #b48dff;
+  color: var(--rich-cmd-flag);
 }
 .agent-output-rich .rich-cmd-flag-val {
-  color: #d8c4ff;
+  color: var(--rich-cmd-flag-val);
 }
 .agent-output-rich .rich-cmd-env {
-  color: #6cc0a7;
+  color: var(--rich-cmd-env);
 }
 .agent-output-rich .rich-cmd-env-val {
-  color: #b3dccc;
+  color: var(--rich-cmd-env-val);
 }
 .agent-output-rich .rich-cmd-path {
-  color: #f0c674;
+  color: var(--rich-cmd-path);
 }
 
 /* ── Rich v1 polish: code-block syntax classes ─────────────────
@@ -492,14 +573,14 @@ body.desktop textarea {
  * intentionally minimal so the renderer stays language-agnostic.
  */
 .agent-output-rich .rich-code-comment {
-  color: #6a737d;
+  color: var(--rich-code-comment);
   font-style: italic;
 }
 .agent-output-rich .rich-code-string {
-  color: #a5d6a7;
+  color: var(--rich-code-string);
 }
 .agent-output-rich .rich-code-kw {
-  color: #c39bd3;
+  color: var(--rich-code-kw);
   font-weight: 600;
 }
 
@@ -511,18 +592,18 @@ body.desktop textarea {
 .agent-output-rich .rich-code-diff-add {
   display: inline-block;
   width: 100%;
-  background: rgba(70, 149, 74, 0.18);
-  color: #b6e3b6;
+  background: var(--rich-code-diff-add-bg);
+  color: var(--rich-code-diff-add-text);
 }
 .agent-output-rich .rich-code-diff-del {
   display: inline-block;
   width: 100%;
-  background: rgba(189, 84, 84, 0.18);
-  color: #f4b6b6;
+  background: var(--rich-code-diff-del-bg);
+  color: var(--rich-code-diff-del-text);
 }
 .agent-output-rich .rich-code-diff-hunk,
 .agent-output-rich .rich-code-diff-meta {
-  color: #8b949e;
+  color: var(--rich-code-diff-meta);
 }
 
 /* ── Rich v1 polish: status / keyword line badges ──────────────
@@ -633,10 +714,10 @@ body.desktop textarea {
  * introduced.
  */
 .agent-output-rich .rich-fs-path {
-  color: #f0c674;
+  color: var(--rich-cmd-path);
 }
 .agent-output-rich .rich-fileref {
-  color: #f0c674;
+  color: var(--rich-cmd-path);
   font-weight: 600;
 }
 .agent-output-rich .rich-metric {
@@ -652,7 +733,7 @@ body.desktop textarea {
   letter-spacing: 0.3px;
 }
 .agent-output-rich .rich-quoted {
-  color: #b3dccc;
+  color: var(--rich-cmd-env-val);
 }
 .agent-output-rich .rich-tag {
   color: #bc8cff;
@@ -692,7 +773,7 @@ body.desktop textarea {
 }
 .agent-output-rich .rich-table th,
 .agent-output-rich .rich-table td {
-  border: 1px solid rgba(139, 148, 158, 0.28);
+  border: 1px solid var(--output-code-border);
   padding: 4px 8px;
   text-align: left;
   vertical-align: top;
@@ -898,6 +979,22 @@ body.desktop textarea {
   color: var(--text);
 }
 
+#mode-settings .settings-header,
+#mode-start .settings-header,
+#mode-settings .settings-tabs {
+  width: min(var(--desktop-rail-form), 100%);
+  max-width: var(--desktop-rail-form);
+  margin-left: auto;
+  margin-right: auto;
+  box-sizing: border-box;
+}
+
+#mode-settings .settings-form-pane,
+#mode-start .settings-form-pane {
+  margin-left: auto;
+  margin-right: auto;
+}
+
 .settings-form-pane {
   width: min(var(--desktop-rail-form), 100%);
   max-width: none;
@@ -960,6 +1057,22 @@ body.desktop textarea {
   min-height: 90px;
   max-height: 320px;
   line-height: 1.4;
+}
+
+.settings-section input[type="range"] {
+  padding: 0;
+  accent-color: var(--accent);
+}
+.appearance-value {
+  display: inline-flex;
+  width: max-content;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* form-checkbox: same look-and-feel as the rest of the settings forms */
@@ -1223,8 +1336,8 @@ body.desktop textarea {
 }
 .diag-logs-pre {
   margin: 0;
-  background: #0d1117;
-  color: #c9d1d9;
+  background: var(--output-code-bg);
+  color: var(--output-code-text);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 6px 10px;
@@ -1315,8 +1428,8 @@ body.desktop textarea {
 .readiness-hint.is-ok { color: var(--green); }
 .readiness-cmd {
   margin: 0;
-  background: #0d1117;
-  color: #c9d1d9;
+  background: var(--output-code-bg);
+  color: var(--output-code-text);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 6px 10px;
@@ -2127,7 +2240,7 @@ body.desktop textarea {
 }
 .output-more-history,
 .output-jump-bottom {
-  background: rgba(22, 27, 34, 0.92);
+  background: var(--output-float-bg);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -2135,12 +2248,12 @@ body.desktop textarea {
   font-size: 11px;
   line-height: 1.4;
   cursor: pointer;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 1px 4px var(--output-float-shadow);
   backdrop-filter: blur(2px);
 }
 .output-more-history:hover:not(:disabled),
 .output-jump-bottom:hover {
-  background: rgba(33, 38, 45, 0.96);
+  background: var(--output-float-bg-hover);
   border-color: var(--border-strong, var(--border));
 }
 .output-more-history:disabled {
@@ -2184,7 +2297,7 @@ body.desktop textarea {
   min-height: 0;
   width: 100%;
   height: 100%;
-  background: #0d1117;
+  background: var(--terminal-bg);
   padding: 0;
   box-sizing: border-box;
   overflow: hidden;
@@ -2196,7 +2309,7 @@ body.desktop textarea {
   height: 100%;
 }
 .agent-terminal .xterm-viewport {
-  background: #0d1117 !important;
+  background: var(--terminal-bg) !important;
 }
 
 /* ── Terminal mode pane (CAM-DESK-TERM-001..005) ── */
@@ -2208,7 +2321,7 @@ body.desktop textarea {
   margin: 0;
   padding: 0;
   overflow: hidden;
-  background: #0d1117;
+  background: var(--terminal-bg);
   box-sizing: border-box;
   position: relative;
 }
@@ -2222,5 +2335,5 @@ body.desktop textarea {
   width: 100% !important;
 }
 .agent-terminal .xterm-viewport {
-  background: #0d1117 !important;
+  background: var(--terminal-bg) !important;
 }
