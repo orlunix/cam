@@ -37,6 +37,21 @@ body.desktop {
   --terminal-bg: #0d1117;
   --terminal-fg: #e6edf3;
   --terminal-selection-bg: #1f6feb66;
+  --surface-bg: var(--bg-card);
+  --surface-bg-hover: rgba(255, 255, 255, 0.045);
+  --surface-bg-active: rgba(88, 166, 255, 0.11);
+  --surface-shadow: rgba(1, 4, 9, 0.28);
+  --border-subtle: rgba(139, 148, 158, 0.22);
+  --control-radius: 6px;
+  --control-bg: var(--bg-input);
+  --control-bg-hover: rgba(255, 255, 255, 0.065);
+  --control-border: rgba(139, 148, 158, 0.28);
+  --control-focus-ring: rgba(88, 166, 255, 0.35);
+  --scrollbar-thumb: rgba(139, 148, 158, 0.40);
+  --scrollbar-thumb-hover: rgba(139, 148, 158, 0.62);
+  --danger-text: #ffb4b4;
+  --danger-border: rgba(248, 113, 113, 0.45);
+  --danger-bg-hover: rgba(248, 113, 113, 0.12);
   color-scheme: dark;
   height: 100vh;
   overflow: hidden;
@@ -89,6 +104,21 @@ body.desktop[data-theme="light"] {
   --terminal-bg: #ffffff;
   --terminal-fg: #1f2328;
   --terminal-selection-bg: #0969da33;
+  --surface-bg: #ffffff;
+  --surface-bg-hover: #f6f8fa;
+  --surface-bg-active: #ddf4ff;
+  --surface-shadow: rgba(31, 35, 40, 0.08);
+  --border-subtle: #d8dee4;
+  --control-radius: 6px;
+  --control-bg: #ffffff;
+  --control-bg-hover: #f6f8fa;
+  --control-border: #d0d7de;
+  --control-focus-ring: rgba(9, 105, 218, 0.22);
+  --scrollbar-thumb: rgba(87, 96, 106, 0.36);
+  --scrollbar-thumb-hover: rgba(87, 96, 106, 0.58);
+  --danger-text: #cf222e;
+  --danger-border: rgba(207, 34, 46, 0.42);
+  --danger-bg-hover: rgba(207, 34, 46, 0.08);
   color-scheme: light;
 }
 
@@ -100,6 +130,45 @@ body.desktop input,
 body.desktop select,
 body.desktop textarea {
   font-size: var(--ui-font-size, 13px) !important;
+}
+
+body.desktop,
+body.desktop * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+body.desktop *::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+body.desktop *::-webkit-scrollbar-track {
+  background: transparent;
+}
+body.desktop *::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  background-clip: content-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
+}
+body.desktop *::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+body.desktop *::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+body.desktop button,
+body.desktop input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+body.desktop select,
+body.desktop textarea {
+  border-radius: var(--control-radius);
+}
+body.desktop button:focus-visible,
+body.desktop input:focus-visible,
+body.desktop select:focus-visible,
+body.desktop textarea:focus-visible {
+  outline: 2px solid var(--control-focus-ring);
+  outline-offset: 1px;
 }
 
 .desktop-layout {
@@ -161,11 +230,11 @@ body.desktop textarea {
   text-align: left;
 }
 .mode-nav-btn:hover:not(:disabled) {
-  background: var(--bg-hover);
+  background: var(--surface-bg-hover);
   color: var(--text);
 }
 .mode-nav-btn[aria-pressed="true"] {
-  background: var(--bg-hover);
+  background: var(--surface-bg-hover);
   border-color: var(--border);
   color: var(--accent);
   font-weight: 600;
@@ -241,8 +310,8 @@ body.desktop textarea {
 .sidebar-filters .filter-select {
   flex: 1 1 calc(50% - 6px);
   min-width: 0;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   color: var(--text);
   padding: 4px 6px;
   border-radius: var(--radius-sm);
@@ -251,7 +320,7 @@ body.desktop textarea {
 .agent-list-wrap {
   flex: 1;
   overflow-y: auto;
-  padding: 6px 0;
+  padding: 6px 4px;
   min-height: 0;
 }
 .desktop-agent-row {
@@ -259,16 +328,18 @@ body.desktop textarea {
   grid-template-columns: 12px 1fr auto;
   gap: 8px;
   align-items: center;
-  padding: 8px 12px;
+  margin: 1px 4px;
+  padding: 8px 9px;
   cursor: pointer;
-  border-left: 3px solid transparent;
+  border-left: 2px solid transparent;
+  border-radius: var(--control-radius);
   font-size: 12px;
 }
 .desktop-agent-row:hover {
-  background: var(--bg-hover);
+  background: var(--surface-bg-hover);
 }
 .desktop-agent-row.selected {
-  background: var(--bg-hover);
+  background: var(--surface-bg-active);
   border-left-color: var(--accent);
 }
 .desktop-agent-row .dot {
@@ -362,7 +433,7 @@ body.desktop textarea {
   border-left: 1px solid var(--border);
 }
 .output-mode-btn[aria-pressed="true"] {
-  background: var(--bg-hover);
+  background: var(--surface-bg-hover);
   color: var(--accent);
   font-weight: 600;
 }
@@ -840,8 +911,8 @@ body.desktop textarea {
   align-items: center;
   justify-content: center;
   width: 100%;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   color: var(--text);
   padding: 0 8px;
   border-radius: var(--radius-sm);
@@ -857,7 +928,7 @@ body.desktop textarea {
   min-width: 44px;
 }
 .agent-composer .btn-quick:hover:not(:disabled) {
-  background: var(--bg-hover);
+  background: var(--surface-bg-hover);
 }
 .agent-composer .btn-quick:disabled {
   opacity: 0.4;
@@ -874,8 +945,8 @@ body.desktop textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   color: var(--text-dim);
   padding: 0;
   font-size: 15px;
@@ -888,7 +959,7 @@ body.desktop textarea {
   align-self: stretch;
 }
 .btn-attach:hover:not(:disabled) {
-  background: var(--bg-hover);
+  background: var(--surface-bg-hover);
   color: var(--text);
 }
 .btn-attach:disabled {
@@ -906,8 +977,8 @@ body.desktop textarea {
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   color: var(--text);
   padding: 7px 10px;
   border-radius: var(--radius-sm);
@@ -1012,8 +1083,8 @@ body.desktop textarea {
   flex-direction: column;
   gap: 10px;
   padding: 12px 14px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
+  background: var(--surface-bg);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius);
 }
 .settings-section h3 {
@@ -1030,8 +1101,8 @@ body.desktop textarea {
   color: var(--text-dim);
 }
 .settings-section input {
-  background: var(--bg-input);
-  border: 1px solid var(--border);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   color: var(--text);
   padding: 6px 8px;
   border-radius: var(--radius-sm);
@@ -1045,8 +1116,8 @@ body.desktop textarea {
 }
 .settings-section select,
 .settings-section textarea {
-  background: var(--bg-input);
-  border: 1px solid var(--border);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   color: var(--text);
   padding: 6px 8px;
   border-radius: var(--radius-sm);
@@ -1123,11 +1194,11 @@ body.desktop textarea {
   background: var(--accent-hover);
 }
 .settings-actions .btn-secondary {
-  background: var(--bg-input);
+  background: var(--control-bg);
   color: var(--text);
 }
 .settings-actions .btn-secondary:hover {
-  background: var(--bg-hover);
+  background: var(--control-bg-hover);
 }
 .settings-status {
   font-size: 12px;
@@ -1448,8 +1519,8 @@ body.desktop textarea {
   bottom: 16px;
   left: 50%;
   transform: translateX(-50%);
-  background: var(--bg-card);
-  border: 1px solid var(--border);
+  background: var(--surface-bg);
+  border: 1px solid var(--border-subtle);
   padding: 6px 14px;
   border-radius: var(--radius-sm);
   font-size: 12px;
@@ -1489,19 +1560,19 @@ body.desktop textarea {
   font-size: 12px;
   padding: 4px 10px;
   border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--bg-card);
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
   color: var(--text);
   cursor: pointer;
 }
-#mode-nodes .btn-sm:hover { background: var(--bg-hover, rgba(255,255,255,0.04)); }
+#mode-nodes .btn-sm:hover { background: var(--control-bg-hover); }
 #mode-nodes .btn-sm[disabled] { opacity: 0.5; cursor: not-allowed; }
 #mode-nodes .btn-danger {
-  border-color: rgba(248,113,113,0.45);
-  color: #fecaca;
+  border-color: var(--danger-border);
+  color: var(--danger-text);
 }
 #mode-nodes .btn-danger:hover {
-  background: rgba(248,113,113,0.12);
+  background: var(--danger-bg-hover);
 }
 #mode-nodes .settings-status { padding: 8px 16px; }
 
@@ -1590,8 +1661,8 @@ body.desktop textarea {
   gap: 6px;
   align-items: center;
   padding: 6px 6px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
+  background: var(--surface-bg);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   margin-bottom: 10px;
 }
@@ -1684,20 +1755,20 @@ body.desktop textarea {
   font-size: 11px;
   padding: 2px 8px;
   border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--bg-card);
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
   color: var(--text);
   cursor: pointer;
   white-space: nowrap;
 }
-#mode-nodes .btn-xs:hover  { background: var(--bg-hover, rgba(255,255,255,0.04)); }
+#mode-nodes .btn-xs:hover  { background: var(--control-bg-hover); }
 #mode-nodes .btn-xs[disabled] { opacity: 0.5; cursor: not-allowed; }
 #mode-nodes .btn-xs.btn-xs-danger {
-  border-color: rgba(248,113,113,0.45);
-  color: #fecaca;
+  border-color: var(--danger-border);
+  color: var(--danger-text);
 }
 #mode-nodes .btn-xs.btn-xs-danger:hover {
-  background: rgba(248,113,113,0.12);
+  background: var(--danger-bg-hover);
 }
 #mode-nodes .nodes-ctx-row-main {
   display: flex;
@@ -1794,13 +1865,15 @@ body.desktop textarea {
   gap: 10px;
 }
 #mode-nodes .host-card {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--control-radius);
+  background: var(--surface-bg);
   overflow: hidden;
+  box-shadow: 0 1px 2px var(--surface-shadow);
 }
 #mode-nodes .host-card.expanded {
   border-color: var(--accent, #38bdf8);
+  box-shadow: 0 0 0 1px var(--control-focus-ring);
 }
 #mode-nodes .host-card-header {
   display: flex;
@@ -1812,7 +1885,7 @@ body.desktop textarea {
   user-select: none;
 }
 #mode-nodes .host-card-header:hover {
-  background: var(--bg-hover, rgba(255,255,255,0.04));
+  background: var(--control-bg-hover);
 }
 #mode-nodes .host-chevron {
   display: inline-block;
@@ -1876,15 +1949,15 @@ body.desktop textarea {
  * — collapsed shows name/path + edit/delete, expanded reveals env
  * and the full last-sync diagnostic. */
 #mode-nodes .ctx-row {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--control-radius);
   background: var(--bg);
   margin-bottom: 6px;
   overflow: hidden;
 }
 #mode-nodes .ctx-row.expanded {
-  border-color: var(--border);
-  background: var(--bg-card);
+  border-color: var(--control-border);
+  background: var(--surface-bg);
 }
 #mode-nodes .ctx-row-header {
   display: grid;
@@ -1895,7 +1968,7 @@ body.desktop textarea {
   cursor: pointer;
 }
 #mode-nodes .ctx-row-header:hover {
-  background: var(--bg-hover, rgba(255,255,255,0.04));
+  background: var(--control-bg-hover);
 }
 #mode-nodes .ctx-row-chevron {
   display: inline-block;
@@ -2137,8 +2210,8 @@ body.desktop textarea {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
   color: var(--text);
   border-radius: 999px;
   padding: 2px 4px 2px 8px;
@@ -2165,9 +2238,9 @@ body.desktop textarea {
 
 .sidebar-popover {
   margin: 0 12px 8px;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  background: var(--surface-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--control-radius);
   padding: 8px;
   display: flex;
   flex-direction: column;
