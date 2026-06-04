@@ -17,7 +17,11 @@ name = "claude"
 display_name = "Claude Code"
 
 [launch]
-command = ["claude", "--allowed-tools", "Bash,Edit,Read,Write,Glob,Grep,WebFetch,TodoWrite,NotebookEdit"]
+# Use POSIX `env KEY=VAL prog…` prefix to set CLAUDE_CODE_DISABLE_MOUSE
+# in the agent's environment. tmux execs argv directly without a shell,
+# so this works identically under bash / zsh / csh / tcsh / fish / dash
+# login shells — /usr/bin/env is the single source of truth.
+command = ["env", "CLAUDE_CODE_DISABLE_MOUSE=1", "claude", "--allowed-tools", "Bash,Edit,Read,Write,Glob,Grep,WebFetch,TodoWrite,NotebookEdit"]
 auto_permission_mode = false    # set true to add --permission-mode auto to launch command
 prompt_after_launch = true
 startup_wait = 30.0
