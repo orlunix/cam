@@ -1819,6 +1819,72 @@ function getProfile() {
 
 /* ─────────────── Exports ─────────────── */
 
+/**
+ * Build the SSH connect options the main process needs to attach a
+ * terminal channel to <agentId>. Resolves the agent's owning context,
+ * pulls the (decrypted) password/passphrase out of the credential
+ * store if remembered, and returns a plain object suitable for
+ * sshTransport.openTerminalChannel(). Secrets stay in main-process
+ * memory — this helper is not exposed via IPC or preload.
+ *
+ * Returns one of:
+ *   { ok: true,  agent, ctx, opts }
+ *   { ok: false, error, detail }
+ */
+function _machineMatchesAgent(ctx, agent) {
+  const m = (ctx && ctx.machine) || {};
+  return (m.type || 'local') === (agent.machine_type || agent.transport_type || 'local')
+    && (m.host || '') === (agent.machine_host || '')
+    && (m.user || '') === (agent.machine_user || '')
+    && String(m.port == null ? '' : m.port) === String(agent.machine_port == null ? '' : agent.machine_port);
+}
+
+function _attachContextForAgent(agent, fallbackCtx) {
+  const ctxs = Array.isArray(state.store && state.store.contexts) ? state.store.contexts : [];
+  const byMachine = ctxs.find(ctx => _machineMatchesAgent(ctx, agent));
+  if (byMachine) return byMachine;
+  const byName = agent && agent.context_name ? ctxs.find(c => c && c.name === agent.context_name) : null;
+  return byName || fallbackCtx || null;
+}
+
+async function getAttachConnectOpts(agentId) {
+  const resolved = _contextForAgent(agentId);
+  if (resolved.error) {
+    return { ok: false, error: resolved.error, detail: `agent ${agentId}: ${resolved.error}` };
+  }
+  const agent = resolved.agent || {};
+  const ctx = _attachContextForAgent(agent, resolved.ctx);
+  if (!ctx) return { ok: false, error: 'context_not_found', detail: `agent ${agentId}: context_not_found` };
+
+  // Match `cam attach`: the live agent machine fields are the source of
+  // truth for where the agent actually runs. The context supplies auth
+  // metadata/credentials, but stale context host/user/port must not redirect
+  // an attach to the wrong endpoint. Do not pre-filter by agent status here;
+  // `camc attach` has the authoritative tmux-session check and returns the
+  // useful stale-session error when needed.
+  const built = _sshBaseOptsForContext(ctx, 60000);
+  if (built.error) return { ok: false, error: built.error, detail: built.detail };
+  const opts = { ...built.opts };
+  if ((agent.machine_type || agent.transport_type || 'ssh') !== 'ssh') {
+    return { ok: false, error: 'not_ssh', detail: `agent ${agentId}: terminal attach requires an SSH-backed agent` };
+  }
+  if (agent.machine_host) opts.host = agent.machine_host;
+  if (agent.machine_user) opts.user = agent.machine_user;
+  if (agent.machine_port != null && agent.machine_port !== '') opts.port = agent.machine_port;
+
+  const ready = await _ensureRemoteCamc(opts);
+  if (!ready.ok) {
+    return { ok: false, error: ready.error || 'remote_camc_unavailable', detail: ready.detail || 'failed to prepare ~/.cam/camc on remote host' };
+  }
+  return {
+    ok: true,
+    agent,
+    ctx,
+    opts,
+    command: `${REMOTE_CAMC} attach ${_shellQuote(agent.id || agentId)}`,
+  };
+}
+
 module.exports = {
   configure,
   start,
@@ -1827,4 +1893,5 @@ module.exports = {
   check,
   getLogs,
   getProfile,
+  getAttachConnectOpts,
 };
