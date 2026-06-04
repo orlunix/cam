@@ -221,11 +221,149 @@ def _sf(agent, field, default=""):
     return default
 
 
-def _agent_to_cam_json(a):
+# ---------------------------------------------------------------------------
+# Activity timestamps (F-07, P0 dynamic-only variant).
+#
+# Goal: surface a useful "last activity" timestamp for `camc list` /
+# `camc --json list` without writing anything to agents.json.
+#
+# Strategy:
+#   - For a LIVE local tmux session, query `tmux display-message -p
+#     -F '#{session_activity}'` for the session's last-activity epoch.
+#     tmux's session-activity tracks input AND output, so the value is
+#     genuinely "last time something happened in this pane".
+#   - For a dead session, missing tmux, or any query failure: fall back
+#     to max(completed_at, started_at) — what we'd show anyway.
+#   - Nothing is persisted. agents.json is not written. No monitor
+#     writes, no send/key writes, no msg-inject writes.
+#
+# Cost: one tmux RPC per agent at list time. For a typical `camc list`
+# (<50 agents on a host) this is well under 100ms total and runs only
+# when the user explicitly asks. We do not cache; the staleness of
+# `camc --json list` would dwarf any savings.
+# ---------------------------------------------------------------------------
+
+_TMUX_ACTIVITY_FMT = "#{session_activity}"
+
+
+def _max_ts(*values):
+    """Max ISO-8601 string, ignoring None/empty. ISO 8601 sorts lexicographically."""
+    best = ""
+    for v in values:
+        if not v:
+            continue
+        s = str(v)
+        if s > best:
+            best = s
+    return best or None
+
+
+def _epoch_to_iso(epoch):
+    """Convert tmux's epoch-seconds (string or int) to camc's ISO-8601
+    UTC stamp. Returns None on any parse failure."""
+    if epoch is None:
+        return None
+    try:
+        n = int(str(epoch).strip())
+    except (TypeError, ValueError):
+        return None
+    if n <= 0:
+        return None
+    try:
+        from datetime import datetime, timezone
+        return datetime.fromtimestamp(n, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _tmux_session_activity_iso(session):
+    """Query tmux for the session's last-activity epoch and return an
+    ISO-8601 UTC string. Returns None if the session is missing, the
+    tmux binary fails, or the format expansion isn't a usable integer."""
+    if not session:
+        return None
+    try:
+        from camc_pkg.transport import _tmux_bin_for_session
+        bin_path = _tmux_bin_for_session(session)
+    except Exception:
+        bin_path = None
+    if not bin_path:
+        # No live server bound — caller will use the static fallback.
+        return None
+    try:
+        sock_path = _find_tmux_socket(session)
+    except Exception:
+        sock_path = None
+    cmd = [bin_path]
+    if sock_path:
+        cmd += ["-S", sock_path]
+    cmd += ["display-message", "-p", "-t", session, "-F", _TMUX_ACTIVITY_FMT]
+    try:
+        out = subprocess.check_output(cmd, stderr=subprocess.DEVNULL, timeout=2)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return None
+    return _epoch_to_iso(out.decode("utf-8", "replace").strip())
+
+
+def _compute_updated_at(rec):
+    """Dynamic updated_at for `camc list`. Prefers live tmux session
+    activity (covers both input AND output for the duration of the
+    session). Falls back to max(completed_at, started_at) when the
+    session is gone, tmux is unavailable, or the query fails — which
+    matches what the legacy STARTED column was showing anyway."""
+    if not isinstance(rec, dict):
+        return None
+    session = _sf(rec, "tmux_session")
+    live_ts = _tmux_session_activity_iso(session)
+    if live_ts:
+        return live_ts
+    return _max_ts(rec.get("completed_at"), rec.get("started_at"))
+
+
+def _sort_agents_by_updated_at(agents, recency_fn=None):
+    """Sort `agents` for `camc list`: tag-group ascending, then
+    updated_at DESCENDING within each group, stably.
+
+    Implementation: two-pass stable sort. Pass 1 sorts by recency
+    descending (reverse=True), Pass 2 sorts by tag-group ascending
+    — Python's sorted() is stable so the recency order is preserved
+    inside each (tag-present, first-tag) bucket. This avoids the
+    older chr(127)+s[::-1] trick, which does NOT actually produce
+    descending order for ISO 8601 strings (reversed-string lex sort
+    of '09:00' vs '07:00' depends on the digit positions and is
+    unpredictable).
+
+    `recency_fn(a)` returns the dynamic updated_at string for agent
+    `a` ("" for no recency). Defaults to `_compute_updated_at(a) or
+    ""` — pass an explicit closure to share a precomputed cache so
+    the tmux RPC fires once per agent for the whole pipeline (sort
+    + JSON emit + table render)."""
+    if recency_fn is None:
+        recency_fn = lambda a: _compute_updated_at(a) or ""
+    # Pass 1: recency descending. Empty recency sorts AFTER non-empty
+    # because reverse=True orders larger strings first; the empty
+    # string is the smallest possible value, so it lands at the tail.
+    by_recency = sorted(agents, key=recency_fn, reverse=True)
+    # Pass 2: tag-group ascending. Ties preserve pass-1 order.
+    def _group_key(a):
+        tags = _tf(a, "tags")
+        tags = tags if isinstance(tags, list) else []
+        first_tag = tags[0].lower() if tags else ""
+        return (0 if tags else 1, first_tag)
+    return sorted(by_recency, key=_group_key)
+
+
+def _agent_to_cam_json(a, _updated_at_override=None):
     """Convert agent dict to cam-compatible JSON format.
 
     With the unified schema, new-format records are already cam-compatible.
     This function handles both legacy (flat fields) and new (nested task) formats.
+
+    `_updated_at_override` is the F-07 escape hatch: cmd_list precomputes
+    the dynamic updated_at once per agent and passes it in here so the
+    JSON emit path does NOT issue a second tmux RPC. Callers outside
+    the list pipeline (cmd_status, etc.) pass nothing and fall back to
+    a fresh _compute_updated_at(a) at JSON-emit time.
     """
     # Handle nested task (new format) vs flat fields (legacy)
     task = a.get("task")
@@ -276,6 +414,13 @@ def _agent_to_cam_json(a):
         "hostname": a.get("hostname", ""),
         "started_at": a.get("started_at"),
         "completed_at": a.get("completed_at"),
+        # F-07 P0: updated_at is computed dynamically — NOT persisted.
+        # For live tmux sessions this is the tmux session-activity
+        # epoch; for dead sessions it falls back to max(completed_at,
+        # started_at). cmd_list passes a precomputed value via
+        # _updated_at_override to avoid a duplicate tmux RPC.
+        "updated_at": _updated_at_override if _updated_at_override is not None
+                      else _compute_updated_at(a),
         "exit_reason": a.get("exit_reason"),
         "retry_count": a.get("retry_count", 0),
         "cost_estimate": a.get("cost_estimate"),
@@ -584,24 +729,32 @@ def cmd_list(args):
         agents = [a for a in agents
                   if tag_filter in (_tf(a, "tags") if isinstance(_tf(a, "tags"), list) else [])]
 
+    # F-07: precompute dynamic updated_at ONCE per agent, then sort /
+    # JSON-emit / render-table all consult the same cache. This caps
+    # tmux RPCs at N (one per agent) rather than ~3N (one per call
+    # site). The closure captures `recency_cache` so the sort, JSON
+    # path, and table cell all see the same precomputed value.
+    recency_cache = {id(a): (_compute_updated_at(a) or "") for a in agents}
+    def _recency(a):
+        return recency_cache.get(id(a), "")
+
     # Sort: tagged agents first (by tags[0] alpha), then untagged.
-    # Within each group, by started_at descending.
-    def _sort_key(a):
-        tags = _tf(a, "tags")
-        tags = tags if isinstance(tags, list) else []
-        first_tag = tags[0].lower() if tags else ""
-        started = a.get("started_at", "")
-        # tagged=0 (first), untagged=1 (after); then by tag alpha, then newest first
-        return (0 if tags else 1, first_tag, "" if not started else chr(127) + started[::-1])
-    agents = sorted(agents, key=_sort_key)
+    # Within each group, by updated_at DESCENDING. Implementation
+    # detail in _sort_agents_by_updated_at — see its docstring for
+    # why the old chr(127)+s[::-1] trick is replaced by a two-pass
+    # stable sort.
+    agents = _sort_agents_by_updated_at(agents, _recency)
 
     # Limit
     last_n = getattr(args, "last", 50) or 50
     agents = agents[:last_n]
 
-    # JSON output — cam-compatible format
+    # JSON output — cam-compatible format.
     if _want_json(args):
-        print(json.dumps([_agent_to_cam_json(a) for a in agents], indent=2))
+        print(json.dumps(
+            [_agent_to_cam_json(a, _updated_at_override=_recency(a) or None)
+             for a in agents],
+            indent=2))
         return
 
     any_tags = any(isinstance(_tf(a, "tags"), list) and _tf(a, "tags") for a in agents)
@@ -620,14 +773,16 @@ def cmd_list(args):
             styled_status(a.get("status", "?")),
             styled_state(a.get("state")),
             (_tf(a, "prompt") or "")[:24],
-            _time_ago(a.get("started_at")),
+            # F-07: UPDATED column matches the sort order; uses the
+            # cached value so we don't issue a third tmux RPC.
+            _time_ago(_recency(a) or None),
         ]
         rows.append(row)
     if any_tags:
-        headers = ["ID", "NAME", "TAG", "TOOL", "STATUS", "STATE", "PROMPT", "STARTED"]
+        headers = ["ID", "NAME", "TAG", "TOOL", "STATUS", "STATE", "PROMPT", "UPDATED"]
         col_styles = {0: "dim", 1: "bold", 2: "cyan", 4: None, 7: "dim"}
     else:
-        headers = ["ID", "NAME", "TOOL", "STATUS", "STATE", "PROMPT", "STARTED"]
+        headers = ["ID", "NAME", "TOOL", "STATUS", "STATE", "PROMPT", "UPDATED"]
         col_styles = {0: "dim", 1: "bold", 3: None, 6: "dim"}
     print_table(headers, rows, title="Agents", col_styles=col_styles)
 
@@ -2686,14 +2841,9 @@ def cmd_heal(args):
         name = _tf(a, "name") or aid
         session = _sf(a, "tmux_session")
 
-        # Skip remote (SSH) agents — their tmux sessions are on the remote machine,
-        # not locally checkable. Remote heal is handled by `camc heal` on each machine.
-        transport = a.get("transport_type", "local")
-        if transport != "local":
-            print("  %s (%s): skipped (remote/%s)" % (name, aid, transport))
-            skipped += 1
-            continue
-
+        # transport_type reflects how the agent was deployed (e.g. "ssh" when
+        # created via cam server), not where tmux lives. The real gate is
+        # tmux_session_exists — if the session is alive here, we own it.
         # Check if tmux session is alive — double-check to avoid false negatives
         # (cron environment may cause transient tmux failures)
         session_alive = tmux_session_exists(session)
@@ -2702,6 +2852,14 @@ def cmd_heal(args):
             time.sleep(0.5)
             session_alive = tmux_session_exists(session)
         if not session_alive:
+            # Session is not on this host. If transport_type says ssh, this
+            # is expected — the real session lives elsewhere and that
+            # machine's camc will heal it. Skip without marking dead.
+            transport = a.get("transport_type", "local")
+            if transport != "local":
+                print("  %s (%s): skipped (remote/%s)" % (name, aid, transport))
+                skipped += 1
+                continue
             state = a.get("state") or "initializing"
             status = "completed" if state not in ("initializing",) else "failed"
             store.update(aid, status=status, exit_reason="Session gone (heal)", completed_at=_now_iso())
