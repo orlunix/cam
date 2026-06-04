@@ -91,16 +91,17 @@ export function mountSettingsMode({ state, showToast, readConfig, saveConfig, co
     }
   } catch {}
 
-  /* ────────── Settings tabs (Direct / Relay only) ──────────
-   * CAM-DESK-REMOTE-014: active Settings has exactly two tabs.
-   * Unknown saved tab values (e.g. legacy 'local') are clamped to
-   * 'direct' so existing users do not crash on an unrendered tab. */
+  /* ────────── Settings tabs (Direct / Relay / Appearance) ──────────
+   * Active Settings has three tabs. Unknown saved tab values (e.g.
+   * legacy 'local') are clamped to 'direct' so existing users do not
+   * crash on an unrendered tab. */
   const tabButtons = panel.querySelectorAll('.settings-tab[data-tab]');
   const tabPanels  = panel.querySelectorAll('.settings-tab-panel[data-tab]');
   const TAB_KEY    = 'cam_desktop_settings_tab';
+  const VALID_TABS = ['direct', 'relay', 'appearance'];
 
   function applyTab(name) {
-    if (name !== 'direct' && name !== 'relay') name = 'direct';
+    if (!VALID_TABS.includes(name)) name = 'direct';
     tabButtons.forEach((b) => {
       const active = b.dataset.tab === name;
       b.setAttribute('aria-pressed', active ? 'true' : 'false');
@@ -116,7 +117,7 @@ export function mountSettingsMode({ state, showToast, readConfig, saveConfig, co
   function pickInitialTab() {
     try {
       const saved = localStorage.getItem(TAB_KEY);
-      if (saved === 'direct' || saved === 'relay') return saved;
+      if (VALID_TABS.includes(saved)) return saved;
     } catch {}
     if (_profileKind() === 'relay') return 'relay';
     return 'direct';
@@ -138,6 +139,14 @@ export function mountSettingsMode({ state, showToast, readConfig, saveConfig, co
    * token. Without the third, the websocket connects but every proxied
    * REST call fails 401. */
   mountRelayTab({ panel, readConfig, saveConfig, connect, showToast });
+
+  /* ────────── Appearance tab (CAM-DESK-SET-002) ──────────
+   * Theme (dark/light/system) + UI font size + agent-output font
+   * size. Stored in localStorage; applied immediately via body
+   * `data-theme` + CSS custom properties on `body.desktop`.
+   * `applyAppearance()` was already called at module-load time so
+   * the initial paint is correct before this mount runs. */
+  mountAppearanceTab({ panel, showToast });
 }
 
 /* ───────── Direct tab controller (CAM-DESK-DIRECT-010..019) ───────── */
@@ -451,4 +460,199 @@ function mountRelayTab({ panel, readConfig, saveConfig, connect, showToast }) {
       relaySetStatus('Connection failed — check relay URL, relay token, and CAM token.', 'is-error');
     }
   });
+}
+
+/* ───────── Appearance tab (CAM-DESK-SET-002) ─────────
+ *
+ * Theme + font-size are renderer-only preferences. Persisted via
+ * localStorage; applied immediately by setting `data-theme` on
+ * `body` and CSS custom properties (`--ui-font-size`,
+ * `--output-font-size`) on `body.desktop`. The light theme is
+ * implemented as `body.desktop[data-theme="light"]` overrides in
+ * `web/css/desktop.css`; the dark theme is the default (no
+ * attribute set).
+ *
+ * `applyAppearance()` is called once at module-load time so the
+ * initial paint is correct before any view mounts. It is also
+ * called again from `mountAppearanceTab` whenever a control
+ * changes. A `prefers-color-scheme` MediaQueryList listener keeps
+ * the "Match system" mode in sync if the OS theme switches.
+ */
+
+const APPEARANCE_THEME_KEY     = 'cam_desktop_theme';
+const APPEARANCE_UI_FONT_KEY   = 'cam_desktop_font_ui';
+const APPEARANCE_OUTPUT_KEY    = 'cam_desktop_font_output';
+const APPEARANCE_VALID_THEMES  = ['dark', 'light', 'system'];
+const APPEARANCE_UI_MIN        = 11;
+const APPEARANCE_UI_MAX        = 17;
+const APPEARANCE_UI_DEFAULT    = 13;
+const APPEARANCE_OUTPUT_MIN    = 10;
+const APPEARANCE_OUTPUT_MAX    = 20;
+const APPEARANCE_OUTPUT_DEFAULT = 13;
+
+function _readAppearanceTheme() {
+  try {
+    const v = localStorage.getItem(APPEARANCE_THEME_KEY);
+    if (APPEARANCE_VALID_THEMES.includes(v)) return v;
+  } catch {}
+  return 'dark';
+}
+function _readAppearanceFont(key, def, min, max) {
+  try {
+    const raw = localStorage.getItem(key);
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= min && n <= max) return n;
+  } catch {}
+  return def;
+}
+function _systemPrefersLight() {
+  try {
+    return !!(typeof window !== 'undefined' &&
+              window.matchMedia &&
+              window.matchMedia('(prefers-color-scheme: light)').matches);
+  } catch { return false; }
+}
+function _resolveEffectiveTheme(setting) {
+  if (setting === 'light') return 'light';
+  if (setting === 'dark')  return 'dark';
+  return _systemPrefersLight() ? 'light' : 'dark';
+}
+
+/** Apply the current saved appearance to the DOM. Idempotent.
+ *  Safe to call multiple times; safe to call before any view is
+ *  mounted (it only touches `<body>`). */
+export function applyAppearance() {
+  if (typeof document === 'undefined' || !document.body) return;
+  const body = document.body;
+  const themeSetting   = _readAppearanceTheme();
+  const effectiveTheme = _resolveEffectiveTheme(themeSetting);
+
+  // `data-theme` is only set when light; dark is the unattributed
+  // default so existing CSS continues to render as before.
+  if (effectiveTheme === 'light') {
+    body.setAttribute('data-theme', 'light');
+  } else {
+    body.removeAttribute('data-theme');
+  }
+  // Record the explicit user choice too, so the Appearance form can
+  // distinguish "system → currently light" from "explicit light".
+  body.setAttribute('data-theme-setting', themeSetting);
+
+  const ui = _readAppearanceFont(
+    APPEARANCE_UI_FONT_KEY, APPEARANCE_UI_DEFAULT,
+    APPEARANCE_UI_MIN, APPEARANCE_UI_MAX,
+  );
+  const out = _readAppearanceFont(
+    APPEARANCE_OUTPUT_KEY, APPEARANCE_OUTPUT_DEFAULT,
+    APPEARANCE_OUTPUT_MIN, APPEARANCE_OUTPUT_MAX,
+  );
+  body.style.setProperty('--ui-font-size', `${ui}px`);
+  body.style.setProperty('--output-font-size', `${out}px`);
+}
+
+// Side-effect at module load: apply persisted appearance before any
+// panel mounts, so the very first paint matches the saved choice.
+applyAppearance();
+
+// Keep "Match system" in sync if the OS theme flips while the app
+// is running. Best-effort: older browsers without addEventListener
+// on MQL fall through gracefully.
+try {
+  if (typeof window !== 'undefined' && window.matchMedia) {
+    const mq = window.matchMedia('(prefers-color-scheme: light)');
+    const onChange = () => {
+      if (_readAppearanceTheme() === 'system') applyAppearance();
+    };
+    if (typeof mq.addEventListener === 'function') mq.addEventListener('change', onChange);
+    else if (typeof mq.addListener === 'function')  mq.addListener(onChange);
+  }
+} catch {}
+
+function mountAppearanceTab({ panel, showToast }) {
+  const tabPanel = panel.querySelector('#settings-tab-appearance');
+  if (!tabPanel) return;
+
+  const themeSel       = tabPanel.querySelector('#appearance-theme');
+  const uiFontInput    = tabPanel.querySelector('#appearance-ui-font');
+  const uiFontValEl    = tabPanel.querySelector('#appearance-ui-font-val');
+  const outFontInput   = tabPanel.querySelector('#appearance-output-font');
+  const outFontValEl   = tabPanel.querySelector('#appearance-output-font-val');
+  const resetBtn       = tabPanel.querySelector('#appearance-reset');
+  const statusEl       = tabPanel.querySelector('#settings-status-appearance');
+
+  function setStatus(text, cls = '') {
+    if (!statusEl) return;
+    statusEl.textContent = text || '';
+    statusEl.classList.remove('is-error', 'is-ok');
+    if (cls) statusEl.classList.add(cls);
+  }
+
+  // Initialize controls from saved values.
+  function syncFromStorage() {
+    const theme = _readAppearanceTheme();
+    const ui    = _readAppearanceFont(
+      APPEARANCE_UI_FONT_KEY, APPEARANCE_UI_DEFAULT,
+      APPEARANCE_UI_MIN, APPEARANCE_UI_MAX,
+    );
+    const out   = _readAppearanceFont(
+      APPEARANCE_OUTPUT_KEY, APPEARANCE_OUTPUT_DEFAULT,
+      APPEARANCE_OUTPUT_MIN, APPEARANCE_OUTPUT_MAX,
+    );
+    if (themeSel)     themeSel.value         = theme;
+    if (uiFontInput)  uiFontInput.value      = String(ui);
+    if (uiFontValEl)  uiFontValEl.textContent = `${ui} px`;
+    if (outFontInput) outFontInput.value     = String(out);
+    if (outFontValEl) outFontValEl.textContent = `${out} px`;
+  }
+  syncFromStorage();
+
+  if (themeSel) {
+    themeSel.addEventListener('change', () => {
+      const v = themeSel.value;
+      if (!APPEARANCE_VALID_THEMES.includes(v)) return;
+      try { localStorage.setItem(APPEARANCE_THEME_KEY, v); } catch {}
+      applyAppearance();
+      setStatus(`Theme set to ${v}.`, 'is-ok');
+    });
+  }
+
+  function commitFont(input, valEl, key, min, max) {
+    if (!input) return;
+    let n = Number.parseInt(input.value, 10);
+    if (!Number.isFinite(n)) n = min;
+    if (n < min) n = min;
+    if (n > max) n = max;
+    input.value = String(n);
+    if (valEl) valEl.textContent = `${n} px`;
+    try { localStorage.setItem(key, String(n)); } catch {}
+    applyAppearance();
+  }
+  if (uiFontInput) {
+    uiFontInput.addEventListener('input', () => {
+      commitFont(uiFontInput, uiFontValEl, APPEARANCE_UI_FONT_KEY,
+                 APPEARANCE_UI_MIN, APPEARANCE_UI_MAX);
+    });
+  }
+  if (outFontInput) {
+    outFontInput.addEventListener('input', () => {
+      commitFont(outFontInput, outFontValEl, APPEARANCE_OUTPUT_KEY,
+                 APPEARANCE_OUTPUT_MIN, APPEARANCE_OUTPUT_MAX);
+    });
+  }
+
+  if (resetBtn) {
+    resetBtn.addEventListener('click', () => {
+      try {
+        localStorage.removeItem(APPEARANCE_THEME_KEY);
+        localStorage.removeItem(APPEARANCE_UI_FONT_KEY);
+        localStorage.removeItem(APPEARANCE_OUTPUT_KEY);
+      } catch {}
+      applyAppearance();
+      syncFromStorage();
+      setStatus('Reset to defaults.', 'is-ok');
+      if (typeof showToast === 'function') {
+        showToast('Appearance reset to defaults.', 'success');
+      }
+    });
+  }
 }

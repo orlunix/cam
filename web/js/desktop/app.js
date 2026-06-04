@@ -17,6 +17,7 @@ import { mountStartAgentMode } from './start-agent-mode.js?v=0.64.0';
 import { mountNodesMode } from './nodes-mode.js?v=0.64.0';
 
 const POLL_INTERVAL_MS = 5000;
+const AGENT_SNAPSHOT_SYNC_EVERY_TICKS = 6; // ~30s at POLL_INTERVAL_MS.
 const PROFILE_KIND_KEY = 'cam_profile_kind';
 // `start`/`nodes` are real left-nav workspace modes like
 // `agents`/`settings`. `nodes` shows hub-provided controllers/nodes
@@ -163,6 +164,59 @@ async function loadContextsAndAdapters() {
   }
 }
 
+let snapshotSyncInFlight = false;
+
+function endpointKeyForContext(ctx) {
+  const m = (ctx && ctx.machine) || {};
+  const type = m.type || 'local';
+  if (type !== 'ssh') return '';
+  const host = String(m.host || '').trim();
+  const user = String(m.user || '').trim();
+  const port = Number(m.port || 22) || 22;
+  if (!host || !user) return '';
+  return `${type}|${user}|${host}|${port}`;
+}
+
+function representativeSyncContexts(contexts) {
+  const reps = new Map();
+  for (const ctx of Array.isArray(contexts) ? contexts : []) {
+    const m = (ctx && ctx.machine) || {};
+    if (m.type !== 'ssh') continue;
+    const auth = m.auth_method || (m.key_file ? 'key' : 'agent');
+    // Password one-shot contexts cannot be refreshed silently. Remembered
+    // password contexts are fine because the Hub decrypts in main only.
+    if (auth === 'password' && !m.credential_saved) continue;
+    const key = endpointKeyForContext(ctx);
+    if (key && !reps.has(key)) reps.set(key, ctx);
+  }
+  return [...reps.values()];
+}
+
+async function syncAgentSnapshotsFromContexts(reason = 'poll') {
+  if (api.mode !== 'direct') return;
+  if (snapshotSyncInFlight) return;
+  const contexts = representativeSyncContexts(state.get('contexts') || []);
+  if (contexts.length === 0) return;
+
+  snapshotSyncInFlight = true;
+  try {
+    let attempted = 0;
+    for (const ctx of contexts) {
+      try {
+        await api.syncContext(ctx.name);
+        attempted++;
+      } catch (e) {
+        console.warn(`background sync ${ctx.name} failed:`, e);
+      }
+    }
+    if (attempted > 0) await loadAgents();
+  } catch (e) {
+    console.warn(`background agent snapshot sync failed (${reason}):`, e);
+  } finally {
+    snapshotSyncInFlight = false;
+  }
+}
+
 async function connect() {
   const cfg = resolveConnectionConfig(readConfig());
   if (!hasConnectionConfig(cfg)) {
@@ -184,6 +238,7 @@ async function connect() {
   updateConnectionDot(mode);
   if (mode !== 'disconnected') {
     await Promise.all([loadAgents(), loadContextsAndAdapters()]);
+    if (mode === 'direct') void syncAgentSnapshotsFromContexts('connect');
     if (mode === 'relay') {
       try { api._requestRelayEventStream(); } catch {}
     }
@@ -405,11 +460,13 @@ async function init() {
       if (hasConnectionConfig(cfg)) await connect();
       return;
     }
-    pollTick = (pollTick + 1) % 6;
+    pollTick = (pollTick + 1) % AGENT_SNAPSHOT_SYNC_EVERY_TICKS;
     if (pollTick === 0) {
-      // Every 6th tick (~30s @ 5s POLL_INTERVAL): refresh contexts and
-      // adapters in addition to the agent list.
+      // Every ~30s: refresh contexts/adapters, then refresh one
+      // representative SSH context per endpoint so agent updated_at
+      // stays current without duplicating sibling contexts.
       await Promise.all([loadAgents(), loadContextsAndAdapters()]);
+      void syncAgentSnapshotsFromContexts('poll');
     } else {
       await loadAgents();
     }

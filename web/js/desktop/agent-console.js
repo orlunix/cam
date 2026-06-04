@@ -957,6 +957,7 @@ export function mountAgentConsole({ api, state, showToast }) {
   let termUnsubData = null;
   let termUnsubStatus = null;
   let termResizeObserver = null;
+  let termThemeObserver = null;
 
   function readOutputMode() {
     try {
@@ -1121,6 +1122,40 @@ export function mountAgentConsole({ api, state, showToast }) {
     term.write(`\r\n\x1b[2m${String(text || '')}\x1b[0m\r\n`);
   }
 
+  function cssVar(name, fallback) {
+    try {
+      const v = getComputedStyle(document.body).getPropertyValue(name).trim();
+      return v || fallback;
+    } catch { return fallback; }
+  }
+
+  function terminalThemeFromCss() {
+    return {
+      background: cssVar('--terminal-bg', '#0d1117'),
+      foreground: cssVar('--terminal-fg', '#e6edf3'),
+      cursor: cssVar('--accent', '#58a6ff'),
+      selectionBackground: cssVar('--terminal-selection-bg', '#1f6feb66'),
+    };
+  }
+
+  function applyTerminalTheme() {
+    const theme = terminalThemeFromCss();
+    if (terminalEl) terminalEl.style.background = theme.background;
+    if (term) term.options.theme = theme;
+  }
+
+  function ensureTerminalThemeObserver() {
+    if (termThemeObserver || !window.MutationObserver || !document.body) return;
+    termThemeObserver = new MutationObserver(() => {
+      applyTerminalTheme();
+      scheduleTerminalFit();
+    });
+    termThemeObserver.observe(document.body, {
+      attributes: true,
+      attributeFilter: ['data-theme', 'style'],
+    });
+  }
+
   function fitTerminalAndNotify() {
     if (!term || !termFit) return;
     try { termFit.fit(); } catch (_) {}
@@ -1153,12 +1188,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       scrollback: 5000,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
       fontSize: 12,
-      theme: {
-        background: '#0d1117',
-        foreground: '#e6edf3',
-        cursor: '#58a6ff',
-        selectionBackground: '#1f6feb66',
-      },
+      theme: terminalThemeFromCss(),
     });
     const FitCtor = window.FitAddon && window.FitAddon.FitAddon;
     if (FitCtor) {
@@ -1166,6 +1196,8 @@ export function mountAgentConsole({ api, state, showToast }) {
       term.loadAddon(termFit);
     }
     term.open(terminalEl);
+    applyTerminalTheme();
+    ensureTerminalThemeObserver();
     term.onData((data) => {
       const bridge = termBridge();
       if (!bridge || !termSessionId) return;
@@ -1922,6 +1954,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     if (termUnsubData) { try { termUnsubData(); } catch (_) {} termUnsubData = null; }
     if (termUnsubStatus) { try { termUnsubStatus(); } catch (_) {} termUnsubStatus = null; }
     if (termResizeObserver) { try { termResizeObserver.disconnect(); } catch (_) {} termResizeObserver = null; }
+    if (termThemeObserver) { try { termThemeObserver.disconnect(); } catch (_) {} termThemeObserver = null; }
     void closeTerminalSession();
   });
 

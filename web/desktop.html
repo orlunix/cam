@@ -246,11 +246,13 @@
           </p>
         </div>
 
-        <div class="settings-tabs" role="tablist" aria-label="Connection mode">
+        <div class="settings-tabs" role="tablist" aria-label="Settings tabs">
           <button type="button" class="settings-tab" data-tab="direct"
             role="tab" aria-pressed="true">Direct</button>
           <button type="button" class="settings-tab" data-tab="relay"
             role="tab" aria-pressed="false">Relay</button>
+          <button type="button" class="settings-tab" data-tab="appearance"
+            role="tab" aria-pressed="false">Appearance</button>
         </div>
 
         <!-- ── Direct tab (CAM-DESK-DIRECT-010..019: app-managed Hub) ── -->
@@ -325,6 +327,41 @@
               <button type="submit" class="btn-primary">Save &amp; Connect</button>
             </div>
             <div class="settings-status" id="settings-status-relay" aria-live="polite"></div>
+          </form>
+        </div>
+
+        <!-- ── Appearance tab (CAM-DESK-SET-002: theme + font sizes) ── -->
+        <div class="settings-tab-panel" id="settings-tab-appearance" data-tab="appearance" hidden>
+          <form id="settings-form-appearance" class="settings-form-pane">
+            <div class="settings-section">
+              <h3>Appearance</h3>
+              <p class="settings-help">
+                Adjust the Desktop's theme and text size. Settings are
+                stored locally in this browser/Electron profile and
+                apply immediately — no reload needed.
+              </p>
+              <label>Theme
+                <select id="appearance-theme">
+                  <option value="dark">Dark (default)</option>
+                  <option value="light">Light</option>
+                  <option value="system">Match system</option>
+                </select>
+              </label>
+              <label>UI font size
+                <input type="range" id="appearance-ui-font"
+                  min="11" max="17" step="1" value="13">
+                <span class="appearance-value" id="appearance-ui-font-val">13 px</span>
+              </label>
+              <label>Agent output font size
+                <input type="range" id="appearance-output-font"
+                  min="10" max="20" step="1" value="13">
+                <span class="appearance-value" id="appearance-output-font-val">13 px</span>
+              </label>
+            </div>
+            <div class="settings-actions">
+              <button type="button" class="btn-secondary" id="appearance-reset">Reset to defaults</button>
+            </div>
+            <div class="settings-status" id="settings-status-appearance" aria-live="polite"></div>
           </form>
         </div>
       </section>
