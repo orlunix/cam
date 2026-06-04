@@ -59,8 +59,8 @@
  * Errors map to a small dictionary for the renderer to switch on:
  *   'invalid_args' | 'key_file_missing' | 'key_read_failed' |
  *   'connect_timeout' | 'auth_failed' | 'connect_refused' |
- *   'dns_failure' | 'exec_failed' | 'remote_nonzero' |
- *   'sftp_failed' | 'sftp_write_failed'
+ *   'dns_failure' | 'connect_lost' | 'exec_failed' |
+ *   'remote_nonzero' | 'sftp_failed' | 'sftp_write_failed'
  */
 
 'use strict';
@@ -175,6 +175,9 @@ function _classifyError(err) {
   if (err.code === 'ETIMEDOUT' || /timed out/i.test(msg)) {
     return { error: 'connect_timeout', detail: msg };
   }
+  if (/Connection lost before handshake|closed before ready|ended before ready|before handshake/i.test(msg)) {
+    return { error: 'connect_lost', detail: msg };
+  }
   return { error: 'exec_failed', detail: msg };
 }
 
@@ -248,32 +251,41 @@ function _getOrCreate(key, opts, ssh2) {
 
   entry.readyPromise = new Promise((resolve, reject) => {
     const t0 = Date.now();
-    let rejected = false;
-    const failOnce = (err) => {
-      if (rejected) return;
-      rejected = true;
-      const c = _classifyError(err);
+    let settled = false;
+    const failConnect = (err) => {
+      if (settled) return;
+      settled = true;
+      const c = (err && err.error && err.detail) ? err : _classifyError(err);
       entry.connectError = c;
       _dropEntry(key, 'connect_error');
       reject(c);
     };
-    client.once('error', failOnce);
-    client.once('close', () => {
+    const onError = (err) => {
+      if (entry.state === 'connecting') failConnect(err);
+      else _dropEntry(key, 'error');
+    };
+    const onClose = () => {
       // If we never reached ready, treat close as connect failure.
-      if (entry.state === 'connecting') failOnce(new Error('connection closed before ready'));
+      if (entry.state === 'connecting') failConnect(new Error('Connection lost before handshake'));
       else _dropEntry(key, 'close');
-    });
-    client.once('end', () => {
-      if (entry.state === 'connecting') failOnce(new Error('connection ended before ready'));
+    };
+    const onEnd = () => {
+      if (entry.state === 'connecting') failConnect(new Error('Connection ended before handshake'));
       else _dropEntry(key, 'end');
-    });
+    };
+
+    // Keep a permanent error listener for the full client lifetime.
+    // ssh2 can emit a late "Connection lost before handshake" from the
+    // socket after close/destroy; without a listener that becomes an
+    // uncaught exception in Electron's main process.
+    client.on('error', onError);
+    client.on('close', onClose);
+    client.on('end', onEnd);
     client.once('ready', () => {
+      if (settled) return;
+      settled = true;
       entry.state = 'ready';
       entry.connectMs = Date.now() - t0;
-      // Replace the initial one-shot 'error' listener with a steady-state
-      // listener so a later error tears down the pooled entry.
-      client.removeListener('error', failOnce);
-      client.on('error', () => _dropEntry(key, 'error'));
       _startIdleTimer(entry);
       resolve();
     });
@@ -288,7 +300,7 @@ function _getOrCreate(key, opts, ssh2) {
       ...authBuilt.fields,
     };
     try { client.connect(connectOpts); }
-    catch (e) { failOnce(e); }
+    catch (e) { failConnect(e); }
   });
 
   _pool.set(key, entry);
@@ -432,9 +444,164 @@ function poolStats() {
   return { size: _pool.size, entries: out, keys: out.map(e => e.key) };
 }
 
+/**
+ * Open a long-lived PTY exec channel for an interactive attach
+ * (CAM-DESK-TERM-001). Unlike execRemote/writeRemoteFile which return
+ * after a single roundtrip, this opens a streaming channel:
+ *
+ *   - The same connection pool is reused (no extra TCP/auth handshake
+ *     when an output / sync session is already open to the same
+ *     endpoint+auth identity).
+ *   - A fresh ssh2 channel (`conn.exec(cmd, {pty:{cols,rows,...}}, cb)`)
+ *     is opened — concurrent with any other channel on the same
+ *     client. Closing this channel does NOT affect other channels and
+ *     does NOT close the pooled client.
+ *   - `onData(buf)` fires for every chunk of stdout / stderr; we
+ *     merge both onto the same callback because xterm.js treats them
+ *     as one byte stream.
+ *   - `onClose({code, signal})` fires once when the remote command
+ *     ends, the channel is destroyed, or the underlying connection
+ *     drops.
+ *
+ * Returns:
+ *   { ok: true, dispose, write(buf), resize(cols, rows) }
+ *   { ok: false, error, detail }
+ *
+ * `dispose()` closes the channel (best-effort) and stops invoking
+ * onData/onClose. It is idempotent. The agent process keeps running —
+ * `camc attach` is a read+input attach to the agent's tmux, not the
+ * agent itself.
+ */
+async function openTerminalChannel(opts, hooks = {}) {
+  if (_override) return _override({ ...opts, operation: 'openTerminalChannel' });
+  if (!opts || !opts.host || !opts.user) {
+    return { ok: false, error: 'invalid_args', detail: 'host and user are required' };
+  }
+  if (typeof opts.command !== 'string' || !opts.command) {
+    return { ok: false, error: 'invalid_args', detail: 'command is required' };
+  }
+  const onData  = typeof hooks.onData  === 'function' ? hooks.onData  : () => {};
+  const onClose = typeof hooks.onClose === 'function' ? hooks.onClose : () => {};
+  const cols = Math.max(2, Math.min(500, Number(hooks.cols) || 80));
+  const rows = Math.max(2, Math.min(500, Number(hooks.rows) || 24));
+  const openTimeoutMs = Math.max(5000, Math.min(120000, Number(opts.timeout_ms) || 60000));
+
+  const ssh2 = _loadSsh2();
+  if (!ssh2 || !ssh2.Client) {
+    return { ok: false, error: 'exec_failed', detail: `ssh2 module not loadable: ${ssh2 && ssh2._loadError || 'unknown'}` };
+  }
+
+  const key = _poolKey(opts);
+  const entry = _getOrCreate(key, opts, ssh2);
+
+  try {
+    await entry.readyPromise;
+  } catch (e) {
+    return { ok: false, error: e.error || 'exec_failed', detail: e.detail || 'connect failed' };
+  }
+
+  // Reserve so the idle timer cannot drop the client mid-attach.
+  entry.inflight++;
+  _clearIdleTimer(entry);
+
+  return await new Promise((resolve) => {
+    let stream = null;
+    let active = true;
+    let settledOpen = false;
+    let openTimer = null;
+
+    const finishOpen = (result) => {
+      if (settledOpen) return;
+      settledOpen = true;
+      if (openTimer) { clearTimeout(openTimer); openTimer = null; }
+      resolve(result);
+    };
+    const release = () => {
+      if (!active) return;
+      active = false;
+      entry.inflight = Math.max(0, entry.inflight - 1);
+      if (entry.inflight === 0 && _pool.get(key) === entry) {
+        _startIdleTimer(entry);
+      }
+    };
+    const dispose = () => {
+      if (!active) return;
+      // Stop emitting; close the channel; release the pool reservation.
+      try { if (stream && typeof stream.end === 'function') stream.end(); } catch { /* noop */ }
+      try { if (stream && typeof stream.destroy === 'function') stream.destroy(); } catch { /* noop */ }
+      release();
+    };
+
+    openTimer = setTimeout(() => {
+      const wasActive = active;
+      release();
+      try { if (stream && typeof stream.destroy === 'function') stream.destroy(); } catch { /* noop */ }
+      if (wasActive) {
+        finishOpen({ ok: false, error: 'exec_timeout', detail: 'terminal channel open timed out' });
+      }
+    }, openTimeoutMs);
+    if (openTimer && typeof openTimer.unref === 'function') openTimer.unref();
+
+    try {
+      entry.client.exec(opts.command, {
+        pty: {
+          term: 'xterm-256color',
+          cols, rows,
+          width: 0, height: 0,
+        },
+      }, (err, s) => {
+        if (err) {
+          release();
+          return finishOpen({ ok: false, error: 'exec_failed', detail: err.message });
+        }
+        if (!active) {
+          try { if (s && typeof s.destroy === 'function') s.destroy(); } catch { /* noop */ }
+          return;
+        }
+        stream = s;
+        s.on('data', (d) => { if (active) onData(d); });
+        if (s.stderr) s.stderr.on('data', (d) => { if (active) onData(d); });
+        s.on('close', (code, signal) => {
+          const exitCode = (typeof code === 'number') ? code : null;
+          const exitSig  = signal || null;
+          const wasActive = active;
+          release();
+          if (wasActive) {
+            try { onClose({ code: exitCode, signal: exitSig }); } catch { /* noop */ }
+          }
+        });
+        s.on('error', (err) => {
+          const wasActive = active;
+          release();
+          if (wasActive) {
+            try { onClose({ code: null, signal: null, error: err && err.message || String(err) }); } catch { /* noop */ }
+          }
+        });
+        finishOpen({
+          ok: true,
+          dispose,
+          write(buf) {
+            if (!active || !stream || stream.destroyed) return false;
+            try { return stream.write(buf); } catch { return false; }
+          },
+          resize(c, r) {
+            if (!active || !stream || typeof stream.setWindow !== 'function') return false;
+            try { stream.setWindow(Math.max(2, r|0), Math.max(2, c|0), 0, 0); return true; }
+            catch { return false; }
+          },
+        });
+      });
+    } catch (e) {
+      release();
+      finishOpen({ ok: false, error: 'exec_failed', detail: e && e.message });
+    }
+  });
+}
+
 module.exports = {
   execRemote,
   writeRemoteFile,
+  openTerminalChannel,
   setOverride,
   closeAll,
   poolStats,
