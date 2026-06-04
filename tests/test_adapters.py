@@ -70,7 +70,7 @@ class TestClaudeAdapter:
     def test_launch_command(self, task, context):
         adapter = ClaudeAdapter()
         cmd = adapter.get_launch_command(task, context)
-        assert cmd[0] == "claude"
+        assert cmd[:3] == ["env", "CLAUDE_CODE_DISABLE_MOUSE=1", "claude"]
         assert "--allowed-tools" in cmd
         # Prompt is NOT in launch command — sent via stdin after launch
         assert task.prompt not in cmd
