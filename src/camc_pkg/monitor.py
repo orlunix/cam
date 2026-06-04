@@ -24,6 +24,7 @@ Logging levels:
 import hashlib
 import logging
 import os
+import re
 import signal
 import sys
 import time
@@ -184,6 +185,16 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 confirm = should_auto_confirm(output, config)
                 if confirm:
                     response, send_enter, pat_str, matched = confirm
+                    # 1-spam guard: if response is '1' and the bottom of the
+                    # screen already shows 3+ consecutive '1's, the monitor
+                    # (or some other source) has been blasting '1's. Suppress
+                    # this fire and apply a 60s cooldown so the screen has
+                    # time to refresh before we add more.
+                    if response == "1" and re.search(r"1{3,}", "\n".join(tail_lines)):
+                        log.warning("[%d] Auto-confirm '1' suppressed (1-spam guard: 3+ consecutive '1's visible in last 5 lines; cooldown +60s)",
+                                    cycle)
+                        last_confirm = now + (60.0 - config.confirm_cooldown)
+                        continue
                     log.info("Auto-confirm: pattern=%r matched=%r -> %r (enter=%s)",
                              pat_str, matched, response, send_enter)
                     log.debug("[%d] Confirm screen: %s", cycle, _screen_tail(output, 5))
