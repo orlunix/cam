@@ -447,8 +447,14 @@ export class CamApi {
   restartAgent(id) { return this.request('POST', `/api/agents/${id}/restart`); }
   deleteAgentHistory(id) { return this.request('DELETE', `/api/agents/${id}/history`); }
   agentLogs(id, tail = 100) { return this.request('GET', `/api/agents/${id}/logs?tail=${tail}`); }
-  agentOutput(id, lines = 80, hash = null) { return this.request('GET', `/api/agents/${id}/output?lines=${lines}${hash ? '&hash=' + hash : ''}`); }
-  agentFullOutput(id, offset = 0) { return this.request('GET', `/api/agents/${id}/fulloutput?offset=${offset}`); }
+  agentOutput(id, lines = 80, hash = null, format = null) {
+    const fmt = format ? `&format=${encodeURIComponent(format)}` : '';
+    return this.request('GET', `/api/agents/${id}/output?lines=${lines}${hash ? '&hash=' + hash : ''}${fmt}`);
+  }
+  agentFullOutput(id, offset = 0, format = null) {
+    const fmt = format ? `&format=${encodeURIComponent(format)}` : '';
+    return this.request('GET', `/api/agents/${id}/fulloutput?offset=${offset}${fmt}`);
+  }
   sendInput(id, text, sendEnter = true) { return this.request('POST', `/api/agents/${id}/input`, { text, send_enter: sendEnter }); }
   sendKey(id, key) { return this.request('POST', `/api/agents/${id}/key`, { key }); }
   uploadFile(id, filename, base64data) { return this.request('POST', `/api/agents/${id}/upload`, { filename, data: base64data }); }
@@ -461,6 +467,14 @@ export class CamApi {
   syncContext(nameOrId) { return this.request('POST', `/api/contexts/${nameOrId}/sync`); }
   listFiles(contextId, path = '') { return this.request('GET', `/api/contexts/${contextId}/files?path=${encodeURIComponent(path)}`); }
   readFile(contextId, path) { return this.request('GET', `/api/contexts/${contextId}/files/read?path=${encodeURIComponent(path)}`); }
+
+  // CAM-DESK-DIRECT-017: Desktop's embedded Hub exposes a read-only
+  // suggestion list parsed from the user's ~/.ssh/config. Returns
+  // `{ available, source, hosts:[{alias,host,user,port,identity_file}], note }`.
+  // Key file values are paths only; key contents are never returned.
+  // Hubs that do not implement this (e.g. external CAM server, relay)
+  // will 404; the renderer treats that as "import unavailable".
+  sshConfigHosts() { return this.request('GET', '/api/system/ssh-config'); }
 }
 
 export const api = new CamApi();

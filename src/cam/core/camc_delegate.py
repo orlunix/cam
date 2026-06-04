@@ -227,9 +227,22 @@ class CamcDelegate:
     # Agent interaction
     # ------------------------------------------------------------------
 
-    def capture(self, agent_id: str, lines: int = 100) -> str:
-        """Capture agent screen output via camc capture."""
+    def capture(self, agent_id: str, lines: int = 100,
+                fmt: str = "plain") -> str:
+        """Capture agent screen output via camc capture.
+
+        fmt: "plain" (default, ANSI stripped) or "ansi" (preserve SGR
+        style escapes). Passed through to camc via argv, never as a
+        shell string. For backward compatibility with older remote camc
+        binaries that do not know `--format`, only the ansi path appends
+        the flag; the plain path keeps the original argv shape.
+        """
+        fmt = (fmt or "plain").lower()
+        if fmt not in ("plain", "ansi"):
+            fmt = "plain"
         args = ["capture", agent_id, "--lines", str(lines)]
+        if fmt == "ansi":
+            args += ["--format", "ansi"]
         rc, out = self._run(args)
         return out if rc == 0 else ""
 
