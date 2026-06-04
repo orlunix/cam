@@ -281,7 +281,7 @@ turning the first implementation into a full interactive terminal.
 | ID | Status | Requirement |
 | --- | --- | --- |
 | CAM-DESK-OUT-010 | verified | Add a rich-output capture path that preserves ANSI SGR/style sequences from tmux. The existing plain-text output path must remain unchanged for mobile, search, copy, and low-risk fallback. |
-| CAM-DESK-OUT-011 | verified | The API contract must be explicit, e.g. `GET /api/agents/{id}/output?format=ansi` and, if implemented, `/fulloutput?format=ansi`. The default with no `format` stays plain text. |
+| CAM-DESK-OUT-011 | verified | The output API contract is explicit: `GET /api/agents/{id}/output` and `/fulloutput` return plain text by default with no `format` query. The Hub may tolerate an optional `format` query for compatibility, but Desktop Rich mode must not depend on it. |
 | CAM-DESK-OUT-012 | verified | Backend capture must use tmux style-preserving capture (`capture-pane -e` or equivalent) and must not strip ANSI in the rich path. Existing monitor/detection paths must continue using plain/stripped output. |
 | CAM-DESK-OUT-013 | verified | Output hash/cache must be format-aware so a plain-text hash cannot incorrectly suppress an ANSI response, and vice versa. |
 | CAM-DESK-OUT-014 | verified | Desktop UI must render rich output in a contained read-only terminal-like pane. Prefer `xterm.js` if adding a dependency is acceptable; otherwise use an ANSI-to-HTML renderer with escaping and a narrow supported escape set. |
@@ -290,18 +290,133 @@ turning the first implementation into a full interactive terminal.
 | CAM-DESK-OUT-017 | verified | Rich output is snapshot rendering, not interactive attach. It must not introduce a PTY, SSH client, terminal tab, or arbitrary command execution. |
 | CAM-DESK-OUT-018 | verified | Mobile/PWA existing files must remain compatible. If shared API code changes, existing mobile output rendering must continue to receive plain text by default. |
 | CAM-DESK-OUT-019 | verified | Very large ANSI output must be bounded similarly to existing output. Full-output rich mode may be omitted in the first pass if it risks large-memory rendering; live 200-line rich output is the minimum. |
+| CAM-DESK-OUT-020 | approved | Rich mode v0 is a safe line-based renderer over the same captured string Plain mode uses. Remote capture must stay plain-text compatible: Desktop calls `camc capture ... --lines N` without `--format plain`; Rich mode must not require a second remote capture format. It must normalize line endings, parse shallow block structures (fenced code, tables, dividers, shell commands, quotes, lists, headings, indented code, normal terminal lines), preserve any ANSI SGR already present through the existing safe ANSI span renderer, HTML-escape all raw text, preserve scroll/follow behavior, and fall back to escaped plain text on parser errors. Plain mode remains the source of truth and is unchanged. |
+| CAM-DESK-OUT-021 | draft | Rich mode v2 must follow the fixture-first renderer plan in [rich-renderer-v2-spec.md](./rich-renderer-v2-spec.md). It keeps the same low-bandwidth plain `camc capture` source, then applies a deterministic local block/inline classifier so commands, status lines, code, quotes, lists, tables, paths, URLs, important keywords, metrics, and low-signal logs no longer render as one flat wall of text. |
+| CAM-DESK-OUT-022 | approved | Agent output history expansion is **manual**, not automatic. Scrolling, mouse-wheel, and PageUp move the viewport only — they must not trigger a history fetch. The renderer always starts with a bounded live tail of 200 lines, including terminal-status agents. When the user reaches the top edge of the output pane and the local cache does not yet contain full scrollback, a compact floating top-right `More +` button appears and remains discoverable at that same location. Clicking it grows the local tail window through a bounded ladder (`200 -> 1000 -> 2000 -> 4000 -> 8000` lines) using `/output?lines=N`; only after the ladder is exhausted may it call `/fulloutput` as a final check. The `More +` control uses the same floating-control style as the bottom-right jump button, must not cover or block the output scrollbar, and remains in a stable disabled position while loading or while one pending request is queued behind an in-flight poll. The same top-right `More +` button slot reports `Loading...`, then `More content loaded` when the fetched response contains more lines than the local tail, or becomes disabled as `No more content` once the server returns fewer lines than requested (meaning the oldest available tmux content is already rendered) or the final `/fulloutput` check succeeds; there must be no second status pill that shifts the user's eye away from the button location. Loading older history must preserve the visible scroll anchor (`previousHeight`/`previousTop`), and Plain and Rich must continue to render from the same cached captured string — switching Plain↔Rich must render from cache immediately and must NOT trigger an extra fetch unless the cache is empty. While the user is reading older output (scrolled away from the bottom), normal 2-second polling must NOT replace the visible pane — poll-driven `loadOutput()` is suppressed until the user returns to the bottom. A floating bottom-right "Jump to bottom" button appears when the user is away from the bottom; clicking it scrolls the active pane to the bottom, sets `autoScroll=true`, and triggers exactly one non-poll refresh so the tail is fresh. Full-scrollback sessions are exempt from poll suppression (their text is immutable); terminal-status agents still use the same manual ladder so the `More +` affordance remains available until an explicit manual request proves the oldest remote content is rendered. The initial 200-line tail response must not by itself replace `More +` with `No more content`, because only a manual larger-window request or final `/fulloutput` check proves the oldest remote content is rendered. All in-flight state must be guarded so concurrent manual + automatic requests cannot interleave or double-render. |
+
+### Rich Mode Render Spec v0
+
+Rich mode is a presentation layer, not a second output source. The renderer
+starts from the same captured string used by Plain mode, normalizes `CRLF` /
+`CR` to `LF`, strips ANSI only for structure detection, and renders safe HTML
+into the `agent-output-rich` pane. When Plain output is already cached, switching
+to Rich must render that cached text immediately rather than showing `Loading…`.
+Rich mode uses the same plain remote capture response as Plain mode; it must not
+ask remote `camc capture` for `--format plain` or `--format ansi`. Plain mode
+continues to assign raw text with `textContent`.
+
+Block parsing is line-based and ordered by priority:
+
+1. fenced code blocks: matching triple backtick or triple tilde fences, optional language label;
+2. pipe tables with a valid separator row;
+3. dividers such as `---`, `===`, `***`, or long box-drawing separators;
+4. shell command lines beginning with `$`, `PS>`, `cmd>`, `❯`, or command-looking `>` prompts; normal `>` prose remains a quote;
+5. consecutive quote lines beginning with `>`;
+6. unordered, ordered, and checkbox list lines with shallow indentation;
+7. compact headings `#`, `##`, `###`;
+8. grouped four-space indented code;
+9. normal terminal lines rendered with whitespace preserved.
+
+Inline rendering is intentionally shallow outside code blocks: ANSI SGR spans
+remain supported, and non-ANSI text may render inline code, bold, conservative
+italic, and safe external links. The renderer must not use raw `innerHTML` from
+agent output; every raw fragment is escaped, and parser failure produces escaped
+plain text rather than blank output. Rich mode remains snapshot rendering, not
+interactive terminal attach; no PTY, SSH client, command execution, or full
+CommonMark dependency is introduced in v0.
+
 
 Implementation notes:
 
-- `camc_pkg.transport.capture_tmux()` currently strips ANSI. Add a separate
-  mode or function for rich capture instead of changing its default behavior.
-- `src/cam/api/routes/agents.py` is the likely API surface for the `format`
-  query parameter and cache-key change.
-- `web/js/api.js` should expose an option rather than hard-code `format=ansi`
-  everywhere.
+- `camc_pkg.transport.capture_tmux()` / `camc capture` remains plain-text by
+  default. Desktop must not depend on a remote `--format` flag for Rich mode.
+- `web/js/api.js` keeps optional `format` plumbing for compatibility, but
+  `web/js/desktop/agent-console.js` should call output APIs without a format
+  argument so Plain and Rich share one plain capture stream.
 - `web/js/desktop/agent-console.js` is the first desktop renderer target.
 - Do not alter completion detection, auto-confirm, or monitor logic for this
   feature.
+
+### Rich Mode Render Spec v1 (polish)
+
+v1 layers small, bounded enhancements on top of the v0 line-based renderer.
+No new dependencies, no markdown library, no remote format negotiation. The
+same captured plain string still drives both Plain and Rich modes; v1 only
+adds line classifiers and per-line tokenizers, all scoped to `.rich-*`
+classes in `web/css/desktop.css`. Plain mode is unchanged.
+
+Block / line additions, in detection order (run after the existing v0
+detectors so headings, tables, fenced code, etc. still win):
+
+1. **Status / keyword lines.** A leading `PASS`, `FAIL`, `ERROR`,
+   `WARN`/`WARNING`, `STATUS`, `IMPLEMENTATION`, `IMPLEMENTATION_SUMMARY`,
+   `FILES_CHANGED`, `TESTS`, `SMOKE`, `BUILD`, `INSTALL`, `BLOCKERS`,
+   `REQ_STATUS`, `MOBILE_COMPAT`, `NOTES`, or `REVIEW_STATUS` (followed by
+   word boundary or `:`) gets a compact uppercase pill at the start of the
+   line and a soft row tint matching the severity class (`pass`, `fail`,
+   `error`, `warn`, `info`). Exit-code lines (`exit code N`, `Exit Code: N`,
+   `exit status N`) and HTTP status lines (`HTTP/1.x NNN …`) reuse the same
+   badge with a `pass`/`fail`/`warn`/`error` class chosen from the number.
+2. **Low-signal lines.** npm `WARN`/`notice`/`info`/`http`/`verb`,
+   `electron-builder`, `app-builder`, node `DeprecationWarning`/`[DEP…]`,
+   `node_modules/…` traces, common spinner glyphs, and bar-progress lines
+   like `[##### 50/100]` get a `.rich-dim` class. They stay visible and
+   selectable — only the colour is dimmed.
+
+Per-line tokenizer additions (replace v0's `renderPlainInline` only inside
+the matching block):
+
+3. **Shell-command segments.** Inside any `rich-shell` line, the command
+   text is split into tokens. The first non-env token is the command name
+   (`.rich-cmd-name`); leading `KEY=value` tokens are env assignments
+   (`.rich-cmd-env` + `.rich-cmd-env-val`); flags matching `--long` or
+   `-x`, optionally with `=value`, are styled as flags
+   (`.rich-cmd-flag` + `.rich-cmd-flag-val`); paths (start with `~`, `/`,
+   `./`, `../`, contain a `/`, or end with a short file extension) get
+   `.rich-cmd-path`. URLs/backticks inside commands are intentionally not
+   re-processed by `renderPlainInline` in this segment; the command line
+   reads as a command, not as prose.
+4. **Code-block lines.** Fenced code blocks always render as code.
+   Four-space-indented lines render as code only when they contain a cheap
+   code-like signal (keyword, assignment, braces, function call, diff prefix,
+   shell-ish token). Path-only attachment lines, whitespace-only terminal
+   residue, and ordinary indented prose must stay normal/dim lines so Rich
+   mode does not create empty scrollable code panels. Code lines pass through
+   a per-line classifier. Diff prefixes are recognised first
+   (`@@…@@` hunk, `+`/`-` add/del, `+++`/`---` meta). Whole-line comments
+   for `//`, `#`, `--`, `;` (excluding `#!` shebangs) get
+   `.rich-code-comment`. Inside other lines, a single combined regex emits
+   `.rich-code-string` for `"…"` / `'…'` / `` `…` `` literals and
+   `.rich-code-kw` for a small JS / Python / shell keyword set. Lines
+   longer than 500 characters skip tokenizing and just HTML-escape.
+
+Performance guard:
+
+- Each line runs at most a small constant number of regex tests (≤ 5).
+- Per-line tokenizer regexes always advance at least one character per
+  match step, so total work is linear in characters.
+- Per-line highlighting bails out at `LINE_HL_MAX = 500` chars: that line
+  falls back to plain `escapeHtml`, which preserves selectability.
+- No detector calls back into another detector; the order in
+  `renderRichOutput` is the entire control flow.
+- All raw text is still HTML-escaped before going into the DOM; parser
+  failure still falls back to the v0 escaped-plain-text fallback.
+
+Terminal separator handling:
+
+- Short markdown dividers may render as a normal horizontal rule. Long terminal
+  separator lines (for example a full-width line of underscores/dashes emitted
+  by a TUI) render as a full-width low-emphasis `rich-terminal-rule` using a
+  normal CSS border. They must never render as text inside a `pre`/code block,
+  because that can create empty scrollable panels or horizontal scrollbars.
+
+Constraints retained from v0:
+
+- Plain mode is unchanged; Plain and Rich share one plain capture stream.
+- No remote `--format` flag is introduced.
+- No markdown / syntax-highlighter dependency is added.
+- Output is selectable / copyable in both modes.
+- Rich mode is presentation only — no PTY, SSH, or command execution.
 
 ## Active Nodes Workspace Requirements
 
@@ -347,11 +462,11 @@ that conflicts with ARCH-011 / SSH-013.
 
 | ID | Status | Requirement |
 | --- | --- | --- |
-| CAM-DESK-TERM-001 | deferred | Add an Agent Detail `Terminal` tab using `xterm.js` over a server-mediated WebSocket exposed by the hub. The hub forwards bytes to the selected agent's controller; Desktop never opens an arbitrary process. |
-| CAM-DESK-TERM-002 | deferred | Terminal attach must be server-mediated. Desktop must not own SSH keys or shell out to `ssh camc attach` as the primary product path (see SSH-012 if an explicit SSH transport is added later). |
-| CAM-DESK-TERM-003 | deferred | The renderer may send only terminal bytes, resize events, and agent ID to the terminal WebSocket. It must not pass shell commands or controller paths. |
-| CAM-DESK-TERM-004 | deferred | Closing the tab detaches the client only; it must not kill the tmux session or agent on the controller. |
-| CAM-DESK-TERM-005 | deferred | Relay mode must be considered in the terminal design, so Desktop can attach even when it cannot directly reach the agent's controller. The relay forwards the terminal WebSocket the same way it forwards REST. |
+| CAM-DESK-TERM-001 | approved | Add a third Agent Detail output mode `Terminal` alongside Plain/Rich, driven by `xterm.js` (`@xterm/xterm` + `@xterm/addon-fit`). CamUI Direct is the JavaScript/Electron implementation of `cam` behavior: Terminal attach follows `cam attach` semantics, using the live agent record's `machine_host` / `machine_user` / `machine_port` as the source of truth for where the agent actually runs; context records provide credentials and workspace metadata only and must not redirect attach to a stale endpoint. The renderer never opens its own SSH or PTY — every byte goes through Electron main (`CamBridge.term.{open,input,resize,close,onData,onStatus}` → ipcMain `term:*` handlers → `ssh-transport.openTerminalChannel()`). On the remote node, the attached command is `~/.cam/camc attach <agent-id>` (same `~/.cam/camc` shim path that sync / output use). The Desktop does not reject completed/failed/stale-looking records before attach; `camc attach` owns the authoritative tmux-session check and returns the useful stale-session error. The Terminal button is disabled/greyed when the renderer cannot satisfy the contract (for example, outside the Electron preload or in Relay-only mode). |
+| CAM-DESK-TERM-002 | approved | xterm packaging. `@xterm/xterm` and `@xterm/addon-fit` are declared as runtime dependencies of `apps/cam-desktop/package.json`. The UMD bundles and `xterm.css` are shipped under `web/vendor/xterm/` so the file://-served renderer can load them under the existing `script-src 'self'` CSP. `xterm.css` is linked from `desktop.html`; `xterm.js` + `addon-fit.js` are loaded as plain `<script>` tags before the desktop module bundle so `window.Terminal` and `window.FitAddon.FitAddon` are present at mount time. |
+| CAM-DESK-TERM-003 | approved | Channel reuse + secret handling. The terminal channel is opened against the same per-endpoint long-lived `ssh2.Client` pool that serves `execRemote` / `writeRemoteFile` (CAM-DESK-DIRECT-019) — a fresh PTY exec channel is multiplexed onto the pooled client, NOT a new TCP/auth handshake. Plaintext password/passphrase is read from `credentialStore.get()` inside Electron main only at connect time and never crosses the IPC boundary. The renderer sees only the opaque `sessionId` and the UTF-8 byte stream. There is **no** `child_process`, no system `ssh`, no shell, no WSL on the active Desktop terminal path. |
+| CAM-DESK-TERM-004 | approved | Lifecycle. Closing the Terminal mode (switching to Plain/Rich, selecting a different agent, leaving Agents mode, app shutdown, or Direct→Relay flip) sends `term:close` → `stream.end()` / `stream.destroy()` on the channel. This detaches the local view only; it does **not** kill the tmux session and does **not** stop the underlying agent — `camc attach` is a tmux-level attach. Opening a Terminal session for a new agent while one is already open closes the previous channel automatically (single-attach-per-renderer). On `before-quit`, every open channel is disposed before the embedded Hub teardown so pooled clients can flush END/CLOSE frames cleanly. |
+| CAM-DESK-TERM-005 | approved | Renderer focus. While Terminal mode is active, the composer surface is hidden completely — no quick-key tab, attachment button, input textarea, or Send button — so xterm owns keyboard input. The Terminal pane uses the full available Agent-detail output width, not the Plain/Rich reading rail. The xterm host must not add layout padding that can make the fit addon over-count rows; the renderer refits after Terminal mode becomes visible and after resize/layout events so the last terminal row remains fully visible even when the Desktop window is not maximized. Plain↔Rich switching restores the composer. The Terminal button has an inline disabled tooltip ("Terminal mode is available only with Direct connection") when the active connection mode is Relay-only. Per-pane state machines (output history, autoScroll, viaPoll suppression) remain Plain/Rich only — Terminal mode bypasses them entirely because the channel is push-based. |
 | CAM-DESK-TERM-010 | superseded | (Local-PTY experiment from `camui-desktop-v3`.) Replace selected-agent surface with an embedded terminal driven by a local PTY. Superseded by TERM-001 + SSH-010..013: terminal attach must go through the hub/controller path, not a local PTY assumption. |
 | CAM-DESK-TERM-011 | superseded | (Local-PTY experiment.) Argv-only spawn equivalent to `cam a <id>` on the user's machine. Superseded by hub-provided attach metadata (HUB-013). The same v3 stash remains as reference code for the renderer-side xterm + IPC shape. |
 | CAM-DESK-TERM-012 | superseded | (Local-PTY experiment.) Narrow CamBridge surface for open/input/resize/close. The shape is still the right starting point for SSH-011, but the local-spawn target is replaced. |
