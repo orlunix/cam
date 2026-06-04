@@ -4852,11 +4852,15 @@ def cmd_capture(args):
     # truncate to the last N lines. Tmux's history-limit (default 2000)
     # caps the real amount either way; long runs drop off the top.
     lines = getattr(args, "lines", 0) or 0
-    output = capture_tmux(session, lines=lines)
+    fmt = (getattr(args, "format", None) or "plain").lower()
+    if fmt not in ("plain", "ansi"):
+        print("--format must be plain or ansi", file=sys.stderr)
+        sys.exit(2)
+    output = capture_tmux(session, lines=lines, preserve_ansi=(fmt == "ansi"))
     if _want_json(args):
         import hashlib
         h = hashlib.md5(output.encode()).hexdigest()[:8]
-        print(json.dumps({"content": output, "hash": h}, indent=2))
+        print(json.dumps({"content": output, "hash": h, "format": fmt}, indent=2))
     else:
         sys.stdout.write(output)
 
@@ -5146,6 +5150,8 @@ examples:
     cap.add_argument("id", help="Agent ID (prefix match)")
     cap.add_argument("--lines", "-n", type=int, default=0,
                      help="Tail last N lines (default: 0 = full scrollback)")
+    cap.add_argument("--format", choices=("plain", "ansi"), default="plain",
+                     help="plain (default, ANSI stripped) or ansi (preserve SGR style escapes)")
 
     # send
     snd = sub.add_parser("send", help="Send text input to agent tmux session")
