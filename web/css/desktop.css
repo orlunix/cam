@@ -290,23 +290,6 @@ body.desktop textarea {
   cursor: not-allowed;
 }
 
-.agent-edit-btn {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  font-size: 11px;
-  padding: 4px 10px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-.agent-edit-btn:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--text);
-}
-.agent-edit-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
 .agent-header-title {
   font-size: 14px;
   font-weight: 600;
@@ -321,6 +304,7 @@ body.desktop textarea {
 }
 
 .agent-output-wrap {
+  position: relative;     /* anchor for .output-float-controls (OUT-022) */
   min-height: 0;
   min-width: 0;
   display: flex;
@@ -328,6 +312,8 @@ body.desktop textarea {
   background: #0d1117;
   overflow: hidden;
   flex: 1;
+  -webkit-user-select: text;
+  user-select: text;
 }
 #mode-agents .agent-header,
 #mode-agents .agent-composer {
@@ -359,8 +345,13 @@ body.desktop textarea {
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
+  cursor: text;
   -webkit-user-select: text;
   user-select: text;
+}
+.agent-output::selection {
+  background: rgba(74, 158, 255, 0.35);
+  color: #ffffff;
 }
 .agent-output.placeholder {
   color: var(--text-muted);
@@ -382,8 +373,13 @@ body.desktop textarea {
   line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
+  cursor: text;
   -webkit-user-select: text;
   user-select: text;
+}
+.agent-output-rich::selection {
+  background: rgba(74, 158, 255, 0.35);
+  color: #ffffff;
 }
 .agent-output-rich[hidden] { display: none; }
 .agent-output-rich .ansi-bold     { font-weight: 700; }
@@ -392,6 +388,334 @@ body.desktop textarea {
 .agent-output-rich .ansi-underline{ text-decoration: underline; }
 .agent-output-rich .ansi-strike   { text-decoration: line-through; }
 .agent-output-rich .ansi-inverse  { filter: invert(1); }
+
+.agent-output-rich {
+  white-space: normal;
+}
+.agent-output-rich .rich-line,
+.agent-output-rich .rich-shell,
+.agent-output-rich .rich-list-item,
+.agent-output-rich .rich-quote-line {
+  white-space: pre-wrap;
+}
+.agent-output-rich .rich-line {
+  min-height: 1.45em;
+}
+.agent-output-rich .rich-empty {
+  min-height: 0.75em;
+}
+.agent-output-rich .rich-heading {
+  margin: 10px 0 5px;
+  color: var(--text);
+  font-weight: 700;
+  white-space: pre-wrap;
+}
+.agent-output-rich .rich-heading-1 { font-size: 15px; }
+.agent-output-rich .rich-heading-2 { font-size: 14px; }
+.agent-output-rich .rich-heading-3 { font-size: 13px; }
+.agent-output-rich .rich-divider {
+  border-top: 1px solid rgba(139, 148, 158, 0.35);
+  margin: 9px 0;
+}
+.agent-output-rich .rich-terminal-rule {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  border-top: 1px solid rgba(139, 148, 158, 0.30);
+  margin: 9px 0;
+}
+.agent-output-rich .rich-code-block,
+.agent-output-rich .rich-code {
+  margin: 8px 0;
+}
+.agent-output-rich .rich-code-lang {
+  display: inline-block;
+  margin: 0 0 3px;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.agent-output-rich .rich-code {
+  background: rgba(1, 4, 9, 0.72);
+  border: 1px solid rgba(139, 148, 158, 0.28);
+  border-radius: var(--radius-sm);
+  color: #d6dee8;
+  overflow-x: auto;
+  padding: 8px 10px;
+  white-space: pre;
+}
+.agent-output-rich .rich-shell {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin: 2px 0;
+}
+.agent-output-rich .rich-shell-prompt {
+  color: var(--accent);
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+.agent-output-rich .rich-shell-command {
+  color: #e6edf3;
+  font-weight: 600;
+  min-width: 0;
+}
+
+/* ── Rich v1 polish: shell-command token highlighting ──────────
+ * Light, professional accents — no loud colors. The command line
+ * already reads as bold; tokens just nudge contrast.
+ */
+.agent-output-rich .rich-cmd-name {
+  color: #fff;
+  font-weight: 700;
+}
+.agent-output-rich .rich-cmd-flag {
+  color: #b48dff;
+}
+.agent-output-rich .rich-cmd-flag-val {
+  color: #d8c4ff;
+}
+.agent-output-rich .rich-cmd-env {
+  color: #6cc0a7;
+}
+.agent-output-rich .rich-cmd-env-val {
+  color: #b3dccc;
+}
+.agent-output-rich .rich-cmd-path {
+  color: #f0c674;
+}
+
+/* ── Rich v1 polish: code-block syntax classes ─────────────────
+ * Comment / string / keyword are the only three syntax classes —
+ * intentionally minimal so the renderer stays language-agnostic.
+ */
+.agent-output-rich .rich-code-comment {
+  color: #6a737d;
+  font-style: italic;
+}
+.agent-output-rich .rich-code-string {
+  color: #a5d6a7;
+}
+.agent-output-rich .rich-code-kw {
+  color: #c39bd3;
+  font-weight: 600;
+}
+
+/* ── Rich v1 polish: diff hunks inside code blocks ─────────────
+ * Restrained green/red lines + a dim hunk header. The block
+ * background keeps the line transparent so selection still
+ * highlights cleanly.
+ */
+.agent-output-rich .rich-code-diff-add {
+  display: inline-block;
+  width: 100%;
+  background: rgba(70, 149, 74, 0.18);
+  color: #b6e3b6;
+}
+.agent-output-rich .rich-code-diff-del {
+  display: inline-block;
+  width: 100%;
+  background: rgba(189, 84, 84, 0.18);
+  color: #f4b6b6;
+}
+.agent-output-rich .rich-code-diff-hunk,
+.agent-output-rich .rich-code-diff-meta {
+  color: #8b949e;
+}
+
+/* ── Rich v1 polish: status / keyword line badges ──────────────
+ * Compact pill prepended to the line. Subtle accent on the row,
+ * stronger colour on the pill. Each colour is reused for both
+ * the pill and a soft row tint so the eye can scan a long log.
+ */
+.agent-output-rich .rich-status {
+  margin: 2px 0;
+}
+.agent-output-rich .rich-status-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  padding: 1px 6px;
+  margin-right: 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  vertical-align: baseline;
+  border: 1px solid transparent;
+}
+.agent-output-rich .rich-status-pass {
+  color: #cfead2;
+}
+.agent-output-rich .rich-status-badge-pass {
+  background: rgba(70, 149, 74, 0.28);
+  color: #cfead2;
+  border-color: rgba(70, 149, 74, 0.6);
+}
+.agent-output-rich .rich-status-fail {
+  color: #f6c0c0;
+}
+.agent-output-rich .rich-status-badge-fail {
+  background: rgba(189, 84, 84, 0.28);
+  color: #fbd4d4;
+  border-color: rgba(189, 84, 84, 0.6);
+}
+.agent-output-rich .rich-status-error {
+  color: #fbd4d4;
+}
+.agent-output-rich .rich-status-badge-error {
+  background: rgba(189, 84, 84, 0.4);
+  color: #fff;
+  border-color: rgba(189, 84, 84, 0.85);
+}
+.agent-output-rich .rich-status-warn {
+  color: #f6dcb1;
+}
+.agent-output-rich .rich-status-badge-warn {
+  background: rgba(193, 142, 49, 0.28);
+  color: #f6dcb1;
+  border-color: rgba(193, 142, 49, 0.6);
+}
+.agent-output-rich .rich-status-info {
+  color: #cfd8e3;
+}
+.agent-output-rich .rich-status-badge-info {
+  background: rgba(74, 158, 255, 0.22);
+  color: #cde0fb;
+  border-color: rgba(74, 158, 255, 0.55);
+}
+.agent-output-rich .rich-status-punct {
+  color: var(--text-dim);
+  margin-right: 4px;
+}
+
+/* ── Rich v1 polish: low-signal lines (npm/builder progress) ───
+ * Dim only; never hidden. Stays selectable so the user can copy
+ * the noisy bit out for a bug report if they need to.
+ */
+.agent-output-rich .rich-dim {
+  color: #6a737d;
+}
+
+/* ── Rich v2: agent event / progress lines ────────────────────────
+ * Codex/Claude-style TUI verbs ("Cooked for 36s", "Working …",
+ * "Reading foo", "Edited bar"). The verb gets a small accent so
+ * the eye reads the row as a timeline event, not prose.
+ */
+.agent-output-rich .rich-event {
+  margin: 2px 0;
+  color: var(--text-dim);
+}
+.agent-output-rich .rich-event-glyph {
+  color: #79c0ff;
+  margin-right: 4px;
+  opacity: 0.85;
+}
+.agent-output-rich .rich-event-verb {
+  color: #d29922;
+  font-weight: 600;
+}
+
+/* ── Rich v2: command output / subblock lines ─────────────────────
+ * Lines that follow a `.rich-shell` row until the next block
+ * detector reset the flag. Read as muted stdout so the eye stays
+ * on the next command, while staying selectable.
+ */
+.agent-output-rich .rich-cmd-output {
+  color: #95a3b3;
+}
+
+/* ── Rich v2: inline tokens ───────────────────────────────────────
+ * All scoped under `.agent-output-rich` so nothing leaks. Colour
+ * choices are restrained — these inherit from the existing dim
+ * tones and reuse the same accent family the v1 polish already
+ * introduced.
+ */
+.agent-output-rich .rich-fs-path {
+  color: #f0c674;
+}
+.agent-output-rich .rich-fileref {
+  color: #f0c674;
+  font-weight: 600;
+}
+.agent-output-rich .rich-metric {
+  color: #79c0ff;
+  font-variant-numeric: tabular-nums;
+}
+.agent-output-rich .rich-kw-attn {
+  color: #f6dcb1;
+  background: rgba(193, 142, 49, 0.18);
+  border-radius: 2px;
+  padding: 0 4px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+.agent-output-rich .rich-quoted {
+  color: #b3dccc;
+}
+.agent-output-rich .rich-tag {
+  color: #bc8cff;
+}
+
+.agent-output-rich .rich-quote {
+  margin: 7px 0;
+  padding: 5px 0 5px 10px;
+  border-left: 2px solid rgba(74, 158, 255, 0.65);
+  color: var(--text-dim);
+}
+.agent-output-rich .rich-list {
+  margin: 4px 0;
+}
+.agent-output-rich .rich-list-item {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  column-gap: 4px;
+  padding-left: calc(var(--depth, 0) * 18px);
+}
+.agent-output-rich .rich-list-marker {
+  color: var(--text-muted);
+  text-align: right;
+}
+.agent-output-rich .rich-check.checked {
+  color: var(--green);
+}
+.agent-output-rich .rich-table-wrap {
+  margin: 8px 0;
+  overflow-x: auto;
+}
+.agent-output-rich .rich-table {
+  border-collapse: collapse;
+  color: #d6dee8;
+  font-size: 12px;
+  min-width: 320px;
+}
+.agent-output-rich .rich-table th,
+.agent-output-rich .rich-table td {
+  border: 1px solid rgba(139, 148, 158, 0.28);
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.agent-output-rich .rich-table th {
+  background: rgba(139, 148, 158, 0.14);
+  color: var(--text);
+  font-weight: 700;
+}
+.agent-output-rich .rich-inline-code {
+  background: rgba(139, 148, 158, 0.16);
+  border: 1px solid rgba(139, 148, 158, 0.24);
+  border-radius: 3px;
+  color: #f0f6fc;
+  padding: 0 3px;
+}
+.agent-output-rich .rich-link {
+  color: #79c0ff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.agent-output-rich .rich-strong { font-weight: 700; }
+.agent-output-rich .rich-em { font-style: italic; }
 
 .agent-composer {
   --quick-key-width: minmax(0, 1fr);
@@ -1786,4 +2110,117 @@ body.desktop textarea {
 .popover-clear:hover {
   background: var(--border);
   color: var(--text);
+}
+
+/* ── Floating output controls (CAM-DESK-OUT-022 manual history) ── */
+.output-float-controls {
+  position: absolute;
+  top: 8px;
+  right: max(32px, calc((100% - var(--desktop-rail-wide)) / 2 + 32px));
+  bottom: 8px;
+  left: max(12px, calc((100% - var(--desktop-rail-wide)) / 2 + 12px));
+  pointer-events: none;   /* only the buttons inside catch clicks */
+  z-index: 2;
+}
+.output-float-controls > * {
+  pointer-events: auto;
+}
+.output-more-history,
+.output-jump-bottom {
+  background: rgba(22, 27, 34, 0.92);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(2px);
+}
+.output-more-history:hover:not(:disabled),
+.output-jump-bottom:hover {
+  background: rgba(33, 38, 45, 0.96);
+  border-color: var(--border-strong, var(--border));
+}
+.output-more-history:disabled {
+  opacity: 0.55;
+  cursor: progress;
+}
+.output-more-history[hidden],
+.output-jump-bottom[hidden] {
+  display: none;
+}
+.output-more-history[data-kind="success"] {
+  color: var(--ok, #3fb950);
+  border-color: rgba(63, 185, 80, 0.45);
+}
+.output-more-history[data-kind="done"] {
+  color: var(--text-dim);
+}
+.output-more-history[data-kind="error"] {
+  color: var(--danger, #f85149);
+  border-color: rgba(248, 81, 73, 0.45);
+}
+.output-more-history[data-kind="loading"] {
+  color: var(--accent, #58a6ff);
+  border-color: rgba(88, 166, 255, 0.45);
+}
+.output-jump-bottom {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+}
+.output-more-history {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+
+/* ── Agent Terminal mode (CAM-DESK-TERM-001..005) ── */
+.agent-terminal {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  background: #0d1117;
+  padding: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.agent-terminal[hidden] {
+  display: none;
+}
+.agent-terminal .xterm {
+  height: 100%;
+}
+.agent-terminal .xterm-viewport {
+  background: #0d1117 !important;
+}
+
+/* ── Terminal mode pane (CAM-DESK-TERM-001..005) ── */
+#mode-agents .agent-terminal {
+  width: 100%;
+  max-width: none;
+  align-self: stretch;
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: #0d1117;
+  box-sizing: border-box;
+  position: relative;
+}
+#mode-agents .agent-composer[hidden],
+.agent-terminal[hidden] { display: none !important; }
+.agent-terminal .xterm,
+.agent-terminal .xterm-viewport,
+.agent-terminal .xterm-screen {
+  box-sizing: border-box;
+  height: 100% !important;
+  width: 100% !important;
+}
+.agent-terminal .xterm-viewport {
+  background: #0d1117 !important;
 }

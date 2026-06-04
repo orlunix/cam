@@ -14,16 +14,14 @@ import { mountShell } from './shell.js?v=0.64.0';
 import { mountAgentConsole } from './agent-console.js?v=0.64.0';
 import { mountSettingsMode } from './settings-mode.js?v=0.64.0';
 import { mountStartAgentMode } from './start-agent-mode.js?v=0.64.0';
-import { mountAgentEditMode } from './agent-edit-mode.js?v=0.64.0';
 import { mountNodesMode } from './nodes-mode.js?v=0.64.0';
 
 const POLL_INTERVAL_MS = 5000;
 const PROFILE_KIND_KEY = 'cam_profile_kind';
-// `edit` is a transient subview reachable only from the agent header;
 // `start`/`nodes` are real left-nav workspace modes like
 // `agents`/`settings`. `nodes` shows hub-provided controllers/nodes
 // (CAM-DESK-NODEUI-010..017) and is not a connection mode.
-const MODES = ['agents', 'settings', 'start', 'nodes', 'edit'];
+const MODES = ['agents', 'settings', 'start', 'nodes'];
 const DEFAULT_MODE = 'agents';
 
 function readConfig() {
@@ -210,11 +208,7 @@ function handleEvent(event) {
 
 /* ────────── Mode host ────────── */
 
-// Modes that survive a page reload. `edit` is transient — it lives on
-// state but never lands in localStorage, so a refresh while editing
-// drops back to Agents with the agent list visible and a nav-button
-// highlighted, rather than stranding the user on an Edit form with no
-// nav indicator.
+// Modes that survive a page reload.
 const PERSISTENT_MODES = new Set(['agents', 'settings', 'start', 'nodes']);
 
 function setMode(next) {
@@ -226,31 +220,25 @@ function setMode(next) {
     if (PERSISTENT_MODES.has(next)) {
       localStorage.setItem('cam_desktop_mode', next);
     }
-    // Else: leave the previous persisted mode in place — that mode is
-    // where the user "came from" and is where reload should land.
   } catch {}
 }
 
 function applyModeToDom(mode) {
-  // Mode nav button pressed state. `edit` is not in the nav — only
-  // reachable from the agent header — so no button highlights for it.
+  // Mode nav button pressed state.
   document.querySelectorAll('.mode-nav-btn[data-mode]').forEach(btn => {
     const active = btn.dataset.mode === mode;
     btn.setAttribute('aria-pressed', active ? 'true' : 'false');
   });
   // Main mode panels — `agents` (default) shows the output/composer;
-  // `start` and `edit` swap that out without unmounting it, so the
-  // composer textarea, scroll position, and output-mode state are
-  // preserved (CAM-DESK-EDIT-014).
+  // `start`/`nodes`/`settings` swap that out without unmounting it, so
+  // composer textarea, scroll position, and output-mode state are preserved.
   document.querySelectorAll('.mode-panel').forEach(panel => {
     const active = panel.dataset.mode === mode;
     if (active) panel.removeAttribute('hidden');
     else panel.setAttribute('hidden', '');
   });
   // Sidebar contextual content. The agent list stays visible only in
-  // Agents mode — switching to Edit removes the list so a user cannot
-  // change selection mid-edit (CAM-DESK-EDIT-013 keeps the edit target
-  // single-valued via state.editAgentId).
+  // Agents mode.
   const agentsSide = document.getElementById('sidebar-agents-content');
   const settingsSide = document.getElementById('sidebar-settings-content');
   if (agentsSide) agentsSide.toggleAttribute('hidden', mode !== 'agents');
@@ -390,7 +378,6 @@ async function init() {
     connect,
   });
   mountStartAgentMode({ api, state, showToast, setMode, loadAgents });
-  mountAgentEditMode({ api, state, showToast, setMode, loadAgents });
   mountNodesMode({
     api, state, showToast, setMode,
     loadContextsAndAdapters, loadAgents,
