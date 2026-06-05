@@ -978,6 +978,385 @@ function _decodeUploadData(data) {
   }
 }
 
+/* ─────────────── Workspace Browser (CAM-DESK-FILE-010..017) ───────────────
+ *
+ * Read-only directory listing + file read for the agent's working
+ * directory. The frontend's new Browse output mode hits this via
+ * agent-scoped endpoints; the same helpers also back the
+ * compatibility context-scoped endpoints below so mobile/Relay
+ * callers can drop in without remembering to switch routes.
+ *
+ * Path safety:
+ *   - The root is whatever `agent.context_path || agent.path ||
+ *     ctx.path` resolves to. We treat it as an opaque string from
+ *     the agent record; we never let the renderer pass a root.
+ *   - Subpaths are normalized with `posix.normalize` after stripping
+ *     leading `/`. We reject any subpath that starts with `..`,
+ *     contains `..` after normalize, or contains a `\0` byte. The
+ *     final joined path is reconstructed from the root + cleaned
+ *     subpath; we do NOT call `path.resolve` against the local
+ *     process — the root is a REMOTE path.
+ *   - For local-type contexts, we additionally verify the joined
+ *     real path stays under the realpath'd root using
+ *     `fs.realpathSync.native`. SFTP paths cannot be realpath'd
+ *     locally so we trust the normalized join + reject literal `..`
+ *     for the remote case.
+ *
+ * Response shapes (mirror docs):
+ *   list: { scope, agent_id?, context_name?, root, path, parent,
+ *           entries: [{name,type,size,mtime?}] }
+ *   read: { scope, agent_id?, context_name?, root, path, binary,
+ *           size, content }   // content = utf-8 text or base64 when binary
+ */
+const WORKSPACE_FILE_MAX_BYTES = 5 * 1024 * 1024;
+
+function _resolveBrowseRoot(agent, ctx) {
+  if (agent && typeof agent.context_path === 'string' && agent.context_path) return agent.context_path;
+  if (agent && typeof agent.path === 'string' && agent.path) return agent.path;
+  if (ctx && typeof ctx.path === 'string' && ctx.path) return ctx.path;
+  return '';
+}
+
+function _cleanBrowseSubpath(raw) {
+  let s = String(raw == null ? '' : raw);
+  if (s.includes('\0')) return { error: 'invalid_path', detail: 'NUL byte in path' };
+  // Normalize separators to forward slashes; SFTP/POSIX paths are
+  // forward-slash even when the renderer runs on Windows.
+  s = s.replace(/\\/g, '/');
+  // Strip leading slashes — sub is always relative to root.
+  while (s.startsWith('/')) s = s.slice(1);
+  if (!s || s === '.' || s === './') return { sub: '' };
+  // Refuse any segment of `..` or a literal `..` anywhere.
+  const segs = s.split('/').filter(Boolean);
+  for (const seg of segs) {
+    if (seg === '..') return { error: 'path_traversal', detail: 'parent traversal not allowed' };
+    if (seg === '.')  continue;
+  }
+  // Drive-letter / UNC absolute escape (defense in depth).
+  if (/^[A-Za-z]:[\\/]/.test(s) || s.startsWith('//') || s.startsWith('\\\\')) {
+    return { error: 'absolute_path', detail: 'absolute path not allowed' };
+  }
+  return { sub: segs.filter(p => p !== '.').join('/') };
+}
+
+function _joinBrowsePath(root, sub) {
+  if (!sub) return root;
+  // Use POSIX join — remote roots are POSIX even on Windows-hosted
+  // Electron via SFTP. Strip any trailing slash on root for safety.
+  const r = root.replace(/[\\/]+$/, '');
+  // Replace any host separators with forward slash and trim leading
+  // slashes (sub already validated by _cleanBrowseSubpath).
+  return r + '/' + sub;
+}
+
+function _parentBrowsePath(sub) {
+  if (!sub || sub === '') return null;
+  const segs = sub.split('/').filter(Boolean);
+  if (segs.length <= 1) return '';
+  return segs.slice(0, -1).join('/');
+}
+
+function _localPath(remotePath) {
+  // Convert a POSIX-style "remote" path back to the local OS path
+  // for the local-context branch. On Linux this is identity. On
+  // Windows the local renderer is rare for Browse v0; we still
+  // normalize separators to be safe.
+  if (process.platform === 'win32') {
+    return remotePath.replace(/\//g, path.sep);
+  }
+  return remotePath;
+}
+
+function _safeLocalPathUnderRoot(rootAbs, full) {
+  try {
+    const realRoot = fs.realpathSync.native(rootAbs);
+    let realFull;
+    try { realFull = fs.realpathSync.native(full); }
+    catch { realFull = full; }
+    if (realFull === realRoot) return true;
+    return realFull.startsWith(realRoot + path.sep) || realFull.startsWith(realRoot + '/');
+  } catch {
+    return false;
+  }
+}
+
+async function _browseList({ agent, ctx, root, sub }) {
+  const isLocal = !ctx || !ctx.machine || ctx.machine.type !== 'ssh';
+  const fullRemote = _joinBrowsePath(root, sub);
+
+  if (isLocal) {
+    const rootAbs = _localPath(root);
+    const fullAbs = _localPath(fullRemote);
+    if (!_safeLocalPathUnderRoot(rootAbs, fullAbs)) {
+      return { error: 'path_traversal', detail: 'resolved path is outside the workspace root' };
+    }
+    let dirents;
+    try {
+      dirents = fs.readdirSync(fullAbs, { withFileTypes: true });
+    } catch (e) {
+      const code = e && e.code;
+      return {
+        error:  code === 'ENOENT' ? 'not_found' : (code === 'EACCES' ? 'permission_denied' : 'list_failed'),
+        detail: e && e.message,
+      };
+    }
+    const entries = [];
+    for (const d of dirents) {
+      const name = d.name;
+      if (!name || name === '.' || name === '..') continue;
+      let size = 0;
+      let mtime = null;
+      try {
+        const st = fs.statSync(path.join(fullAbs, name));
+        if (st && st.size != null) size = st.size;
+        if (st && st.mtime) mtime = Math.floor(st.mtime.getTime() / 1000);
+      } catch { /* ignore per-entry errors */ }
+      entries.push({
+        name,
+        type: d.isDirectory() ? 'dir' : 'file',
+        size: d.isDirectory() ? 0 : size,
+        mtime,
+      });
+    }
+    entries.sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    return { entries };
+  }
+
+  // SSH branch via SFTP — uses the existing pooled connection.
+  if (!_sshTransport || typeof _sshTransport.listRemoteFiles !== 'function') {
+    return { error: 'ssh_transport_unavailable', detail: 'embedded Hub has no SSH transport configured' };
+  }
+  const baseBuilt = _sshBaseOptsForContext(ctx);
+  if (baseBuilt.error) return { error: baseBuilt.error, detail: baseBuilt.detail };
+  const res = await _sshTransport.listRemoteFiles({
+    ...baseBuilt.opts,
+    remotePath: fullRemote,
+  });
+  if (!res || !res.ok) {
+    return { error: (res && res.error) || 'sftp_readdir_failed', detail: (res && res.detail) || 'list failed' };
+  }
+  return { entries: res.entries || [] };
+}
+
+async function _browseRead({ agent, ctx, root, sub }) {
+  if (!sub) return { error: 'missing_path', detail: 'path is required' };
+  const isLocal = !ctx || !ctx.machine || ctx.machine.type !== 'ssh';
+  const fullRemote = _joinBrowsePath(root, sub);
+
+  if (isLocal) {
+    const rootAbs = _localPath(root);
+    const fullAbs = _localPath(fullRemote);
+    if (!_safeLocalPathUnderRoot(rootAbs, fullAbs)) {
+      return { error: 'path_traversal', detail: 'resolved path is outside the workspace root' };
+    }
+    let st;
+    try { st = fs.statSync(fullAbs); }
+    catch (e) {
+      const code = e && e.code;
+      return {
+        error:  code === 'ENOENT' ? 'not_found' : (code === 'EACCES' ? 'permission_denied' : 'stat_failed'),
+        detail: e && e.message,
+      };
+    }
+    if (st.isDirectory()) return { error: 'is_directory', detail: 'path is a directory' };
+    if (st.size > WORKSPACE_FILE_MAX_BYTES) {
+      return { error: 'too_large', detail: `file is ${st.size} bytes (max ${WORKSPACE_FILE_MAX_BYTES})`, size: st.size };
+    }
+    let data;
+    try { data = fs.readFileSync(fullAbs); }
+    catch (e) {
+      return { error: 'read_failed', detail: e && e.message };
+    }
+    return _packBrowseRead(data, st.size);
+  }
+
+  if (!_sshTransport || typeof _sshTransport.readRemoteFile !== 'function') {
+    return { error: 'ssh_transport_unavailable', detail: 'embedded Hub has no SSH transport configured' };
+  }
+  const baseBuilt = _sshBaseOptsForContext(ctx);
+  if (baseBuilt.error) return { error: baseBuilt.error, detail: baseBuilt.detail };
+  const res = await _sshTransport.readRemoteFile({
+    ...baseBuilt.opts,
+    remotePath: fullRemote,
+    maxBytes:   WORKSPACE_FILE_MAX_BYTES,
+  });
+  if (!res || !res.ok) {
+    return {
+      error:  (res && res.error)  || 'sftp_read_failed',
+      detail: (res && res.detail) || 'read failed',
+      size:   (res && res.size)   != null ? res.size : undefined,
+    };
+  }
+  return _packBrowseRead(res.content, res.size);
+}
+
+function _packBrowseRead(buf, sizeFromStat) {
+  const data = Buffer.isBuffer(buf) ? buf : Buffer.from(buf || '');
+  const size = Number.isFinite(sizeFromStat) ? sizeFromStat : data.length;
+  if (data.length === 0) return { binary: false, size: 0, content: '' };
+  // Binary heuristic: NUL byte in first 8 KiB → binary. Matches the
+  // Python files.py route so mobile + desktop stay consistent.
+  const head = data.slice(0, Math.min(data.length, 8192));
+  let isBinary = false;
+  for (let i = 0; i < head.length; i++) {
+    if (head[i] === 0) { isBinary = true; break; }
+  }
+  if (isBinary) {
+    return { binary: true, size, content: data.toString('base64') };
+  }
+  let text;
+  try { text = data.toString('utf8'); }
+  catch { text = data.toString('latin1'); }
+  return { binary: false, size, content: text };
+}
+
+async function _browseAgentList(agentId, rawPath) {
+  const resolved = _contextForAgent(agentId);
+  if (resolved.error && resolved.error !== 'context_not_found') {
+    return { httpStatus: resolved.error === 'agent_not_found' ? 404 : 502, body: { error: resolved.error, detail: `Browse unavailable: ${resolved.error}` } };
+  }
+  const agent = resolved.agent || {};
+  const ctx   = resolved.ctx  || null;
+  const root  = _resolveBrowseRoot(agent, ctx);
+  if (!root) {
+    return { httpStatus: 502, body: { error: 'workspace_missing', detail: 'Agent has no working directory recorded' } };
+  }
+  const cleaned = _cleanBrowseSubpath(rawPath);
+  if (cleaned.error) return { httpStatus: 400, body: { error: cleaned.error, detail: cleaned.detail } };
+  const sub = cleaned.sub || '';
+
+  const res = await _browseList({ agent, ctx, root, sub });
+  if (res.error) {
+    const badArgs = new Set(['invalid_path', 'path_traversal', 'absolute_path', 'is_directory']);
+    const status = res.error === 'not_found'
+      ? 404
+      : (badArgs.has(res.error) ? 400 : (res.error === 'permission_denied' ? 403 : 502));
+    return { httpStatus: status, body: { error: res.error, detail: res.detail } };
+  }
+  return {
+    httpStatus: 200,
+    body: {
+      scope:        'agent',
+      agent_id:     agent.id || String(agentId),
+      context_name: agent.context_name || (ctx && ctx.name) || null,
+      root,
+      path:         sub,
+      parent:       _parentBrowsePath(sub),
+      entries:      res.entries,
+    },
+  };
+}
+
+async function _browseAgentRead(agentId, rawPath) {
+  const resolved = _contextForAgent(agentId);
+  if (resolved.error && resolved.error !== 'context_not_found') {
+    return { httpStatus: resolved.error === 'agent_not_found' ? 404 : 502, body: { error: resolved.error, detail: `Browse unavailable: ${resolved.error}` } };
+  }
+  const agent = resolved.agent || {};
+  const ctx   = resolved.ctx  || null;
+  const root  = _resolveBrowseRoot(agent, ctx);
+  if (!root) {
+    return { httpStatus: 502, body: { error: 'workspace_missing', detail: 'Agent has no working directory recorded' } };
+  }
+  const cleaned = _cleanBrowseSubpath(rawPath);
+  if (cleaned.error) return { httpStatus: 400, body: { error: cleaned.error, detail: cleaned.detail } };
+  const sub = cleaned.sub || '';
+
+  const res = await _browseRead({ agent, ctx, root, sub });
+  if (res.error) {
+    const badArgs = new Set(['missing_path', 'invalid_path', 'path_traversal', 'absolute_path', 'is_directory', 'too_large']);
+    const status = res.error === 'not_found'
+      ? 404
+      : (badArgs.has(res.error) ? 400 : (res.error === 'permission_denied' ? 403 : 502));
+    return {
+      httpStatus: status,
+      body: { error: res.error, detail: res.detail, size: res.size },
+    };
+  }
+  return {
+    httpStatus: 200,
+    body: {
+      scope:        'agent',
+      agent_id:     agent.id || String(agentId),
+      context_name: agent.context_name || (ctx && ctx.name) || null,
+      root,
+      path:         sub,
+      binary:       res.binary,
+      size:         res.size,
+      content:      res.content,
+    },
+  };
+}
+
+async function _browseContextList(ctxNameOrId, rawPath) {
+  const ctx = findContextByName(String(ctxNameOrId || '')) || (state.store && Array.isArray(state.store.contexts) ? state.store.contexts.find(c => String(c.id || '') === String(ctxNameOrId)) : null);
+  if (!ctx) return { httpStatus: 404, body: { error: 'context_not_found', detail: `Context not found: ${ctxNameOrId}` } };
+  const root = ctx.path || '';
+  if (!root) return { httpStatus: 502, body: { error: 'workspace_missing', detail: 'Context has no working directory' } };
+  const cleaned = _cleanBrowseSubpath(rawPath);
+  if (cleaned.error) return { httpStatus: 400, body: { error: cleaned.error, detail: cleaned.detail } };
+  const sub = cleaned.sub || '';
+
+  const res = await _browseList({ ctx, root, sub });
+  if (res.error) {
+    const badArgs = new Set(['invalid_path', 'path_traversal', 'absolute_path', 'is_directory']);
+    const status = res.error === 'not_found'
+      ? 404
+      : (badArgs.has(res.error) ? 400 : (res.error === 'permission_denied' ? 403 : 502));
+    return { httpStatus: status, body: { error: res.error, detail: res.detail } };
+  }
+  return {
+    httpStatus: 200,
+    body: {
+      scope:        'context',
+      context_id:   String(ctx.id || ''),
+      context_name: ctx.name,
+      root,
+      path:         sub,
+      parent:       _parentBrowsePath(sub),
+      entries:      res.entries,
+    },
+  };
+}
+
+async function _browseContextRead(ctxNameOrId, rawPath) {
+  const ctx = findContextByName(String(ctxNameOrId || '')) || (state.store && Array.isArray(state.store.contexts) ? state.store.contexts.find(c => String(c.id || '') === String(ctxNameOrId)) : null);
+  if (!ctx) return { httpStatus: 404, body: { error: 'context_not_found', detail: `Context not found: ${ctxNameOrId}` } };
+  const root = ctx.path || '';
+  if (!root) return { httpStatus: 502, body: { error: 'workspace_missing', detail: 'Context has no working directory' } };
+  const cleaned = _cleanBrowseSubpath(rawPath);
+  if (cleaned.error) return { httpStatus: 400, body: { error: cleaned.error, detail: cleaned.detail } };
+  const sub = cleaned.sub || '';
+
+  const res = await _browseRead({ ctx, root, sub });
+  if (res.error) {
+    const badArgs = new Set(['missing_path', 'invalid_path', 'path_traversal', 'absolute_path', 'is_directory', 'too_large']);
+    const status = res.error === 'not_found'
+      ? 404
+      : (badArgs.has(res.error) ? 400 : (res.error === 'permission_denied' ? 403 : 502));
+    return {
+      httpStatus: status,
+      body: { error: res.error, detail: res.detail, size: res.size },
+    };
+  }
+  return {
+    httpStatus: 200,
+    body: {
+      scope:        'context',
+      context_id:   String(ctx.id || ''),
+      context_name: ctx.name,
+      root,
+      path:         sub,
+      binary:       res.binary,
+      size:         res.size,
+      content:      res.content,
+    },
+  };
+}
+
 function _sshBaseOptsForContext(ctx, timeoutMs = SYNC_DEFAULT_TIMEOUT_MS) {
   if (!ctx || !ctx.machine || ctx.machine.type !== 'ssh') {
     return { error: 'not_ssh', detail: `context "${(ctx && ctx.name) || '?'}" is not an SSH context` };
@@ -1518,7 +1897,16 @@ async function handle(req, res) {
       return sendJson(res, 200, result);
     }
     if (method === 'POST' && sub === '/copy') return send501(res, 'context copy');
-    if (method === 'GET'   && (sub === '/files' || sub === '/files/read')) return sendJson(res, 200, { files: [] });
+    if (method === 'GET'   && sub === '/files') {
+      const subpath = url.searchParams.get('path') || '';
+      const out = await _browseContextList(existing.name, subpath);
+      return sendJson(res, out.httpStatus, out.body);
+    }
+    if (method === 'GET'   && sub === '/files/read') {
+      const subpath = url.searchParams.get('path') || '';
+      const out = await _browseContextRead(existing.name, subpath);
+      return sendJson(res, out.httpStatus, out.body);
+    }
     return send404(res);
   }
 
@@ -1631,6 +2019,16 @@ async function handle(req, res) {
         });
       }
       return sendJson(res, 200, { output: exec.stdout, offset: 0 });
+    }
+    if (method === 'GET' && sub === '/workspace/files') {
+      const subpath = url.searchParams.get('path') || '';
+      const out = await _browseAgentList(agentMatch[1], subpath);
+      return sendJson(res, out.httpStatus, out.body);
+    }
+    if (method === 'GET' && sub === '/workspace/files/read') {
+      const subpath = url.searchParams.get('path') || '';
+      const out = await _browseAgentRead(agentMatch[1], subpath);
+      return sendJson(res, out.httpStatus, out.body);
     }
     return send404(res);
   }

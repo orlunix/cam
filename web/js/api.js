@@ -98,7 +98,7 @@ export class CamApi {
 
   // Only cache lightweight list endpoints, not file content
   _isCacheable(path) {
-    return !path.includes('/files/read') && !path.includes('/upload') && !path.includes('/output') && !path.includes('/fulloutput') && !path.includes('/logs');
+    return !path.includes('/files/read') && !path.includes('/workspace/files') && !path.includes('/upload') && !path.includes('/output') && !path.includes('/fulloutput') && !path.includes('/logs');
   }
 
   _pruneCache() {
@@ -467,6 +467,18 @@ export class CamApi {
   syncContext(nameOrId) { return this.request('POST', `/api/contexts/${nameOrId}/sync`); }
   listFiles(contextId, path = '') { return this.request('GET', `/api/contexts/${contextId}/files?path=${encodeURIComponent(path)}`); }
   readFile(contextId, path) { return this.request('GET', `/api/contexts/${contextId}/files/read?path=${encodeURIComponent(path)}`); }
+
+  /* Workspace Browser (CAM-DESK-FILE-010..017): agent-scoped reads so
+   * Desktop's Browse mode resolves through the agent's recorded
+   * working directory rather than a separate context lookup. The
+   * mobile File Browser keeps using the `listFiles` / `readFile`
+   * context-scoped path above; both routes share helpers server-side. */
+  agentListWorkspaceFiles(agentId, path = '') {
+    return this.request('GET', `/api/agents/${encodeURIComponent(agentId)}/workspace/files?path=${encodeURIComponent(path)}`);
+  }
+  agentReadWorkspaceFile(agentId, path) {
+    return this.request('GET', `/api/agents/${encodeURIComponent(agentId)}/workspace/files/read?path=${encodeURIComponent(path)}`);
+  }
 
   // CAM-DESK-DIRECT-017: Desktop's embedded Hub exposes a read-only
   // suggestion list parsed from the user's ~/.ssh/config. Returns
