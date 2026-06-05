@@ -903,10 +903,367 @@ export function renderRichOutput(input) {
 
 /* ────────────────────────────────────────────────────────────────── */
 
-const OUTPUT_MODE_KEY = 'cam_desktop_output_mode'; // 'plain' | 'rich'
+const OUTPUT_MODE_KEY = 'cam_desktop_output_mode'; // 'plain' | 'rich' | 'terminal' | 'browse'
 export const OUTPUT_HISTORY_INITIAL_LINES = 200;
 export const OUTPUT_HISTORY_STEPS = [200, 1000, 2000, 4000, 8000];
 const TERMINAL_AGENT_STATUSES = new Set(['completed', 'failed', 'timeout', 'killed']);
+
+/* ─────────── Browse v1: language detection + highlighter ───────────
+ *
+ * Lightweight per-language tokenizer for the Workspace Browse
+ * preview pane. No CDN, no dependency. Each language config is a
+ * small object with keyword set + comment/string syntax flags;
+ * `browseHighlight()` runs ONE bounded sweep per line and emits
+ * HTML-escaped tokens wrapped in `.tok-*` spans. Lines longer than
+ * BROWSE_HL_LINE_MAX or files larger than BROWSE_HL_FILE_MAX fall
+ * back to plain `escapeHtml(text)` so a runaway minified blob can
+ * never lock the renderer.
+ *
+ * Selectability: the highlighter only adds `<span>` wrappers
+ * around already-escaped text; the `<pre>` containing the result
+ * stays a normal text container and supports Ctrl+C selection.
+ */
+
+const BROWSE_HL_FILE_MAX = 2 * 1024 * 1024;   // 2 MiB
+const BROWSE_HL_LINE_MAX = 800;
+
+function _browseEscapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+export function browseLanguageFromName(name) {
+  const lower = String(name || '').toLowerCase();
+  const dot = lower.lastIndexOf('.');
+  const ext = dot >= 0 ? lower.slice(dot) : '';
+  const base = dot >= 0 ? lower.slice(0, dot) : lower;
+  switch (ext) {
+    case '.py':                                       return 'python';
+    case '.pyi':                                      return 'python';
+    case '.js': case '.mjs': case '.cjs':             return 'js';
+    case '.ts':                                       return 'ts';
+    case '.tsx':                                      return 'tsx';
+    case '.jsx':                                      return 'jsx';
+    case '.c': case '.h':                             return 'c';
+    case '.cpp': case '.cc': case '.cxx':
+    case '.hpp': case '.hxx':                         return 'cpp';
+    case '.java':                                     return 'java';
+    case '.sh': case '.bash': case '.zsh':            return 'shell';
+    case '.json':                                     return 'json';
+    case '.css':                                      return 'css';
+    case '.html': case '.htm':                        return 'html';
+    case '.xml': case '.svg':                         return 'xml';
+    case '.md': case '.markdown':                     return 'md';
+    case '.v':                                        return 'verilog';
+    case '.sv': case '.svh':                          return 'verilog';
+    case '.yaml': case '.yml':                        return 'yaml';
+    case '.toml':                                     return 'toml';
+    default:
+      // Filename hints (no extension).
+      if (base === 'dockerfile') return 'shell';
+      if (base === 'makefile')   return 'shell';
+      return 'plain';
+  }
+}
+
+const _BR_KW_C = ['auto','break','case','char','const','continue','default','do','double','else','enum','extern','float','for','goto','if','inline','int','long','register','restrict','return','short','signed','sizeof','static','struct','switch','typedef','union','unsigned','void','volatile','while','_Bool','_Complex','_Imaginary'];
+const _BR_KW_CPP = _BR_KW_C.concat(['bool','catch','class','constexpr','delete','dynamic_cast','explicit','export','false','friend','mutable','namespace','new','noexcept','nullptr','operator','override','private','protected','public','reinterpret_cast','static_cast','template','this','throw','true','try','typeid','typename','using','virtual','wchar_t']);
+const _BR_KW_JAVA = ['abstract','assert','boolean','break','byte','case','catch','char','class','const','continue','default','do','double','else','enum','extends','false','final','finally','float','for','goto','if','implements','import','instanceof','int','interface','long','native','new','null','package','private','protected','public','return','short','static','strictfp','super','switch','synchronized','this','throw','throws','transient','true','try','void','volatile','while','var','yield','record','sealed','permits'];
+const _BR_KW_JS = ['async','await','break','case','catch','class','const','continue','debugger','default','delete','do','else','export','extends','false','finally','for','from','function','if','import','in','instanceof','let','new','null','of','return','static','super','switch','this','throw','true','try','typeof','undefined','var','void','while','with','yield'];
+const _BR_KW_TS = _BR_KW_JS.concat(['abstract','any','as','boolean','declare','enum','implements','interface','is','keyof','module','namespace','never','number','object','private','protected','public','readonly','satisfies','string','symbol','type','unknown']);
+const _BR_KW_PY = ['False','None','True','and','as','assert','async','await','break','class','continue','def','del','elif','else','except','finally','for','from','global','if','import','in','is','lambda','match','case','nonlocal','not','or','pass','raise','return','try','while','with','yield'];
+const _BR_KW_SH = ['if','then','else','elif','fi','for','do','done','while','until','case','esac','in','function','return','exit','break','continue','export','source','local','readonly','select','time','let','declare','typeset','unset','shift','trap','set','test','eval','printf','echo'];
+const _BR_KW_VERILOG = ['always','always_comb','always_ff','always_latch','assign','begin','case','casex','casez','default','defparam','disable','do','else','end','endcase','endfunction','endgenerate','endinterface','endmodule','endpackage','endpackage','endprogram','endproperty','endsequence','endspecify','endtask','enum','event','export','extern','final','for','forever','fork','function','generate','genvar','if','ifnone','iff','import','initial','inout','input','interface','join','join_any','join_none','localparam','logic','module','negedge','output','package','packed','parameter','posedge','program','property','pulldown','pullup','realtime','ref','reg','repeat','return','sequence','signed','specify','specparam','static','struct','supply0','supply1','task','tri','tri0','tri1','triand','trior','typedef','union','unique','unique0','unsigned','use','var','vectored','virtual','wait','wand','while','wire','wor','xnor','xor','byte','shortint','int','longint','bit','logic','reg','real','shortreal','time','realtime'];
+const _BR_KW_YAML = ['true','false','null','yes','no','on','off'];
+
+const BROWSE_LANG_CONFIG = {
+  python: {
+    keywords:        new Set(_BR_KW_PY),
+    lineCommentRe:   /(?<=^|\s)#[^\n]*/.source,
+    stringRes: [
+      '"""(?:\\\\.|[^"\\\\]|"(?!""))*"""',     // triple double
+      "'''(?:\\\\.|[^'\\\\]|'(?!''))*'''",       // triple single
+      '"(?:\\\\.|[^"\\\\\\n])*"',
+      "'(?:\\\\.|[^'\\\\\\n])*'",
+    ],
+  },
+  js:  { keywords: new Set(_BR_KW_JS),  lineCommentRe: '\\/\\/[^\\n]*', stringRes: ['`(?:\\\\.|[^`\\\\])*`', '"(?:\\\\.|[^"\\\\\\n])*"', "'(?:\\\\.|[^'\\\\\\n])*'"] },
+  ts:  { keywords: new Set(_BR_KW_TS),  lineCommentRe: '\\/\\/[^\\n]*', stringRes: ['`(?:\\\\.|[^`\\\\])*`', '"(?:\\\\.|[^"\\\\\\n])*"', "'(?:\\\\.|[^'\\\\\\n])*'"] },
+  jsx: { keywords: new Set(_BR_KW_JS),  lineCommentRe: '\\/\\/[^\\n]*', stringRes: ['`(?:\\\\.|[^`\\\\])*`', '"(?:\\\\.|[^"\\\\\\n])*"', "'(?:\\\\.|[^'\\\\\\n])*'"] },
+  tsx: { keywords: new Set(_BR_KW_TS),  lineCommentRe: '\\/\\/[^\\n]*', stringRes: ['`(?:\\\\.|[^`\\\\])*`', '"(?:\\\\.|[^"\\\\\\n])*"', "'(?:\\\\.|[^'\\\\\\n])*'"] },
+  c:   { keywords: new Set(_BR_KW_C),   lineCommentRe: '\\/\\/[^\\n]*', stringRes: ['"(?:\\\\.|[^"\\\\\\n])*"', "'(?:\\\\.|[^'\\\\\\n])*'"] },
+  cpp: { keywords: new Set(_BR_KW_CPP), lineCommentRe: '\\/\\/[^\\n]*', stringRes: ['R"\\((?:[^)]|\\)(?!"))*\\)"', '"(?:\\\\.|[^"\\\\\\n])*"', "'(?:\\\\.|[^'\\\\\\n])*'"] },
+  java:{ keywords: new Set(_BR_KW_JAVA),lineCommentRe: '\\/\\/[^\\n]*', stringRes: ['"(?:\\\\.|[^"\\\\\\n])*"', "'(?:\\\\.|[^'\\\\\\n])*'"] },
+  shell: {
+    keywords:        new Set(_BR_KW_SH),
+    lineCommentRe:   '(?<=^|\\s)#[^\\n]*',
+    stringRes: ['"(?:\\\\.|[^"\\\\])*"', "'[^'\\n]*'", '`[^`\\n]*`'],
+  },
+  json: { keywords: new Set(['true','false','null']),
+          lineCommentRe: null,
+          stringRes: ['"(?:\\\\.|[^"\\\\\\n])*"'] },
+  css:  { keywords: new Set(['important','from','to']),
+          lineCommentRe: null,
+          stringRes: ['"(?:\\\\.|[^"\\\\\\n])*"', "'(?:\\\\.|[^'\\\\\\n])*'"] },
+  yaml: { keywords: new Set(_BR_KW_YAML),
+          lineCommentRe: '(?<=^|\\s)#[^\\n]*',
+          stringRes: ['"(?:\\\\.|[^"\\\\\\n])*"', "'(?:\\\\.|[^'\\\\\\n])*'"] },
+  toml: { keywords: new Set(['true','false']),
+          lineCommentRe: '(?<=^|\\s)#[^\\n]*',
+          stringRes: ['"""(?:\\\\.|[^"\\\\])*"""', "'''[^']*'''", '"(?:\\\\.|[^"\\\\\\n])*"', "'[^'\\n]*'"] },
+  verilog: { keywords: new Set(_BR_KW_VERILOG),
+             lineCommentRe: '\\/\\/[^\\n]*',
+             stringRes: ['"(?:\\\\.|[^"\\\\\\n])*"'] },
+};
+
+// Pre-compile a per-language combined regex with named groups so the
+// per-line scan stays a single linear pass. Reused across calls.
+const _BROWSE_LANG_RE = {};
+function _browseLangRegex(lang) {
+  if (_BROWSE_LANG_RE[lang]) return _BROWSE_LANG_RE[lang];
+  const cfg = BROWSE_LANG_CONFIG[lang];
+  if (!cfg) return null;
+  const parts = [];
+  if (cfg.lineCommentRe) parts.push(`(?<cmt>${cfg.lineCommentRe})`);
+  if (cfg.stringRes && cfg.stringRes.length) {
+    parts.push(`(?<str>${cfg.stringRes.join('|')})`);
+  }
+  // Number literal — int / float / hex / octal / bin.
+  parts.push('(?<num>\\b(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO]?[0-7_]+|[0-9][0-9_]*(?:\\.[0-9_]+)?(?:[eE][+-]?[0-9_]+)?)\\b)');
+  // Identifier — emit so we can keyword-test it. Underscore + letters
+  // + digits. (We pass it through verbatim if not a keyword.)
+  parts.push('(?<id>[A-Za-z_$][\\w$]*)');
+  // Any other single char.
+  parts.push('(?<other>.)');
+  const re = new RegExp(parts.join('|'), 'g');
+  _BROWSE_LANG_RE[lang] = re;
+  return re;
+}
+
+function _browseHighlightLineGeneric(line, lang) {
+  if (line.length === 0) return '';
+  if (line.length > BROWSE_HL_LINE_MAX) return _browseEscapeHtml(line);
+  const re = _browseLangRegex(lang);
+  if (!re) return _browseEscapeHtml(line);
+  const cfg = BROWSE_LANG_CONFIG[lang];
+  // Reset lastIndex; the per-line regex is shared module-wide so a
+  // previous bail-out could leave it non-zero.
+  re.lastIndex = 0;
+  let out = '';
+  let m;
+  // Iterating with exec rather than matchAll lets us bail out cleanly
+  // if we ever see a zero-length match (shouldn't happen — `other`
+  // always consumes one char).
+  while ((m = re.exec(line))) {
+    if (m.index === re.lastIndex) { re.lastIndex++; continue; }
+    const g = m.groups || {};
+    const raw = m[0];
+    if (g.cmt) {
+      out += `<span class="tok-comment">${_browseEscapeHtml(raw)}</span>`;
+    } else if (g.str) {
+      out += `<span class="tok-string">${_browseEscapeHtml(raw)}</span>`;
+    } else if (g.num) {
+      out += `<span class="tok-number">${_browseEscapeHtml(raw)}</span>`;
+    } else if (g.id) {
+      if (cfg.keywords.has(raw)) {
+        out += `<span class="tok-keyword">${_browseEscapeHtml(raw)}</span>`;
+      } else {
+        // Function-call heuristic: identifier immediately followed by '('.
+        // Cheap lookahead via the regex's lastIndex.
+        const next = line.charCodeAt(re.lastIndex);
+        if (next === 40 /* '(' */) {
+          out += `<span class="tok-fn">${_browseEscapeHtml(raw)}</span>`;
+        } else {
+          out += _browseEscapeHtml(raw);
+        }
+      }
+    } else {
+      out += _browseEscapeHtml(raw);
+    }
+  }
+  return out;
+}
+
+// HTML / XML highlighter — different shape (tags vs identifiers).
+// Single-line approximation: we treat each line independently, so a
+// multi-line attribute span gets escaped without highlighting. Good
+// enough for browse preview.
+function _browseHighlightLineHtml(line) {
+  if (line.length > BROWSE_HL_LINE_MAX) return _browseEscapeHtml(line);
+  // Match: comment, tag (with attrs), or text. The regex is a single
+  // scan so we don't backtrack across tags.
+  const TAG_RE = /(<!--[\s\S]*?-->)|(<\/?[A-Za-z][\w:-]*)((?:\s+[A-Za-z_:][\w:.-]*(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s'">]+))?)*)\s*(\/?>)|([^<]+)/g;
+  let out = '';
+  let m;
+  while ((m = TAG_RE.exec(line))) {
+    if (m[1]) {
+      out += `<span class="tok-comment">${_browseEscapeHtml(m[1])}</span>`;
+    } else if (m[2]) {
+      const head = m[2];               // "<tag" or "</tag"
+      const attrsRaw = m[3] || '';
+      const close = m[4] || '';
+      out += `<span class="tok-tag">${_browseEscapeHtml(head)}</span>`;
+      // Attributes: cheap split on `\s+` keeping the attr=value chunks.
+      const attrRe = /\s+([A-Za-z_:][\w:.-]*)(\s*=\s*(?:"[^"]*"|'[^']*'|[^\s'">]+))?/g;
+      let am;
+      while ((am = attrRe.exec(attrsRaw))) {
+        out += _browseEscapeHtml(am[0].slice(0, am[0].indexOf(am[1])));
+        out += `<span class="tok-attr">${_browseEscapeHtml(am[1])}</span>`;
+        if (am[2]) {
+          const eqAndVal = am[2];
+          const eq = eqAndVal.indexOf('=');
+          out += _browseEscapeHtml(eqAndVal.slice(0, eq + 1));
+          const val = eqAndVal.slice(eq + 1).trim();
+          const lead = eqAndVal.slice(eq + 1, eqAndVal.length - val.length);
+          out += _browseEscapeHtml(lead);
+          out += `<span class="tok-string">${_browseEscapeHtml(val)}</span>`;
+        }
+      }
+      out += `<span class="tok-tag">${_browseEscapeHtml(close)}</span>`;
+    } else if (m[5]) {
+      out += _browseEscapeHtml(m[5]);
+    }
+  }
+  return out;
+}
+
+export function browseHighlight(text, lang) {
+  const src = String(text == null ? '' : text);
+  if (!src) return '';
+  if (lang === 'plain' || !BROWSE_LANG_CONFIG[lang] && lang !== 'html' && lang !== 'xml') {
+    return _browseEscapeHtml(src);
+  }
+  if (src.length > BROWSE_HL_FILE_MAX) return _browseEscapeHtml(src);
+  const lines = src.split('\n');
+  const lineFn = (lang === 'html' || lang === 'xml')
+    ? _browseHighlightLineHtml
+    : (line) => _browseHighlightLineGeneric(line, lang);
+  return lines.map(lineFn).join('\n');
+}
+
+/* ─────────── Browse v1: local markdown preview ───────────
+ *
+ * Tiny, safe-by-default markdown → HTML renderer. No raw HTML
+ * passthrough, no script tags, no inline `on*` attributes, no
+ * unescaped attribute values. Headings, hr, fenced code, inline
+ * code, bold/italic, links, lists, blockquote, paragraphs. The
+ * fenced code block also passes through `browseHighlight()` when
+ * the fence carries a known language label.
+ */
+
+function _mdInline(text) {
+  let s = _browseEscapeHtml(text);
+  // Inline code first so emphasis inside it doesn't trip the patterns.
+  s = s.replace(/`([^`\n]+)`/g, (_, body) => `<code class="md-code">${body}</code>`);
+  // Bold (**), italic (*), bold (__), italic (_), strike (~~).
+  s = s.replace(/\*\*([^*][\s\S]*?[^*])\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/__([^_][\s\S]*?[^_])__/g, '<strong>$1</strong>');
+  s = s.replace(/(^|\W)\*([^*\n][^*\n]*?)\*(?=\W|$)/g, '$1<em>$2</em>');
+  s = s.replace(/(^|\W)_([^_\n][^_\n]*?)_(?=\W|$)/g, '$1<em>$2</em>');
+  s = s.replace(/~~([^~\n][\s\S]*?[^~])~~/g, '<del>$1</del>');
+  // Links: [text](target). We only accept http/https/mailto or
+  // relative targets. Anything else is rendered as inert text.
+  s = s.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g,
+    (_, label, href) => {
+      const safeHref = String(href)
+        .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+        .replace(/[<>"\s]/g, '');
+      const hasProtocol = /^[A-Za-z][A-Za-z0-9+.-]*:/i.test(safeHref);
+      const allowed = /^https?:\/\//i.test(safeHref) || /^mailto:/i.test(safeHref) ||
+        (!hasProtocol && /^(\.{0,2}\/|[A-Za-z0-9_.-]+(?:\/|$))/i.test(safeHref));
+      if (!allowed) return `<span class="md-link-inert">${label}</span>`;
+      const isExternal = /^https?:\/\//i.test(safeHref);
+      const target = isExternal ? ' target="_blank" rel="noreferrer noopener"' : '';
+      return `<a href="${_browseEscapeHtml(safeHref)}" class="md-link"${target}>${label}</a>`;
+    });
+  return s;
+}
+
+export function browseMarkdownToHtml(src) {
+  const lines = String(src == null ? '' : src).split(/\r?\n/);
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.replace(/^\s+|\s+$/g, '');
+    // Fenced code block.
+    const fence = /^\s*(```|~~~)\s*([A-Za-z0-9_+.-]*)\s*$/.exec(line);
+    if (fence) {
+      const f = fence[1];
+      const lang = (fence[2] || '').toLowerCase();
+      const buf = [];
+      i++;
+      while (i < lines.length) {
+        if (lines[i].replace(/^\s+|\s+$/g, '') === f) { i++; break; }
+        buf.push(lines[i]); i++;
+      }
+      const body = buf.join('\n');
+      const highlighted = lang && BROWSE_LANG_CONFIG[lang]
+        ? browseHighlight(body, lang)
+        : (lang === 'html' || lang === 'xml' ? browseHighlight(body, lang) : _browseEscapeHtml(body));
+      const langCls = lang ? ` lang-${_browseEscapeHtml(lang)}` : '';
+      out.push(`<pre class="md-pre"><code class="md-codeblock${langCls}">${highlighted}</code></pre>`);
+      continue;
+    }
+    // Horizontal rule.
+    if (/^\s*([-*_])\s*\1\s*\1[\-*_\s]*$/.test(line)) {
+      out.push('<hr class="md-hr">'); i++; continue;
+    }
+    // ATX heading.
+    const heading = /^\s*(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
+    if (heading) {
+      const level = heading[1].length;
+      out.push(`<h${level} class="md-h md-h${level}">${_mdInline(heading[2])}</h${level}>`);
+      i++; continue;
+    }
+    // Blockquote.
+    if (/^\s*>/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^\s*>/.test(lines[i])) {
+        buf.push(lines[i].replace(/^\s*>\s?/, ''));
+        i++;
+      }
+      out.push(`<blockquote class="md-quote">${_mdInline(buf.join(' '))}</blockquote>`);
+      continue;
+    }
+    // List (unordered or ordered, shallow).
+    if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
+      const ordered = /^\s*\d+\./.test(line);
+      const tag = ordered ? 'ol' : 'ul';
+      const items = [];
+      while (i < lines.length && /^\s*(?:[-*+]|\d+\.)\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*(?:[-*+]|\d+\.)\s+/, ''));
+        i++;
+      }
+      out.push(`<${tag} class="md-list">` +
+        items.map(it => `<li>${_mdInline(it)}</li>`).join('') +
+        `</${tag}>`);
+      continue;
+    }
+    // Blank line.
+    if (!trimmed) { i++; continue; }
+    // Paragraph — collect until blank/block boundary.
+    const buf = [trimmed];
+    i++;
+    while (i < lines.length) {
+      const next = lines[i];
+      const nt = next.replace(/^\s+|\s+$/g, '');
+      if (!nt) break;
+      if (/^\s*(?:[-*+]|\d+\.)\s+/.test(next)) break;
+      if (/^\s*#{1,6}\s+/.test(next)) break;
+      if (/^\s*>/.test(next)) break;
+      if (/^\s*(```|~~~)/.test(next)) break;
+      if (/^\s*([-*_])\s*\1\s*\1[\-*_\s]*$/.test(next)) break;
+      buf.push(nt);
+      i++;
+    }
+    out.push(`<p class="md-p">${_mdInline(buf.join(' '))}</p>`);
+  }
+  return out.join('');
+}
 
 export function nextOutputHistoryState(lines = OUTPUT_HISTORY_INITIAL_LINES, full = false) {
   if (full) {
@@ -924,13 +1281,25 @@ export function mountAgentConsole({ api, state, showToast }) {
   const outputEl = document.getElementById('agent-output');
   const outputRichEl = document.getElementById('agent-output-rich');
   const terminalEl = document.getElementById('agent-terminal');
+  const browseEl                  = document.getElementById('agent-browse');
+  const browseBreadcrumbEl        = document.getElementById('agent-browse-breadcrumb');
+  const browseEntriesEl           = document.getElementById('agent-browse-entries');
+  const browseStatusEl            = document.getElementById('agent-browse-status');
+  const browsePreviewNameEl       = document.getElementById('agent-browse-preview-name');
+  const browsePreviewSizeEl       = document.getElementById('agent-browse-preview-size');
+  const browsePreviewBodyEl       = document.getElementById('agent-browse-preview-body');
+  const browsePreviewMdEl         = document.getElementById('agent-browse-preview-md');
+  const browseMdToggleEl          = document.getElementById('agent-browse-preview-mode-toggle');
+  const browseMdToggleBtns        = browseMdToggleEl
+    ? browseMdToggleEl.querySelectorAll('.agent-browse-md-btn')
+    : [];
   const inputEl = document.getElementById('composer-input');
   const sendBtn = document.getElementById('composer-send');
   const composer = document.getElementById('agent-composer');
   const quickKeyBtns = composer.querySelectorAll('.btn-quick');
   const expandKeysBtn = document.getElementById('expand-keys');
   const extraKeysEl = document.getElementById('extra-keys');
-  const modeBtns = document.querySelectorAll('.output-mode-btn');
+  const modeBtns = document.querySelectorAll('.output-mode-btn[data-mode]');
   const attachBtn = document.getElementById('composer-attach');
   const fileInput = document.getElementById('composer-file-input');
   const uploadStatusEl = document.getElementById('composer-upload-status');
@@ -958,17 +1327,43 @@ export function mountAgentConsole({ api, state, showToast }) {
   let termUnsubStatus = null;
   let termResizeObserver = null;
   let termThemeObserver = null;
+  // Workspace Browser (CAM-DESK-FILE-010..017) state. browseAgentId
+  // tracks which agent we last loaded; switching agents resets the
+  // path back to root. browseInflight is a guard against double
+  // requests while the user clicks around. browseLastFile preserves
+  // the active preview so a re-render after a list refresh keeps it.
+  let browseAgentId   = null;
+  let browsePath      = '';
+  let browseEntries   = null;
+  let browseRoot      = '';
+  let browseInflight  = false;
+  let browseLastFile  = null;     // { path, name }
+  // Browse v1 preview state. `browseLastContent` is the most recent
+  // file body (for the Raw/Preview toggle on markdown — never
+  // refetched). `browseLastLang` is the language detected from the
+  // file name. `browseMdMode` is 'preview' or 'raw'.
+  let browseLastContent = null;
+  let browseLastLang    = 'plain';
+  const BROWSE_MD_MODE_KEY = 'cam_desktop_browse_md_mode';
+  function readBrowseMdMode() {
+    try {
+      const v = localStorage.getItem(BROWSE_MD_MODE_KEY);
+      return v === 'raw' ? 'raw' : 'preview';
+    } catch { return 'preview'; }
+  }
+  let browseMdMode = readBrowseMdMode();
 
   function readOutputMode() {
     try {
       const v = localStorage.getItem(OUTPUT_MODE_KEY);
-      return (v === 'rich' || v === 'terminal') ? v : 'plain';
+      return (v === 'rich' || v === 'terminal' || v === 'browse') ? v : 'plain';
     } catch { return 'plain'; }
   }
   let outputMode = readOutputMode();
 
   function activePane() {
     if (outputMode === 'terminal') return terminalEl || outputEl;
+    if (outputMode === 'browse')   return browseEl   || outputEl;
     return outputMode === 'rich' ? outputRichEl : outputEl;
   }
 
@@ -1098,16 +1493,28 @@ export function mountAgentConsole({ api, state, showToast }) {
       outputEl.setAttribute('hidden', '');
       outputRichEl.setAttribute('hidden', '');
       if (terminalEl) terminalEl.removeAttribute('hidden');
+      if (browseEl)   browseEl.setAttribute('hidden', '');
       if (composer) composer.hidden = true;
       scheduleTerminalFit();
     } else if (outputMode === 'rich') {
       outputEl.setAttribute('hidden', '');
       outputRichEl.removeAttribute('hidden');
       if (terminalEl) terminalEl.setAttribute('hidden', '');
+      if (browseEl)   browseEl.setAttribute('hidden', '');
       if (composer) composer.hidden = false;
+    } else if (outputMode === 'browse') {
+      outputEl.setAttribute('hidden', '');
+      outputRichEl.setAttribute('hidden', '');
+      if (terminalEl) terminalEl.setAttribute('hidden', '');
+      if (browseEl)   browseEl.removeAttribute('hidden');
+      // Browse is read-only — the composer/quick-keys don't apply.
+      // Keep them hidden so the user isn't tempted to send input
+      // into a file-preview pane.
+      if (composer) composer.hidden = true;
     } else {
       outputRichEl.setAttribute('hidden', '');
       if (terminalEl) terminalEl.setAttribute('hidden', '');
+      if (browseEl)   browseEl.setAttribute('hidden', '');
       outputEl.removeAttribute('hidden');
       if (composer) composer.hidden = false;
     }
@@ -1308,7 +1715,7 @@ export function mountAgentConsole({ api, state, showToast }) {
   }
 
   function setMode(next) {
-    if (next !== 'plain' && next !== 'rich' && next !== 'terminal') next = 'plain';
+    if (next !== 'plain' && next !== 'rich' && next !== 'terminal' && next !== 'browse') next = 'plain';
     if (next === 'terminal' && !canUseTerminalMode()) {
       syncModeToggle();
       showToast('Terminal mode is available only with Direct connection.', 'warning', 3500);
@@ -1319,6 +1726,10 @@ export function mountAgentConsole({ api, state, showToast }) {
         stopPolling();
         setEnabled(false);
         void openTerminalForSelected({ force: true });
+      }
+      if (next === 'browse') {
+        // Re-clicking Browse refreshes the current directory.
+        void browseLoadCurrent();
       }
       return;
     }
@@ -1333,6 +1744,16 @@ export function mountAgentConsole({ api, state, showToast }) {
       stopPolling();
       setEnabled(false);
       void openTerminalForSelected();
+      updateHistoryControls();
+      return;
+    }
+    if (outputMode === 'browse') {
+      // Browse is presentation-only — pause polling for the captured
+      // output stream while the user is in this pane. Keep the agent
+      // selected so a return to Plain/Rich resumes seamlessly.
+      stopPolling();
+      setEnabled(false);
+      void browseLoadCurrent();
       updateHistoryControls();
       return;
     }
@@ -1371,6 +1792,30 @@ export function mountAgentConsole({ api, state, showToast }) {
     renderHeader(agent);
 
     if (!agent) {
+      // Browse owns its own pane DOM. The shared `renderPlaceholder`
+      // path would call `activePane().textContent = …` which, when
+      // `outputMode === 'browse'`, points at `#agent-browse` and
+      // wipes the breadcrumb / entries / preview children. Handle
+      // the no-agent state explicitly for browse: reset internal
+      // state and write the empty-state into the entries list,
+      // not into the pane root. CAM-DESK-FILE-010..017 fix.
+      if (outputMode === 'browse') {
+        syncModeToggle();
+        browseResetForAgent(null);
+        if (browseEntriesEl) {
+          browseEntriesEl.innerHTML =
+            '<div class="empty-state">Select an agent on the left to browse its workspace.</div>';
+        }
+        if (browseBreadcrumbEl) browseBreadcrumbEl.innerHTML = '';
+        if (browsePreviewNameEl) browsePreviewNameEl.textContent = 'No file selected';
+        if (browsePreviewSizeEl) browsePreviewSizeEl.textContent = '';
+        if (browsePreviewBodyEl) browsePreviewBodyEl.textContent = '';
+        browseSetStatus('');
+        setEnabled(false);
+        stopPolling();
+        updateHistoryControls();
+        return;
+      }
       renderPlaceholder('Select an agent on the left to view output.');
       setEnabled(false);
       stopPolling();
@@ -1382,6 +1827,21 @@ export function mountAgentConsole({ api, state, showToast }) {
       setEnabled(false);
       stopPolling();
       void openTerminalForSelected({ force: true });
+      updateHistoryControls();
+      return;
+    }
+
+    // Browse mode owns its own pane (`#agent-browse`) and must not
+    // be touched by the Plain/Rich `renderPlaceholder` /
+    // `loadOutput` / `startPolling` path — those would wipe the
+    // browse DOM via `activePane()` and start the live capture
+    // poll behind the user's back. CAM-DESK-FILE-010..017 fix.
+    if (outputMode === 'browse') {
+      syncModeToggle();
+      setEnabled(false);
+      stopPolling();
+      if (browseAgentId !== agent.id) browseResetForAgent(agent.id);
+      void browseLoadCurrent();
       updateHistoryControls();
       return;
     }
@@ -1406,7 +1866,7 @@ export function mountAgentConsole({ api, state, showToast }) {
   }
 
   async function loadOutput(opts = {}) {
-    if (outputMode === 'terminal') return;
+    if (outputMode === 'terminal' || outputMode === 'browse') return;
     const agent = selectedAgent();
     if (!agent || inflightOutput || inflightHistory) return;
     // CAM-DESK-OUT-022 (manual history): when the user has scrolled away
@@ -1672,7 +2132,11 @@ export function mountAgentConsole({ api, state, showToast }) {
   }
 
   function updateHistoryControls() {
-    if (outputMode === 'terminal') {
+    // Browse is a workspace file pane, not a tmux capture stream —
+    // the history affordances (More+, Loading…, No more, Jump to
+    // bottom) don't apply there. Treat it the same way Terminal is
+    // treated. (CAM-DESK-FILE-018.)
+    if (outputMode === 'terminal' || outputMode === 'browse') {
       if (moreHistoryBtn) moreHistoryBtn.hidden = true;
       if (jumpBottomBtn) jumpBottomBtn.hidden = true;
       return;
@@ -1982,6 +2446,15 @@ export function mountAgentConsole({ api, state, showToast }) {
             stopPolling();
             setEnabled(false);
             void openTerminalForSelected();
+          } else if (outputMode === 'browse') {
+            // Browse pane re-shows when the user returns to Agents
+            // mode. Don't start the live output poll — Browse is a
+            // read-only file pane, not a capture stream. Refresh
+            // the current directory in case the workspace changed
+            // while the user was elsewhere.
+            stopPolling();
+            setEnabled(false);
+            void browseLoadCurrent();
           } else {
             startPolling(agent);
             setEnabled(isActiveStatus(agent.status));
@@ -2000,6 +2473,14 @@ export function mountAgentConsole({ api, state, showToast }) {
         if (outputMode === 'terminal') {
           stopPolling();
           setEnabled(false);
+        } else if (outputMode === 'browse') {
+          // Same idea as the mode-change branch: an agents-list
+          // refresh (status flip, new agent appearing, etc.) must
+          // not start the output poll while Browse owns the pane.
+          // Re-render the header but leave the browse pane alone
+          // — the user's path/preview should survive a list tick.
+          stopPolling();
+          setEnabled(false);
         } else if (isActiveStatus(agent.status)) {
           if (!pollTimer) startPolling(agent);
         } else {
@@ -2014,12 +2495,264 @@ export function mountAgentConsole({ api, state, showToast }) {
         setMode('plain');
       }
       // Connection flip can re-enable/disable the attach button and
-      // the Direct-only Terminal tab.
+      // the Direct-only Terminal tab. Browse is read-only and stays
+      // composer-disabled regardless of connection state.
       const agent = selectedAgent();
       if (agent && isAgentsMode()) {
-        setEnabled(isActiveStatus(agent.status) && outputMode !== 'terminal');
+        const composerActive = outputMode !== 'terminal' && outputMode !== 'browse';
+        setEnabled(isActiveStatus(agent.status) && composerActive);
       }
     }
+  });
+
+  /* ─────────── Workspace Browse (CAM-DESK-FILE-010..017) ───────────
+   *
+   * Two-pane workspace browser inside the agent output area.
+   * Left: breadcrumb + entries list. Right: file preview.
+   * Read-only: no upload, no delete, no rename, no shell.
+   * All state lives in mountAgentConsole scope so it survives
+   * mode switches.
+   */
+
+  function browseFormatSize(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) return '';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+
+  function browseSetStatus(text, kind = 'info') {
+    if (!browseStatusEl) return;
+    browseStatusEl.textContent = text || '';
+    browseStatusEl.classList.remove('is-error', 'is-ok', 'is-info');
+    if (text) browseStatusEl.classList.add(kind === 'error' ? 'is-error' : (kind === 'ok' ? 'is-ok' : 'is-info'));
+  }
+
+  function browseResetForAgent(agentId) {
+    browseAgentId     = agentId;
+    browsePath        = '';
+    browseEntries     = null;
+    browseRoot        = '';
+    browseLastFile    = null;
+    browseLastContent = null;
+    browseLastLang    = 'plain';
+    if (browsePreviewNameEl) browsePreviewNameEl.textContent = 'No file selected';
+    if (browsePreviewSizeEl) browsePreviewSizeEl.textContent = '';
+    if (browsePreviewBodyEl) {
+      browsePreviewBodyEl.innerHTML = '';
+      browsePreviewBodyEl.removeAttribute('hidden');
+      delete browsePreviewBodyEl.dataset.lang;
+    }
+    if (browsePreviewMdEl) {
+      browsePreviewMdEl.innerHTML = '';
+      browsePreviewMdEl.setAttribute('hidden', '');
+    }
+    browseShowMdToggle(false);
+    if (browseBreadcrumbEl)  browseBreadcrumbEl.innerHTML = '';
+    if (browseEntriesEl)     browseEntriesEl.innerHTML = '';
+    browseSetStatus('');
+  }
+
+  function browseRenderBreadcrumb() {
+    if (!browseBreadcrumbEl) return;
+    const parts = browsePath ? browsePath.split('/').filter(Boolean) : [];
+    const rootLabel = browseRoot
+      ? (browseRoot.split('/').filter(Boolean).pop() || '/')
+      : 'workspace';
+    let html = `<button type="button" class="agent-browse-crumb" data-path="">${escapeHtml(rootLabel)}</button>`;
+    let acc = '';
+    for (const part of parts) {
+      acc = acc ? `${acc}/${part}` : part;
+      html += `<span class="agent-browse-crumb-sep">/</span>` +
+              `<button type="button" class="agent-browse-crumb" data-path="${escapeAttr(acc)}">${escapeHtml(part)}</button>`;
+    }
+    browseBreadcrumbEl.innerHTML = html;
+    browseBreadcrumbEl.querySelectorAll('.agent-browse-crumb').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (browseInflight) return;
+        browsePath = btn.dataset.path || '';
+        void browseLoadCurrent();
+      });
+    });
+  }
+
+  function browseRenderEntries() {
+    if (!browseEntriesEl) return;
+    if (!Array.isArray(browseEntries) || browseEntries.length === 0) {
+      browseEntriesEl.innerHTML = '<div class="empty-state">Empty directory.</div>';
+      return;
+    }
+    // Defensive re-sort (server already returns dirs-first by name).
+    const list = browseEntries.slice().sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+      return String(a.name || '').localeCompare(String(b.name || ''));
+    });
+    const html = list.map(e => {
+      const icon = e.type === 'dir'
+        ? '<span class="agent-browse-icon agent-browse-icon-dir">&#128193;</span>'
+        : '<span class="agent-browse-icon agent-browse-icon-file">&#128196;</span>';
+      const size = e.type === 'file' ? browseFormatSize(e.size) : '';
+      return `
+        <div class="agent-browse-row" data-name="${escapeAttr(e.name)}" data-type="${escapeAttr(e.type)}">
+          ${icon}
+          <span class="agent-browse-name">${escapeHtml(e.name)}</span>
+          <span class="agent-browse-size">${escapeHtml(size)}</span>
+        </div>`;
+    }).join('');
+    browseEntriesEl.innerHTML = html;
+  }
+
+  async function browseLoadCurrent() {
+    if (!browseEntriesEl) return;
+    const agent = selectedAgent();
+    if (!agent) {
+      browseResetForAgent(null);
+      browseEntriesEl.innerHTML = '<div class="empty-state">No agent selected.</div>';
+      return;
+    }
+    if (browseAgentId !== agent.id) browseResetForAgent(agent.id);
+
+    if (browseInflight) return;
+    browseInflight = true;
+    browseSetStatus('Loading…');
+    browseEntriesEl.classList.add('is-loading');
+    try {
+      const data = await api.agentListWorkspaceFiles(agent.id, browsePath || '');
+      // Discard if the user switched agents during the request.
+      if (selectedAgent()?.id !== agent.id || outputMode !== 'browse') return;
+      browseRoot    = data && data.root ? String(data.root) : browseRoot;
+      browseEntries = Array.isArray(data && data.entries) ? data.entries : [];
+      browseRenderBreadcrumb();
+      browseRenderEntries();
+      browseSetStatus('');
+    } catch (err) {
+      const msg = (err && err.message) || String(err || 'load failed');
+      browseEntriesEl.innerHTML = `<div class="empty-state is-error">${escapeHtml('Browse error: ' + msg)}</div>`;
+      browseSetStatus(msg, 'error');
+    } finally {
+      browseInflight = false;
+      browseEntriesEl.classList.remove('is-loading');
+    }
+  }
+
+  function browseShowMdToggle(show) {
+    if (!browseMdToggleEl) return;
+    if (show) browseMdToggleEl.removeAttribute('hidden');
+    else browseMdToggleEl.setAttribute('hidden', '');
+    browseMdToggleBtns.forEach(b => {
+      const active = b.dataset.mdMode === browseMdMode;
+      b.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  }
+
+  function browseRenderPreview() {
+    if (browseLastContent == null) return;
+    const isMd = browseLastLang === 'md';
+    if (isMd && browseMdMode === 'preview') {
+      // Local markdown render — see `browseMarkdownToHtml`. The
+      // helper escapes all raw content; the only HTML in the output
+      // is from the renderer's own templates (h*, p, ul, ol, li,
+      // blockquote, pre/code, a). `innerHTML` is safe here.
+      if (browsePreviewMdEl) browsePreviewMdEl.innerHTML = browseMarkdownToHtml(browseLastContent);
+      if (browsePreviewBodyEl) browsePreviewBodyEl.setAttribute('hidden', '');
+      if (browsePreviewMdEl)   browsePreviewMdEl.removeAttribute('hidden');
+      return;
+    }
+    if (browsePreviewMdEl)   browsePreviewMdEl.setAttribute('hidden', '');
+    if (browsePreviewBodyEl) browsePreviewBodyEl.removeAttribute('hidden');
+    if (!browsePreviewBodyEl) return;
+    // Use the per-language highlighter for source files. For
+    // languages we don't know we fall back to plain escaped text.
+    // The output goes into <pre><code> via innerHTML — every token
+    // span is built from escaped text.
+    if (browseLastLang === 'plain' || browseLastLang === 'md' /* raw */) {
+      browsePreviewBodyEl.textContent = browseLastContent;
+      browsePreviewBodyEl.dataset.lang = browseLastLang;
+      return;
+    }
+    const html = browseHighlight(browseLastContent, browseLastLang);
+    browsePreviewBodyEl.innerHTML = `<code class="agent-browse-code lang-${escapeAttr(browseLastLang)}">${html}</code>`;
+    browsePreviewBodyEl.dataset.lang = browseLastLang;
+  }
+
+  async function browseOpenFile(name) {
+    const agent = selectedAgent();
+    if (!agent) return;
+    const full = browsePath ? `${browsePath}/${name}` : name;
+    browseLastFile    = { path: full, name };
+    browseLastContent = null;
+    browseLastLang    = browseLanguageFromName(name);
+    if (browsePreviewNameEl) browsePreviewNameEl.textContent = name;
+    if (browsePreviewSizeEl) browsePreviewSizeEl.textContent = '';
+    if (browsePreviewBodyEl) {
+      browsePreviewBodyEl.innerHTML = '';
+      browsePreviewBodyEl.textContent = 'Loading…';
+      browsePreviewBodyEl.removeAttribute('hidden');
+    }
+    if (browsePreviewMdEl) {
+      browsePreviewMdEl.innerHTML = '';
+      browsePreviewMdEl.setAttribute('hidden', '');
+    }
+    browseShowMdToggle(false);
+    browseSetStatus('');
+    try {
+      const data = await api.agentReadWorkspaceFile(agent.id, full);
+      if (!browseLastFile || browseLastFile.path !== full || selectedAgent()?.id !== agent.id) return;
+      const size = Number.isFinite(data && data.size) ? data.size : 0;
+      if (browsePreviewSizeEl) browsePreviewSizeEl.textContent = browseFormatSize(size);
+      if (data && data.binary) {
+        browseLastContent = null;
+        if (browsePreviewBodyEl) {
+          browsePreviewBodyEl.innerHTML = '';
+          browsePreviewBodyEl.textContent =
+            `[binary file, ${browseFormatSize(size)}]\n(preview is hidden — Browse is read-only and does not download binaries)`;
+        }
+        return;
+      }
+      browseLastContent = (data && typeof data.content === 'string') ? data.content : '';
+      browseShowMdToggle(browseLastLang === 'md');
+      browseRenderPreview();
+    } catch (err) {
+      const msg = (err && err.message) || String(err || 'read failed');
+      browseLastContent = null;
+      if (browsePreviewBodyEl) {
+        browsePreviewBodyEl.innerHTML = '';
+        browsePreviewBodyEl.textContent = `Read error: ${msg}`;
+      }
+      browseSetStatus(msg, 'error');
+    }
+  }
+
+  if (browseEntriesEl) {
+    browseEntriesEl.addEventListener('click', (e) => {
+      if (browseInflight) return;
+      const row = e.target.closest && e.target.closest('.agent-browse-row');
+      if (!row) return;
+      const name = row.dataset.name;
+      const type = row.dataset.type;
+      if (!name) return;
+      if (type === 'dir') {
+        browsePath = browsePath ? `${browsePath}/${name}` : name;
+        void browseLoadCurrent();
+      } else {
+        void browseOpenFile(name);
+      }
+    });
+  }
+
+  // Markdown Raw / Preview toggle. Re-renders from the cached
+  // `browseLastContent` — does NOT re-fetch the file. Persists the
+  // user's preference across loads.
+  browseMdToggleBtns.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const mode = btn.dataset.mdMode === 'raw' ? 'raw' : 'preview';
+      if (mode === browseMdMode) return;
+      browseMdMode = mode;
+      try { localStorage.setItem(BROWSE_MD_MODE_KEY, mode); } catch {}
+      browseShowMdToggle(browseLastLang === 'md');
+      if (browseLastContent != null) browseRenderPreview();
+    });
   });
 
   selectAgent(state.get('selectedAgentId') || null);

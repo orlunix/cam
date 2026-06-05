@@ -2410,3 +2410,339 @@ body.desktop textarea:focus-visible {
 .agent-terminal .xterm-viewport {
   background: var(--terminal-bg) !important;
 }
+
+/* ────────── Workspace Browser pane (CAM-DESK-FILE-010..017) ──────────
+ * Two-pane layout sitting inside `.agent-output-wrap`. Left: breadcrumb
+ * + directory listing. Right: file preview. Read-only — no upload
+ * affordances are rendered. Stays inside the same `var(--desktop-rail-
+ * wide)` rail as Plain/Rich/Terminal panes. */
+.agent-browse {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  width: min(100%, var(--desktop-rail-wide));
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+  gap: 1px;
+  background: var(--border);
+  overflow: hidden;
+}
+.agent-browse[hidden] { display: none !important; }
+@media (max-width: 899px) {
+  .agent-browse {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.agent-browse-list {
+  background: var(--bg-card);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.agent-browse-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow-x: auto;
+  font-family: SFMono-Regular, Consolas, monospace;
+}
+.agent-browse-crumb {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--accent);
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.agent-browse-crumb:hover {
+  background: var(--bg-hover);
+  border-color: var(--border);
+}
+.agent-browse-crumb-sep {
+  color: var(--text-muted);
+  user-select: none;
+}
+.agent-browse-entries {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+.agent-browse-entries.is-loading {
+  opacity: 0.55;
+}
+.agent-browse-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text);
+  white-space: nowrap;
+}
+.agent-browse-row:hover {
+  background: var(--bg-hover);
+}
+.agent-browse-icon {
+  font-size: 13px;
+  line-height: 1;
+  text-align: center;
+}
+.agent-browse-icon-dir { color: var(--accent); }
+.agent-browse-icon-file { color: var(--text-dim); }
+.agent-browse-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: SFMono-Regular, Consolas, monospace;
+}
+.agent-browse-size {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-family: SFMono-Regular, Consolas, monospace;
+}
+.agent-browse-status {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--text-dim);
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  min-height: 22px;
+  box-sizing: border-box;
+}
+.agent-browse-status.is-error { color: #f6c0c0; }
+.agent-browse-status.is-ok    { color: #b6e3b6; }
+.agent-browse-preview {
+  background: var(--bg-card);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.agent-browse-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.agent-browse-preview-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: SFMono-Regular, Consolas, monospace;
+}
+.agent-browse-preview-size {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-family: SFMono-Regular, Consolas, monospace;
+}
+.agent-browse-preview-body {
+  flex: 1;
+  margin: 0;
+  padding: 10px 14px;
+  overflow: auto;
+  background: #0d1117;
+  color: #c9d1d9;
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: var(--output-font-size, 13px);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  -webkit-user-select: text;
+  user-select: text;
+  min-height: 0;
+}
+body.desktop[data-theme="light"] .agent-browse-preview-body {
+  background: #f5f5f7;
+  color: #1f2328;
+}
+
+/* ─── Browse v1 polish: syntax-highlighted preview + markdown ───
+ * Token spans for the per-language highlighter (`browseHighlight`).
+ * Colors are tuned for the dark agent-output palette and overridden
+ * for light theme below. All spans wrap already-escaped text. */
+.agent-browse-preview-body .agent-browse-code {
+  display: block;
+  font-family: inherit;
+  font-size: inherit;
+  white-space: pre;
+}
+.agent-browse-preview-body .tok-keyword { color: #c39bd3; font-weight: 600; }
+.agent-browse-preview-body .tok-string  { color: #a5d6a7; }
+.agent-browse-preview-body .tok-comment { color: #6a737d; font-style: italic; }
+.agent-browse-preview-body .tok-number  { color: #79c0ff; font-variant-numeric: tabular-nums; }
+.agent-browse-preview-body .tok-fn      { color: #f0c674; }
+.agent-browse-preview-body .tok-tag     { color: #79c0ff; }
+.agent-browse-preview-body .tok-attr    { color: #d29922; }
+
+/* Markdown Raw/Preview toggle in the preview header. Reuses the
+ * existing `.output-mode-btn` look so the controls feel consistent
+ * with the Plain/Rich/Terminal/Browse toggle. */
+.agent-browse-preview-mode-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  margin-left: 8px;
+}
+.agent-browse-preview-mode-toggle[hidden] { display: none !important; }
+.agent-browse-preview-mode-toggle .agent-browse-md-btn {
+  background: var(--bg-card);
+  border: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+.agent-browse-preview-mode-toggle .agent-browse-md-btn + .agent-browse-md-btn {
+  border-left: 1px solid var(--border);
+}
+.agent-browse-preview-mode-toggle .agent-browse-md-btn[aria-pressed="true"] {
+  background: var(--bg-hover);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Markdown rendered preview pane — sibling of the <pre> body.
+ * Comfortable reading layout with restrained colors. Code blocks
+ * stay monospace and pick up the same `.tok-*` palette so JS / Py
+ * / shell fenced blocks read as code, not prose. */
+.agent-browse-preview-md {
+  flex: 1;
+  margin: 0;
+  padding: 14px 18px;
+  overflow: auto;
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: var(--ui-font-size, 13px);
+  line-height: 1.55;
+  -webkit-user-select: text;
+  user-select: text;
+  min-height: 0;
+}
+.agent-browse-preview-md[hidden] { display: none !important; }
+.agent-browse-preview-md .md-h {
+  margin: 18px 0 8px;
+  font-weight: 700;
+  color: var(--text);
+}
+.agent-browse-preview-md .md-h1 {
+  font-size: 1.55em;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+.agent-browse-preview-md .md-h2 {
+  font-size: 1.35em;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 3px;
+}
+.agent-browse-preview-md .md-h3 { font-size: 1.15em; }
+.agent-browse-preview-md .md-h4 { font-size: 1.05em; }
+.agent-browse-preview-md .md-h5,
+.agent-browse-preview-md .md-h6 { font-size: 1em; color: var(--text-dim); }
+.agent-browse-preview-md .md-p {
+  margin: 8px 0;
+  word-wrap: break-word;
+}
+.agent-browse-preview-md .md-quote {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--bg-hover);
+  color: var(--text-dim);
+}
+.agent-browse-preview-md .md-list {
+  margin: 8px 0;
+  padding-left: 22px;
+}
+.agent-browse-preview-md .md-list li { margin: 2px 0; }
+.agent-browse-preview-md .md-hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 16px 0;
+}
+.agent-browse-preview-md .md-code {
+  background: var(--bg-input);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 0.9em;
+}
+.agent-browse-preview-md .md-pre {
+  margin: 10px 0;
+  padding: 10px 12px;
+  background: #0d1117;
+  color: #c9d1d9;
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: var(--output-font-size, 13px);
+  line-height: 1.45;
+}
+.agent-browse-preview-md .md-codeblock {
+  font-family: inherit;
+}
+.agent-browse-preview-md .md-pre .tok-keyword { color: #c39bd3; font-weight: 600; }
+.agent-browse-preview-md .md-pre .tok-string  { color: #a5d6a7; }
+.agent-browse-preview-md .md-pre .tok-comment { color: #6a737d; font-style: italic; }
+.agent-browse-preview-md .md-pre .tok-number  { color: #79c0ff; }
+.agent-browse-preview-md .md-pre .tok-fn      { color: #f0c674; }
+.agent-browse-preview-md .md-pre .tok-tag     { color: #79c0ff; }
+.agent-browse-preview-md .md-pre .tok-attr    { color: #d29922; }
+.agent-browse-preview-md .md-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+.agent-browse-preview-md .md-link:hover {
+  text-decoration: underline;
+}
+.agent-browse-preview-md .md-link-inert {
+  color: var(--text-dim);
+}
+
+/* Light theme tuning — the token palette needs darker tints on a
+ * white surface, and the embedded code block stays the dark
+ * terminal surface for visual consistency with `.agent-output`. */
+body.desktop[data-theme="light"] .agent-browse-preview-body .tok-keyword { color: #6f42c1; }
+body.desktop[data-theme="light"] .agent-browse-preview-body .tok-string  { color: #1a7f37; }
+body.desktop[data-theme="light"] .agent-browse-preview-body .tok-comment { color: #6e7781; }
+body.desktop[data-theme="light"] .agent-browse-preview-body .tok-number  { color: #0550ae; }
+body.desktop[data-theme="light"] .agent-browse-preview-body .tok-fn      { color: #953800; }
+body.desktop[data-theme="light"] .agent-browse-preview-body .tok-tag     { color: #0550ae; }
+body.desktop[data-theme="light"] .agent-browse-preview-body .tok-attr    { color: #953800; }
+body.desktop[data-theme="light"] .agent-browse-preview-md {
+  background: #ffffff;
+  color: #1f2328;
+}
+body.desktop[data-theme="light"] .agent-browse-preview-md .md-quote {
+  background: #f6f8fa;
+}
+body.desktop[data-theme="light"] .agent-browse-preview-md .md-code {
+  background: #f6f8fa;
+  color: #1f2328;
+}
+/* Keep the embedded fenced code blocks dark for visual recognition
+ * even when the surrounding surface is light — matches the agent
+ * output behavior. */

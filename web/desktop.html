@@ -159,6 +159,7 @@
               <button type="button" class="output-mode-btn" data-mode="plain" aria-pressed="true">Plain</button>
               <button type="button" class="output-mode-btn" data-mode="rich"  aria-pressed="false">Rich</button>
               <button type="button" class="output-mode-btn" data-mode="terminal" aria-pressed="false" title="Interactive attach via SSH">Terminal</button>
+              <button type="button" class="output-mode-btn" data-mode="browse"   aria-pressed="false" title="Browse the agent's workspace (read-only)">Browse</button>
             </div>
           </div>
         </div>
@@ -166,6 +167,31 @@
           <pre class="agent-output"      id="agent-output" tabindex="0" aria-label="Agent output"></pre>
           <pre class="agent-output-rich" id="agent-output-rich" tabindex="0" aria-label="Agent rich output" hidden></pre>
           <div class="agent-terminal" id="agent-terminal" tabindex="0" aria-label="Agent terminal" hidden></div>
+          <div class="agent-browse" id="agent-browse" aria-label="Agent workspace browser" hidden>
+            <div class="agent-browse-list" id="agent-browse-list">
+              <div class="agent-browse-breadcrumb" id="agent-browse-breadcrumb" aria-label="Workspace breadcrumb"></div>
+              <div class="agent-browse-entries" id="agent-browse-entries">
+                <div class="empty-state">Select an agent to browse its workspace.</div>
+              </div>
+              <div class="agent-browse-status" id="agent-browse-status" aria-live="polite"></div>
+            </div>
+            <div class="agent-browse-preview" id="agent-browse-preview">
+              <div class="agent-browse-preview-header">
+                <span class="agent-browse-preview-name" id="agent-browse-preview-name">No file selected</span>
+                <span class="agent-browse-preview-size" id="agent-browse-preview-size"></span>
+                <div class="agent-browse-preview-mode-toggle"
+                     id="agent-browse-preview-mode-toggle"
+                     role="group" aria-label="Markdown view mode" hidden>
+                  <button type="button" class="output-mode-btn agent-browse-md-btn"
+                          data-md-mode="preview" aria-pressed="true">Preview</button>
+                  <button type="button" class="output-mode-btn agent-browse-md-btn"
+                          data-md-mode="raw"     aria-pressed="false">Raw</button>
+                </div>
+              </div>
+              <pre class="agent-browse-preview-body" id="agent-browse-preview-body" tabindex="0"></pre>
+              <div class="agent-browse-preview-md"  id="agent-browse-preview-md"   tabindex="0" hidden></div>
+            </div>
+          </div>
         </div>
         <div class="agent-composer" id="agent-composer">
           <div class="quick-keys">
