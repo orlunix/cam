@@ -49,6 +49,11 @@ Desktop UI  ──HTTP/WS──▶  CAM Hub/API  ──poll/route──▶  Remo
   OpenSSH `ControlMaster` / `ControlPersist=600`. Repeat
   syncs/captures/uploads reuse the same authenticated connection
   instead of paying a TCP+auth handshake every call.
+- **Browse is a workspace browser** (CAM-DESK-FILE-010..017). Agent Browse
+  and Context Browse are two entry points into the same workspace-root file
+  contract. Relay and Direct must expose the same list/read API shape so
+  Desktop and mobile can share behavior without transport-specific renderer
+  branches.
 - **SSH attach** to the selected agent's controller is a future path
   (see SSH-010..013, status `proposed`).
 - **The separate Local tab is retired.** Its useful app-managed-Hub
