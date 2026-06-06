@@ -1,0 +1,426 @@
+"""Feature pipeline for the per-agent monitor (behavior-preserving v1).
+
+Replaces the earlier ``monitor_steps`` 4-step pipeline with a
+coarser-grained, 3-phase feature pipeline:
+
+    Phase A (before_confirm) — busy/done signals.
+    Phase B (confirm)        — auto-confirm rules, may halt the cycle.
+    Phase C (after_confirm)  — state detect, output-change reset, idle detect.
+
+Registered features:
+
+    * StateManagerFeature (order 10) — owns the state-management work that
+      used to live across ScreenStateStep + StateDetectStep +
+      OutputChangeStep + IdleDetectStep. Implements:
+          before_confirm(): _update_screen_signals()
+          after_confirm():  _detect_state_change()
+                            _update_output_change()
+                            _detect_idle()
+      The phase split is what preserves the legacy ordering exactly: a
+      halt_cycle from AutoConfirmationFeature.confirm() skips the
+      after_confirm phase entirely, so the output-change reset and the
+      idle detector don't run on the halted cycle — matching the legacy
+      ``time.sleep(...); continue`` semantics.
+
+    * AutoConfirmationFeature (order 20) — owns the cooldown-gated
+      auto-confirm pipeline. Only implements confirm(). Emits a
+      halt_cycle action on a successful confirm OR on a 1-spam guard
+      suppression (last_confirm advanced by 60s).
+
+    * MailboxFeature (order 30) — PLACEHOLDER, disabled by default,
+      no-op. Reserved for a future slice that wires the camc msg
+      mailbox into the monitor. Does NOT read / write the ledger, does
+      NOT inject into tmux, does NOT call store.
+
+    * CronFeature (order 40) — PLACEHOLDER, disabled by default,
+      no-op. Reserved for a future slice that wires camc cron checks
+      into the monitor. Does NOT consult cron.json, does NOT spawn
+      jobs, does NOT call store.
+
+Action protocol is unchanged from the step-pipeline era:
+
+    {"kind": "log",          "level": "debug|info|warning|error", "msg": str}
+    {"kind": "send_input",   "text": str, "send_enter": bool}
+    {"kind": "send_key",     "key": str}
+    {"kind": "store_update", "fields": {<field>: <value>, ...}}
+    {"kind": "event",        "name": str, "detail": dict|None}
+    {"kind": "halt_cycle",   "sleep": float}
+
+Python 3.6+, stdlib only. No dataclasses, no f-strings.
+"""
+
+import re
+
+
+# ---------------------------------------------------------------------------
+# Snapshot + runtime (plain classes; no dataclasses for 3.6 compat)
+# ---------------------------------------------------------------------------
+
+class MonitorSnapshot(object):
+    """Per-tick read-only payload the driver builds before phase A. See
+    the per-field comments below; identical contract to the v0 pipeline
+    so legacy tests reading these fields keep working."""
+
+    __slots__ = (
+        "output", "hash", "prev_hash", "changed", "now", "cycle",
+        "prompt_visible", "screen_busy", "screen_done", "bare_prompt",
+        "tail_lines", "idle_for",
+    )
+
+    def __init__(self, **kwargs):
+        for k in self.__slots__:
+            setattr(self, k, kwargs.get(k))
+
+
+class MonitorRuntime(object):
+    """Mutable monitor state carried across ticks.
+
+    Features may mutate fields directly (no setter ceremony). The
+    feature_state dict is a per-feature namespace so a feature can
+    persist arbitrary local data without colliding with other
+    features. (Compat shim: a `step_state` alias points at the same
+    dict so any v0 step-era test that touches ``runtime.step_state``
+    still works.)"""
+
+    def __init__(self, agent_id, config, now=0.0):
+        self.agent_id = agent_id
+        self.config = config
+        self.prev_hash = ""
+        self.prev_output = ""
+        self.last_change = now
+        self.last_health = now
+        self.last_confirm = 0.0
+        self.current_state = None
+        self.has_worked = False
+        self.idle_confirmed = False
+        self.cycle = 0
+        self.feature_state = {}
+        # Back-compat alias for any leftover v0 callers / tests.
+        self.step_state = self.feature_state
+
+
+# ---------------------------------------------------------------------------
+# Registry + base feature
+# ---------------------------------------------------------------------------
+
+_REGISTRY = []   # list of feature classes, in registration order
+
+
+def register_feature(feature_cls):
+    """Class decorator (or plain call) that adds a feature class to the
+    registry. ``build_features()`` later instantiates these in ``order``
+    ascending."""
+    if feature_cls not in _REGISTRY:
+        _REGISTRY.append(feature_cls)
+    return feature_cls
+
+
+def registered_features():
+    """Read-only view of the registry. Tests use this to assert order."""
+    return tuple(_REGISTRY)
+
+
+def reset_registry():
+    """Test-only: clear the registry so a focused test can install its
+    own feature set without leaking globals."""
+    del _REGISTRY[:]
+
+
+def build_features(enabled=None):
+    """Instantiate registered features, optionally toggling by name.
+
+    ``enabled``:
+      None              — every feature's own ``enabled`` attr wins.
+      dict[name->bool]  — explicit overrides; missing names fall back
+                          to the feature's default ``enabled``.
+      iterable of names — only those names are kept; everything else
+                          treated as disabled.
+
+    Returns a list sorted by ``feature.order`` ascending. DISABLED
+    features are still INCLUDED in the returned list so the driver
+    (and tests) can introspect them; the driver checks ``feature.enabled``
+    before invoking any phase hook."""
+    instances = []
+    if isinstance(enabled, dict):
+        toggles = dict(enabled)
+        for cls in _REGISTRY:
+            inst = cls()
+            if inst.name in toggles:
+                inst.enabled = bool(toggles[inst.name])
+            instances.append(inst)
+    elif enabled is None:
+        for cls in _REGISTRY:
+            inst = cls()
+            instances.append(inst)
+    else:
+        allowed = set(enabled)
+        for cls in _REGISTRY:
+            inst = cls()
+            inst.enabled = inst.name in allowed
+            instances.append(inst)
+    instances.sort(key=lambda f: f.order)
+    return instances
+
+
+class MonitorFeature(object):
+    """Base class for a monitor pipeline feature.
+
+    Subclasses set ``name`` (unique within the registry), ``order``
+    (lower runs first within each phase), and may override ``enabled``
+    (default True). Override ``init_state`` if the feature needs a
+    non-empty per-runtime state dict.
+
+    Phase hooks — subclasses override only the ones they need. Each
+    returns a list of action dicts (or empty)."""
+
+    name = ""
+    order = 0
+    enabled = True
+
+    def init_state(self):
+        return {}
+
+    def get_state(self, runtime):
+        st = runtime.feature_state.get(self.name)
+        if st is None:
+            st = self.init_state()
+            runtime.feature_state[self.name] = st
+        return st
+
+    def before_confirm(self, snap, runtime):
+        return []
+
+    def confirm(self, snap, runtime):
+        return []
+
+    def after_confirm(self, snap, runtime):
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Small helper (private to this module so monitor_features stays self-contained)
+# ---------------------------------------------------------------------------
+
+def _screen_tail_str(output, n=3):
+    lines = [l.strip() for l in output.rstrip("\n").split("\n") if l.strip()]
+    return " | ".join(lines[-n:]) if lines else "(empty)"
+
+
+# ===========================================================================
+# StateManagerFeature — owns busy/done + state detect + output change + idle
+# ===========================================================================
+
+@register_feature
+class StateManagerFeature(MonitorFeature):
+    """Phase A: busy/done signals (legacy step 2b).
+    Phase C: detect_state (3) → output_change reset (5) → idle_detect (6).
+
+    Auto-confirm sits in between (phase B, owned by
+    AutoConfirmationFeature). A halt_cycle from phase B skips phase C
+    for this cycle, which is exactly what the legacy ``time.sleep(...);
+    continue`` did after step 3."""
+
+    name = "state_manager"
+    order = 10
+
+    def before_confirm(self, snap, runtime):
+        return self._update_screen_signals(snap, runtime)
+
+    def after_confirm(self, snap, runtime):
+        actions = []
+        actions.extend(self._detect_state_change(snap, runtime))
+        actions.extend(self._update_output_change(snap, runtime))
+        actions.extend(self._detect_idle(snap, runtime))
+        return actions
+
+    # -- private phase implementations -------------------------------------
+
+    def _update_screen_signals(self, snap, runtime):
+        """Legacy step 2b. busy_pattern → reset last_change + mark
+        has_worked + clear idle_confirmed; done_pattern → mark
+        has_worked only."""
+        actions = []
+        if snap.screen_busy:
+            if not runtime.has_worked:
+                runtime.has_worked = True
+                actions.append({"kind": "log", "level": "info",
+                                "msg": "Busy signal detected, has_worked=True"})
+            runtime.last_change = snap.now
+            runtime.idle_confirmed = False
+        if snap.screen_done and not runtime.has_worked:
+            runtime.has_worked = True
+            actions.append({"kind": "log", "level": "info",
+                            "msg": "Done signal detected, has_worked=True"})
+        return actions
+
+    def _detect_state_change(self, snap, runtime):
+        """Legacy step 4. detect_state(output, config) → emit state_change
+        event + store_update(state=ns) + mark has_worked unless
+        transitioning to 'initializing'."""
+        from camc_pkg.detection import detect_state
+        actions = []
+        ns = detect_state(snap.output, runtime.config)
+        if ns and ns != runtime.current_state:
+            if ns != "initializing":
+                runtime.has_worked = True
+            actions.append({"kind": "log", "level": "info",
+                            "msg": "State: %s -> %s" % (runtime.current_state, ns)})
+            actions.append({"kind": "event", "name": "state_change",
+                            "detail": {"from": runtime.current_state, "to": ns}})
+            runtime.current_state = ns
+            actions.append({"kind": "store_update", "fields": {"state": ns}})
+        return actions
+
+    def _update_output_change(self, snap, runtime):
+        """Legacy step 5. snap.changed → reset last_change + clear
+        idle_confirmed + emit Output-changed debug log."""
+        actions = []
+        if snap.changed:
+            actions.append({"kind": "log", "level": "debug",
+                            "msg": "[%d] Output changed (hash %s -> %s), reset idle timer"
+                                   % (snap.cycle, snap.prev_hash, snap.hash)})
+            runtime.last_change = snap.now
+            runtime.idle_confirmed = False
+        return actions
+
+    def _detect_idle(self, snap, runtime):
+        """Legacy step 6. Threshold 5s when screen_done AND bare_prompt
+        (fast-track), else 60s. Requires has_worked AND not idle_confirmed
+        AND idle_for >= threshold AND prompt_visible."""
+        actions = []
+        idle_threshold = 5 if (snap.screen_done and snap.bare_prompt) else 60
+        if runtime.has_worked and not runtime.idle_confirmed and snap.idle_for >= idle_threshold:
+            if snap.prompt_visible:
+                runtime.idle_confirmed = True
+                if idle_threshold < 60:
+                    actions.append({"kind": "log", "level": "info",
+                                    "msg": "Idle confirmed (done signal + prompt, %.0fs stable)"
+                                           % snap.idle_for})
+                else:
+                    actions.append({"kind": "log", "level": "info",
+                                    "msg": "Idle confirmed (screen stable %.0fs, prompt visible)"
+                                           % snap.idle_for})
+                actions.append({"kind": "event", "name": "idle_confirmed",
+                                "detail": {"idle_for": snap.idle_for}})
+                actions.append({"kind": "store_update", "fields": {"state": "idle"}})
+            else:
+                actions.append({"kind": "log", "level": "debug",
+                                "msg": "[%d] Idle candidate (%.0fs stable) but prompt not visible"
+                                       % (snap.cycle, snap.idle_for)})
+        return actions
+
+
+# ===========================================================================
+# AutoConfirmationFeature — owns the cooldown-gated dialog auto-confirm
+# ===========================================================================
+
+@register_feature
+class AutoConfirmationFeature(MonitorFeature):
+    """Phase B only. Preserves the legacy step 3 semantics exactly:
+      * skip_confirm = bare_prompt (the screen_busy veto was disabled
+        mid-May 2026; see monitor.py).
+      * cooldown gate via runtime.last_confirm vs config.confirm_cooldown.
+      * should_auto_confirm(output, config) consulted only when cooldown
+        clear AND not skipping.
+      * 1-spam guard: response=='1' AND 3+ consecutive '1's in tail_lines
+        → suppress, advance last_confirm by 60s, halt cycle (sleep=0).
+      * Successful fire: set last_confirm=now, last_change=now,
+        idle_confirmed=False, has_worked=True, emit auto_confirm event,
+        halt cycle (sleep=config.confirm_sleep).
+    """
+
+    name = "auto_confirm"
+    order = 20
+
+    def confirm(self, snap, runtime):
+        from camc_pkg.detection import should_auto_confirm
+        actions = []
+        cfg = runtime.config
+        confirm_cd = snap.now - runtime.last_confirm
+        skip_confirm = snap.bare_prompt
+        if confirm_cd >= cfg.confirm_cooldown and not skip_confirm:
+            confirm = should_auto_confirm(snap.output, cfg)
+            if confirm:
+                response, send_enter, pat_str, matched = confirm
+                # 1-spam guard
+                if response == "1" and re.search(r"1{3,}", "\n".join(snap.tail_lines)):
+                    actions.append({"kind": "log", "level": "warning",
+                                    "msg": "[%d] Auto-confirm '1' suppressed "
+                                           "(1-spam guard: 3+ consecutive '1's "
+                                           "visible in last 5 lines; cooldown +60s)"
+                                           % snap.cycle})
+                    runtime.last_confirm = snap.now + (60.0 - cfg.confirm_cooldown)
+                    actions.append({"kind": "halt_cycle", "sleep": 0})
+                    return actions
+                actions.append({"kind": "log", "level": "info",
+                                "msg": "Auto-confirm: pattern=%r matched=%r -> %r (enter=%s)"
+                                       % (pat_str, matched, response, send_enter)})
+                actions.append({"kind": "log", "level": "debug",
+                                "msg": "[%d] Confirm screen: %s"
+                                       % (snap.cycle, _screen_tail_str(snap.output, 5))})
+                if response:
+                    actions.append({"kind": "send_input",
+                                    "text": response, "send_enter": send_enter})
+                elif send_enter:
+                    actions.append({"kind": "send_key", "key": "Enter"})
+                runtime.last_confirm = snap.now
+                runtime.last_change = snap.now
+                runtime.idle_confirmed = False
+                runtime.has_worked = True
+                actions.append({"kind": "event", "name": "auto_confirm",
+                                "detail": {"pattern": pat_str, "response": response}})
+                actions.append({"kind": "halt_cycle", "sleep": cfg.confirm_sleep})
+                return actions
+        else:
+            if confirm_cd < cfg.confirm_cooldown:
+                actions.append({"kind": "log", "level": "debug",
+                                "msg": "[%d] Confirm cooldown (%.1fs remaining)"
+                                       % (snap.cycle, cfg.confirm_cooldown - confirm_cd)})
+            else:
+                reasons = []
+                if snap.screen_busy:
+                    reasons.append("screen_busy")
+                if snap.bare_prompt:
+                    reasons.append("bare_prompt")
+                actions.append({"kind": "log", "level": "debug",
+                                "msg": "[%d] Confirm skipped (%s; cooldown already elapsed %.0fs ago)"
+                                       % (snap.cycle, ",".join(reasons) or "unknown",
+                                          confirm_cd - cfg.confirm_cooldown)})
+        return actions
+
+
+# ===========================================================================
+# Placeholders — registered but disabled. Reserved for future slices.
+# ===========================================================================
+
+@register_feature
+class MailboxFeature(MonitorFeature):
+    """PLACEHOLDER, disabled by default. A future slice will wire the
+    camc msg mailbox here so the monitor can react to incoming
+    inter-agent messages. Until then: registered for discoverability +
+    ordering, but ``enabled=False`` and every phase hook is a no-op.
+
+    This deliberately does NOT read or write the messages.jsonl ledger,
+    does NOT inject into the tmux pane, and does NOT touch the agent
+    store. The driver skips disabled features entirely; this class
+    exists purely as a public contract."""
+
+    name = "mailbox"
+    order = 30
+    enabled = False
+
+
+@register_feature
+class CronFeature(MonitorFeature):
+    """PLACEHOLDER, disabled by default. A future slice will wire camc
+    cron checks here so per-agent recurring jobs can land inside the
+    monitor loop. Until then: registered for discoverability +
+    ordering, but ``enabled=False`` and every phase hook is a no-op.
+
+    This deliberately does NOT consult cron.json, does NOT spawn jobs,
+    and does NOT call the store. The driver skips disabled features
+    entirely; this class exists purely as a public contract."""
+
+    name = "cron"
+    order = 40
+    enabled = False
