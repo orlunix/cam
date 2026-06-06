@@ -19,12 +19,21 @@ Logging levels:
   INFO   - state changes, auto-confirm, idle, auto-exit, stuck
   WARNING- stuck fallback, unexpected situations
   ERROR  - crashes, session errors
+
+Refactor note: the per-tick logic lives in ``camc_pkg.monitor_features``
+as a coarse-grained 3-phase pipeline (before_confirm → confirm →
+after_confirm). This loop captures the screen, builds a MonitorSnapshot,
+calls each registered+enabled feature's phase hooks in order, and
+applies the returned action dicts (send_input, send_key, store_update,
+event, log, halt_cycle). A halt_cycle from the confirm phase skips the
+after_confirm phase entirely, preserving the legacy step-3-continue
+semantics. Health-check / stuck-fallback / auto-exit stay inline for
+this slice.
 """
 
 import hashlib
 import logging
 import os
-import re
 import signal
 import sys
 import time
@@ -37,8 +46,9 @@ from camc_pkg.transport import (
     capture_tmux, tmux_session_exists, tmux_send_input, tmux_send_key,
     tmux_kill_session, tmux_is_attached,
 )
-from camc_pkg.detection import (
-    detect_state, should_auto_confirm, detect_completion, is_ready_for_input,
+from camc_pkg.detection import detect_completion, is_ready_for_input
+from camc_pkg.monitor_features import (
+    MonitorSnapshot, MonitorRuntime, build_features,
 )
 
 
@@ -46,6 +56,29 @@ def _screen_tail(output, n=3):
     """Last n non-empty lines of screen output, for logging."""
     lines = [l.strip() for l in output.rstrip("\n").split("\n") if l.strip()]
     return " | ".join(lines[-n:]) if lines else "(empty)"
+
+
+def _apply_action(action, *, session, agent_id, store, events_fn):
+    """Apply a single step action dict to the real world. Returns
+    (halt_cycle, sleep_seconds). halt_cycle=True means the loop must
+    stop running further steps in this cycle and skip the inline
+    stuck-fallback / auto-exit blocks (matching the original
+    ``time.sleep(confirm_sleep); continue`` semantics)."""
+    kind = action.get("kind")
+    if kind == "log":
+        getattr(log, action.get("level", "debug"))(action.get("msg", ""))
+    elif kind == "send_input":
+        tmux_send_input(session, action["text"],
+                        send_enter=action.get("send_enter", True))
+    elif kind == "send_key":
+        tmux_send_key(session, action["key"])
+    elif kind == "store_update":
+        store.update(agent_id, **action.get("fields", {}))
+    elif kind == "event":
+        events_fn(action["name"], action.get("detail"))
+    elif kind == "halt_cycle":
+        return True, float(action.get("sleep", 0) or 0)
+    return False, 0.0
 
 
 def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=None):
@@ -56,15 +89,6 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
     running = [True]
     signal.signal(signal.SIGTERM, lambda s, f: running.__setitem__(0, False))
 
-    prev_hash = ""
-    prev_output = ""
-    last_change = last_health = time.time()
-    last_confirm = 0.0
-    current_state = None
-    has_worked = False
-    idle_confirmed = False
-    cycle = 0
-
     def _event(etype, detail=None):
         if events:
             events.append(agent_id, etype, detail)
@@ -73,14 +97,45 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
     log.info("Config: confirm_cooldown=%.1f confirm_sleep=%.1f health_check=%.1f",
              config.confirm_cooldown, config.confirm_sleep, config.health_check_interval)
 
+    # Build the per-tick feature pipeline once. Stuck-fallback /
+    # auto-exit / health-check are NOT in the pipeline yet — they
+    # remain inline below per the v1 scope. Disabled features
+    # (currently MailboxFeature + CronFeature) are still in the list
+    # so test code can introspect them, but the driver skips them.
+    runtime = MonitorRuntime(agent_id, config, now=time.time())
+    runtime.last_health = runtime.last_change
+    features = build_features()
+    prev_output = ""
+
+    def _run_phase(snap, phase_name):
+        """Apply the given phase hook on every enabled feature, in
+        ``order`` ascending. Returns (halted, sleep_seconds) — halted
+        signals the driver to skip remaining phases for this cycle."""
+        for feat in features:
+            if not feat.enabled:
+                continue
+            hook = getattr(feat, phase_name, None)
+            if hook is None:
+                continue
+            for action in hook(snap, runtime):
+                halt, slp = _apply_action(
+                    action,
+                    session=session, agent_id=agent_id,
+                    store=store, events_fn=_event,
+                )
+                if halt:
+                    return True, slp
+        return False, 0.0
+
     try:
         while running[0]:
             now = time.time()
-            cycle += 1
+            runtime.cycle += 1
+            cycle = runtime.cycle
 
             # --- 1. Health check (every 15s) ---
-            if now - last_health >= config.health_check_interval:
-                last_health = now
+            if now - runtime.last_health >= config.health_check_interval:
+                runtime.last_health = now
                 alive = tmux_session_exists(session)
                 log.debug("[%d] Health check: session=%s alive=%s", cycle, session, alive)
                 if not alive:
@@ -98,11 +153,12 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                         continue
                     if prev_output:
                         done = detect_completion(prev_output, config)
-                        status = "completed" if (done or has_worked) else "failed"
+                        status = "completed" if (done or runtime.has_worked) else "failed"
                     else:
-                        status = "completed" if has_worked else "failed"
+                        status = "completed" if runtime.has_worked else "failed"
                     reason = "Session ended cleanly" if status == "completed" else "Session exited before agent started working"
-                    log.info("Session gone (confirmed after retries) -> %s (%s) [has_worked=%s]", status, reason, has_worked)
+                    log.info("Session gone (confirmed after retries) -> %s (%s) [has_worked=%s]",
+                             status, reason, runtime.has_worked)
                     log.info("Last screen: %s", _screen_tail(prev_output, 5))
                     store.update(agent_id, status=status,
                                  exit_reason=reason, completed_at=_now_iso())
@@ -117,161 +173,76 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
             # Hash: strip last line (status bar flicker) before hashing
             hash_input = output.rsplit("\n", 1)[0] if "\n" in output else output
             h = hashlib.md5(hash_input.encode()).hexdigest()[:8]
-            changed = h != prev_hash
-            prev_hash = h
+            prev_h_for_log = runtime.prev_hash
+            changed = h != runtime.prev_hash
+            runtime.prev_hash = h
 
             if not output.strip():
                 log.debug("[%d] Empty screen, skipping", cycle)
                 time.sleep(1)
                 continue
 
-            idle_for = now - last_change
-            prompt_visible = is_ready_for_input(output, config)
-
-            # --- 2b. Auxiliary screen signals (busy/done) ---
-            tail_text = "\n".join(
-                [l for l in output.rstrip("\n").split("\n") if l.strip()][-5:]
-            )
+            # Compute auxiliary screen signals + tail_lines for the snapshot.
+            tail_lines = [l for l in output.rstrip("\n").split("\n") if l.strip()][-5:]
+            tail_text = "\n".join(tail_lines)
             screen_busy = (config.busy_pattern and
                            bool(config.busy_pattern.search(tail_text)))
             screen_done = (config.done_pattern and
                            bool(config.done_pattern.search(tail_text)))
+            bare_prompt = any(
+                l.strip() in ("❯", ">", "›")  # ❯  >  ›
+                for l in tail_lines
+            )
+            prompt_visible = is_ready_for_input(output, config)
+            idle_for = now - runtime.last_change
 
-            if screen_busy:
-                # Definitely working — reset idle, mark has_worked, skip confirm
-                if not has_worked:
-                    has_worked = True
-                    log.info("Busy signal detected, has_worked=True")
-                last_change = now
-                idle_confirmed = False
-
-            if screen_done and not has_worked:
-                has_worked = True
-                log.info("Done signal detected, has_worked=True")
+            snap = MonitorSnapshot(
+                output=output, hash=h, prev_hash=prev_h_for_log,
+                changed=changed, now=now, cycle=cycle,
+                prompt_visible=prompt_visible,
+                screen_busy=bool(screen_busy),
+                screen_done=bool(screen_done),
+                bare_prompt=bare_prompt,
+                tail_lines=tail_lines, idle_for=idle_for,
+            )
 
             # Periodic debug summary (every 30 cycles ≈ 30s)
             if cycle % 30 == 0:
                 log.debug("[%d] hash=%s changed=%s idle_for=%.0fs prompt=%s state=%s has_worked=%s idle_confirmed=%s",
-                          cycle, h, changed, idle_for, prompt_visible, current_state, has_worked, idle_confirmed)
+                          cycle, h, changed, idle_for, prompt_visible,
+                          runtime.current_state, runtime.has_worked,
+                          runtime.idle_confirmed)
                 log.debug("[%d] screen: %s", cycle, _screen_tail(output))
 
-            # --- 3. Auto-confirm (cooldown-gated) ---
-            # Skip when: busy signal (agent is working, not at a dialog),
-            # or bare prompt (agent at input, confirm text is stale history).
-            confirm_cd = now - last_confirm
-            tail_lines = [l for l in output.rstrip("\n").split("\n") if l.strip()][-5:]
-            bare_prompt = any(
-                l.strip() in ("\u276f", ">", "\u203a")  # ❯  >  ›
-                for l in tail_lines
-            )
-            # busy_pattern (the "...ing…" gerund spinner) used to be a
-            # hard veto here, on the assumption "spinner = agent working,
-            # not at a dialog." That assumption broke: as of mid-May 2026
-            # Claude's TUI now renders the spinner CONCURRENTLY with
-            # permission dialogs (todoskill 383e73be: "Nucleating… (6m
-            # 44s · …)" running while "Do you want to proceed? / 1.
-            # Yes / 2. No" is the actual blocking state). We disable
-            # the brake by commenting `screen_busy` out — auto-confirm
-            # now fires whenever a [[confirm]] rule matches, regardless
-            # of the spinner. KNOWN regression: pane scrollback containing
-            # dialog-shaped text (e.g. an attached human reading a chat
-            # transcript that quotes dialog wording) can trigger stray
-            # auto-confirms every cooldown until the text scrolls off
-            # the last-N-lines window in should_auto_confirm(). When
-            # that becomes a problem, replace this line with a screen-
-            # stability gate (camc msg send's reply-detection primitive).
-            skip_confirm = bare_prompt  # was: screen_busy or bare_prompt
-            if confirm_cd >= config.confirm_cooldown and not skip_confirm:
-                confirm = should_auto_confirm(output, config)
-                if confirm:
-                    response, send_enter, pat_str, matched = confirm
-                    # 1-spam guard: if response is '1' and the bottom of the
-                    # screen already shows 3+ consecutive '1's, the monitor
-                    # (or some other source) has been blasting '1's. Suppress
-                    # this fire and apply a 60s cooldown so the screen has
-                    # time to refresh before we add more.
-                    if response == "1" and re.search(r"1{3,}", "\n".join(tail_lines)):
-                        log.warning("[%d] Auto-confirm '1' suppressed (1-spam guard: 3+ consecutive '1's visible in last 5 lines; cooldown +60s)",
-                                    cycle)
-                        last_confirm = now + (60.0 - config.confirm_cooldown)
-                        continue
-                    log.info("Auto-confirm: pattern=%r matched=%r -> %r (enter=%s)",
-                             pat_str, matched, response, send_enter)
-                    log.debug("[%d] Confirm screen: %s", cycle, _screen_tail(output, 5))
-                    if response:
-                        tmux_send_input(session, response, send_enter=send_enter)
-                    elif send_enter:
-                        tmux_send_key(session, "Enter")
-                    last_confirm = now
-                    last_change = now
-                    idle_confirmed = False
-                    has_worked = True
-                    _event("auto_confirm", {"pattern": pat_str, "response": response})
-                    time.sleep(config.confirm_sleep)
-                    continue
-            else:
-                # Report the REAL reason we skipped. Previously this always
-                # logged "cooldown (Xs remaining)" and printed negative values
-                # whenever the agent was actually being blocked by screen_busy
-                # or bare_prompt — hid the stuck case entirely.
-                if confirm_cd < config.confirm_cooldown:
-                    log.debug("[%d] Confirm cooldown (%.1fs remaining)",
-                              cycle, config.confirm_cooldown - confirm_cd)
-                else:
-                    reasons = []
-                    if screen_busy:
-                        reasons.append("screen_busy")
-                    if bare_prompt:
-                        reasons.append("bare_prompt")
-                    log.debug("[%d] Confirm skipped (%s; cooldown already elapsed %.0fs ago)",
-                              cycle, ",".join(reasons) or "unknown",
-                              confirm_cd - config.confirm_cooldown)
-
-            # --- 4. State detection ---
-            ns = detect_state(output, config)
-            if ns and ns != current_state:
-                if ns != "initializing":
-                    has_worked = True
-                log.info("State: %s -> %s", current_state, ns)
-                _event("state_change", {"from": current_state, "to": ns})
-                current_state = ns
-                store.update(agent_id, state=ns)
-
-            # --- 5. Output change ---
-            if changed:
-                log.debug("[%d] Output changed (hash %s -> %s), reset idle timer", cycle, prev_hash, h)
-                last_change = now
-                idle_confirmed = False
-
-            # --- 6. Idle detection (pure screen: stable hash + prompt visible) ---
-            # Fast-track: done signal + bare prompt → idle after 5s (not 60s).
-            # The done signal ("ed for Xs") is a definitive completion marker.
-            idle_threshold = 5 if (screen_done and bare_prompt) else 60
-            if has_worked and not idle_confirmed and idle_for >= idle_threshold:
-                if prompt_visible:
-                    idle_confirmed = True
-                    if idle_threshold < 60:
-                        log.info("Idle confirmed (done signal + prompt, %.0fs stable)", idle_for)
-                    else:
-                        log.info("Idle confirmed (screen stable %.0fs, prompt visible)", idle_for)
-                    _event("idle_confirmed", {"idle_for": idle_for})
-                    store.update(agent_id, state="idle")
-                else:
-                    log.debug("[%d] Idle candidate (%.0fs stable) but prompt not visible", cycle, idle_for)
+            # --- Feature pipeline: 3 phases per cycle ---
+            # Phase A (before_confirm): busy/done signals.
+            # Phase B (confirm):        auto-confirm rules. May halt.
+            # Phase C (after_confirm):  state detect, output change, idle.
+            # A halt from any earlier phase skips later phases for this
+            # cycle, matching the legacy `time.sleep(...); continue`.
+            halted, halt_sleep = _run_phase(snap, "before_confirm")
+            if not halted:
+                halted, halt_sleep = _run_phase(snap, "confirm")
+            if not halted:
+                halted, halt_sleep = _run_phase(snap, "after_confirm")
+            if halted:
+                if halt_sleep > 0:
+                    time.sleep(halt_sleep)
+                continue
 
             # --- 6b. Stuck fallback: screen frozen but prompt NOT visible ---
             stuck_threshold = getattr(config, "stuck_timeout", 120)
-            if (has_worked and not idle_confirmed
+            if (runtime.has_worked and not runtime.idle_confirmed
                     and idle_for >= stuck_threshold
                     and not prompt_visible):
                 log.warning("Stuck fallback (%.0fs frozen, prompt not visible) — sending '1'", idle_for)
                 log.warning("Stuck screen: %s", _screen_tail(output, 5))
                 tmux_send_input(session, "1", send_enter=False)
-                last_change = now
+                runtime.last_change = now
                 _event("stuck_fallback", {"idle_for": idle_for})
 
             # --- 7. Auto-exit ---
-            if idle_confirmed:
+            if runtime.idle_confirmed:
                 attached = tmux_is_attached(session)
                 if attached:
                     log.debug("[%d] Idle but user attached, waiting", cycle)
