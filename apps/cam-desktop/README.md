@@ -1,30 +1,40 @@
 # Cam Desktop
 
-Cam Desktop is the Windows-first desktop client for `camc`.
+Cam Desktop is the Windows-first desktop package for CAM.
 
-Start with the product/API spec before implementation changes:
+The canonical product spec is now:
 
-- [SPEC.md](SPEC.md) - required P0/P1 Cam function coverage, backend
-  interface, UI requirements, and acceptance criteria.
-- [CHATSHELL_ANALYSIS.md](CHATSHELL_ANALYSIS.md) - analysis of the cloned
-  ChatShell baseline and what Cam should keep/drop.
-- [docs-chatshell-baseline.md](docs-chatshell-baseline.md) - what we borrow
-  from ChatShell as a reference product shape.
+- [Desktop UI Spec v2](../../docs/desktop-ui-spec.md)
 
-This app follows the same broad product shape as ChatShell-style desktop
-agent clients:
+The original independent React/Tauri desktop direction is archived:
 
-- Tauri 2 shell with a Rust native boundary.
-- React/TypeScript renderer for the chat and agent UI.
-- A typed backend interface between the UI and execution backends.
-- `camc` remains the source of truth for agents, messages, tmux, and
-  lifecycle operations.
+- `../../docs/archive/desktop-ui-v1-spec.md`
+- `../../docs/archive/cam-desktop-v1-scaffold-spec.md`
+- `../../docs/archive/cam-desktop-v1-chatshell-analysis.md`
+- `../../docs/archive/cam-desktop-v1-chatshell-baseline.md`
+- `../../docs/archive/chatshell-reference-evaluation-v1.md`
 
-The desktop app does not parse terminal screens as a primary API. It calls
-`camc` through a small command bridge today, and the adapter can later be
-swapped to `camc api serve --stdio` without changing UI components.
+The current code in this directory is the V1 desktop implementation. It proved
+Windows packaging and a minimal list/output/input loop, but future Desktop v2
+work should derive the UI from the existing `web/` app instead of expanding this
+separate product surface.
 
-## Backend Profiles
+Target direction:
+
+- Electron shell with a small native boundary.
+- Bundled WebUI-derived desktop entry.
+- Shared `web/js/api.js` and `web/js/state.js` behavior with mobile/PWA.
+- Desktop-specific layout: persistent left nav, large output workspace, bottom
+  composer.
+- Windows MSI first, macOS package later.
+- Phase 1 connects to an already-running CAM direct/relay endpoint. It does not
+  start or bundle the relay server.
+
+## Legacy V1 Backend Profiles
+
+The profile shape below belongs to the legacy standalone React/Tauri V1 app.
+Desktop v2 should instead reuse the existing WebUI direct/relay connection
+model and treat the CAM/relay server as an already-running external endpoint.
 
 Supported profile shapes:
 
@@ -52,7 +62,7 @@ more robust for long-running streams.
 
 ## Development
 
-Prerequisites:
+Prerequisites for the legacy V1 Tauri app:
 
 - Node.js 20+
 - Rust stable
@@ -71,20 +81,18 @@ Build:
 npm run build
 ```
 
-## MVP Scope
+## Product Direction
 
-See [SPEC.md](SPEC.md). P0 is not just chat: the desktop app must cover the
-basic Cam lifecycle surface:
+See [Desktop UI Spec v2](../../docs/desktop-ui-spec.md).
 
-- backend health
-- list/status/detail
-- run/capture/send/key/logs
-- stop/kill/remove/reboot/update/history/heal
-- inbox/thread/send/reply/mark-read messaging
+Do not add new product features to the standalone V1 React/Tauri UI unless
+explicitly requested. The next desktop work should start by adding a
+WebUI-derived desktop entry and an Electron shell that loads it.
 
 ## Non-Goals For MVP
 
 - Bundling `camc` on Windows.
 - Replacing tmux.
 - Running agents natively on Windows.
-- Building a new cam daemon before the CLI adapter proves the UX.
+- Starting or supervising the relay server from the desktop app in Phase 1.
+- Forking mobile/WebUI product behavior into a second desktop-only UI.
