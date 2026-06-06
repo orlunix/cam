@@ -1,387 +1,736 @@
-# CAM Desktop UI Spec
+# CAM Desktop UI Spec v2
 
 Status: draft for review
-Owner split: `camui-rev` writes and reviews this spec; `camui-dev` implements after approval.
+Owner split: `camui-rev` owns product direction and review; `camui-dev`
+implements only after explicit delegation.
 
-## Summary
+This spec supersedes the archived V1 desktop specs:
 
-CAM Desktop is a desktop control surface for CAM, the "PM2 for AI coding
-agents". It manages Claude Code, Codex, Cursor, and other CLI agents that run
-inside tmux sessions through `cam` / `camc`.
+- `docs/archive/desktop-ui-v1-spec.md`
+- `docs/archive/cam-desktop-v1-scaffold-spec.md`
+- `docs/archive/cam-desktop-v1-chatshell-analysis.md`
+- `docs/archive/cam-desktop-v1-chatshell-baseline.md`
+- `docs/archive/chatshell-reference-evaluation-v1.md`
 
-The desktop app must not replace `camc` or tmux. It should make the common
-agent-management loop visible and low-friction:
+## Decision
 
-- see all agents and their state
-- inspect one agent's live output
-- send direct input or special keys to the selected tmux session
-- keep working when `cam serve` is unavailable by falling back to direct `camc`
+CAM Desktop v2 should be derived from the existing `web/` UI and mobile/relay
+product line. It should not continue the separate React-only desktop UI as the
+main product path.
 
-V1 is intentionally narrower than the earlier preserve-first draft: **agent
-list, selected-agent output, and selected-agent input are the only product
-surface**. Other scaffold features may remain in code if useful, but they
-should not be visible in the first default UI.
-
-## Framework Decision
-
-Use the existing `apps/cam-desktop` scaffold: **Tauri 2 + React + TypeScript**.
-
-Rationale:
-
-- The repository already contains a Tauri/React desktop app with a typed
-  `CamBackend` abstraction and a Rust command bridge for direct `camc` calls.
-- Tauri is a good fit for a developer desktop tool because it can safely bridge
-  to local commands without carrying Electron's runtime size.
-- React/TypeScript keeps the UI portable: the domain components can later share
-  patterns with the existing `web/` client or a future browser app.
-
-Do not introduce Electron, Flutter, Qt, or another desktop stack for this
-iteration.
-
-## Existing Repository Context
-
-Relevant files already present:
-
-- `src/cam/api/server.py`: FastAPI app, `cam serve` entry point.
-- `src/cam/api/routes/agents.py`: agent REST endpoints.
-- `src/cam/api/ws.py`: WebSocket event/status stream.
-- `src/cam/api/routes/contexts.py`: context REST endpoints.
-- `src/cam/api/routes/system.py`: health/config endpoints.
-- `apps/cam-desktop/src/`: current React desktop UI scaffold.
-- `apps/cam-desktop/src-tauri/src/main.rs`: Tauri command bridge.
-- `apps/cam-desktop/SPEC.md`: earlier scaffold-level spec, useful background.
-- `baseline/chatshell-desktop/`: ChatShell reference app.
-- `docs/chatshell-reference-evaluation.md`: feature mapping and reuse
-  recommendation.
-
-Current scaffold coverage in `apps/cam-desktop`:
-
-- health via `camc version`
-- agent list via `camc --json list`
-- run agent
-- capture selected agent
-- send direct text
-- list/read/send/reply `camc msg` threads
-- local / WSL / SSH backend profiles
-
-This spec supersedes the scaffold spec for product direction, but the existing
-code should be evolved in place rather than recreated.
-
-## Backend Model
-
-The UI depends on a typed `CamBackend` interface. React components must call
-domain methods, not build command strings or REST paths directly.
-
-The important architectural choice is to keep the first UI small while putting
-one stable seam between the UI and CAM operations. The first release should not
-try to expose all of CAM. It should prove this loop:
+The target architecture is:
 
 ```text
-select agent -> read current output -> send input/key -> refresh output
+Shared CAM UI core
+  api / state / actions / formatters / cache
+        |
+        +-- Mobile shell: route/page/touch-first UI
+        |
+        +-- Desktop shell: workbench/sidebar/output/composer UI
+                |
+                +-- Electron package for Windows first, macOS later
 ```
 
-Initial implementation order:
+The important distinction is:
 
-1. **CLI adapter, first implementation path**
-   - Uses the existing Tauri Rust bridge to run `camc` with argv.
-   - Supports local Linux/macOS first.
-   - Keeps WSL and SSH profiles available because the scaffold already has the
-     shape, but they are not blockers for the first usable Linux build.
-   - Matches CAM's current source-of-truth model: per-machine `camc` owns tmux,
-     agent state, logs, and message ledger.
+- Share product behavior, API clients, state model, relay support, and business
+  actions.
+- Do not force mobile and desktop to share the same layout.
 
-2. **API adapter, later online/multi-machine path**
-   - Connects to `cam serve`.
-   - Uses REST for agent/context/actions.
-   - Uses WebSocket for agent status/event updates.
-   - Uses output polling for live tmux output because the current WS endpoint
-     streams events/status, not raw terminal bytes.
-   - Best mode for multi-machine aggregated state after the direct `camc` loop
-     is stable.
+## Why This Replaces V1
 
-This gives the project a simple start without painting the architecture into a
-corner: future API/WS work changes the adapter, not the main UI.
+The V1 desktop branch created an independent `apps/cam-desktop` React/Tauri UI.
+That proved packaging and a minimal list/output/input loop, but it forks the
+product surface from the already mature WebUI.
 
-Default profile behavior:
+The existing `web/` app already includes:
 
-- Linux/macOS P0: direct local `camc`.
-- Windows P0: direct WSL `camc` where available.
-- API mode: opt-in until the UI's direct `camc` interaction loop is solid.
-- Manual profile switch is always available.
+- direct HTTP and relay WebSocket API client
+- connection settings and saved profiles
+- agent dashboard with filters
+- agent detail with output polling, send input, send key, direct input mode,
+  upload, fullscreen, and mobile keyboard handling
+- start-agent form
+- contexts, including SSH context fields
+- nodes/machines view
+- file browser and file preview
+- Android/PWA bridge hooks through `window.CamBridge`
 
-## API Contract
+Desktop v2 should reuse that work instead of recreating it.
 
-The API adapter should use these existing endpoints:
+## Goals
 
-- Health: `GET /api/system/health`
-- Config: `GET /api/system/config`
-- Agent list: `GET /api/agents`
-- Agent detail: `GET /api/agents/{agent_id}`
-- Run agent: `POST /api/agents`
-- Update agent: `PATCH /api/agents/{agent_id}`
-- Stop/kill: `DELETE /api/agents/{agent_id}?force=false|true`
-- Retry/restart: `POST /api/agents/{agent_id}/restart`
-- Logs: `GET /api/agents/{agent_id}/logs?tail=...`
-- Live output: `GET /api/agents/{agent_id}/output?lines=...&hash=...`
-- Full output: `GET /api/agents/{agent_id}/fulloutput`
-- Direct text: `POST /api/agents/{agent_id}/input`
-- Special key: `POST /api/agents/{agent_id}/key`
-- Context list/detail/create/update/delete: `/api/contexts...`
-- WebSocket: `/api/ws?token=...` with optional `agent_id=...`
+- Build a Windows-first desktop app that uses the existing CAM WebUI product
+  behavior.
+- Keep mobile UI working as-is.
+- Add a desktop layout that feels closer to Codex/VS Code/Cursor workbench
+  patterns:
+  - persistent left navigation
+  - agent list/filter always available
+  - large main output area
+  - input composer fixed at the bottom
+  - settings/nodes/contexts as mode pages, not mobile back-stack pages
+- Preserve direct and relay connection modes.
+- Keep future macOS packaging straightforward by sharing the same bundled web
+  assets and Electron shell.
+- Treat Desktop as a client application in the first phase. A CAM direct or
+  relay endpoint must already be running somewhere reachable.
+- Choose Electron for the desktop shell so the product has a stable,
+  cross-platform desktop packaging and integration baseline while still reusing
+  the existing WebUI product layer.
 
-The API adapter must include bearer auth where required. The UI should store
-only the server URL and token in local app settings. It must not log tokens.
+## Non-Goals
 
-## CLI Contract
+- Do not build a separate desktop product surface that duplicates WebUI logic.
+- Do not make the mobile layout carry desktop density requirements.
+- Do not design or implement embedded terminal UI in Phase 1.
+- Do not start, install, or supervise the CAM relay server from Desktop v2
+  Phase 1.
+- Do not add TaskHub, Tree/Diff, or a VS Code clone in this milestone.
+- Do not rewrite the existing `web/` app into React as part of this step.
 
-The CLI adapter maps to `camc`, because `camc` is authoritative per machine.
-Minimum commands:
+## Current WebUI Assets To Reuse
 
-- Health: `camc version`
-- Agent list: `camc --json list`
-- Agent detail: `camc --json status <agent>`
-- Run: `camc run --name <name> --path <path> --tool <tool> <prompt>`
-- Capture: `camc capture <agent> --lines <n>`
-- Logs: `camc logs <agent> --tail <n>`
-- Direct text: `camc send <agent> --text <text>`
-- Key: `camc key <agent> --key <key>`
-- Stop: `camc stop <agent>`
-- Kill: `camc kill <agent>`
-- Remove: `camc rm <agent> [--archive]`
-- Retry/resume: `camc reboot <agent>`
-- History: `camc history <agent> --limit <n>`
-- Heal: `camc heal`
-- Context list: `camc context list`
-- Messaging inbox: `camc msg read --json`
-- Messaging thread: `camc msg read <msg_id> --json`
-- Messaging send: `camc msg send <to> -t <text> --no-wait [--expect-reply]`
-- Messaging reply: `camc msg reply <msg_id> -t <text>`
+These modules are the source of truth for product behavior:
 
-The Tauri bridge must continue to use argv for local and WSL execution. SSH may
-use shell quoting until a safer remote protocol exists, but host validation and
-clear error reporting are required.
+- `web/js/api.js`
+  - direct HTTP mode
+  - relay REST-over-WebSocket mode
+  - event WebSocket stream
+  - retry/cache behavior
+  - agent/context/file methods
+- `web/js/state.js`
+  - agents
+  - contexts
+  - connection mode
+  - filters
+  - toast
+  - per-agent output cache
+- `web/js/views/dashboard.js`
+  - agent list
+  - stats
+  - status/tool/node filters
+  - edit/delete agent records
+- `web/js/views/agent-detail.js`
+  - output polling
+  - full output for terminal agents
+  - send input
+  - send key
+  - direct input mode
+  - upload
+  - fullscreen output
+- `web/js/views/start-agent.js`
+  - start agent
+  - tool/context/prompt/auto-confirm/auto-exit options
+- `web/js/views/contexts.js`
+  - local and SSH contexts
+  - sync/copy/delete/browse actions
+- `web/js/views/machines.js`
+  - node grouping
+  - node filtering
+  - context sync and cleanup actions
+- `web/js/views/settings.js`
+  - direct and relay settings
+  - profile save/load
+  - connection test
+  - update hook through `CamBridge`
+- `web/js/views/file-browser.js`
+  - list/read files through API
+  - code view
+  - markdown/html preview
 
-## Scope Strategy
+## Target Directory Shape
 
-The first product slice should optimize for the smallest complete CAM desktop
-loop, not for maximum feature preservation. The default posture for V1 is:
-**show only list/output/input; keep future affordances out of the way**.
+Do this incrementally. The first implementation does not need a large
+restructure, but the end state should move toward:
 
-Do not build TaskHub, Tree view, Diff view, lifecycle management, run-agent
-forms, or message-thread UI for V1. If existing scaffold or ChatShell-derived
-code already contains those paths, prefer leaving it unchanged and dormant
-rather than deleting it just to shrink the codebase. The V1 requirement is that
-non-core surfaces must not appear in the default interface and must not make the
-main list/output/input loop harder to use.
+```text
+web/
+  index.html                  mobile/PWA entry
+  desktop.html                desktop/Electron entry
+  css/
+    style.css                 shared/mobile styles
+    desktop.css               desktop workbench styles
+  js/
+    api.js                    shared initially; later core/api.js
+    state.js                  shared initially; later core/state.js
+    views/                    current mobile/page views
+    desktop/
+      app.js                  desktop router/shell
+      shell.js                workbench layout
+      agent-console.js        desktop agent console
+      settings-page.js        desktop settings adapter
+```
 
-Mapping examples:
+Later, shared behavior can be extracted without changing product behavior:
 
-- ChatShell conversation list -> CAM agent list and future message-thread list.
-- ChatShell chat view -> selected-agent output and future `camc msg` thread
-  replay.
-- ChatShell chat input -> direct tmux send, message send/reply, and run-agent
-  prompt.
-- ChatShell model/settings controls -> backend profile, tool kind, context, and
-  execution options.
-- ChatShell attachments -> future upload to selected agent/context.
-- ChatShell search -> future search over agents, logs, and messages.
-- ChatShell prompts/skills UI -> future prompt templates or read-only skill
-  visibility.
+```text
+web/js/core/
+  api.js
+  state.js
+  actions/agent-actions.js
+  actions/context-actions.js
+  format.js
+  output-cache.js
+  profiles.js
+```
 
-Non-mappable runtime areas must not be copied into CAM Desktop:
+Avoid a large upfront refactor. Add the desktop entry first, then extract shared
+helpers only when duplication appears.
 
-- LLM provider/model runtime.
-- Built-in shell/file/web tools runtime.
-- MCP runtime.
-- Skills runtime.
-- SQLite conversation store as source of truth.
+## Desktop Layout
 
-Those responsibilities belong to CAM, `camc`, `cam serve`, or the managed
-coding agents.
+Desktop should use a workbench layout, not the mobile page stack.
 
-This follows the ChatShell evaluation only where it directly helps the core
-loop: borrow the desktop shell, sidebar/list behavior, input composer,
-scroll behavior, and settings/error patterns. Do not borrow ChatShell's LLM
-provider runtime, built-in tool runtime, MCP runtime, skills runtime, or SQLite
-conversation store as CAM's source of truth.
+```text
++------------------+----------------------------------------------+
+| Activity / Nav   | Main Workspace                               |
+|                  |                                              |
+| Agents           | selected agent title / status / context      |
+| Nodes            |                                              |
+| Contexts         |  large output pane                           |
+| Files            |                                              |
+| Settings         |                                              |
+|                  |----------------------------------------------|
+| Agent filters    | composer + quick keys                        |
+| Agent list       |                                              |
++------------------+----------------------------------------------+
+```
 
-## Core P0 Scope
+### Agent Console Mode
 
-Core P0 is agent list plus one interaction surface. The goal is to confirm the
-desktop app starts on the right abstraction with no extra panels competing for
-attention.
+This is the first desktop mode.
 
-Required views:
+Required:
 
-- **Connection Bar**
-  - Shows current backend mode: local `camc`, WSL, or SSH.
-  - Shows health/version, connection errors, and last refresh time.
-  - Lets the user retry connection.
-  - Profile switching may remain if already implemented, but it should be
-    visually secondary to the list/output/input loop.
+- left navigation
+- agent filters
+- scannable agent list
+- selected agent output in the main area
+- bottom composer
+- quick keys for Enter, Esc, Ctrl-C, Backspace, arrows, Tab where useful
+- connection status
+- direct and relay modes work through the shared `api`
 
-- **Agent List**
-  - Dense, scannable list of agents.
-  - Fields: name, short id, tool, status, state, context/path, host.
-  - Selecting an agent updates the interaction surface.
-  - Poll every 2-5 seconds.
+The output/composer behavior should initially reuse the proven WebUI
+`agent-detail.js` behavior, but the layout should be desktop-specific:
 
-- **Interaction Surface**
-  - Primary pane displays current captured output from the selected agent.
-  - CLI mode uses `camc capture <agent> --lines <n>`.
-  - Refresh button is required.
-  - Auto-refresh is optional and must be easy to pause.
-  - Borrow ChatShell's scroll rule: auto-scroll only if the user is already
-    near the bottom; never fight manual scrolling.
+- no mobile back button as the main navigation pattern
+- no full-page route jump just to select another agent
+- no mobile keyboard hacks in the desktop path unless harmless
 
-- **Direct Command Composer**
-  - Send text to selected agent.
-  - Toggle send Enter vs no Enter if supported by the backend method.
-  - Buttons for Enter, Escape, Ctrl-C, Ctrl-D.
-  - Enter sends; modifier+Enter or Shift+Enter inserts a newline.
-  - IME composition must not accidentally submit.
-  - Disable when no running agent is selected.
+### Settings Mode
 
-- **Minimal Agent Metadata**
-  - Show only what is needed inline: selected agent name/id, status, state, and
-    context/path.
-  - Do not show a separate metadata inspector in V1.
-  - No lifecycle controls are required for P0.
+Settings should be a full desktop page/mode, not squeezed into the agent
+console.
 
-P0 backend interface should be this small:
+Required:
+
+- direct server URL/token
+- relay URL/token
+- saved profiles
+- connection test
+- app version/update area
+
+Initial storage can match WebUI `localStorage` behavior. Later desktop builds
+can add OS keychain storage behind `CamBridge`.
+
+### Nodes / Machines / Backend Endpoints
+
+Keep two concepts separate:
+
+- Backend endpoint: how the UI connects to CAM, configured as direct server URL
+  and/or relay URL in Settings.
+- Node or machine: where agents run, derived from CAM contexts and agent
+  metadata such as host, user, port, and env setup.
+
+The current WebUI already treats these as separate areas:
+
+- Settings manages direct/relay connection profiles.
+- Contexts manages local/SSH execution contexts.
+- Nodes/Machines is a derived operational view over contexts plus agents.
+
+Desktop should follow the same model. Do not manage nodes from a modal attached
+to the agent console. Use a separate workbench mode/page for Nodes and Contexts
+when those modes are brought into the desktop shell. Small popovers are fine for
+choosing the active backend profile, but create/edit/delete context or node
+operations should live in their own mode so the agent console stays simple.
+
+### Nodes / Contexts / Files
+
+These can initially adapt existing views:
+
+- Nodes mode from `machines.js`
+- Contexts mode from `contexts.js`
+- Files mode from `file-browser.js`
+
+Desktop polish can come later. The first goal is to avoid duplicating their
+API and state logic.
+
+## Mobile Compatibility
+
+Do not regress mobile.
+
+Mobile keeps:
+
+- `web/index.html`
+- existing hash routes
+- mobile header/menu
+- touch and keyboard-specific logic
+- Android `CamBridge` hooks
+- service worker/PWA behavior
+
+Desktop uses:
+
+- `web/desktop.html`
+- desktop-specific shell/layout
+- shared `api` and `state`
+- desktop-specific CSS
+
+Responsive CSS may share primitives, but do not depend on viewport width alone
+to decide product behavior. The Electron app should load the desktop entry
+explicitly.
+
+## Desktop Runtime
+
+CAM Desktop v2 should use Electron as the desktop runtime.
+
+Reason:
+
+- this is closer to the VS Code/Cursor/Codex-style desktop architecture the UI
+  is moving toward
+- Electron gives one desktop shell for Windows first and macOS later
+- Node/Electron packaging is a pragmatic fit for a WebUI-derived app
+- the WebUI product layer can still be reused; only the native shell changes
+
+The current `apps/cam-desktop` Tauri app is legacy V1. It may remain on disk for
+reference until the Electron shell replaces it, but new Desktop v2 product work
+should not expand the standalone React/Tauri UI.
+
+Suggested Electron app shape:
+
+```text
+apps/cam-desktop/
+  package.json
+  electron/
+    main.js                 app lifecycle, BrowserWindow, IPC
+    preload.js              narrow window.CamBridge surface
+  renderer -> bundled web/desktop.html assets
+```
+
+Do not put CAM product logic in Electron IPC. Product behavior stays in
+`web/js/api.js`, `web/js/state.js`, and shared WebUI modules.
+
+## Backend Connectivity Model
+
+Desktop v2 is a client in Phase 1. It should use the same connection model as
+the current mobile/WebUI app:
+
+```text
+CAM Desktop UI
+   |
+   +-- direct HTTP/WebSocket -> existing cam serve endpoint
+   |
+   +-- relay WebSocket/REST-over-WS -> existing relay endpoint
+```
+
+The relay server and CAM server are separate runtime services. Desktop Phase 1
+does not start them, bundle them, supervise them, or expose server management as
+a product mode.
+
+The UI client and backend services are intentionally decoupled:
+
+- relay server can run on the same machine as the UI
+- relay server can run on a different machine
+- CAM direct server can run in WSL, Linux, macOS, or a remote host
+- Desktop only needs a reachable URL/profile and credentials
+
+Expected user flow:
+
+1. User starts CAM/CAM relay in an existing Linux-like environment:
+   - WSL on Windows
+   - Linux host
+   - macOS host
+   - remote machine reachable over the network
+2. User opens CAM Desktop.
+3. User picks or enters a direct/relay profile.
+4. Desktop uses the existing WebUI API paths to list agents, show output, and
+   send input/keys.
+
+This keeps the first desktop milestone aligned with the already-working mobile
+app and avoids coupling the UI/installer to server bootstrap.
+
+Later, Desktop may add optional helper flows:
+
+- connection profile wizard
+- "how to start relay" guidance
+
+Those helpers must remain optional; the baseline assumption is that an existing
+CAM endpoint is already running.
+
+## Release UX For Backend Startup
+
+Phase 1 may assume an existing backend endpoint so the desktop UI can land
+quickly, but that is not enough for a polished desktop product.
+
+The real release flow should be:
+
+```text
+install app -> open app -> app discovers or starts a usable backend -> user works
+```
+
+Users should not have to remember and manually run a sequence of shell commands
+every time they want to use the desktop app.
+
+Phase 2 should add a backend readiness layer:
+
+- detect saved backend profiles and reconnect automatically
+- health-check the active endpoint with clear error states
+- detect a local backend where practical:
+  - Windows: WSL distro with CAM installed
+  - macOS/Linux: local `cam serve`
+- offer one-click start for a local backend when the environment already exists
+- show the exact setup/start command only as a fallback or diagnostic path
+- keep the backend process independent from the UI lifetime when possible, so
+  closing the desktop app does not accidentally kill running agents
+
+Do not confuse this with relay/server management as a product module. The UI
+does not need a "relay server admin page" in the first desktop releases. It
+needs a dependable connection and startup experience.
+
+### Backend Readiness Milestones
+
+The product should move from "developer has a backend running" to "normal user
+opens the app and works" in layers.
+
+#### Phase 2A: Backend Readiness
+
+Goal: make an already-installed environment feel automatic.
+
+Scope:
+
+- reconnect saved direct/relay profiles on launch
+- show clear backend health in Settings and the sidebar connection bar
+- distinguish these states:
+  - connected
+  - configured but unreachable
+  - no profile configured
+  - local backend detected but not running
+  - local backend not installed
+- add a desktop-native readiness seam behind `CamBridge`, not product logic in
+  Electron IPC:
 
 ```ts
-interface CamBackend {
-  health(): Promise<BackendHealth>;
-  listAgents(): Promise<AgentSummary[]>;
-  captureAgent(id: string, lines?: number): Promise<CaptureResult>;
-  sendToAgent(id: string, text: string, opts?: SendOptions): Promise<void>;
-  sendKey(id: string, key: string): Promise<void>;
+interface BackendReadiness {
+  platform: "windows" | "macos" | "linux";
+  hasWsl?: boolean;
+  wslDistros?: string[];
+  selectedDistro?: string;
+  hasCam?: boolean;
+  hasPython?: boolean;
+  localServerRunning?: boolean;
+  suggestedCommand?: string;
+  message: string;
 }
 ```
 
-The interface may contain future methods, but P0 acceptance depends only on the
-five methods above.
+Suggested bridge methods:
 
-## P1 / Later Scope
+```ts
+CamBridge.checkBackendReadiness(): Promise<BackendReadiness>;
+CamBridge.startLocalBackend?(): Promise<{ ok: boolean; url?: string; message: string }>;
+CamBridge.openSetupDocs?(): Promise<void>;
+```
 
-- TaskHub / task wall / multi-task tabs.
-- Tree view and Diff view.
-- `camc msg` inbox/thread/reply panel.
-- Run-agent form.
-- API adapter for `cam serve` online/multi-machine mode.
-- Agent lifecycle controls: stop, kill, retry/reboot, remove.
-- Log tab from `camc logs` / `/logs`.
-- Attach session via external terminal or copyable command.
-- Minimal context selector.
-- Polished settings/profile dialog with app-data persistence.
-- Rich rendering for message threads and final summaries.
-- File/image upload to selected agents.
-- Full context create/edit/delete UI.
-- Node and machine management.
-- DAG workflow editor for `cam apply`.
-- Archive browser.
-- Prune/orphan cleanup UI.
-- Embedded terminal/PTY.
-- Server auto-start and tray daemon lifecycle.
-- App auto-update and signed installers.
-- Rich diff/file-change browser.
-- Multi-agent batch operations.
+Windows behavior:
 
-## UX Requirements
+- detect WSL with `wsl.exe --status` / `wsl.exe -l -q`
+- detect Python and CAM inside an existing distro with non-mutating commands
+- if CAM exists but `cam serve` is not running, offer a `Start backend` action
+- save the resulting direct profile, usually `http://127.0.0.1:8420`
 
-- The first screen is the operational console, not a landing page.
-- Use a compact, work-focused desktop layout:
-  - left: connection + agent list
-  - center: selected agent output + composer
-  - no right inspector, advanced panel, TaskHub, Tree, or Diff in V1
-- Prefer ChatShell-style component split over one large `App.tsx`:
-  - `ConnectionPanel`
-  - `AgentList`
-  - `AgentOutputPane`
-  - `AgentComposer`
-  - small stores/hooks for backend profile, agents, and selection
-- Avoid decorative hero sections, nested cards, and marketing copy.
-- Use stable dimensions for agent rows, action bars, and output panes to avoid
-  layout jumps during polling.
-- Show command/API failures with stderr/stdout or response details.
-- Keep the UI responsive while backend commands run.
-- Disable duplicate actions while an action is in flight.
+macOS/Linux behavior:
 
-## Security Requirements
+- detect whether `cam` is on PATH
+- health-check a local `cam serve` endpoint
+- offer a local start action only when the environment is already installed
 
-- Renderer code must not execute arbitrary commands.
-- Tauri commands expose typed backend operations or a constrained `camc` argv
-  execution path.
-- No shell for local or WSL command execution.
-- No passwords in profiles.
-- Tokens are stored only in local app settings and never logged.
-- Destructive actions require explicit confirmation:
-  - kill
-  - remove
-  - archive/remove
-  - retry/reboot when it may replace a running session
-  - stop for an actively running agent
+Acceptance:
 
-## Implementation Plan After Approval
+- no terminal UI
+- no relay admin UI
+- no mandatory command line for the happy path when the environment already
+  exists
+- all setup/start failures produce actionable text
+- closing the desktop app should not kill already-running agents
 
-The first implementation task for `camui-dev` should be narrowly bounded:
+#### Phase 2B: Existing WSL Bootstrap
 
-1. Keep the existing Tauri/React app.
-2. Make Core P0 reliable: health, list, capture, direct send, key.
-3. Hide all visible non-core surfaces from the default V1 UI, including
-   metadata inspector, advanced panel, run-agent form, message inbox, TaskHub,
-   Tree, and Diff. Prefer not deleting existing scaffold/ChatShell-derived code
-   unless keeping it creates build failures, dead imports, or user-visible
-   confusion.
-4. Split the current app into small components/stores if the implementation is
-   changing `App.tsx` substantially.
-5. Complete local CLI-backed behavior first.
-6. Keep UI state and parsing isolated in `src/lib`.
-7. Do not modify core Python CAM behavior unless a desktop blocker proves the
-   API contract is wrong.
+Goal: if WSL exists but CAM does not, let the user install CAM into WSL from the
+desktop app.
 
-Expected touched area:
+Scope:
 
-- `apps/cam-desktop/src/lib/*`
-- `apps/cam-desktop/src/App.tsx`
-- `apps/cam-desktop/src/styles.css`
-- `apps/cam-desktop/src-tauri/src/main.rs` only if new bridge commands are
-  required
-- tests/config files only when needed for build verification
+- choose a WSL distro
+- create an isolated CAM Desktop environment in WSL, for example
+  `~/.cam-desktop/venv`
+- install CAM from a packaged wheel/source bundle or a configured internal URL
+- verify `python3 --version`, `cam --version`, and `cam serve` startup
+- store the working direct profile
 
-## Verification
+Do not require Node on the user's machine. Electron already ships the runtime
+needed by the desktop app; Node is only a developer/build dependency.
 
-Before review, `camui-dev` must report:
+Acceptance:
 
-- `npm run build:web` from `apps/cam-desktop`
-- `npm audit --audit-level=high` from `apps/cam-desktop`
-- focused manual smoke result for local `camc` profile:
-  - health loads
-  - agent list loads
-  - selecting agent shows capture/output
-  - direct send path works or returns a clear backend error
-  - key path works or returns a clear backend error
-  - no non-core panels are visible in the default V1 UI
-- Tauri build result if Rust platform deps are installed:
-  - `npm run build`
+- user does not type commands manually when WSL and network/package source are
+  available
+- logs are captured and visible from the setup UI
+- installation is idempotent
+- existing user CAM installs are not overwritten without confirmation
 
-If a command cannot run because of missing system dependencies, the reply must
-include the exact failure and the next command a human should run.
+#### Phase 2C: Full Windows Setup
+
+Goal: support a Windows machine that does not yet have a usable Linux-like
+backend environment.
+
+Scope:
+
+- detect missing WSL
+- guide or trigger WSL installation when allowed by Windows policy
+- handle the fact that WSL installation may require admin approval, reboot, or
+  Microsoft Store / Windows optional feature availability
+- after WSL exists, fall through to Phase 2B
+
+Acceptance:
+
+- corporate-policy failures are explained clearly
+- user can resume setup after reboot
+- the app never leaves the user with an ambiguous half-installed state
+
+#### Phase 2D: Offline / Bundled Bootstrap
+
+Goal: make installation work in restricted or offline environments.
+
+Scope:
+
+- bundle CAM wheel/source package
+- bundle Python/wheel dependencies where allowed
+- optionally bundle a small Python installer/runtime strategy for WSL
+- support an internal package mirror
+- verify package signatures or checksums
+
+This is the heaviest option and should come last. It increases installer size,
+maintenance burden, security review surface, and platform-specific edge cases.
+
+Acceptance:
+
+- repeatable offline install on a clean test machine
+- versioned dependency manifest
+- clear upgrade and rollback behavior
+- no hidden dependency on public package registries
+
+## Windows Packaging
+
+Windows first:
+
+- package as a single MSI installer
+- load bundled `web/desktop.html` assets
+- preserve app icon and app metadata
+- do not require the installer to install WSL, Python, CAM, or the relay server
+
+macOS later:
+
+- package the same desktop entry as `.app` / `.dmg`
+- add signing/notarization when ready
+- avoid Windows-specific assumptions in the WebUI layer
+
+### CamBridge
+
+Expose a small `window.CamBridge` surface for desktop-only behavior.
+
+Initial bridge:
+
+```ts
+interface CamBridge {
+  platform: "windows" | "macos" | "linux";
+  getAppVersion(): string;
+  restartApp(route?: string): void;
+  openExternal(url: string): void;
+}
+```
+
+Later bridge candidates:
+
+- secure token storage
+- choose local folder
+- open log folder
+- desktop notifications
+- auto-update integration
+
+Do not move CAM product behavior into `CamBridge`; it should stay in shared
+WebUI/API code.
+
+## Terminal Scope
+
+Do not design or implement terminal UI in Phase 1.
+
+Baseline Desktop v2 should use the existing WebUI model:
+
+```text
+agent output polling + send input + send key
+```
+
+This is already implemented over direct/relay APIs and works with mobile.
+
+## Implementation Plan
+
+### Phase 0: Archive Old Direction
+
+- Archive V1/ChatShell-era specs.
+- Keep `docs/desktop-ui-spec.md` as the canonical v2 spec.
+- Mark the current `apps/cam-desktop` React UI as legacy V1 until replaced.
+
+### Phase 1: Desktop Entry Spike
+
+Add:
+
+- `web/desktop.html`
+- `web/css/desktop.css`
+- `web/js/desktop/app.js`
+- `web/js/desktop/shell.js`
+
+Use existing `api.js` and `state.js` directly.
+
+Acceptance:
+
+- desktop entry connects in direct and relay modes
+- agent list renders
+- selecting an agent updates the main workspace
+- selected agent output loads
+- composer sends input
+- key buttons send keys
+
+### Phase 2: Electron Loads Desktop Entry
+
+Update or replace `apps/cam-desktop` so the packaged desktop app loads the
+desktop web entry rather than maintaining a separate product UI.
+
+Acceptance:
+
+- `npm run build:web` or equivalent web asset build passes
+- Windows MSI builds
+- installed app opens the desktop shell
+- settings survive app restart
+
+### Phase 2A: Backend Readiness
+
+Add the readiness layer described above, without installing anything yet.
+
+Acceptance:
+
+- Settings shows backend readiness and connection health
+- saved profiles reconnect automatically
+- existing local backend can be detected
+- if the local environment is already installed, the app can offer a start
+  action
+- failures provide actionable setup text
+
+### Phase 2B: Existing WSL Bootstrap
+
+Add a guided install path for machines that already have WSL.
+
+Acceptance:
+
+- WSL distro detection works on Windows
+- CAM can be installed into an isolated WSL environment
+- install logs are visible
+- successful install saves a working direct profile
+
+### Phase 2C: Full Windows Setup
+
+Add the outer setup flow for Windows machines without WSL.
+
+Acceptance:
+
+- missing WSL is detected
+- setup explains admin/reboot/store/policy blockers
+- after WSL exists, the flow resumes into Phase 2B
+
+### Phase 2D: Offline / Bundled Bootstrap
+
+Add offline/internal-mirror packaging after the online WSL flow works.
+
+Acceptance:
+
+- bundled dependency manifest is versioned
+- offline install works on a clean test machine
+- checksum/signature verification exists for bundled artifacts
+
+### Phase 3: Desktop Mode Pages
+
+Adapt existing WebUI pages:
+
+- Settings
+- Nodes
+- Contexts
+- Files
+- Start Agent
+
+Acceptance:
+
+- no duplicated API client
+- no duplicated state store
+- mobile routes still work
+- desktop pages use workbench navigation
+
+### Phase 4: macOS Packaging
+
+After Windows works:
+
+- add macOS bundle workflow
+- verify Electron/Chromium behavior on macOS
+- handle signing/notarization separately
 
 ## Acceptance Criteria
 
-P0 is acceptable when:
+Desktop v2 is acceptable when:
 
-- The app builds with TypeScript/Vite.
-- The app can list agents from at least one backend profile.
-- The selected agent output pane works without blocking the UI.
-- Direct text and special-key controls are wired to the backend.
-- Selecting a different agent switches the output and input target.
-- The default UI contains only connection/list, selected output, and composer.
-- Dormant scaffold features, if kept in code, do not appear in V1 UI and do
-  not affect the main loop.
-- The UI remains simple enough that future TaskHub, Tree/Diff, lifecycle, run,
-  messaging, context, and API features can be added later without rewriting the
-  backend abstraction.
-- All errors are visible and actionable.
+- The desktop app uses the WebUI-derived desktop entry.
+- Mobile `web/index.html` still works.
+- Shared API/state code is used by both mobile and desktop.
+- Desktop console has persistent left navigation plus main output/composer.
+- Direct and relay connections both work.
+- Windows MSI builds and launches.
+- The implementation avoids adding new product behavior only to Desktop unless
+  it is truly desktop-native bridge behavior.
+- Future macOS packaging does not require a UI rewrite.
+
+## Guidance For `camui-dev`
+
+All new desktop implementation work must happen in the isolated clone:
+
+```text
+/data/home_hren/scratch/cam
+branch: camui-desktop-v2
+```
+
+Do not use `/home/hren/.openclaw/workspace/cam` for desktop implementation.
+Do not use `/home/hren/scratch/cam`.
+
+Before implementing, read:
+
+- this spec
+- `web/js/api.js`
+- `web/js/state.js`
+- `web/js/app.js`
+- `web/js/views/agent-detail.js`
+- `web/js/views/dashboard.js`
+- `web/js/views/settings.js`
+- `web/js/views/machines.js`
+- `web/js/views/contexts.js`
+- `web/js/views/file-browser.js`
+- `apps/cam-desktop/src-tauri/`
+
+First implementation task should be a small desktop-entry spike, not a full
+rewrite.
