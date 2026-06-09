@@ -11,7 +11,7 @@ name = "codex"
 display_name = "OpenAI Codex"
 
 [launch]
-command = ["codex"]
+command = ["codex", "--enable", "goals"]
 prompt_after_launch = true
 startup_wait = 20.0
 ready_pattern = "^[›>]"
@@ -54,8 +54,9 @@ error_flags = ["IGNORECASE"]
 
 [[confirm]]
 # Trust dialog: "1. Yes, allow Codex to work in this folder"
-pattern = "1\\.\\s*(Yes,?\\s*)?allow Codex to work"
-flags = ["IGNORECASE"]
+# Anchor: line start + ≤1 leading symbol (cursor "›"/etc), no prose before the marker.
+pattern = "^[^\\w\\s]?\\s*1\\.\\s*(Yes,?\\s*)?allow Codex to work"
+flags = ["IGNORECASE", "MULTILINE"]
 response = "1"
 send_enter = false
 
@@ -73,15 +74,17 @@ send_enter = false
 # Same trust dialog, but match the bottom menu. The question text can be
 # above the last 8 lines captured by should_auto_confirm(), while these
 # menu lines remain visible at the bottom.
-pattern = "1\\.\\s*Yes,?\\s+continue\\s*\\n\\s*2\\.\\s*No,\\s+quit\\s*\\n\\s*Press\\s+enter\\s+to\\s+continue"
-flags = ["IGNORECASE"]
+pattern = "^[^\\w\\s]?\\s*1\\.\\s*Yes,?\\s+continue\\s*\\n\\s*2\\.\\s*No,\\s+quit\\s*\\n\\s*Press\\s+enter\\s+to\\s+continue"
+flags = ["IGNORECASE", "MULTILINE"]
 response = "1"
 send_enter = false
 
 [[confirm]]
 # Retry command outside the sandbox after a failed command.
-pattern = "1\\.\\s*Yes,\\s*proceed.*Press\\s+enter\\s+to\\s+confirm"
-flags = ["IGNORECASE", "DOTALL"]
+# Both anchors anchored to line start; option 2 can wrap to dozens of lines
+# in between (huge csh command being quoted) — DOTALL lets .* span them.
+pattern = "^[^\\w\\s]?\\s*1\\.\\s*Yes,\\s*proceed.*Press\\s+enter\\s+to\\s+confirm"
+flags = ["IGNORECASE", "DOTALL", "MULTILINE"]
 response = "1"
 send_enter = false
 
@@ -102,6 +105,7 @@ idle_threshold = 2
 # Codex shows "• Working (7s • esc to interrupt)" while busy
 busy_pattern = "Working \\(\\d+s"
 confirm_cooldown = 5.0
+confirm_recent_lines = 100    # codex "don't ask again for commands that start with <huge cmd>" can wrap option 2 to 30+ lines, pushing `1. Yes, proceed` out of view
 confirm_sleep = 0.5
 completion_stable = 3.0
 health_check_interval = 15
