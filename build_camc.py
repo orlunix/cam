@@ -28,6 +28,14 @@ MODULE_ORDER = [
     "remote",
     "migrate",
     "formatters",
+    # monitor_features MUST precede monitor: monitor.py imports
+    # MonitorSnapshot / MonitorRuntime / build_features from
+    # monitor_features. Earlier bundles crashed at standalone _monitor
+    # entry with NameError because the helper module was missing from
+    # the concatenated single-file. Replaces the v0 monitor_steps
+    # entry (the old module was removed when StateManagerFeature
+    # absorbed the 4 small steps).
+    "monitor_features",
     "monitor",
     "scheduler",
     "cron",

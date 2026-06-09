@@ -2123,3 +2123,165 @@ b4e09ff camc: reject single-dash long option typos
 fddb770 camc msg: add mailbox thread read API
 9d7cf9c camc msg: add expected-reply async protocol
 ```
+## v1.2.0  f327b73-dirty 2026-05-17 03:34
+
+- Lines: 9431
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+9c82cd4 camc: keep cron deploy compatible with Python 3.6
+8d5020b camc cron: add scheduled jobs and list command
+```
+
+## v1.2.0  f327b73-dirty 2026-05-18 03:14
+
+- Lines: 9431
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+9c82cd4 camc: keep cron deploy compatible with Python 3.6
+8d5020b camc cron: add scheduled jobs and list command
+```
+
+## v1.2.0  f327b73-dirty 2026-05-19 00:47
+
+- Lines: 9434
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+9c82cd4 camc: keep cron deploy compatible with Python 3.6
+8d5020b camc cron: add scheduled jobs and list command
+```
+
+## v1.2.0  f327b73-dirty 2026-05-20 23:04
+
+- Lines: 9435
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+9c82cd4 camc: keep cron deploy compatible with Python 3.6
+8d5020b camc cron: add scheduled jobs and list command
+```
+
+## v1.2.0  f327b73-dirty 2026-05-20 23:16
+
+- Lines: 9451
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+9c82cd4 camc: keep cron deploy compatible with Python 3.6
+8d5020b camc cron: add scheduled jobs and list command
+```
+
+## v1.2.0  f327b73-dirty 2026-06-03 01:31
+
+- Lines: 9455
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+9c82cd4 camc: keep cron deploy compatible with Python 3.6
+8d5020b camc cron: add scheduled jobs and list command
+```
+
+## v1.2.0  f327b73-dirty 2026-06-04 00:33
+
+- Lines: 9609
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+9c82cd4 camc: keep cron deploy compatible with Python 3.6
+8d5020b camc cron: add scheduled jobs and list command
+```
+## v1.2.0  f327b73-dirty 2026-06-04 00:39
+
+- Lines: 9609
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+9c82cd4 camc: keep cron deploy compatible with Python 3.6
+8d5020b camc cron: add scheduled jobs and list command
+```
+## v1.2.0  83674c9-dirty 2026-06-06 01:42
+
+- Lines: 9557
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+9c82cd4 camc: keep cron deploy compatible with Python 3.6
+```
+## v1.2.0  83674c9-dirty 2026-06-06 01:45
+
+- Lines: 9942
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+9c82cd4 camc: keep cron deploy compatible with Python 3.6
+```
+## v1.2.0  83674c9-dirty 2026-06-06 03:23
+
+- Lines: 9946
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+9c82cd4 camc: keep cron deploy compatible with Python 3.6
+```
+## v1.2.0  13af7cc-dirty 2026-06-09 00:35
+
+- Lines: 10248
+- Output: /tmp/cam-cron-build.lFetxJ/wt/dist/camc
+- Recent changes:
+```
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+```
+## v1.2.0  27e8a33-dirty 2026-06-09 00:54
+
+- Lines: 10267
+- Output: /tmp/cam-gitlab-merge.6rxroD/wt/dist/camc
+- Recent changes:
+```
+824a0f5 Add Electron CAM Desktop baseline
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+9c82cd4 camc: keep cron deploy compatible with Python 3.6
+```
