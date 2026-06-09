@@ -2261,3 +2261,15 @@ f327b73 monitor: comment out busy_pattern brake on auto-confirm
 6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
 9c82cd4 camc: keep cron deploy compatible with Python 3.6
 ```
+## v1.2.0  13af7cc-dirty 2026-06-09 00:35
+
+- Lines: 10248
+- Output: /tmp/cam-cron-build.lFetxJ/wt/dist/camc
+- Recent changes:
+```
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+```
