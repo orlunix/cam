@@ -67,23 +67,26 @@ fallback_summary_pattern = "✻ .+ for \\d+"
 [[confirm]]
 # Numbered permission menu: "Do you want to proceed? 1. Yes 2. No"
 # Send "1" to select option 1. The Ink TUI consumes the keypress.
-pattern = "Do\\s+you\\s+want\\s+to\\s+proceed"
-flags = ["IGNORECASE"]
+# Anchor: line start + at most 1 leading symbol (e.g. cursor "❯"), no
+# descriptive prose before the marker — prevents prose false positives
+# like "...so do you want to proceed with X?".
+pattern = "^[^\\w\\s]?\\s*Do\\s+you\\s+want\\s+to\\s+proceed"
+flags = ["IGNORECASE", "MULTILINE"]
 response = "1"
 send_enter = false
 
 [[confirm]]
 # Numbered menu with "1. Yes" or "1. Allow" — send "1" to select.
-pattern = "1\\.\\s*(Yes|Allow)"
-flags = ["IGNORECASE"]
+pattern = "^[^\\w\\s]?\\s*1\\.\\s*(Yes|Allow)"
+flags = ["IGNORECASE", "MULTILINE"]
 response = "1"
 send_enter = false
 
 [[confirm]]
 # "Allow once" / "Always allow" select menu (Claude 4.x+)
 # Send "1" to select the first option.
-pattern = "Allow\\s+(once|always)"
-flags = ["IGNORECASE"]
+pattern = "^[^\\w\\s]?\\s*Allow\\s+(once|always)"
+flags = ["IGNORECASE", "MULTILINE"]
 response = "1"
 send_enter = false
 
@@ -128,6 +131,7 @@ busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
 # done_pattern: task just finished (e.g. "Crunched for 36s", "Cogitated for 1m 8s")
 done_pattern = "ed\\s+for\\s+\\d+[smh]"
 confirm_cooldown = 5.0        # seconds between auto-confirm attempts
+confirm_recent_lines = 32     # last N non-empty lines to scan for permission dialogs (dialog can be pushed up by todo footer + spinner)
 confirm_sleep = 0.5           # sleep after sending confirmation
 completion_stable = 3.0       # idle seconds before checking completion
 health_check_interval = 15    # seconds between tmux alive checks
