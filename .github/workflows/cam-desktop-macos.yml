@@ -1,0 +1,64 @@
+name: CAM Desktop — macOS DMG
+
+# Unsigned/not-notarized macOS package for CAM Desktop POC testing.
+# Later signing/notarization can be added with Apple Developer cert secrets
+# (CSC_LINK / CSC_KEY_PASSWORD / APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / TEAM_ID).
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'cam-desktop-v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-macos-dmg:
+    name: Build macOS DMG (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+    defaults:
+      run:
+        working-directory: apps/cam-desktop
+    env:
+      # Keep this first POC build unsigned. Remove/adjust this when signing
+      # and notarization secrets are configured.
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: apps/cam-desktop/package-lock.json
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Syntax check Electron entrypoints
+        run: npm run lint:electron
+
+      - name: Build unsigned DMG
+        run: npx electron-builder --mac dmg --${{ matrix.arch }} --config.npmRebuild=false --publish=never
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: cam-desktop-macos-${{ matrix.arch }}-dmg
+          path: |
+            apps/cam-desktop/dist/*.dmg
+            apps/cam-desktop/dist/*.blockmap
+          if-no-files-found: error
