@@ -85,13 +85,13 @@ from camc_pkg.monitor import _run_monitor
 # rely on the fact that cron.py exports unique identifiers (no clash
 # with anything else in cli.py).
 from camc_pkg.cron import (
-    CronConfig, CronStore,
+    CronConfig, CronStore, CronJobStore,
     DuplicateJobName, CorruptCronJSON, CorruptCronConfig,
     AmbiguousJobKey, CrontabUnavailable,
-    install_tick, remove_tick, ensure_tick_if_needed, tick,
+    install_tick, remove_tick, ensure_tick_if_needed, tick, cron_run,
     parse_every, parse_daily, parse_at, parse_in,
     build_job, DEFAULT_TIMEOUT_SECONDS,
-    _archive_job, _append_runs, _emit_event,
+    _archive_job, _append_runs, _emit_event, _hostname, _same_host,
 )
 from camc_pkg.formatters import (
     print_table, print_panel, print_detail, print_success, print_error, print_warning,
@@ -3200,7 +3200,7 @@ def cmd_heal(args):
             print("Cron: registry is corrupt at %s — refused to touch crontab;"
                   " inspect manually." % result[1])
         elif result in ("installed", "repaired"):
-            enabled = [j for j in CronStore().jobs()
+            enabled = [j for j in CronJobStore().jobs()
                        if j.get("enabled", True)]
             print("Cron: %s tick entry (%d enabled job(s))"
                   % ("installed missing" if result == "installed"
@@ -4478,7 +4478,7 @@ def cmd_msg_read(args):
 # ===========================================================================
 
 def cmd_cron(args):
-    """Cron dispatch: add / rm / list / tick."""
+    """Cron dispatch: add / rm / list / tick / run."""
     sub = getattr(args, "cron_cmd", None)
     if sub == "add":
         cmd_cron_add(args)
@@ -4488,15 +4488,18 @@ def cmd_cron(args):
         cmd_cron_list(args)
     elif sub == "tick":
         cmd_cron_tick(args)
+    elif sub == "run":
+        cmd_cron_run(args)
     else:
         sys.stderr.write(
-            "usage: camc cron {add,rm,list,tick} ...\n"
+            "usage: camc cron {add,rm,list,tick,run} ...\n"
             "  add --name NAME (--every DUR | --daily HH:MM | --at TIME | --in DUR)\n"
             "      [--ttl-days N | --expires-at T | --no-expire] [--max-attempts N]\n"
             "      [--timeout S] [--cwd P] [--host H] (--shell \"CMD\" | -- COMMAND...)\n"
             "  rm <id-or-name>\n"
             "  list [--json]                 read-only listing of active jobs\n"
             "  tick   (system entrypoint; invoked by crontab)\n"
+            "  run <run_id>   (internal worker; invoked by tick)\n"
         )
         sys.exit(1)
 
@@ -4564,14 +4567,14 @@ def cmd_cron_add(args):
         sys.stderr.write("camc cron add: %s\n" % e)
         sys.exit(1)
     try:
-        CronStore().add(job)
+        CronJobStore().add(job)
     except DuplicateJobName:
         sys.stderr.write(
             "camc cron add: a job named '%s' already exists\n" % args.name)
         sys.exit(1)
     except CorruptCronJSON as e:
         sys.stderr.write(
-            "camc cron add: cron.json is corrupt and was NOT modified (%s).\n"
+            "camc cron add: cron registry is corrupt and was NOT modified (%s).\n"
             "  Inspect manually before adding new jobs.\n" % e)
         sys.exit(1)
 
@@ -4593,10 +4596,10 @@ def cmd_cron_add(args):
 def cmd_cron_rm(args):
     """Remove + archive a job. Remove the tick block when no enabled jobs remain."""
     try:
-        removed = CronStore().remove(args.id_or_name)
+        removed = CronJobStore().remove(args.id_or_name)
     except CorruptCronJSON as e:
         sys.stderr.write(
-            "camc cron rm: cron.json is corrupt and was NOT modified (%s).\n" % e)
+            "camc cron rm: cron registry is corrupt and was NOT modified (%s).\n" % e)
         sys.exit(1)
     except AmbiguousJobKey as e:
         sys.stderr.write(
@@ -4617,8 +4620,12 @@ def cmd_cron_rm(args):
                      reason="manual_remove")
     sys.stdout.write(
         "removed cron job %s (%s)\n" % (removed.get("name"), removed.get("id")))
-    # If no enabled jobs remain, take down the tick block.
-    enabled = [j for j in CronStore().jobs() if j.get("enabled", True)]
+    # If no enabled jobs remain for this host, take down this host's
+    # tick block. Shared-NFS homes may still contain jobs for other hosts.
+    my_host = _hostname()
+    enabled = [j for j in CronJobStore().jobs()
+               if j.get("enabled", True)
+               and _same_host(j.get("host") or my_host, my_host)]
     if not enabled:
         try:
             if remove_tick():
@@ -4633,8 +4640,26 @@ def cmd_cron_tick(args):
     """System entrypoint: one scheduler step. Always exits 0 unless internal error."""
     result = tick()
     # Tick is invoked by the OS cron daemon — keep stdout sparse.
-    if result.get("ran"):
-        sys.stdout.write("cron tick: ran %d job(s)\n" % result["ran"])
+    n = result.get("queued") or result.get("ran") or 0
+    if n:
+        sys.stdout.write("cron tick: queued %d job(s)\n" % n)
+    sys.exit(0)
+
+
+def cmd_cron_run(args):
+    """Internal worker: execute one previously queued run."""
+    rid = getattr(args, "run_id", None)
+    if not rid:
+        sys.stderr.write("camc cron run: run_id is required\n")
+        sys.exit(2)
+    result = cron_run(rid)
+    status = result.get("status")
+    if status == "succeeded":
+        sys.exit(0)
+    if status in ("run_failed", "run_timed_out", "missing",
+                  "no_job", "no_command"):
+        sys.exit(1)
+    # already_started / terminal / skipped_host → exit 0 quietly
     sys.exit(0)
 
 
@@ -4642,17 +4667,19 @@ def cmd_cron_list(args):
     """Read-only listing of active cron jobs.
 
     Does NOT install/remove the crontab block, does NOT tick, and does
-    NOT mutate cron.json / cron-runs.jsonl / cron-archive. Fails closed
-    (exit 1, stderr) when cron.json exists but is corrupt — silent
+    NOT mutate jobs.json / runs.jsonl / archive. Fails closed
+    (exit 1, stderr) when jobs.json exists but is corrupt — silent
     "empty" output would mask the failure.
     """
     json_out = bool(getattr(args, "json_out", False))
 
-    store = CronStore()
+    store = CronJobStore()
+    store.migrate_legacy_if_present()
     if store.is_corrupt():
+        bad = store.corrupt_files()
         sys.stderr.write(
-            "camc cron list: cron.json is corrupt at %s — refusing to list.\n"
-            "  Inspect the file before adding/removing jobs.\n" % store._path)
+            "camc cron list: corrupt job file(s) — refusing to list.\n"
+            "  Inspect: %s\n" % ", ".join(bad))
         sys.exit(1)
 
     jobs = list(store.jobs())
@@ -4684,11 +4711,12 @@ def cmd_cron_list(args):
                     "kind": j.get("kind"),
                     "schedule": j.get("schedule"),
                     "host": j.get("host"),
-                    "expires_at": j.get("expires_at"),
-                    "max_attempts": j.get("max_attempts"),
-                    "attempts": j.get("attempts", 0),
-                    "last_status": j.get("last_status"),
-                    "last_due_at": j.get("last_due_at"),
+                    "expires_at": (j.get("policy") or {}).get("expires_at"),
+                    "max_attempts": (j.get("policy") or {}).get("max_attempts"),
+                    "attempts": (j.get("state") or {}).get("attempts", 0),
+                    "last_status": (j.get("state") or {}).get("last_status"),
+                    "last_due_at": (j.get("state") or {}).get("last_due_at"),
+                    "last_run_id": (j.get("state") or {}).get("last_run_id"),
                 }
                 for j in jobs
             ],
@@ -4704,15 +4732,17 @@ def cmd_cron_list(args):
         "ID", "NAME", "SCHED", "EN", "HOST", "EXPIRES", "ATT/MAX", "LAST"))
     sys.stdout.write(header)
     for j in jobs:
+        policy = j.get("policy") or {}
+        st = j.get("state") or {}
         sys.stdout.write("%-9s  %-20s  %-18s  %-3s  %-15s  %-19s  %-7s  %s\n" % (
             (j.get("id") or "")[:9],
             (j.get("name") or "")[:20],
             _sched_str(j)[:18],
             "y" if j.get("enabled", True) else "n",
             (j.get("host") or "")[:15],
-            (j.get("expires_at") or "-")[:19],
-            "%s/%s" % (j.get("attempts", 0), j.get("max_attempts", "?")),
-            j.get("last_status") or "-",
+            (policy.get("expires_at") or "-")[:19],
+            "%s/%s" % (st.get("attempts", 0), policy.get("max_attempts", "?")),
+            st.get("last_status") or "-",
         ))
     sys.exit(0)
 
@@ -5406,6 +5436,9 @@ examples:
                        help="Emit machine-readable JSON instead of a table")
     cron_sub.add_parser("tick",
                         help="(system) scheduler entrypoint — called by crontab")
+    crun = cron_sub.add_parser(
+        "run", help="(internal) execute one previously queued run by id")
+    crun.add_argument("run_id", help="run id from runs.jsonl (e.g. r9f31a2c0)")
 
     # machine
     mp = sub.add_parser("machine", help="Manage remote machines")
