@@ -230,6 +230,7 @@ class AdapterConfig(object):
         dp = mon_cfg.get("done_pattern")
         self.done_pattern = compile_pattern(dp, mon_cfg.get("done_flags")) if dp else None
         self.confirm_cooldown = float(mon_cfg.get("confirm_cooldown", 5.0))
+        self.confirm_recent_lines = int(mon_cfg.get("confirm_recent_lines", 8))
         self.confirm_sleep = float(mon_cfg.get("confirm_sleep", 0.5))
         self.completion_stable = float(mon_cfg.get("completion_stable", 3.0))
         self.health_check_interval = float(mon_cfg.get("health_check_interval", 15))
