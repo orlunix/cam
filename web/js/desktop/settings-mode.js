@@ -72,7 +72,7 @@ function bridgeDirectHub() {
   return (b && b.directHub) || null;
 }
 
-export function mountSettingsMode({ state, showToast, readConfig, saveConfig, connect }) {
+export function mountSettingsMode({ api, state, showToast, readConfig, saveConfig, connect }) {
   const panel = document.getElementById('mode-settings');
   if (!panel) return;
 
@@ -129,7 +129,7 @@ export function mountSettingsMode({ state, showToast, readConfig, saveConfig, co
   applyTab(pickInitialTab());
 
   /* ────────── Direct tab — app-managed Hub lifecycle ────────── */
-  mountDirectTab({ panel, state, showToast, saveConfig, connect });
+  mountDirectTab({ panel, api, state, showToast, readConfig, saveConfig, connect });
 
   /* ────────── Relay tab ──────────
    * The Relay user-mode points at an external relay endpoint that
@@ -151,7 +151,7 @@ export function mountSettingsMode({ state, showToast, readConfig, saveConfig, co
 
 /* ───────── Direct tab controller (CAM-DESK-DIRECT-010..019) ───────── */
 
-function mountDirectTab({ panel, state, showToast, saveConfig, connect }) {
+function mountDirectTab({ panel, api, state, showToast, readConfig, saveConfig, connect }) {
   const tabPanel = panel.querySelector('#settings-tab-direct');
   if (!tabPanel) return;
 
@@ -186,11 +186,18 @@ function mountDirectTab({ panel, state, showToast, saveConfig, connect }) {
 
   function summaryDetail(r) {
     if (!r) return '';
+    const range = r.apiPortRange && r.apiPortRange.start != null && r.apiPortRange.end != null
+      ? `${r.apiPortRange.start}..${r.apiPortRange.end}`
+      : `${r.apiPort}+`;
     switch (r.summary) {
       case 'running':       return 'Embedded CAM Hub is running on this machine.';
       case 'starting':      return 'Embedded CAM Hub is starting…';
-      case 'port-conflict': return `All candidate loopback ports (${r.apiPort}+) are in use. Free one of them and click Check again.`;
-      case 'stopped':       return 'Embedded CAM Hub is stopped. Click Start to launch it.';
+      case 'port-conflict': return `No fixed Direct port in ${range} could be bound, and the OS-assigned fallback also failed. Open Diagnostics and check Port candidates for the real bind error.`;
+      case 'stopped':
+        if (r.apiPortStatus && r.apiPortStatus.state === 'fallback-free') {
+          return `Fixed Direct ports (${range}) are unavailable, but an OS-assigned loopback port is available. Click Restart to recover.`;
+        }
+        return 'Embedded CAM Hub is stopped. Click Start to launch it.';
       case 'error':         return r.lastError || 'Embedded CAM Hub failed to start.';
       default:              return r.summary || '';
     }
@@ -205,14 +212,32 @@ function mountDirectTab({ panel, state, showToast, saveConfig, connect }) {
     targetEl.innerHTML = `Runtime: <strong>embedded</strong> (Electron Node${plat})`;
   }
 
+  function portCandidateSummary(r) {
+    const c = r && r.apiPortCandidates;
+    if (!c) return '—';
+    const errors = c.errors && Object.keys(c.errors).length
+      ? ' · ' + Object.entries(c.errors).map(([k, v]) => `${k}:${v}`).join(', ')
+      : '';
+    const first = c.firstFree == null ? 'none' : c.firstFree;
+    const fallback = c.fallback
+      ? ` · OS fallback: ${c.fallback}${c.fallbackError ? ` (${c.fallbackError})` : ''}`
+      : '';
+    return `${c.free}/${c.count} free · first free: ${first}${fallback}${errors}`;
+  }
+
   function renderDiagnostics(r) {
     if (!r) { diagGrid.textContent = '(no data)'; return; }
     const portState = r.apiPortStatus && r.apiPortStatus.state;
+    const cfg = typeof readConfig === 'function' ? readConfig() : {};
     const rows = [
       ['Runtime',        'embedded (Electron Node)'],
       ['Platform',       r.platform || '—'],
       ['API port',       `${r.apiPort}${portState ? ' — ' + portState : ''}`],
+      ['Port scan range', r.apiPortRange ? `${r.apiPortRange.start}..${r.apiPortRange.end}` : '—'],
+      ['Port candidates', portCandidateSummary(r)],
       ['Profile kind',   _profileKind()],
+      ['Saved Direct URL', cfg.serverUrl || '—'],
+      ['Renderer API mode', api && api.mode ? api.mode : (state && state.get ? state.get('connectionMode') : '—')],
     ];
     if (r.state && r.state.server) {
       const s = r.state.server;
@@ -238,11 +263,15 @@ function mountDirectTab({ panel, state, showToast, saveConfig, connect }) {
     // The embedded Hub is built in — there is no local-runtime
     // gate. Start is only blocked when the whole candidate port range
     // is exhausted (summary === 'port-conflict'). The hub-side
-    // start() does its own scan and will pick 8421..8429 if 8420 is
-    // taken, so a single foreign listener on 8420 must not block UI.
+    // start() does its own scan and will pick an alternate candidate if
+    // 8420 is busy (within the embedded Hub's configured scan range), so
+    // a single foreign listener on 8420 must not block UI.
     startBtn.disabled = !supported || owned || summary === 'port-conflict';
     stopBtn.disabled    = !supported || !owned;
-    restartBt.disabled  = !supported || !owned;
+    // Restart doubles as Direct recovery: when disconnected or when the
+    // previous loopback URL/token is stale, restart() is stop(no-op)+start
+    // and then we persist the fresh URL/token before reconnecting.
+    restartBt.disabled  = !supported;
   }
 
   async function refreshCheck() {
@@ -285,8 +314,9 @@ function mountDirectTab({ panel, state, showToast, saveConfig, connect }) {
       return;
     }
     if (!res || res.ok !== true) {
-      setStatus(res && res.error ? res.error : 'Start failed.', 'is-error');
-      setHint(res && res.error ? res.error : 'See Diagnostics for details.', 'is-error');
+      const msg = res && res.error ? res.error : 'Start failed.';
+      setStatus(msg, 'is-error');
+      setHint(msg, 'is-error');
       await refreshCheck();
       return;
     }
@@ -342,12 +372,16 @@ function mountDirectTab({ panel, state, showToast, saveConfig, connect }) {
 
   async function doRestart() {
     if (!bridgeDirectHub()) return;
-    setStatus('Restarting embedded Hub…');
+    setStatus('Restarting Direct connection…');
+    setHint('Starting a fresh embedded Hub and refreshing the Direct URL/token…');
     setBadge('starting');
+    [startBtn, stopBtn, restartBt].forEach((b) => { if (b) b.disabled = true; });
     try {
       const res = await bridgeDirectHub().restart();
-      if (!res || res.ok !== true) {
-        setStatus((res && res.error) || 'Restart failed.', 'is-error');
+      if (!res || res.ok !== true || !res.apiUrl || !res.apiToken) {
+        const msg = (res && res.error) || 'Restart failed.';
+        setStatus(msg, 'is-error');
+        setHint(msg, 'is-error');
       } else {
         saveConfig({
           serverUrl:  res.apiUrl,
@@ -359,12 +393,16 @@ function mountDirectTab({ panel, state, showToast, saveConfig, connect }) {
         const mode = await connect();
         if (mode !== 'disconnected') {
           setStatus(`Reconnected (${mode}).`, 'is-ok');
+          setHint('Direct profile was refreshed with a new embedded Hub URL/token.', 'is-ok');
+          showToast('Direct connection restarted', 'success');
         } else {
-          setStatus('Restarted but reconnect failed.', 'is-error');
+          setStatus('Restarted Hub but reconnect failed.', 'is-error');
+          setHint('Open Diagnostics and check Saved Direct URL, Renderer API mode, and Port candidates.', 'is-error');
         }
       }
     } catch (e) {
       setStatus(`Restart failed: ${e?.message || e}`, 'is-error');
+      setHint(`Restart failed: ${e?.message || e}`, 'is-error');
     }
     await refreshCheck();
   }
