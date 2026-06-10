@@ -31,7 +31,7 @@ or present camc state, but camc owns the local runtime truth.
   ledgers are still inline helpers in `cli.py`; the target is to move them
   behind service/store APIs.
 - **Append-only ledgers.** `events.jsonl`, `messages.jsonl`, and
-  `cron-runs.jsonl` are append-only records. JSON snapshots are rewritten
+  `runs.jsonl` are append-only records. JSON snapshots are rewritten
   atomically.
 
 ## 2. File layout (`~/.cam/`)
@@ -42,12 +42,12 @@ or present camc state, but camc owns the local runtime truth.
 | `agents.json.lock` | `AgentStore` | empty file, fcntl lock target | Held only during read-modify-write |
 | `events.jsonl` | `EventStore` | one JSON record per line | Append-only; `rotate(max_age_days=30)` helper |
 | `messages.jsonl` | inline (`cli.py`) | ledger of msg envelopes + turn records | Append-only best-effort today; see §6 |
-| `cron.json` | `CronStore` | `{"version": 1, "jobs": [...]}` | Locked write, atomic rename, refuses corrupt overwrite |
-| `cron-config.json` | `CronConfig` | global cron defaults | Auto-created on first cron add |
-| `cron-runs.jsonl` | `cron.py` | per-fire history | Append-only |
-| `cron.state.json` | `cron.py` | last tick state | Single-record |
-| `cron.lock` | `cron.py` | fcntl lock target | Prevents concurrent ticks |
-| `cron-archive/` | `cron.py` | recycled job records | Removed/expired jobs are archived here |
+| `cron/jobs.d/<job_id>.json` | `CronJobStore` | one active job per JSON file | Locked write, atomic rename, refuses corrupt overwrite |
+| `cron/config.json` | `CronConfig` | global cron defaults | Auto-created on first cron add |
+| `cron/runs.jsonl` | `cron.py` | per-fire history | Append-only |
+| `cron/state.json` | `cron.py` | last tick state | Single-record |
+| `cron/tick.lock` | `cron.py` | fcntl lock target | Prevents concurrent ticks |
+| `cron/archive/` | `cron.py` | recycled job records | Removed/expired jobs are archived here |
 | `configs/*.toml` | adapter loader | TOML adapter rules | Optional override of embedded configs |
 | `context.json` | `_load_default_context` | legacy single-machine context | Optional env_setup |
 | `contexts.json` | `ContextStore` | list of workspace contexts | Locked write, atomic rename |
@@ -55,7 +55,7 @@ or present camc state, but camc owns the local runtime truth.
 | `archives/*.tar.gz` | `cli.cmd_archive_*` | transcript + agent metadata bundle | Created by `archive`, `rm --archive`, or pruning flows |
 | `logs/monitor-<id>.log` | monitor subprocess | monitor loop log | Main monitor logger output |
 | `logs/monitor-<id>.stderr` | monitor subprocess launcher | monitor subprocess stderr | Created by `run` / `heal` launch paths |
-| `logs/cron.log` | system crontab block | cron tick stdout/stderr | Human-readable cron log |
+| `cron/cron.log` | system crontab block | cron tick stdout/stderr | Human-readable cron log |
 | `pids/<id>.pid` | monitor subprocess | monitor process pid | Self-cleanup on exit |
 
 `/tmp/cam-sockets/cam-<id>.sock` holds the tmux server socket for each
@@ -251,7 +251,7 @@ tell "still processing" from "dead".
 
 ## 7. Cron — external tick contract
 
-`cron.py` + `cmd_cron_*` in `cli.py`. Backed by `~/.cam/cron.json`.
+`cron.py` + `cmd_cron_*` in `cli.py`. Backed by one active job file per entry under `~/.cam/cron/jobs.d/`.
 
 ### 7.1 Commands
 
@@ -271,21 +271,21 @@ camc never schedules itself. The OS crontab carries a single line
 installed by `install_tick()` (block-managed; see `_build_tick_block`):
 
 ```
-* * * * * HOME=/home/<user> PATH=<captured PATH> /home/<user>/.cam/camc cron tick >> ~/.cam/logs/cron.log 2>&1
+* * * * * HOME=/home/<user> PATH=<captured PATH> /home/<user>/.cam/camc cron tick >> ~/.cam/cron/cron.log 2>&1
 ```
 
 `camc cron tick` then:
 
-1. Acquires `~/.cam/cron.lock` (fcntl). If held, exit immediately.
-2. Loads `cron-config.json` and `cron.json`; corrupt files fail closed.
+1. Acquires `~/.cam/cron/tick.lock` (fcntl). If held, exit immediately.
+2. Loads `cron/config.json` and scans `cron/jobs.d/*.json`; corrupt files fail closed.
 3. For each `is_due(job, now)` → fork+exec the job's command.
-4. `_append_runs(record)` writes to `cron-runs.jsonl` for each fire.
-5. `_write_state(...)` updates `cron.state.json` (last fire ts, etc.).
+4. `_append_runs(record)` writes to `runs.jsonl` for each fire.
+5. `_write_state(...)` updates `state.json` (last fire ts, etc.).
 6. `recycle_job(...)` archives one-shot, expired, or over-failed jobs.
 
 ### 7.3 Hostname filtering
 
-A job has an optional `host` field. On NFS-shared `~/.cam/cron.json`,
+A job has an optional `host` field. On NFS-shared `~/.cam/cron/jobs.d/`,
 only the host whose `socket.gethostname()` matches the `host` field
 actually fires. This mirrors the agent-level `hostname` filter.
 
@@ -545,7 +545,7 @@ Auto-rewrite would silently mask drift instead of surfacing it.
 
 Already the design today. Document as canonical:
 
-- camc owns `cron.json` and `cron tick` behavior.
+- camc owns `cron/jobs.d/*.json` and `cron tick` behavior.
 - camc does **not** own scheduling. The OS (crontab / systemd timer / cam-flow)
   calls `cron tick` at whatever cadence it wants.
 - `install_tick()` is a convenience for the common "I want a 1-minute OS cron
