@@ -7,6 +7,11 @@ The design goal is simple and stable: jobs are validated by camc, stored
 as individual JSON files, scheduled by one tick per host, and executed by
 a separate run worker.
 
+Agent-owned monitor loops are a separate feature. They reuse schedule and
+policy concepts, but live in per-agent `agent.loop.json` files and are
+executed by the owner's monitor process, not by `camc cron tick`. See
+`docs/camc-agent-loop-spec.md`.
+
 User-facing commands stay intentionally small:
 
 ```bash

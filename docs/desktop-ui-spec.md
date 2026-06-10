@@ -368,6 +368,249 @@ Later, Desktop may add optional helper flows:
 Those helpers must remain optional; the baseline assumption is that an existing
 CAM endpoint is already running.
 
+## Workspace Service Gateway
+
+Future workspace-level features such as todos, skills, workspace metadata,
+search indexes, or other CLI-backed tools should share one generic service
+model instead of each feature inventing its own database sync and SSH tunnel.
+
+The preferred model is:
+
+```text
+one workspace primary endpoint
+one remote gateway process
+one remote loopback port
+one local SSH tunnel
+many registered services behind the gateway
+```
+
+In other words, avoid this:
+
+```text
+todos  -> remote port A -> local tunnel A
+skills -> remote port B -> local tunnel B
+index  -> remote port C -> local tunnel C
+```
+
+Prefer this:
+
+```text
+workspace gateway
+  remote: 127.0.0.1:<remote_port>
+  tunnel: 127.0.0.1:<local_port> -> remote 127.0.0.1:<remote_port>
+
+  /health
+  /services
+  /services/todos/...
+  /services/skills/...
+  /services/index/...
+```
+
+### Primary Endpoint
+
+Some workspace services need a single authoritative database. For example, a
+todo system may keep files under:
+
+```text
+<workspace>/.cam/todos/
+  .todocli.yml
+  .todo.db
+  .todo1.db
+```
+
+When multiple nodes can work on the same logical workspace, CamUI should not
+copy or merge raw database files between nodes. Instead, one node is configured
+as the workspace primary endpoint for that service family. Other nodes access
+the service through the gateway/tunnel, or the feature is shown as unavailable
+when the primary endpoint cannot be reached.
+
+The primary endpoint is feature/workspace configuration, not a global "main
+machine" for all CAM operations.
+
+Example:
+
+```yaml
+version: 1
+
+primary:
+  context: pdx119
+  endpoint: hren@pdx119:22
+  workspace: /home/hren/project
+```
+
+### Service Registry
+
+Service registration should be declarative so future CLI tools can participate
+without CamUI gaining feature-specific tunnel code.
+
+Suggested workspace config:
+
+```yaml
+# <workspace>/.cam/services.yml
+version: 1
+
+primary:
+  context: pdx119
+  endpoint: hren@pdx119:22
+  workspace: /home/hren/project
+
+gateway:
+  command: camw serve --workspace . --host 127.0.0.1 --port ${PORT}
+  port_file: .cam/services/gateway.port
+  pid_file: .cam/services/gateway.pid
+
+services:
+  todos:
+    enabled: true
+    module: todocli
+    data: .cam/todos
+
+  skills:
+    enabled: true
+    module: skillcli
+    data: .cam/skills
+```
+
+The exact gateway binary name is not decided by this spec. `camw` is a
+placeholder for "CAM workspace gateway".
+
+Each registered service must provide:
+
+- a stable route prefix under `/services/<name>/`
+- a health response
+- a workspace-relative data path
+- a local-only server surface, bound to `127.0.0.1`
+- its own database and schema semantics
+
+CamUI owns service lifecycle and connectivity. The service owns its data model.
+
+### Gateway API Contract
+
+The gateway should expose a small common API:
+
+```text
+GET /health
+GET /services
+
+GET /services/:service/health
+GET /services/:service/api/...
+POST /services/:service/api/...
+PATCH /services/:service/api/...
+DELETE /services/:service/api/...
+```
+
+Example todo calls through the same local tunnel:
+
+```text
+GET  http://127.0.0.1:<local_port>/services/todos/api/todos
+POST http://127.0.0.1:<local_port>/services/todos/api/todos
+```
+
+Example skills calls:
+
+```text
+GET http://127.0.0.1:<local_port>/services/skills/api/skills
+```
+
+### CamUI / Hub Responsibilities
+
+The renderer should not manage SSH, ports, daemon process state, or secrets.
+Those responsibilities belong in the Hub layer.
+
+CamUI Hub should provide generic service-session management:
+
+```text
+ensureWorkspaceGateway(workspace)
+  -> read .cam/services.yml
+  -> resolve primary endpoint/context
+  -> open/reuse the long-lived SSH connection
+  -> ensure gateway process exists on the primary endpoint
+  -> create/recreate one local port forward
+  -> health-check /health and /services
+  -> expose status and proxy APIs to the renderer
+```
+
+Generic Hub API shape:
+
+```text
+GET  /api/workspace-services
+GET  /api/workspace-services/:service/status
+POST /api/workspace-services/:service/start
+POST /api/workspace-services/:service/stop
+POST /api/workspace-services/:service/retry
+
+ANY  /api/workspace-services/:service/proxy/*
+```
+
+Feature UI can then call the proxy route instead of opening its own connection.
+
+### Lifecycle State
+
+The service session should be explicit about state:
+
+```text
+disabled
+resolving_config
+connecting_primary
+ensuring_gateway
+forwarding
+ready
+degraded
+healing
+unavailable
+```
+
+Heal rules:
+
+- SSH disconnected: reopen the pooled SSH connection and recreate the tunnel.
+- Local forward closed: recreate the forward.
+- Gateway not responding: re-run the gateway ensure/start command.
+- Primary unreachable: mark unavailable and do not create a second local DB.
+- Service unhealthy: keep the gateway alive, mark only that service degraded.
+
+CamUI must not silently fall back to a new local database when a primary-node
+service is unreachable. That would create split-brain state.
+
+### Security Rules
+
+- Gateway and service processes bind only to remote `127.0.0.1`.
+- CamUI exposes access through its existing authenticated Hub API, not by
+  opening public ports.
+- Raw secrets stay in the Hub/main process. They are never passed to renderer
+  code.
+- Services should not receive arbitrary shell strings from the renderer.
+- Database files remain private to the primary node/workspace. Other nodes use
+  the service API, not file copying.
+
+### Todo Example
+
+For a todo feature, the DB remains workspace-local on the primary endpoint:
+
+```text
+/home/hren/project/.cam/todos/.todocli.yml
+/home/hren/project/.cam/todos/.todo.db
+```
+
+The CLI tool should also work outside CamUI:
+
+```bash
+cd /home/hren/project
+todocli list
+```
+
+When running on a non-primary node, `todocli` can read the same
+`.cam/services.yml`, discover that todos are primary-node backed, open or reuse
+the gateway tunnel, and call the gateway API. CamUI uses the same model through
+the Hub.
+
+This keeps the command-line and GUI behavior aligned:
+
+```text
+CLI:   todocli list
+GUI:   Todos panel
+Both:  one gateway, one tunnel, one authoritative DB
+```
+
 ## Release UX For Backend Startup
 
 Phase 1 may assume an existing backend endpoint so the desktop UI can land
