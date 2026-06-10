@@ -23,11 +23,11 @@ Desktop UI  ──HTTP/WS──▶  CAM Hub/API  ──poll/route──▶  Remo
   and agent CLIs live on the remote nodes and are provisioned there.
 - **Workspace modes** in the left nav: **Agents** (default — agent
   list, output, composer, quick keys), **Start** (start a new agent),
-  **Settings** (connection profile), and **Nodes** (read-mostly view
-  of hub-provided controllers/nodes, see NODEUI-010..017). Contexts is
-  a future placeholder. Workspace modes are separate from connection
-  modes — switching to Nodes does not change how Desktop reaches the
-  hub.
+  **Settings** (connection profile), **Nodes** (hub-provided
+  controllers/nodes, see NODEUI-010..017), and **Skills** (Skillm
+  library management). Contexts is a future placeholder. Workspace
+  modes are separate from connection modes — switching workspace modes
+  does not change how Desktop reaches the hub.
 - **Active Settings exposes two connection modes**: Direct and Relay.
   Direct is the default app-managed embedded CAM Hub path: Desktop starts
   the Node/Electron Hub, generates the token, connects to it over
@@ -54,6 +54,10 @@ Desktop UI  ──HTTP/WS──▶  CAM Hub/API  ──poll/route──▶  Remo
   contract. Relay and Direct must expose the same list/read API shape so
   Desktop and mobile can share behavior without transport-specific renderer
   branches.
+- **Skills wraps node-local `skillm`**. Desktop provides a thin UI over
+  managed `~/.cam/skillm` for repo connect/pull, node sync, and
+  global/workspace skill installs. The design is documented in
+  [`skillm-integration.md`](./skillm-integration.md).
 - **SSH attach** to the selected agent's controller is a future path
   (see SSH-010..013, status `proposed`).
 - **The separate Local tab is retired.** Its useful app-managed-Hub
@@ -67,6 +71,8 @@ Desktop UI  ──HTTP/WS──▶  CAM Hub/API  ──poll/route──▶  Remo
 - [`requirements.md`](./requirements.md) — canonical requirement registry
   with stable Req IDs. **Read this first.** Starts with the Architecture
   and Connection Model section that this README summarizes.
+- [`skillm-integration.md`](./skillm-integration.md) — Desktop Skillm v0
+  implementation contract and follow-up boundaries.
 - [`../desktop-ui-spec.md`](../desktop-ui-spec.md) — current milestone /
   product spec. Explains design direction; cite `requirements.md` IDs in
   reviews.

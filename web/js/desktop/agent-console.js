@@ -8,13 +8,15 @@
  *   - IME composition      → never send, even on Enter
  *
  * Output modes (CAM-DESK-OUT-010..022):
- *   - "plain": default; ANSI-stripped text, same path mobile/PWA uses.
- *   - "rich":  same captured text as plain, rendered into a sibling
+ *   - "rich":  default; same captured text as plain, rendered into a sibling
  *              pane by a safe ANSI + shallow block renderer below.
+ *   - "plain": ANSI-stripped text, same path mobile/PWA uses.
  * The two panes hold independent hashes so a plain hash can never
  * suppress a rich response (and vice versa). On any rich-render error
  * we fall back to plain so input/key sending stays intact.
  */
+
+import { bumpUserActivity } from './shell.js?v=0.64.0';
 
 function escapeHtml(s) {
   const d = document.createElement('div');
@@ -49,12 +51,12 @@ function isActiveStatus(s) {
  * Output is fully HTML-escaped before any tags are added.
  */
 const ANSI_PALETTE_BASE = [
-  '#0d1117', '#cc4444', '#3dd68c', '#d29922',
-  '#4a9eff', '#a67ad6', '#5ec5d6', '#c9d1d9',
+  'var(--ansi-black)', 'var(--ansi-red)', 'var(--ansi-green)', 'var(--ansi-yellow)',
+  'var(--ansi-blue)', 'var(--ansi-magenta)', 'var(--ansi-cyan)', 'var(--ansi-white)',
 ];
 const ANSI_PALETTE_BRIGHT = [
-  '#6e7681', '#f85149', '#56d364', '#e3b341',
-  '#79c0ff', '#bc8cff', '#7ddcff', '#ffffff',
+  'var(--ansi-bright-black)', 'var(--ansi-bright-red)', 'var(--ansi-bright-green)', 'var(--ansi-bright-yellow)',
+  'var(--ansi-bright-blue)', 'var(--ansi-bright-magenta)', 'var(--ansi-bright-cyan)', 'var(--ansi-bright-white)',
 ];
 
 function ansiColor8(idx) {
@@ -904,6 +906,7 @@ export function renderRichOutput(input) {
 /* ────────────────────────────────────────────────────────────────── */
 
 const OUTPUT_MODE_KEY = 'cam_desktop_output_mode'; // 'plain' | 'rich' | 'terminal' | 'browse'
+const OUTPUT_MODE_DEFAULT = 'rich';
 export const OUTPUT_HISTORY_INITIAL_LINES = 200;
 export const OUTPUT_HISTORY_STEPS = [200, 1000, 2000, 4000, 8000];
 const TERMINAL_AGENT_STATUSES = new Set(['completed', 'failed', 'timeout', 'killed']);
@@ -1356,8 +1359,8 @@ export function mountAgentConsole({ api, state, showToast }) {
   function readOutputMode() {
     try {
       const v = localStorage.getItem(OUTPUT_MODE_KEY);
-      return (v === 'rich' || v === 'terminal' || v === 'browse') ? v : 'plain';
-    } catch { return 'plain'; }
+      return (v === 'plain' || v === 'rich' || v === 'terminal' || v === 'browse') ? v : OUTPUT_MODE_DEFAULT;
+    } catch { return OUTPUT_MODE_DEFAULT; }
   }
   let outputMode = readOutputMode();
 
@@ -1422,6 +1425,11 @@ export function mountAgentConsole({ api, state, showToast }) {
     return (state.get('agents') || []).find(a => a.id === id) || null;
   }
 
+  function bumpAndRefreshUserActivity(agentId) {
+    bumpUserActivity(agentId);
+    try { state.set('agents', [...(state.get('agents') || [])]); } catch { /* noop */ }
+  }
+
   function isAgentsMode() {
     return (state.get('mode') || 'agents') === 'agents';
   }
@@ -1475,7 +1483,7 @@ export function mountAgentConsole({ api, state, showToast }) {
   function syncModeToggle() {
     const terminalAllowed = canUseTerminalMode();
     if (outputMode === 'terminal' && !terminalAllowed) {
-      outputMode = 'plain';
+      outputMode = OUTPUT_MODE_DEFAULT;
       try { localStorage.setItem(OUTPUT_MODE_KEY, outputMode); } catch {}
       void closeTerminalSession();
     }
@@ -1715,7 +1723,7 @@ export function mountAgentConsole({ api, state, showToast }) {
   }
 
   function setMode(next) {
-    if (next !== 'plain' && next !== 'rich' && next !== 'terminal' && next !== 'browse') next = 'plain';
+    if (next !== 'plain' && next !== 'rich' && next !== 'terminal' && next !== 'browse') next = OUTPUT_MODE_DEFAULT;
     if (next === 'terminal' && !canUseTerminalMode()) {
       syncModeToggle();
       showToast('Terminal mode is available only with Direct connection.', 'warning', 3500);
@@ -2189,6 +2197,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     sendBtn.disabled = true;
     try {
       await api.sendInput(agent.id, text, true);
+      bumpAndRefreshUserActivity(agent.id);
     } catch (e) {
       inputEl.value = text;
       showToast(`Send failed: ${e.message}`, 'error', 5000);
@@ -2281,6 +2290,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       // leave the browser. We never serialize a local filesystem path.
       const b64 = await fileToBase64(file);
       const resp = await api.uploadFile(agent.id, filename, b64);
+      bumpAndRefreshUserActivity(agent.id);
       // CAM-DESK-INP-012: send the returned workspace path (matching
       // mobile behavior: send without Enter so the agent sees just the
       // path string and the user can wrap it with prose if they want).
@@ -2390,6 +2400,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       btn.disabled = true;
       try {
         await api.sendInput(agent.id, text, false);
+        bumpAndRefreshUserActivity(agent.id);
       } catch (e) {
         showToast(`Input failed: ${e.message}`, 'error', 5000);
       } finally {
@@ -2406,6 +2417,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       btn.disabled = true;
       try {
         await api.sendKey(agent.id, key);
+        bumpAndRefreshUserActivity(agent.id);
       } catch (e) {
         showToast(`Key failed: ${e.message}`, 'error', 5000);
       } finally {
