@@ -53,6 +53,7 @@ export function mountNodesMode({
   setMode,
   loadContextsAndAdapters,
   loadAgents,
+  connect,
 }) {
   const panel = document.getElementById('mode-nodes');
   if (!panel) return;
@@ -79,6 +80,21 @@ export function mountNodesMode({
     statusEl.textContent = text || '';
     statusEl.classList.remove('is-error', 'is-ok');
     if (cls) statusEl.classList.add(cls);
+  }
+
+
+  async function ensureNodesConnected() {
+    if (api && api.mode !== 'disconnected') return true;
+    if (typeof connect === 'function') {
+      const mode = await connect();
+      return mode && mode !== 'disconnected' && api && api.mode !== 'disconnected';
+    }
+    return false;
+  }
+
+  async function requireNodesConnected(label = 'Action') {
+    const ok = await ensureNodesConnected();
+    if (!ok) throw new Error(`${label} requires an active Direct or Relay connection`);
   }
 
   function fmtAgo(ts) {
@@ -243,6 +259,7 @@ export function mountNodesMode({
     render();
     let resp = null;
     try {
+      await requireNodesConnected('Sync');
       resp = await api.syncContext(ctx.name);
     } catch (err) {
       const msg  = (err && err.message) || String(err);
@@ -397,8 +414,12 @@ export function mountNodesMode({
     if (hosts.length === 0) {
       const haveAnything =
         (state.get('contexts') || []).length || (state.get('agents') || []).length;
+      const connected = state.get('connectionMode') !== 'disconnected'
+        && (!api || api.mode !== 'disconnected');
       listEl.innerHTML = haveAnything
         ? `<div class="empty-state">No hosts resolved from current contexts/agents.</div>`
+        : !connected
+          ? `<div class="empty-state">Not connected to Direct or Relay. Open <strong>Settings</strong>, start Direct, then return to Nodes.</div>`
         : `<div class="empty-state">Embedded Hub is running. No hosts yet. Click <strong>Add Host</strong>.</div>`;
       return;
     }
@@ -483,6 +504,14 @@ export function mountNodesMode({
         setStatus(`Deleting host ${epLabel} (${names.length} context(s))…`);
         let removed = 0;
         const failures = [];
+        try { await requireNodesConnected('Delete host'); }
+        catch (err) {
+          btn.disabled = false;
+          btn.textContent = originalText;
+          setStatus(`Delete host failed: ${err.message}`, 'is-error');
+          showToast(`Delete host failed: ${err.message}`, 'error', 5000);
+          return;
+        }
         for (const name of names) {
           try {
             await api.deleteContext(name);
@@ -650,6 +679,7 @@ export function mountNodesMode({
         const originalText = btn.textContent;
         btn.textContent = '…';
         try {
+          await requireNodesConnected('Delete context');
           await api.deleteContext(name);
           lastSync.delete(name);
           expandedCtxNames.delete(name);
@@ -685,7 +715,7 @@ export function mountNodesMode({
 
   mountNodesActions({
     panel, api, state, showToast, setStatus,
-    loadContextsAndAdapters, loadAgents,
+    loadContextsAndAdapters, loadAgents, requireNodesConnected,
   });
 }
 
@@ -717,7 +747,7 @@ function bridgeFiles() {
   return (b && b.files) || null;
 }
 
-function mountNodesActions({ panel, api, state, showToast, setStatus, loadContextsAndAdapters, loadAgents }) {
+function mountNodesActions({ panel, api, state, showToast, setStatus, loadContextsAndAdapters, loadAgents, requireNodesConnected }) {
   const addToggle    = panel.querySelector('#nodes-add-toggle');
   const managePanel  = panel.querySelector('#nodes-manage-panel');
   const manageClose  = panel.querySelector('#nodes-manage-close');
@@ -1063,6 +1093,7 @@ function mountNodesActions({ panel, api, state, showToast, setStatus, loadContex
       const body = { path: ctxPath, env_setup: fEnv ? fEnv.value.trim() : '' };
       setAddStatus(`Saving context "${editContextTarget}"…`);
       try {
+        await requireNodesConnected('Save context');
         await api.updateContext(editContextTarget, body);
         setAddStatus(`Saved context "${editContextTarget}".`, 'is-ok');
         showToast(`Context "${editContextTarget}" updated`, 'success');
@@ -1128,6 +1159,7 @@ function mountNodesActions({ panel, api, state, showToast, setStatus, loadContex
 
       setAddStatus(`Adding context "${name}" to host…`);
       try {
+        await requireNodesConnected('Add context');
         await api.createContext(body);
         setAddStatus(`Added context "${name}".`, 'is-ok');
         showToast(
@@ -1207,6 +1239,13 @@ function mountNodesActions({ panel, api, state, showToast, setStatus, loadContex
       setAddStatus(`Saving host fields to ${total} context(s)…`);
       let saved = 0;
       const failures = [];
+      try {
+        await requireNodesConnected('Save host');
+      } catch (err) {
+        setAddStatus(`Save host failed: ${err.message}`, 'is-error');
+        showToast(`Host update failed: ${err.message}`, 'error', 5000);
+        return;
+      }
       for (const ctx of node.contexts) {
         const body = { ...hostBody };
         body.path      = ctx.path || (user ? `/home/${user}` : '');
@@ -1244,6 +1283,7 @@ function mountNodesActions({ panel, api, state, showToast, setStatus, loadContex
     };
     setAddStatus('Adding…');
     try {
+      await requireNodesConnected('Add host');
       await api.createContext(addBody);
       setAddStatus(`Added "${name}".`, 'is-ok');
       showToast(`Host "${user}@${host}:${port}" added (initial context "${name}")`, 'success');
@@ -1277,6 +1317,7 @@ function mountNodesActions({ panel, api, state, showToast, setStatus, loadContex
     importList.innerHTML = `<div class="empty-state">Loading…</div>`;
     let resp;
     try {
+      await requireNodesConnected('SSH config import');
       resp = await api.sshConfigHosts();
     } catch (err) {
       importList.innerHTML = `<div class="empty-state">SSH config import not available on this Hub.</div>`;
@@ -1319,6 +1360,7 @@ function mountNodesActions({ panel, api, state, showToast, setStatus, loadContex
         btn.disabled = true;
         btn.textContent = 'Importing…';
         try {
+          await requireNodesConnected('Import host');
           await api.createContext(body);
           btn.textContent = 'Imported';
           setImportStatus(`Imported "${name}".`, 'is-ok');

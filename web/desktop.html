@@ -24,6 +24,7 @@
   <link rel="modulepreload" href="js/desktop/settings-mode.js?v=0.64.0">
   <link rel="modulepreload" href="js/desktop/start-agent-mode.js?v=0.64.0">
   <link rel="modulepreload" href="js/desktop/nodes-mode.js?v=0.64.0">
+  <link rel="modulepreload" href="js/desktop/skills-mode.js?v=0.64.0">
 </head>
 <body class="desktop">
   <div id="desktop-app" class="desktop-layout">
@@ -49,6 +50,10 @@
         <button class="mode-nav-btn" data-mode="nodes" aria-pressed="false">
           <span class="mode-nav-icon">&#9635;</span>
           <span class="mode-nav-label">Nodes</span>
+        </button>
+        <button class="mode-nav-btn" data-mode="skills" aria-pressed="false">
+          <span class="mode-nav-icon">&#9734;</span>
+          <span class="mode-nav-label">Skills</span>
         </button>
         <button class="mode-nav-btn mode-nav-placeholder" disabled
           title="Coming in a later phase">
@@ -115,7 +120,7 @@
             <label class="popover-row">
               <span class="popover-label">Field</span>
               <select id="sort-field" class="filter-select">
-                <option value="updated">Updated</option>
+                <option value="user_activity">User activity</option>
                 <option value="created">Created</option>
                 <option value="name">Name</option>
               </select>
@@ -163,6 +168,111 @@
             </div>
           </div>
         </div>
+        <div class="agent-settings-panel" id="agent-settings-panel" hidden>
+          <div class="settings-header agent-settings-header">
+            <button type="button" class="btn-secondary agent-settings-back" id="agent-settings-back">Back to agent</button>
+            <div class="agent-settings-heading">
+              <h2 id="agent-settings-title">Agent Settings</h2>
+              <p class="settings-help" id="agent-settings-meta"></p>
+            </div>
+          </div>
+          <div class="settings-tabs agent-settings-tabs" role="tablist" aria-label="Agent settings tabs">
+            <button type="button" class="settings-tab" data-agent-settings-tab="attributes" aria-pressed="true">Attributes</button>
+            <button type="button" class="settings-tab" data-agent-settings-tab="loop" aria-pressed="false">Loop</button>
+            <button type="button" class="settings-tab" data-agent-settings-tab="workflow" aria-pressed="false">Workflow</button>
+            <button type="button" class="settings-tab" data-agent-settings-tab="cron" aria-pressed="false">Cron</button>
+          </div>
+          <div class="settings-form-pane agent-settings-form-pane">
+            <div class="settings-tab-panel" id="agent-settings-tab-attributes" data-agent-settings-panel="attributes">
+              <section class="settings-section">
+                <h3>Attributes</h3>
+                <label>Name
+                  <input type="text" id="agent-settings-name" maxlength="128" autocomplete="off">
+                </label>
+                <label class="form-checkbox">
+                  <input type="checkbox" id="agent-settings-auto-confirm">
+                  <span>Auto-confirm prompts</span>
+                </label>
+                <label>Tags
+                  <input type="text" id="agent-settings-tags" placeholder="tag1, tag2" autocomplete="off">
+                </label>
+                <p class="form-hint">Tags use letters, digits, underscore, or dash. Separate multiple tags with commas.</p>
+                <div class="settings-actions agent-settings-actions">
+                  <button type="button" class="btn-primary" id="agent-settings-save">Save Attributes</button>
+                  <button type="button" class="btn-secondary" id="agent-settings-reset">Reset</button>
+                </div>
+                <div class="settings-status" id="agent-settings-status" aria-live="polite"></div>
+              </section>
+            </div>
+            <div class="settings-tab-panel" id="agent-settings-tab-loop" data-agent-settings-panel="loop" hidden>
+              <section class="settings-section">
+                <h3>Loop</h3>
+                <p class="form-hint">Agent-attached loop policies will live here: nudge if idle, ask status, continue until done, and stuck-agent correction. The backing scheduler should be node-local cron, but the policy is attached to this agent.</p>
+              </section>
+            </div>
+            <div class="settings-tab-panel" id="agent-settings-tab-workflow" data-agent-settings-panel="workflow" hidden>
+              <section class="settings-section">
+                <h3>Workflow</h3>
+                <p class="form-hint">Workflow controls are reserved for higher-level multi-step runs, reviewer handoff, and recovery flows. This tab is intentionally a placeholder until those semantics are finalized.</p>
+              </section>
+            </div>
+            <div class="settings-tab-panel" id="agent-settings-tab-cron" data-agent-settings-panel="cron" hidden>
+              <section class="settings-section agent-cron-section">
+                <div class="agent-cron-card agent-cron-target">
+                  <div>
+                    <h3>Cron</h3>
+                    <p class="form-hint" id="agent-cron-target">Select an agent to manage node-local cron jobs.</p>
+                  </div>
+                  <button type="button" class="btn-secondary" id="agent-cron-refresh">Refresh</button>
+                </div>
+                <div class="agent-cron-card">
+                  <div class="agent-cron-card-head">
+                    <h4>Add cron job</h4>
+                    <span class="form-hint">Runs <code>camc msg send</code> on this agent's node.</span>
+                  </div>
+                  <div class="agent-cron-grid">
+                    <label>Name
+                      <input type="text" id="agent-cron-name" placeholder="daily-review" autocomplete="off">
+                    </label>
+                    <label>Schedule
+                      <select id="agent-cron-schedule-type">
+                        <option value="every">Every</option>
+                        <option value="daily">Daily</option>
+                        <option value="in">In</option>
+                        <option value="at">At</option>
+                      </select>
+                    </label>
+                    <label>Value
+                      <input type="text" id="agent-cron-schedule-value" placeholder="30m" autocomplete="off">
+                    </label>
+                    <label>Timeout seconds
+                      <input type="number" id="agent-cron-timeout" min="5" max="3600" step="5" value="60">
+                    </label>
+                    <label>Max attempts
+                      <input type="number" id="agent-cron-attempts" min="1" max="20" step="1" value="3">
+                    </label>
+                    <label>TTL days
+                      <input type="number" id="agent-cron-ttl" min="1" max="3650" step="1" value="7">
+                    </label>
+                  </div>
+                  <label>Message
+                    <textarea id="agent-cron-text" rows="4" placeholder="review latest changes and report blockers"></textarea>
+                  </label>
+                  <label class="form-checkbox">
+                    <input type="checkbox" id="agent-cron-no-expire">
+                    <span>No automatic expiry</span>
+                  </label>
+                  <div class="settings-actions agent-settings-actions">
+                    <button type="button" class="btn-primary" id="agent-cron-add">Add cron job</button>
+                  </div>
+                  <div class="settings-status" id="agent-cron-status" aria-live="polite"></div>
+                </div>
+                <div class="agent-cron-list" id="agent-cron-list"></div>
+              </section>
+            </div>
+          </div>
+        </div>
+
         <div class="agent-output-wrap">
           <pre class="agent-output"      id="agent-output" tabindex="0" aria-label="Agent output"></pre>
           <pre class="agent-output-rich" id="agent-output-rich" tabindex="0" aria-label="Agent rich output" hidden></pre>
@@ -607,6 +717,124 @@
           <div class="empty-state">Loading hosts&hellip;</div>
         </div>
         <div class="settings-status" id="nodes-status" aria-live="polite"></div>
+      </section>
+
+
+      <!-- Skills workspace (CAM-DESK-SKILLM-010..014) -->
+      <section class="mode-panel" id="mode-skills" data-mode="skills" hidden>
+        <div class="settings-header skills-header">
+          <h2>Skills</h2>
+          <p class="settings-help">
+            Manage node-local <code>skillm</code> repositories and install skills.
+            Repository refresh is handled by the embedded Hub before listing and install.
+          </p>
+        </div>
+
+        <div class="skills-workbench skills-workbench-v2">
+          <section class="skills-card skills-card-main">
+            <div class="skills-tabs" role="tablist" aria-label="Skills workspace tabs">
+              <button type="button" class="skills-tab active" data-skillm-tab="repos" role="tab" aria-selected="true">Repositories</button>
+              <button type="button" class="skills-tab" data-skillm-tab="install" role="tab" aria-selected="false">Install</button>
+            </div>
+
+            <div class="skills-tab-panel" id="skillm-tab-repos">
+              <div class="skills-card-head">
+                <h3>Setup and repositories</h3>
+                <button type="button" class="btn-primary" id="skillm-repo-add">Add Repository</button>
+              </div>
+              <div class="skills-setup-grid">
+                <section class="skills-subpanel skills-setup-panel">
+                  <div class="skills-subpanel-head">
+                    <h4>Setup node</h4>
+                    <div class="skills-mini-actions">
+                      <button type="button" class="btn-secondary" id="skillm-check">Check</button>
+                      <button type="button" class="btn-secondary" id="skillm-refresh">Refresh</button>
+                    </div>
+                  </div>
+                  <label>Node
+                    <select id="skillm-setup-context"></select>
+                  </label>
+                  <p class="form-hint">Choose the node that owns the Skillm repository store. Install can target this node, all SSH nodes, or selected nodes.</p>
+                </section>
+
+                <section class="skills-subpanel skills-repo-panel">
+                  <div class="skills-repo-editor" id="skillm-repo-editor" hidden>
+                    <div class="skills-inline-fields">
+                      <label>Name
+                        <input type="text" id="skillm-repo-name" placeholder="main" autocomplete="off">
+                      </label>
+                      <label>Git repo URL
+                        <input type="url" id="skillm-repo-url" placeholder="https://gitlab.example.com/team/skills.git" autocomplete="off">
+                      </label>
+                    </div>
+                    <label>Token
+                      <input type="password" id="skillm-repo-token" placeholder="one-shot token, not saved" autocomplete="off">
+                    </label>
+                    <div class="skills-actions">
+                      <button type="button" class="btn-primary" id="skillm-repo-save">Save Repository</button>
+                      <button type="button" class="btn-secondary" id="skillm-repo-cancel">Cancel</button>
+                    </div>
+                  </div>
+                  <div class="skillm-repo-list" id="skillm-repo-list"></div>
+                </section>
+              </div>
+            </div>
+
+            <div class="skills-tab-panel" id="skillm-tab-install" hidden>
+              <div class="skills-card-head">
+                <h3>Install skills</h3>
+                <div class="skills-mini-actions">
+                  <button type="button" class="btn-secondary" id="skillm-skills-all">Select shown</button>
+                  <button type="button" class="btn-secondary" id="skillm-skills-none">Clear</button>
+                </div>
+              </div>
+              <div class="skills-install-controls">
+                <label>Repository
+                  <select id="skillm-repo-filter"><option value="all">All repositories</option></select>
+                </label>
+                <label>Search
+                  <input type="search" id="skillm-skill-search" placeholder="Search name, tag, repo..." autocomplete="off">
+                </label>
+              </div>
+              <div class="skillm-skill-list" id="skillm-skill-list"></div>
+
+              <div class="skills-install-grid">
+                <section class="skills-subpanel">
+                  <h4>Target hosts</h4>
+                  <div class="skills-segmented" role="group" aria-label="Node scope">
+                    <button type="button" class="active" data-node-scope="setup">This node</button>
+                    <button type="button" data-node-scope="all">All SSH</button>
+                    <button type="button" data-node-scope="selected">Selected</button>
+                  </div>
+                  <div class="skillm-node-list" id="skillm-node-list"></div>
+                </section>
+                <section class="skills-subpanel">
+                  <h4>Install target</h4>
+                  <label>Scope
+                    <select id="skillm-install-scope">
+                      <option value="global">Global defaults</option>
+                      <option value="workspace">Workspace path</option>
+                    </select>
+                  </label>
+                  <label>Workspace path
+                    <input type="text" id="skillm-workspace-path" placeholder="/path/to/workspace" autocomplete="off">
+                  </label>
+                  <div class="skills-agent-grid" aria-label="Agent CLIs">
+                    <label><input type="checkbox" id="skillm-agent-claude" checked> Claude</label>
+                    <label><input type="checkbox" id="skillm-agent-codex" checked> Codex</label>
+                    <label><input type="checkbox" id="skillm-agent-openclaw" checked> OpenClaw</label>
+                    <label><input type="checkbox" id="skillm-agent-cursor"> Cursor</label>
+                  </div>
+                  <div class="skills-actions">
+                    <button type="button" class="btn-primary" id="skillm-install">Install selected skills</button>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <div class="settings-status skills-status" id="skillm-status" aria-live="polite"></div>
       </section>
 
     </main>
