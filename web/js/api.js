@@ -98,7 +98,7 @@ export class CamApi {
 
   // Only cache lightweight list endpoints, not file content
   _isCacheable(path) {
-    return !path.includes('/files/read') && !path.includes('/workspace/files') && !path.includes('/upload') && !path.includes('/output') && !path.includes('/fulloutput') && !path.includes('/logs');
+    return !path.includes('/skillm') && !path.includes('/files/read') && !path.includes('/workspace/files') && !path.includes('/upload') && !path.includes('/output') && !path.includes('/fulloutput') && !path.includes('/logs');
   }
 
   _pruneCache() {
@@ -444,6 +444,9 @@ export class CamApi {
   startAgent(body) { return this.request('POST', '/api/agents', body); }
   stopAgent(id, force = false) { return this.request('DELETE', `/api/agents/${id}?force=${force}`); }
   updateAgent(id, body) { return this.request('PATCH', `/api/agents/${id}`, body); }
+  agentCronJobs(id) { return this.request('GET', `/api/agents/${id}/cron`); }
+  createAgentCronJob(id, body) { return this.request('POST', `/api/agents/${id}/cron`, body); }
+  deleteAgentCronJob(id, jobKey) { return this.request('DELETE', `/api/agents/${id}/cron/${encodeURIComponent(jobKey)}`); }
   restartAgent(id) { return this.request('POST', `/api/agents/${id}/restart`); }
   deleteAgentHistory(id) { return this.request('DELETE', `/api/agents/${id}/history`); }
   agentLogs(id, tail = 100) { return this.request('GET', `/api/agents/${id}/logs?tail=${tail}`); }
@@ -487,6 +490,28 @@ export class CamApi {
   // Hubs that do not implement this (e.g. external CAM server, relay)
   // will 404; the renderer treats that as "import unavailable".
   sshConfigHosts() { return this.request('GET', '/api/system/ssh-config'); }
+
+  // Skillm library management (CAM-DESK-SKILLM-010..014).
+  skillmStatus(contextName) {
+    return this.request('GET', `/api/skillm/status?context=${encodeURIComponent(contextName || '')}`);
+  }
+  skillmRepos(contextName) {
+    return this.request('GET', `/api/skillm/repos?context=${encodeURIComponent(contextName || '')}`);
+  }
+  skillmList(contextName, opts = {}) {
+    const qs = new URLSearchParams({ context: contextName || '' });
+    if (opts.repoName) qs.set('repo', opts.repoName);
+    if (opts.sync) qs.set('sync', '1');
+    return this.request('GET', `/api/skillm/list?${qs.toString()}`);
+  }
+  skillmRepoAdd(body) { return this.request('POST', '/api/skillm/repos', body); }
+  skillmRepoUpdate(body) { return this.request('PATCH', '/api/skillm/repos', body); }
+  skillmRepoRemove(body) { return this.request('DELETE', '/api/skillm/repos', body); }
+  skillmRepoRefresh(body) { return this.request('POST', '/api/skillm/repos/refresh', body); }
+  skillmRepoConnect(body) { return this.request('POST', '/api/skillm/repo-connect', body); }
+  skillmSync(body) { return this.request('POST', '/api/skillm/sync', body); }
+  skillmInstall(body) { return this.request('POST', '/api/skillm/install', body); }
+
 }
 
 export const api = new CamApi();
