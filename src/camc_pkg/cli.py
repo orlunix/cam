@@ -2709,6 +2709,137 @@ def cmd_status(args):
         print(json.dumps({"agents": agents, "hash": h}))
 
 
+def _find_monitor_pids(agent_id):
+    """Enumerate local processes that look like ``camc _monitor <agent_id>``.
+
+    Returns a list of ``(pid, etimes)`` tuples. ``etimes`` is the
+    elapsed seconds since the process started (lower = newer); None if
+    unavailable. Best-effort: returns ``[]`` on any subprocess / parse
+    failure rather than raising. The current process is excluded so
+    ``cmd_heal`` cannot mistake itself for a stale monitor.
+
+    Matching uses ``_monitor <agent_id>`` as a token boundary to avoid
+    false positives from agent ids that share a substring with another
+    id (8-hex ids are short and substring collisions, while rare, do
+    happen).
+    """
+    if not agent_id:
+        return []
+    import re as _re
+    pat = _re.compile(r"_monitor\s+%s(?:\b|$)" % _re.escape(agent_id))
+    my_pid = os.getpid()
+
+    def _parse_extended(text):
+        out = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(None, 2)
+            if len(parts) < 3:
+                continue
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            try:
+                et = int(parts[1])
+            except ValueError:
+                et = None
+            cmd = parts[2]
+            if "grep" in cmd:
+                continue
+            if pid == my_pid:
+                continue
+            if pat.search(cmd):
+                out.append((pid, et))
+        return out
+
+    def _parse_aux(text):
+        out = []
+        for line in text.splitlines():
+            if "grep" in line:
+                continue
+            if "_monitor" not in line or agent_id not in line:
+                continue
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            try:
+                pid = int(parts[1])
+            except ValueError:
+                continue
+            if pid == my_pid:
+                continue
+            if pat.search(line):
+                out.append((pid, None))
+        return out
+
+    try:
+        text = subprocess.check_output(
+            ["ps", "-eo", "pid=,etimes=,command="],
+            stderr=subprocess.DEVNULL).decode("utf-8", errors="replace")
+        return _parse_extended(text)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        text = subprocess.check_output(
+            ["ps", "aux"], stderr=subprocess.DEVNULL).decode(
+                "utf-8", errors="replace")
+        return _parse_aux(text)
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
+def _cleanup_duplicate_monitors(agent_id, record_pid, pidfile_pid,
+                                 _find=None, _kill=None):
+    """If multiple local monitor processes exist for ``agent_id``, keep
+    exactly one and SIGTERM the older extras.
+
+    Keeper preference (first match wins):
+      1. ``record_pid`` (agent record) if among the live monitor pids.
+      2. ``pidfile_pid`` (``~/.cam/pids/<id>.pid`` etc.) if among them.
+      3. Newest monitor — smallest ``etimes``. When ``etimes`` is
+         unavailable we fall back to the highest PID (a rough proxy
+         for "started most recently" within one PID cycle).
+
+    Returns ``(kept_pid, killed_pids)``. With zero or one monitor the
+    second element is ``[]``. ``_find`` / ``_kill`` are injectable for
+    tests; defaults call this module's helpers / ``os.kill``.
+    """
+    find = _find or _find_monitor_pids
+    kill = _kill or os.kill
+    pids = find(agent_id)
+    if not pids:
+        return None, []
+    if len(pids) == 1:
+        return pids[0][0], []
+    pid_set = set(p for p, _ in pids)
+    keep = None
+    if record_pid and record_pid in pid_set:
+        keep = record_pid
+    elif pidfile_pid and pidfile_pid in pid_set:
+        keep = pidfile_pid
+    else:
+        # Sort: known etimes ascending (smaller = newer), unknown last.
+        # PID descending tie-breaker. The chosen keeper is index 0.
+        _SENTINEL = 10 ** 12
+        def _key(item):
+            p, et = item
+            return ((et if et is not None else _SENTINEL), -p)
+        keep = sorted(pids, key=_key)[0][0]
+    killed = []
+    for p, _ in pids:
+        if p == keep:
+            continue
+        try:
+            kill(p, 15)  # SIGTERM only — per spec
+            killed.append(p)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    return keep, killed
+
+
 def _kill_all_monitors():
     """Kill all monitor processes on this machine (old and new)."""
     killed = 0
@@ -2892,9 +3023,47 @@ def cmd_heal(args):
             print("  %s (%s): session dead, marked %s" % (name, aid, status))
             continue
 
+        # Duplicate-monitor sweep. Multiple `camc _monitor <aid>`
+        # processes can accumulate when the restart path raced an
+        # already-alive monitor (e.g. an earlier heal that mis-detected
+        # the live one). Keep exactly one and SIGTERM the rest before
+        # the alive-check below — otherwise the alive-check would see
+        # any one of the duplicates and report `ok` while the others
+        # keep racing on the tmux pane.
+        from camc_pkg import PIDS_DIR
+        record_pid = _sf(a, "pid", None)
+        pidfile_pid = None
+        for _pp in (os.path.join(PIDS_DIR, "%s.pid" % aid),
+                    "/tmp/camc-%s.pid" % aid):
+            if os.path.exists(_pp):
+                try:
+                    with open(_pp) as _pf:
+                        pidfile_pid = int(_pf.read().strip())
+                    break
+                except (ValueError, OSError):
+                    pass
+        kept_pid, killed_pids = _cleanup_duplicate_monitors(
+            aid, record_pid, pidfile_pid)
+        if killed_pids:
+            print("  %s (%s): duplicate monitors cleaned (kept PID %d, killed %s)"
+                  % (name, aid, kept_pid,
+                     ", ".join(str(p) for p in killed_pids)))
+        # Adopt the kept pid whenever one was found — even when no
+        # duplicates were killed (len(pids)==1). Otherwise a single
+        # live BUT untracked monitor (stale/missing record_pid + no
+        # pidfile) would slip past the alive-check below and heal
+        # would spawn a NEW monitor, creating exactly the duplicate
+        # state we are trying to avoid. Silent store.update — the
+        # `duplicate monitors cleaned` line above is reserved for the
+        # case where something was actually killed.
+        if kept_pid and kept_pid != record_pid:
+            store.update(aid, pid=kept_pid)
+            record_pid = kept_pid
+            a["pid"] = kept_pid
+
         # Check if monitor process is alive
         monitor_alive = False
-        pid = _sf(a, "pid", None)
+        pid = record_pid
         if pid:
             try:
                 os.kill(pid, 0)
@@ -2902,7 +3071,6 @@ def cmd_heal(args):
             except (ProcessLookupError, PermissionError, OSError):
                 pass
         if not monitor_alive:
-            from camc_pkg import PIDS_DIR
             for pid_path in (os.path.join(PIDS_DIR, "%s.pid" % aid), "/tmp/camc-%s.pid" % aid):
                 if os.path.exists(pid_path):
                     try:
