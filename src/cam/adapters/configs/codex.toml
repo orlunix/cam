@@ -11,7 +11,7 @@ name = "codex"
 display_name = "OpenAI Codex"
 
 [launch]
-command = ["codex", "--enable", "goals"]
+command = ["codex", "-c", "features.goals=true"]
 prompt_after_launch = true
 startup_wait = 20.0
 ready_pattern = "^[›>]"
@@ -58,7 +58,7 @@ error_flags = ["IGNORECASE"]
 pattern = "^[^\\w\\s]?\\s*1\\.\\s*(Yes,?\\s*)?allow Codex to work"
 flags = ["IGNORECASE", "MULTILINE"]
 response = "1"
-send_enter = false
+send_enter = true
 
 [[confirm]]
 # Trust dialog (Codex 0.55+):
@@ -68,7 +68,7 @@ send_enter = false
 pattern = "Do\\s+you\\s+trust\\s+the\\s+contents\\s+of\\s+this\\s+directory\\?.*Yes,?\\s+continue"
 flags = ["IGNORECASE", "DOTALL"]
 response = "1"
-send_enter = false
+send_enter = true
 
 [[confirm]]
 # Same trust dialog, but match the bottom menu. The question text can be
@@ -77,7 +77,7 @@ send_enter = false
 pattern = "^[^\\w\\s]?\\s*1\\.\\s*Yes,?\\s+continue\\s*\\n\\s*2\\.\\s*No,\\s+quit\\s*\\n\\s*Press\\s+enter\\s+to\\s+continue"
 flags = ["IGNORECASE", "MULTILINE"]
 response = "1"
-send_enter = false
+send_enter = true
 
 [[confirm]]
 # Retry command outside the sandbox after a failed command.
@@ -86,20 +86,14 @@ send_enter = false
 pattern = "^[^\\w\\s]?\\s*1\\.\\s*Yes,\\s*proceed.*Press\\s+enter\\s+to\\s+confirm"
 flags = ["IGNORECASE", "DOTALL", "MULTILINE"]
 response = "1"
-send_enter = false
-
-[[confirm]]
-# Any [Y/n] or [y/N] prompt — covers Apply, Accept, Approve, Continue,
-# Proceed, Run, Execute, Overwrite, Allow, and any future prompts
-pattern = "\\[Y/n\\]|\\[y/N\\]"
-flags = ["IGNORECASE"]
-response = "y"
 send_enter = true
 
-[probe]
-char = "1"                    # smart probe char (also used for auto-confirm)
-wait = 0.3
-idle_threshold = 2
+# (2026-06-11 hot-fix) The generic bracket-y/n rule
+#   "\[Y/n\]|\[y/N\]"
+# was REMOVED — modern codex uses numbered menus handled by the
+# rules above. The legacy rule false-fired on prose / scrollback
+# containing the literal bracket token. The new global input-cursor
+# guard in src/camc_pkg/detection.py is a second layer of defense.
 
 [monitor]
 # Codex shows "• Working (7s • esc to interrupt)" while busy
@@ -107,11 +101,26 @@ busy_pattern = "Working \\(\\d+s"
 confirm_cooldown = 5.0
 confirm_recent_lines = 100    # codex "don't ask again for commands that start with <huge cmd>" can wrap option 2 to 30+ lines, pushing `1. Yes, proceed` out of view
 confirm_sleep = 0.5
-completion_stable = 3.0
 health_check_interval = 15
-empty_threshold = 3
+idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle
 auto_exit = false             # finalize agent when task completes and idle confirmed
 exit_action = "kill_session"  # "kill_session", "send_exit", or "mark_only"
-probe_stable = 10.0
-probe_cooldown = 20.0
 exit_command = "/exit"        # command to send if exit_action = "send_exit"
+
+# Adapter-owned readiness (F-08). Codex auth is soft: any one of the
+# alternatives below passes; complete miss is a WARN not a block,
+# because the canonical auth path varies across deployments.
+[readiness]
+binary = "codex"
+version_args = ["--version"]
+version_required = true
+install_hint = "npm install -g @openai/codex"
+
+[[readiness.optional_files]]
+path = "~/.codex/auth.json"
+
+[[readiness.optional_files]]
+path = "~/.codex/config.toml"
+
+[[readiness.optional_env]]
+name = "OPENAI_API_KEY"

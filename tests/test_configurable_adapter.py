@@ -182,14 +182,13 @@ class TestCodexToml:
 
     # ── should_auto_confirm ──
 
+    # The "Apply changes? [Y/n]" / "Accept suggestion? [Y/n]" / etc.
+    # parametrize rows were removed on 2026-06-11 along with codex.toml
+    # rule #5 (the loose bracket-y/n rule). Modern Codex uses numbered
+    # menus handled by the rules above. See the hot-fix block in
+    # src/cam/adapters/configs/codex.toml.
     @pytest.mark.parametrize("output,expect_match", [
         ("1. Yes, allow Codex to work in this folder\n2. No", True),
-        ("Apply changes? [Y/n]", True),
-        ("Accept suggestion? [Y/n]", True),
-        ("Approve all? [Y/n]", True),
-        ("Continue with changes? [Y/n]", True),
-        ("Proceed? [Y/n]", True),
-        ("Apply changes? [y/N]", True),
         ("1. Yes, continue\n2. No, quit\nPress Enter to continue", True),
         ("Press Enter to continue", False),
         ("Just some normal output", False),
@@ -205,13 +204,13 @@ class TestCodexToml:
         output = "1. Yes, allow Codex to work in this folder\n2. No"
         result = codex_adapter.should_auto_confirm(output)
         assert result.response == "1"
-        assert result.send_enter is False
+        assert result.send_enter is True
 
     def test_trust_continue_menu_sends_1(self, codex_adapter):
         output = "1. Yes, continue\n2. No, quit\nPress Enter to continue"
         result = codex_adapter.should_auto_confirm(output)
         assert result.response == "1"
-        assert result.send_enter is False
+        assert result.send_enter is True
 
     def test_retry_without_sandbox_sends_1(self, codex_adapter):
         output = (
@@ -222,7 +221,7 @@ class TestCodexToml:
         )
         result = codex_adapter.should_auto_confirm(output)
         assert result.response == "1"
-        assert result.send_enter is False
+        assert result.send_enter is True
 
     # ── detect_completion (prompt_count strategy) ──
 
@@ -293,25 +292,29 @@ class TestCursorAdapter:
         output = "Fixed it.\n→ Add a follow-up\nClaude 4.6 Opus (Thinking) · 6.7%"
         assert cursor_adapter.detect_completion(output) == AgentStatus.COMPLETED
 
-    def test_auto_confirm_run_once(self, cursor_adapter):
-        output = "Run this command?\n → Run (once) (y)\n   Skip (esc or n)"
-        result = cursor_adapter.should_auto_confirm(output)
-        assert result is not None
-        assert result.response == ""
-        assert result.send_enter is True
-
-    def test_auto_confirm_run_always(self, cursor_adapter):
-        output = "Run this command?\n → Run (always for this command)\n   Skip"
-        result = cursor_adapter.should_auto_confirm(output)
-        assert result is not None
-        assert result.send_enter is True
+    # test_auto_confirm_run_once and test_auto_confirm_run_always were
+    # removed on 2026-06-11 along with the two loose substring rules
+    # ("\(y\)" / "Run \(always") in cursor.toml. See the hot-fix block
+    # in src/cam/adapters/configs/cursor.toml.
 
     def test_auto_confirm_trust_workspace(self, cursor_adapter):
         output = "▶ [a] Trust this workspace\n  [q] Quit\n  Use arrow keys to navigate"
         result = cursor_adapter.should_auto_confirm(output)
         assert result is not None
-        assert result.response == ""
-        assert result.send_enter is True
+        assert result.response == "a"
+        assert result.send_enter is False
+
+    def test_stale_trust_workspace_does_not_auto_confirm(self, cursor_adapter):
+        output = (
+            "▶ [a] Trust this workspace\n"
+            "  [q] Quit\n"
+            "  ⏳ Trusting workspace...\n"
+            "Cursor Agent\n"
+            "v2026.06.04-5fd875e\n"
+            "→ aaaaa\n"
+            "Composer 2.5 Fast\n"
+        )
+        assert cursor_adapter.should_auto_confirm(output) is None
 
     def test_trust_dialog_not_detected_as_ready(self, cursor_adapter):
         """Trust dialog has ▶ not →, so is_ready_for_input must return False."""
@@ -645,3 +648,75 @@ class TestAutoExitConfig:
 
         task_none = TaskDefinition(name="test", tool="claude", prompt="test")
         assert task_none.auto_exit is None
+
+
+# ─── Hot-fix 2026-06-11: global input-cursor guard
+#
+# camc_pkg.detection.should_auto_confirm now refuses to fire any rule
+# unless an active input-cursor marker (❯ / › / `> `) is visible on
+# the last 5 non-empty lines of the captured screen. This kills the
+# class of false-fires where stray substrings (markdown bodies, code
+# blocks, embedded screen captures) match a rule even though no real
+# prompt is on screen.
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestGlobalInputCursorGuard:
+    """The three spec-mandated tests for the global guard."""
+
+    def _camc_cfg(self, rules):
+        from camc_pkg.adapters import AdapterConfig as CamcAdapterConfig
+        return CamcAdapterConfig({
+            "adapter": {"name": "x", "display_name": "X"},
+            "confirm": rules,
+        })
+
+    def test_no_cursor_no_confirm(self):
+        """Prompt token in mid-block prose but no input cursor on
+        screen → should return None unconditionally."""
+        from camc_pkg.detection import should_auto_confirm
+        cfg = self._camc_cfg([
+            {"pattern": r"1\. Yes", "response": "1", "send_enter": False},
+        ])
+        # No ❯/›/`> ` anywhere in the last 5 non-empty lines.
+        screen = (
+            "Here is some markdown prose:\n"
+            "  1. Yes, do it\n"
+            "  2. No, skip it\n"
+            "These are list items, not a real prompt.\n"
+            "Final paragraph of agent narration.\n"
+        )
+        assert should_auto_confirm(screen, cfg) is None
+
+    def test_cursor_present_confirm_fires(self):
+        """Cursor at the last line + a numbered menu in the recent
+        window → confirm fires normally."""
+        from camc_pkg.detection import should_auto_confirm
+        cfg = self._camc_cfg([
+            {"pattern": r"1\. Yes", "response": "1", "send_enter": False},
+        ])
+        screen = (
+            "Do you want to proceed?\n"
+            "1. Yes\n"
+            "2. No\n"
+            "❯ \n"   # input cursor visible on last line
+        )
+        result = should_auto_confirm(screen, cfg)
+        assert result is not None
+        response, send_enter, _pat, _matched = result
+        assert response == "1"
+        assert send_enter is False
+
+    def test_cursor_without_dialog(self):
+        """Cursor present but no rule pattern matches → None.
+        Guard must not over-fire; rule matching still applies."""
+        from camc_pkg.detection import should_auto_confirm
+        cfg = self._camc_cfg([
+            {"pattern": r"1\. Yes", "response": "1", "send_enter": False},
+        ])
+        screen = (
+            "Some agent narration with the cursor visible:\n"
+            "❯ tell me about cats\n"
+            "No dialog here, no numbered menu.\n"
+        )
+        assert should_auto_confirm(screen, cfg) is None

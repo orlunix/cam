@@ -2261,10 +2261,10 @@ f327b73 monitor: comment out busy_pattern brake on auto-confirm
 6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
 9c82cd4 camc: keep cron deploy compatible with Python 3.6
 ```
-## v1.2.0  13af7cc-dirty 2026-06-09 00:35
+## v1.2.0  13af7cc-dirty 2026-06-06 07:34
 
-- Lines: 10248
-- Output: /tmp/cam-cron-build.lFetxJ/wt/dist/camc
+- Lines: 10348
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
 - Recent changes:
 ```
 13af7cc camc monitor: refactor loop into feature pipeline
@@ -2273,3 +2273,368 @@ f327b73 monitor: comment out busy_pattern brake on auto-confirm
 20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
 6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
 ```
+## v1.2.0  13af7cc-dirty 2026-06-06 07:39
+
+- Lines: 10381
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+```
+## v1.2.0  13af7cc-dirty 2026-06-07 23:45
+
+- Lines: 10543
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+```
+## v1.2.0  13af7cc-dirty 2026-06-08 08:47
+
+- Lines: 10567
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+```
+## v1.2.0  13af7cc-dirty 2026-06-08 08:54
+
+- Lines: 10567
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+```
+## v1.2.0  13af7cc-dirty 2026-06-08 08:58
+
+- Lines: 10577
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+```
+## v1.2.0  13af7cc-dirty 2026-06-08 09:08
+
+- Lines: 10577
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+```
+## v1.2.0  13af7cc-dirty 2026-06-08 20:23
+
+- Lines: 10577
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+```
+## v1.2.0  13af7cc-dirty 2026-06-08 20:56
+
+- Lines: 10578
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+```
+## v1.2.0  13af7cc-dirty 2026-06-08 23:03
+
+- Lines: 10875
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+```
+
+
+## v1.2.0  13af7cc-dirty 2026-06-08 23:05  cron jobs.d/run worker scheme
+
+- Lines: 10875
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Scope: rewrite cron storage + execution per docs/camc-cron-spec.md.
+  - Per-file job storage `~/.cam/cron/jobs.d/<job_id>.json` replaces the
+    single `jobs.json` registry. Legacy `jobs.json` is auto-migrated on
+    first access; the old file is renamed to `jobs.json.migrated`.
+  - Job schema is the spec shape: nested `policy {ttl_days, expires_at,
+    max_attempts}` and `state {attempts, created_at, updated_at,
+    last_due_at, last_run_id, last_status}`, plus `created_by` metadata.
+    `schedule.next_due_at` is now the source of truth for "is due."
+  - `cron tick` schedules ONLY — never executes user commands inline.
+    For each due job it appends `run_queued`, advances next_due_at,
+    persists job state, then detaches `camc cron run <run_id>`.
+  - New internal `camc cron run <run_id>` worker: looks up the queued
+    run, executes argv or shell with timeout, redirects stdout/stderr
+    to `~/.cam/cron/logs/<run_id>.log`, appends `run_started`,
+    then one of `run_succeeded` / `run_failed` / `run_timed_out`.
+    Updates job attempts; recycles once-jobs on success and any job
+    after `max_attempts` failures.
+  - Tick fails closed on corrupt config OR corrupt job file (any
+    `*.json` under jobs.d/ that won't parse).
+  - Crontab block PATH is short + stable; no longer inherits the
+    caller's `$PATH` (long login-shell PATH leak was a real risk).
+  - Action remains OPAQUE to cron: exit 0 = success, anything else =
+    failure. cron does not parse msg/run/apply semantics.
+- Tests: tests/test_cron.py rewritten end-to-end (63 tests).
+  Full pytest: 709 passed.
+- Files touched: src/camc_pkg/cron.py, src/camc_pkg/cli.py,
+  tests/test_cron.py, src/camc, dist/camc, dist/BUILD_LOG.md.
+## v1.2.0  13af7cc-dirty 2026-06-08 23:22
+
+- Lines: 10879
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+```
+## v1.2.0  04e35ad-dirty 2026-06-09 03:01
+
+- Lines: 10879
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+```
+## v1.2.0  04e35ad-dirty 2026-06-09 06:19
+
+- Lines: 10879
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+```
+## v1.2.0  04e35ad-dirty 2026-06-09 06:21
+
+- Lines: 10882
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+```
+## v1.2.0  9d98efc-dirty 2026-06-10 00:37
+
+- Lines: 11045
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+```
+
+## v1.2.0  9d98efc-dirty 2026-06-10 00:43
+
+- Lines: 11050
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+```
+
+## v1.2.0  da7299b-dirty 2026-06-10 01:27
+
+- Lines: 11032
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+```
+
+## v1.2.0  da7299b-dirty 2026-06-10 01:32
+
+- Lines: 11104
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+```
+
+## v1.2.0  da7299b-dirty 2026-06-10 02:16
+
+- Lines: 11077
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+```
+
+## v1.2.0  da7299b-dirty 2026-06-10 02:26
+
+- Lines: 11205
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+```
+
+## v1.2.0  da7299b-dirty 2026-06-10 02:31
+
+- Lines: 11213
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+```
+## v1.2.0  da7299b-dirty 2026-06-10 02:45
+
+- Lines: 11238
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+```
+## v1.2.0  da7299b-dirty 2026-06-10 02:51
+
+- Lines: 11261
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+```
+## v1.2.0  da7299b-dirty 2026-06-10 23:46
+
+- Lines: 11302
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+```
+
+## v1.2.0  da7299b-dirty 2026-06-10 23:50
+
+- Lines: 11310
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+```
+
+
+
+## v1.2.0  hot-fix 2026-06-11  global input-cursor guard for auto-confirm
+
+- Lines: 11310
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Scope: stop should_auto_confirm() from false-firing when a literal
+  rule substring (markdown text, code block, embedded screen capture)
+  appears on the captured screen but no real interactive prompt is
+  present. Incident: agent 4ff4eaea (camman) fired the y/n rule TWICE
+  while the user was viewing a markdown discussion containing the
+  bracket token.
+- Changes:
+  1. camc_pkg/detection.py: global input-cursor guard added.
+       _INPUT_CURSOR_RE = re.compile(r"(?m)^\s*[❯›>]\s")
+       has_input_cursor(output)
+     should_auto_confirm() now returns None unless one of ❯ (\xe2\x9d\xaf,
+     Claude TUI), › (\xe2\x80\xba, Codex TUI), or `> ` (generic shell)
+     is visible on the last 5 non-empty lines of the RAW capture
+     (BEFORE clean_for_confirm strips selection cursors).
+  2. claude.toml: rule #5 (generic y/n bracket) REMOVED entirely.
+  3. codex.toml:  rule #5 (generic bracket-y/n)   REMOVED entirely.
+  4. cursor.toml: two loose substring rules ("\(y\)" and "Run \(always")
+                  REMOVED. Trust-workspace rule kept (end-anchored).
+  5. Tests:
+       - tests/test_configurable_adapter.py TestGlobalInputCursorGuard:
+         test_no_cursor_no_confirm
+         test_cursor_present_confirm_fires
+         test_cursor_without_dialog
+       - test_adapters / test_configurable_adapter parametrize lists
+         trimmed of cases that exercised the now-removed rules.
+       - test_monitor_loop screens that exercise auto-confirm got a
+         trailing "❯ " line to satisfy the guard. The y/n test
+         was flipped to assert NEGATIVE (rule no longer exists).
+       - tests/test_monitor_loop.py inline TOML: y/n rule removed.
+- Tests: full pytest 776 passed. cmp src/camc dist/camc byte-identical.
