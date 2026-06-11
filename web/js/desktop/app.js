@@ -16,6 +16,7 @@ import { mountSettingsMode } from './settings-mode.js?v=0.64.0';
 import { mountStartAgentMode } from './start-agent-mode.js?v=0.64.0';
 import { mountNodesMode } from './nodes-mode.js?v=0.64.0';
 import { mountSkillsMode } from './skills-mode.js?v=0.64.0';
+import { mountTodosMode } from './todos-mode.js?v=0.64.0';
 
 const POLL_INTERVAL_MS = 5000;
 const AGENT_SNAPSHOT_SYNC_EVERY_TICKS = 6; // ~30s at POLL_INTERVAL_MS.
@@ -23,7 +24,7 @@ const PROFILE_KIND_KEY = 'cam_profile_kind';
 // `start`/`nodes` are real left-nav workspace modes like
 // `agents`/`settings`. `nodes` shows hub-provided controllers/nodes
 // (CAM-DESK-NODEUI-010..017) and is not a connection mode.
-const MODES = ['agents', 'settings', 'start', 'nodes', 'skills'];
+const MODES = ['agents', 'settings', 'start', 'nodes', 'skills', 'todos'];
 const DEFAULT_MODE = 'agents';
 
 function readConfig() {
@@ -265,7 +266,7 @@ function handleEvent(event) {
 /* ────────── Mode host ────────── */
 
 // Modes that survive a page reload.
-const PERSISTENT_MODES = new Set(['agents', 'settings', 'start', 'nodes', 'skills']);
+const PERSISTENT_MODES = new Set(['agents', 'settings', 'start', 'nodes', 'skills', 'todos']);
 
 function setMode(next) {
   if (!MODES.includes(next)) next = DEFAULT_MODE;
@@ -440,6 +441,7 @@ async function init() {
     connect: autoStartConnection,
   });
   mountSkillsMode({ api, state, showToast });
+  mountTodosMode({ api, state, showToast });
 
   // First connection attempt.
   //
