@@ -97,6 +97,8 @@ class MonitorRuntime(object):
         self.last_change_hash1 = now  # hash1 last-changed timestamp (diagnostic)
         self.last_health = now
         self.last_confirm = 0.0
+        self.last_confirm_hash = ""   # screen hash at last fire (dedup)
+        self.last_confirm_response = ""  # response sent at last fire (input-box guard)
         self.current_state = None
         self.has_worked = False
         # 2026-06-10 addendum: "initialize" is a one-shot pre-busy
@@ -389,10 +391,24 @@ class AutoConfirmationFeature(MonitorFeature):
                             "msg": "[%d] Confirm cooldown (%.1fs remaining)"
                                    % (snap.cycle, cfg.confirm_cooldown - confirm_cd)})
             return actions
-        confirm = should_auto_confirm(snap.output, cfg)
+        confirm = should_auto_confirm(snap.output, cfg,
+                                       last_response=runtime.last_confirm_response,
+                                       prev_output=runtime.prev_output or "")
         if not confirm:
             return actions
         response, send_enter, pat_str, matched = confirm
+        # Dedup: skip if the digit-stripped screen hash (hash1)
+        # hasn't changed since the last fire. Why hash1 not hash0:
+        # hash0 includes ASCII digits, so codex's "Working 5m 31s"
+        # → "32s" → "33s" timer changes hash0 every second and
+        # defeats dedup. hash1 strips ASCII digits, so timer ticks
+        # don't flip it — but a NEW dialog with different surrounding
+        # text (e.g. a different `$ command` line) does.
+        if snap.hash1 and snap.hash1 == runtime.last_confirm_hash:
+            actions.append({"kind": "log", "level": "debug",
+                            "msg": "[%d] Confirm dedup: hash1 unchanged since last fire"
+                                   % snap.cycle})
+            return actions
         actions.append({"kind": "log", "level": "info",
                         "msg": "Auto-confirm: pattern=%r matched=%r -> %r (enter=%s)"
                                % (pat_str, matched, response, send_enter)})
@@ -405,6 +421,8 @@ class AutoConfirmationFeature(MonitorFeature):
         elif send_enter:
             actions.append({"kind": "send_key", "key": "Enter"})
         runtime.last_confirm = snap.now
+        runtime.last_confirm_hash = snap.hash1
+        runtime.last_confirm_response = response
         runtime.last_change = snap.now
         runtime.idle_confirmed = False
         runtime.has_worked = True

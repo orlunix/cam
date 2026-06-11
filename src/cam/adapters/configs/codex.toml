@@ -52,41 +52,16 @@ prompt_count_threshold = 2
 error_pattern = "(Error:|error:|FAILED|fatal:|Exception|command not found)"
 error_flags = ["IGNORECASE"]
 
+# (2026-06-11 trim) Rules 2, 3, 4 removed (trust-dialog DOTALL variants,
+# bottom-menu variant, sandbox-retry). They each used broad anchors that
+# false-fired on scrollback prose. The single rule below requires the
+# active cursor › at line start — only matches when the menu is drawn.
 [[confirm]]
-# Trust dialog: "1. Yes, allow Codex to work in this folder"
-# Anchor: line start + ≤1 leading symbol (cursor "›"/etc), no prose before the marker.
-pattern = "^[^\\w\\s]?\\s*1\\.\\s*(Yes,?\\s*)?allow Codex to work"
+# Numbered menu — cursor at line start, then "1. Yes".
+pattern = "^›\\s+1\\.\\s*Yes.*$"
 flags = ["IGNORECASE", "MULTILINE"]
 response = "1"
-send_enter = true
-
-[[confirm]]
-# Trust dialog (Codex 0.55+):
-#   "Do you trust the contents of this directory?"
-#   "1. Yes, continue"
-# Send "1" to select the numbered affirmative option.
-pattern = "Do\\s+you\\s+trust\\s+the\\s+contents\\s+of\\s+this\\s+directory\\?.*Yes,?\\s+continue"
-flags = ["IGNORECASE", "DOTALL"]
-response = "1"
-send_enter = true
-
-[[confirm]]
-# Same trust dialog, but match the bottom menu. The question text can be
-# above the last 8 lines captured by should_auto_confirm(), while these
-# menu lines remain visible at the bottom.
-pattern = "^[^\\w\\s]?\\s*1\\.\\s*Yes,?\\s+continue\\s*\\n\\s*2\\.\\s*No,\\s+quit\\s*\\n\\s*Press\\s+enter\\s+to\\s+continue"
-flags = ["IGNORECASE", "MULTILINE"]
-response = "1"
-send_enter = true
-
-[[confirm]]
-# Retry command outside the sandbox after a failed command.
-# Both anchors anchored to line start; option 2 can wrap to dozens of lines
-# in between (huge csh command being quoted) — DOTALL lets .* span them.
-pattern = "^[^\\w\\s]?\\s*1\\.\\s*Yes,\\s*proceed.*Press\\s+enter\\s+to\\s+confirm"
-flags = ["IGNORECASE", "DOTALL", "MULTILINE"]
-response = "1"
-send_enter = true
+send_enter = false
 
 # (2026-06-11 hot-fix) The generic bracket-y/n rule
 #   "\[Y/n\]|\[y/N\]"
@@ -99,7 +74,7 @@ send_enter = true
 # Codex shows "• Working (7s • esc to interrupt)" while busy
 busy_pattern = "Working \\(\\d+s"
 confirm_cooldown = 5.0
-confirm_recent_lines = 100    # codex "don't ask again for commands that start with <huge cmd>" can wrap option 2 to 30+ lines, pushing `1. Yes, proceed` out of view
+confirm_recent_lines = 20
 confirm_sleep = 0.5
 health_check_interval = 15
 idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle

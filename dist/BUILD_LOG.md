@@ -2638,3 +2638,185 @@ f327b73 monitor: comment out busy_pattern brake on auto-confirm
          was flipped to assert NEGATIVE (rule no longer exists).
        - tests/test_monitor_loop.py inline TOML: y/n rule removed.
 - Tests: full pytest 776 passed. cmp src/camc dist/camc byte-identical.
+## v1.2.0  005d020-dirty 2026-06-11 00:40
+
+- Lines: 11266
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+005d020 auto-confirm: global input-cursor guard + remove loose substring rules
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+```
+
+## v1.2.0  005d020-dirty 2026-06-11 00:47
+
+- Lines: 11267
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+005d020 auto-confirm: global input-cursor guard + remove loose substring rules
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+```
+
+## v1.2.0  005d020-dirty 2026-06-11 01:00
+
+- Lines: 11261
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+005d020 auto-confirm: global input-cursor guard + remove loose substring rules
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+```
+
+## v1.2.0  005d020-dirty 2026-06-11 01:07
+
+- Lines: 11261
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+005d020 auto-confirm: global input-cursor guard + remove loose substring rules
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+```
+
+## v1.2.0  005d020-dirty 2026-06-11 01:15
+
+- Lines: 11240
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+005d020 auto-confirm: global input-cursor guard + remove loose substring rules
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+```
+
+## v1.2.0  005d020-dirty 2026-06-11 01:28
+
+- Lines: 11251
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+005d020 auto-confirm: global input-cursor guard + remove loose substring rules
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+```
+
+## v1.2.0  005d020-dirty 2026-06-11 01:35
+
+- Lines: 11258
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+005d020 auto-confirm: global input-cursor guard + remove loose substring rules
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+```
+
+## v1.2.0  005d020-dirty 2026-06-11 02:03
+
+- Lines: 11258
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+005d020 auto-confirm: global input-cursor guard + remove loose substring rules
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+```
+
+## v1.2.0  005d020-dirty 2026-06-11 03:08
+
+- Lines: 11263
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+005d020 auto-confirm: global input-cursor guard + remove loose substring rules
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+```
+
+## v1.2.0  005d020-dirty 2026-06-11 03:18
+
+- Lines: 11263
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+005d020 auto-confirm: global input-cursor guard + remove loose substring rules
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+```
+
+## v1.2.0  005d020-dirty 2026-06-11 03:27
+
+- Lines: 11263
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+005d020 auto-confirm: global input-cursor guard + remove loose substring rules
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+```
+
+## v1.2.0  005d020-dirty 2026-06-11 03:29
+
+- Lines: 11265
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+005d020 auto-confirm: global input-cursor guard + remove loose substring rules
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+```
+
+## v1.2.0  005d020-dirty 2026-06-11 04:11
+
+- Lines: 11265
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+005d020 auto-confirm: global input-cursor guard + remove loose substring rules
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+```
+
+## v1.2.0  005d020-dirty 2026-06-11 04:54
+
+- Lines: 11300
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+005d020 auto-confirm: global input-cursor guard + remove loose substring rules
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+20c0b0d camc: add dynamic list activity and harden confirms
+```
+
