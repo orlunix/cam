@@ -29,11 +29,36 @@ def strip_ansi(text):
 _BOX_CHARS = u"\u2500\u2502\u250c\u2510\u2514\u2518\u251c\u2524\u252c\u2534\u253c\u256d\u256e\u2570\u256f \t"
 
 
+# Strip a leading selection-cursor marker that sits immediately in
+# front of a numbered menu option, e.g.
+#   "\u276f 1. Yes"  -> "1. Yes"
+#   "\u203a 2. No"   -> "2. No"
+#   "> 1. Yes"  -> "1. Yes"
+#   "    \u276f 1. Allow once"  -> "    1. Allow once"   (indent preserved)
+#
+# Narrow on purpose so TOML [[confirm]] rules can stay author-friendly
+# (e.g. "^1\.\s*Yes") without each tool having to spell out every UI
+# cursor variant. Only the cursor marker + its trailing whitespace is
+# dropped; line indent is preserved. The lookahead requires
+# ``\d+\.`` immediately after the cursor so unrelated prose like
+# "\u276f write the code" is left alone. ``>`` is restricted to a single
+# `>` to avoid touching shell-prompt-style `>>`/`>>>` markers.
+_CURSOR_BEFORE_NUMBERED_OPT_RE = re.compile(
+    u"^(\\s*)[\u276f\u203a>](?!>)\\s+(?=\\d+\\.)",
+    re.MULTILINE,
+)
+
+
+def _strip_selection_cursor_before_numbered(text):
+    return _CURSOR_BEFORE_NUMBERED_OPT_RE.sub(r"\1", text)
+
+
 def clean_for_confirm(text):
     lines = [line.strip(_BOX_CHARS) for line in text.splitlines()]
     while lines and not lines[-1]:
         lines.pop()
-    return "\n".join(lines).rstrip()
+    joined = "\n".join(lines).rstrip()
+    return _strip_selection_cursor_before_numbered(joined)
 
 
 _RE_FLAGS = {
@@ -125,10 +150,19 @@ def _build_command(config, prompt, path):
                 part = part.replace(key, value)
                 break
         result.append(part)
-    # Inject --permission-mode auto if enabled in config
+    # Inject --permission-mode auto if enabled in config.
+    # The launch argv may be wrapped (`env KEY=VAL tool ...`), so we must
+    # insert AFTER the actual tool binary, not at index 1 (which would land
+    # the flag inside the `env` wrapper and yield "env: unrecognized option").
     if getattr(config, "auto_permission_mode", False):
-        # Insert after the executable name (index 0)
-        result[1:1] = ["--permission-mode", "auto"]
+        idx = 0
+        if result and result[0] == "env":
+            idx = 1
+            # skip past KEY=VAL env-var args
+            while idx < len(result) and "=" in result[idx] and not result[idx].startswith("-"):
+                idx += 1
+        # idx now points to the tool binary; insert right after it
+        result[idx+1:idx+1] = ["--permission-mode", "auto"]
     return result
 
 
