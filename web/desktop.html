@@ -55,10 +55,9 @@
           <span class="mode-nav-icon">&#9734;</span>
           <span class="mode-nav-label">Skills</span>
         </button>
-        <button class="mode-nav-btn mode-nav-placeholder" disabled
-          title="Coming in a later phase">
-          <span class="mode-nav-icon">&#9776;</span>
-          <span class="mode-nav-label">Contexts</span>
+        <button class="mode-nav-btn" data-mode="todos" aria-pressed="false">
+          <span class="mode-nav-icon">&#9745;</span>
+          <span class="mode-nav-label">Todos</span>
         </button>
       </nav>
 
@@ -178,9 +177,8 @@
           </div>
           <div class="settings-tabs agent-settings-tabs" role="tablist" aria-label="Agent settings tabs">
             <button type="button" class="settings-tab" data-agent-settings-tab="attributes" aria-pressed="true">Attributes</button>
-            <button type="button" class="settings-tab" data-agent-settings-tab="loop" aria-pressed="false">Loop</button>
+            <button type="button" class="settings-tab" data-agent-settings-tab="automation" aria-pressed="false">Automation</button>
             <button type="button" class="settings-tab" data-agent-settings-tab="workflow" aria-pressed="false">Workflow</button>
-            <button type="button" class="settings-tab" data-agent-settings-tab="cron" aria-pressed="false">Cron</button>
           </div>
           <div class="settings-form-pane agent-settings-form-pane">
             <div class="settings-tab-panel" id="agent-settings-tab-attributes" data-agent-settings-panel="attributes">
@@ -204,31 +202,41 @@
                 <div class="settings-status" id="agent-settings-status" aria-live="polite"></div>
               </section>
             </div>
-            <div class="settings-tab-panel" id="agent-settings-tab-loop" data-agent-settings-panel="loop" hidden>
-              <section class="settings-section">
-                <h3>Loop</h3>
-                <p class="form-hint">Agent-attached loop policies will live here: nudge if idle, ask status, continue until done, and stuck-agent correction. The backing scheduler should be node-local cron, but the policy is attached to this agent.</p>
-              </section>
-            </div>
             <div class="settings-tab-panel" id="agent-settings-tab-workflow" data-agent-settings-panel="workflow" hidden>
               <section class="settings-section">
                 <h3>Workflow</h3>
                 <p class="form-hint">Workflow controls are reserved for higher-level multi-step runs, reviewer handoff, and recovery flows. This tab is intentionally a placeholder until those semantics are finalized.</p>
               </section>
             </div>
-            <div class="settings-tab-panel" id="agent-settings-tab-cron" data-agent-settings-panel="cron" hidden>
+            <div class="settings-tab-panel" id="agent-settings-tab-automation" data-agent-settings-panel="automation" hidden>
               <section class="settings-section agent-cron-section">
                 <div class="agent-cron-card agent-cron-target">
                   <div>
-                    <h3>Cron</h3>
-                    <p class="form-hint" id="agent-cron-target">Select an agent to manage node-local cron jobs.</p>
+                    <h3>Automation</h3>
+                    <p class="form-hint" id="agent-cron-target">Select an agent to manage loops and node-local cron jobs.</p>
                   </div>
                   <button type="button" class="btn-secondary" id="agent-cron-refresh">Refresh</button>
                 </div>
                 <div class="agent-cron-card">
                   <div class="agent-cron-card-head">
-                    <h4>Add cron job</h4>
-                    <span class="form-hint">Runs <code>camc msg send</code> on this agent's node.</span>
+                    <h4>Add automation</h4>
+                    <span class="form-hint">Choose whether to prompt this agent or run a host command.</span>
+                  </div>
+                  <div class="agent-cron-type" role="group" aria-label="Automation type">
+                    <label>
+                      <input type="radio" name="agent-cron-type" value="loop" checked>
+                      <span>
+                        <strong>Agent loop</strong>
+                        <small>Send prompt text to this agent when idle.</small>
+                      </span>
+                    </label>
+                    <label>
+                      <input type="radio" name="agent-cron-type" value="cron">
+                      <span>
+                        <strong>Host cron</strong>
+                        <small>Run a shell command on this node.</small>
+                      </span>
+                    </label>
                   </div>
                   <div class="agent-cron-grid">
                     <label>Name
@@ -255,15 +263,18 @@
                       <input type="number" id="agent-cron-ttl" min="1" max="3650" step="1" value="7">
                     </label>
                   </div>
-                  <label>Message
+                  <label id="agent-cron-text-label">Prompt
                     <textarea id="agent-cron-text" rows="4" placeholder="review latest changes and report blockers"></textarea>
+                  </label>
+                  <label id="agent-cron-cwd-label" hidden>Working directory
+                    <input type="text" id="agent-cron-cwd" autocomplete="off">
                   </label>
                   <label class="form-checkbox">
                     <input type="checkbox" id="agent-cron-no-expire">
                     <span>No automatic expiry</span>
                   </label>
                   <div class="settings-actions agent-settings-actions">
-                    <button type="button" class="btn-primary" id="agent-cron-add">Add cron job</button>
+                    <button type="button" class="btn-primary" id="agent-cron-add">Add loop</button>
                   </div>
                   <div class="settings-status" id="agent-cron-status" aria-live="polite"></div>
                 </div>
@@ -835,6 +846,86 @@
         </div>
 
         <div class="settings-status skills-status" id="skillm-status" aria-live="polite"></div>
+      </section>
+
+      <!-- Todos / Notes worklog (CAM-DESK-TODOS-010..017) -->
+      <section class="mode-panel" id="mode-todos" data-mode="todos" hidden>
+        <div class="settings-header todos-header">
+          <h2>Todos</h2>
+          <p class="settings-help">
+            Structured Markdown worklog for tasks, notes, checklists, and project history.
+            V0 is local and mock-safe while the todocli backend contract is wired.
+          </p>
+        </div>
+
+        <div class="todos-workbench">
+          <section class="todos-card todos-card-main">
+            <div class="todos-card-head">
+              <div class="todos-tabs" role="tablist" aria-label="Todos workspace tabs">
+                <button type="button" class="todos-tab active" data-todos-tab="inbox" role="tab" aria-selected="true">Inbox</button>
+                <button type="button" class="todos-tab" data-todos-tab="tasks" role="tab" aria-selected="false">Tasks</button>
+                <button type="button" class="todos-tab" data-todos-tab="notes" role="tab" aria-selected="false">Notes</button>
+                <button type="button" class="todos-tab" data-todos-tab="projects" role="tab" aria-selected="false">Projects</button>
+                <button type="button" class="todos-tab" data-todos-tab="archive" role="tab" aria-selected="false">Archive</button>
+              </div>
+              <div class="todos-actions">
+                <button type="button" class="btn-secondary" id="todos-new-note">New note</button>
+                <button type="button" class="btn-primary" id="todos-new-task">New task</button>
+              </div>
+            </div>
+
+            <section class="todos-store-card" aria-label="Todo store">
+              <div>
+                <span class="todos-label">Context</span>
+                <strong id="todos-context-label">Current workspace context</strong>
+              </div>
+              <div>
+                <span class="todos-label">Store</span>
+                <code id="todos-store-path">/workspace/.cam/worklog</code>
+              </div>
+              <div class="todos-store-actions">
+                <button type="button" class="btn-secondary" id="todos-check">Check</button>
+                <button type="button" class="btn-secondary" id="todos-init">Initialize</button>
+                <button type="button" class="btn-secondary" id="todos-refresh">Refresh</button>
+              </div>
+            </section>
+
+            <section class="todos-controls" aria-label="Todo filters">
+              <label>Search
+                <input type="search" id="todos-search" placeholder="Search todos, notes, tags..." autocomplete="off">
+              </label>
+              <label>Project
+                <select id="todos-project-filter"><option value="all">All</option></select>
+              </label>
+              <label>Status
+                <select id="todos-status-filter">
+                  <option value="open">Open</option>
+                  <option value="active">Active</option>
+                  <option value="done">Done</option>
+                  <option value="archived">Archived</option>
+                  <option value="all">All</option>
+                </select>
+              </label>
+              <label>Sort
+                <select id="todos-sort">
+                  <option value="updated">Updated</option>
+                  <option value="priority">Priority</option>
+                  <option value="title">Title</option>
+                </select>
+              </label>
+            </section>
+
+            <section class="todos-outline" id="todos-outline" aria-label="Structured todos and notes">
+              <div class="empty-state">Loading todos&hellip;</div>
+            </section>
+
+            <section class="todos-detail" id="todos-detail" aria-label="Selected todo detail">
+              <div class="empty-state">Select an item to view details.</div>
+            </section>
+          </section>
+        </div>
+
+        <div class="settings-status todos-status" id="todos-status" aria-live="polite"></div>
       </section>
 
     </main>

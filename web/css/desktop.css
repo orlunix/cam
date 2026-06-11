@@ -3614,6 +3614,49 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
   gap: 12px;
   margin-bottom: 10px;
 }
+
+.agent-cron-type {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 10px 0 12px;
+}
+.agent-cron-type label {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--control-bg);
+  cursor: pointer;
+}
+.agent-cron-type label:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.agent-cron-type strong {
+  display: block;
+  color: var(--text);
+  font-size: 12px;
+}
+.agent-cron-type small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  margin-top: 2px;
+}
+.agent-cron-list-heading {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  margin: 2px 0 -2px;
+}
+
 .agent-cron-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -3673,6 +3716,7 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
   white-space: nowrap;
 }
 @media (max-width: 900px) {
+  .agent-cron-type,
   .agent-cron-grid {
     grid-template-columns: 1fr;
   }
@@ -3685,5 +3729,343 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
   }
   .agent-cron-job-side {
     align-items: flex-start;
+  }
+}
+
+/* ───────── Todos / Notes worklog (CAM-DESK-TODOS-010..017) ───────── */
+#mode-todos .todos-header,
+#mode-todos .todos-workbench,
+#mode-todos .todos-status {
+  width: min(100%, var(--desktop-rail-wide));
+  max-width: var(--desktop-rail-wide);
+  margin-left: auto;
+  margin-right: auto;
+  box-sizing: border-box;
+}
+#mode-todos .todos-workbench {
+  display: block;
+  padding: 12px 16px 20px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.todos-card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 14px 14px;
+  background: var(--surface-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+}
+.todos-card h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+}
+.todos-card label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.todos-card input,
+.todos-card select {
+  background: var(--control-bg);
+  border: 1px solid var(--control-border);
+  color: var(--text);
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  font: inherit;
+}
+.todos-card input:focus,
+.todos-card select:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  border-color: var(--accent);
+}
+.todos-card-head,
+.todos-actions,
+.todos-store-actions,
+.todos-detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.todos-card-head { justify-content: space-between; }
+.todos-tabs,
+.todos-detail-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  width: max-content;
+  max-width: 100%;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+}
+.todos-tab,
+.todos-detail-tabs button {
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 1px);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  padding: 6px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.todos-tab:hover,
+.todos-detail-tabs button:hover { color: var(--text); background: var(--bg-hover); }
+.todos-tab.active,
+.todos-detail-tabs button.active { color: #fff; background: var(--accent); }
+.todos-card .btn-primary,
+.todos-card .btn-secondary {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 6px 10px;
+}
+.todos-card .btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.todos-card .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+.todos-card .btn-secondary {
+  background: var(--control-bg);
+  color: var(--text);
+}
+.todos-card .btn-secondary:hover:not(:disabled) { background: var(--control-bg-hover); }
+.todos-store-card {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(260px, 1.2fr) auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  padding: 12px;
+}
+.todos-label {
+  display: block;
+  color: var(--text-dim);
+  font-size: 10px;
+  margin-bottom: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.todos-store-card strong,
+.todos-store-card code {
+  color: var(--text);
+  font-size: 12px;
+}
+.todos-store-card code { word-break: break-all; }
+.todos-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.6fr) minmax(140px, 0.8fr) minmax(140px, 0.8fr) minmax(140px, 0.8fr);
+  gap: 10px;
+}
+.todos-outline {
+  display: grid;
+  gap: 10px;
+}
+.todos-project {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+.todos-project-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.todos-project-head h3,
+.todos-detail h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+.todos-project-toggle {
+  color: var(--text-dim);
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+}
+.todos-item-list { display: grid; }
+.todos-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.todos-row:last-child { border-bottom: 0; }
+.todos-row:hover { background: var(--bg-hover); }
+.todos-row.active {
+  background: var(--bg-hover);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.todos-row-kind {
+  color: var(--text-dim);
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+}
+.todos-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.todos-row-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-weight: 650;
+}
+.todos-row-title strong {
+  color: #d7b46a;
+  font-size: 12px;
+}
+.todos-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.todos-tags {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.todos-tag {
+  color: var(--text-dim);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+  font-size: 11px;
+  background: var(--control-bg);
+}
+.todos-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  padding: 12px;
+}
+.todos-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.todos-detail-head p { margin: 3px 0 0; }
+.todos-properties {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+.todos-properties div {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--control-bg);
+  padding: 8px 10px;
+}
+.todos-properties dt {
+  margin: 0 0 3px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.todos-properties dd {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 12px;
+}
+.todos-detail-body {
+  min-height: 140px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-output, var(--bg));
+  padding: 12px;
+  color: var(--text);
+}
+.todos-detail-body p {
+  margin: 0;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.todos-detail-body pre {
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.todos-checklist,
+.todos-history {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.45;
+}
+.todos-status {
+  padding: 0 16px 12px;
+}
+@media (max-width: 1100px) {
+  .todos-store-card,
+  .todos-controls,
+  .todos-properties {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .todos-row {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+  .todos-tags {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+  .todos-detail-head,
+  .todos-card-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .todos-actions,
+  .todos-store-actions,
+  .todos-detail-actions {
+    justify-content: flex-start;
   }
 }
