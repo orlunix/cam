@@ -382,7 +382,7 @@ class AutoConfirmationFeature(MonitorFeature):
     order = 20
 
     def confirm(self, snap, runtime):
-        from camc_pkg.detection import should_auto_confirm
+        from camc_pkg.detection import should_auto_confirm, input_residue_count
         actions = []
         cfg = runtime.config
         confirm_cd = snap.now - runtime.last_confirm
@@ -390,6 +390,18 @@ class AutoConfirmationFeature(MonitorFeature):
             actions.append({"kind": "log", "level": "debug",
                             "msg": "[%d] Confirm cooldown (%.1fs remaining)"
                                    % (snap.cycle, cfg.confirm_cooldown - confirm_cd)})
+            return actions
+        # spam-fix: if our last_response chars leaked into the input
+        # box, send a backspace to clean them up one per cycle. The
+        # rest of the auto-confirm flow stays suppressed by
+        # has_input_cursor (condition 2) until the input is clean.
+        residue = input_residue_count(snap.output, runtime.last_confirm_response)
+        if residue > 0:
+            actions.append({"kind": "log", "level": "info",
+                            "msg": "[%d] Backspace to clean input residue (%d chars)"
+                                   % (snap.cycle, residue)})
+            actions.append({"kind": "send_key", "key": "BSpace"})
+            actions.append({"kind": "halt_cycle", "sleep": cfg.confirm_sleep})
             return actions
         confirm = should_auto_confirm(snap.output, cfg,
                                        last_response=runtime.last_confirm_response,
