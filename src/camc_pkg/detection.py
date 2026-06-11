@@ -69,6 +69,26 @@ def has_input_cursor(output, last_response="", prev_output=""):
     return False
 
 
+def input_residue_count(output, last_response):
+    """Return how many stray response chars are sitting in the input
+    box's cursor line (condition 2 case). 0 if none. Used by the
+    monitor to send backspaces and clean up after our own keystrokes
+    that leaked into the input box."""
+    if not last_response:
+        return 0
+    tail_lines = [l for l in output.splitlines() if l.strip()][-8:]
+    cur_line = _find_cursor_line(tail_lines)
+    if cur_line is None:
+        return 0
+    m = _CURSOR_PREFIX_RE.match(cur_line)
+    if not m:
+        return 0
+    content = m.group(1)
+    if content and all(c == last_response for c in content):
+        return len(content)
+    return 0
+
+
 def detect_state(output, config):
     recent = output[-config.state_recent_chars:]
     if config.strip_ansi:
