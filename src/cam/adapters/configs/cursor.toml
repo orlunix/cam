@@ -57,24 +57,25 @@ prompt_count_threshold = 2
 # Agent shows "Claude 4.6 Opus (Thinking) · 6.7%" after task finishes
 fallback_summary_pattern = "·\\s*\\d+(\\.\\d+)?%"
 
+# (2026-06-11 trim) All prior rules removed; replaced by two anchored
+# rules below. The active cursor marker for Cursor TUI is →.
+
 [[confirm]]
-# Workspace trust dialog: choose `a` hotkey only. The negative lookahead
-# prevents stale trust text in scrollback from typing `a` into the chat
-# after the Cursor Agent UI has appeared.
-pattern = "Trust this workspace(?:(?!Cursor Agent).)*$"
-flags = ["DOTALL"]
-response = "a"
+# Generic (y) prompt — anchored to the line start with the → cursor
+# marker (Proceed (y) / Run once (y) / ...).
+pattern = "^\\s*→.*\\(y\\)"
+flags = ["MULTILINE"]
+response = "y"
 send_enter = false
 
-# (2026-06-11 hot-fix) Two loose substring rules were REMOVED:
-#   "\(y\)"          – matched any prose containing "(y)" anywhere
-#   "Run \(always"   – substring with no end-of-line anchor
-# Both relied on the active-input-cursor being present, but a stray
-# substring in scrollback / agent prose could false-fire. The global
-# guard in src/camc_pkg/detection.py now requires a cursor (❯ / › /
-# → / `> `) before any rule may match, and surviving rules must have
-# a strong end-of-line anchor. If a real Cursor (y) prompt needs to
-# fire, add a tightened rule in ~/.cam/configs/cursor.toml.
+[[confirm]]
+# Workspace trust dialog — the `[a]` hotkey label sits directly before
+# "Trust this workspace". Anchoring on the bracketed hotkey lets this
+# fire only when the dialog is actually drawn.
+pattern = "^\\W*\\[a\\]\\s*Trust this workspace"
+flags = ["MULTILINE"]
+response = "a"
+send_enter = false
 
 [monitor]
 # Cursor shows "Thinking..." while busy, "· X.Y%" usage after done.
@@ -82,6 +83,7 @@ send_enter = false
 # false positives (e.g. "promptengineering.org", "testing.py").
 busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
 confirm_cooldown = 5.0
+confirm_recent_lines = 20
 confirm_sleep = 0.5
 health_check_interval = 15
 idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle
