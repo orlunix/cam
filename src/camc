@@ -32,7 +32,7 @@ import time
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "da7299b-dirty 2026-06-10 23:50"
+__build__ = "005d020-dirty 2026-06-11 04:54"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -86,36 +86,15 @@ def strip_ansi(text):
 _BOX_CHARS = u"\u2500\u2502\u250c\u2510\u2514\u2518\u251c\u2524\u252c\u2534\u253c\u256d\u256e\u2570\u256f \t"
 
 
-# Strip a leading selection-cursor marker that sits immediately in
-# front of a numbered menu option, e.g.
-#   "\u276f 1. Yes"  -> "1. Yes"
-#   "\u203a 2. No"   -> "2. No"
-#   "> 1. Yes"  -> "1. Yes"
-#   "    \u276f 1. Allow once"  -> "    1. Allow once"   (indent preserved)
-#
-# Narrow on purpose so TOML [[confirm]] rules can stay author-friendly
-# (e.g. "^1\.\s*Yes") without each tool having to spell out every UI
-# cursor variant. Only the cursor marker + its trailing whitespace is
-# dropped; line indent is preserved. The lookahead requires
-# ``\d+\.`` immediately after the cursor so unrelated prose like
-# "\u276f write the code" is left alone. ``>`` is restricted to a single
-# `>` to avoid touching shell-prompt-style `>>`/`>>>` markers.
-_CURSOR_BEFORE_NUMBERED_OPT_RE = re.compile(
-    u"^(\\s*)[\u276f\u203a>](?!>)\\s+(?=\\d+\\.)",
-    re.MULTILINE,
-)
-
-
-def _strip_selection_cursor_before_numbered(text):
-    return _CURSOR_BEFORE_NUMBERED_OPT_RE.sub(r"\1", text)
-
-
 def clean_for_confirm(text):
+    # Strip box-drawing edges from each line so TOML rules can anchor
+    # on the actual content (the dialog inside the box). The selection
+    # cursor \u276f/\u203a/\u2192 is INTENTIONALLY preserved \u2014 TOML rules now anchor
+    # on it (e.g. ``^\u276f\s+1\.\s*Yes``) for stronger menu detection.
     lines = [line.strip(_BOX_CHARS) for line in text.splitlines()]
     while lines and not lines[-1]:
         lines.pop()
-    joined = "\n".join(lines).rstrip()
-    return _strip_selection_cursor_before_numbered(joined)
+    return "\n".join(lines).rstrip()
 
 
 _RE_FLAGS = {
@@ -322,45 +301,20 @@ prompt_count_threshold = 2
 # Claude rotates verbs (Crunched, Sautéed, Whisked, Baked, etc.)
 fallback_summary_pattern = "✻ .+ for \\d+"
 
+# (2026-06-11 trim) Rules removed: "Do you want to proceed",
+# "Allow once/always", and the v2.1 trust-dialog Enter rule. All three
+# false-fired on scrollback prose, and the trust-dialog one fired on
+# this very documentation block. The single remaining numbered-menu
+# rule below requires the active cursor ❯ at line start, so it can ONLY
+# match when Claude has actually drawn the menu.
 [[confirm]]
-# Numbered permission menu: "Do you want to proceed? 1. Yes 2. No"
-# Send "1" to select option 1. The Ink TUI consumes the keypress.
-# Anchor: line start + at most 1 leading symbol (e.g. cursor "❯"), no
-# descriptive prose before the marker — prevents prose false positives
-# like "...so do you want to proceed with X?".
-pattern = "^[^\\w\\s]?\\s*Do\\s+you\\s+want\\s+to\\s+proceed"
+# Numbered permission menu — "❯ 1. Yes" / "❯ 1. Allow". The cursor ❯
+# is what Ink draws when the menu is active and highlighting option 1.
+# Anchor: literal ❯ followed by whitespace then "1." then Yes/Allow.
+pattern = "^❯\\s+1\\.\\s*(Yes|Allow).*$"
 flags = ["IGNORECASE", "MULTILINE"]
 response = "1"
 send_enter = false
-
-[[confirm]]
-# Numbered menu with "1. Yes" or "1. Allow" — send "1" to select.
-pattern = "^[^\\w\\s]?\\s*1\\.\\s*(Yes|Allow)"
-flags = ["IGNORECASE", "MULTILINE"]
-response = "1"
-send_enter = false
-
-[[confirm]]
-# "Allow once" / "Always allow" select menu (Claude 4.x+)
-# Send "1" to select the first option.
-pattern = "^[^\\w\\s]?\\s*Allow\\s+(once|always)"
-flags = ["IGNORECASE", "MULTILINE"]
-response = "1"
-send_enter = false
-
-[[confirm]]
-# Claude Code v2.1+ trust dialog — Ink select menu shown on first
-# launch in any new working directory. Two phrasings observed:
-#   "Enter to confirm · Esc to cancel"   (initial trust)
-#   "Allow once  Allow always"           (per-tool permission)
-# Press Enter to select the highlighted default (Trust this folder /
-# Allow once). Without this rule, the launch loop times out waiting
-# for ready_pattern (the dialog hides the ❯), then blasts the prompt
-# at the dialog — the body is consumed as keystrokes, the trailing
-# Enter confirms the dialog, and the prompt never reaches Claude.
-pattern = "Enter to confirm.*Esc to cancel|Allow once.*Allow always"
-response = ""
-send_enter = true
 
 # (2026-06-11 hot-fix) The generic y/n bracket rule
 #   "\(y/n\)|\[Y/n\]|\[y/N\]"
@@ -387,7 +341,7 @@ busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
 # done_pattern: task just finished (e.g. "Crunched for 36s", "Cogitated for 1m 8s")
 done_pattern = "ed\\s+for\\s+\\d+[smh]"
 confirm_cooldown = 5.0        # seconds between auto-confirm attempts
-confirm_recent_lines = 32     # last N non-empty lines to scan for permission dialogs (dialog can be pushed up by todo footer + spinner)
+confirm_recent_lines = 20
 confirm_sleep = 0.5           # sleep after sending confirmation
 health_check_interval = 15    # seconds between tmux alive checks
 idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle
@@ -465,41 +419,16 @@ prompt_count_threshold = 2
 error_pattern = "(Error:|error:|FAILED|fatal:|Exception|command not found)"
 error_flags = ["IGNORECASE"]
 
+# (2026-06-11 trim) Rules 2, 3, 4 removed (trust-dialog DOTALL variants,
+# bottom-menu variant, sandbox-retry). They each used broad anchors that
+# false-fired on scrollback prose. The single rule below requires the
+# active cursor › at line start — only matches when the menu is drawn.
 [[confirm]]
-# Trust dialog: "1. Yes, allow Codex to work in this folder"
-# Anchor: line start + ≤1 leading symbol (cursor "›"/etc), no prose before the marker.
-pattern = "^[^\\w\\s]?\\s*1\\.\\s*(Yes,?\\s*)?allow Codex to work"
+# Numbered menu — cursor at line start, then "1. Yes".
+pattern = "^›\\s+1\\.\\s*Yes.*$"
 flags = ["IGNORECASE", "MULTILINE"]
 response = "1"
-send_enter = true
-
-[[confirm]]
-# Trust dialog (Codex 0.55+):
-#   "Do you trust the contents of this directory?"
-#   "1. Yes, continue"
-# Send "1" to select the numbered affirmative option.
-pattern = "Do\\s+you\\s+trust\\s+the\\s+contents\\s+of\\s+this\\s+directory\\?.*Yes,?\\s+continue"
-flags = ["IGNORECASE", "DOTALL"]
-response = "1"
-send_enter = true
-
-[[confirm]]
-# Same trust dialog, but match the bottom menu. The question text can be
-# above the last 8 lines captured by should_auto_confirm(), while these
-# menu lines remain visible at the bottom.
-pattern = "^[^\\w\\s]?\\s*1\\.\\s*Yes,?\\s+continue\\s*\\n\\s*2\\.\\s*No,\\s+quit\\s*\\n\\s*Press\\s+enter\\s+to\\s+continue"
-flags = ["IGNORECASE", "MULTILINE"]
-response = "1"
-send_enter = true
-
-[[confirm]]
-# Retry command outside the sandbox after a failed command.
-# Both anchors anchored to line start; option 2 can wrap to dozens of lines
-# in between (huge csh command being quoted) — DOTALL lets .* span them.
-pattern = "^[^\\w\\s]?\\s*1\\.\\s*Yes,\\s*proceed.*Press\\s+enter\\s+to\\s+confirm"
-flags = ["IGNORECASE", "DOTALL", "MULTILINE"]
-response = "1"
-send_enter = true
+send_enter = false
 
 # (2026-06-11 hot-fix) The generic bracket-y/n rule
 #   "\[Y/n\]|\[y/N\]"
@@ -512,7 +441,7 @@ send_enter = true
 # Codex shows "• Working (7s • esc to interrupt)" while busy
 busy_pattern = "Working \\(\\d+s"
 confirm_cooldown = 5.0
-confirm_recent_lines = 100    # codex "don't ask again for commands that start with <huge cmd>" can wrap option 2 to 30+ lines, pushing `1. Yes, proceed` out of view
+confirm_recent_lines = 20
 confirm_sleep = 0.5
 health_check_interval = 15
 idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle
@@ -597,24 +526,25 @@ prompt_count_threshold = 2
 # Agent shows "Claude 4.6 Opus (Thinking) · 6.7%" after task finishes
 fallback_summary_pattern = "·\\s*\\d+(\\.\\d+)?%"
 
+# (2026-06-11 trim) All prior rules removed; replaced by two anchored
+# rules below. The active cursor marker for Cursor TUI is →.
+
 [[confirm]]
-# Workspace trust dialog: choose `a` hotkey only. The negative lookahead
-# prevents stale trust text in scrollback from typing `a` into the chat
-# after the Cursor Agent UI has appeared.
-pattern = "Trust this workspace(?:(?!Cursor Agent).)*$"
-flags = ["DOTALL"]
-response = "a"
+# Generic (y) prompt — anchored to the line start with the → cursor
+# marker (Proceed (y) / Run once (y) / ...).
+pattern = "^\\s*→.*\\(y\\)"
+flags = ["MULTILINE"]
+response = "y"
 send_enter = false
 
-# (2026-06-11 hot-fix) Two loose substring rules were REMOVED:
-#   "\(y\)"          – matched any prose containing "(y)" anywhere
-#   "Run \(always"   – substring with no end-of-line anchor
-# Both relied on the active-input-cursor being present, but a stray
-# substring in scrollback / agent prose could false-fire. The global
-# guard in src/camc_pkg/detection.py now requires a cursor (❯ / › /
-# → / `> `) before any rule may match, and surviving rules must have
-# a strong end-of-line anchor. If a real Cursor (y) prompt needs to
-# fire, add a tightened rule in ~/.cam/configs/cursor.toml.
+[[confirm]]
+# Workspace trust dialog — the `[a]` hotkey label sits directly before
+# "Trust this workspace". Anchoring on the bracketed hotkey lets this
+# fire only when the dialog is actually drawn.
+pattern = "^\\W*\\[a\\]\\s*Trust this workspace"
+flags = ["MULTILINE"]
+response = "a"
+send_enter = false
 
 [monitor]
 # Cursor shows "Thinking..." while busy, "· X.Y%" usage after done.
@@ -622,6 +552,7 @@ send_enter = false
 # false positives (e.g. "promptengineering.org", "testing.py").
 busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
 confirm_cooldown = 5.0
+confirm_recent_lines = 20
 confirm_sleep = 0.5
 health_check_interval = 15
 idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle
@@ -1840,28 +1771,68 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
 # detection
 # ===========================================================================
 
-# Global active-input-cursor guard (2026-06-11 hot-fix).
+# Global input-box guard (2026-06-11).
 #
-# Detects an INPUT cursor — a TUI marker that says "the user can type
-# right now". Markers (line start, optional indent, then char + space):
+# Detects an INPUT cursor sitting in the user's input box, meaning the
+# agent is waiting for the human to type — auto-confirm MUST NOT fire
+# in that state or it injects keystrokes into the user's input.
+#
+# Cursor markers (line start, optional indent, then char + space):
 #   U+276F ❯  Claude Code TUI
 #   U+203A ›  Codex TUI
+#   U+2192 →  Cursor Agent TUI
 #   >         generic shell / continuation prompt
 #
-# Restricted to the LAST 5 non-empty lines of the captured screen.
-# If no cursor is on screen, no auto-confirm rule may fire — period.
-# This kills the false-fire class where a stray substring (markdown
-# body, code fence, embedded screen capture, agent prose) matches a
-# TOML rule even though no real interactive prompt is present.
-_INPUT_CURSOR_RE = re.compile(r"(?m)^\s*[❯›>]\s")
+# Detects "input box is currently active" in three ways, ANY of which
+# means auto-confirm must skip:
+#
+# (1) Bare cursor line: ``^\s*[❯›→>]\s*$`` — input box empty, idle.
+# (2) Cursor line consists only of repeated last_response chars:
+#     ``^\s*[❯›→>]\s+<response>+\s*$``. Catches the spam-in-input case
+#     where our own ``1`` or ``a`` keystroke landed in the input box
+#     instead of selecting a menu option. NOT triggered by menu lines
+#     like ``❯ 1. Yes`` because of the ``.`` after the digit.
+# (3) Cursor line content changed vs the previous capture — the
+#     input box is being typed into (by user or by codex animating).
+#
+# Search window: last 8 non-empty lines.
+_CURSOR_LINE_RE = re.compile(r"^\s*[❯›→>](\s|$)")
+_BARE_CURSOR_RE = re.compile(r"^\s*[❯›→>]\s*$")
+_CURSOR_PREFIX_RE = re.compile(r"^\s*[❯›→>]\s+(.*?)\s*$")
 
 
-def has_input_cursor(output):
-    """True iff one of the active-input-cursor markers is visible on
-    the last 5 non-empty lines of ``output``. See _INPUT_CURSOR_RE."""
-    tail_lines = [l for l in output.splitlines() if l.strip()][-5:]
-    tail = "\n".join(tail_lines)
-    return bool(_INPUT_CURSOR_RE.search(tail))
+def _find_cursor_line(lines):
+    """Return the bottom-most cursor line in ``lines``, or None."""
+    for line in reversed(lines):
+        if _CURSOR_LINE_RE.match(line):
+            return line
+    return None
+
+
+def has_input_cursor(output, last_response="", prev_output=""):
+    """True iff the input box is visible / active and auto-confirm
+    must therefore skip. Three conditions documented above."""
+    tail_lines = [l for l in output.splitlines() if l.strip()][-8:]
+    cur_line = _find_cursor_line(tail_lines)
+    if cur_line is None:
+        return False
+    # (1) Bare cursor line
+    if _BARE_CURSOR_RE.match(cur_line):
+        return True
+    # (2) Cursor line is only repeated last_response chars
+    if last_response:
+        m = _CURSOR_PREFIX_RE.match(cur_line)
+        if m:
+            content = m.group(1)
+            if content and all(c == last_response for c in content):
+                return True
+    # (3) Cursor line changed since the previous capture
+    if prev_output:
+        prev_tail = [l for l in prev_output.splitlines() if l.strip()][-8:]
+        prev_cur = _find_cursor_line(prev_tail)
+        if prev_cur is not None and prev_cur != cur_line:
+            return True
+    return False
 
 
 def detect_state(output, config):
@@ -1883,24 +1854,14 @@ def detect_state(output, config):
         return None
 
 
-def should_auto_confirm(output, config):
+def should_auto_confirm(output, config, last_response="", prev_output=""):
     if config.strip_ansi:
         output = strip_ansi(output)
-    # 2026-06-11 hot-fix: global input-cursor guard. If no active
-    # input cursor (❯ / › / `> `) is visible in the last 5 non-empty
-    # lines of the RAW capture, no TOML [[confirm]] rule may fire —
-    # there cannot be a real dialog waiting for input without a
-    # cursor on screen. Kills false-fires from markdown / code blocks
-    # / embedded screen captures that happen to contain a rule's
-    # literal substring.
-    #
-    # Critically: this check runs against `output`, NOT against
-    # `clean_for_confirm(output)`. clean_for_confirm() strips a
-    # leading selection cursor sitting before a numbered option (so
-    # author-friendly rules like `^1\. Yes` still match) — applying
-    # the guard AFTER that strip would defeat itself, because the
-    # cursor would already be gone from the cleaned text.
-    if not has_input_cursor(output):
+    # Input-box guard. Three conditions in has_input_cursor: bare
+    # cursor, cursor + only our last_response chars, or cursor line
+    # content changing since the previous capture. Any → skip.
+    if has_input_cursor(output, last_response=last_response,
+                        prev_output=prev_output):
         return None
     clean = clean_for_confirm(output)
     # Only check the last few non-empty lines — real permission dialogs
@@ -3127,6 +3088,8 @@ class MonitorRuntime(object):
         self.last_change_hash1 = now  # hash1 last-changed timestamp (diagnostic)
         self.last_health = now
         self.last_confirm = 0.0
+        self.last_confirm_hash = ""   # screen hash at last fire (dedup)
+        self.last_confirm_response = ""  # response sent at last fire (input-box guard)
         self.current_state = None
         self.has_worked = False
         # 2026-06-10 addendum: "initialize" is a one-shot pre-busy
@@ -3417,10 +3380,24 @@ class AutoConfirmationFeature(MonitorFeature):
                             "msg": "[%d] Confirm cooldown (%.1fs remaining)"
                                    % (snap.cycle, cfg.confirm_cooldown - confirm_cd)})
             return actions
-        confirm = should_auto_confirm(snap.output, cfg)
+        confirm = should_auto_confirm(snap.output, cfg,
+                                       last_response=runtime.last_confirm_response,
+                                       prev_output=runtime.prev_output or "")
         if not confirm:
             return actions
         response, send_enter, pat_str, matched = confirm
+        # Dedup: skip if the digit-stripped screen hash (hash1)
+        # hasn't changed since the last fire. Why hash1 not hash0:
+        # hash0 includes ASCII digits, so codex's "Working 5m 31s"
+        # → "32s" → "33s" timer changes hash0 every second and
+        # defeats dedup. hash1 strips ASCII digits, so timer ticks
+        # don't flip it — but a NEW dialog with different surrounding
+        # text (e.g. a different `$ command` line) does.
+        if snap.hash1 and snap.hash1 == runtime.last_confirm_hash:
+            actions.append({"kind": "log", "level": "debug",
+                            "msg": "[%d] Confirm dedup: hash1 unchanged since last fire"
+                                   % snap.cycle})
+            return actions
         actions.append({"kind": "log", "level": "info",
                         "msg": "Auto-confirm: pattern=%r matched=%r -> %r (enter=%s)"
                                % (pat_str, matched, response, send_enter)})
@@ -3433,6 +3410,8 @@ class AutoConfirmationFeature(MonitorFeature):
         elif send_enter:
             actions.append({"kind": "send_key", "key": "Enter"})
         runtime.last_confirm = snap.now
+        runtime.last_confirm_hash = snap.hash1
+        runtime.last_confirm_response = response
         runtime.last_change = snap.now
         runtime.idle_confirmed = False
         runtime.has_worked = True
@@ -6192,18 +6171,29 @@ def cmd_run(args):
     if config.prompt_after_launch:
         elapsed = 0.0
         ready = False
+        last_hash = ""    # dedup: skip same-screen re-fires within startup window
+        last_response = ""  # last response sent (input-box guard)
+        prev_output = ""    # previous capture (input-box guard "changed" condition)
         while elapsed < config.startup_wait:
             time.sleep(1); elapsed += 1
             output = capture_tmux(session)
             if not output.strip():
                 continue
-            # Try clearing a confirm dialog first. should_auto_confirm
-            # returns (response, send_enter, pattern, match) or None;
-            # the rule is per-dialog: e.g. "1" without Enter for numbered
-            # menus, "" with Enter for Ink select dialogs.
-            confirm = should_auto_confirm(output, config)
+            confirm = should_auto_confirm(output, config,
+                                           last_response=last_response,
+                                           prev_output=prev_output)
+            prev_output = output
             if confirm:
-                response, send_enter = confirm[0], confirm[1]
+                response, send_enter, _pat, _matched = confirm
+                # Dedup by hash1 (digits stripped) of the recent slice.
+                import re as _re
+                _digits = _re.compile(r"[0-9]+")
+                tail = "\n".join([l for l in output.splitlines() if l.strip()][-config.confirm_recent_lines:])
+                cur_hash = hashlib.md5(_digits.sub("", tail).encode("utf-8", errors="replace")).hexdigest()
+                if cur_hash == last_hash:
+                    continue
+                last_hash = cur_hash
+                last_response = response
                 _send_confirm_response(session, response, send_enter)
                 time.sleep(3); elapsed += 3
                 continue
