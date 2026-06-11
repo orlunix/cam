@@ -697,18 +697,29 @@ def cmd_run(args):
     if config.prompt_after_launch:
         elapsed = 0.0
         ready = False
+        last_hash = ""    # dedup: skip same-screen re-fires within startup window
+        last_response = ""  # last response sent (input-box guard)
+        prev_output = ""    # previous capture (input-box guard "changed" condition)
         while elapsed < config.startup_wait:
             time.sleep(1); elapsed += 1
             output = capture_tmux(session)
             if not output.strip():
                 continue
-            # Try clearing a confirm dialog first. should_auto_confirm
-            # returns (response, send_enter, pattern, match) or None;
-            # the rule is per-dialog: e.g. "1" without Enter for numbered
-            # menus, "" with Enter for Ink select dialogs.
-            confirm = should_auto_confirm(output, config)
+            confirm = should_auto_confirm(output, config,
+                                           last_response=last_response,
+                                           prev_output=prev_output)
+            prev_output = output
             if confirm:
-                response, send_enter = confirm[0], confirm[1]
+                response, send_enter, _pat, _matched = confirm
+                # Dedup by hash1 (digits stripped) of the recent slice.
+                import re as _re
+                _digits = _re.compile(r"[0-9]+")
+                tail = "\n".join([l for l in output.splitlines() if l.strip()][-config.confirm_recent_lines:])
+                cur_hash = hashlib.md5(_digits.sub("", tail).encode("utf-8", errors="replace")).hexdigest()
+                if cur_hash == last_hash:
+                    continue
+                last_hash = cur_hash
+                last_response = response
                 _send_confirm_response(session, response, send_enter)
                 time.sleep(3); elapsed += 3
                 continue
