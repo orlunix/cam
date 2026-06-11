@@ -508,8 +508,8 @@ export function mountShell({ api, state, connect }) {
    * The row ⋯ button is intentionally a small action menu only:
    * Settings / Stop / Remove. Settings opens a full Agents-mode
    * settings surface styled like the app Settings page. Attributes
-   * are editable now; Cron maps to node-local camc cron; Loop and
-   * Workflow remain planning tabs for later automation slices.
+   * are editable now; Automation merges agent-owned prompt loops and
+   * advanced host cron jobs in one surface.
    */
   const modeAgentsEl = document.getElementById('mode-agents');
   const agentSettingsPanel = document.getElementById('agent-settings-panel');
@@ -534,6 +534,10 @@ export function mountShell({ api, state, connect }) {
   const agentCronTtl = document.getElementById('agent-cron-ttl');
   const agentCronNoExpire = document.getElementById('agent-cron-no-expire');
   const agentCronText = document.getElementById('agent-cron-text');
+  const agentCronTextLabel = document.getElementById('agent-cron-text-label');
+  const agentCronCwdLabel = document.getElementById('agent-cron-cwd-label');
+  const agentCronCwd = document.getElementById('agent-cron-cwd');
+  const agentCronTypeInputs = Array.from(document.querySelectorAll('input[name="agent-cron-type"]'));
   const agentCronAdd = document.getElementById('agent-cron-add');
   const agentCronStatus = document.getElementById('agent-cron-status');
   const agentCronList = document.getElementById('agent-cron-list');
@@ -544,6 +548,7 @@ export function mountShell({ api, state, connect }) {
   let _agentSettingsAgentId = null;
   let _agentSettingsTab = 'attributes';
   let _agentCronLoadedFor = null;
+  let _agentCronCwdFor = null;
   let _agentCronPayload = null;
   let _agentCronLoading = false;
 
@@ -607,6 +612,28 @@ export function mountShell({ api, state, connect }) {
     if (cls) agentCronStatus.classList.add(cls);
   }
 
+  function currentAutomationType() {
+    const picked = agentCronTypeInputs.find(input => input.checked);
+    return picked && picked.value === 'cron' ? 'cron' : 'loop';
+  }
+
+  function agentWorkspacePath(agent = activeSettingsAgent()) {
+    return String(agent?.context_path || agent?.path || agent?.cwd || '');
+  }
+
+  function updateAutomationTypeUi() {
+    const type = currentAutomationType();
+    const isCron = type === 'cron';
+    if (agentCronTextLabel) {
+      const child = agentCronTextLabel.querySelector('textarea');
+      agentCronTextLabel.firstChild.textContent = isCron ? 'Command\n                    ' : 'Prompt\n                    ';
+      if (child) child.placeholder = isCron ? 'camc msg send cam-dev -t "review latest changes" --no-wait' : 'review latest changes and report blockers';
+    }
+    if (agentCronCwdLabel) agentCronCwdLabel.hidden = !isCron;
+    if (agentCronCwd && isCron && !agentCronCwd.value) agentCronCwd.value = agentWorkspacePath();
+    if (agentCronAdd) agentCronAdd.textContent = isCron ? 'Add cron job' : 'Add loop';
+  }
+
   function updateCronSchedulePlaceholder() {
     if (!agentCronScheduleType || !agentCronScheduleValue) return;
     const t = agentCronScheduleType.value || 'every';
@@ -647,33 +674,34 @@ export function mountShell({ api, state, connect }) {
   function renderAgentCronJobs(agent = activeSettingsAgent()) {
     if (!agentCronList) return;
     if (!agent) {
-      agentCronList.innerHTML = '<div class="empty-state">Select an agent to view cron jobs.</div>';
+      agentCronList.innerHTML = '<div class="empty-state">Select an agent to view automation.</div>';
       return;
     }
     if (_agentCronLoading) {
-      agentCronList.innerHTML = '<div class="empty-state">Loading cron jobs...</div>';
+      agentCronList.innerHTML = '<div class="empty-state">Loading automation...</div>';
       return;
     }
     const payload = _agentCronPayload;
     const jobs = payload && Array.isArray(payload.jobs) ? payload.jobs : [];
+    const loops = payload && Array.isArray(payload.loops) ? payload.loops : [];
     if (!payload) {
-      agentCronList.innerHTML = '<div class="empty-state">Click Refresh to load cron jobs on this node.</div>';
+      agentCronList.innerHTML = '<div class="empty-state">Click Refresh to load automation for this agent.</div>';
       return;
     }
-    if (!jobs.length) {
-      agentCronList.innerHTML = '<div class="empty-state">No CamUI-managed cron jobs are attached to this agent.</div>';
-      return;
-    }
-    agentCronList.innerHTML = jobs.map((job) => {
-      const id = escapeHtml(job.id || '');
-      const key = escapeAttr(job.id || job.name || '');
-      const name = escapeHtml(job.display_name || job.name || job.id || 'cron job');
-      const schedule = escapeHtml(cronScheduleLabel(job));
-      const host = escapeHtml(job.host || 'this host');
-      const status = escapeHtml(job.last_status || 'never run');
-      const attempts = escapeHtml(`${job.attempts || 0}/${job.max_attempts || '?'}`);
-      const next = escapeHtml(cronNextDue(job));
-      const expires = escapeHtml(job.expires_at || 'no expiry');
+
+    function card(item, kind) {
+      const id = escapeHtml(item.id || '');
+      const keyRaw = item.id || item.name || '';
+      const key = escapeAttr(`${kind}:${keyRaw}`);
+      const name = escapeHtml(item.display_name || item.name || item.id || (kind === 'loop' ? 'loop' : 'cron job'));
+      const schedule = escapeHtml(cronScheduleLabel(item));
+      const status = escapeHtml(item.last_status || item.state?.last_status || 'never run');
+      const next = escapeHtml(cronNextDue(item));
+      const policy = item.policy || {};
+      const attempts = escapeHtml(`${item.attempts ?? item.state?.attempts ?? 0}/${item.max_attempts || policy.max_attempts || '?'}`);
+      const expires = escapeHtml(item.expires_at || policy.expires_at || 'no expiry');
+      const host = escapeHtml(kind === 'loop' ? 'agent monitor' : (item.host || 'this host'));
+      const removeLabel = kind === 'loop' ? 'Remove loop' : 'Remove cron job';
       return `
         <article class="agent-cron-job-card" data-cron-job="${key}">
           <div class="agent-cron-job-main">
@@ -683,17 +711,25 @@ export function mountShell({ api, state, connect }) {
           </div>
           <div class="agent-cron-job-side">
             <span class="agent-cron-status-pill">${status}</span>
-            <button type="button" class="btn-secondary btn-xs" data-cron-remove="${key}" aria-label="Remove cron job ${name}">Remove</button>
+            <button type="button" class="btn-secondary btn-xs" data-cron-remove="${key}" aria-label="${removeLabel} ${name}">Remove</button>
           </div>
           ${id ? `<div class="agent-cron-job-id">${id}</div>` : ''}
         </article>`;
-    }).join('');
+    }
+
+    const sections = [];
+    if (loops.length) sections.push(`<div class="agent-cron-list-heading">Agent loops</div>${loops.map(loop => card(loop, 'loop')).join('')}`);
+    if (jobs.length) sections.push(`<div class="agent-cron-list-heading">Host cron jobs</div>${jobs.map(job => card(job, 'cron')).join('')}`);
+    if (!sections.length) sections.push('<div class="empty-state">No automation is attached to this agent.</div>');
+    if (payload.loop_error) sections.push(`<div class="empty-state">Agent loops unavailable: ${escapeHtml(payload.loop_error)}</div>`);
+    agentCronList.innerHTML = sections.join('');
   }
 
   async function loadAgentCron({ force = false } = {}) {
     const agent = activeSettingsAgent();
     if (!agent) {
       _agentCronLoadedFor = null;
+      _agentCronCwdFor = null;
       _agentCronPayload = null;
       renderAgentCronJobs(null);
       return;
@@ -704,16 +740,18 @@ export function mountShell({ api, state, connect }) {
     }
     _agentCronLoading = true;
     renderAgentCronJobs(agent);
-    setAgentCronStatus('Loading cron jobs...');
+    setAgentCronStatus('Loading automation...');
     try {
-      await requireAgentSettingsConnected('Cron');
+      await requireAgentSettingsConnected('Automation');
       const payload = await api.agentCronJobs(agent.id);
       _agentCronLoadedFor = agent.id;
       _agentCronPayload = payload || { jobs: [] };
-      setAgentCronStatus(`Loaded ${(_agentCronPayload.jobs || []).length} cron job(s).`, 'is-ok');
+      const total = (_agentCronPayload.jobs || []).length + (_agentCronPayload.loops || []).length;
+      const suffix = _agentCronPayload.loop_error ? ` Loop unavailable: ${_agentCronPayload.loop_error}` : '';
+      setAgentCronStatus(`Loaded ${total} automation item(s).${suffix}`, _agentCronPayload.loop_error ? 'is-error' : 'is-ok');
     } catch (err) {
       _agentCronPayload = { jobs: [] };
-      setAgentCronStatus(`Cron load failed: ${err?.message || err}`, 'is-error');
+      setAgentCronStatus(`Automation load failed: ${err?.message || err}`, 'is-error');
     } finally {
       _agentCronLoading = false;
       renderAgentCronJobs(agent);
@@ -726,19 +764,25 @@ export function mountShell({ api, state, connect }) {
     const scheduleType = String(agentCronScheduleType?.value || 'every');
     const scheduleValue = String(agentCronScheduleValue?.value || '').trim();
     const text = String(agentCronText?.value || '').trim();
-    if (!text) return { error: 'Message is required.' };
-    return {
-      body: {
-        name,
-        schedule_type: scheduleType,
-        schedule_value: scheduleValue,
-        text,
-        timeout_seconds: Number(agentCronTimeout?.value || 60),
-        max_attempts: Number(agentCronAttempts?.value || 3),
-        ttl_days: Number(agentCronTtl?.value || 7),
-        no_expire: !!agentCronNoExpire?.checked,
-      },
+    const type = currentAutomationType();
+    if (!text) return { error: type === 'cron' ? 'Command is required.' : 'Prompt is required.' };
+    const body = {
+      type,
+      name,
+      schedule_type: scheduleType,
+      schedule_value: scheduleValue,
+      timeout_seconds: Number(agentCronTimeout?.value || 60),
+      max_attempts: Number(agentCronAttempts?.value || 3),
+      ttl_days: Number(agentCronTtl?.value || 7),
+      no_expire: !!agentCronNoExpire?.checked,
     };
+    if (type === 'cron') {
+      body.command = text;
+      body.cwd = String(agentCronCwd?.value || '').trim() || agentWorkspacePath();
+    } else {
+      body.text = text;
+    }
+    return { body };
   }
 
   async function addAgentCronJob() {
@@ -750,11 +794,12 @@ export function mountShell({ api, state, connect }) {
       return;
     }
     if (agentCronAdd) agentCronAdd.disabled = true;
-    setAgentCronStatus('Adding cron job...');
+    const type = checked.body.type === 'cron' ? 'cron job' : 'loop';
+    setAgentCronStatus(`Adding ${type}...`);
     try {
-      await requireAgentSettingsConnected('Cron add');
+      await requireAgentSettingsConnected('Automation add');
       await api.createAgentCronJob(agent.id, checked.body);
-      setAgentCronStatus('Cron job added.', 'is-ok');
+      setAgentCronStatus(`${type === 'cron job' ? 'Cron job' : 'Loop'} added.`, 'is-ok');
       if (agentCronName) agentCronName.value = '';
       if (agentCronText) agentCronText.value = '';
       await loadAgentCron({ force: true });
@@ -768,12 +813,13 @@ export function mountShell({ api, state, connect }) {
   async function removeAgentCronJob(jobKey) {
     const agent = activeSettingsAgent();
     if (!agent || !jobKey) return;
-    if (!confirm(`Remove cron job "${jobKey}"?`)) return;
-    setAgentCronStatus('Removing cron job...');
+    const isLoop = String(jobKey || '').startsWith('loop:');
+    if (!confirm(`Remove ${isLoop ? 'loop' : 'cron job'} "${jobKey.replace(/^(loop|cron):/, '')}"?`)) return;
+    setAgentCronStatus(`Removing ${isLoop ? 'loop' : 'cron job'}...`);
     try {
-      await requireAgentSettingsConnected('Cron remove');
+      await requireAgentSettingsConnected('Automation remove');
       await api.deleteAgentCronJob(agent.id, jobKey);
-      setAgentCronStatus('Cron job removed.', 'is-ok');
+      setAgentCronStatus(`${isLoop ? 'Loop' : 'Cron job'} removed.`, 'is-ok');
       await loadAgentCron({ force: true });
     } catch (err) {
       setAgentCronStatus(`Remove failed: ${err?.message || err}`, 'is-error');
@@ -781,7 +827,7 @@ export function mountShell({ api, state, connect }) {
   }
 
   function setAgentSettingsTab(tab) {
-    _agentSettingsTab = ['attributes', 'loop', 'workflow', 'cron'].includes(tab) ? tab : 'attributes';
+    _agentSettingsTab = ['attributes', 'automation', 'workflow'].includes(tab) ? tab : 'attributes';
     for (const btn of agentSettingsTabs) {
       const on = btn.dataset.agentSettingsTab === _agentSettingsTab;
       btn.setAttribute('aria-pressed', on ? 'true' : 'false');
@@ -789,7 +835,7 @@ export function mountShell({ api, state, connect }) {
     for (const panel of agentSettingsPanels) {
       panel.hidden = panel.dataset.agentSettingsPanel !== _agentSettingsTab;
     }
-    if (_agentSettingsTab === 'cron' && agentSettingsPanel && !agentSettingsPanel.hidden) {
+    if (_agentSettingsTab === 'automation' && agentSettingsPanel && !agentSettingsPanel.hidden) {
       void loadAgentCron();
     }
   }
@@ -803,7 +849,7 @@ export function mountShell({ api, state, connect }) {
       if (agentSettingsTags) agentSettingsTags.value = '';
       if (agentSettingsSave) agentSettingsSave.disabled = true;
       if (agentSettingsReset) agentSettingsReset.disabled = true;
-      if (agentCronTarget) agentCronTarget.textContent = 'Select an agent to manage node-local cron jobs.';
+      if (agentCronTarget) agentCronTarget.textContent = 'Select an agent to manage automation.';
       if (agentCronAdd) agentCronAdd.disabled = true;
       _agentCronLoadedFor = null;
       _agentCronPayload = null;
@@ -833,7 +879,11 @@ export function mountShell({ api, state, connect }) {
     if (agentCronTarget) {
       const host = agent.machine_host || agent.hostname || 'this node';
       const path = agent.context_path || agent.path || '';
-      agentCronTarget.textContent = `Jobs are stored on ${host}${path ? ` in ${path}` : ''}. CamUI-managed job names are scoped to ${agent.id}.`;
+      agentCronTarget.textContent = `Loops are owned by this agent. Host cron jobs run on ${host}${path ? ` in ${path}` : ''} by default.`;
+    }
+    if (agentCronCwd && _agentCronCwdFor !== agent.id) {
+      agentCronCwd.value = agentWorkspacePath(agent);
+      _agentCronCwdFor = agent.id;
     }
     if (agentCronAdd) agentCronAdd.disabled = false;
     if (_agentCronLoadedFor && _agentCronLoadedFor !== agent.id) {
@@ -857,7 +907,8 @@ export function mountShell({ api, state, connect }) {
     setAgentSettingsTab(_agentSettingsTab || 'attributes');
     fillAgentSettings(agent);
     updateCronSchedulePlaceholder();
-    try { (_agentSettingsTab === 'cron' ? agentCronName : agentSettingsName)?.focus(); } catch { /* noop */ }
+    updateAutomationTypeUi();
+    try { (_agentSettingsTab === 'automation' ? agentCronName : agentSettingsName)?.focus(); } catch { /* noop */ }
   }
 
   function closeAgentSettings() {
@@ -1024,6 +1075,7 @@ export function mountShell({ api, state, connect }) {
   agentSettingsSave?.addEventListener('click', () => { void saveAgentSettingsAttributes(); });
   agentSettingsReset?.addEventListener('click', () => fillAgentSettings(activeSettingsAgent()));
   agentCronScheduleType?.addEventListener('change', updateCronSchedulePlaceholder);
+  agentCronTypeInputs.forEach(input => input.addEventListener('change', updateAutomationTypeUi));
   agentCronRefresh?.addEventListener('click', () => { void loadAgentCron({ force: true }); });
   agentCronAdd?.addEventListener('click', () => { void addAgentCronJob(); });
   agentCronList?.addEventListener('click', (ev) => {
@@ -1052,7 +1104,7 @@ export function mountShell({ api, state, connect }) {
         const prevSettingsAgent = _agentSettingsAgentId;
         if (s && s !== _agentSettingsAgentId) _agentSettingsAgentId = s;
         fillAgentSettings(activeSettingsAgent());
-        if (_agentSettingsTab === 'cron' && _agentSettingsAgentId && _agentSettingsAgentId !== prevSettingsAgent) {
+        if (_agentSettingsTab === 'automation' && _agentSettingsAgentId && _agentSettingsAgentId !== prevSettingsAgent) {
           void loadAgentCron({ force: true });
         }
       }
