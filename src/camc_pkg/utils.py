@@ -29,36 +29,15 @@ def strip_ansi(text):
 _BOX_CHARS = u"\u2500\u2502\u250c\u2510\u2514\u2518\u251c\u2524\u252c\u2534\u253c\u256d\u256e\u2570\u256f \t"
 
 
-# Strip a leading selection-cursor marker that sits immediately in
-# front of a numbered menu option, e.g.
-#   "\u276f 1. Yes"  -> "1. Yes"
-#   "\u203a 2. No"   -> "2. No"
-#   "> 1. Yes"  -> "1. Yes"
-#   "    \u276f 1. Allow once"  -> "    1. Allow once"   (indent preserved)
-#
-# Narrow on purpose so TOML [[confirm]] rules can stay author-friendly
-# (e.g. "^1\.\s*Yes") without each tool having to spell out every UI
-# cursor variant. Only the cursor marker + its trailing whitespace is
-# dropped; line indent is preserved. The lookahead requires
-# ``\d+\.`` immediately after the cursor so unrelated prose like
-# "\u276f write the code" is left alone. ``>`` is restricted to a single
-# `>` to avoid touching shell-prompt-style `>>`/`>>>` markers.
-_CURSOR_BEFORE_NUMBERED_OPT_RE = re.compile(
-    u"^(\\s*)[\u276f\u203a>](?!>)\\s+(?=\\d+\\.)",
-    re.MULTILINE,
-)
-
-
-def _strip_selection_cursor_before_numbered(text):
-    return _CURSOR_BEFORE_NUMBERED_OPT_RE.sub(r"\1", text)
-
-
 def clean_for_confirm(text):
+    # Strip box-drawing edges from each line so TOML rules can anchor
+    # on the actual content (the dialog inside the box). The selection
+    # cursor \u276f/\u203a/\u2192 is INTENTIONALLY preserved \u2014 TOML rules now anchor
+    # on it (e.g. ``^\u276f\s+1\.\s*Yes``) for stronger menu detection.
     lines = [line.strip(_BOX_CHARS) for line in text.splitlines()]
     while lines and not lines[-1]:
         lines.pop()
-    joined = "\n".join(lines).rstrip()
-    return _strip_selection_cursor_before_numbered(joined)
+    return "\n".join(lines).rstrip()
 
 
 _RE_FLAGS = {

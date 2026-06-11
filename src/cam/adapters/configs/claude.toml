@@ -64,45 +64,20 @@ prompt_count_threshold = 2
 # Claude rotates verbs (Crunched, Sautéed, Whisked, Baked, etc.)
 fallback_summary_pattern = "✻ .+ for \\d+"
 
+# (2026-06-11 trim) Rules removed: "Do you want to proceed",
+# "Allow once/always", and the v2.1 trust-dialog Enter rule. All three
+# false-fired on scrollback prose, and the trust-dialog one fired on
+# this very documentation block. The single remaining numbered-menu
+# rule below requires the active cursor ❯ at line start, so it can ONLY
+# match when Claude has actually drawn the menu.
 [[confirm]]
-# Numbered permission menu: "Do you want to proceed? 1. Yes 2. No"
-# Send "1" to select option 1. The Ink TUI consumes the keypress.
-# Anchor: line start + at most 1 leading symbol (e.g. cursor "❯"), no
-# descriptive prose before the marker — prevents prose false positives
-# like "...so do you want to proceed with X?".
-pattern = "^[^\\w\\s]?\\s*Do\\s+you\\s+want\\s+to\\s+proceed"
+# Numbered permission menu — "❯ 1. Yes" / "❯ 1. Allow". The cursor ❯
+# is what Ink draws when the menu is active and highlighting option 1.
+# Anchor: literal ❯ followed by whitespace then "1." then Yes/Allow.
+pattern = "^❯\\s+1\\.\\s*(Yes|Allow).*$"
 flags = ["IGNORECASE", "MULTILINE"]
 response = "1"
 send_enter = false
-
-[[confirm]]
-# Numbered menu with "1. Yes" or "1. Allow" — send "1" to select.
-pattern = "^[^\\w\\s]?\\s*1\\.\\s*(Yes|Allow)"
-flags = ["IGNORECASE", "MULTILINE"]
-response = "1"
-send_enter = false
-
-[[confirm]]
-# "Allow once" / "Always allow" select menu (Claude 4.x+)
-# Send "1" to select the first option.
-pattern = "^[^\\w\\s]?\\s*Allow\\s+(once|always)"
-flags = ["IGNORECASE", "MULTILINE"]
-response = "1"
-send_enter = false
-
-[[confirm]]
-# Claude Code v2.1+ trust dialog — Ink select menu shown on first
-# launch in any new working directory. Two phrasings observed:
-#   "Enter to confirm · Esc to cancel"   (initial trust)
-#   "Allow once  Allow always"           (per-tool permission)
-# Press Enter to select the highlighted default (Trust this folder /
-# Allow once). Without this rule, the launch loop times out waiting
-# for ready_pattern (the dialog hides the ❯), then blasts the prompt
-# at the dialog — the body is consumed as keystrokes, the trailing
-# Enter confirms the dialog, and the prompt never reaches Claude.
-pattern = "Enter to confirm.*Esc to cancel|Allow once.*Allow always"
-response = ""
-send_enter = true
 
 # (2026-06-11 hot-fix) The generic y/n bracket rule
 #   "\(y/n\)|\[Y/n\]|\[y/N\]"
@@ -129,7 +104,7 @@ busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
 # done_pattern: task just finished (e.g. "Crunched for 36s", "Cogitated for 1m 8s")
 done_pattern = "ed\\s+for\\s+\\d+[smh]"
 confirm_cooldown = 5.0        # seconds between auto-confirm attempts
-confirm_recent_lines = 32     # last N non-empty lines to scan for permission dialogs (dialog can be pushed up by todo footer + spinner)
+confirm_recent_lines = 20
 confirm_sleep = 0.5           # sleep after sending confirmation
 health_check_interval = 15    # seconds between tmux alive checks
 idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle

@@ -5,28 +5,68 @@ import re
 from camc_pkg.utils import strip_ansi, clean_for_confirm
 
 
-# Global active-input-cursor guard (2026-06-11 hot-fix).
+# Global input-box guard (2026-06-11).
 #
-# Detects an INPUT cursor — a TUI marker that says "the user can type
-# right now". Markers (line start, optional indent, then char + space):
+# Detects an INPUT cursor sitting in the user's input box, meaning the
+# agent is waiting for the human to type — auto-confirm MUST NOT fire
+# in that state or it injects keystrokes into the user's input.
+#
+# Cursor markers (line start, optional indent, then char + space):
 #   U+276F ❯  Claude Code TUI
 #   U+203A ›  Codex TUI
+#   U+2192 →  Cursor Agent TUI
 #   >         generic shell / continuation prompt
 #
-# Restricted to the LAST 5 non-empty lines of the captured screen.
-# If no cursor is on screen, no auto-confirm rule may fire — period.
-# This kills the false-fire class where a stray substring (markdown
-# body, code fence, embedded screen capture, agent prose) matches a
-# TOML rule even though no real interactive prompt is present.
-_INPUT_CURSOR_RE = re.compile(r"(?m)^\s*[❯›>]\s")
+# Detects "input box is currently active" in three ways, ANY of which
+# means auto-confirm must skip:
+#
+# (1) Bare cursor line: ``^\s*[❯›→>]\s*$`` — input box empty, idle.
+# (2) Cursor line consists only of repeated last_response chars:
+#     ``^\s*[❯›→>]\s+<response>+\s*$``. Catches the spam-in-input case
+#     where our own ``1`` or ``a`` keystroke landed in the input box
+#     instead of selecting a menu option. NOT triggered by menu lines
+#     like ``❯ 1. Yes`` because of the ``.`` after the digit.
+# (3) Cursor line content changed vs the previous capture — the
+#     input box is being typed into (by user or by codex animating).
+#
+# Search window: last 8 non-empty lines.
+_CURSOR_LINE_RE = re.compile(r"^\s*[❯›→>](\s|$)")
+_BARE_CURSOR_RE = re.compile(r"^\s*[❯›→>]\s*$")
+_CURSOR_PREFIX_RE = re.compile(r"^\s*[❯›→>]\s+(.*?)\s*$")
 
 
-def has_input_cursor(output):
-    """True iff one of the active-input-cursor markers is visible on
-    the last 5 non-empty lines of ``output``. See _INPUT_CURSOR_RE."""
-    tail_lines = [l for l in output.splitlines() if l.strip()][-5:]
-    tail = "\n".join(tail_lines)
-    return bool(_INPUT_CURSOR_RE.search(tail))
+def _find_cursor_line(lines):
+    """Return the bottom-most cursor line in ``lines``, or None."""
+    for line in reversed(lines):
+        if _CURSOR_LINE_RE.match(line):
+            return line
+    return None
+
+
+def has_input_cursor(output, last_response="", prev_output=""):
+    """True iff the input box is visible / active and auto-confirm
+    must therefore skip. Three conditions documented above."""
+    tail_lines = [l for l in output.splitlines() if l.strip()][-8:]
+    cur_line = _find_cursor_line(tail_lines)
+    if cur_line is None:
+        return False
+    # (1) Bare cursor line
+    if _BARE_CURSOR_RE.match(cur_line):
+        return True
+    # (2) Cursor line is only repeated last_response chars
+    if last_response:
+        m = _CURSOR_PREFIX_RE.match(cur_line)
+        if m:
+            content = m.group(1)
+            if content and all(c == last_response for c in content):
+                return True
+    # (3) Cursor line changed since the previous capture
+    if prev_output:
+        prev_tail = [l for l in prev_output.splitlines() if l.strip()][-8:]
+        prev_cur = _find_cursor_line(prev_tail)
+        if prev_cur is not None and prev_cur != cur_line:
+            return True
+    return False
 
 
 def detect_state(output, config):
@@ -48,24 +88,14 @@ def detect_state(output, config):
         return None
 
 
-def should_auto_confirm(output, config):
+def should_auto_confirm(output, config, last_response="", prev_output=""):
     if config.strip_ansi:
         output = strip_ansi(output)
-    # 2026-06-11 hot-fix: global input-cursor guard. If no active
-    # input cursor (❯ / › / `> `) is visible in the last 5 non-empty
-    # lines of the RAW capture, no TOML [[confirm]] rule may fire —
-    # there cannot be a real dialog waiting for input without a
-    # cursor on screen. Kills false-fires from markdown / code blocks
-    # / embedded screen captures that happen to contain a rule's
-    # literal substring.
-    #
-    # Critically: this check runs against `output`, NOT against
-    # `clean_for_confirm(output)`. clean_for_confirm() strips a
-    # leading selection cursor sitting before a numbered option (so
-    # author-friendly rules like `^1\. Yes` still match) — applying
-    # the guard AFTER that strip would defeat itself, because the
-    # cursor would already be gone from the cleaned text.
-    if not has_input_cursor(output):
+    # Input-box guard. Three conditions in has_input_cursor: bare
+    # cursor, cursor + only our last_response chars, or cursor line
+    # content changing since the previous capture. Any → skip.
+    if has_input_cursor(output, last_response=last_response,
+                        prev_output=prev_output):
         return None
     clean = clean_for_confirm(output)
     # Only check the last few non-empty lines — real permission dialogs
