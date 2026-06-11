@@ -26,9 +26,9 @@
  *   DELETE /api/agents/:id           — graceful stop via `camc stop <id>`
  *   DELETE /api/agents/:id/history   — remove via `camc rm <id>` (kills
  *                                      tmux + drops the agent record)
- *   GET    /api/agents/:id/cron      — list CamUI-managed cron jobs
- *   POST   /api/agents/:id/cron      — add `camc cron` msg-send job
- *   DELETE /api/agents/:id/cron/:job — remove one cron job
+ *   GET    /api/agents/:id/cron      — list CamUI-managed automation
+ *   POST   /api/agents/:id/cron      — add agent loop or host cron job
+ *   DELETE /api/agents/:id/cron/:job — remove one automation item
  *   POST   /api/agents/:id/input     — send text into the tmux pane
  *   POST   /api/agents/:id/key       — send a named tmux key
  *   POST   /api/agents/:id/upload    — upload a file via SSH
@@ -1724,7 +1724,7 @@ function _decorateAgentCronJobs(agentId, jobs) {
 async function _listAgentCron(agentId) {
   const resolved = _contextForAgent(agentId);
   if (resolved.error) {
-    return { ok: false, error: resolved.error, detail: `Cron unavailable: ${resolved.error}` };
+    return { ok: false, error: resolved.error, detail: `Automation unavailable: ${resolved.error}` };
   }
   const agent = resolved.agent || {};
   const canonicalId = String(agent.id || decodeURIComponent(String(agentId || '')));
@@ -1736,18 +1736,72 @@ async function _listAgentCron(agentId) {
   try { parsed = JSON.parse(exec.stdout || '{}'); }
   catch (e) { return { ok: false, error: 'invalid_json', detail: `camc cron list returned invalid JSON: ${e.message}` }; }
   const allJobs = Array.isArray(parsed.jobs) ? parsed.jobs : [];
+
+  let loops = [];
+  let loopError = '';
+  const loopExec = await _execCamcOnContext(resolved.ctx, ['cron', 'list', '--loop', '--owner', canonicalId, '--json'], { timeoutMs: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000) });
+  if (loopExec.ok) {
+    try {
+      const loopParsed = JSON.parse(loopExec.stdout || '{}');
+      loops = Array.isArray(loopParsed.loops) ? loopParsed.loops : [];
+    } catch (e) {
+      loopError = `invalid loop JSON: ${e.message}`;
+    }
+  } else {
+    loopError = loopExec.detail || loopExec.stderr || loopExec.error || 'camc cron --loop list failed';
+  }
+
   return {
     ok: true,
     agent_id: canonicalId,
     context_name: resolved.ctx && resolved.ctx.name,
     workspace: _agentWorkspacePath(agent, resolved.ctx),
-    count: _decorateAgentCronJobs(canonicalId, allJobs).length,
+    count: _decorateAgentCronJobs(canonicalId, allJobs).length + loops.length,
     all_count: allJobs.length,
     jobs: _decorateAgentCronJobs(canonicalId, allJobs),
+    loops,
+    loop_error: loopError,
   };
 }
 
+async function _addAgentLoop(agentId, body) {
+  const resolved = _contextForAgent(agentId);
+  if (resolved.error) {
+    return { ok: false, error: resolved.error, detail: `Loop unavailable: ${resolved.error}` };
+  }
+  const agent = resolved.agent || {};
+  const canonicalId = String(agent.id || decodeURIComponent(String(agentId || '')));
+  const name = String(body && body.name || '').trim();
+  if (!_validCronUiName(name)) {
+    return { ok: false, error: 'invalid_name', detail: 'Use letters, digits, dot, underscore, or dash; max 48 chars' };
+  }
+  const schedule = _cronScheduleArgs(body && body.schedule_type, body && body.schedule_value);
+  if (schedule.error) return { ok: false, error: schedule.error, detail: schedule.detail };
+  const text = String(body && body.text || '').trim();
+  if (!text) return { ok: false, error: 'missing_text', detail: 'Loop prompt text is required' };
+  if (text.length > 4000) return { ok: false, error: 'text_too_long', detail: 'Loop prompt text is too long' };
+
+  const args = [
+    'cron', 'add',
+    '--loop',
+    '--owner', canonicalId,
+    '--name', name,
+    ...schedule.args,
+    '--prompt', text,
+  ];
+  const exec = await _execCamcOnContext(resolved.ctx, args, { timeoutMs: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000) });
+  if (!exec.ok) {
+    return { ok: false, error: exec.error || 'loop_add_failed', detail: exec.detail || exec.stderr || 'camc cron add --loop failed' };
+  }
+  pushLog('info', `loop add ${name} for agent ${canonicalId}`);
+  const listed = await _listAgentCron(canonicalId);
+  return { ok: true, stdout: exec.stdout || '', stderr: exec.stderr || '', loops: listed.ok ? listed.loops : [] };
+}
+
 async function _addAgentCron(agentId, body) {
+  if (String(body && body.type || '').trim() === 'loop') {
+    return _addAgentLoop(agentId, body);
+  }
   const resolved = _contextForAgent(agentId);
   if (resolved.error) {
     return { ok: false, error: resolved.error, detail: `Cron unavailable: ${resolved.error}` };
@@ -1760,9 +1814,10 @@ async function _addAgentCron(agentId, body) {
   }
   const schedule = _cronScheduleArgs(body && body.schedule_type, body && body.schedule_value);
   if (schedule.error) return { ok: false, error: schedule.error, detail: schedule.detail };
-  const text = String(body && body.text || '').trim();
-  if (!text) return { ok: false, error: 'missing_text', detail: 'Cron message text is required' };
-  if (text.length > 4000) return { ok: false, error: 'text_too_long', detail: 'Cron message text is too long' };
+  const commandText = String(body && (body.command || body.shell) || '').trim();
+  const legacyMessage = String(body && body.text || '').trim();
+  if (!commandText && !legacyMessage) return { ok: false, error: 'missing_command', detail: 'Cron command is required' };
+  if (commandText.length > 4000 || legacyMessage.length > 4000) return { ok: false, error: 'text_too_long', detail: 'Cron command is too long' };
 
   const timeout = Math.max(5, Math.min(3600, Number(body && body.timeout_seconds) || 60));
   const maxAttempts = Math.max(1, Math.min(20, Number(body && body.max_attempts) || 3));
@@ -1770,7 +1825,7 @@ async function _addAgentCron(agentId, body) {
   const noExpire = !!(body && body.no_expire);
   const cwd = String(body && body.cwd || _agentWorkspacePath(agent, resolved.ctx) || '.');
   const cronName = `${_cronManagedPrefix(canonicalId)}${name}`;
-  const shellCmd = `${REMOTE_CAMC} msg send ${_shellQuote(canonicalId)} -t ${_shellQuote(text)} --no-wait`;
+  const shellCmd = commandText || `${REMOTE_CAMC} msg send ${_shellQuote(canonicalId)} -t ${_shellQuote(legacyMessage)} --no-wait`;
   const args = [
     'cron', 'add',
     '--name', cronName,
@@ -1799,21 +1854,26 @@ async function _removeAgentCron(agentId, jobKey) {
   }
   const agent = resolved.agent || {};
   const canonicalId = String(agent.id || decodeURIComponent(String(agentId || '')));
-  const key = decodeURIComponent(String(jobKey || '')).trim();
-  if (!key) return { ok: false, error: 'missing_job', detail: 'Cron job id or name is required' };
-  const exec = await _execCamcOnContext(resolved.ctx, ['cron', 'rm', key], { timeoutMs: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000) });
+  let key = decodeURIComponent(String(jobKey || '')).trim();
+  const isLoop = key.startsWith('loop:');
+  if (key.startsWith('loop:') || key.startsWith('cron:')) key = key.slice(key.indexOf(':') + 1);
+  if (!key) return { ok: false, error: 'missing_job', detail: 'Automation id or name is required' };
+  const args = isLoop
+    ? ['cron', 'rm', '--loop', '--owner', canonicalId, key]
+    : ['cron', 'rm', key];
+  const exec = await _execCamcOnContext(resolved.ctx, args, { timeoutMs: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000) });
   if (!exec.ok) {
-    return { ok: false, error: exec.error || 'cron_remove_failed', detail: exec.detail || exec.stderr || 'camc cron rm failed' };
+    return { ok: false, error: exec.error || (isLoop ? 'loop_remove_failed' : 'cron_remove_failed'), detail: exec.detail || exec.stderr || `camc cron rm${isLoop ? ' --loop' : ''} failed` };
   }
-  pushLog('info', `cron remove ${key} for agent ${canonicalId}`);
-  return { ok: true, removed: key, stdout: exec.stdout || '', stderr: exec.stderr || '' };
+  pushLog('info', `${isLoop ? 'loop' : 'cron'} remove ${key} for agent ${canonicalId}`);
+  return { ok: true, removed: key, kind: isLoop ? 'loop' : 'cron', stdout: exec.stdout || '', stderr: exec.stderr || '' };
 }
 
 function _cronHttpStatus(error) {
   const e = String(error || '');
   if (e === 'agent_not_found') return 404;
   if (['context_not_found', 'store_unavailable'].includes(e)) return e === 'store_unavailable' ? 503 : 404;
-  if (['invalid_name', 'invalid_schedule', 'missing_text', 'text_too_long', 'missing_job'].includes(e)) return 400;
+  if (['invalid_name', 'invalid_schedule', 'missing_text', 'missing_command', 'text_too_long', 'missing_job'].includes(e)) return 400;
   return 502;
 }
 
