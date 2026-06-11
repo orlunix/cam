@@ -288,7 +288,7 @@ class TestCodexAdapter:
         assert result is not None
         assert isinstance(result, ConfirmAction)
         assert result.response == "1"
-        assert result.send_enter is False
+        assert result.send_enter is True
 
     def test_auto_confirm_new_trust_directory_dialog(self):
         adapter = CodexAdapter()
@@ -302,7 +302,7 @@ class TestCodexAdapter:
         assert result is not None
         assert isinstance(result, ConfirmAction)
         assert result.response == "1"
-        assert result.send_enter is False
+        assert result.send_enter is True
 
     def test_auto_confirm_new_trust_directory_dialog_bottom_menu(self):
         adapter = CodexAdapter()
@@ -320,7 +320,7 @@ class TestCodexAdapter:
         assert result is not None
         assert isinstance(result, ConfirmAction)
         assert result.response == "1"
-        assert result.send_enter is False
+        assert result.send_enter is True
 
     def test_auto_confirm_retry_without_sandbox(self):
         adapter = CodexAdapter()
@@ -334,7 +334,7 @@ class TestCodexAdapter:
         assert result is not None
         assert isinstance(result, ConfirmAction)
         assert result.response == "1"
-        assert result.send_enter is False
+        assert result.send_enter is True
 
     def test_no_auto_confirm_press_enter_stale_scrollback(self):
         adapter = CodexAdapter()
@@ -348,13 +348,9 @@ class TestCodexAdapter:
         )
         assert result is None
 
-    def test_auto_confirm_apply(self):
-        adapter = CodexAdapter()
-        result = adapter.should_auto_confirm("Apply changes? [Y/n]")
-        assert result is not None
-        assert isinstance(result, ConfirmAction)
-        assert result.response == "y"
-        assert result.send_enter is True
+    # test_auto_confirm_apply removed on 2026-06-11 along with
+    # codex.toml rule #5 (the loose bracket-y/n rule). Modern Codex
+    # uses numbered menus.
 
     def test_no_auto_confirm(self):
         adapter = CodexAdapter()

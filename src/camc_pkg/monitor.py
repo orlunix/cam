@@ -2,22 +2,24 @@
 
 Pure screen-based, tool-agnostic design:
   1. Capture screen -> detect state/confirm/idle
-  2. Auto-confirm: pattern match on last 8 lines -> send response
+  2. Auto-confirm: TOML [[confirm]] rule match -> send response
   3. Idle: screen hash stable 60s + prompt visible -> idle
-  4. Stuck fallback: screen frozen 120s + prompt NOT visible -> send "1"
-  5. Auto-exit: idle + not attached + auto_exit enabled -> kill
+  4. Auto-exit: idle + not attached + auto_exit enabled -> kill
 
-No probe mechanism.  No characters sent except auto-confirm responses
-and stuck fallback.  All tool differences handled via TOML config patterns.
+No probe mechanism. The only characters the monitor sends are
+auto-confirm responses driven by adapter TOML rules. The previous
+"stuck fallback" that injected a bare "1" when the screen froze with
+no prompt visible was removed on 2026-06-10 — see
+``docs/legacy/monitor-auto-confirm-v1.md`` for the archived rationale.
 
 Auxiliary screen signals (optional, from TOML config):
-  busy_pattern: "ing…" style → definitely busy, skip confirm, reset idle
+  busy_pattern: "ing…" style → definitely busy, reset idle
   done_pattern: "ed for Xs" style → task done, fast-track idle with prompt
 
 Logging levels:
   DEBUG  - every cycle decision (hash, idle_for, why skipped, screen tail)
-  INFO   - state changes, auto-confirm, idle, auto-exit, stuck
-  WARNING- stuck fallback, unexpected situations
+  INFO   - state changes, auto-confirm, idle, auto-exit
+  WARNING- unexpected situations
   ERROR  - crashes, session errors
 
 Refactor note: the per-tick logic lives in ``camc_pkg.monitor_features``
@@ -26,9 +28,7 @@ after_confirm). This loop captures the screen, builds a MonitorSnapshot,
 calls each registered+enabled feature's phase hooks in order, and
 applies the returned action dicts (send_input, send_key, store_update,
 event, log, halt_cycle). A halt_cycle from the confirm phase skips the
-after_confirm phase entirely, preserving the legacy step-3-continue
-semantics. Health-check / stuck-fallback / auto-exit stay inline for
-this slice.
+after_confirm phase entirely. Health-check and auto-exit stay inline.
 """
 
 import hashlib
@@ -56,6 +56,71 @@ def _screen_tail(output, n=3):
     """Last n non-empty lines of screen output, for logging."""
     lines = [l.strip() for l in output.rstrip("\n").split("\n") if l.strip()]
     return " | ".join(lines[-n:]) if lines else "(empty)"
+
+
+# ANSI CSI (`ESC[...letter`) + OSC (`ESC]...BEL`). Sequences arriving with
+# stray bytes will fall through and be stripped by the printable-ASCII /
+# CJK pass below — this regex covers the structured cases only.
+import re as _re
+_ANSI_RE = _re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07")
+# [0-9]+ — strictly ASCII. We MUST NOT use ``\d`` here: Python's
+# ``\d`` is Unicode-aware and would also strip e.g. fullwidth digits
+# (０-９, U+FF10..U+FF19), Arabic-Indic digits, and other decimal
+# digit codepoints. The user spec keeps non-ASCII characters
+# (Chinese/CJK and anything else printable) in hash1; only the
+# Western 0-9 run gets removed.
+_DIGITS_RE = _re.compile(r"[0-9]+")
+
+
+def _normalize_screen(text):
+    """Return a stable, content-only view of a tmux capture.
+
+    Keeps only printable ASCII (space..tilde) and CJK characters
+    (CJK Unified Ideographs / Extension A, CJK Symbols and
+    Punctuation, halfwidth+fullwidth forms). Preserves ``\\n`` and
+    ``\\t`` so line / column structure survives for hash comparison.
+
+    Strips:
+      * the trailing status-bar line (Claude's `? for shortcuts` ↔
+        `esc to interrupt` flicker — same trim the legacy hash did);
+      * ANSI CSI/OSC escape sequences;
+      * everything else (control chars, emoji, box-drawing, dingbats,
+        sparklines, all other Unicode blocks).
+
+    Python 3.6+, stdlib only. UTF-8 throughout.
+    """
+    if not text:
+        return ""
+    body = text.rsplit("\n", 1)[0] if "\n" in text else text
+    body = _ANSI_RE.sub("", body)
+    out = []
+    append = out.append
+    for ch in body:
+        if ch == "\n" or ch == "\t":
+            append(ch)
+            continue
+        cp = ord(ch)
+        if 0x20 <= cp <= 0x7e:
+            append(ch)
+            continue
+        if (0x4e00 <= cp <= 0x9fff or       # CJK Unified Ideographs
+            0x3400 <= cp <= 0x4dbf or       # CJK Extension A
+            0x3000 <= cp <= 0x303f or       # CJK Symbols and Punctuation
+            0xff00 <= cp <= 0xffef):        # Halfwidth + Fullwidth Forms
+            append(ch)
+    return "".join(out)
+
+
+def _strip_ascii_digits(text):
+    """Remove ASCII digit runs. CJK digits (一二三 / 零) are untouched
+    because they are not in 0-9; they stay in the hash so genuine
+    Chinese-language progress text is not flattened."""
+    return _DIGITS_RE.sub("", text)
+
+
+def _content_hash(text):
+    """Short stable MD5 hex digest used as a screen-content fingerprint."""
+    return hashlib.md5(text.encode("utf-8")).hexdigest()[:8]
 
 
 def _apply_action(action, *, session, agent_id, store, events_fn):
@@ -170,12 +235,29 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
             if output.strip():
                 prev_output = output
 
-            # Hash: strip last line (status bar flicker) before hashing
-            hash_input = output.rsplit("\n", 1)[0] if "\n" in output else output
-            h = hashlib.md5(hash_input.encode()).hexdigest()[:8]
+            # Content hashes:
+            #   hash0 = normalized screen (printable ASCII + CJK,
+            #           status-bar line stripped, ANSI/control stripped).
+            #           This is the canonical idle signal.
+            #   hash1 = hash0 with ASCII digits removed. If hash1 is
+            #           stable while hash0 keeps changing, only numbers
+            #           are churning (timer / progress / spinner): the
+            #           agent is still working, NOT idle. Used as a
+            #           diagnostic and a guard against numeric churn
+            #           starving idle detection.
+            normalized = _normalize_screen(output)
+            h0 = _content_hash(normalized)
+            h1 = _content_hash(_strip_ascii_digits(normalized))
             prev_h_for_log = runtime.prev_hash
-            changed = h != runtime.prev_hash
-            runtime.prev_hash = h
+            changed = h0 != runtime.prev_hash
+            runtime.prev_hash = h0
+            # Per-tick hash1 churn tracking (separate from hash0's
+            # runtime.last_change which drives the idle decision).
+            if h1 != getattr(runtime, "prev_hash1", ""):
+                runtime.last_change_hash1 = now
+            runtime.prev_hash1 = h1
+            idle_for_hash1 = now - getattr(
+                runtime, "last_change_hash1", now)
 
             if not output.strip():
                 log.debug("[%d] Empty screen, skipping", cycle)
@@ -197,21 +279,26 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
             idle_for = now - runtime.last_change
 
             snap = MonitorSnapshot(
-                output=output, hash=h, prev_hash=prev_h_for_log,
+                output=output, hash=h0, prev_hash=prev_h_for_log,
                 changed=changed, now=now, cycle=cycle,
                 prompt_visible=prompt_visible,
                 screen_busy=bool(screen_busy),
                 screen_done=bool(screen_done),
                 bare_prompt=bare_prompt,
                 tail_lines=tail_lines, idle_for=idle_for,
+                hash0=h0, hash1=h1,
+                idle_for_hash1=idle_for_hash1,
             )
 
             # Periodic debug summary (every 30 cycles ≈ 30s)
             if cycle % 30 == 0:
-                log.debug("[%d] hash=%s changed=%s idle_for=%.0fs prompt=%s state=%s has_worked=%s idle_confirmed=%s",
-                          cycle, h, changed, idle_for, prompt_visible,
-                          runtime.current_state, runtime.has_worked,
-                          runtime.idle_confirmed)
+                log.debug(
+                    "[%d] h0=%s h1=%s changed=%s idle_for=%.0fs "
+                    "idle_for_h1=%.0fs prompt=%s state=%s "
+                    "has_worked=%s idle_confirmed=%s",
+                    cycle, h0, h1, changed, idle_for, idle_for_hash1,
+                    prompt_visible, runtime.current_state,
+                    runtime.has_worked, runtime.idle_confirmed)
                 log.debug("[%d] screen: %s", cycle, _screen_tail(output))
 
             # --- Feature pipeline: 3 phases per cycle ---
@@ -230,16 +317,14 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                     time.sleep(halt_sleep)
                 continue
 
-            # --- 6b. Stuck fallback: screen frozen but prompt NOT visible ---
-            stuck_threshold = getattr(config, "stuck_timeout", 120)
-            if (runtime.has_worked and not runtime.idle_confirmed
-                    and idle_for >= stuck_threshold
-                    and not prompt_visible):
-                log.warning("Stuck fallback (%.0fs frozen, prompt not visible) — sending '1'", idle_for)
-                log.warning("Stuck screen: %s", _screen_tail(output, 5))
-                tmux_send_input(session, "1", send_enter=False)
-                runtime.last_change = now
-                _event("stuck_fallback", {"idle_for": idle_for})
+            # --- 6b. (Removed 2026-06-10) Legacy stuck fallback ---
+            # The previous code sent a hardcoded "1" into the pane when
+            # the screen had been frozen for >=120s and no prompt was
+            # visible. That nudge was not driven by any TOML rule and
+            # has been removed as part of the TOML-only auto-confirm
+            # simplification. See docs/legacy/monitor-auto-confirm-v1.md.
+            # Tools that need a nudge in this state should declare it
+            # as a TOML [[confirm]] rule instead.
 
             # --- 7. Auto-exit ---
             if runtime.idle_confirmed:

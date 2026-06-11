@@ -22,7 +22,7 @@ display_name = "Claude Code"
 # so this works identically under bash / zsh / csh / tcsh / fish / dash
 # login shells — /usr/bin/env is the single source of truth.
 command = ["env", "CLAUDE_CODE_DISABLE_MOUSE=1", "claude", "--allowed-tools", "Bash,Edit,Read,Write,Glob,Grep,WebFetch,TodoWrite,NotebookEdit"]
-auto_permission_mode = false    # set true to add --permission-mode auto to launch command
+auto_permission_mode = true     # add --permission-mode auto to launch command (default on as of 2026-06-11)
 prompt_after_launch = true
 startup_wait = 30.0
 strip_ansi = true
@@ -104,22 +104,20 @@ pattern = "Enter to confirm.*Esc to cancel|Allow once.*Allow always"
 response = ""
 send_enter = true
 
-[[confirm]]
-# y/n confirmation prompt
-pattern = "\\(y/n\\)|\\[Y/n\\]|\\[y/N\\]"
-response = "y"
-send_enter = true
+# (2026-06-11 hot-fix) The generic y/n bracket rule
+#   "\(y/n\)|\[Y/n\]|\[y/N\]"
+# was REMOVED — modern Claude Code does not use bracket-y/n prompts,
+# it uses the numbered menus handled by the rules above. The legacy
+# rule false-fired on markdown discussions / scrollback prose
+# containing the literal bracket token. Also, src/camc_pkg/detection.py
+# now requires an input cursor (❯) to be visible before ANY rule may
+# fire — a second layer that protects the remaining rules.
 
 [[confirm]]
 # Multi-line paste confirmation: [Pasted text #1 +N lines]
 pattern = "Pasted text.*\\+\\d+ lines"
 response = ""
 send_enter = true
-
-[probe]
-char = "1"                    # smart probe char (also used for auto-confirm)
-wait = 0.3                    # seconds after probe before recapture
-idle_threshold = 2            # consecutive idle probes → confirmed idle
 
 [monitor]
 # Screen-bottom signals for definitive state detection (no other checks needed).
@@ -133,11 +131,24 @@ done_pattern = "ed\\s+for\\s+\\d+[smh]"
 confirm_cooldown = 5.0        # seconds between auto-confirm attempts
 confirm_recent_lines = 32     # last N non-empty lines to scan for permission dialogs (dialog can be pushed up by todo footer + spinner)
 confirm_sleep = 0.5           # sleep after sending confirmation
-completion_stable = 3.0       # idle seconds before checking completion
 health_check_interval = 15    # seconds between tmux alive checks
-empty_threshold = 3           # consecutive empty captures before concern
+idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle
 auto_exit = false             # finalize agent when task completes and idle confirmed
-probe_stable = 5.0            # idle seconds before first probe
-probe_cooldown = 5.0          # seconds between probes
 exit_action = "kill_session"  # "kill_session", "send_exit", or "mark_only"
 exit_command = "/exit"        # command to send if exit_action = "send_exit"
+
+# Adapter-owned readiness (F-08). Tool-specific auth/version policy
+# lives here so each tool owns its rules in TOML instead of being
+# hardcoded in runtime_env._TOOL_SPECS. The launch command above uses
+# `env CLAUDE_CODE_DISABLE_MOUSE=1 claude ...` for shell-agnostic env
+# injection; readiness.binary disambiguates so the check resolves
+# `claude` itself, not /usr/bin/env.
+[readiness]
+binary = "claude"
+version_args = ["--version"]
+version_required = true
+install_hint = "npm install -g @anthropic-ai/claude-code"
+
+[[readiness.required_files]]
+path = "~/.claude.json"
+label = "Claude auth file"
