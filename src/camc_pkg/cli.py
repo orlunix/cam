@@ -69,7 +69,7 @@ def _gen_agent_id():
 
 from camc_pkg import __version__, CAM_DIR, CONFIGS_DIR, CONTEXT_FILE, LOGS_DIR, PIDS_DIR, SOCKETS_DIR, log
 from camc_pkg.utils import _now_iso, _time_ago, _load_default_context, _build_command, _kill_monitor, _run
-from camc_pkg.adapters import _EMBEDDED_CONFIGS, _load_config
+from camc_pkg.adapters import _EMBEDDED_CONFIGS, _load_config, install_default_configs
 from camc_pkg.storage import AgentStore, EventStore
 from camc_pkg.transport import (
     _find_tmux_socket, capture_tmux, tmux_session_exists,
@@ -129,6 +129,67 @@ def _send_with_submit_delay(session_id, text, send_enter=True, submit_delay=0.0)
     return tmux_send_input(session_id, text, send_enter=send_enter)
 
 
+def _send_confirm_response(session_id, response, send_enter):
+    if response and len(response) == 1:
+        if not tmux_send_key(session_id, response):
+            return False
+        if send_enter:
+            return tmux_send_key(session_id, "Enter")
+        return True
+    return tmux_send_input(session_id, response, send_enter=send_enter)
+
+
+def cmd_env(args):
+    """F-08: read-only diagnostic for the effective runtime env + tool
+    readiness. NEVER modifies anything; safe to invoke on production
+    hosts. Used by tests + by humans debugging "tmux says command not
+    found" vs "PATH looks fine in my shell" disagreements."""
+    from camc_pkg.runtime_env import build_runtime_env, check_tool_readiness
+    tool = getattr(args, "tool", None) or "claude"
+    config = _load_config(tool)
+    tool_binary = config.command[0] if config.command else None
+    context = _load_default_context()
+    env_setup = (context.get("env_setup") or None) if isinstance(context, dict) else None
+    runtime = build_runtime_env(env_setup=env_setup)
+    adapter_readiness = getattr(config, "readiness", None)
+    readiness = check_tool_readiness(runtime, tool, tool_binary,
+                                     readiness=adapter_readiness)
+
+    if getattr(args, "json", False):
+        out = {
+            "tool":             tool,
+            "tool_binary":      tool_binary,
+            "env_setup":        env_setup,
+            "source":           runtime.source,
+            "shell":            runtime.shell,
+            "path":             runtime.path,
+            "warnings":         runtime.warnings,
+            "issues":           [{"level": l, "message": m} for l, m in readiness["issues"]],
+            "resolved":         readiness["resolved"],
+            "readiness_source": readiness.get("readiness_source", "fallback"),
+        }
+        print(json.dumps(out, indent=2))
+        return
+
+    print("Effective env source: %s" % runtime.source)
+    print("Readiness source:     %s" % readiness.get("readiness_source", "fallback"))
+    print("Login shell:          %s" % (runtime.shell or "(unknown)"))
+    print("PATH:                 %s" % runtime.path)
+    if runtime.warnings:
+        print("Warnings from env capture:")
+        for w in runtime.warnings:
+            print("  - %s" % w)
+    print("Resolved:")
+    print("  tmux: %s" % readiness["resolved"].get("tmux", "(not found)"))
+    print("  %s:   %s" % (tool, readiness["resolved"].get("tool", "(not found)")))
+    if readiness["issues"]:
+        print("Readiness issues:")
+        for level, msg in readiness["issues"]:
+            print("  [%s] %s" % (level.upper(), msg))
+    else:
+        print("Readiness: OK")
+
+
 def cmd_init(args):
     """Interactive setup wizard."""
     print("camc v%s — Coding Agent Manager (standalone)" % __version__)
@@ -162,17 +223,20 @@ def cmd_init(args):
             pass
     print("  Config: %s" % CAM_DIR)
 
-    # 3. Write adapter configs
+    # 3. Write adapter configs (templates for [[confirm]] customization).
+    # install_default_configs() writes one TOML per supported tool,
+    # skipping any file the user has already edited. With --force it
+    # rewrites them from the current embedded TOML snapshot.
     print()
     print("Writing adapter configs...")
-    for filename, content in _EMBEDDED_CONFIGS.items():
-        path = os.path.join(CONFIGS_DIR, filename)
-        if os.path.exists(path) and not getattr(args, "force", False):
+    results = install_default_configs(force=getattr(args, "force", False))
+    for filename, status in results.items():
+        if status == "skipped_exists":
             print("  · %s: exists (use --force to overwrite)" % filename)
-        else:
-            with open(path, "w") as f:
-                f.write(content)
+        elif status in ("created", "overwritten"):
             print_success(filename)
+        else:
+            print_error("%s: %s" % (filename, status))
 
     # 4. Create context.json template
     _load_default_context()
@@ -434,35 +498,32 @@ _TOOL_HINTS = {
 }
 
 
-def _preflight(tool, tool_binary, workdir, env_setup=None):
-    """Return a list of (level, message). 'error' blocks startup, 'warn' is advisory."""
-    issues = []
+def _preflight(tool, tool_binary, workdir, env_setup=None, runtime=None,
+               adapter_readiness=None):
+    """Tool readiness (via runtime_env) + local writable-dir checks.
 
-    # tmux present and >= 2.4 (needs `send-keys -l` and `capture-pane -a`).
-    # Uses transport.TMUX_BIN so Rocky 8.9 boxes check the system /usr/bin/tmux
-    # rather than whatever user-custom tmux is earlier in PATH.
-    from camc_pkg.transport import TMUX_BIN
-    if not TMUX_BIN or not os.path.exists(TMUX_BIN) and not shutil.which(TMUX_BIN):
-        issues.append(("error", "tmux not found. Install: apt install tmux / brew install tmux"))
-    else:
-        try:
-            out = subprocess.check_output(
-                [TMUX_BIN, "-V"], stderr=subprocess.STDOUT, timeout=3
-            ).decode(errors="replace")
-            m = re.search(r"(\d+)\.(\d+)", out)
-            if m and (int(m.group(1)), int(m.group(2))) < (2, 4):
-                issues.append(("error", "tmux %s too old; need >= 2.4" % out.strip()))
-        except Exception:
-            pass  # unparseable — don't block; launch will surface any real issue
+    Returns ``(issues, resolved)`` — a list of (level, message) tuples
+    AND a dict {"tmux": "/abs/path", "tool": "/abs/path"} populated by
+    the readiness check. cmd_run threads `resolved["tmux"]` and the
+    runtime's env into `create_tmux_session()` so detection and launch
+    share one effective environment.
 
-    # Tool binary in PATH. When env_setup is configured the caller has
-    # taken responsibility for PATH inside tmux — don't re-run login
-    # shell here (expensive on NFS-heavy hosts like pdx-110). If the
-    # binary is truly missing, the tmux session will exit and surface
-    # the real error immediately.
-    if tool_binary and not env_setup and not shutil.which(tool_binary):
-        hint = _TOOL_HINTS.get(tool, "ensure '%s' is in PATH" % tool_binary)
-        issues.append(("error", "'%s' not found. Install: %s" % (tool_binary, hint)))
+    `runtime`: a pre-built `RuntimeEnv` (preferred — keeps the SAME
+    effective env between this preflight and the subsequent tmux
+    launch). When None, we build one on the fly so legacy callers
+    keep working without code changes.
+    `adapter_readiness`: the adapter's TOML-sourced readiness dict
+    (``AdapterConfig.readiness``). When provided, the readiness check
+    prefers it over the hardcoded ``_TOOL_SPECS`` fallback so each
+    tool's auth/version policy lives in its own TOML.
+    """
+    from camc_pkg.runtime_env import build_runtime_env, check_tool_readiness
+
+    if runtime is None:
+        runtime = build_runtime_env(env_setup=env_setup)
+    readiness = check_tool_readiness(runtime, tool, tool_binary,
+                                     readiness=adapter_readiness)
+    issues = list(readiness["issues"])
 
     # workdir accessible
     try:
@@ -487,7 +548,7 @@ def _preflight(tool, tool_binary, workdir, env_setup=None):
     except OSError as e:
         issues.append(("warn", "agents.json not writable: %s" % e))
 
-    return issues
+    return issues, readiness.get("resolved", {})
 
 
 def cmd_run(args):
@@ -500,9 +561,19 @@ def cmd_run(args):
     context = _load_default_context()
     env_setup = context.get("env_setup") or None
 
-    # Preflight environment checks
+    # F-08: build the effective runtime env ONCE, share it across
+    # preflight + tmux launch so PATH-related checks can't pass at
+    # preflight and then fail in tmux (or vice versa).
+    from camc_pkg.runtime_env import build_runtime_env
+    runtime = build_runtime_env(env_setup=env_setup)
     tool_binary = config.command[0] if config.command else None
-    issues = _preflight(tool, tool_binary, workdir, env_setup=env_setup)
+    # F-08 (adapter-owned): prefer the adapter's [readiness] block
+    # over runtime_env's hardcoded _TOOL_SPECS fallback. None when
+    # the adapter doesn't declare [readiness] — fallback kicks in.
+    adapter_readiness = getattr(config, "readiness", None)
+    issues, resolved = _preflight(tool, tool_binary, workdir,
+                                  env_setup=env_setup, runtime=runtime,
+                                  adapter_readiness=adapter_readiness)
     has_error = False
     for level, msg in issues:
         if level == "error":
@@ -554,21 +625,30 @@ def cmd_run(args):
         except OSError:
             pass
     print("Starting %s agent %s..." % (tool, agent_id))
-    if not create_tmux_session(session, launch_cmd, workdir, env_setup=env_setup, inherit_env=inherit_env):
+    # F-08: launch with the SAME effective env preflight saw, and the
+    # SAME tmux binary preflight just version-checked. resolved["tmux"]
+    # may be missing if preflight short-circuited (it doesn't — error
+    # would have exited above), but fall back to TMUX_BIN defensively.
+    from camc_pkg.transport import TMUX_BIN
+    resolved_tmux = resolved.get("tmux") or TMUX_BIN
+    if not create_tmux_session(session, launch_cmd, workdir,
+                               env_setup=env_setup, inherit_env=inherit_env,
+                               env=runtime.env, tmux_bin=resolved_tmux):
         print_error("Failed to create tmux session for '%s'" % session)
-        print_info("Debug: tmux -u -S %s/%s.sock new-session -d -s %s -c %s" % (SOCKETS_DIR, session, session, workdir))
+        print_info("Debug: %s -u -S %s/%s.sock new-session -d -s %s -c %s" %
+                   (resolved_tmux, SOCKETS_DIR, session, session, workdir))
         sys.exit(1)
 
     # Snapshot the tmux binary + version that actually started this server.
     # tmux client/server protocol requires matching versions, so subsequent
     # capture/send/kill on this session must use the same binary. Record at
     # creation time — resolution order later: record → /proc/exe → fallback.
-    from camc_pkg.transport import TMUX_BIN
-    tmux_bin_used = TMUX_BIN
+    tmux_bin_used = resolved_tmux
     tmux_ver_used = ""
     try:
         tmux_ver_used = subprocess.check_output(
-            [tmux_bin_used, "-V"], stderr=subprocess.STDOUT, timeout=2
+            [tmux_bin_used, "-V"], stderr=subprocess.STDOUT, timeout=2,
+            env=runtime.env,
         ).decode(errors="replace").strip()
     except Exception:
         pass
@@ -624,13 +704,12 @@ def cmd_run(args):
                 continue
             # Try clearing a confirm dialog first. should_auto_confirm
             # returns (response, send_enter, pattern, match) or None;
-            # use the rule's response/send_enter (NOT probe_char — the
-            # rule is per-dialog: e.g. "1" without Enter for numbered
-            # menus, "" with Enter for Ink select dialogs).
+            # the rule is per-dialog: e.g. "1" without Enter for numbered
+            # menus, "" with Enter for Ink select dialogs.
             confirm = should_auto_confirm(output, config)
             if confirm:
                 response, send_enter = confirm[0], confirm[1]
-                tmux_send_input(session, response, send_enter=send_enter)
+                _send_confirm_response(session, response, send_enter)
                 time.sleep(3); elapsed += 3
                 continue
             if is_ready_for_input(output, config):
@@ -2872,6 +2951,21 @@ def cmd_heal(args):
         killed = _kill_all_monitors()
         print("Upgrade: killed %d old monitor process(es)" % killed)
         time.sleep(0.5)  # let processes die
+
+        # Ensure each supported tool has a customization template at
+        # ~/.cam/configs/<tool>.toml. Missing-file only — never
+        # overwrites a user-edited file on the upgrade path (init's
+        # --force is the only way to do that, by design). Lets users
+        # land custom [[confirm]] rules after a binary upgrade without
+        # re-running `camc init`.
+        try:
+            cfg_results = install_default_configs(force=False)
+            created = [f for f, s in cfg_results.items() if s == "created"]
+            if created:
+                print("Upgrade: created adapter config template(s): %s"
+                      % ", ".join(sorted(created)))
+        except Exception as e:
+            log.warning("upgrade: install_default_configs failed: %s", e)
 
     my_hostname = _sock.gethostname()
     store = AgentStore()
@@ -5336,6 +5430,15 @@ examples:
     init_p = sub.add_parser("init", help="First-time setup")
     init_p.add_argument("--force", "-f", action="store_true", help="Overwrite existing configs")
 
+    # env (F-08): read-only runtime/tool readiness diagnostic
+    env_p = sub.add_parser("env", help="Diagnose effective runtime env + tool readiness (read-only)")
+    env_sub = env_p.add_subparsers(dest="env_action", parser_class=CamArgumentParser)
+    env_check = env_sub.add_parser("check", help="Check effective env + tool readiness")
+    env_check.add_argument("--tool", "-t", default="claude",
+                           help="Tool to check readiness for (claude/codex/cursor)")
+    env_check.add_argument("--json", action="store_true",
+                           help="Emit a JSON envelope instead of human text")
+
     # run
     r = sub.add_parser("run", help="Start a coding agent on a task")
     r.add_argument("prompt", nargs="?", default="", help="Task prompt (empty for interactive mode)")
@@ -5690,6 +5793,7 @@ examples:
     _ensure_logs_on_scratch()
 
     cmds = {
+        "env": cmd_env,
         "init": cmd_init,
         "run": cmd_run,
         "list": cmd_list, "ls": cmd_list,
