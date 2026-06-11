@@ -6,6 +6,7 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 
 
 def _ssh_control_path(user, host, port):
@@ -194,12 +195,24 @@ def sync_camc_to_machine(machine, camc_path=None, configs_dir=None):
             elif lh:
                 results[fname] = "unchanged"
 
-    # Sync machine's env_setup as context.json
+    # Sync machine's env_setup as context.json. Use scp instead of a
+    # remote heredoc because many PDX/DC accounts default to csh/tcsh,
+    # where heredoc handling can leave the terminator in the file.
     env_setup = machine.get("env_setup")
     if env_setup:
-        ctx_json = json.dumps({"env_setup": env_setup}, indent=2)
-        rc2, _ = ssh_run(machine,
-            "cat > ~/.cam/context.json << 'CAMEOF'\n%s\nCAMEOF" % ctx_json, timeout=10)
-        results["context.json"] = "deployed" if rc2 == 0 else "failed"
+        ctx_json = json.dumps({"env_setup": env_setup}, indent=2) + "\n"
+        tmp_path = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(prefix="camc-context-", suffix=".json")
+            with os.fdopen(fd, "w") as f:
+                f.write(ctx_json)
+            results["context.json"] = (
+                "deployed" if sync_file(machine, tmp_path, "~/.cam/context.json") else "failed")
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     return results
