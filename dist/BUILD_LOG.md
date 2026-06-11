@@ -2820,3 +2820,16 @@ da7299b camc heal: clean duplicate monitors
 20c0b0d camc: add dynamic list activity and harden confirms
 ```
 
+## v1.2.0  bb53b45-dirty 2026-06-11 05:41
+
+- Lines: 11332
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+bb53b45 auto-confirm: input-box-aware guard + cursor-anchored rules
+005d020 auto-confirm: global input-cursor guard + remove loose substring rules
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+13af7cc camc monitor: refactor loop into feature pipeline
+```
+
