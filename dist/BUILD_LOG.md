@@ -2273,6 +2273,19 @@ f327b73 monitor: comment out busy_pattern brake on auto-confirm
 20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
 6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
 ```
+## v1.2.0  27e8a33-dirty 2026-06-09 00:54
+
+- Lines: 10267
+- Output: /tmp/cam-gitlab-merge.6rxroD/wt/dist/camc
+- Recent changes:
+```
+824a0f5 Add Electron CAM Desktop baseline
+f327b73 monitor: comment out busy_pattern brake on auto-confirm
+20017ba Revert "monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)"
+6467c59 monitor: confirm rules veto busy_pattern (todoskill stuck-forever fix)
+9c82cd4 camc: keep cron deploy compatible with Python 3.6
+```
+
 ## v1.2.0  13af7cc-dirty 2026-06-06 07:39
 
 - Lines: 10381
@@ -2871,4 +2884,3 @@ bb53b45 auto-confirm: input-box-aware guard + cursor-anchored rules
 005d020 auto-confirm: global input-cursor guard + remove loose substring rules
 da7299b camc heal: clean duplicate monitors
 ```
-

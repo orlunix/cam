@@ -1,374 +1,185 @@
 # CAM Desktop Rich Renderer v2 Spec
 
-Status: draft for implementation
-
-## Purpose
-
-Rich mode is a local renderer over the same low-bandwidth plain `camc capture`
-string used by Plain mode. It must make long agent transcripts scannable without
-requiring remote rich text, markdown JSON, or a heavy client-side markdown
-engine. The renderer should avoid a flat wall of white text by assigning each
-line/block a visual role: command, output, prose, status, path, quote, list,
-code, table, separator, or low-signal log.
-
-The design references three stable patterns:
-
-- Agent TUI transcript style, as seen in Codex / Claude Code: commands are
-  distinct from prose, command output is indented/dimmed where appropriate,
-  status/progress is visible, and separators preserve rhythm.
-- Markdown semantics, as seen in GitHub / ChatGPT: headings, lists, quotes,
-  fenced code, tables, dividers, inline code, bold/italic, and links are familiar
-  and should render predictably.
-- CI/log viewers, as seen in GitHub Actions or build logs: `ERROR`, `WARN`,
-  `PASS`, `FAIL`, exit codes, HTTP statuses, and build/install/test labels get
-  stable severity treatment; repetitive dependency/progress noise is dimmed.
-
-## Non-goals
-
-- Do not transmit rich text, block JSON, or agent event streams in this slice.
-- Do not introduce markdown-it, highlight.js, xterm.js, or another heavy parser.
-- Do not execute commands or create an interactive terminal.
-- Do not hide output. Low-signal output may be visually dimmed, but remains
-  visible, selectable, and copyable.
-- Do not make ASCII-art boxes or text dividers part of the rendered structure.
-  Use HTML/CSS structure, borders, accents, badges, and spans.
-
-## Pipeline
-
-1. Normalize line endings to `LF`.
-2. Split into line records `{ raw, plain }`, where `plain` strips ANSI only for
-   classification.
-3. Run a deterministic block classifier in the order below.
-4. Run a bounded inline classifier inside prose/list/quote/status/output blocks.
-5. Emit escaped HTML fragments with `.rich-*` classes only.
-6. Fall back to escaped plain lines on parser failure.
-
-Classifier order is fixed. Earlier rules win; later rules must not reinterpret
-blocks that were already consumed.
-
-## Block Taxonomy And Priority
-
-### 1. Fenced Code
-
-Pattern:
-
-- Triple backtick or triple tilde, optional language label.
-- Consumes until matching fence or EOF.
-
-Render:
-
-- `.rich-code-block`, optional `.rich-code-lang`, nested `pre.rich-code > code`.
-- Apply lightweight code tokenizer per line.
-- Diff-looking lines inside code get diff classes.
-
-Never:
-
-- Never parse markdown/list/status inside fenced code.
-
-### 2. Table
-
-Pattern:
-
-- Pipe table with at least two columns and a separator row like `---`, `:---`,
-  `---:`.
-
-Render:
-
-- `.rich-table-wrap > table.rich-table`.
-- Header row is stronger than body rows.
-- Inline classifier may run inside cells, but no block detection inside cells.
-
-### 3. Terminal Separator / Markdown Divider
-
-Pattern:
-
-- Short markdown divider: `---`, `***`, `___`, `===`.
-- Long terminal separator: full-width `_`, `-`, `=`, `-`, etc.
-
-Render:
-
-- Short markdown divider: `.rich-divider`.
-- Long terminal separator: full-width `.rich-terminal-rule` using CSS border.
-
-Never:
-
-- Never render separator text inside `pre` or code.
-- Never create horizontal scrollbar from separator content.
-
-### 4. Markdown Heading
-
-Pattern:
-
-- `#`, `##`, `###` followed by text.
-- Keep shallow only; deeper headings render as normal prose.
-
-Render:
-
-- `.rich-heading.rich-heading-N`.
-- Apply inline classifier to heading text.
-
-### 5. Agent Event / Approval / Progress Line
-
-Pattern examples:
-
-- `You approved codex to run ... this time`
-- `Ran ssh -p ...`
-- `Working (1m 09s | esc to interrupt)`
-- `Brewed for 10s`
-- `Auto-update failed ...`
-
-Render:
-
-- `.rich-event` with optional severity/accent classes:
-  - `.rich-event-approved`
-  - `.rich-event-ran`
-  - `.rich-event-working`
-  - `.rich-event-failed`
-- Important words (`approved`, `failed`, `running`, elapsed time) get inline
-  accent spans.
-
-Reason:
-
-- This is the main TUI clue that separates agent narration from ordinary prose.
-
-### 6. Terminal Command
-
-Pattern:
-
-- Shell prompts: `$`, `>`, `PS>`, `cmd>`.
-- Command-looking `>` only when followed by known commands such as `ssh`, `cam`,
-  `camc`, `npm`, `node`, `python`, `git`, `cd`, `ls`, `cat`, `echo`, `make`,
-  `pytest`, `docker`, `kubectl`, `powershell`, `cmd`.
-
-Render:
-
-- `.rich-shell` row containing `.rich-shell-prompt` and
-  `.rich-shell-command`.
-- Tokenize command segment:
-  - first non-env executable: `.rich-cmd-name`
-  - leading `KEY=value`: `.rich-cmd-env` + `.rich-cmd-env-val`
-  - `--flag`, `-x`, `--flag=value`: `.rich-cmd-flag` and optional value
-  - filesystem paths: `.rich-path` or `.rich-cmd-path`
-  - URLs: `.rich-link`
-
-Special case:
-
-- Prompt followed only by paths/attachments is a path/output line, not a command
-  execution. Do not make the first path look like an executable.
-
-### 7. Command Output / Subblock
-
-Pattern:
-
-- Lines after a command that are indented, start with ellipsis markers, show
-  snippets, or appear to be command stdout/stderr but are not code/status.
-- Examples: `... +3 lines`, line-numbered snippets, grep result fragments,
-  `stdout:` / `stderr:` labels.
-
-Render:
-
-- `.rich-subblock` or `.rich-output-line`.
-- `... +N lines`, `ctrl + t to view transcript`, and similar helper text are
-  `.rich-dim` inside the subblock.
-- File paths and line references get inline path/link treatment.
-
-### 8. Status / Result / Severity Line
-
-Pattern:
-
-- Anchored labels: `PASS`, `FAIL`, `ERROR`, `WARN`, `STATUS`, `REQ_STATUS`,
-  `FILES_CHANGED`, `IMPLEMENTATION`, `TESTS`, `SMOKE`, `BUILD`, `INSTALL`,
-  `BLOCKERS`, `NOTES`, `MOBILE_COMPAT`, `REVIEW_STATUS`.
-- Exit codes: `exit code N`, `Exit Code: N`, `exit status N`.
-- HTTP: `HTTP/1.1 404`, `HTTP/2 200`.
-- Common final summaries: `SUMMARY N/M`, `N/N PASS`, `0 FAIL`.
-
-Render:
-
-- `.rich-status.rich-status-{pass|fail|error|warn|info}`.
-- Leading compact `.rich-status-badge-*`.
-- Rest of the line runs inline classifier.
-
-### 9. Quote
-
-Pattern:
-
-- Markdown quote: `>` followed by text.
-- Consecutive quote lines form one block.
-
-Render:
-
-- `blockquote.rich-quote` with left border.
-- Inline classifier inside quote text.
-- Quote is medium emphasis, not as loud as status or command.
-
-### 10. List
-
-Pattern:
-
-- Bullets: `-`, `*`, `+`.
-- Ordered: `1.`, `2.`.
-- Checkboxes: `[ ]`, `[x]` after bullet.
-- Shallow indentation levels only.
-
-Render:
-
-- `.rich-list`, `.rich-list-item`, `.rich-list-marker`.
-- Ordered list markers should be visually distinct enough to scan.
-- Inline classifier inside list content.
-
-### 11. Real Indented Code
-
-Pattern:
-
-- Four-space-indented line with a code-like signal:
-  keyword, assignment, braces, semicolon, function call, diff prefix, shell-ish
-  token.
-
-Render:
-
-- Same as code block.
-
-Never:
-
-- Path-only lines, attachment paths, whitespace-only terminal residue, or
-  ordinary indented prose must not become code. This avoids empty scrollable
-  panels and fake code blocks.
-
-### 12. Low-signal Log Line
-
-Pattern examples:
-
-- `npm WARN`, `npm notice`, `npm info`, `npm http`, `npm verb`
-- `electron-builder`, `app-builder`, `gyp info`, `node_modules/...`
-- node deprecation warnings
-- spinner/progress bar lines
-- repeated dependency install traces
-
-Render:
-
-- `.rich-dim`.
-- Still visible and selectable.
-- If a low-signal line contains `ERROR`, `FAIL`, nonzero exit code, or HTTP 4xx
-  / 5xx, severity wins and it must not be dimmed.
-
-### 13. Normal Prose
-
-Pattern:
-
-- Anything not matched earlier.
-
-Render:
-
-- `.rich-line`.
-- Inline classifier gives structure to important phrases, paths, URLs, quoted
-  strings, inline code, list-like references, and emphasis.
-
-## Inline Classifier
-
-Run only on non-code text. It must be bounded and local to the line.
-
-Priority:
-
-1. Existing ANSI spans, if present.
-2. Inline code: `` `code` `` -> `.rich-inline-code`.
-3. URL: `http://...`, `https://...` -> `.rich-link`.
-4. Filesystem path:
-   - Unix: `/home/...`, `~/...`, `./...`, `../...`
-   - Windows: `C:\\...`, `\\\\server\\share\\...`
-   - Extensions: `.js`, `.py`, `.cjs`, `.md`, `.json`, `.toml`, `.png`,
-     `.log`, `.txt`, `.sh`, `.ps1`, `.c`, `.cpp`, `.h`, `.rs`, `.go`, `.ts`,
-     `.tsx`, `.jsx`, `.html`, `.css`
-   -> `.rich-path`.
-5. Line refs: `file.js:123`, `line 42`, `L123` -> `.rich-line-ref`.
-6. Quoted strings: `'...'`, `"..."` -> `.rich-quoted` unless already code.
-7. Strong markdown: `**...**` -> `.rich-strong`.
-8. Conservative italic: `*...*` -> `.rich-em`.
-9. Important keywords in prose:
-   - `important`, `blocked`, `blocker`, `failed`, `error`, `warning`, `pass`,
-     `success`, `done`, `needs-review`, `installed`, `reinstalled`, `synced`,
-     `updated`, `unchanged`, `credential_missing`, `auth_failed`,
-     `connect_lost`, `connect_timeout`, `camc_missing`, `invalid_json`
-   -> `.rich-keyword` with severity variants when obvious.
-10. Parenthetical timing / progress: `(1m 09s)`, `53/53`, `11/11`, `0 FAIL`
-    -> `.rich-metric`.
-
-Long-line guard:
-
-- If a line exceeds `LINE_HL_MAX`, skip inline tokenization except HTML escape.
-- URLs/paths in very long lines may be missed; speed and stability win.
+Status: implemented (renderer landed; reviewer pass complete)
+
+Implementation notes (do not remove the spec; this section just
+records where the spec lives in code):
+
+- Block taxonomy lives in `web/js/desktop/agent-console.js` inside
+  `renderRichOutput`. Priority order matches the table below.
+  Subblock state (`inCmdOutput`) tags lines that follow a
+  `.rich-shell` row as `.rich-line.rich-cmd-output`; any block
+  detector resets the flag.
+- Agent event / progress detector is `richEventMatch(plain)`; the
+  verb set is defined in `RICH_EVENT_VERBS`. Bullet glyphs (✦ ✻
+  ⏺ • …) are optional.
+- Inline taxonomy lives in `enrichInline` /
+  `enrichProseSegment` / `INLINE_RE`. The single combined regex
+  exposes named groups (`url`, `fileref`, `path`, `quoted`,
+  `metric`, `kwattn`, `tag`); `classifyInlineToken` dispatches.
+- Per-line bailout at `LINE_HL_MAX = 500` chars keeps the
+  renderer linear on pathological captures. Long ASCII dividers
+  use `.rich-terminal-rule` (a CSS rule) so they never create
+  horizontal scrollbars.
+- Golden fixture lives at `/tmp/rich-render-v2-smoke.mjs` and
+  covers all block + inline cases plus the negative cases from
+  the "Important Negative Cases" section.
+- CSS additions are scoped under `.agent-output-rich .rich-*` in
+  `web/css/desktop.css`. No global selectors.
+
+This spec defines the next Rich mode pass for CAM Desktop agent output. The
+goal is to avoid a flat wall of equally bright text while keeping the renderer
+fast, stable, selectable, and driven by the same plain `camc capture` string
+used by Plain mode.
+
+## Design References
+
+The renderer should borrow structure from three familiar surfaces:
+
+- Agent TUIs such as Codex / Claude Code: command lines, progress events,
+  separators, tool results, and approval prompts are visually distinct.
+- Markdown readers such as GitHub / ChatGPT: headings, lists, quotes, code
+  blocks, tables, and links create hierarchy without hiding content.
+- CI / log viewers: PASS / FAIL / WARN / ERROR lines, durations, counts, paths,
+  and low-signal build noise are easy to scan.
+
+This is not a full terminal emulator and not a full CommonMark parser. It is a
+deterministic local renderer for terminal transcripts.
+
+## Non-Goals
+
+- Do not transfer rich text from remote machines.
+- Do not require a remote `--format` flag; Rich and Plain share one capture.
+- Do not add a heavy markdown, syntax-highlighter, or xterm dependency in v2.
+- Do not hide or collapse output by default. Dim low-signal content instead.
+- Do not make structure with ASCII art. Use spacing, borders, badges, muted
+  backgrounds, and restrained color.
+- Do not break selection/copy. Rendered text must remain selectable with
+  Ctrl+C and the browser context menu.
+
+## Rendering Pipeline
+
+1. Normalize line endings to LF.
+2. Strip ANSI only for detection; preserve ANSI spans for visual rendering.
+3. Build line records: raw text, plain text, indent, blank/nonblank, length.
+4. Run block classification in a fixed priority order.
+5. Run bounded inline classification inside prose, lists, quotes, shell
+   commands, status lines, and code blocks.
+6. Emit safe escaped HTML using only `.rich-*` CSS classes.
+7. If any classifier fails, render escaped plain text for that region.
+
+The block pass owns vertical rhythm. The inline pass owns local emphasis.
+
+## Block Taxonomy
+
+Classifiers run in this order. Earlier matches win.
+
+| Priority | Pattern | Visual Role | Notes |
+| --- | --- | --- | --- |
+| 1 | Fenced code block | Strong code card | Triple backtick / tilde, optional language label. |
+| 2 | Table | Structured data block | Pipe table with separator row; align cells and keep selectable text. |
+| 3 | Terminal / markdown divider | Section boundary | Long repeated rule characters, `---`, `===`, `***`; render as CSS rule, never as a scrollable code block. |
+| 4 | Markdown heading | Section title | `#`, `##`, `###`; also detect compact all-caps labels only when followed by `:`. |
+| 5 | Agent event / progress | Timeline event row | Examples: `Brewed for 10s`, `Cooked for 2m`, `Working (...)`, `Tool call`, `Reading`, `Edited`, `Wrote`, `Asked`. |
+| 6 | Shell command | Command row | Prompts `$`, `PS>`, `cmd>`, `>`, and common chevron prompts. Command is emphasized; output stays separate. |
+| 7 | Command output / subblock | Muted terminal output | Lines immediately after a command that look like stdout/stderr. Keep monospaced, lower contrast than commands. |
+| 8 | Status / result | Scan badge row | PASS, FAIL, ERROR, WARN, STATUS, BUILD, INSTALL, TESTS, SMOKE, BLOCKERS, REQ_STATUS, exit codes, HTTP statuses. |
+| 9 | Quote | Quoted / secondary reasoning | `>` markdown quotes and quoted transcript blocks. Left border, muted background. |
+| 10 | List | Scannable list | Bullets, numbers, checkboxes, shallow indentation. List marker gets accent; text uses prose inline highlights. |
+| 11 | Real indented code | Code card | Four-space lines only when code-like; path-only attachment lines must not become code. |
+| 12 | Low-signal log | Dim line | npm/electron-builder/gyp/deprecation/progress noise. Still visible, just lower contrast. |
+| 13 | Normal prose | Readable paragraph | Inline highlights applied; no background card by default. |
+
+## Inline Taxonomy
+
+Inline classifiers are conservative. They should make important tokens easier
+to spot without turning every line into rainbow text.
+
+| Priority | Pattern | Class Intent |
+| --- | --- | --- |
+| 1 | ANSI SGR spans | Preserve existing terminal color. |
+| 2 | Inline code / backticks | Code pill. |
+| 3 | URLs | Link accent and underline on hover. |
+| 4 | Filesystem paths | Warm path accent; supports Unix, Windows, UNC, relative paths. |
+| 5 | File references | Path plus `:line` / `:line:col` gets stronger path styling. |
+| 6 | Shell tokens | Command name, env assignment, flags, flag values, redirects, pipes. |
+| 7 | Important keywords | `IMPORTANT`, `TODO`, `FIXME`, `BLOCKER`, `SECURITY`, `PASS`, `FAIL`, `ERROR`, `WARN`. |
+| 8 | Metrics | Durations, counts, percentages, exit codes, ports, bytes. |
+| 9 | Quoted strings | Slight contrast only; avoid over-highlighting prose. |
+| 10 | Tags | `#tag` only when it is not a shell comment. |
 
 ## Visual Hierarchy
 
-Use restrained dark-theme CSS, not loud rainbow highlighting.
+Use a restrained dark UI vocabulary:
 
-- `command`: strong text, prompt accent, subtle left rhythm if needed.
-- `status`: compact badges; red/yellow/green/blue only for severity.
-- `code`: panel background, syntax spans, horizontal scroll only for real code.
-- `subblock/output`: slightly dimmer than prose but not hidden.
-- `quote`: left border, muted text.
-- `list`: visible marker column; ordered numbers use a muted accent.
-- `path/url`: color accent so filesystem references stand out in prose.
-- `important prose`: modest weight/color, not a badge unless line starts with a
-  status keyword.
-- `low-signal`: dim gray.
-- `separator`: full-width CSS border with low emphasis.
+- Commands: most prominent transcript line after headings. Prompt accent plus
+  bold command token; flags and paths get secondary accents.
+- Status: compact pill plus tinted text. PASS / success is green, WARN is
+  amber, FAIL / ERROR is red, INFO is blue/gray.
+- Code: card background one step darker/lighter than pane, small language
+  label when known, syntax-lite tokens only.
+- Subblocks / stdout: monospaced, muted, no heavy border unless grouped.
+- Quotes: left border and soft background, lower contrast than normal prose.
+- Lists: marker column aligned; nested lists use indentation, not nested cards.
+- Tables: subtle cell borders and sticky-looking header tone, no giant card.
+- Dividers: CSS rule with vertical spacing. Never create a horizontal scrollbar.
+- Low-signal logs: dim color, same selectable text.
 
-## Golden Fixture Requirements
+Avoid large uninterrupted blocks with identical contrast. A page should show a
+visible rhythm of heading, command, output, status, and prose.
 
-A renderer fixture must include at least one case for every block type and every
-negative rule. The smoke should assert both positive classes and absence of bad
-classes.
+## Important Negative Cases
 
-Positive cases:
+These must not be misclassified:
 
-- heading, divider, terminal separator
-- approval/progress event line
-- command with env, flags, path, URL
-- path-only prompt line
-- command output snippet with `... +N lines`
-- status lines: PASS, FAIL, ERROR, WARN, STATUS, BUILD, INSTALL, BLOCKERS
-- exit code 0 and nonzero
-- HTTP 200, 404, 500
-- quote block
-- unordered, ordered, checkbox list
-- fenced code with string/comment/keyword
-- diff block
-- markdown table
-- prose with URL, Unix path, Windows path, line ref, quoted string, metric,
-  important keyword
-- low-signal npm/electron-builder/deprecation line
+- A path-only attachment line must not become an indented code block.
+- A long repeated separator must not create a scrollable code panel.
+- A prose line containing `PASS` or `ERROR` mid-sentence must not become a
+  status badge.
+- `https://...` must not be split as a shell comment or path-only line.
+- `#` in a shell script comment is a comment; `#tag` in prose is a tag.
+- Very long minified lines fall back to escaped plain text.
+- Plain mode output remains untouched.
 
-Negative cases:
+## Golden Fixture Set
 
-- path-only / attachment line is not `rich-code`
-- terminal separator is not inside `pre` and does not create scrollbar text
-- `PASS` in the middle of prose is not a status badge
-- `https://` is not split into a `//` comment in code/prose rendering
-- long line falls back safely and does not lock the renderer
-- raw HTML remains escaped
-- Plain mode is unchanged
+v2 implementation must be driven by one fixture file covering:
+
+1. Markdown headings, dividers, quotes, ordered lists, unordered lists,
+   checkboxes, nested list indentation.
+2. Shell transcript: prompt command, stdout, stderr, path arguments, flags,
+   env assignments, redirects, and pipes.
+3. Code: fenced JavaScript, Python, shell, diff, and four-space indented code.
+4. Table with header and alignment row.
+5. Status lines: PASS / FAIL / ERROR / WARN / STATUS, HTTP status, exit code.
+6. Low-signal build output: npm, electron-builder, node deprecation, progress.
+7. Agent event lines: brewed/cooked/working/tool/read/edit/write/send.
+8. Inline tokens: URLs, file paths, Windows paths, UNC paths, line references,
+   tags, quoted strings, durations, percentages, ports.
+9. Negative cases listed above.
+
+The smoke test should assert class presence and class absence. It should not
+assert exact pixel color.
 
 ## Implementation Plan
 
-1. Move the fixture into a focused smoke script or doc fixture under
-   `docs/desktop/` plus `/tmp` smoke during development.
-2. Refactor `renderRichOutput` around the block taxonomy above, preserving the
-   existing v1 helper names where possible.
-3. Replace `renderPlainInline` with a bounded inline tokenizer that emits URL,
-   path, line-ref, quote, metric, keyword, code, bold/italic spans.
-4. Add CSS only under `.agent-output-rich .rich-*`.
-5. Keep old v0/v1 smoke cases and add the golden fixture smoke.
-6. Rebuild/reinstall only after the smoke passes.
+1. Add the golden fixture and smoke assertions first.
+2. Refactor block classification into named classifier helpers with explicit
+   priority.
+3. Add inline token classifiers in one bounded pass per line.
+4. Tune CSS only through `.agent-output-rich .rich-*` selectors.
+5. Verify selection/copy still works and the output pane does not show unwanted
+   horizontal scrollbars.
+6. Rebuild/reinstall only after the renderer passes local smoke.
 
 ## Acceptance Criteria
 
-- Rich output no longer appears as an undifferentiated wall of white text on the
-  golden fixture.
-- Important status/result lines are scannable without reading every line.
-- Paths, URLs, line refs, metrics, and quoted strings stand out in prose.
-- Command blocks are clearly distinct from command output and prose.
-- Low-signal logs are visually quiet but still copyable.
-- Separators preserve structure without scrollbars.
-- No new dependency, no remote rich data, no remote format flag, no renderer
-  command execution.
+- Rich mode visually separates commands, outputs, status, code, quotes, lists,
+  tables, paths, URLs, important keywords, and low-signal logs.
+- Rich and Plain use the same captured string; switching modes does not trigger
+  a new remote capture when output is already loaded.
+- No raw agent text enters `innerHTML` without escaping.
+- Output remains selectable and copyable.
+- Long separators render as CSS rules and never create horizontal scrollbars.
+- The implementation remains fast on large captures by bailing out on very
+  long lines and avoiding cross-document markdown parsing.
