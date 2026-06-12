@@ -57,28 +57,25 @@ prompt_count_threshold = 2
 # Agent shows "Claude 4.6 Opus (Thinking) · 6.7%" after task finishes
 fallback_summary_pattern = "·\\s*\\d+(\\.\\d+)?%"
 
-[[confirm]]
-# Workspace trust dialog: "▶ [a] Trust this workspace" — press Enter (cursor already on it)
-pattern = "Trust this workspace"
-response = ""
-send_enter = true
+# (2026-06-11 trim) All prior rules removed; replaced by two anchored
+# rules below. The active cursor marker for Cursor TUI is →.
 
 [[confirm]]
-# Catch-all: any prompt with (y) — covers Proceed (y), Run (once) (y), etc.
-pattern = "\\(y\\)"
-response = ""
-send_enter = true
+# Generic (y) prompt — anchored to the line start with the → cursor
+# marker (Proceed (y) / Run once (y) / ...).
+pattern = "^\\s*→.*\\(y\\)"
+flags = ["MULTILINE"]
+response = "y"
+send_enter = false
 
 [[confirm]]
-# "Run (always for this command)" has no (y) suffix
-pattern = "Run \\(always"
-response = ""
-send_enter = true
-
-[probe]
-char = "1"                    # smart probe char (also used for auto-confirm)
-wait = 0.3
-idle_threshold = 2
+# Workspace trust dialog — the `[a]` hotkey label sits directly before
+# "Trust this workspace". Anchoring on the bracketed hotkey lets this
+# fire only when the dialog is actually drawn.
+pattern = "^\\W*\\[a\\]\\s*Trust this workspace"
+flags = ["MULTILINE"]
+response = "a"
+send_enter = false
 
 [monitor]
 # Cursor shows "Thinking..." while busy, "· X.Y%" usage after done.
@@ -86,12 +83,18 @@ idle_threshold = 2
 # false positives (e.g. "promptengineering.org", "testing.py").
 busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
 confirm_cooldown = 5.0
+confirm_recent_lines = 20
 confirm_sleep = 0.5
-completion_stable = 3.0
 health_check_interval = 15
-empty_threshold = 3
+idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle
 auto_exit = false             # finalize agent when task completes and idle confirmed
 exit_action = "kill_session"  # "kill_session", "send_exit", or "mark_only"
-probe_stable = 10.0
-probe_cooldown = 20.0
 exit_command = "/exit"        # command to send if exit_action = "send_exit"
+
+# Adapter-owned readiness (F-08). Cursor: binary + version only —
+# no required auth files in current code.
+[readiness]
+binary = "cursor"
+version_args = ["--version"]
+version_required = true
+install_hint = "ensure 'cursor' is in PATH"

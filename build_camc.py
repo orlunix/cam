@@ -19,7 +19,13 @@ from datetime import datetime
 # Module load order (respects dependency DAG)
 MODULE_ORDER = [
     "utils",
+    "system_prompt",
     "adapters",
+    # runtime_env must come before transport + cli: transport's
+    # create_tmux_session keeps its legacy default behavior when no
+    # env/tmux_bin is passed (runtime_env not needed), but cli imports
+    # build_runtime_env / check_tool_readiness from runtime_env.
+    "runtime_env",
     "transport",
     "detection",
     "storage",
