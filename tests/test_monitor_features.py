@@ -264,7 +264,9 @@ def test_auto_confirmation_returns_send_input_and_halt_cycle():
     runtime.last_confirm = 0.0
     feat = mf.AutoConfirmationFeature()
     snap = _mk_snap(
-        output="Do you want to proceed?\n1. Yes\n2. No\n",
+        # Includes ❯ on the last line so the global input-cursor guard
+        # (camc_pkg.detection.should_auto_confirm) allows the rule.
+        output="Do you want to proceed?\n1. Yes\n2. No\n❯ \n",
         now=1000.0, prompt_visible=False, bare_prompt=False,
     )
     actions = feat.confirm(snap, runtime)
@@ -298,7 +300,12 @@ def test_auto_confirmation_cooldown_window_suppresses_fire():
     assert runtime.last_confirm == 95.0
 
 
-def test_auto_confirmation_one_spam_guard_suppresses_fire():
+def test_auto_confirmation_no_1_spam_guard_python_side():
+    """v2 is TOML-only: a screen full of '1' characters MUST NOT
+    suppress a matching TOML [[confirm]] rule. The legacy 1-spam guard
+    was archived on 2026-06-10 (see docs/legacy/monitor-auto-confirm-v1.md).
+    If a user needs to suppress in that screen state, the TOML rule
+    must encode it."""
     confirm_rules = [(re.compile(r"1\. Yes"), "1", False)]
     cfg = _Cfg(confirm_cooldown=5.0, confirm_rules=confirm_rules)
     runtime = mf.MonitorRuntime("aid", cfg, now=200.0)
@@ -311,23 +318,28 @@ def test_auto_confirmation_one_spam_guard_suppresses_fire():
     )
     actions = feat.confirm(snap, runtime)
     kinds = [a["kind"] for a in actions]
-    assert "send_input" not in kinds
+    # TOML rule fired; no Python-side suppression.
+    assert "send_input" in kinds
     assert "halt_cycle" in kinds
     halt = next(a for a in actions if a["kind"] == "halt_cycle")
-    assert halt["sleep"] == 0
-    assert runtime.last_confirm == pytest.approx(200.0 + (60.0 - 5.0))
+    assert halt["sleep"] == pytest.approx(cfg.confirm_sleep)
+    # last_confirm advanced to NOW (normal fire), not now + (60-cooldown).
+    assert runtime.last_confirm == 200.0
 
 
-def test_auto_confirmation_bare_prompt_skip():
+def test_auto_confirmation_no_bare_prompt_skip_python_side():
+    """v2 is TOML-only: a bare prompt visible in the tail MUST NOT
+    suppress a matching TOML rule. The legacy bare_prompt skip was
+    archived on 2026-06-10."""
     confirm_rules = [(re.compile(r"1\. Yes"), "1", False)]
     cfg = _Cfg(confirm_rules=confirm_rules)
     runtime = mf.MonitorRuntime("aid", cfg, now=500.0)
     runtime.last_confirm = 0.0
     feat = mf.AutoConfirmationFeature()
-    snap = _mk_snap(output="\n1. Yes\n❯", bare_prompt=True, now=500.0)
+    snap = _mk_snap(output="\n1. Yes\n❯ ", bare_prompt=True, now=500.0)
     kinds = [a["kind"] for a in feat.confirm(snap, runtime)]
-    assert "send_input" not in kinds
-    assert "halt_cycle" not in kinds
+    assert "send_input" in kinds
+    assert "halt_cycle" in kinds
 
 
 # ---------------------------------------------------------------------------
@@ -359,13 +371,12 @@ def _drive_three_phases(features, snap, runtime):
     return applied, halted, phases_run
 
 
-def test_one_spam_halt_prevents_after_confirm_phase():
-    """1-spam guard halt in phase B must skip phase C entirely. The
-    state_manager.after_confirm hook handles output-change reset
-    (and idle detect, and detect_state); none of them should run on
-    the halted cycle. snap.changed=True is set on purpose so the
-    assertion 'last_change retains its pre-tick value' would FAIL if
-    after_confirm had been allowed to run."""
+def test_successful_confirm_with_1_spam_screen_still_halts_phase_c():
+    """v2 TOML-only: even when the screen tail has '1' spam, a matching
+    TOML rule still fires and the resulting halt skips after_confirm.
+    last_change is set by AutoConfirmationFeature's successful fire
+    path (not by the legacy 1-spam suppression which used to halt with
+    sleep=0)."""
     confirm_rules = [(re.compile(r"1\. Yes"), "1", False)]
     cfg = _Cfg(confirm_cooldown=5.0, confirm_rules=confirm_rules)
     runtime = mf.MonitorRuntime("aid", cfg, now=200.0)
@@ -380,12 +391,10 @@ def test_one_spam_halt_prevents_after_confirm_phase():
     )
     applied, halted, phases = _drive_three_phases(features, snap, runtime)
     assert halted
-    # after_confirm phase ran in the driver loop, but only confirm
-    # phase produced actions; we must NOT see any after_confirm-phase
-    # actions (because phase B halted before phase C started).
     assert "after_confirm" not in phases
-    assert runtime.last_change == 50.0, \
-        "1-spam halt must preserve last_change (output-change reset skipped)"
+    # Successful fire updates last_change to now (NOT preserved at 50.0
+    # as in the archived v1 1-spam suppression path).
+    assert runtime.last_change == 200.0
 
 
 def test_successful_confirm_halt_also_skips_after_confirm():
@@ -397,7 +406,7 @@ def test_successful_confirm_halt_also_skips_after_confirm():
     runtime.idle_confirmed = True
     features = mf.build_features()
     snap = _mk_snap(
-        output="Do you want to proceed?\n1. Yes\n2. No\n",
+        output="Do you want to proceed?\n1. Yes\n2. No\n❯ \n",
         changed=True, now=300.0,
     )
     applied, halted, phases = _drive_three_phases(features, snap, runtime)
@@ -427,3 +436,67 @@ def test_no_halt_runs_all_three_phases():
     assert runtime.last_change == 400.0
     # IdleDetectStep equivalent ran: idle confirmed.
     assert runtime.idle_confirmed is True
+
+
+# ---------------------------------------------------------------------------
+# TOML-only invariant — monitor.py must not carry the legacy stuck-fallback
+# (which injected a bare "1" into the pane when frozen with no prompt).
+# This is a static check against the source so a future contributor can't
+# reintroduce the Python-side nudge without renaming the symbol.
+# ---------------------------------------------------------------------------
+
+def test_monitor_module_has_no_stuck_fallback_send():
+    monitor_path = os.path.join(SRC, "camc_pkg", "monitor.py")
+    with open(monitor_path, "r") as f:
+        src = f.read()
+    # The legacy event name and the hardcoded '1' send must both be
+    # absent from live code. We tolerate appearances inside the
+    # comment block that documents the removal.
+    code_lines = []
+    for line in src.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("#") or stripped.startswith('"'):
+            continue
+        code_lines.append(line)
+    body = "\n".join(code_lines)
+    assert "stuck_fallback" not in body, \
+        "stuck_fallback event must not be emitted (TOML-only auto-confirm)"
+    assert 'tmux_send_input(session, "1"' not in body, \
+        "hardcoded '1' send must not appear in monitor.py"
+
+
+def test_auto_confirmation_fires_purely_from_toml_rule():
+    """End-to-end pin: only the TOML rule decides. No bare_prompt, no
+    1-spam, no busy/done overrides on the confirm path."""
+    confirm_rules = [(re.compile(r"1\. Yes"), "1", False)]
+    cfg = _Cfg(confirm_rules=confirm_rules)
+    runtime = mf.MonitorRuntime("aid", cfg, now=10.0)
+    runtime.last_confirm = 0.0
+    feat = mf.AutoConfirmationFeature()
+    snap = _mk_snap(
+        output="Do you want to proceed?\n1. Yes\n2. No\n❯ \n",
+        bare_prompt=True, screen_busy=True, screen_done=True,
+        tail_lines=["1111", "❯", "1. Yes"],
+        now=10.0,
+    )
+    kinds = [a["kind"] for a in feat.confirm(snap, runtime)]
+    assert "send_input" in kinds
+    assert "halt_cycle" in kinds
+
+
+def test_auto_confirmation_no_rule_matches_no_action():
+    """No TOML rule => no send_input, no halt. Empty rule set must be
+    a clean no-op; no implicit Python-side fallback."""
+    cfg = _Cfg(confirm_rules=[])
+    runtime = mf.MonitorRuntime("aid", cfg, now=10.0)
+    runtime.last_confirm = 0.0
+    feat = mf.AutoConfirmationFeature()
+    snap = _mk_snap(
+        output="some random output with nothing matching",
+        idle_for=300.0, prompt_visible=False, now=10.0,
+    )
+    actions = feat.confirm(snap, runtime)
+    kinds = [a["kind"] for a in actions]
+    assert "send_input" not in kinds
+    assert "send_key" not in kinds
+    assert "halt_cycle" not in kinds
