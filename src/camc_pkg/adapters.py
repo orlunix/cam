@@ -219,11 +219,16 @@ class AdapterConfig(object):
                 rule.get("send_enter", True),
             ))
 
-        probe_cfg = config.get("probe", {})
-        self.probe_char = probe_cfg.get("char", "Z")
-        self.probe_wait = float(probe_cfg.get("wait", 0.3))
-        self.probe_idle_threshold = int(probe_cfg.get("idle_threshold", 2))
-
+        # Note (2026-06-10): the legacy [probe] block (char/wait/
+        # idle_threshold) and the [monitor] completion_stable /
+        # empty_threshold / probe_stable / probe_cooldown fields were
+        # removed from the TOML schema as part of the TOML-only
+        # auto-confirm simplification — the camc monitor no longer
+        # consults any of them. ``cam.client.AdapterConfig`` (the
+        # legacy CAM client) keeps its own parsing of these fields
+        # for backwards compatibility; the defaults there match the
+        # values previously written into shared TOMLs, so removing
+        # them is behavior-preserving for the legacy path.
         mon_cfg = config.get("monitor", {})
         bp = mon_cfg.get("busy_pattern")
         self.busy_pattern = compile_pattern(bp, mon_cfg.get("busy_flags")) if bp else None
@@ -232,26 +237,161 @@ class AdapterConfig(object):
         self.confirm_cooldown = float(mon_cfg.get("confirm_cooldown", 5.0))
         self.confirm_recent_lines = int(mon_cfg.get("confirm_recent_lines", 8))
         self.confirm_sleep = float(mon_cfg.get("confirm_sleep", 0.5))
-        self.completion_stable = float(mon_cfg.get("completion_stable", 3.0))
         self.health_check_interval = float(mon_cfg.get("health_check_interval", 15))
-        self.empty_threshold = int(mon_cfg.get("empty_threshold", 3))
+        # Idle stability threshold (hash0 unchanged this long → idle).
+        # Default 60s preserves the prior hardcoded threshold exactly.
+        self.idle_stable_seconds = float(mon_cfg.get("idle_stable_seconds", 60.0))
         self.auto_exit = bool(mon_cfg.get("auto_exit", False))
         self.exit_action = mon_cfg.get("exit_action", "kill_session")
         self.exit_command = mon_cfg.get("exit_command", "/exit")
-        self.probe_stable = float(mon_cfg.get("probe_stable", 10.0))
-        self.probe_cooldown = float(mon_cfg.get("probe_cooldown", 20.0))
+
+        # ----- Readiness (F-08 adapter-owned) -----
+        # Tool-specific readiness policy. When the [readiness] block is
+        # present, runtime_env.check_tool_readiness will prefer it over
+        # the hardcoded _TOOL_SPECS fallback so each tool can own its
+        # auth / version / file-existence rules in TOML rather than in
+        # Python. Shape (all fields optional):
+        #
+        #   [readiness]
+        #   binary           = "claude"
+        #   version_args     = ["--version"]
+        #   version_required = true
+        #   install_hint     = "npm install -g @anthropic-ai/claude-code"
+        #
+        #   [[readiness.required_files]]
+        #   path  = "~/.claude.json"
+        #   label = "Claude auth file"
+        #
+        #   [[readiness.optional_files]]
+        #   path  = "~/.codex/auth.json"
+        #
+        #   [[readiness.optional_env]]
+        #   name  = "OPENAI_API_KEY"
+        #
+        # Reserved-but-disabled keys (e.g. auth_probe) MAY be parsed
+        # here in the future; right now we only carry shapes that
+        # actually have effect. self.readiness is None when no block
+        # is configured — callers fall back to _TOOL_SPECS.
+        rd = config.get("readiness")
+        if isinstance(rd, dict):
+            req_files = []
+            for entry in (rd.get("required_files") or []):
+                if isinstance(entry, dict) and entry.get("path"):
+                    req_files.append({
+                        "path":  str(entry.get("path")),
+                        "label": str(entry.get("label") or ""),
+                    })
+            opt_files = []
+            for entry in (rd.get("optional_files") or []):
+                if isinstance(entry, dict) and entry.get("path"):
+                    opt_files.append({
+                        "path":  str(entry.get("path")),
+                        "label": str(entry.get("label") or ""),
+                    })
+            opt_env = []
+            for entry in (rd.get("optional_env") or []):
+                if isinstance(entry, dict) and entry.get("name"):
+                    opt_env.append({"name": str(entry.get("name"))})
+            self.readiness = {
+                "binary":           rd.get("binary") or "",
+                "version_args":     list(rd.get("version_args") or ["--version"]),
+                "version_required": bool(rd.get("version_required", True)),
+                "install_hint":     rd.get("install_hint") or "",
+                "required_files":   req_files,
+                "optional_files":   opt_files,
+                "optional_env":     opt_env,
+            }
+        else:
+            self.readiness = None
+
+
+# Keys whose list value should APPEND (user-extension lists) rather
+# than override. Anything not in this set is treated as a scalar-like
+# override even when the value happens to be a list. Without this
+# distinction, install_default_configs() (which writes a FULL embedded
+# snapshot to ~/.cam/configs/<tool>.toml) would cause _load_config to
+# double every list field on merge — e.g. readiness.version_args ended
+# up as ['--version', '--version'], state.patterns doubled, etc.
+_APPEND_LIST_KEYS = frozenset({"confirm"})
 
 
 def _merge_toml(base, override):
-    """Merge override TOML dict into base. Lists (e.g. [[confirm]]) are appended."""
+    """Merge ``override`` TOML dict into ``base``.
+
+    - For keys in ``_APPEND_LIST_KEYS`` (currently ``confirm``), lists
+      APPEND to the embedded defaults — this is what lets a user-side
+      ``[[confirm]]`` block extend the rule set without duplicating the
+      whole adapter config.
+    - Every other list value (readiness.version_args, state.patterns,
+      *.flags, required_files, optional_files, optional_env, …)
+      OVERRIDES the embedded value. Treating these like ``confirm``
+      would silently double their entries each time merge ran.
+    - Dicts merge recursively so per-section overrides still work.
+    """
     for k, v in override.items():
-        if isinstance(v, list) and isinstance(base.get(k), list):
-            base[k] = base[k] + v  # append (e.g. extra confirm rules)
+        if (k in _APPEND_LIST_KEYS
+                and isinstance(v, list)
+                and isinstance(base.get(k), list)):
+            base[k] = base[k] + v
         elif isinstance(v, dict) and isinstance(base.get(k), dict):
             _merge_toml(base[k], v)
         else:
             base[k] = v
     return base
+
+
+def install_default_configs(target_dir=None, force=False):
+    """Write embedded adapter TOMLs to ``target_dir`` (default
+    :data:`CONFIGS_DIR`, i.e. ``~/.cam/configs/``).
+
+    For each adapter in ``_EMBEDDED_CONFIGS`` (claude / codex / cursor):
+
+      * If ``<name>.toml`` exists in ``target_dir`` AND ``force`` is
+        false → leave the user's copy alone (status ``skipped_exists``).
+      * Otherwise → write the embedded TOML verbatim
+        (``created`` / ``overwritten``).
+
+    The on-disk file serves two purposes:
+      1. It is the **template** users edit to add custom
+         ``[[confirm]]`` rules. ``_load_config(tool)`` merges this file
+         on top of the embedded defaults, so a custom rule simply
+         appends to the active rule set without touching Python.
+      2. It is a stable snapshot of the embedded TOML — handy when a
+         user wants to read or tweak any other adapter field
+         (busy_pattern, state patterns, monitor config, etc.).
+
+    Idempotent and side-effect-light: never overwrites an
+    edited file unless the caller explicitly asks via ``force=True``.
+    Returns a dict mapping filename → action string.
+    """
+    out_dir = target_dir or CONFIGS_DIR
+    try:
+        os.makedirs(out_dir)
+    except OSError:
+        pass
+    results = {}
+    for fname, content in _EMBEDDED_CONFIGS.items():
+        path = os.path.join(out_dir, fname)
+        if os.path.exists(path) and not force:
+            results[fname] = "skipped_exists"
+            continue
+        existed = os.path.exists(path)
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                f.write(content)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+            os.replace(tmp, path)
+        except OSError as e:
+            log.warning("install_default_configs: %s: %s", path, e)
+            results[fname] = "error:%s" % e
+            continue
+        results[fname] = "overwritten" if existed else "created"
+    return results
 
 
 def _load_config(tool):

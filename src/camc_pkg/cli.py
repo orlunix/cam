@@ -69,13 +69,16 @@ def _gen_agent_id():
 
 from camc_pkg import __version__, CAM_DIR, CONFIGS_DIR, CONTEXT_FILE, LOGS_DIR, PIDS_DIR, SOCKETS_DIR, log
 from camc_pkg.utils import _now_iso, _time_ago, _load_default_context, _build_command, _kill_monitor, _run
-from camc_pkg.adapters import _EMBEDDED_CONFIGS, _load_config
+from camc_pkg.adapters import _EMBEDDED_CONFIGS, _load_config, install_default_configs
 from camc_pkg.storage import AgentStore, EventStore
 from camc_pkg.transport import (
     _find_tmux_socket, capture_tmux, tmux_session_exists,
     tmux_send_input, tmux_send_key, tmux_kill_session, create_tmux_session,
 )
 from camc_pkg.detection import should_auto_confirm, is_ready_for_input
+from camc_pkg.system_prompt import (
+    target_file, write_block, strip_block, has_block, load_prompt_text,
+)
 from camc_pkg.monitor import _run_monitor
 # Cron module: bare names (no `as` aliases). build_camc.py strips this
 # import line during bundling; the names then live at the top level of
@@ -129,6 +132,67 @@ def _send_with_submit_delay(session_id, text, send_enter=True, submit_delay=0.0)
     return tmux_send_input(session_id, text, send_enter=send_enter)
 
 
+def _send_confirm_response(session_id, response, send_enter):
+    if response and len(response) == 1:
+        if not tmux_send_key(session_id, response):
+            return False
+        if send_enter:
+            return tmux_send_key(session_id, "Enter")
+        return True
+    return tmux_send_input(session_id, response, send_enter=send_enter)
+
+
+def cmd_env(args):
+    """F-08: read-only diagnostic for the effective runtime env + tool
+    readiness. NEVER modifies anything; safe to invoke on production
+    hosts. Used by tests + by humans debugging "tmux says command not
+    found" vs "PATH looks fine in my shell" disagreements."""
+    from camc_pkg.runtime_env import build_runtime_env, check_tool_readiness
+    tool = getattr(args, "tool", None) or "claude"
+    config = _load_config(tool)
+    tool_binary = config.command[0] if config.command else None
+    context = _load_default_context()
+    env_setup = (context.get("env_setup") or None) if isinstance(context, dict) else None
+    runtime = build_runtime_env(env_setup=env_setup)
+    adapter_readiness = getattr(config, "readiness", None)
+    readiness = check_tool_readiness(runtime, tool, tool_binary,
+                                     readiness=adapter_readiness)
+
+    if getattr(args, "json", False):
+        out = {
+            "tool":             tool,
+            "tool_binary":      tool_binary,
+            "env_setup":        env_setup,
+            "source":           runtime.source,
+            "shell":            runtime.shell,
+            "path":             runtime.path,
+            "warnings":         runtime.warnings,
+            "issues":           [{"level": l, "message": m} for l, m in readiness["issues"]],
+            "resolved":         readiness["resolved"],
+            "readiness_source": readiness.get("readiness_source", "fallback"),
+        }
+        print(json.dumps(out, indent=2))
+        return
+
+    print("Effective env source: %s" % runtime.source)
+    print("Readiness source:     %s" % readiness.get("readiness_source", "fallback"))
+    print("Login shell:          %s" % (runtime.shell or "(unknown)"))
+    print("PATH:                 %s" % runtime.path)
+    if runtime.warnings:
+        print("Warnings from env capture:")
+        for w in runtime.warnings:
+            print("  - %s" % w)
+    print("Resolved:")
+    print("  tmux: %s" % readiness["resolved"].get("tmux", "(not found)"))
+    print("  %s:   %s" % (tool, readiness["resolved"].get("tool", "(not found)")))
+    if readiness["issues"]:
+        print("Readiness issues:")
+        for level, msg in readiness["issues"]:
+            print("  [%s] %s" % (level.upper(), msg))
+    else:
+        print("Readiness: OK")
+
+
 def cmd_init(args):
     """Interactive setup wizard."""
     print("camc v%s — Coding Agent Manager (standalone)" % __version__)
@@ -162,17 +226,20 @@ def cmd_init(args):
             pass
     print("  Config: %s" % CAM_DIR)
 
-    # 3. Write adapter configs
+    # 3. Write adapter configs (templates for [[confirm]] customization).
+    # install_default_configs() writes one TOML per supported tool,
+    # skipping any file the user has already edited. With --force it
+    # rewrites them from the current embedded TOML snapshot.
     print()
     print("Writing adapter configs...")
-    for filename, content in _EMBEDDED_CONFIGS.items():
-        path = os.path.join(CONFIGS_DIR, filename)
-        if os.path.exists(path) and not getattr(args, "force", False):
+    results = install_default_configs(force=getattr(args, "force", False))
+    for filename, status in results.items():
+        if status == "skipped_exists":
             print("  · %s: exists (use --force to overwrite)" % filename)
-        else:
-            with open(path, "w") as f:
-                f.write(content)
+        elif status in ("created", "overwritten"):
             print_success(filename)
+        else:
+            print_error("%s: %s" % (filename, status))
 
     # 4. Create context.json template
     _load_default_context()
@@ -434,35 +501,32 @@ _TOOL_HINTS = {
 }
 
 
-def _preflight(tool, tool_binary, workdir, env_setup=None):
-    """Return a list of (level, message). 'error' blocks startup, 'warn' is advisory."""
-    issues = []
+def _preflight(tool, tool_binary, workdir, env_setup=None, runtime=None,
+               adapter_readiness=None):
+    """Tool readiness (via runtime_env) + local writable-dir checks.
 
-    # tmux present and >= 2.4 (needs `send-keys -l` and `capture-pane -a`).
-    # Uses transport.TMUX_BIN so Rocky 8.9 boxes check the system /usr/bin/tmux
-    # rather than whatever user-custom tmux is earlier in PATH.
-    from camc_pkg.transport import TMUX_BIN
-    if not TMUX_BIN or not os.path.exists(TMUX_BIN) and not shutil.which(TMUX_BIN):
-        issues.append(("error", "tmux not found. Install: apt install tmux / brew install tmux"))
-    else:
-        try:
-            out = subprocess.check_output(
-                [TMUX_BIN, "-V"], stderr=subprocess.STDOUT, timeout=3
-            ).decode(errors="replace")
-            m = re.search(r"(\d+)\.(\d+)", out)
-            if m and (int(m.group(1)), int(m.group(2))) < (2, 4):
-                issues.append(("error", "tmux %s too old; need >= 2.4" % out.strip()))
-        except Exception:
-            pass  # unparseable — don't block; launch will surface any real issue
+    Returns ``(issues, resolved)`` — a list of (level, message) tuples
+    AND a dict {"tmux": "/abs/path", "tool": "/abs/path"} populated by
+    the readiness check. cmd_run threads `resolved["tmux"]` and the
+    runtime's env into `create_tmux_session()` so detection and launch
+    share one effective environment.
 
-    # Tool binary in PATH. When env_setup is configured the caller has
-    # taken responsibility for PATH inside tmux — don't re-run login
-    # shell here (expensive on NFS-heavy hosts like pdx-110). If the
-    # binary is truly missing, the tmux session will exit and surface
-    # the real error immediately.
-    if tool_binary and not env_setup and not shutil.which(tool_binary):
-        hint = _TOOL_HINTS.get(tool, "ensure '%s' is in PATH" % tool_binary)
-        issues.append(("error", "'%s' not found. Install: %s" % (tool_binary, hint)))
+    `runtime`: a pre-built `RuntimeEnv` (preferred — keeps the SAME
+    effective env between this preflight and the subsequent tmux
+    launch). When None, we build one on the fly so legacy callers
+    keep working without code changes.
+    `adapter_readiness`: the adapter's TOML-sourced readiness dict
+    (``AdapterConfig.readiness``). When provided, the readiness check
+    prefers it over the hardcoded ``_TOOL_SPECS`` fallback so each
+    tool's auth/version policy lives in its own TOML.
+    """
+    from camc_pkg.runtime_env import build_runtime_env, check_tool_readiness
+
+    if runtime is None:
+        runtime = build_runtime_env(env_setup=env_setup)
+    readiness = check_tool_readiness(runtime, tool, tool_binary,
+                                     readiness=adapter_readiness)
+    issues = list(readiness["issues"])
 
     # workdir accessible
     try:
@@ -487,7 +551,7 @@ def _preflight(tool, tool_binary, workdir, env_setup=None):
     except OSError as e:
         issues.append(("warn", "agents.json not writable: %s" % e))
 
-    return issues
+    return issues, readiness.get("resolved", {})
 
 
 def cmd_run(args):
@@ -500,9 +564,19 @@ def cmd_run(args):
     context = _load_default_context()
     env_setup = context.get("env_setup") or None
 
-    # Preflight environment checks
+    # F-08: build the effective runtime env ONCE, share it across
+    # preflight + tmux launch so PATH-related checks can't pass at
+    # preflight and then fail in tmux (or vice versa).
+    from camc_pkg.runtime_env import build_runtime_env
+    runtime = build_runtime_env(env_setup=env_setup)
     tool_binary = config.command[0] if config.command else None
-    issues = _preflight(tool, tool_binary, workdir, env_setup=env_setup)
+    # F-08 (adapter-owned): prefer the adapter's [readiness] block
+    # over runtime_env's hardcoded _TOOL_SPECS fallback. None when
+    # the adapter doesn't declare [readiness] — fallback kicks in.
+    adapter_readiness = getattr(config, "readiness", None)
+    issues, resolved = _preflight(tool, tool_binary, workdir,
+                                  env_setup=env_setup, runtime=runtime,
+                                  adapter_readiness=adapter_readiness)
     has_error = False
     for level, msg in issues:
         if level == "error":
@@ -515,6 +589,33 @@ def cmd_run(args):
 
     agent_id = _gen_agent_id()
     session = "cam-%s" % agent_id
+
+    # Per-agent system prompt: write to CLAUDE.md / AGENTS.md before
+    # launch. The tool auto-loads it via its normal mechanism. See
+    # docs/system-prompt-feature.md.
+    sp_text = ""
+    sp_file_path = ""
+    sp_source = ""
+    sp_arg = getattr(args, "system_prompt", None)
+    sp_file_arg = getattr(args, "system_file", None)
+    if sp_arg or sp_file_arg:
+        try:
+            sp_text = load_prompt_text(sp_arg, sp_file_arg)
+        except (IOError, OSError) as e:
+            print_error("--system-file: %s" % e)
+            sys.exit(1)
+        if sp_text:
+            sp_file_path = target_file(tool, workdir)
+            if not sp_file_path:
+                print_warning("No system-prompt file mapping for tool '%s'; skipping injection" % tool)
+            else:
+                try:
+                    write_block(sp_file_path, agent_id, sp_text)
+                    sp_source = "file:%s" % sp_file_arg if sp_file_arg else "inline"
+                    print_info("System prompt written to %s" % sp_file_path)
+                except Exception as e:
+                    print_warning("Failed to write system prompt: %s" % e)
+                    sp_file_path = ""
 
     resume_session = getattr(args, "resume_session", None)
 
@@ -554,21 +655,30 @@ def cmd_run(args):
         except OSError:
             pass
     print("Starting %s agent %s..." % (tool, agent_id))
-    if not create_tmux_session(session, launch_cmd, workdir, env_setup=env_setup, inherit_env=inherit_env):
+    # F-08: launch with the SAME effective env preflight saw, and the
+    # SAME tmux binary preflight just version-checked. resolved["tmux"]
+    # may be missing if preflight short-circuited (it doesn't — error
+    # would have exited above), but fall back to TMUX_BIN defensively.
+    from camc_pkg.transport import TMUX_BIN
+    resolved_tmux = resolved.get("tmux") or TMUX_BIN
+    if not create_tmux_session(session, launch_cmd, workdir,
+                               env_setup=env_setup, inherit_env=inherit_env,
+                               env=runtime.env, tmux_bin=resolved_tmux):
         print_error("Failed to create tmux session for '%s'" % session)
-        print_info("Debug: tmux -u -S %s/%s.sock new-session -d -s %s -c %s" % (SOCKETS_DIR, session, session, workdir))
+        print_info("Debug: %s -u -S %s/%s.sock new-session -d -s %s -c %s" %
+                   (resolved_tmux, SOCKETS_DIR, session, session, workdir))
         sys.exit(1)
 
     # Snapshot the tmux binary + version that actually started this server.
     # tmux client/server protocol requires matching versions, so subsequent
     # capture/send/kill on this session must use the same binary. Record at
     # creation time — resolution order later: record → /proc/exe → fallback.
-    from camc_pkg.transport import TMUX_BIN
-    tmux_bin_used = TMUX_BIN
+    tmux_bin_used = resolved_tmux
     tmux_ver_used = ""
     try:
         tmux_ver_used = subprocess.check_output(
-            [tmux_bin_used, "-V"], stderr=subprocess.STDOUT, timeout=2
+            [tmux_bin_used, "-V"], stderr=subprocess.STDOUT, timeout=2,
+            env=runtime.env,
         ).decode(errors="replace").strip()
     except Exception:
         pass
@@ -587,7 +697,10 @@ def cmd_run(args):
         "task": {"name": name or "", "tool": tool, "prompt": prompt,
                  "auto_confirm": True, "auto_exit": auto_exit,
                  "auto_exit_enable": auto_exit_enable,
-                 "tags": tags},
+                 "tags": tags,
+                 "system_prompt": sp_text,
+                 "system_prompt_file": sp_file_path,
+                 "system_prompt_source": sp_source},
         "context_id": "",
         "context_name": ctx_name,
         "context_path": workdir,
@@ -617,20 +730,30 @@ def cmd_run(args):
     if config.prompt_after_launch:
         elapsed = 0.0
         ready = False
+        last_hash = ""    # dedup: skip same-screen re-fires within startup window
+        last_response = ""  # last response sent (input-box guard)
+        prev_output = ""    # previous capture (input-box guard "changed" condition)
         while elapsed < config.startup_wait:
             time.sleep(1); elapsed += 1
             output = capture_tmux(session)
             if not output.strip():
                 continue
-            # Try clearing a confirm dialog first. should_auto_confirm
-            # returns (response, send_enter, pattern, match) or None;
-            # use the rule's response/send_enter (NOT probe_char — the
-            # rule is per-dialog: e.g. "1" without Enter for numbered
-            # menus, "" with Enter for Ink select dialogs).
-            confirm = should_auto_confirm(output, config)
+            confirm = should_auto_confirm(output, config,
+                                           last_response=last_response,
+                                           prev_output=prev_output)
+            prev_output = output
             if confirm:
-                response, send_enter = confirm[0], confirm[1]
-                tmux_send_input(session, response, send_enter=send_enter)
+                response, send_enter, _pat, _matched = confirm
+                # Dedup by hash1 (digits stripped) of the recent slice.
+                import re as _re
+                _digits = _re.compile(r"[0-9]+")
+                tail = "\n".join([l for l in output.splitlines() if l.strip()][-config.confirm_recent_lines:])
+                cur_hash = hashlib.md5(_digits.sub("", tail).encode("utf-8", errors="replace")).hexdigest()
+                if cur_hash == last_hash:
+                    continue
+                last_hash = cur_hash
+                last_response = response
+                _send_confirm_response(session, response, send_enter)
                 time.sleep(3); elapsed += 3
                 continue
             if is_ready_for_input(output, config):
@@ -1977,6 +2100,15 @@ def cmd_rm(args):
         except Exception as e:
             print_warning("Archive step raised %s; proceeding with rm anyway." % e)
     _kill_monitor(a)
+    # Strip the system_prompt block we injected at run-time, if any.
+    task_rec = a.get("task") or {}
+    sp_file_path = task_rec.get("system_prompt_file") or ""
+    if sp_file_path:
+        try:
+            if strip_block(sp_file_path, a["id"]):
+                print_info("System prompt block removed from %s" % sp_file_path)
+        except Exception as e:
+            print_warning("Failed to strip system prompt block: %s" % e)
     session = _sf(a, "tmux_session")
     if session:
         tmux_kill_session(session)
@@ -2531,6 +2663,19 @@ def cmd_migrate(args):
 
     print_info("Rebooting agent %s (%s)..." % (name, old_id))
 
+    # Re-inject system_prompt block if recorded and missing from file
+    # (e.g. user wiped the file, or rebooting after a host move).
+    task_rec = a.get("task") or {}
+    sp_text = task_rec.get("system_prompt") or ""
+    sp_file_path = task_rec.get("system_prompt_file") or ""
+    if sp_text and sp_file_path:
+        if not has_block(sp_file_path, old_id):
+            try:
+                write_block(sp_file_path, old_id, sp_text)
+                print_info("System prompt re-injected at %s" % sp_file_path)
+            except Exception as e:
+                print_warning("Failed to re-inject system prompt: %s" % e)
+
     # 1. Graceful exit — same as `camc exit`. Claude goes away, tmux stays.
     if not (old_session and tmux_session_exists(old_session)):
         print_error("No tmux session found for agent")
@@ -2680,6 +2825,11 @@ def cmd_status(args):
                 else:
                     session_file_info = "%s (not found)" % sf_path
 
+        sp_text = _tf(a, "system_prompt") or ""
+        sp_display = None
+        if sp_text:
+            sp_summary = sp_text.replace("\n", " ")
+            sp_display = (sp_summary[:200] + "...") if len(sp_summary) > 200 else sp_summary
         pairs = [
             ("ID", a.get("id", "?")),
             ("Name", _tf(a, "name")),
@@ -2694,6 +2844,7 @@ def cmd_status(args):
             ("Completed", a.get("completed_at")),
             ("Exit", a.get("exit_reason")),
             ("Prompt", prompt_display),
+            ("System", sp_display),
             ("Auto-exit", "ON" if _tf(a, "auto_exit") else None),
             ("Alive", _c("alive", "green") if alive else _c("dead", "red")),
         ]
@@ -2707,6 +2858,137 @@ def cmd_status(args):
         raw = json.dumps(agents, sort_keys=True)
         h = hashlib.md5(raw.encode()).hexdigest()[:8]
         print(json.dumps({"agents": agents, "hash": h}))
+
+
+def _find_monitor_pids(agent_id):
+    """Enumerate local processes that look like ``camc _monitor <agent_id>``.
+
+    Returns a list of ``(pid, etimes)`` tuples. ``etimes`` is the
+    elapsed seconds since the process started (lower = newer); None if
+    unavailable. Best-effort: returns ``[]`` on any subprocess / parse
+    failure rather than raising. The current process is excluded so
+    ``cmd_heal`` cannot mistake itself for a stale monitor.
+
+    Matching uses ``_monitor <agent_id>`` as a token boundary to avoid
+    false positives from agent ids that share a substring with another
+    id (8-hex ids are short and substring collisions, while rare, do
+    happen).
+    """
+    if not agent_id:
+        return []
+    import re as _re
+    pat = _re.compile(r"_monitor\s+%s(?:\b|$)" % _re.escape(agent_id))
+    my_pid = os.getpid()
+
+    def _parse_extended(text):
+        out = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(None, 2)
+            if len(parts) < 3:
+                continue
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            try:
+                et = int(parts[1])
+            except ValueError:
+                et = None
+            cmd = parts[2]
+            if "grep" in cmd:
+                continue
+            if pid == my_pid:
+                continue
+            if pat.search(cmd):
+                out.append((pid, et))
+        return out
+
+    def _parse_aux(text):
+        out = []
+        for line in text.splitlines():
+            if "grep" in line:
+                continue
+            if "_monitor" not in line or agent_id not in line:
+                continue
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            try:
+                pid = int(parts[1])
+            except ValueError:
+                continue
+            if pid == my_pid:
+                continue
+            if pat.search(line):
+                out.append((pid, None))
+        return out
+
+    try:
+        text = subprocess.check_output(
+            ["ps", "-eo", "pid=,etimes=,command="],
+            stderr=subprocess.DEVNULL).decode("utf-8", errors="replace")
+        return _parse_extended(text)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        text = subprocess.check_output(
+            ["ps", "aux"], stderr=subprocess.DEVNULL).decode(
+                "utf-8", errors="replace")
+        return _parse_aux(text)
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
+def _cleanup_duplicate_monitors(agent_id, record_pid, pidfile_pid,
+                                 _find=None, _kill=None):
+    """If multiple local monitor processes exist for ``agent_id``, keep
+    exactly one and SIGTERM the older extras.
+
+    Keeper preference (first match wins):
+      1. ``record_pid`` (agent record) if among the live monitor pids.
+      2. ``pidfile_pid`` (``~/.cam/pids/<id>.pid`` etc.) if among them.
+      3. Newest monitor — smallest ``etimes``. When ``etimes`` is
+         unavailable we fall back to the highest PID (a rough proxy
+         for "started most recently" within one PID cycle).
+
+    Returns ``(kept_pid, killed_pids)``. With zero or one monitor the
+    second element is ``[]``. ``_find`` / ``_kill`` are injectable for
+    tests; defaults call this module's helpers / ``os.kill``.
+    """
+    find = _find or _find_monitor_pids
+    kill = _kill or os.kill
+    pids = find(agent_id)
+    if not pids:
+        return None, []
+    if len(pids) == 1:
+        return pids[0][0], []
+    pid_set = set(p for p, _ in pids)
+    keep = None
+    if record_pid and record_pid in pid_set:
+        keep = record_pid
+    elif pidfile_pid and pidfile_pid in pid_set:
+        keep = pidfile_pid
+    else:
+        # Sort: known etimes ascending (smaller = newer), unknown last.
+        # PID descending tie-breaker. The chosen keeper is index 0.
+        _SENTINEL = 10 ** 12
+        def _key(item):
+            p, et = item
+            return ((et if et is not None else _SENTINEL), -p)
+        keep = sorted(pids, key=_key)[0][0]
+    killed = []
+    for p, _ in pids:
+        if p == keep:
+            continue
+        try:
+            kill(p, 15)  # SIGTERM only — per spec
+            killed.append(p)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    return keep, killed
 
 
 def _kill_all_monitors():
@@ -2741,6 +3023,21 @@ def cmd_heal(args):
         killed = _kill_all_monitors()
         print("Upgrade: killed %d old monitor process(es)" % killed)
         time.sleep(0.5)  # let processes die
+
+        # Ensure each supported tool has a customization template at
+        # ~/.cam/configs/<tool>.toml. Missing-file only — never
+        # overwrites a user-edited file on the upgrade path (init's
+        # --force is the only way to do that, by design). Lets users
+        # land custom [[confirm]] rules after a binary upgrade without
+        # re-running `camc init`.
+        try:
+            cfg_results = install_default_configs(force=False)
+            created = [f for f, s in cfg_results.items() if s == "created"]
+            if created:
+                print("Upgrade: created adapter config template(s): %s"
+                      % ", ".join(sorted(created)))
+        except Exception as e:
+            log.warning("upgrade: install_default_configs failed: %s", e)
 
     my_hostname = _sock.gethostname()
     store = AgentStore()
@@ -2892,9 +3189,47 @@ def cmd_heal(args):
             print("  %s (%s): session dead, marked %s" % (name, aid, status))
             continue
 
+        # Duplicate-monitor sweep. Multiple `camc _monitor <aid>`
+        # processes can accumulate when the restart path raced an
+        # already-alive monitor (e.g. an earlier heal that mis-detected
+        # the live one). Keep exactly one and SIGTERM the rest before
+        # the alive-check below — otherwise the alive-check would see
+        # any one of the duplicates and report `ok` while the others
+        # keep racing on the tmux pane.
+        from camc_pkg import PIDS_DIR
+        record_pid = _sf(a, "pid", None)
+        pidfile_pid = None
+        for _pp in (os.path.join(PIDS_DIR, "%s.pid" % aid),
+                    "/tmp/camc-%s.pid" % aid):
+            if os.path.exists(_pp):
+                try:
+                    with open(_pp) as _pf:
+                        pidfile_pid = int(_pf.read().strip())
+                    break
+                except (ValueError, OSError):
+                    pass
+        kept_pid, killed_pids = _cleanup_duplicate_monitors(
+            aid, record_pid, pidfile_pid)
+        if killed_pids:
+            print("  %s (%s): duplicate monitors cleaned (kept PID %d, killed %s)"
+                  % (name, aid, kept_pid,
+                     ", ".join(str(p) for p in killed_pids)))
+        # Adopt the kept pid whenever one was found — even when no
+        # duplicates were killed (len(pids)==1). Otherwise a single
+        # live BUT untracked monitor (stale/missing record_pid + no
+        # pidfile) would slip past the alive-check below and heal
+        # would spawn a NEW monitor, creating exactly the duplicate
+        # state we are trying to avoid. Silent store.update — the
+        # `duplicate monitors cleaned` line above is reserved for the
+        # case where something was actually killed.
+        if kept_pid and kept_pid != record_pid:
+            store.update(aid, pid=kept_pid)
+            record_pid = kept_pid
+            a["pid"] = kept_pid
+
         # Check if monitor process is alive
         monitor_alive = False
-        pid = _sf(a, "pid", None)
+        pid = record_pid
         if pid:
             try:
                 os.kill(pid, 0)
@@ -2902,7 +3237,6 @@ def cmd_heal(args):
             except (ProcessLookupError, PermissionError, OSError):
                 pass
         if not monitor_alive:
-            from camc_pkg import PIDS_DIR
             for pid_path in (os.path.join(PIDS_DIR, "%s.pid" % aid), "/tmp/camc-%s.pid" % aid):
                 if os.path.exists(pid_path):
                     try:
@@ -5172,6 +5506,15 @@ examples:
     init_p = sub.add_parser("init", help="First-time setup")
     init_p.add_argument("--force", "-f", action="store_true", help="Overwrite existing configs")
 
+    # env (F-08): read-only runtime/tool readiness diagnostic
+    env_p = sub.add_parser("env", help="Diagnose effective runtime env + tool readiness (read-only)")
+    env_sub = env_p.add_subparsers(dest="env_action", parser_class=CamArgumentParser)
+    env_check = env_sub.add_parser("check", help="Check effective env + tool readiness")
+    env_check.add_argument("--tool", "-t", default="claude",
+                           help="Tool to check readiness for (claude/codex/cursor)")
+    env_check.add_argument("--json", action="store_true",
+                           help="Emit a JSON envelope instead of human text")
+
     # run
     r = sub.add_parser("run", help="Start a coding agent on a task")
     r.add_argument("prompt", nargs="?", default="", help="Task prompt (empty for interactive mode)")
@@ -5190,6 +5533,10 @@ examples:
                    metavar="SESSION_ID",
                    help="Resume an existing Claude session by ID (adds --resume to claude, skips prompt injection)")
     r.add_argument("--no-inherit-env", action="store_true", help="Legacy mode: wrap command with bash -c and env_setup")
+    r.add_argument("--system-prompt", dest="system_prompt", default=None,
+                   help="Inline system prompt; injected into CLAUDE.md/AGENTS.md in workdir before launch")
+    r.add_argument("--system-file", dest="system_file", default=None,
+                   help="Path to a file whose contents become the system prompt (overrides --system-prompt)")
 
     # list
     ls = sub.add_parser("list", aliases=["ls"], help="List agents")
@@ -5528,6 +5875,7 @@ examples:
     _ensure_logs_on_scratch()
 
     cmds = {
+        "env": cmd_env,
         "init": cmd_init,
         "run": cmd_run,
         "list": cmd_list, "ls": cmd_list,
