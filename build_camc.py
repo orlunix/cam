@@ -45,6 +45,9 @@ MODULE_ORDER = [
     "monitor",
     "scheduler",
     "cron",
+    # cron_loop must follow cron (imports helpers from it). Both are
+    # consumed by cli.py for the --loop CLI surface.
+    "cron_loop",
     "cli",
 ]
 
