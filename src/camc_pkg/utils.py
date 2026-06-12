@@ -30,6 +30,10 @@ _BOX_CHARS = u"\u2500\u2502\u250c\u2510\u2514\u2518\u251c\u2524\u252c\u2534\u253
 
 
 def clean_for_confirm(text):
+    # Strip box-drawing edges from each line so TOML rules can anchor
+    # on the actual content (the dialog inside the box). The selection
+    # cursor \u276f/\u203a/\u2192 is INTENTIONALLY preserved \u2014 TOML rules now anchor
+    # on it (e.g. ``^\u276f\s+1\.\s*Yes``) for stronger menu detection.
     lines = [line.strip(_BOX_CHARS) for line in text.splitlines()]
     while lines and not lines[-1]:
         lines.pop()
@@ -125,10 +129,19 @@ def _build_command(config, prompt, path):
                 part = part.replace(key, value)
                 break
         result.append(part)
-    # Inject --permission-mode auto if enabled in config
+    # Inject --permission-mode auto if enabled in config.
+    # The launch argv may be wrapped (`env KEY=VAL tool ...`), so we must
+    # insert AFTER the actual tool binary, not at index 1 (which would land
+    # the flag inside the `env` wrapper and yield "env: unrecognized option").
     if getattr(config, "auto_permission_mode", False):
-        # Insert after the executable name (index 0)
-        result[1:1] = ["--permission-mode", "auto"]
+        idx = 0
+        if result and result[0] == "env":
+            idx = 1
+            # skip past KEY=VAL env-var args
+            while idx < len(result) and "=" in result[idx] and not result[idx].startswith("-"):
+                idx += 1
+        # idx now points to the tool binary; insert right after it
+        result[idx+1:idx+1] = ["--permission-mode", "auto"]
     return result
 
 
