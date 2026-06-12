@@ -67,6 +67,22 @@ it scans jobs, claims due work, records a run, starts `camc cron run
 - No requirement for an always-running camc daemon.
 - No parsing of action-specific semantics inside cron.
 
+### Agent Loop Integration (V0, 2026-06-12, CAM-DESK-CRON-010)
+
+`camc cron tick` now also services agent loops under
+`~/.cam/loops/<owner>/agent.loop.json` after the host-job pass.
+The CLI surface is `camc cron {add,list,rm} --loop --owner <agent>`;
+see `docs/camc-agent-loop-spec.md` for the loop file shape and
+the JSON list envelope Desktop consumes. Loops cannot execute
+shell commands — the only allowed action is sending prompt text
+to the owner agent via `camc msg send`, and dispatch defers when
+the owner is not currently `status=running, state=idle`.
+
+This integration is additive: the host job surface
+(`jobs.d/<job_id>.json`, `cron run <run_id>`, the crontab block
+spec below) is unchanged. Loop dispatch never reads `jobs.d/` and
+host-job dispatch never reads `loops/`.
+
 ## Files
 
 ```text
