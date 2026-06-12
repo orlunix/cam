@@ -22,10 +22,11 @@ Registered features:
       idle detector don't run on the halted cycle — matching the legacy
       ``time.sleep(...); continue`` semantics.
 
-    * AutoConfirmationFeature (order 20) — owns the cooldown-gated
-      auto-confirm pipeline. Only implements confirm(). Emits a
-      halt_cycle action on a successful confirm OR on a 1-spam guard
-      suppression (last_confirm advanced by 60s).
+    * AutoConfirmationFeature (order 20) — TOML-only auto-confirm.
+      Cooldown-gated; the ONLY semantic decision is the adapter's
+      `[[confirm]]` rule set. Emits a halt_cycle action on a successful
+      confirm. The legacy bare_prompt skip and 1-spam guard were
+      removed on 2026-06-10 (see docs/legacy/monitor-auto-confirm-v1.md).
 
     * MailboxFeature (order 30) — PLACEHOLDER, disabled by default,
       no-op. Reserved for a future slice that wires the camc msg
@@ -34,7 +35,7 @@ Registered features:
 
     * CronFeature (order 40) — PLACEHOLDER, disabled by default,
       no-op. Reserved for a future slice that wires camc cron checks
-      into the monitor. Does NOT consult cron.json, does NOT spawn
+      into the monitor. Does NOT consult jobs.json, does NOT spawn
       jobs, does NOT call store.
 
 Action protocol is unchanged from the step-pipeline era:
@@ -49,9 +50,6 @@ Action protocol is unchanged from the step-pipeline era:
 Python 3.6+, stdlib only. No dataclasses, no f-strings.
 """
 
-import re
-
-
 # ---------------------------------------------------------------------------
 # Snapshot + runtime (plain classes; no dataclasses for 3.6 compat)
 # ---------------------------------------------------------------------------
@@ -65,6 +63,13 @@ class MonitorSnapshot(object):
         "output", "hash", "prev_hash", "changed", "now", "cycle",
         "prompt_visible", "screen_busy", "screen_done", "bare_prompt",
         "tail_lines", "idle_for",
+        # 2026-06-10: hash0/hash1 normalized-content fingerprints.
+        # hash0 is the canonical idle signal (mirrors `hash`); hash1
+        # is hash0 with ASCII digits removed — exposed so a feature
+        # or test can distinguish "numbers-only churn" from real
+        # screen content change. ``idle_for_hash1`` is the parallel
+        # seconds-stable counter for hash1.
+        "hash0", "hash1", "idle_for_hash1",
     )
 
     def __init__(self, **kwargs):
@@ -85,13 +90,25 @@ class MonitorRuntime(object):
     def __init__(self, agent_id, config, now=0.0):
         self.agent_id = agent_id
         self.config = config
-        self.prev_hash = ""
+        self.prev_hash = ""           # prev hash0 (kept as `prev_hash` for back-compat)
+        self.prev_hash1 = ""
         self.prev_output = ""
-        self.last_change = now
+        self.last_change = now        # hash0 last-changed timestamp
+        self.last_change_hash1 = now  # hash1 last-changed timestamp (diagnostic)
         self.last_health = now
         self.last_confirm = 0.0
+        self.last_confirm_hash = ""   # screen hash at last fire (dedup)
+        self.last_confirm_response = ""  # response sent at last fire (input-box guard)
         self.current_state = None
         self.has_worked = False
+        # 2026-06-10 addendum: "initialize" is a one-shot pre-busy
+        # state. Once the screen has been busy at least once, this
+        # latches True and the state detector refuses to fall back
+        # to "initializing". The monitor only starts AFTER the first
+        # prompt has been delivered (cmd_run sends the prompt before
+        # spawning the monitor subprocess), so screen-busy is the
+        # only remaining gate to track in the runtime itself.
+        self.left_initializing = False
         self.idle_confirmed = False
         self.cycle = 0
         self.feature_state = {}
@@ -237,14 +254,18 @@ class StateManagerFeature(MonitorFeature):
 
     def _update_screen_signals(self, snap, runtime):
         """Legacy step 2b. busy_pattern → reset last_change + mark
-        has_worked + clear idle_confirmed; done_pattern → mark
-        has_worked only."""
+        has_worked + clear idle_confirmed + latch left_initializing;
+        done_pattern → mark has_worked only."""
         actions = []
         if snap.screen_busy:
             if not runtime.has_worked:
                 runtime.has_worked = True
                 actions.append({"kind": "log", "level": "info",
                                 "msg": "Busy signal detected, has_worked=True"})
+            if not runtime.left_initializing:
+                runtime.left_initializing = True
+                actions.append({"kind": "log", "level": "info",
+                                "msg": "First busy seen — left initializing permanently"})
             runtime.last_change = snap.now
             runtime.idle_confirmed = False
         if snap.screen_done and not runtime.has_worked:
@@ -254,12 +275,20 @@ class StateManagerFeature(MonitorFeature):
         return actions
 
     def _detect_state_change(self, snap, runtime):
-        """Legacy step 4. detect_state(output, config) → emit state_change
-        event + store_update(state=ns) + mark has_worked unless
-        transitioning to 'initializing'."""
+        """detect_state(output, config) → emit state_change event +
+        store_update(state=ns) + mark has_worked unless transitioning
+        to 'initializing'.
+
+        2026-06-10 boundary: once ``runtime.left_initializing`` has
+        latched True (first busy seen), refuse to fall back to
+        'initializing'. The first prompt is always delivered before
+        the monitor subprocess starts, so the busy-seen latch is the
+        only remaining gate for the boundary."""
         from camc_pkg.detection import detect_state
         actions = []
         ns = detect_state(snap.output, runtime.config)
+        if ns == "initializing" and runtime.left_initializing:
+            return actions
         if ns and ns != runtime.current_state:
             if ns != "initializing":
                 runtime.has_worked = True
@@ -284,15 +313,29 @@ class StateManagerFeature(MonitorFeature):
         return actions
 
     def _detect_idle(self, snap, runtime):
-        """Legacy step 6. Threshold 5s when screen_done AND bare_prompt
-        (fast-track), else 60s. Requires has_worked AND not idle_confirmed
-        AND idle_for >= threshold AND prompt_visible."""
+        """Idle = hash0 (normalized printable ASCII + CJK) stable for
+        ``cfg.idle_stable_seconds`` (default 60s — preserves the prior
+        hardcoded threshold). Fast-track 5s when ``screen_done`` AND
+        ``bare_prompt`` are both set. Requires ``has_worked`` AND not
+        ``idle_confirmed`` AND ``snap.idle_for >= idle_threshold`` AND
+        ``prompt_visible``.
+
+        ``snap.idle_for`` is the hash0 stability window (driven by
+        runtime.last_change, which is only advanced when the
+        normalized-content hash changes). Numeric-only churn (timer,
+        progress, spinner) changes hash0 every tick (because the
+        digits ARE part of hash0) while hash1 stays stable (digits
+        are stripped from hash1). That combination means the agent
+        is still working: hash0 keeps resetting the idle timer, so
+        idle is NOT confirmed — exactly what the addendum asked for.
+        """
         actions = []
-        idle_threshold = 5 if (snap.screen_done and snap.bare_prompt) else 60
+        idle_stable = getattr(runtime.config, "idle_stable_seconds", 60.0)
+        idle_threshold = 5 if (snap.screen_done and snap.bare_prompt) else idle_stable
         if runtime.has_worked and not runtime.idle_confirmed and snap.idle_for >= idle_threshold:
             if snap.prompt_visible:
                 runtime.idle_confirmed = True
-                if idle_threshold < 60:
+                if idle_threshold < idle_stable:
                     actions.append({"kind": "log", "level": "info",
                                     "msg": "Idle confirmed (done signal + prompt, %.0fs stable)"
                                            % snap.idle_for})
@@ -316,76 +359,88 @@ class StateManagerFeature(MonitorFeature):
 
 @register_feature
 class AutoConfirmationFeature(MonitorFeature):
-    """Phase B only. Preserves the legacy step 3 semantics exactly:
-      * skip_confirm = bare_prompt (the screen_busy veto was disabled
-        mid-May 2026; see monitor.py).
-      * cooldown gate via runtime.last_confirm vs config.confirm_cooldown.
-      * should_auto_confirm(output, config) consulted only when cooldown
-        clear AND not skipping.
-      * 1-spam guard: response=='1' AND 3+ consecutive '1's in tail_lines
-        → suppress, advance last_confirm by 60s, halt cycle (sleep=0).
-      * Successful fire: set last_confirm=now, last_change=now,
-        idle_confirmed=False, has_worked=True, emit auto_confirm event,
-        halt cycle (sleep=config.confirm_sleep).
+    """Phase B only — TOML-only auto-confirm.
+
+    The ONLY decision for whether to confirm and what to send is the
+    adapter's TOML ``[[confirm]]`` rule set, consulted through
+    ``should_auto_confirm(snap.output, cfg)``. No Python-side semantic
+    matching, no ``bare_prompt`` skip, no ``1-spam`` guard. See
+    ``docs/legacy/monitor-auto-confirm-v1.md`` for the archived v1
+    behavior.
+
+    Retained runtime mechanics (config-driven, not pattern matching):
+      * cooldown gate via ``runtime.last_confirm`` vs
+        ``config.confirm_cooldown``;
+      * successful fire: send ``response`` (or ``Enter`` when response
+        is empty + ``send_enter`` is true), update ``last_confirm`` /
+        ``last_change``, clear ``idle_confirmed``, set
+        ``has_worked=True``, emit ``auto_confirm`` event, halt the
+        cycle with ``sleep=cfg.confirm_sleep``.
     """
 
     name = "auto_confirm"
     order = 20
 
     def confirm(self, snap, runtime):
-        from camc_pkg.detection import should_auto_confirm
+        from camc_pkg.detection import should_auto_confirm, input_residue_count
         actions = []
         cfg = runtime.config
         confirm_cd = snap.now - runtime.last_confirm
-        skip_confirm = snap.bare_prompt
-        if confirm_cd >= cfg.confirm_cooldown and not skip_confirm:
-            confirm = should_auto_confirm(snap.output, cfg)
-            if confirm:
-                response, send_enter, pat_str, matched = confirm
-                # 1-spam guard
-                if response == "1" and re.search(r"1{3,}", "\n".join(snap.tail_lines)):
-                    actions.append({"kind": "log", "level": "warning",
-                                    "msg": "[%d] Auto-confirm '1' suppressed "
-                                           "(1-spam guard: 3+ consecutive '1's "
-                                           "visible in last 5 lines; cooldown +60s)"
-                                           % snap.cycle})
-                    runtime.last_confirm = snap.now + (60.0 - cfg.confirm_cooldown)
-                    actions.append({"kind": "halt_cycle", "sleep": 0})
-                    return actions
-                actions.append({"kind": "log", "level": "info",
-                                "msg": "Auto-confirm: pattern=%r matched=%r -> %r (enter=%s)"
-                                       % (pat_str, matched, response, send_enter)})
-                actions.append({"kind": "log", "level": "debug",
-                                "msg": "[%d] Confirm screen: %s"
-                                       % (snap.cycle, _screen_tail_str(snap.output, 5))})
-                if response:
-                    actions.append({"kind": "send_input",
-                                    "text": response, "send_enter": send_enter})
-                elif send_enter:
-                    actions.append({"kind": "send_key", "key": "Enter"})
-                runtime.last_confirm = snap.now
-                runtime.last_change = snap.now
-                runtime.idle_confirmed = False
-                runtime.has_worked = True
-                actions.append({"kind": "event", "name": "auto_confirm",
-                                "detail": {"pattern": pat_str, "response": response}})
-                actions.append({"kind": "halt_cycle", "sleep": cfg.confirm_sleep})
-                return actions
-        else:
-            if confirm_cd < cfg.confirm_cooldown:
-                actions.append({"kind": "log", "level": "debug",
-                                "msg": "[%d] Confirm cooldown (%.1fs remaining)"
-                                       % (snap.cycle, cfg.confirm_cooldown - confirm_cd)})
-            else:
-                reasons = []
-                if snap.screen_busy:
-                    reasons.append("screen_busy")
-                if snap.bare_prompt:
-                    reasons.append("bare_prompt")
-                actions.append({"kind": "log", "level": "debug",
-                                "msg": "[%d] Confirm skipped (%s; cooldown already elapsed %.0fs ago)"
-                                       % (snap.cycle, ",".join(reasons) or "unknown",
-                                          confirm_cd - cfg.confirm_cooldown)})
+        if confirm_cd < cfg.confirm_cooldown:
+            actions.append({"kind": "log", "level": "debug",
+                            "msg": "[%d] Confirm cooldown (%.1fs remaining)"
+                                   % (snap.cycle, cfg.confirm_cooldown - confirm_cd)})
+            return actions
+        # spam-fix: if our last_response chars leaked into the input
+        # box, send a backspace to clean them up one per cycle. The
+        # rest of the auto-confirm flow stays suppressed by
+        # has_input_cursor (condition 2) until the input is clean.
+        residue = input_residue_count(snap.output, runtime.last_confirm_response)
+        if residue > 0:
+            actions.append({"kind": "log", "level": "info",
+                            "msg": "[%d] Backspace to clean input residue (%d chars)"
+                                   % (snap.cycle, residue)})
+            actions.append({"kind": "send_key", "key": "BSpace"})
+            actions.append({"kind": "halt_cycle", "sleep": cfg.confirm_sleep})
+            return actions
+        confirm = should_auto_confirm(snap.output, cfg,
+                                       last_response=runtime.last_confirm_response,
+                                       prev_output=runtime.prev_output or "")
+        if not confirm:
+            return actions
+        response, send_enter, pat_str, matched = confirm
+        # Dedup: skip if the digit-stripped screen hash (hash1)
+        # hasn't changed since the last fire. Why hash1 not hash0:
+        # hash0 includes ASCII digits, so codex's "Working 5m 31s"
+        # → "32s" → "33s" timer changes hash0 every second and
+        # defeats dedup. hash1 strips ASCII digits, so timer ticks
+        # don't flip it — but a NEW dialog with different surrounding
+        # text (e.g. a different `$ command` line) does.
+        if snap.hash1 and snap.hash1 == runtime.last_confirm_hash:
+            actions.append({"kind": "log", "level": "debug",
+                            "msg": "[%d] Confirm dedup: hash1 unchanged since last fire"
+                                   % snap.cycle})
+            return actions
+        actions.append({"kind": "log", "level": "info",
+                        "msg": "Auto-confirm: pattern=%r matched=%r -> %r (enter=%s)"
+                               % (pat_str, matched, response, send_enter)})
+        actions.append({"kind": "log", "level": "debug",
+                        "msg": "[%d] Confirm screen: %s"
+                               % (snap.cycle, _screen_tail_str(snap.output, 5))})
+        if response:
+            actions.append({"kind": "send_input",
+                            "text": response, "send_enter": send_enter})
+        elif send_enter:
+            actions.append({"kind": "send_key", "key": "Enter"})
+        runtime.last_confirm = snap.now
+        runtime.last_confirm_hash = snap.hash1
+        runtime.last_confirm_response = response
+        runtime.last_change = snap.now
+        runtime.idle_confirmed = False
+        runtime.has_worked = True
+        actions.append({"kind": "event", "name": "auto_confirm",
+                        "detail": {"pattern": pat_str, "response": response}})
+        actions.append({"kind": "halt_cycle", "sleep": cfg.confirm_sleep})
         return actions
 
 
@@ -417,7 +472,7 @@ class CronFeature(MonitorFeature):
     monitor loop. Until then: registered for discoverability +
     ordering, but ``enabled=False`` and every phase hook is a no-op.
 
-    This deliberately does NOT consult cron.json, does NOT spawn jobs,
+    This deliberately does NOT consult jobs.json, does NOT spawn jobs,
     and does NOT call the store. The driver skips disabled features
     entirely; this class exists purely as a public contract."""
 
