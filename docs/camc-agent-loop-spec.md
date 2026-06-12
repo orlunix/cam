@@ -68,13 +68,35 @@ Agent loop jobs:
 
 ```text
 storage:  ~/.cam/loops/<agent_id>/agent.loop.json
-executor: that agent's monitor process
+executor: host scheduler tick (V0); future revision may move
+          execution to the agent's monitor process
 action:   prompt text only, sent via camc msg send <agent_id>
 owner:    required agent id/name/session
 ```
 
-`camc cron tick` must never scan `~/.cam/loops/`. The monitor feature
-must never scan `~/.cam/cron/jobs.d/`.
+V0 implementation note (2026-06-12, CAM-DESK-CRON-010):
+``camc cron tick`` services BOTH host cron jobs (under
+``~/.cam/cron/jobs.d/``) AND agent loops (under ``~/.cam/loops/``)
+in the same pass. This keeps Desktop on a single tick installer
+without spawning a separate monitor-side daemon. The earlier
+"tick must never scan ~/.cam/loops/" stance is **obsolete** — see
+``src/camc_pkg/cron.py:tick()`` calling
+``cron_loop.tick_loops()`` after the host-job pass.
+
+The execution semantics still preserve the "loops belong to one
+owner agent" contract: ``tick_loops`` resolves the owner from the
+agent store and **defers dispatch unless the owner is currently
+``status=running`` and ``state=idle``**. Deferred fires emit
+``loop_deferred`` events and leave both ``next_due_at`` and
+``state.attempts`` untouched, so a busy or missing agent burns
+neither schedule slots nor retry budget.
+
+The monitor-side execution path described elsewhere in this spec
+is a future evolution, not a V0 requirement. The host scheduler
+path keeps the storage boundary intact: jobs.d/ files are still
+the cron registry, loops/ files are still per-agent, and
+``camc cron tick`` never confuses one for the other (separate
+modules, separate stores).
 
 ## Files
 
@@ -582,7 +604,8 @@ Monitor logs should include concise lines:
 - Agent owner is resolved and pinned to full agent id at creation time.
 - All file writes use fcntl lock + atomic rename.
 - Unknown JSON fields are preserved.
-- The monitor only touches its own owner file.
+- V0 host scheduler tick scans loop files after the host-job pass; a
+  future monitor executor may narrow this to one owner file per monitor.
 
 ## Tests
 
@@ -597,11 +620,13 @@ Unit tests:
 - `cron list --loop --owner` reads only that owner's loop file.
 - `cron rm --loop --owner` archives one entry and leaves others.
 - Due calculation reuses interval/daily/once semantics.
-- Busy monitor defers due loop without advancing `next_due_at`.
-- Idle monitor dispatches exactly one due loop.
-- Duplicate monitor race does not double-dispatch the same due_at.
+- Busy or missing owner agent defers due loop without advancing
+  `next_due_at` or incrementing attempts.
+- Idle owner agent dispatches exactly one due loop.
+- Duplicate tick race does not double-dispatch the same due_at.
 - Stale/corrupt `agent.loop.json` is skipped and preserved.
-- `camc cron tick` ignores `~/.cam/loops/` entirely.
+- `camc cron tick` services both host jobs and due agent loops without
+  mixing the two stores.
 
 Integration-style tests with mocks:
 

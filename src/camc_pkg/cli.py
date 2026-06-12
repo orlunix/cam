@@ -4811,6 +4811,253 @@ def cmd_msg_read(args):
 # Cron (P0)
 # ===========================================================================
 
+def _cmd_cron_add_loop(args):
+    """Persist a loop into ~/.cam/loops/<owner>/agent.loop.json."""
+    from camc_pkg.cron_loop import (
+        LoopStore, build_loop, resolve_owner,
+        OwnerNotFound, DuplicateLoopName, CorruptLoopFile, _agent_field,
+    )
+
+    # Validation per spec: --loop requires --owner, --prompt[-file],
+    # --name, exactly one schedule. Rejects --shell and -- argv.
+    if not args.name:
+        sys.stderr.write("camc cron add --loop: --name is required\n"); sys.exit(1)
+    if not args.owner:
+        sys.stderr.write("camc cron add --loop: --owner is required\n"); sys.exit(1)
+    if args.shell_cmd or (args.cmd_argv and any(t != "--" for t in args.cmd_argv)):
+        sys.stderr.write(
+            "camc cron add --loop: --shell and `-- COMMAND...` are not "
+            "allowed in loop mode (loops send prompt text only)\n")
+        sys.exit(1)
+    prompt_text = args.prompt or ""
+    if args.prompt_file:
+        if args.prompt:
+            sys.stderr.write(
+                "camc cron add --loop: --prompt and --prompt-file are "
+                "mutually exclusive\n")
+            sys.exit(1)
+        try:
+            with open(os.path.expanduser(args.prompt_file), "r") as f:
+                prompt_text = f.read()
+        except OSError as e:
+            sys.stderr.write(
+                "camc cron add --loop: --prompt-file unreadable: %s\n" % e)
+            sys.exit(1)
+    if not prompt_text.strip():
+        sys.stderr.write(
+            "camc cron add --loop: --prompt or --prompt-file is required\n")
+        sys.exit(1)
+
+    try:
+        if args.every:
+            schedule = parse_every(args.every)
+        elif args.daily:
+            schedule = parse_daily(args.daily)
+        elif args.at_time:
+            schedule = parse_at(args.at_time)
+        elif args.in_dur:
+            schedule = parse_in(args.in_dur)
+        else:
+            sys.stderr.write(
+                "camc cron add --loop: one schedule preset is required\n")
+            sys.exit(1)
+    except ValueError as e:
+        sys.stderr.write("camc cron add --loop: %s\n" % e); sys.exit(1)
+
+    try:
+        owner = resolve_owner(args.owner)
+    except OwnerNotFound as e:
+        sys.stderr.write("camc cron add --loop: %s\n" % e); sys.exit(1)
+
+    loop = build_loop(
+        args.name, schedule, prompt_text, owner,
+        max_attempts=args.max_attempts,
+    )
+    owner_id = owner.get("id") or ""
+    owner_name = _agent_field(owner, "name") or ""
+    tmux_session = _agent_field(owner, "tmux_session") or ""
+    store = LoopStore(owner_id, owner_name=owner_name,
+                      tmux_session=tmux_session)
+    try:
+        store.add(loop)
+    except DuplicateLoopName:
+        sys.stderr.write(
+            "camc cron add --loop: a loop named '%s' already exists for "
+            "owner '%s'\n" % (args.name, owner_id))
+        sys.exit(1)
+    except CorruptLoopFile as e:
+        sys.stderr.write(
+            "camc cron add --loop: loop file corrupt, refused: %s\n" % e)
+        sys.exit(1)
+    sys.stdout.write(
+        "added agent loop %s (%s)\nowner: %s (%s)\nexecutor: host-tick\n"
+        % (loop["name"], loop["id"], owner_name or "(unnamed)", owner_id))
+    # Ensure the host scheduler tick block exists — without it the
+    # loop is persisted but cannot fire. Match host `cron add`
+    # semantics: if the crontab install fails, the loop file stays
+    # on disk but `cron add` exits 1 so callers (Desktop / CI) can
+    # surface a clear "saved but not runnable, run `camc heal`" state
+    # rather than mistakenly trusting the loop is live.
+    try:
+        install_tick()
+        sys.stdout.write("tick: installed\n")
+    except CrontabUnavailable as e:
+        sys.stderr.write(
+            "ERROR: failed to install system cron tick: %s\n"
+            "Loop is saved but will not fire until the tick block is "
+            "installed.\nRun `camc heal` after fixing crontab access.\n" % e)
+        sys.exit(1)
+    sys.exit(0)
+
+
+def _cmd_cron_list_loop(args):
+    """List loops for one owner. Emits the stable JSON envelope
+    Desktop parses as ``loopParsed.loops``."""
+    from camc_pkg.cron_loop import (
+        LoopStore, resolve_owner, OwnerNotFound, CorruptLoopFile,
+        _agent_field,
+    )
+    if not args.owner:
+        sys.stderr.write("camc cron list --loop: --owner is required\n"); sys.exit(1)
+    try:
+        owner = resolve_owner(args.owner)
+    except OwnerNotFound as e:
+        # Mirror Desktop's expected shape so renderer can show "no loops"
+        # rather than crash on the error envelope.
+        if getattr(args, "json_out", False):
+            sys.stdout.write(json.dumps(
+                {"agent_id": args.owner, "count": 0, "loops": [],
+                 "error": str(e)}) + "\n")
+            sys.exit(1)
+        sys.stderr.write("camc cron list --loop: %s\n" % e); sys.exit(1)
+    owner_id = owner.get("id") or ""
+    owner_name = _agent_field(owner, "name") or ""
+    store = LoopStore(owner_id, owner_name=owner_name)
+    try:
+        envelope = store.load()
+    except CorruptLoopFile as e:
+        sys.stderr.write(
+            "camc cron list --loop: loop file corrupt: %s\n" % e)
+        sys.exit(1)
+    loops = envelope.get("loops", [])
+    if getattr(args, "json_out", False):
+        # Project the stored schema into the Desktop-stable shape:
+        # top-level id/name/owner/enabled/schedule/prompt/next_due_at/
+        # last_status/last_due_at/last_run_id. Keep the rich nested
+        # blocks (action, policy, state) too so future Desktop reads
+        # can still introspect — this is an additive projection, not
+        # a replacement. ``last_run_id`` is exposed as the most
+        # recent ``msg_id`` returned by ``camc msg send`` because that
+        # is the run identifier the loop produces; ``null`` when the
+        # loop has never fired.
+        projected = []
+        for L in loops:
+            sched = L.get("schedule") or {}
+            action = L.get("action") or {}
+            st = L.get("state") or {}
+            projected.append({
+                "id": L.get("id"),
+                "name": L.get("name"),
+                "owner": L.get("owner"),
+                "enabled": bool(L.get("enabled", True)),
+                "schedule": sched,
+                "prompt": action.get("text", ""),
+                "next_due_at": sched.get("next_due_at"),
+                "last_status": st.get("last_status"),
+                "last_due_at": st.get("last_due_at"),
+                "last_run_id": st.get("last_msg_id"),
+                # Nested blocks kept for forward-compat.
+                "action": action,
+                "policy": L.get("policy"),
+                "state": st,
+            })
+        sys.stdout.write(json.dumps({
+            "agent_id": owner_id,
+            "agent_name": owner_name,
+            "count": len(projected),
+            "loops": projected,
+        }, ensure_ascii=False) + "\n")
+        sys.exit(0)
+    if not loops:
+        sys.stdout.write("No agent loops for %s.\n" % (owner_name or owner_id))
+        sys.exit(0)
+    sys.stdout.write("%-9s  %-20s  %-15s  %-3s  %-19s  %-9s  %s\n" % (
+        "ID", "NAME", "SCHED", "EN", "NEXT", "LAST", "MSG"))
+    for L in loops:
+        sched = L.get("schedule") or {}
+        kind = sched.get("type", "?")
+        if kind == "interval":
+            n = int(sched.get("every_seconds") or 0)
+            sched_str = (
+                "every %dh" % (n // 3600) if n and n % 3600 == 0
+                else "every %dm" % (n // 60) if n else "interval"
+            )
+        elif kind == "daily":
+            sched_str = "daily %s" % (sched.get("time") or "??:??")
+        elif kind == "once":
+            sched_str = "once @ %s" % (sched.get("run_at") or "?")
+        else:
+            sched_str = kind
+        st = L.get("state") or {}
+        sys.stdout.write("%-9s  %-20s  %-15s  %-3s  %-19s  %-9s  %s\n" % (
+            (L.get("id") or "")[:9],
+            (L.get("name") or "")[:20],
+            sched_str[:15],
+            "y" if L.get("enabled", True) else "n",
+            (sched.get("next_due_at") or "-")[:19],
+            (st.get("last_status") or "-")[:9],
+            (st.get("last_msg_id") or "-"),
+        ))
+    sys.exit(0)
+
+
+def _cmd_cron_rm_loop(args):
+    from camc_pkg.cron_loop import (
+        LoopStore, resolve_owner, OwnerNotFound, CorruptLoopFile,
+        AmbiguousLoopKey, _agent_field,
+    )
+    if not args.owner:
+        sys.stderr.write("camc cron rm --loop: --owner is required\n"); sys.exit(1)
+    if not args.id_or_name:
+        sys.stderr.write(
+            "camc cron rm --loop: <id-or-name> is required\n"); sys.exit(1)
+    try:
+        owner = resolve_owner(args.owner)
+    except OwnerNotFound as e:
+        sys.stderr.write("camc cron rm --loop: %s\n" % e); sys.exit(1)
+    owner_id = owner.get("id") or ""
+    owner_name = _agent_field(owner, "name") or ""
+    store = LoopStore(owner_id, owner_name=owner_name)
+    try:
+        removed = store.remove(args.id_or_name)
+    except CorruptLoopFile as e:
+        sys.stderr.write(
+            "camc cron rm --loop: loop file corrupt, refused: %s\n" % e)
+        sys.exit(1)
+    except AmbiguousLoopKey as e:
+        sys.stderr.write(
+            "camc cron rm --loop: ambiguous prefix %r — %s\n"
+            % (e.key, ", ".join(e.matches)))
+        sys.exit(1)
+    if not removed:
+        sys.stderr.write(
+            "camc cron rm --loop: no loop matched '%s' for owner '%s'\n"
+            % (args.id_or_name, owner_id))
+        sys.exit(1)
+    archive_path = store.archive(removed, "manual_remove")
+    from camc_pkg.cron_loop import append_loop_run
+    append_loop_run(owner_id, {
+        "event": "loop_removed",
+        "loop_id": removed.get("id"),
+        "loop_name": removed.get("name"),
+        "archive_path": archive_path or "",
+    })
+    sys.stdout.write(
+        "removed agent loop %s (%s) for owner %s\n"
+        % (removed.get("name"), removed.get("id"), owner_id))
+    sys.exit(0)
+
+
 def cmd_cron(args):
     """Cron dispatch: add / rm / list / tick / run."""
     sub = getattr(args, "cron_cmd", None)
@@ -4840,6 +5087,20 @@ def cmd_cron(args):
 
 def cmd_cron_add(args):
     """Build a job from cli args, persist, then ensure the tick crontab block."""
+    # Loop mode short-circuit: persists into ~/.cam/loops/<owner>/agent.loop.json
+    # rather than the host cron jobs.d/ registry. Same scheduler tick
+    # services both, so we still ensure the tick block at the end.
+    if getattr(args, "loop", False):
+        _cmd_cron_add_loop(args)
+        return
+
+    # Reject loop-only flags on host-job path so the surfaces don't blur.
+    if getattr(args, "owner", None) or getattr(args, "prompt", None) \
+            or getattr(args, "prompt_file", None):
+        sys.stderr.write(
+            "camc cron add: --owner / --prompt / --prompt-file require --loop\n")
+        sys.exit(1)
+
     # Resolve schedule preset
     try:
         if args.every:
@@ -4929,6 +5190,9 @@ def cmd_cron_add(args):
 
 def cmd_cron_rm(args):
     """Remove + archive a job. Remove the tick block when no enabled jobs remain."""
+    if getattr(args, "loop", False):
+        _cmd_cron_rm_loop(args)
+        return
     try:
         removed = CronJobStore().remove(args.id_or_name)
     except CorruptCronJSON as e:
@@ -5005,6 +5269,9 @@ def cmd_cron_list(args):
     (exit 1, stderr) when jobs.json exists but is corrupt — silent
     "empty" output would mask the failure.
     """
+    if getattr(args, "loop", False):
+        _cmd_cron_list_loop(args)
+        return
     json_out = bool(getattr(args, "json_out", False))
 
     store = CronJobStore()
@@ -5750,6 +6017,17 @@ examples:
     cron_sub = cron_p.add_subparsers(dest="cron_cmd", parser_class=CamArgumentParser)
     cadd = cron_sub.add_parser("add", help="Add a scheduled job")
     cadd.add_argument("--name", required=True, help="Unique job name")
+    # Loop mode (CAM-DESK-CRON-010): persists into ~/.cam/loops/<owner>/
+    # instead of the host cron registry. Sends prompt text to owner via
+    # `camc msg send`. See docs/camc-agent-loop-spec.md.
+    cadd.add_argument("--loop", action="store_true",
+                      help="Persist as a per-agent prompt loop (not a host cron job)")
+    cadd.add_argument("--owner", default=None,
+                      help="Owner agent id/name (required with --loop)")
+    cadd.add_argument("--prompt", default=None,
+                      help="Prompt text to send each fire (loop mode)")
+    cadd.add_argument("--prompt-file", dest="prompt_file", default=None,
+                      help="Read prompt from file (loop mode)")
     sched_grp = cadd.add_mutually_exclusive_group(required=True)
     sched_grp.add_argument("--every", default=None,
                            help="Interval (e.g. 30m, 2h)")
@@ -5783,10 +6061,18 @@ examples:
                       help="argv after `--` (preferred). Mutually exclusive with --shell.")
     crm = cron_sub.add_parser("rm", help="Remove (and archive) a scheduled job")
     crm.add_argument("id_or_name", help="Job id, id prefix, or exact name")
+    crm.add_argument("--loop", action="store_true",
+                     help="Operate on the owner's agent loop file instead of host cron")
+    crm.add_argument("--owner", default=None,
+                     help="Owner agent id/name (required with --loop)")
     clist = cron_sub.add_parser("list",
                                 help="Read-only listing of active cron jobs")
     clist.add_argument("--json", dest="json_out", action="store_true",
                        help="Emit machine-readable JSON instead of a table")
+    clist.add_argument("--loop", action="store_true",
+                       help="List per-agent loops (requires --owner)")
+    clist.add_argument("--owner", default=None,
+                       help="Owner agent id/name (required with --loop)")
     cron_sub.add_parser("tick",
                         help="(system) scheduler entrypoint — called by crontab")
     crun = cron_sub.add_parser(
