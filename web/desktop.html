@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src *;">
+  <title>CAM Desktop</title>
+  <meta name="cam-version" content="v0.64.0">
+  <link rel="icon" href="assets/icon-192.png">
+  <link rel="stylesheet" href="css/style.css?v=0.64.0">
+  <link rel="stylesheet" href="css/desktop.css?v=0.64.0">
+  <link rel="stylesheet" href="vendor/xterm/xterm.css?v=0.64.0">
+  <!-- CAM-DESK-TERM-002: xterm UMD bundles expose window.Terminal and
+       window.FitAddon. Loaded before any module so agent-console.js
+       sees them at mount time. -->
+  <script src="vendor/xterm/xterm.js?v=0.64.0"></script>
+  <script src="vendor/xterm/addon-fit.js?v=0.64.0"></script>
+  <link rel="modulepreload" href="js/api.js?v=0.64.0">
+  <link rel="modulepreload" href="js/state.js?v=0.64.0">
+  <link rel="modulepreload" href="js/desktop/app.js?v=0.64.0">
+  <link rel="modulepreload" href="js/desktop/shell.js?v=0.64.0">
+  <link rel="modulepreload" href="js/desktop/agent-console.js?v=0.64.0">
+  <link rel="modulepreload" href="js/desktop/settings-mode.js?v=0.64.0">
+  <link rel="modulepreload" href="js/desktop/start-agent-mode.js?v=0.64.0">
+  <link rel="modulepreload" href="js/desktop/nodes-mode.js?v=0.64.0">
+</head>
+<body class="desktop">
+  <div id="desktop-app" class="desktop-layout">
+    <aside id="sidebar" class="desktop-sidebar">
+      <div class="sidebar-header">
+        <span class="sidebar-logo">CAM</span>
+        <span class="sidebar-sub">Desktop</span>
+      </div>
+
+      <nav class="mode-nav" id="mode-nav" aria-label="Workspace modes">
+        <button class="mode-nav-btn" data-mode="agents" aria-pressed="true">
+          <span class="mode-nav-icon">&#9632;</span>
+          <span class="mode-nav-label">Agents</span>
+        </button>
+        <button class="mode-nav-btn" data-mode="start" aria-pressed="false">
+          <span class="mode-nav-icon">+</span>
+          <span class="mode-nav-label">Start</span>
+        </button>
+        <button class="mode-nav-btn" data-mode="settings" aria-pressed="false">
+          <span class="mode-nav-icon">&#9881;</span>
+          <span class="mode-nav-label">Settings</span>
+        </button>
+        <button class="mode-nav-btn" data-mode="nodes" aria-pressed="false">
+          <span class="mode-nav-icon">&#9635;</span>
+          <span class="mode-nav-label">Nodes</span>
+        </button>
+        <button class="mode-nav-btn mode-nav-placeholder" disabled
+          title="Coming in a later phase">
+          <span class="mode-nav-icon">&#9776;</span>
+          <span class="mode-nav-label">Contexts</span>
+        </button>
+      </nav>
+
+      <div class="conn-bar" id="conn-bar"
+        title="Edit connection in Settings mode">
+        <span class="conn-dot disconnected" id="conn-status"></span>
+        <span class="conn-label" id="conn-label">disconnected</span>
+      </div>
+
+      <div class="sidebar-mode-content" id="sidebar-agents-content">
+        <header class="sidebar-section-header">
+          <h2 class="sidebar-section-title">Projects</h2>
+          <button type="button" class="sidebar-section-menu-btn"
+                  id="agents-menu-btn"
+                  aria-haspopup="true" aria-expanded="false"
+                  aria-controls="agents-menu-popover"
+                  title="Filter & sort">
+            <span aria-hidden="true">&#x22EF;</span>
+            <span class="sr-only">Filter and sort options</span>
+          </button>
+        </header>
+        <div class="sidebar-filter-chips" id="agents-filter-chips" hidden
+             aria-label="Active filters and sort"></div>
+        <div class="sidebar-popover" id="agents-menu-popover" hidden
+             role="menu" aria-labelledby="agents-menu-btn">
+          <div class="popover-section">
+            <h3 class="popover-section-title">Filter</h3>
+            <label class="popover-row">
+              <span class="popover-label">Tag</span>
+              <select id="filter-tag" class="filter-select">
+                <option value="">All tags</option>
+              </select>
+            </label>
+            <label class="popover-row">
+              <span class="popover-label">Status</span>
+              <select id="filter-status" class="filter-select">
+                <option value="">All status</option>
+                <option value="running">Running</option>
+                <option value="completed">Completed</option>
+                <option value="failed">Failed</option>
+                <option value="killed">Killed</option>
+              </select>
+            </label>
+            <label class="popover-row">
+              <span class="popover-label">Tool</span>
+              <select id="filter-tool" class="filter-select">
+                <option value="">All tools</option>
+              </select>
+            </label>
+            <label class="popover-row">
+              <span class="popover-label">Node</span>
+              <select id="filter-machine" class="filter-select">
+                <option value="">All nodes</option>
+              </select>
+            </label>
+          </div>
+          <div class="popover-section">
+            <h3 class="popover-section-title">Sort by</h3>
+            <label class="popover-row">
+              <span class="popover-label">Field</span>
+              <select id="sort-field" class="filter-select">
+                <option value="updated">Updated</option>
+                <option value="created">Created</option>
+                <option value="name">Name</option>
+              </select>
+            </label>
+            <label class="popover-row">
+              <span class="popover-label">Direction</span>
+              <select id="sort-dir" class="filter-select">
+                <option value="desc">Descending</option>
+                <option value="asc">Ascending</option>
+              </select>
+            </label>
+          </div>
+          <div class="popover-footer">
+            <button type="button" class="popover-clear"
+                    id="agents-menu-clear">Clear filters</button>
+          </div>
+        </div>
+        <div class="agent-list-wrap" id="agent-list-wrap">
+          <div class="empty-state">Connecting…</div>
+        </div>
+      </div>
+
+      <div class="sidebar-mode-content" id="sidebar-settings-content" hidden>
+        <div class="sidebar-help">
+          Configure how CAM Desktop reaches CAM. <strong>Direct</strong>
+          runs an app-managed CAM Hub on this machine and connects to it
+          on loopback; the Hub manages all remote nodes. <strong>Relay</strong>
+          connects to an existing Hub through a relay endpoint.
+        </div>
+      </div>
+    </aside>
+
+    <main id="main" class="desktop-main">
+      <!-- Agents mode -->
+      <section class="mode-panel" id="mode-agents" data-mode="agents">
+        <div class="agent-header" id="agent-header">
+          <div class="agent-header-title" id="agent-header-title">No agent selected</div>
+          <div class="agent-header-meta" id="agent-header-meta"></div>
+          <div class="agent-header-tools">
+            <div class="output-mode-toggle" role="group" aria-label="Output mode">
+              <button type="button" class="output-mode-btn" data-mode="plain" aria-pressed="true">Plain</button>
+              <button type="button" class="output-mode-btn" data-mode="rich"  aria-pressed="false">Rich</button>
+              <button type="button" class="output-mode-btn" data-mode="terminal" aria-pressed="false" title="Interactive attach via SSH">Terminal</button>
+            </div>
+          </div>
+        </div>
+        <div class="agent-output-wrap">
+          <pre class="agent-output"      id="agent-output" tabindex="0" aria-label="Agent output"></pre>
+          <pre class="agent-output-rich" id="agent-output-rich" tabindex="0" aria-label="Agent rich output" hidden></pre>
+          <div class="agent-terminal" id="agent-terminal" tabindex="0" aria-label="Agent terminal" hidden></div>
+        </div>
+        <div class="agent-composer" id="agent-composer">
+          <div class="quick-keys">
+            <button class="btn-quick" data-input="y" title="Type y">y</button>
+            <button class="btn-quick" data-input="n" title="Type n">n</button>
+            <button class="btn-quick" data-input="1" title="Type 1">1</button>
+            <button class="btn-quick" data-input="2" title="Type 2">2</button>
+            <button class="btn-quick" data-input="3" title="Type 3">3</button>
+            <button class="btn-quick" data-input="4" title="Type 4">4</button>
+            <button class="btn-quick" data-key="Enter" title="Enter">&#8629;</button>
+            <button class="btn-quick" data-key="Escape" title="Escape">Esc</button>
+            <button class="btn-quick" data-key="C-c" title="Ctrl-C">^C</button>
+            <button class="btn-quick" data-key="BSpace" title="Backspace">&#9003;</button>
+            <button class="btn-quick" data-key="Tab" title="Tab">Tab</button>
+            <button class="btn-quick btn-quick-expand" id="expand-keys" title="More keys" aria-expanded="false">...</button>
+          </div>
+          <div class="quick-actions-extra hidden" id="extra-keys">
+            <div class="quick-row">
+              <button class="btn-quick" data-key="BTab" title="Shift-Tab">S-Tab</button>
+              <button class="btn-quick" data-key="DC" title="Delete">Del</button>
+              <button class="btn-quick" data-key="Left" title="Left">&larr;</button>
+              <button class="btn-quick" data-key="Up" title="Up">&uarr;</button>
+              <button class="btn-quick" data-key="Down" title="Down">&darr;</button>
+              <button class="btn-quick" data-key="Right" title="Right">&rarr;</button>
+              <button class="btn-quick" data-key="Home" title="Home">Home</button>
+              <button class="btn-quick" data-key="End" title="End">End</button>
+            </div>
+            <div class="quick-row">
+              <button class="btn-quick" data-key="PPage" title="Page Up">PgUp</button>
+              <button class="btn-quick" data-key="NPage" title="Page Down">PgDn</button>
+              <button class="btn-quick" data-input="/" title="Type /">/</button>
+              <button class="btn-quick" data-input="~" title="Type ~">~</button>
+              <button class="btn-quick" data-input="@" title="Type @">@</button>
+              <button class="btn-quick" data-input="*" title="Type *">*</button>
+              <button class="btn-quick" data-input="$" title="Type $">$</button>
+              <button class="btn-quick" data-input="{" title="Type {">{</button>
+            </div>
+            <div class="quick-row">
+              <button class="btn-quick" data-input="}" title="Type }">}</button>
+              <button class="btn-quick" data-input="[" title="Type [">[</button>
+              <button class="btn-quick" data-input="]" title="Type ]">]</button>
+              <button class="btn-quick" data-input="|" title="Type |">|</button>
+              <button class="btn-quick" data-input="-" title="Type -">-</button>
+              <button class="btn-quick" data-input="_" title="Type _">_</button>
+              <button class="btn-quick" data-input="?" title="Type ?">?</button>
+              <button class="btn-quick" data-input="." title="Type .">.</button>
+            </div>
+          </div>
+          <div class="composer-row">
+            <button class="btn-attach" id="composer-attach"
+              title="Attach an image to the selected agent" disabled
+              aria-label="Attach image">&#128206;</button>
+            <input type="file" id="composer-file-input" accept="image/*" hidden>
+            <textarea id="composer-input"
+              class="composer-input"
+              rows="2"
+              placeholder="Send input to selected agent…  (Enter to send, Shift+Enter for newline)"
+              autocomplete="off" autocorrect="off" autocapitalize="off"
+              spellcheck="false"></textarea>
+            <button class="btn-primary" id="composer-send">Send</button>
+          </div>
+          <div class="composer-upload-status" id="composer-upload-status" hidden aria-live="polite"></div>
+        </div>
+      </section>
+
+      <!-- Settings mode — active connection modes are Direct (app-managed
+           local Hub, CAM-DESK-DIRECT-010..019) and Relay (external relay,
+           CAM-DESK-REMOTE-012). No separate Local tab. -->
+      <section class="mode-panel" id="mode-settings" data-mode="settings" hidden>
+        <div class="settings-header">
+          <h2>Settings</h2>
+          <p class="settings-help">
+            Choose how CAM Desktop reaches CAM. <strong>Direct</strong>
+            starts an app-managed CAM Hub on this machine and connects
+            to it on loopback — the Hub manages your remote nodes. Use
+            <strong>Relay</strong> when an existing CAM Hub is reachable
+            only through a relay endpoint.
+          </p>
+        </div>
+
+        <div class="settings-tabs" role="tablist" aria-label="Connection mode">
+          <button type="button" class="settings-tab" data-tab="direct"
+            role="tab" aria-pressed="true">Direct</button>
+          <button type="button" class="settings-tab" data-tab="relay"
+            role="tab" aria-pressed="false">Relay</button>
+        </div>
+
+        <!-- ── Direct tab (CAM-DESK-DIRECT-010..019: app-managed Hub) ── -->
+        <div class="settings-tab-panel" id="settings-tab-direct" data-tab="direct">
+          <div class="settings-form-pane">
+            <div class="settings-section">
+              <h3>CAM Hub on this machine</h3>
+              <div class="direct-state-row">
+                <span class="direct-state-badge state-stopped" id="direct-state-badge">unknown</span>
+                <span class="direct-state-detail" id="direct-state-detail">
+                  Click <strong>Check</strong> to inspect the embedded Hub, or <strong>Start</strong> to launch it.
+                </span>
+              </div>
+              <div class="direct-target" id="direct-target"></div>
+              <div class="direct-actions">
+                <button type="button" id="direct-check"   class="btn-secondary">Check</button>
+                <button type="button" id="direct-start"   class="btn-primary"   disabled>Start</button>
+                <button type="button" id="direct-stop"    class="btn-secondary" disabled>Stop</button>
+                <button type="button" id="direct-restart" class="btn-secondary" disabled>Restart</button>
+              </div>
+              <div class="direct-hint" id="direct-hint" aria-live="polite"></div>
+            </div>
+
+            <!-- Diagnostics: internal URL/token/port details hidden by
+                 default (CAM-DESK-DIRECT-012). Tokens shown only as
+                 redacted sha256 fingerprints. -->
+            <details class="settings-section settings-diag" id="direct-diag">
+              <summary>Advanced / Diagnostics</summary>
+              <div class="diag-grid" id="direct-diag-grid">
+                (no data yet — click Check)
+              </div>
+              <div class="diag-logs">
+                <h4>Recent Hub logs</h4>
+                <pre class="diag-logs-pre" id="direct-diag-logs">(none)</pre>
+                <div class="diag-logs-actions">
+                  <button type="button" id="direct-diag-refresh" class="btn-secondary">Refresh logs</button>
+                </div>
+              </div>
+              <p class="diag-note">
+                Tokens are shown only as redacted fingerprints
+                (sha256 prefix). The Hub binds to <code>127.0.0.1</code>
+                only — never to a routable interface.
+              </p>
+            </details>
+
+            <div class="settings-status" id="direct-status" aria-live="polite"></div>
+          </div>
+        </div>
+
+        <!-- ── Relay tab ── -->
+        <div class="settings-tab-panel" id="settings-tab-relay" data-tab="relay" hidden>
+          <form id="settings-form-relay" class="settings-form-pane">
+            <div class="settings-section">
+              <h3>External relay</h3>
+              <p class="settings-help">
+                Connect Desktop to an existing CAM Hub through a relay
+                endpoint. The relay forwards REST/WS to a Hub you cannot
+                reach directly — you still need that Hub's API token so
+                the proxied requests authenticate.
+              </p>
+              <label>Relay URL
+                <input type="url" id="set-relay-url" placeholder="wss://relay:8443" autocomplete="off">
+              </label>
+              <label>Relay token
+                <input type="password" id="set-relay-token" placeholder="Relay shared secret" autocomplete="off">
+              </label>
+              <label>CAM API token
+                <input type="password" id="set-relay-cam-token" placeholder="Token of the CAM Hub behind the relay" autocomplete="off">
+              </label>
+            </div>
+            <div class="settings-actions">
+              <button type="submit" class="btn-primary">Save &amp; Connect</button>
+            </div>
+            <div class="settings-status" id="settings-status-relay" aria-live="polite"></div>
+          </form>
+        </div>
+      </section>
+
+      <!-- Start Agent mode (CAM-DESK-RUN-010..015) -->
+      <section class="mode-panel" id="mode-start" data-mode="start" hidden>
+        <div class="settings-header">
+          <h2>Start agent</h2>
+          <p class="settings-help">
+            Launch a new agent through the connected CAM endpoint.
+            Desktop calls <code>POST /api/agents</code>; it does not run
+            <code>camc run</code> locally.
+          </p>
+        </div>
+        <form id="start-form" class="settings-form-pane">
+          <div class="settings-section">
+            <h3>Task</h3>
+            <label>Tool
+              <select id="start-tool" required></select>
+            </label>
+            <label>Context
+              <select id="start-context" required>
+                <option value="">Select context…</option>
+              </select>
+            </label>
+            <label>Prompt (optional)
+              <textarea id="start-prompt" rows="6"
+                placeholder="Describe the task…"
+                autocomplete="off" autocorrect="off"
+                autocapitalize="off" spellcheck="false"></textarea>
+            </label>
+          </div>
+          <div class="settings-section">
+            <h3>Behavior</h3>
+            <label class="form-checkbox">
+              <input type="checkbox" id="start-autoconfirm" checked>
+              <span>Auto-confirm</span>
+              <span class="form-hint">Automatically respond to permission prompts.</span>
+            </label>
+            <label class="form-checkbox">
+              <input type="checkbox" id="start-autoexit">
+              <span>Auto-exit</span>
+              <span class="form-hint">Finalize agent when task completes.</span>
+            </label>
+          </div>
+          <div class="settings-section">
+            <h3>Advanced</h3>
+            <label>Task name (optional)
+              <input type="text" id="start-name" placeholder="auto-generated" autocomplete="off">
+            </label>
+            <label>Timeout (optional)
+              <input type="text" id="start-timeout" placeholder="e.g. 30m, 1h" autocomplete="off">
+            </label>
+            <label>Retries
+              <input type="number" id="start-retry" value="0" min="0" max="5">
+            </label>
+          </div>
+          <div class="settings-actions">
+            <button type="submit" id="start-submit" class="btn-primary">Start agent</button>
+          </div>
+          <div class="settings-status" id="start-status" aria-live="polite"></div>
+        </form>
+        <div class="start-disconnected" id="start-disconnected" hidden>
+          <p>Connect to a CAM endpoint in <strong>Settings</strong> before
+          starting an agent.</p>
+        </div>
+      </section>
+
+      <!-- Nodes workspace (CAM-DESK-NODEUI-010..017,
+           CAM-DESK-DIRECT-014..018) — default view is the node list;
+           Add Host opens an inline manage panel with Manual / Import
+           tabs. -->
+      <section class="mode-panel" id="mode-nodes" data-mode="nodes" hidden>
+        <div class="settings-header">
+          <h2>Nodes</h2>
+          <p class="settings-help">
+            Hosts the embedded Hub knows about. Click a host card to
+            expand its actions and contexts, or <strong>Add Host</strong>
+            to register a new one.
+          </p>
+        </div>
+
+        <div class="nodes-actions" id="nodes-actions">
+          <button type="button" class="btn-primary" id="nodes-add-toggle">Add Host</button>
+        </div>
+
+        <div id="nodes-manage-panel" class="nodes-manage-panel" hidden>
+          <div class="nodes-manage-tabs" role="tablist" aria-label="Add host source">
+            <button type="button" class="nodes-manage-tab" data-subtab="manual"
+              role="tab" aria-pressed="true">Add manually</button>
+            <button type="button" class="nodes-manage-tab" data-subtab="import"
+              role="tab" aria-pressed="false">Import from SSH config</button>
+            <button type="button" class="btn-secondary nodes-manage-close"
+              id="nodes-manage-close" title="Close">Close</button>
+          </div>
+
+          <!-- Manual tab -->
+          <form id="nodes-add-form" class="nodes-add-form settings-form-pane" data-subtab="manual">
+            <div class="settings-section">
+              <h3 id="nodes-add-heading">Add host manually</h3>
+              <p class="settings-help">
+                Register a remote node by SSH. The embedded Hub stores
+                host/user/port/path/env locally; the private key file
+                is referenced by path only — its contents are never
+                read or copied (CAM-DESK-DIRECT-018).
+              </p>
+              <label data-host-edit-hide="1">Name
+                <input type="text" id="nodes-add-name" required placeholder="my-node" autocomplete="off"
+                  pattern="[A-Za-z0-9_-]{1,64}" title="Letters, digits, underscore, hyphen (1–64 chars)">
+              </label>
+              <label data-ctx-edit-readonly="1" data-add-ctx-hide="1">Host
+                <input type="text" id="nodes-add-host" required placeholder="host.example.com" autocomplete="off">
+              </label>
+              <label data-ctx-edit-readonly="1" data-add-ctx-hide="1">User
+                <input type="text" id="nodes-add-user" required placeholder="hren" autocomplete="off">
+              </label>
+              <label data-ctx-edit-readonly="1" data-add-ctx-hide="1">Port
+                <input type="number" id="nodes-add-port" min="1" max="65535" value="22">
+              </label>
+              <label data-host-edit-hide="1">Remote path
+                <input type="text" id="nodes-add-path" required placeholder="/home/&lt;user&gt;" autocomplete="off">
+              </label>
+              <label data-ctx-edit-readonly="1" data-add-ctx-hide="1">Auth method
+                <select id="nodes-add-auth">
+                  <option value="key">SSH key</option>
+                  <option value="password">Password</option>
+                  <option value="agent">SSH agent / default</option>
+                </select>
+              </label>
+
+              <div class="nodes-auth-section" id="nodes-auth-key" data-auth="key" data-ctx-edit-hide="1" data-add-ctx-hide="1">
+                <label>Private key file
+                  <div class="nodes-auth-keyfile-row">
+                    <input type="text" id="nodes-add-keyfile" placeholder="~/.ssh/id_ed25519" autocomplete="off">
+                    <button type="button" class="btn-secondary" id="nodes-add-browse">Browse&hellip;</button>
+                  </div>
+                </label>
+                <label>Passphrase (optional)
+                  <input type="password" id="nodes-add-passphrase" autocomplete="new-password"
+                    placeholder="leave blank if key is unencrypted">
+                </label>
+                <label class="form-checkbox">
+                  <input type="checkbox" id="nodes-add-remember-passphrase">
+                  <span>Remember passphrase</span>
+                  <span class="form-hint">Encrypted with the OS keychain (Electron safeStorage). Never stored in plaintext.</span>
+                </label>
+              </div>
+
+              <div class="nodes-auth-section" id="nodes-auth-password" data-auth="password" data-ctx-edit-hide="1" hidden>
+                <label>Password
+                  <input type="password" id="nodes-add-password" autocomplete="new-password">
+                </label>
+                <label class="form-checkbox">
+                  <input type="checkbox" id="nodes-add-remember-password">
+                  <span>Remember password</span>
+                  <span class="form-hint">Encrypted with the OS keychain (Electron safeStorage). Never stored in plaintext.</span>
+                </label>
+              </div>
+
+              <div class="nodes-auth-section" id="nodes-auth-agent" data-auth="agent" data-ctx-edit-hide="1" data-add-ctx-hide="1" hidden>
+                <p class="form-hint">
+                  Use the running SSH agent or the default key search
+                  (<code>~/.ssh/id_*</code>). No key file or password
+                  is stored by Desktop in this mode.
+                </p>
+              </div>
+
+              <label data-host-edit-hide="1">Env setup (optional)
+                <input type="text" id="nodes-add-env" placeholder="source ~/.bashrc" autocomplete="off">
+              </label>
+              <p class="form-hint" data-host-edit-only="1" hidden>
+                Editing host fields applies to <strong id="nodes-host-edit-scope-count">all</strong>
+                context(s) on this host. Workspace fields (name,
+                remote path, env setup) are managed per context and are
+                not changed by this form.
+              </p>
+              <p class="form-hint" data-ctx-edit-only="1" hidden>
+                Editing context "<strong id="nodes-ctx-edit-scope-name">…</strong>".
+                Context name is read-only. Remote path and env setup are
+                changed here. Host fields are shown locked/grey because
+                contexts are bound to their host; use
+                <strong>Edit Host</strong> to change host settings.
+              </p>
+              <p class="form-hint" data-add-ctx-only="1" hidden>
+                Adding a new context under host
+                "<strong id="nodes-add-ctx-scope-host">…</strong>".
+                Host fields (host, user, port, auth, key file) are
+                inherited from the existing host. For password-auth
+                hosts you must enter the password again — the embedded
+                Hub does not auto-clone credential references to new
+                contexts.
+              </p>
+            </div>
+            <div class="settings-actions">
+              <button type="button" class="btn-secondary" id="nodes-add-cancel">Cancel</button>
+              <button type="submit"  class="btn-primary" id="nodes-add-submit">Add</button>
+            </div>
+            <div class="settings-status" id="nodes-add-status" aria-live="polite"></div>
+          </form>
+
+          <!-- Import tab -->
+          <div id="nodes-import-pane" class="nodes-import-pane settings-form-pane" data-subtab="import" hidden>
+            <div class="settings-section">
+              <h3>Import from SSH config</h3>
+              <p class="settings-help" id="nodes-import-source">
+                Reading <code>~/.ssh/config</code>&hellip;
+              </p>
+              <div id="nodes-import-list" class="nodes-import-list">
+                <div class="empty-state">Loading&hellip;</div>
+              </div>
+              <div class="settings-status" id="nodes-import-status" aria-live="polite"></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="nodes-list-wrap" class="nodes-list-wrap">
+          <div class="empty-state">Loading hosts&hellip;</div>
+        </div>
+        <div class="settings-status" id="nodes-status" aria-live="polite"></div>
+      </section>
+
+    </main>
+  </div>
+
+  <script type="module" src="js/desktop/app.js?v=0.64.0"></script>
+</body>
+</html>

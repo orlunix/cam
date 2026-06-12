@@ -1,98 +1,81 @@
-# Cam Desktop
+# CAM Desktop
 
-Cam Desktop is the Windows-first desktop package for CAM.
+CAM Desktop is a thin UI/client for CAM, the agent control plane.
 
-The canonical product spec is now:
+## Where to read
 
-- [Desktop UI Spec v2](../../docs/desktop-ui-spec.md)
+Authoritative documentation lives under `docs/desktop/`. Start there:
 
-The original independent React/Tauri desktop direction is archived:
+- [`docs/desktop/README.md`](../../docs/desktop/README.md) — architecture
+  in one screen plus a file index.
+- [`docs/desktop/requirements.md`](../../docs/desktop/requirements.md) —
+  canonical requirement registry with stable IDs (read first).
+- [`docs/desktop-ui-spec.md`](../../docs/desktop-ui-spec.md) — current
+  milestone / product spec.
+- [`docs/desktop/local-integrated-mode-spec.md`](../../docs/desktop/local-integrated-mode-spec.md)
+  and
+  [`docs/desktop/local-runtime-user-guide.md`](../../docs/desktop/local-runtime-user-guide.md)
+  — **SUPERSEDED / historical** notes for the old separate Local tab
+  experiment. The app-managed Hub lifecycle now belongs to Direct;
+  these files are preserved only for requirement-ID stability.
 
-- `../../docs/archive/desktop-ui-v1-spec.md`
-- `../../docs/archive/cam-desktop-v1-scaffold-spec.md`
-- `../../docs/archive/cam-desktop-v1-chatshell-analysis.md`
-- `../../docs/archive/cam-desktop-v1-chatshell-baseline.md`
-- `../../docs/archive/chatshell-reference-evaluation-v1.md`
-
-The current code in this directory is the V1 desktop implementation. It proved
-Windows packaging and a minimal list/output/input loop, but future Desktop v2
-work should derive the UI from the existing `web/` app instead of expanding this
-separate product surface.
-
-Target direction:
-
-- Electron shell with a small native boundary.
-- Bundled WebUI-derived desktop entry.
-- Shared `web/js/api.js` and `web/js/state.js` behavior with mobile/PWA.
-- Desktop-specific layout: persistent left nav, large output workspace, bottom
-  composer.
-- Windows MSI first, macOS package later.
-- Phase 1 connects to an already-running CAM direct/relay endpoint. It does not
-  start or bundle the relay server.
-
-## Legacy V1 Backend Profiles
-
-The profile shape below belongs to the legacy standalone React/Tauri V1 app.
-Desktop v2 should instead reuse the existing WebUI direct/relay connection
-model and treat the CAM/relay server as an already-running external endpoint.
-
-Supported profile shapes:
-
-```ts
-type BackendProfile =
-  | { kind: "local"; camcPath?: string }
-  | { kind: "wsl"; distro?: string; camcPath?: string }
-  | { kind: "ssh"; host: string; user?: string; port?: number; camcPath?: string };
-```
-
-Default Windows path should be WSL:
+## Architecture in one paragraph
 
 ```text
-wsl.exe --exec /usr/bin/env camc ...
+Desktop UI  ──HTTP/WS──▶  CAM Hub/API  ──poll/route──▶  Remote Controller/Node  ──spawns──▶  tmux + agent runtime
 ```
 
-Default Linux/macOS path should be local:
+Coding agents run on the controller/node, never inside Desktop. The hub
+aggregates the node/agent/context tables and routes commands. Desktop is
+the Electron app under this folder; it loads the WebUI-derived renderer
+from `../../web/desktop.html` and reuses `web/js/api.js` as its API
+client. In Direct mode, Electron main starts an embedded Node/Electron CAM
+Hub and the renderer connects to it through the same `CamApi` path. The
+installed app must not require WSL, local Python, a host shell, local
+`cam`, or local `cam serve`. tmux and agent CLI dependencies live on the
+remote controller/node.
 
-```text
-camc ...
-```
+## Settings tabs
 
-SSH is available for remote Linux hosts, but a future stdio API will be
-more robust for long-running streams.
+Active Settings exposes two connection modes (canonical IDs in
+`docs/desktop/requirements.md`):
+
+- **Direct** (`DIRECT-010..019`) — default app-managed embedded CAM Hub.
+  Electron main checks readiness, starts the Node/Electron Hub on
+  loopback, generates the API token, and connects the renderer to that
+  Hub. The normal UI does not ask the user to type a Hub URL, run
+  terminal commands, install WSL/Python, or install `cam`.
+- **Relay** (`REMOTE-012`) — relay URL + relay token + CAM API token,
+  for unreachable hubs.
+
+Future and deferred modes (not active Settings tabs):
+
+- **SSH attach / transport** (`SSH-010..013`) — future, for terminal
+  attach to the selected agent's controller. Status `proposed`.
+- **Local tab** (`LOC-010..024`) — superseded. Old separate Local
+  experiment; its useful lifecycle pieces moved into Direct. See the
+  historical docs linked above.
 
 ## Development
 
-Prerequisites for the legacy V1 Tauri app:
+Build / run / package commands live under this folder; see `package.json`.
+The `electron/` subdirectory contains the main + preload entry points;
+`scripts/` carries small helpers (`copy-vendor.cjs` etc.); the renderer
+lives at `../../web/` and is bundled via electron-builder
+`extraResources`.
 
-- Node.js 20+
-- Rust stable
-- Tauri prerequisites for the current OS
+## Non-Goals
 
-Install and run:
+- Running agents natively inside Desktop. Agents still run on
+  controller/nodes; Direct only runs the embedded Hub/control-plane code.
+- Owning SSH keys, vendor credentials, or agent CLI logins. The future
+  SSH attach path (SSH-010..013) is server-mediated.
+- Becoming a second machine registry. Remotes are existing CAM
+  contexts/nodes from the hub.
 
-```bash
-npm install
-npm run dev
-```
+## Legacy folders
 
-Build:
-
-```bash
-npm run build
-```
-
-## Product Direction
-
-See [Desktop UI Spec v2](../../docs/desktop-ui-spec.md).
-
-Do not add new product features to the standalone V1 React/Tauri UI unless
-explicitly requested. The next desktop work should start by adding a
-WebUI-derived desktop entry and an Electron shell that loads it.
-
-## Non-Goals For MVP
-
-- Bundling `camc` on Windows.
-- Replacing tmux.
-- Running agents natively on Windows.
-- Starting or supervising the relay server from the desktop app in Phase 1.
-- Forking mobile/WebUI product behavior into a second desktop-only UI.
+Earlier iterations explored a Tauri scaffold (`src/`, `src-tauri/`) and
+a ChatShell-style baseline (`baseline/chatshell-desktop/` at the repo
+root). Those remain as reference but are no longer the product direction.
+The active runtime is Electron under `apps/cam-desktop/electron/`.
