@@ -892,8 +892,9 @@ def _block_in_crontab(text, camc_path=None):
 
 
 def ensure_tick_if_needed(runner=None, camc_path=None):
-    """heal helper: install/repair the tick block iff active jobs exist;
-    remove it iff no enabled jobs remain."""
+    """heal helper: install/repair the tick block iff active jobs OR
+    active agent loops exist on this host; remove it iff neither
+    surface has anything enabled."""
     store = CronJobStore()
     store.migrate_legacy_if_present()
     if store.is_corrupt():
@@ -901,6 +902,21 @@ def ensure_tick_if_needed(runner=None, camc_path=None):
     enabled = [j for j in store.jobs()
                if j.get("enabled", True)
                and _same_host(j.get("host") or _hostname(), _hostname())]
+    # Loop registry counts for tick installation too — the same tick
+    # services both surfaces.
+    if not enabled:
+        try:
+            from camc_pkg.cron_loop import _scan_owner_ids, LoopStore
+            for owner_id in _scan_owner_ids():
+                try:
+                    loops = LoopStore(owner_id).list_loops()
+                except Exception:
+                    continue
+                if any(L.get("enabled", True) for L in loops):
+                    enabled = [{"__loop_owner__": owner_id}]
+                    break
+        except Exception:
+            pass
     try:
         current = _read_user_crontab(runner)
     except CrontabUnavailable as e:
@@ -1174,9 +1190,24 @@ def tick(now=None, runner=None, spawn=None):
             # here — recycle happens in the worker after success or in
             # subsequent ticks once max_attempts is exhausted.
 
+        # Agent-owned loop scheduling. Loops live under ~/.cam/loops/
+        # (per-owner), are dispatched via `camc msg send`, and are
+        # otherwise independent of the cron jobs.d/ registry. The
+        # mailbox c62329aa direction was: have tick service both so a
+        # single host scheduler covers loops too — keeps Desktop's
+        # contract simple (one tick installer, no separate daemon).
+        # Failures here must not abort the host-job pass.
+        try:
+            from camc_pkg.cron_loop import tick_loops
+            loops_dispatched = tick_loops(now=now_local)
+        except Exception as e:
+            log.warning("cron tick: loop tick failed: %s", e)
+            loops_dispatched = 0
+
         completed_at = _iso(_now_local())
         _write_state("ok", started_at, completed_at)
-        return {"status": "ok", "queued": queued}
+        return {"status": "ok", "queued": queued,
+                "loops_dispatched": loops_dispatched}
     finally:
         _release_lock(lock)
 

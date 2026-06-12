@@ -5,6 +5,7 @@ Auto-generated from camc_pkg/ package. Do not edit directly.
 Edit the source in src/camc_pkg/ and rebuild with build_camc.py.
 """
 
+from datetime import datetime
 from datetime import datetime, timedelta, timezone
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -32,7 +33,7 @@ import time
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "64d4a73 2026-06-11 23:02"
+__build__ = "b63e868-dirty 2026-06-12 00:31"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1619,7 +1620,7 @@ def _tmux_base(session_id):
     return [tmux, "-u", "-S", socket] if socket else [tmux]
 
 
-def capture_tmux(session_id, lines=100):
+def capture_tmux(session_id, lines=100, preserve_ansi=False):
     """Capture tmux pane content.
 
     lines > 0: last N lines (visible + scrollback up to N).
@@ -1629,6 +1630,16 @@ def capture_tmux(session_id, lines=100):
     hundreds of KB of history can take several seconds, so we use a
     generous timeout in that case — the default 5s kills mid-capture
     and returns empty.
+
+    preserve_ansi=False (default): tmux capture-pane plain text;
+        output is stripped of any residual ANSI escape sequences before
+        return. This is the default used by monitor/detection, mobile,
+        and any caller that wants searchable, copy-friendly text.
+
+    preserve_ansi=True: tmux capture-pane is invoked with `-e` so SGR
+        colour/style sequences are kept; strip_ansi is bypassed. Used by
+        the rich-output API path. Does not change visible cursor or
+        movement escapes — tmux only emits SGR in this mode.
     """
     socket = _find_tmux_socket(session_id)
     target = "%s:0.0" % session_id
@@ -1642,12 +1653,13 @@ def capture_tmux(session_id, lines=100):
     # waiting on output anyway. Bounded captures use the _run default.
     timeout = 60 if full_scroll else 15
     tmux = _tmux_bin_for_session(session_id)
+    base_flags = ["capture-pane", "-p", "-J"]
+    if preserve_ansi:
+        base_flags.append("-e")
     if socket:
-        args = [tmux, "-u", "-S", socket, "capture-pane", "-p", "-J",
-                "-t", target, "-S", start_flag]
+        args = [tmux, "-u", "-S", socket] + base_flags + ["-t", target, "-S", start_flag]
     else:
-        args = [tmux, "capture-pane", "-p", "-J",
-                "-t", target, "-S", start_flag]
+        args = [tmux] + base_flags + ["-t", target, "-S", start_flag]
     try:
         rc, output = _run(args, timeout=timeout)
         if len(output.strip()) < 20:
@@ -1656,6 +1668,8 @@ def capture_tmux(session_id, lines=100):
             rc2, alt_out = _run(alt, timeout=timeout)
             if len(alt_out.strip()) > len(output.strip()):
                 output = alt_out
+        if preserve_ansi:
+            return output.rstrip()
         return strip_ansi(output).rstrip()
     except Exception as e:
         log.debug("capture_tmux failed: %s", e)
@@ -5206,8 +5220,9 @@ def _block_in_crontab(text, camc_path=None):
 
 
 def ensure_tick_if_needed(runner=None, camc_path=None):
-    """heal helper: install/repair the tick block iff active jobs exist;
-    remove it iff no enabled jobs remain."""
+    """heal helper: install/repair the tick block iff active jobs OR
+    active agent loops exist on this host; remove it iff neither
+    surface has anything enabled."""
     store = CronJobStore()
     store.migrate_legacy_if_present()
     if store.is_corrupt():
@@ -5215,6 +5230,20 @@ def ensure_tick_if_needed(runner=None, camc_path=None):
     enabled = [j for j in store.jobs()
                if j.get("enabled", True)
                and _same_host(j.get("host") or _hostname(), _hostname())]
+    # Loop registry counts for tick installation too — the same tick
+    # services both surfaces.
+    if not enabled:
+        try:
+            for owner_id in _scan_owner_ids():
+                try:
+                    loops = LoopStore(owner_id).list_loops()
+                except Exception:
+                    continue
+                if any(L.get("enabled", True) for L in loops):
+                    enabled = [{"__loop_owner__": owner_id}]
+                    break
+        except Exception:
+            pass
     try:
         current = _read_user_crontab(runner)
     except CrontabUnavailable as e:
@@ -5488,9 +5517,23 @@ def tick(now=None, runner=None, spawn=None):
             # here — recycle happens in the worker after success or in
             # subsequent ticks once max_attempts is exhausted.
 
+        # Agent-owned loop scheduling. Loops live under ~/.cam/loops/
+        # (per-owner), are dispatched via `camc msg send`, and are
+        # otherwise independent of the cron jobs.d/ registry. The
+        # mailbox c62329aa direction was: have tick service both so a
+        # single host scheduler covers loops too — keeps Desktop's
+        # contract simple (one tick installer, no separate daemon).
+        # Failures here must not abort the host-job pass.
+        try:
+            loops_dispatched = tick_loops(now=now_local)
+        except Exception as e:
+            log.warning("cron tick: loop tick failed: %s", e)
+            loops_dispatched = 0
+
         completed_at = _iso(_now_local())
         _write_state("ok", started_at, completed_at)
-        return {"status": "ok", "queued": queued}
+        return {"status": "ok", "queued": queued,
+                "loops_dispatched": loops_dispatched}
     finally:
         _release_lock(lock)
 
@@ -5658,6 +5701,612 @@ def cron_run(run_id, runner=None):
         recycle_job(target, "too_many_failures")
     return {"status": event, "exit_code": exit_code,
             "duration_seconds": duration, "error": err}
+
+
+# ===========================================================================
+# cron_loop
+# ===========================================================================
+
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover — non-POSIX
+    _fcntl = None
+
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+LOOPS_DIR = os.path.join(CAM_DIR, "loops")
+LOOP_FILENAME = "agent.loop.json"
+LOOP_SCHEMA_NAME = "camc-agent-loop/1"
+DEFAULT_MAX_ATTEMPTS = 3
+
+
+def _owner_dir(owner_id):
+    return os.path.join(LOOPS_DIR, owner_id)
+
+
+def _owner_file(owner_id):
+    return os.path.join(_owner_dir(owner_id), LOOP_FILENAME)
+
+
+def _owner_runs_file(owner_id):
+    return os.path.join(_owner_dir(owner_id), "runs.jsonl")
+
+
+def _owner_archive_dir(owner_id):
+    return os.path.join(_owner_dir(owner_id), "archive")
+
+
+def _new_loop_id():
+    return uuid4().hex[:8]
+
+
+# ---------------------------------------------------------------------------
+# Owner resolution
+# ---------------------------------------------------------------------------
+
+class OwnerNotFound(Exception):
+    pass
+
+
+def resolve_owner(name_or_id, _store=None):
+    """Resolve an agent name / id / id-prefix to its canonical record.
+
+    Returns a dict with at least ``id``, ``name``, and ``tmux_session``.
+    Raises OwnerNotFound when there is no matching agent. Injectable
+    ``_store`` for tests."""
+    if not name_or_id:
+        raise OwnerNotFound("owner is required")
+    if _store is None:
+        _store = AgentStore()
+    rec = _store.get(name_or_id)
+    if rec is None:
+        raise OwnerNotFound("no agent matching %r" % name_or_id)
+    return rec
+
+
+def _agent_field(rec, field, default=""):
+    """Read a task/agent field, supporting nested + legacy flat shape."""
+    if not rec:
+        return default
+    t = rec.get("task")
+    if isinstance(t, dict) and t.get(field) is not None:
+        return t.get(field)
+    return rec.get(field, default)
+
+
+# ---------------------------------------------------------------------------
+# LoopStore — per-owner agent.loop.json file
+# ---------------------------------------------------------------------------
+
+class DuplicateLoopName(Exception):
+    pass
+
+
+class CorruptLoopFile(Exception):
+    pass
+
+
+class AmbiguousLoopKey(Exception):
+    def __init__(self, key, matches):
+        super(AmbiguousLoopKey, self).__init__(
+            "ambiguous prefix %r matches %d ids: %s"
+            % (key, len(matches), ", ".join(matches)))
+        self.key = key
+        self.matches = matches
+
+
+def _empty_envelope(owner_id, owner_name="", tmux_session=""):
+    return {
+        "schema": LOOP_SCHEMA_NAME,
+        "version": 1,
+        "agent_id": owner_id,
+        "agent_name": owner_name,
+        "tmux_session": tmux_session,
+        "updated_at": _iso(_now_local()),
+        "loops": [],
+    }
+
+
+class LoopStore(object):
+    """Per-owner agent.loop.json with fcntl-locked read/modify/write."""
+
+    def __init__(self, owner_id, owner_name="", tmux_session="", root=None):
+        self._owner_id = owner_id
+        self._owner_name = owner_name
+        self._tmux_session = tmux_session
+        self._root = root or LOOPS_DIR
+
+    def _path(self):
+        return os.path.join(self._root, self._owner_id, LOOP_FILENAME)
+
+    def _archive_dir(self):
+        return os.path.join(self._root, self._owner_id, "archive")
+
+    def _runs_file(self):
+        return os.path.join(self._root, self._owner_id, "runs.jsonl")
+
+    def load(self):
+        """Return the envelope dict. Missing file → empty envelope.
+        Raises CorruptLoopFile when the file exists but won't parse."""
+        path = self._path()
+        if not os.path.exists(path):
+            return _empty_envelope(
+                self._owner_id, self._owner_name, self._tmux_session)
+        try:
+            with open(path, "r") as f:
+                if _fcntl:
+                    _fcntl.flock(f.fileno(), _fcntl.LOCK_SH)
+                try:
+                    data = json.load(f)
+                finally:
+                    if _fcntl:
+                        _fcntl.flock(f.fileno(), _fcntl.LOCK_UN)
+        except (ValueError, OSError) as e:
+            raise CorruptLoopFile("%s: %s" % (path, e))
+        if not isinstance(data, dict) or "loops" not in data:
+            raise CorruptLoopFile("%s: schema mismatch" % path)
+        if data.get("schema") != LOOP_SCHEMA_NAME:
+            raise CorruptLoopFile(
+                "%s: schema %r != %r" % (path, data.get("schema"), LOOP_SCHEMA_NAME))
+        return data
+
+    def list_loops(self):
+        return list(self.load().get("loops", []))
+
+    def find(self, key):
+        if not key:
+            return None
+        loops = self.list_loops()
+        for L in loops:
+            if L.get("id") == key or L.get("name") == key:
+                return L
+        prefix = [L for L in loops if (L.get("id") or "").startswith(key)]
+        if len(prefix) == 1:
+            return prefix[0]
+        if len(prefix) > 1:
+            raise AmbiguousLoopKey(
+                key, [L.get("id") or "" for L in prefix])
+        return None
+
+    def _modify(self, fn):
+        """fcntl-locked read/modify/write. ``fn`` receives the envelope
+        dict and may mutate it in place or return a new one. Atomic
+        replace via tmp file."""
+        _ensure_dir(os.path.join(self._root, self._owner_id))
+        lock_path = self._path() + ".lock"
+        with open(lock_path, "w") as lf:
+            if _fcntl:
+                _fcntl.flock(lf.fileno(), _fcntl.LOCK_EX)
+            try:
+                try:
+                    data = self.load()
+                except CorruptLoopFile:
+                    raise
+                new = fn(data)
+                if new is None:
+                    new = data
+                new["updated_at"] = _iso(_now_local())
+                # Keep envelope identity fields fresh.
+                new["schema"] = LOOP_SCHEMA_NAME
+                new["version"] = 1
+                new.setdefault("agent_id", self._owner_id)
+                if self._owner_name:
+                    new["agent_name"] = self._owner_name
+                if self._tmux_session:
+                    new["tmux_session"] = self._tmux_session
+                path = self._path()
+                tmp = path + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(new, f, indent=2)
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except OSError:
+                        pass
+                os.replace(tmp, path)
+                return new
+            finally:
+                if _fcntl:
+                    _fcntl.flock(lf.fileno(), _fcntl.LOCK_UN)
+
+    def add(self, loop):
+        name = loop.get("name")
+
+        def _fn(data):
+            for L in data.get("loops", []):
+                if L.get("name") == name:
+                    raise DuplicateLoopName(name)
+            data.setdefault("loops", []).append(loop)
+            return data
+
+        self._modify(_fn)
+
+    def remove(self, key):
+        """Remove (archive) one loop by exact id/name/unique-prefix."""
+        target_holder = {"loop": None}
+
+        def _fn(data):
+            loops = data.get("loops", [])
+            picked = None
+            for L in loops:
+                if L.get("id") == key or L.get("name") == key:
+                    picked = L
+                    break
+            if picked is None:
+                prefix = [L for L in loops if (L.get("id") or "").startswith(key)]
+                if len(prefix) > 1:
+                    raise AmbiguousLoopKey(
+                        key, [L.get("id") or "" for L in prefix])
+                if len(prefix) == 1:
+                    picked = prefix[0]
+            if picked is None:
+                return data
+            data["loops"] = [L for L in loops if L is not picked]
+            target_holder["loop"] = picked
+            return data
+
+        self._modify(_fn)
+        return target_holder["loop"]
+
+    def replace_one(self, loop):
+        """Replace the loop with the same id (idempotent update)."""
+        lid = loop.get("id")
+
+        def _fn(data):
+            loops = data.get("loops", [])
+            data["loops"] = [
+                (loop if L.get("id") == lid else L) for L in loops
+            ]
+            return data
+
+        self._modify(_fn)
+
+    def archive(self, loop, reason):
+        _ensure_dir(self._archive_dir())
+        ts = _now_local().strftime("%Y%m%d-%H%M%S")
+        fname = "%s-%s-%s.json" % (
+            ts, loop.get("name") or "anon", loop.get("id") or "noid")
+        path = os.path.join(self._archive_dir(), fname)
+        payload = dict(loop)
+        payload["archived_at"] = _iso(_now_local())
+        payload["archive_reason"] = reason
+        try:
+            with open(path, "w") as f:
+                json.dump(payload, f, indent=2)
+            return path
+        except OSError as e:
+            log.warning("loop archive failed: %s", e)
+            return None
+
+
+# ---------------------------------------------------------------------------
+# Loop runs log
+# ---------------------------------------------------------------------------
+
+def append_loop_run(owner_id, record, _root=None):
+    """Append a record to the owner's runs.jsonl (best-effort)."""
+    record.setdefault("ts", _iso(_now_local()))
+    root = _root or LOOPS_DIR
+    path = os.path.join(root, owner_id, "runs.jsonl")
+    _ensure_dir(os.path.dirname(path))
+    try:
+        with open(path, "a") as f:
+            if _fcntl:
+                _fcntl.flock(f.fileno(), _fcntl.LOCK_EX)
+            try:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            finally:
+                if _fcntl:
+                    _fcntl.flock(f.fileno(), _fcntl.LOCK_UN)
+    except OSError as e:
+        log.warning("loop run record failed for %s: %s", owner_id, e)
+
+
+# ---------------------------------------------------------------------------
+# Loop record builder
+# ---------------------------------------------------------------------------
+
+def build_loop(name, schedule, prompt, owner_rec, *,
+               max_attempts=None, no_wait=True, expect_reply=False):
+    """Normalize a loop record matching the spec schema."""
+    now_dt = _now_local()
+    now_iso = _iso(now_dt)
+    sched = dict(schedule)
+    if "next_due_at" not in sched:
+        sched["next_due_at"] = _initial_next_due_at(sched, now_dt)
+    owner_id = owner_rec.get("id") or ""
+    owner_name = _agent_field(owner_rec, "name") or ""
+    tmux_session = _agent_field(owner_rec, "tmux_session") or ""
+    return {
+        "id": _new_loop_id(),
+        "name": name,
+        "enabled": True,
+        "executor": "monitor",
+        "owner": {
+            "type": "agent",
+            "agent_id": owner_id,
+            "agent_name": owner_name,
+            "tmux_session": tmux_session,
+        },
+        "schedule": sched,
+        "action": {
+            "type": "prompt",
+            "text": prompt,
+            "delivery": {
+                "method": "camc-msg-send",
+                "to": owner_id,
+                "no_wait": bool(no_wait),
+                "expect_reply": bool(expect_reply),
+            },
+        },
+        "policy": {
+            "ttl_days": None,
+            "expires_at": None,
+            "max_attempts": int(max_attempts) if max_attempts is not None
+                            else DEFAULT_MAX_ATTEMPTS,
+            "busy_policy": "defer",
+            "misfire_policy": "skip",
+        },
+        "state": {
+            "attempts": 0,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+            "last_due_at": None,
+            "last_dispatched_at": None,
+            "last_msg_id": None,
+            "last_status": None,
+            "last_error": None,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Dispatch — sends prompt via `camc msg send <owner> -t <text> --no-wait`
+# ---------------------------------------------------------------------------
+
+def _camc_binary():
+    """Resolve a camc binary path for spawning a child msg send."""
+    import shutil
+    deployed = os.path.expanduser("~/.cam/camc")
+    if os.path.isfile(deployed) and os.access(deployed, os.X_OK):
+        return deployed
+    return shutil.which("camc") or "camc"
+
+
+def dispatch_loop(loop, *, runner=None, camc_path=None):
+    """Send the loop's prompt to the owner agent via `camc msg send`.
+
+    Returns (ok, msg_id_or_error). Caller is responsible for
+    timestamps / state updates / runs.jsonl writes.
+    """
+    runner = runner or subprocess.run
+    binp = camc_path or _camc_binary()
+    owner_id = (loop.get("owner") or {}).get("agent_id") or ""
+    if not owner_id:
+        return False, "no owner agent_id"
+    delivery = (loop.get("action") or {}).get("delivery") or {}
+    text = (loop.get("action") or {}).get("text") or ""
+    if not text:
+        return False, "empty prompt"
+    argv = [binp, "msg", "send", owner_id, "--text", text]
+    if delivery.get("no_wait", True):
+        argv.append("--no-wait")
+    if delivery.get("expect_reply", False):
+        argv.append("--expect-reply")
+    try:
+        r = runner(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, str(e)
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "").strip().splitlines()
+        return False, err[-1] if err else ("exit %d" % r.returncode)
+    # MSG_ID=<8hex> appears on stdout when --no-wait. With blocking
+    # mode, stdout is the reply body — fall back to the first line as
+    # a best-effort id surrogate.
+    msg_id = ""
+    for line in (r.stdout or "").splitlines():
+        line = line.strip()
+        if line.startswith("MSG_ID="):
+            msg_id = line.split("=", 1)[1].strip()
+            break
+    return True, msg_id
+
+
+# ---------------------------------------------------------------------------
+# tick_loops — scan all owner dirs, dispatch due loops
+# ---------------------------------------------------------------------------
+
+def _scan_owner_ids(root=None):
+    root = root or LOOPS_DIR
+    if not os.path.isdir(root):
+        return []
+    out = []
+    for name in sorted(os.listdir(root)):
+        path = os.path.join(root, name)
+        if not os.path.isdir(path):
+            continue
+        if os.path.exists(os.path.join(path, LOOP_FILENAME)):
+            out.append(name)
+    return out
+
+
+def _check_owner_ready(owner_id, _store=None):
+    """Resolve owner and decide if a loop dispatch is safe.
+
+    Returns (ready: bool, reason_or_none: str|None).
+
+    A loop only fires when its owner agent is present in the agent
+    store, currently ``status=running``, and currently ``state=idle``.
+    Anything else (missing record, busy, completed, killed, etc.)
+    defers the loop until the next tick — neither attempts nor
+    next_due_at advance. This matches the spec's "busy_policy:defer".
+    """
+    if not owner_id:
+        return False, "no owner_id"
+    if _store is None:
+        try:
+            _store = AgentStore()
+        except Exception as e:
+            return False, "agent_store_unavailable:%s" % e
+    rec = None
+    try:
+        rec = _store.get(owner_id)
+    except Exception as e:
+        return False, "agent_store_lookup_failed:%s" % e
+    if rec is None:
+        return False, "owner_not_found"
+    status = (rec.get("status") or "").lower()
+    if status != "running":
+        return False, "owner_status_%s" % (status or "unknown")
+    state = (rec.get("state") or "").lower()
+    if state != "idle":
+        return False, "owner_state_%s" % (state or "unknown")
+    return True, None
+
+
+def _loop_is_due(loop, now_dt):
+    if not loop.get("enabled", True):
+        return False, None
+    nda = (loop.get("schedule") or {}).get("next_due_at")
+    if not nda:
+        return False, None
+    nda_dt = _parse_iso(nda)
+    if nda_dt is None:
+        return False, None
+    if now_dt >= nda_dt:
+        return True, nda
+    return False, None
+
+
+def tick_loops(now=None, dispatch=None, root=None, agent_store=None):
+    """Scan all owner loop files and dispatch due loops.
+
+    Reuses the same scheduling shape as host cron (``schedule.next_due_at``
+    advances after queueing). ``dispatch`` injectable for tests; defaults
+    to ``dispatch_loop``. ``agent_store`` injectable to swap AgentStore
+    for the owner-idle guard.
+
+    Guard: a due loop is dispatched ONLY when its owner agent is
+    currently ``status=running`` AND ``state=idle``. Other states
+    (missing record, busy, completed) produce a ``loop_deferred``
+    event with the reason and leave the loop's ``next_due_at`` and
+    ``state.attempts`` untouched, so a busy agent doesn't burn the
+    retry budget and the prompt is delivered as soon as the agent
+    next sits idle.
+    """
+    dispatch_fn = dispatch or dispatch_loop
+    now_dt = now or _now_local()
+    dispatched = 0
+    for owner_id in _scan_owner_ids(root):
+        store = LoopStore(owner_id, root=root)
+        try:
+            envelope = store.load()
+        except CorruptLoopFile as e:
+            log.warning("loop tick skipped (corrupt): %s", e)
+            append_loop_run(owner_id, {
+                "event": "loop_tick_aborted",
+                "reason": "corrupt_loop_file",
+                "error": str(e),
+            }, _root=root)
+            continue
+        loops = envelope.get("loops", [])
+        if not loops:
+            continue
+        changed = False
+        for loop in loops:
+            due, due_at = _loop_is_due(loop, now_dt)
+            if not due:
+                continue
+            # Owner readiness gate — defer if the owner agent isn't
+            # idle. Defer means: do NOT advance next_due_at, do NOT
+            # increment attempts, just emit a loop_deferred event.
+            ready, defer_reason = _check_owner_ready(
+                owner_id, _store=agent_store)
+            if not ready:
+                append_loop_run(owner_id, {
+                    "event": "loop_deferred",
+                    "loop_id": loop.get("id"),
+                    "loop_name": loop.get("name"),
+                    "due_at": due_at,
+                    "owner": owner_id,
+                    "reason": defer_reason or "owner_not_ready",
+                }, _root=root)
+                continue
+            # Append queue event first so it's visible if dispatch crashes.
+            append_loop_run(owner_id, {
+                "event": "loop_queued",
+                "loop_id": loop.get("id"),
+                "loop_name": loop.get("name"),
+                "due_at": due_at,
+                "owner": owner_id,
+            }, _root=root)
+            ok, payload = dispatch_fn(loop)
+            st = loop.setdefault("state", {})
+            st["last_due_at"] = due_at
+            st["last_dispatched_at"] = _iso(_now_local())
+            if ok:
+                st["attempts"] = 0
+                st["last_msg_id"] = payload or ""
+                st["last_status"] = "sent"
+                st["last_error"] = None
+                append_loop_run(owner_id, {
+                    "event": "loop_dispatched",
+                    "loop_id": loop.get("id"),
+                    "loop_name": loop.get("name"),
+                    "msg_id": payload or "",
+                }, _root=root)
+            else:
+                st["attempts"] = int(st.get("attempts") or 0) + 1
+                st["last_status"] = "failed"
+                st["last_error"] = payload or "dispatch failed"
+                append_loop_run(owner_id, {
+                    "event": "loop_failed",
+                    "loop_id": loop.get("id"),
+                    "loop_name": loop.get("name"),
+                    "attempts": st["attempts"],
+                    "error": payload or "",
+                }, _root=root)
+            # Advance the schedule regardless of success — failed
+            # loops retry on later ticks until max_attempts is hit.
+            loop["schedule"] = advance_next_due_at(loop["schedule"], now_dt)
+            st["updated_at"] = _iso(_now_local())
+            changed = True
+            dispatched += 1
+            # Failure recycle
+            max_att = int((loop.get("policy") or {}).get(
+                "max_attempts") or DEFAULT_MAX_ATTEMPTS)
+            if not ok and st["attempts"] >= max_att:
+                loop["enabled"] = False
+                st["last_status"] = "recycled_too_many_failures"
+                append_loop_run(owner_id, {
+                    "event": "loop_recycled",
+                    "loop_id": loop.get("id"),
+                    "loop_name": loop.get("name"),
+                    "reason": "too_many_failures",
+                }, _root=root)
+        if changed:
+            # persist the envelope back (state + advanced schedules).
+            store.replace_envelope(envelope)
+    return dispatched
+
+
+# Helper hung onto LoopStore so the persist path stays inside the lock.
+def _replace_envelope(self, envelope):
+    def _fn(_data):
+        return envelope
+    self._modify(_fn)
+
+
+LoopStore.replace_envelope = _replace_envelope
 
 
 # ===========================================================================
@@ -10421,6 +11070,240 @@ def cmd_msg_read(args):
 # Cron (P0)
 # ===========================================================================
 
+def _cmd_cron_add_loop(args):
+    """Persist a loop into ~/.cam/loops/<owner>/agent.loop.json."""
+
+    # Validation per spec: --loop requires --owner, --prompt[-file],
+    # --name, exactly one schedule. Rejects --shell and -- argv.
+    if not args.name:
+        sys.stderr.write("camc cron add --loop: --name is required\n"); sys.exit(1)
+    if not args.owner:
+        sys.stderr.write("camc cron add --loop: --owner is required\n"); sys.exit(1)
+    if args.shell_cmd or (args.cmd_argv and any(t != "--" for t in args.cmd_argv)):
+        sys.stderr.write(
+            "camc cron add --loop: --shell and `-- COMMAND...` are not "
+            "allowed in loop mode (loops send prompt text only)\n")
+        sys.exit(1)
+    prompt_text = args.prompt or ""
+    if args.prompt_file:
+        if args.prompt:
+            sys.stderr.write(
+                "camc cron add --loop: --prompt and --prompt-file are "
+                "mutually exclusive\n")
+            sys.exit(1)
+        try:
+            with open(os.path.expanduser(args.prompt_file), "r") as f:
+                prompt_text = f.read()
+        except OSError as e:
+            sys.stderr.write(
+                "camc cron add --loop: --prompt-file unreadable: %s\n" % e)
+            sys.exit(1)
+    if not prompt_text.strip():
+        sys.stderr.write(
+            "camc cron add --loop: --prompt or --prompt-file is required\n")
+        sys.exit(1)
+
+    try:
+        if args.every:
+            schedule = parse_every(args.every)
+        elif args.daily:
+            schedule = parse_daily(args.daily)
+        elif args.at_time:
+            schedule = parse_at(args.at_time)
+        elif args.in_dur:
+            schedule = parse_in(args.in_dur)
+        else:
+            sys.stderr.write(
+                "camc cron add --loop: one schedule preset is required\n")
+            sys.exit(1)
+    except ValueError as e:
+        sys.stderr.write("camc cron add --loop: %s\n" % e); sys.exit(1)
+
+    try:
+        owner = resolve_owner(args.owner)
+    except OwnerNotFound as e:
+        sys.stderr.write("camc cron add --loop: %s\n" % e); sys.exit(1)
+
+    loop = build_loop(
+        args.name, schedule, prompt_text, owner,
+        max_attempts=args.max_attempts,
+    )
+    owner_id = owner.get("id") or ""
+    owner_name = _agent_field(owner, "name") or ""
+    tmux_session = _agent_field(owner, "tmux_session") or ""
+    store = LoopStore(owner_id, owner_name=owner_name,
+                      tmux_session=tmux_session)
+    try:
+        store.add(loop)
+    except DuplicateLoopName:
+        sys.stderr.write(
+            "camc cron add --loop: a loop named '%s' already exists for "
+            "owner '%s'\n" % (args.name, owner_id))
+        sys.exit(1)
+    except CorruptLoopFile as e:
+        sys.stderr.write(
+            "camc cron add --loop: loop file corrupt, refused: %s\n" % e)
+        sys.exit(1)
+    sys.stdout.write(
+        "added agent loop %s (%s)\nowner: %s (%s)\nexecutor: host-tick\n"
+        % (loop["name"], loop["id"], owner_name or "(unnamed)", owner_id))
+    # Ensure the host scheduler tick block exists — without it the
+    # loop is persisted but cannot fire. Match host `cron add`
+    # semantics: if the crontab install fails, the loop file stays
+    # on disk but `cron add` exits 1 so callers (Desktop / CI) can
+    # surface a clear "saved but not runnable, run `camc heal`" state
+    # rather than mistakenly trusting the loop is live.
+    try:
+        install_tick()
+        sys.stdout.write("tick: installed\n")
+    except CrontabUnavailable as e:
+        sys.stderr.write(
+            "ERROR: failed to install system cron tick: %s\n"
+            "Loop is saved but will not fire until the tick block is "
+            "installed.\nRun `camc heal` after fixing crontab access.\n" % e)
+        sys.exit(1)
+    sys.exit(0)
+
+
+def _cmd_cron_list_loop(args):
+    """List loops for one owner. Emits the stable JSON envelope
+    Desktop parses as ``loopParsed.loops``."""
+    if not args.owner:
+        sys.stderr.write("camc cron list --loop: --owner is required\n"); sys.exit(1)
+    try:
+        owner = resolve_owner(args.owner)
+    except OwnerNotFound as e:
+        # Mirror Desktop's expected shape so renderer can show "no loops"
+        # rather than crash on the error envelope.
+        if getattr(args, "json_out", False):
+            sys.stdout.write(json.dumps(
+                {"agent_id": args.owner, "count": 0, "loops": [],
+                 "error": str(e)}) + "\n")
+            sys.exit(1)
+        sys.stderr.write("camc cron list --loop: %s\n" % e); sys.exit(1)
+    owner_id = owner.get("id") or ""
+    owner_name = _agent_field(owner, "name") or ""
+    store = LoopStore(owner_id, owner_name=owner_name)
+    try:
+        envelope = store.load()
+    except CorruptLoopFile as e:
+        sys.stderr.write(
+            "camc cron list --loop: loop file corrupt: %s\n" % e)
+        sys.exit(1)
+    loops = envelope.get("loops", [])
+    if getattr(args, "json_out", False):
+        # Project the stored schema into the Desktop-stable shape:
+        # top-level id/name/owner/enabled/schedule/prompt/next_due_at/
+        # last_status/last_due_at/last_run_id. Keep the rich nested
+        # blocks (action, policy, state) too so future Desktop reads
+        # can still introspect — this is an additive projection, not
+        # a replacement. ``last_run_id`` is exposed as the most
+        # recent ``msg_id`` returned by ``camc msg send`` because that
+        # is the run identifier the loop produces; ``null`` when the
+        # loop has never fired.
+        projected = []
+        for L in loops:
+            sched = L.get("schedule") or {}
+            action = L.get("action") or {}
+            st = L.get("state") or {}
+            projected.append({
+                "id": L.get("id"),
+                "name": L.get("name"),
+                "owner": L.get("owner"),
+                "enabled": bool(L.get("enabled", True)),
+                "schedule": sched,
+                "prompt": action.get("text", ""),
+                "next_due_at": sched.get("next_due_at"),
+                "last_status": st.get("last_status"),
+                "last_due_at": st.get("last_due_at"),
+                "last_run_id": st.get("last_msg_id"),
+                # Nested blocks kept for forward-compat.
+                "action": action,
+                "policy": L.get("policy"),
+                "state": st,
+            })
+        sys.stdout.write(json.dumps({
+            "agent_id": owner_id,
+            "agent_name": owner_name,
+            "count": len(projected),
+            "loops": projected,
+        }, ensure_ascii=False) + "\n")
+        sys.exit(0)
+    if not loops:
+        sys.stdout.write("No agent loops for %s.\n" % (owner_name or owner_id))
+        sys.exit(0)
+    sys.stdout.write("%-9s  %-20s  %-15s  %-3s  %-19s  %-9s  %s\n" % (
+        "ID", "NAME", "SCHED", "EN", "NEXT", "LAST", "MSG"))
+    for L in loops:
+        sched = L.get("schedule") or {}
+        kind = sched.get("type", "?")
+        if kind == "interval":
+            n = int(sched.get("every_seconds") or 0)
+            sched_str = (
+                "every %dh" % (n // 3600) if n and n % 3600 == 0
+                else "every %dm" % (n // 60) if n else "interval"
+            )
+        elif kind == "daily":
+            sched_str = "daily %s" % (sched.get("time") or "??:??")
+        elif kind == "once":
+            sched_str = "once @ %s" % (sched.get("run_at") or "?")
+        else:
+            sched_str = kind
+        st = L.get("state") or {}
+        sys.stdout.write("%-9s  %-20s  %-15s  %-3s  %-19s  %-9s  %s\n" % (
+            (L.get("id") or "")[:9],
+            (L.get("name") or "")[:20],
+            sched_str[:15],
+            "y" if L.get("enabled", True) else "n",
+            (sched.get("next_due_at") or "-")[:19],
+            (st.get("last_status") or "-")[:9],
+            (st.get("last_msg_id") or "-"),
+        ))
+    sys.exit(0)
+
+
+def _cmd_cron_rm_loop(args):
+    if not args.owner:
+        sys.stderr.write("camc cron rm --loop: --owner is required\n"); sys.exit(1)
+    if not args.id_or_name:
+        sys.stderr.write(
+            "camc cron rm --loop: <id-or-name> is required\n"); sys.exit(1)
+    try:
+        owner = resolve_owner(args.owner)
+    except OwnerNotFound as e:
+        sys.stderr.write("camc cron rm --loop: %s\n" % e); sys.exit(1)
+    owner_id = owner.get("id") or ""
+    owner_name = _agent_field(owner, "name") or ""
+    store = LoopStore(owner_id, owner_name=owner_name)
+    try:
+        removed = store.remove(args.id_or_name)
+    except CorruptLoopFile as e:
+        sys.stderr.write(
+            "camc cron rm --loop: loop file corrupt, refused: %s\n" % e)
+        sys.exit(1)
+    except AmbiguousLoopKey as e:
+        sys.stderr.write(
+            "camc cron rm --loop: ambiguous prefix %r — %s\n"
+            % (e.key, ", ".join(e.matches)))
+        sys.exit(1)
+    if not removed:
+        sys.stderr.write(
+            "camc cron rm --loop: no loop matched '%s' for owner '%s'\n"
+            % (args.id_or_name, owner_id))
+        sys.exit(1)
+    archive_path = store.archive(removed, "manual_remove")
+    append_loop_run(owner_id, {
+        "event": "loop_removed",
+        "loop_id": removed.get("id"),
+        "loop_name": removed.get("name"),
+        "archive_path": archive_path or "",
+    })
+    sys.stdout.write(
+        "removed agent loop %s (%s) for owner %s\n"
+        % (removed.get("name"), removed.get("id"), owner_id))
+    sys.exit(0)
+
+
 def cmd_cron(args):
     """Cron dispatch: add / rm / list / tick / run."""
     sub = getattr(args, "cron_cmd", None)
@@ -10450,6 +11333,20 @@ def cmd_cron(args):
 
 def cmd_cron_add(args):
     """Build a job from cli args, persist, then ensure the tick crontab block."""
+    # Loop mode short-circuit: persists into ~/.cam/loops/<owner>/agent.loop.json
+    # rather than the host cron jobs.d/ registry. Same scheduler tick
+    # services both, so we still ensure the tick block at the end.
+    if getattr(args, "loop", False):
+        _cmd_cron_add_loop(args)
+        return
+
+    # Reject loop-only flags on host-job path so the surfaces don't blur.
+    if getattr(args, "owner", None) or getattr(args, "prompt", None) \
+            or getattr(args, "prompt_file", None):
+        sys.stderr.write(
+            "camc cron add: --owner / --prompt / --prompt-file require --loop\n")
+        sys.exit(1)
+
     # Resolve schedule preset
     try:
         if args.every:
@@ -10539,6 +11436,9 @@ def cmd_cron_add(args):
 
 def cmd_cron_rm(args):
     """Remove + archive a job. Remove the tick block when no enabled jobs remain."""
+    if getattr(args, "loop", False):
+        _cmd_cron_rm_loop(args)
+        return
     try:
         removed = CronJobStore().remove(args.id_or_name)
     except CorruptCronJSON as e:
@@ -10615,6 +11515,9 @@ def cmd_cron_list(args):
     (exit 1, stderr) when jobs.json exists but is corrupt — silent
     "empty" output would mask the failure.
     """
+    if getattr(args, "loop", False):
+        _cmd_cron_list_loop(args)
+        return
     json_out = bool(getattr(args, "json_out", False))
 
     store = CronJobStore()
@@ -10971,11 +11874,15 @@ def cmd_capture(args):
     # truncate to the last N lines. Tmux's history-limit (default 2000)
     # caps the real amount either way; long runs drop off the top.
     lines = getattr(args, "lines", 0) or 0
-    output = capture_tmux(session, lines=lines)
+    fmt = (getattr(args, "format", None) or "plain").lower()
+    if fmt not in ("plain", "ansi"):
+        print("--format must be plain or ansi", file=sys.stderr)
+        sys.exit(2)
+    output = capture_tmux(session, lines=lines, preserve_ansi=(fmt == "ansi"))
     if _want_json(args):
         import hashlib
         h = hashlib.md5(output.encode()).hexdigest()[:8]
-        print(json.dumps({"content": output, "hash": h}, indent=2))
+        print(json.dumps({"content": output, "hash": h, "format": fmt}, indent=2))
     else:
         sys.stdout.write(output)
 
@@ -11278,6 +12185,8 @@ examples:
     cap.add_argument("id", help="Agent ID (prefix match)")
     cap.add_argument("--lines", "-n", type=int, default=0,
                      help="Tail last N lines (default: 0 = full scrollback)")
+    cap.add_argument("--format", choices=("plain", "ansi"), default="plain",
+                     help="plain (default, ANSI stripped) or ansi (preserve SGR style escapes)")
 
     # send
     snd = sub.add_parser("send", help="Send text input to agent tmux session")
@@ -11341,6 +12250,17 @@ examples:
     cron_sub = cron_p.add_subparsers(dest="cron_cmd", parser_class=CamArgumentParser)
     cadd = cron_sub.add_parser("add", help="Add a scheduled job")
     cadd.add_argument("--name", required=True, help="Unique job name")
+    # Loop mode (CAM-DESK-CRON-010): persists into ~/.cam/loops/<owner>/
+    # instead of the host cron registry. Sends prompt text to owner via
+    # `camc msg send`. See docs/camc-agent-loop-spec.md.
+    cadd.add_argument("--loop", action="store_true",
+                      help="Persist as a per-agent prompt loop (not a host cron job)")
+    cadd.add_argument("--owner", default=None,
+                      help="Owner agent id/name (required with --loop)")
+    cadd.add_argument("--prompt", default=None,
+                      help="Prompt text to send each fire (loop mode)")
+    cadd.add_argument("--prompt-file", dest="prompt_file", default=None,
+                      help="Read prompt from file (loop mode)")
     sched_grp = cadd.add_mutually_exclusive_group(required=True)
     sched_grp.add_argument("--every", default=None,
                            help="Interval (e.g. 30m, 2h)")
@@ -11374,10 +12294,18 @@ examples:
                       help="argv after `--` (preferred). Mutually exclusive with --shell.")
     crm = cron_sub.add_parser("rm", help="Remove (and archive) a scheduled job")
     crm.add_argument("id_or_name", help="Job id, id prefix, or exact name")
+    crm.add_argument("--loop", action="store_true",
+                     help="Operate on the owner's agent loop file instead of host cron")
+    crm.add_argument("--owner", default=None,
+                     help="Owner agent id/name (required with --loop)")
     clist = cron_sub.add_parser("list",
                                 help="Read-only listing of active cron jobs")
     clist.add_argument("--json", dest="json_out", action="store_true",
                        help="Emit machine-readable JSON instead of a table")
+    clist.add_argument("--loop", action="store_true",
+                       help="List per-agent loops (requires --owner)")
+    clist.add_argument("--owner", default=None,
+                       help="Owner agent id/name (required with --loop)")
     cron_sub.add_parser("tick",
                         help="(system) scheduler entrypoint — called by crontab")
     crun = cron_sub.add_parser(
