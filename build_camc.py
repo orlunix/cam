@@ -19,6 +19,7 @@ from datetime import datetime
 # Module load order (respects dependency DAG)
 MODULE_ORDER = [
     "utils",
+    "system_prompt",
     "adapters",
     # runtime_env must come before transport + cli: transport's
     # create_tmux_session keeps its legacy default behavior when no

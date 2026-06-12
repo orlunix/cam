@@ -76,6 +76,9 @@ from camc_pkg.transport import (
     tmux_send_input, tmux_send_key, tmux_kill_session, create_tmux_session,
 )
 from camc_pkg.detection import should_auto_confirm, is_ready_for_input
+from camc_pkg.system_prompt import (
+    target_file, write_block, strip_block, has_block, load_prompt_text,
+)
 from camc_pkg.monitor import _run_monitor
 # Cron module: bare names (no `as` aliases). build_camc.py strips this
 # import line during bundling; the names then live at the top level of
@@ -587,6 +590,33 @@ def cmd_run(args):
     agent_id = _gen_agent_id()
     session = "cam-%s" % agent_id
 
+    # Per-agent system prompt: write to CLAUDE.md / AGENTS.md before
+    # launch. The tool auto-loads it via its normal mechanism. See
+    # docs/system-prompt-feature.md.
+    sp_text = ""
+    sp_file_path = ""
+    sp_source = ""
+    sp_arg = getattr(args, "system_prompt", None)
+    sp_file_arg = getattr(args, "system_file", None)
+    if sp_arg or sp_file_arg:
+        try:
+            sp_text = load_prompt_text(sp_arg, sp_file_arg)
+        except (IOError, OSError) as e:
+            print_error("--system-file: %s" % e)
+            sys.exit(1)
+        if sp_text:
+            sp_file_path = target_file(tool, workdir)
+            if not sp_file_path:
+                print_warning("No system-prompt file mapping for tool '%s'; skipping injection" % tool)
+            else:
+                try:
+                    write_block(sp_file_path, agent_id, sp_text)
+                    sp_source = "file:%s" % sp_file_arg if sp_file_arg else "inline"
+                    print_info("System prompt written to %s" % sp_file_path)
+                except Exception as e:
+                    print_warning("Failed to write system prompt: %s" % e)
+                    sp_file_path = ""
+
     resume_session = getattr(args, "resume_session", None)
 
     # Guard: refuse to resume a session if another Claude is still using it.
@@ -667,7 +697,10 @@ def cmd_run(args):
         "task": {"name": name or "", "tool": tool, "prompt": prompt,
                  "auto_confirm": True, "auto_exit": auto_exit,
                  "auto_exit_enable": auto_exit_enable,
-                 "tags": tags},
+                 "tags": tags,
+                 "system_prompt": sp_text,
+                 "system_prompt_file": sp_file_path,
+                 "system_prompt_source": sp_source},
         "context_id": "",
         "context_name": ctx_name,
         "context_path": workdir,
@@ -2067,6 +2100,15 @@ def cmd_rm(args):
         except Exception as e:
             print_warning("Archive step raised %s; proceeding with rm anyway." % e)
     _kill_monitor(a)
+    # Strip the system_prompt block we injected at run-time, if any.
+    task_rec = a.get("task") or {}
+    sp_file_path = task_rec.get("system_prompt_file") or ""
+    if sp_file_path:
+        try:
+            if strip_block(sp_file_path, a["id"]):
+                print_info("System prompt block removed from %s" % sp_file_path)
+        except Exception as e:
+            print_warning("Failed to strip system prompt block: %s" % e)
     session = _sf(a, "tmux_session")
     if session:
         tmux_kill_session(session)
@@ -2621,6 +2663,19 @@ def cmd_migrate(args):
 
     print_info("Rebooting agent %s (%s)..." % (name, old_id))
 
+    # Re-inject system_prompt block if recorded and missing from file
+    # (e.g. user wiped the file, or rebooting after a host move).
+    task_rec = a.get("task") or {}
+    sp_text = task_rec.get("system_prompt") or ""
+    sp_file_path = task_rec.get("system_prompt_file") or ""
+    if sp_text and sp_file_path:
+        if not has_block(sp_file_path, old_id):
+            try:
+                write_block(sp_file_path, old_id, sp_text)
+                print_info("System prompt re-injected at %s" % sp_file_path)
+            except Exception as e:
+                print_warning("Failed to re-inject system prompt: %s" % e)
+
     # 1. Graceful exit — same as `camc exit`. Claude goes away, tmux stays.
     if not (old_session and tmux_session_exists(old_session)):
         print_error("No tmux session found for agent")
@@ -2770,6 +2825,11 @@ def cmd_status(args):
                 else:
                     session_file_info = "%s (not found)" % sf_path
 
+        sp_text = _tf(a, "system_prompt") or ""
+        sp_display = None
+        if sp_text:
+            sp_summary = sp_text.replace("\n", " ")
+            sp_display = (sp_summary[:200] + "...") if len(sp_summary) > 200 else sp_summary
         pairs = [
             ("ID", a.get("id", "?")),
             ("Name", _tf(a, "name")),
@@ -2784,6 +2844,7 @@ def cmd_status(args):
             ("Completed", a.get("completed_at")),
             ("Exit", a.get("exit_reason")),
             ("Prompt", prompt_display),
+            ("System", sp_display),
             ("Auto-exit", "ON" if _tf(a, "auto_exit") else None),
             ("Alive", _c("alive", "green") if alive else _c("dead", "red")),
         ]
@@ -5468,6 +5529,10 @@ examples:
                    metavar="SESSION_ID",
                    help="Resume an existing Claude session by ID (adds --resume to claude, skips prompt injection)")
     r.add_argument("--no-inherit-env", action="store_true", help="Legacy mode: wrap command with bash -c and env_setup")
+    r.add_argument("--system-prompt", dest="system_prompt", default=None,
+                   help="Inline system prompt; injected into CLAUDE.md/AGENTS.md in workdir before launch")
+    r.add_argument("--system-file", dest="system_file", default=None,
+                   help="Path to a file whose contents become the system prompt (overrides --system-prompt)")
 
     # list
     ls = sub.add_parser("list", aliases=["ls"], help="List agents")

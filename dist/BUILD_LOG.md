@@ -2833,3 +2833,29 @@ da7299b camc heal: clean duplicate monitors
 13af7cc camc monitor: refactor loop into feature pipeline
 ```
 
+## v1.2.0  cb0caad-dirty 2026-06-11 20:36
+
+- Lines: 11508
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+bb53b45 auto-confirm: input-box-aware guard + cursor-anchored rules
+005d020 auto-confirm: global input-cursor guard + remove loose substring rules
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+```
+
+## v1.2.0  cb0caad-dirty 2026-06-11 20:37
+
+- Lines: 11508
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+bb53b45 auto-confirm: input-box-aware guard + cursor-anchored rules
+005d020 auto-confirm: global input-cursor guard + remove loose substring rules
+da7299b camc heal: clean duplicate monitors
+04e35ad camc cron: add host-local jobs.d scheduler
+```
+
