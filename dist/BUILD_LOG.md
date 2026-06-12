@@ -2859,3 +2859,16 @@ da7299b camc heal: clean duplicate monitors
 04e35ad camc cron: add host-local jobs.d scheduler
 ```
 
+## v1.2.0  64d4a73 2026-06-11 23:02
+
+- Lines: 11508
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+bb53b45 auto-confirm: input-box-aware guard + cursor-anchored rules
+005d020 auto-confirm: global input-cursor guard + remove loose substring rules
+da7299b camc heal: clean duplicate monitors
+```
+
