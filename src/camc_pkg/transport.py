@@ -296,25 +296,44 @@ def tmux_kill_session(session_id):
     return rc == 0
 
 
-def create_tmux_session(session_id, command, workdir, env_setup=None, inherit_env=True):
+def create_tmux_session(session_id, command, workdir, env_setup=None,
+                        inherit_env=True, env=None, tmux_bin=None):
+    """Create a detached tmux session named `session_id`.
+
+    F-08: `env` and `tmux_bin` are optional. When provided (the new
+    ``cmd_run`` path), the function uses the SAME effective env and
+    tmux binary that the readiness check just validated — eliminating
+    the "works in preflight, fails in launch" PATH discrepancy. When
+    omitted (scheduler.py, tests, any legacy caller), behavior is
+    bit-identical to the pre-F-08 implementation: env is sourced from
+    ``os.environ.copy()`` and the binary is the module-level
+    ``TMUX_BIN`` resolved at import time.
+
+    Regardless of how `env` arrives, ``TMUX`` / ``TMUX_PANE`` /
+    ``CLAUDECODE`` are stripped here so a nested-launch fails-safe."""
     try:
         os.makedirs(SOCKETS_DIR)
     except OSError:
         pass
     socket = "%s/%s.sock" % (SOCKETS_DIR, session_id)
 
-    # Unset TMUX so we can create sessions from inside tmux (nesting)
-    env = os.environ.copy()
+    # Source env: explicit arg wins; else current process env.
+    env = dict(env) if env is not None else os.environ.copy()
+    # Always strip nest markers — protects callers that pass the raw
+    # parent env (legacy path) AND the new build_runtime_env() path
+    # (it already strips, but defensive double-clear is cheap).
     env.pop("TMUX", None)
     env.pop("TMUX_PANE", None)
-    # Unset CLAUDECODE to prevent nested-session detection
     env.pop("CLAUDECODE", None)
+
+    # Source tmux binary: explicit arg wins; else module-level default.
+    tmux = tmux_bin or TMUX_BIN
 
     if inherit_env:
         # Shell mode: start tmux with user's default shell, inherit all env.
         # Then send the command via send-keys.
         try:
-            tmux_cmd = [TMUX_BIN, "-u", "-S", socket, "new-session",
+            tmux_cmd = [tmux, "-u", "-S", socket, "new-session",
                  "-d", "-x", "220", "-y", "50",
                  "-s", session_id, "-c", workdir]
             proc = subprocess.Popen(
@@ -327,17 +346,17 @@ def create_tmux_session(session_id, command, workdir, env_setup=None, inherit_en
                 err_msg = stderr.decode(errors="replace").strip() if stderr else "exit code %d" % proc.returncode
                 log.error("tmux new-session failed: %s", err_msg)
                 return False
-            _run([TMUX_BIN, "-u", "-S", socket, "set-option", "-t", session_id,
+            _run([tmux, "-u", "-S", socket, "set-option", "-t", session_id,
                   "history-limit", "50000"])
             # Send the command via send-keys. Small pause before Enter
             # so the literal text flushes before Enter races in.
             inner_cmd = " ".join(shlex.quote(arg) for arg in command)
             target = "%s:0.0" % session_id
-            _run([TMUX_BIN, "-u", "-S", socket, "send-keys", "-t", target,
+            _run([tmux, "-u", "-S", socket, "send-keys", "-t", target,
                   "-l", "--", inner_cmd])
             import time as _t
             _t.sleep(0.15)
-            _run([TMUX_BIN, "-u", "-S", socket, "send-keys", "-t", target, "Enter"])
+            _run([tmux, "-u", "-S", socket, "send-keys", "-t", target, "Enter"])
             return True
         except subprocess.TimeoutExpired:
             log.error("tmux new-session timed out after 10s for %s", session_id)
@@ -348,12 +367,16 @@ def create_tmux_session(session_id, command, workdir, env_setup=None, inherit_en
 
     inner_cmd = " ".join(shlex.quote(arg) for arg in command)
     if not env_setup:
-        env_setup = "export PATH=%s" % shlex.quote(os.environ.get("PATH", ""))
+        # Pull PATH from the explicit env if provided, otherwise from
+        # the calling process. Either way we land an explicit `export
+        # PATH=...` inside the bash -l invocation so the launched
+        # command sees the same PATH preflight checked against.
+        env_setup = "export PATH=%s" % shlex.quote(env.get("PATH", os.environ.get("PATH", "")))
     command_str = "env -u CLAUDECODE bash -l -c %s" % shlex.quote(env_setup + " && exec " + inner_cmd)
 
     try:
         proc = subprocess.Popen(
-            [TMUX_BIN, "-u", "-S", socket, "new-session",
+            [tmux, "-u", "-S", socket, "new-session",
              "-d", "-x", "220", "-y", "50",
              "-s", session_id, "-c", workdir, command_str],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -364,7 +387,7 @@ def create_tmux_session(session_id, command, workdir, env_setup=None, inherit_en
             err_msg = stderr.decode(errors="replace").strip() if stderr else "exit code %d" % proc.returncode
             log.error("tmux new-session failed: %s", err_msg)
             return False
-        _run([TMUX_BIN, "-u", "-S", socket, "set-option", "-t", session_id,
+        _run([tmux, "-u", "-S", socket, "set-option", "-t", session_id,
               "history-limit", "50000"])
         return True
     except subprocess.TimeoutExpired:

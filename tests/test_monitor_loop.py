@@ -84,19 +84,15 @@ flags = ["IGNORECASE"]
 response = "1"
 send_enter = false
 
-[[confirm]]
-pattern = "\\\\(y/n\\\\)|\\\\[Y/n\\\\]|\\\\[y/N\\\\]"
-response = "y"
-send_enter = false
+# (2026-06-11) Generic y/n bracket rule removed from inline test TOML
+# to mirror the hot-fix in src/cam/adapters/configs/claude.toml.
 
 [monitor]
 busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
 done_pattern = "ed\\s+for\\s+\\d+[smh]"
 confirm_cooldown = 0.5
 confirm_sleep = 0.2
-completion_stable = 0.5
 health_check_interval = 1
-empty_threshold = 3
 auto_exit = false
 exit_action = "kill_session"
 exit_command = "/exit"
@@ -225,11 +221,14 @@ def screen_confirm_proceed():
 
 
 def screen_confirm_yes():
+    # Trailing "❯ " satisfies the global input-cursor guard added on
+    # 2026-06-11 (camc_pkg.detection.has_input_cursor).
     return (
         "────\n"
         " 1. Yes\n"
         " 2. No\n\n"
         " Esc to cancel\n"
+        "❯ \n"
     )
 
 
@@ -239,11 +238,16 @@ def screen_confirm_allow():
         " Allow once\n"
         " Always allow\n"
         " Deny\n"
+        "❯ \n"
     )
 
 
 def screen_confirm_yn():
-    return "Delete the file? (y/n)\n"
+    # NOTE: the generic y/n rule was removed from claude.toml on
+    # 2026-06-11. This screen now exercises the global cursor guard
+    # only — no rule should match, so test_confirm_yn must assert
+    # NO auto_confirm event fires.
+    return "Delete the file? (y/n)\n❯ \n"
 
 
 def screen_busy():
@@ -402,11 +406,14 @@ class TestStep4AutoConfirm:
         assert len(confirms) >= 1
 
     def test_confirm_yn(self):
+        # 2026-06-11: the generic y/n bracket rule was removed from
+        # claude.toml. This test now asserts the NEGATIVE: a (y/n)
+        # screen without a numbered-menu rule must NOT trigger any
+        # auto_confirm event, even with the input cursor visible.
         screens = [screen_confirm_yn()] * 5
         store, events = run_monitor_steps(screens, max_cycles=10)
         confirms = events.of_type("auto_confirm")
-        assert len(confirms) >= 1
-        assert confirms[0]["detail"]["response"] == "y"
+        assert len(confirms) == 0
 
     def test_confirm_resets_idle(self):
         # idle → confirm dialog → idle_confirmed should reset
