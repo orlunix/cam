@@ -308,8 +308,9 @@
               <p class="settings-help">
                 Connect Desktop to an existing CAM Hub through a relay
                 endpoint. The relay forwards REST/WS to a Hub you cannot
-                reach directly — you still need that Hub's API token so
-                the proxied requests authenticate.
+                reach directly. The CAM API token is profile-managed
+                on the source side (see CAM-DESK-REMOTE-012); you only
+                need the Relay URL and Relay token here.
               </p>
               <label>Relay URL
                 <input type="url" id="set-relay-url" placeholder="wss://relay:8443" autocomplete="off">
@@ -317,8 +318,12 @@
               <label>Relay token
                 <input type="password" id="set-relay-token" placeholder="Relay shared secret" autocomplete="off">
               </label>
-              <label>CAM API token
-                <input type="password" id="set-relay-cam-token" placeholder="Token of the CAM Hub behind the relay" autocomplete="off">
+              <!-- CAM API token field hidden as of 2026-06-12. Kept in
+                   the DOM (display:none) so existing settings-mode.js
+                   refs to #set-relay-cam-token don't NPE; the value is
+                   ignored on connect. -->
+              <label style="display:none" aria-hidden="true">CAM API token (deprecated — leave blank)
+                <input type="password" id="set-relay-cam-token" placeholder="Profile-managed on the source side" autocomplete="off">
               </label>
             </div>
             <div class="settings-actions">

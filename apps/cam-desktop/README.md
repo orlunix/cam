@@ -45,8 +45,11 @@ Active Settings exposes two connection modes (canonical IDs in
   loopback, generates the API token, and connects the renderer to that
   Hub. The normal UI does not ask the user to type a Hub URL, run
   terminal commands, install WSL/Python, or install `cam`.
-- **Relay** (`REMOTE-012`) — relay URL + relay token + CAM API token,
-  for unreachable hubs.
+- **Relay** (`REMOTE-012`) — relay URL + relay token, for unreachable
+  hubs. The CAM API token is source/profile-managed (see
+  `~/.cam/camui/relay/<NAME>/profile.json`) and injected by the relay
+  on `/api/*` forwarding, so the Desktop/mobile UI only needs the
+  two relay fields.
 
 Future and deferred modes (not active Settings tabs):
 
