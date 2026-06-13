@@ -168,8 +168,25 @@ async def do_ws_upgrade(
 class Relay:
     """Stateless WebSocket relay between one server and many clients."""
 
-    def __init__(self, token: str | None = None, web_root: str | None = None) -> None:
+    def __init__(self, token: str | None = None, web_root: str | None = None,
+                 api_token: str | None = None) -> None:
         self._token = token
+        # CAM-DESK-REMOTE-012 (2026-06-12): when set, the relay injects
+        # ``Authorization: Bearer <api_token>`` into every proxied
+        # /api/* request whose ``authorization`` header is missing,
+        # so clients can connect with only Relay URL + Relay token and
+        # never need to handle the source-side CAM API token. Old
+        # clients that still send their own ``Authorization`` header
+        # pass through unchanged (backward compat).
+        #
+        # Two injection sites must stay in sync:
+        #   1. HTTP path  (Relay._proxy_api at /api/* HTTP requests)
+        #   2. WS  path   (Relay._handle_client REST-over-WS frames
+        #                  with payload.path starting with /api/)
+        # Desktop uses (2). Older mobile clients use (1). The helper
+        # ``_inject_api_token_into_headers`` is the single place that
+        # makes the decision.
+        self._api_token = api_token
         self._server_writer: asyncio.StreamWriter | None = None
         self._server_reader: asyncio.StreamReader | None = None
         self._server_sid: str | None = None  # session ID of connected server
@@ -179,6 +196,33 @@ class Relay:
         self._proxy_counter = 0
         self._proxy_pending: dict[str, asyncio.Future] = {}
         self._api_ws_clients: dict[str, asyncio.StreamWriter] = {}  # ws_id → writer
+
+    def _inject_api_token_into_headers(self, headers, path):
+        """Inject ``Authorization: Bearer <api_token>`` when:
+
+        - ``self._api_token`` is configured AND
+        - the request path starts with ``/api/`` (or equals ``/api``),
+          so we never touch ``/_relay/status``, websocket-only paths,
+          or any non-API REST surface AND
+        - the incoming ``headers`` dict has no ``authorization`` /
+          ``Authorization`` entry already (backward compat for older
+          clients that still ship the bearer end-to-end).
+
+        Returns the (possibly-mutated, copied) headers dict so the
+        caller can pass it straight to the forwarding frame without
+        worrying about whether we mutated the original.
+        """
+        if not self._api_token:
+            return headers
+        if not isinstance(path, str) or not (path == "/api" or path.startswith("/api/")):
+            return headers
+        h = headers or {}
+        for k in h:
+            if str(k).lower() == "authorization":
+                return h  # client supplied — leave it alone
+        out = dict(h)
+        out["authorization"] = f"Bearer {self._api_token}"
+        return out
 
     def _check_token(self, query: dict[str, list[str]]) -> bool:
         if not self._token:
@@ -295,6 +339,10 @@ class Relay:
         loop = asyncio.get_event_loop()
         future: asyncio.Future = loop.create_future()
         self._proxy_pending[req_id] = future
+
+        # Token injection (CAM-DESK-REMOTE-012). Same logic the WS
+        # /client path uses — see _inject_api_token_into_headers.
+        headers = self._inject_api_token_into_headers(headers, path)
 
         # Send request frame to server
         frame_data = _json.dumps({
@@ -600,12 +648,19 @@ class Relay:
                 elif opcode == OP_PONG:
                     continue
 
-                # Handle relay-internal requests directly
+                # Handle relay-internal requests directly + inject the
+                # source-side CAM API token (CAM-DESK-REMOTE-012) into
+                # /api/* frames lacking an Authorization header.
+                forward_payload = payload
                 if opcode == OP_TEXT:
                     import json as _json
                     try:
                         msg = _json.loads(payload)
-                        if msg.get("path") == "/_relay/status":
+                    except (ValueError, TypeError):
+                        msg = None
+                    if isinstance(msg, dict):
+                        msg_path = msg.get("path")
+                        if msg_path == "/_relay/status":
                             resp = _json.dumps({
                                 "id": msg.get("id", ""),
                                 "status": 200,
@@ -619,13 +674,23 @@ class Relay:
                             writer.write(make_frame(OP_TEXT, resp.encode()))
                             await writer.drain()
                             continue
-                    except (ValueError, TypeError):
-                        pass
+                        # /api/* frame: inject Authorization if missing.
+                        # The helper short-circuits when api_token is
+                        # unset, path is non-/api, or an authorization
+                        # header is already present, so non-JSON and
+                        # ping/status frames stay untouched.
+                        if isinstance(msg_path, str) and (
+                                msg_path == "/api" or msg_path.startswith("/api/")):
+                            new_headers = self._inject_api_token_into_headers(
+                                msg.get("headers") or {}, msg_path)
+                            if new_headers is not (msg.get("headers") or {}):
+                                msg["headers"] = new_headers
+                                forward_payload = _json.dumps(msg).encode()
 
                 # Forward to server
                 if self._server_writer is not None:
                     try:
-                        self._server_writer.write(make_frame(opcode, payload))
+                        self._server_writer.write(make_frame(opcode, forward_payload))
                         await self._server_writer.drain()
                     except Exception:
                         log.warning("Failed to forward client %d frame to server", cid)
@@ -725,8 +790,10 @@ class Relay:
 # ── Entry point ─────────────────────────────────────────────────────
 
 
-async def run_relay(host: str, port: int, token: str | None, web_root: str | None = None) -> None:
-    relay = Relay(token=token, web_root=web_root)
+async def run_relay(host: str, port: int, token: str | None,
+                    web_root: str | None = None,
+                    api_token: str | None = None) -> None:
+    relay = Relay(token=token, web_root=web_root, api_token=api_token)
     # family=AF_INET avoids dual-stack issues in some Docker environments
     import socket
     server = await asyncio.start_server(
@@ -739,6 +806,14 @@ async def run_relay(host: str, port: int, token: str | None, web_root: str | Non
         log.info("Auth token: %s...%s", token[:4], token[-4:])
     else:
         log.warning("No auth token — relay is open!")
+    if api_token:
+        # Log only a fingerprint so the secret never lands in stdout.
+        import hashlib
+        fp = "sha256:" + hashlib.sha256(api_token.encode()).hexdigest()[:24]
+        log.info(
+            "Source CAM API token configured (%s) — injecting Bearer on /api/* forwards",
+            fp,
+        )
     if web_root:
         log.info("Serving static files from %s", web_root)
 
@@ -747,15 +822,26 @@ async def run_relay(host: str, port: int, token: str | None, web_root: str | Non
 
 
 def main():
+    import os as _os
     parser = argparse.ArgumentParser(description="CAM Relay — WebSocket proxy")
     parser.add_argument("--host", default="0.0.0.0", help="Bind address")
     parser.add_argument("--port", type=int, default=8443, help="Listen port")
-    parser.add_argument("--token", default=None, help="Auth token")
+    parser.add_argument("--token", default=None, help="Auth token (Relay token; clients use ?token= on /server and /client)")
     parser.add_argument("--web-root", default=None, help="Directory to serve static files from")
+    parser.add_argument(
+        "--api-token", default=None,
+        help="Source-side CAM API token to inject into proxied /api/* "
+             "frames missing an Authorization header. Lets app/mobile "
+             "clients connect with only the Relay token. Falls back to "
+             "the CAMUI_API_TOKEN env var when omitted.",
+    )
     args = parser.parse_args()
 
+    api_token = args.api_token or _os.environ.get("CAMUI_API_TOKEN") or None
+
     try:
-        asyncio.run(run_relay(args.host, args.port, args.token, args.web_root))
+        asyncio.run(run_relay(args.host, args.port, args.token,
+                              args.web_root, api_token=api_token))
     except KeyboardInterrupt:
         log.info("Relay stopped")
 
