@@ -87,7 +87,15 @@ function resolveConnectionConfig(cfg) {
 }
 
 function hasConnectionConfig(cfg) {
-  if (cfg.profileKind === 'relay') return !!(cfg.relayUrl && cfg.relayToken && cfg.token);
+  // CAM-DESK-REMOTE-012 (2026-06-12): Relay requires only relayUrl +
+  // relayToken. The CAM API token is profile-managed on the source
+  // side and the relay injects it server-side, so a saved Relay
+  // profile with empty `cfg.token` must still be considered valid
+  // — otherwise autoStartConnection() / the reconnect loop treat
+  // the two-field Relay form as disconnected and never call
+  // CamApi.connect(). Direct mode still requires serverUrl + token
+  // end-to-end against the embedded Hub.
+  if (cfg.profileKind === 'relay') return !!(cfg.relayUrl && cfg.relayToken);
   if (cfg.profileKind === 'direct') return !!(cfg.serverUrl && cfg.token);
   return false;
 }

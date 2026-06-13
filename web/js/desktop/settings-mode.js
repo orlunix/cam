@@ -399,13 +399,21 @@ function mountRelayTab({ panel, readConfig, saveConfig, connect, showToast }) {
 
   const relayUrlEl   = panel.querySelector('#set-relay-url');
   const relayTokenEl = panel.querySelector('#set-relay-token');
+  // CAM-DESK-REMOTE-012 (2026-06-12): the CAM API token field is
+  // hidden in the Relay form. It is now profile-managed on the
+  // source side and injected by the relay; the legacy input
+  // (#set-relay-cam-token) stays in the DOM (display:none) so this
+  // querySelector still resolves and any stale localStorage value
+  // can be cleared without a follow-up cleanup pass.
   const camTokenEl   = panel.querySelector('#set-relay-cam-token');
 
-  // Initial fill from existing localStorage.
+  // Initial fill from existing localStorage. The hidden CAM token
+  // input no longer gets repopulated — leave it empty so a future
+  // save() doesn't carry forward a stale bearer.
   const cfg = readConfig();
   if (relayUrlEl)   relayUrlEl.value   = cfg.relayUrl || '';
   if (relayTokenEl) relayTokenEl.value = cfg.relayToken || '';
-  if (camTokenEl)   camTokenEl.value   = cfg.token || '';
+  if (camTokenEl)   camTokenEl.value   = '';
 
   function relaySetStatus(text, cls = '') {
     if (!relayStatus) return;
@@ -418,26 +426,18 @@ function mountRelayTab({ panel, readConfig, saveConfig, connect, showToast }) {
     e.preventDefault();
     const ru = relayUrlEl   ? relayUrlEl.value.trim()   : '';
     const rt = relayTokenEl ? relayTokenEl.value.trim() : '';
-    const ct = camTokenEl   ? camTokenEl.value.trim()   : '';
     if (!ru || !rt) {
-      relaySetStatus('Set both relay URL and relay token.', 'is-error');
+      relaySetStatus('Set both Relay URL and Relay token.', 'is-error');
       return;
     }
-    if (!ct) {
-      relaySetStatus(
-        'Set the CAM API token of the CAM Hub behind the relay. ' +
-        'Without it, proxied /api requests will be unauthenticated.',
-        'is-error',
-      );
-      return;
-    }
-    // Tab-isolation: Relay clears the Direct serverUrl so CamApi does
-    // not race Direct vs Relay, but keeps the CAM token under `token`
-    // because CamApi.request() needs it for Authorization on proxied
-    // REST calls (web/js/api.js).
+    // Tab-isolation: Relay clears the Direct serverUrl AND token so
+    // CamApi does not race Direct vs Relay, and the relay path no
+    // longer needs the CAM API token at the client (relay/relay.py
+    // injects it). Keeping token empty also means a later Direct
+    // login cannot accidentally inherit a stale relay-side bearer.
     saveConfig({
       serverUrl:  '',
-      token:      ct,
+      token:      '',
       relayUrl:   ru,
       relayToken: rt,
     });
@@ -448,7 +448,10 @@ function mountRelayTab({ panel, readConfig, saveConfig, connect, showToast }) {
       relaySetStatus(`Connected (${mode}).`, 'is-ok');
       showToast(`Connected (${mode})`, 'success');
     } else {
-      relaySetStatus('Connection failed — check relay URL, relay token, and CAM token.', 'is-error');
+      relaySetStatus(
+        'Connection failed — check Relay URL, Relay token, and source status.',
+        'is-error',
+      );
     }
   });
 }
