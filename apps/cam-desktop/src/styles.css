@@ -626,3 +626,350 @@ label {
   line-height: 1;
   cursor: pointer;
 }
+
+/* ------ Workspace mode navigation ------ */
+
+.mode-panel {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.mode-button {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.mode-button.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+/* ------ Todos / Notes worklog ------ */
+
+.worklog-page {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px;
+  background: #0d0f12;
+}
+
+.worklog-hero,
+.worklog-card {
+  width: min(100%, 1280px);
+  margin: 0 auto;
+}
+
+.worklog-hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.worklog-hero h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.worklog-hero p {
+  margin: 4px 0 0;
+  font-size: 13px;
+}
+
+.worklog-actions,
+.worklog-store-actions,
+.worklog-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.worklog-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 14px;
+}
+
+.worklog-tabs,
+.worklog-detail-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.worklog-tabs button,
+.worklog-detail-tabs button {
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.worklog-tabs button.active,
+.worklog-detail-tabs button.active {
+  background: var(--panel-2);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.worklog-store-card {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(260px, 1.2fr) auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #101318;
+  padding: 12px;
+}
+
+.worklog-label {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.worklog-store-card strong,
+.worklog-store-card code {
+  font-size: 12px;
+}
+
+.worklog-store-card code {
+  color: #d6dde4;
+  word-break: break-all;
+}
+
+.worklog-controls {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.6fr) minmax(140px, 0.8fr) minmax(140px, 0.8fr) minmax(140px, 0.8fr);
+  gap: 10px;
+}
+
+.worklog-outline {
+  display: grid;
+  gap: 10px;
+}
+
+.worklog-project {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #101318;
+  overflow: hidden;
+}
+
+.worklog-project > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.worklog-project h3,
+.worklog-detail h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.worklog-project-toggle {
+  width: 26px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+
+.worklog-item-list {
+  display: grid;
+}
+
+.worklog-row {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.worklog-row:last-child {
+  border-bottom: 0;
+}
+
+.worklog-row:hover:not(:disabled) {
+  background: #171b20;
+}
+
+.worklog-row.active {
+  background: var(--accent-bg);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.worklog-row-kind {
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.worklog-row-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.worklog-row-title {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worklog-row-title strong {
+  color: #d7b46a;
+  font-size: 12px;
+}
+
+.worklog-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  justify-content: flex-end;
+}
+
+.worklog-tag {
+  color: #b6c6dc;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 11px;
+  background: #151a20;
+}
+
+.worklog-detail {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: #101318;
+  padding: 14px;
+}
+
+.worklog-detail > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.worklog-detail p {
+  margin: 3px 0 0;
+}
+
+.worklog-properties {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.worklog-properties div {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  padding: 8px 10px;
+}
+
+.worklog-properties dt {
+  margin: 0 0 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.worklog-properties dd {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.worklog-detail-body {
+  min-height: 140px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 12px;
+  color: #d6dde4;
+}
+
+.worklog-detail-body p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.worklog-detail-body pre {
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.worklog-checklist,
+.worklog-history {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.45;
+}
+
+@media (max-width: 1080px) {
+  .worklog-store-card,
+  .worklog-controls,
+  .worklog-properties {
+    grid-template-columns: 1fr;
+  }
+
+  .worklog-row {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+
+  .worklog-tags {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+
+  .worklog-detail > header,
+  .worklog-hero {
+    flex-direction: column;
+  }
+
+  .worklog-actions,
+  .worklog-detail-actions,
+  .worklog-store-actions {
+    justify-content: flex-start;
+  }
+}

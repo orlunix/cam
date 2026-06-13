@@ -48,6 +48,7 @@ const path     = require('node:path');
 const fs       = require('node:fs');
 const os       = require('node:os');
 const readline = require('node:readline');
+const crypto   = require('node:crypto');
 
 const HUB_ROOT = path.resolve(__dirname, '..');                       // apps/cam-desktop
 const ELECTRON = path.join(HUB_ROOT, 'electron');
@@ -68,6 +69,7 @@ const BOOLEAN_FLAGS = new Set([
   'remember',
   'password-prompt',
   'passphrase-prompt',
+  'show-token',
 ]);
 
 function parseArgs(argv) {
@@ -133,6 +135,11 @@ Usage:
   camui --help
   camui [--json] status
   camui start               [--json]               foreground; Ctrl+C to stop
+                            [--relay-url ws://host:port]
+                            [--relay-token TOKEN]
+                            [--api-token TOKEN]    stable CAM API token (also CAMUI_API_TOKEN env)
+                            [--profile NAME]       read/write ~/.cam/camui/relay/<NAME>/profile.json
+                            [--show-token]         debug: print CAM API token for relay clients
   camui node list           [--json]
   camui node add            --name N --host H --user U
                             [--port 22] [--path /home/<user>]
@@ -233,17 +240,104 @@ function _safeStorageFromEnv() {
     decryptString() { return ''; },
   };
 }
-async function ensureHub() {
+// CAM-DESK-REMOTE-012 (2026-06-12): resolve a STABLE cam_api_token for
+// the embedded Hub so source restarts don't churn the bearer Desktop /
+// mobile / relay forwarding rely on. Order of precedence:
+//   1. --api-token <TOKEN>     (explicit per-invocation override)
+//   2. CAMUI_API_TOKEN env     (CI / container friendly)
+//   3. --profile <NAME>        (persistent: reads / writes
+//                               ~/.cam/camui/relay/<NAME>/profile.json,
+//                               generating cam_api_token once on first
+//                               use, file mode 0600)
+//   4. (no override) fall through to embedded-hub's genToken()
+// Full tokens are never logged. Diagnostics use sha256:<24hex>.
+function _tokenFingerprint(tok) {
+  if (!tok) return '';
+  return 'sha256:' + crypto.createHash('sha256').update(tok).digest('hex').slice(0, 24);
+}
+
+// Allowed profile names: alphanumerics + . _ -. No slashes, no .. so
+// --profile cannot escape the camui/relay/ root via traversal. Empty
+// names and pure-dot names ('.', '..') also rejected.
+const _SAFE_PROFILE_RE = /^[A-Za-z0-9._-]+$/;
+
+function _assertSafeProfileName(name) {
+  const s = String(name == null ? '' : name);
+  if (!s || s === '.' || s === '..' || !_SAFE_PROFILE_RE.test(s)) {
+    fail(
+      `invalid --profile name ${JSON.stringify(name)}: ` +
+      'must match /^[A-Za-z0-9._-]+$/ (no slashes, no traversal)',
+    );
+  }
+  return s;
+}
+
+function _relayProfileDir(name) {
+  return path.join(os.homedir(), '.cam', 'camui', 'relay',
+                   _assertSafeProfileName(name));
+}
+
+function _relayProfileFile(name) {
+  return path.join(_relayProfileDir(name), 'profile.json');
+}
+
+function _loadOrCreateProfile(name) {
+  const dir = _relayProfileDir(name);
+  const file = _relayProfileFile(name);
+  // Always (re-)tighten dir to 0700 — mkdirSync's `mode` is ignored
+  // when the dir already exists, and an older install may have left
+  // it group/world-readable. Same defensive pattern is then applied
+  // to the file after read/write.
+  try { fs.mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch (_) {}
+  try { fs.chmodSync(dir, 0o700); } catch (_) {}
+  let profile = {};
+  if (fs.existsSync(file)) {
+    try { profile = JSON.parse(fs.readFileSync(file, 'utf-8')); }
+    catch (_) { profile = {}; }
+    // Defensive re-chmod on read so a previously world-readable
+    // profile gets tightened even if we never need to write again
+    // this run.
+    try { fs.chmodSync(file, 0o600); } catch (_) {}
+  }
+  if (!profile.cam_api_token) {
+    // Generate once and persist with mode 0600.
+    profile.cam_api_token = crypto.randomBytes(24).toString('base64url');
+    fs.writeFileSync(file, JSON.stringify(profile, null, 2), { mode: 0o600 });
+    try { fs.chmodSync(file, 0o600); } catch (_) {}
+  }
+  return { profile, file };
+}
+
+function _resolveApiToken(flags) {
+  if (flags['api-token']) {
+    return { token: String(flags['api-token']), source: 'flag' };
+  }
+  if (process.env.CAMUI_API_TOKEN) {
+    return { token: String(process.env.CAMUI_API_TOKEN), source: 'env' };
+  }
+  if (flags['profile']) {
+    const { profile, file } = _loadOrCreateProfile(flags['profile']);
+    return { token: profile.cam_api_token, source: `profile:${file}` };
+  }
+  return { token: null, source: 'auto-generated' };
+}
+
+async function ensureHub(flags = {}) {
   if (_hub) return _hub;
   const dataDir = defaultDataDir();
   credentialStore.configure({ safeStorage: _safeStorageFromEnv(), dataDir });
   embeddedHub.configure({ credentialStore, sshTransport });
-  const res = await embeddedHub.start({ dataDir });
+  const { token: apiToken, source: tokenSource } = _resolveApiToken(flags);
+  const res = await embeddedHub.start({ dataDir, apiToken });
   if (!res || res.ok !== true) {
     fail(`failed to start embedded Hub: ${res && res.error || 'unknown'}`, 2);
   }
   _hub     = embeddedHub;
   _hubInfo = res;
+  // Stash the resolution source for diagnostics in `cmdStatus` /
+  // `cmdStart`. Use the fingerprint, never the raw token.
+  _hubInfo.apiTokenSource      = tokenSource;
+  _hubInfo.apiTokenFingerprint = _tokenFingerprint(res.apiToken);
   return _hub;
 }
 async function teardownHub() {
@@ -270,10 +364,166 @@ async function hubFetch(path_, opts = {}) {
   return { status: r.status, data };
 }
 
+
+/* ─────────────── relay connector (server side) ─────────────── */
+
+function normalizeRelayUrl(raw) {
+  if (!raw) return '';
+  let url = String(raw).trim().replace(/\/+$/, '');
+  if (!url) return '';
+  if (url.startsWith('http://')) url = 'ws://' + url.slice('http://'.length);
+  else if (url.startsWith('https://')) url = 'wss://' + url.slice('https://'.length);
+  if (!/^wss?:\/\//i.test(url)) url = 'ws://' + url;
+  return url;
+}
+
+function getHeader(headers, name) {
+  const want = String(name || '').toLowerCase();
+  for (const [k, v] of Object.entries(headers || {})) {
+    if (String(k).toLowerCase() === want) return String(v || '');
+  }
+  return '';
+}
+
+function relayAuthorized(headers) {
+  const auth = getHeader(headers, 'authorization');
+  return auth === `Bearer ${_hubInfo.apiToken}`;
+}
+
+function relayHttpResponse(id, status, bodyObj, headers = {}) {
+  const body = typeof bodyObj === 'string' ? bodyObj : JSON.stringify(bodyObj || {});
+  return {
+    id,
+    status,
+    headers: { 'content-type': 'application/json', ...headers },
+    body,
+  };
+}
+
+async function relayFetch(req) {
+  const method = String(req.method || 'GET').toUpperCase();
+  const path_ = String(req.path || '/');
+  const headers = req.headers || {};
+  const body = req.body == null ? '' : String(req.body);
+
+  if (method === 'WS') {
+    return relayHttpResponse(req.id, 501, { error: 'ws_not_supported', detail: 'camui CLI relay supports REST polling; /api/ws is not implemented in this source CLI connector yet.' });
+  }
+  if (!path_.startsWith('/api/')) {
+    return relayHttpResponse(req.id, 404, { error: 'not_found' });
+  }
+  if (!relayAuthorized(headers)) {
+    return relayHttpResponse(req.id, 401, { error: 'unauthorized', detail: 'missing or invalid CAM API token' });
+  }
+
+  const init = {
+    method,
+    headers: {
+      'Authorization': `Bearer ${_hubInfo.apiToken}`,
+      'Content-Type': getHeader(headers, 'content-type') || 'application/json',
+    },
+  };
+  if (!['GET', 'HEAD'].includes(method) && body) init.body = body;
+
+  try {
+    const r = await fetch(`${_hubInfo.apiUrl}${path_}`, init);
+    const text = await r.text();
+    return {
+      id: req.id,
+      status: r.status,
+      headers: { 'content-type': r.headers.get('content-type') || 'application/json' },
+      body: text,
+    };
+  } catch (e) {
+    return relayHttpResponse(req.id, 502, { error: 'hub_fetch_failed', detail: e && e.message || String(e) });
+  }
+}
+
+function relayUrlWithAuth(relayUrl, relayToken, sid) {
+  const url = new URL(`${relayUrl}/server`);
+  if (sid) url.searchParams.set('sid', sid);
+  if (relayToken) url.searchParams.set('token', relayToken);
+  return url.toString();
+}
+
+function startRelayConnector({ relayUrl, relayToken, json = false }) {
+  const baseUrl = normalizeRelayUrl(relayUrl);
+  if (!baseUrl) return { stop() {} };
+  if (typeof WebSocket !== 'function') {
+    fail('this Node runtime does not provide global WebSocket; use Node 20+ or install a WebSocket client', 2);
+  }
+
+  let stopped = false;
+  let ws = null;
+  let retryMs = 1000;
+  const sid = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+
+  function logRelay(msg) {
+    if (!json) process.stderr.write(`[relay] ${msg}\n`);
+  }
+
+  function connect() {
+    if (stopped) return;
+    const url = relayUrlWithAuth(baseUrl, relayToken, sid);
+    logRelay(`connecting ${baseUrl}`);
+    ws = new WebSocket(url);
+
+    ws.addEventListener('open', () => {
+      retryMs = 1000;
+      logRelay('connected');
+    });
+
+    ws.addEventListener('message', (ev) => {
+      void (async () => {
+        let text = '';
+        if (typeof ev.data === 'string') text = ev.data;
+        else if (ev.data instanceof ArrayBuffer) text = Buffer.from(ev.data).toString('utf8');
+        else if (Buffer.isBuffer(ev.data)) text = ev.data.toString('utf8');
+        else text = String(ev.data || '');
+
+        let req = null;
+        try { req = JSON.parse(text); }
+        catch (_) { return; }
+        const resp = await relayFetch(req);
+        try {
+          if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(resp));
+        } catch (e) {
+          logRelay(`send response failed: ${e && e.message || e}`);
+        }
+      })();
+    });
+
+    ws.addEventListener('close', (ev) => {
+      if (stopped) return;
+      const reason = ev && ev.reason ? ` (${ev.reason})` : '';
+      logRelay(`disconnected${reason}; reconnecting in ${Math.round(retryMs / 1000)}s`);
+      const wait = retryMs;
+      retryMs = Math.min(retryMs * 2, 60000);
+      const t = setTimeout(connect, wait);
+      if (typeof t.unref === 'function') t.unref();
+    });
+
+    ws.addEventListener('error', (ev) => {
+      const err = ev && (ev.error || ev.message) || 'connection error';
+      logRelay(String(err));
+    });
+  }
+
+  connect();
+  return {
+    stop() {
+      stopped = true;
+      try { if (ws) ws.close(); } catch {}
+    },
+    sid,
+    url: baseUrl,
+  };
+}
+
 /* ─────────────── commands ─────────────── */
 
 async function cmdStatus(flags) {
-  await ensureHub();
+  await ensureHub(flags);
   const out = {
     runtime:  'embedded',
     apiUrl:   _hubInfo.apiUrl,
@@ -284,13 +534,24 @@ async function cmdStatus(flags) {
 }
 
 async function cmdStart(flags) {
-  await ensureHub();
-  emit({
+  await ensureHub(flags);
+  const relayUrl = normalizeRelayUrl(flags['relay-url'] || '');
+  const relay = relayUrl ? startRelayConnector({ relayUrl, relayToken: flags['relay-token'] || '', json: !!flags.json }) : null;
+  const out = {
     started:  true,
     apiUrl:   _hubInfo.apiUrl,
     dataDir:  defaultDataDir(),
     mode:     'foreground',
-  }, !!flags.json);
+    relayUrl: relayUrl || '',
+    relaySid: relay && relay.sid || '',
+  };
+  // Always surface the (sha256-truncated) fingerprint + source so
+  // diagnostics can confirm which token the Hub adopted without ever
+  // leaking the raw secret. --show-token still opts into the raw value.
+  out.apiTokenSource      = _hubInfo.apiTokenSource;
+  out.apiTokenFingerprint = _hubInfo.apiTokenFingerprint;
+  if (flags['show-token']) out.apiToken = _hubInfo.apiToken;
+  emit(out, !!flags.json);
   // The embedded Hub is owned by THIS process: when this CLI exits,
   // the Hub dies with it. There is intentionally NO cross-process
   // `camui stop` in the source CLI — see the help text for why.
@@ -298,20 +559,26 @@ async function cmdStart(flags) {
   if (!flags.json) {
     process.stderr.write(
       '\nEmbedded Hub is running in the foreground.\n' +
+      (relayUrl ? `Relay connector: ${relayUrl}\n` : '') +
+      `CAM API token source: ${_hubInfo.apiTokenSource} (fingerprint ${_hubInfo.apiTokenFingerprint})\n` +
+      (flags['show-token']
+        ? `CAM API token: ${_hubInfo.apiToken}\n`
+        : 'CAM API token is profile-managed; the relay injects it on /api/* forwarding.\n'
+          + 'Use --show-token to print the raw token (debugging only).\n') +
       'Press Ctrl+C to stop. (No daemon mode in source CLI.)\n',
     );
   }
   // Stop cleanly on SIGINT so the loopback socket is freed and any
   // pending store writes flush before we exit.
   process.on('SIGINT', async () => {
+    try { relay && relay.stop && relay.stop(); } catch {}
     try { await embeddedHub.stop(); } catch {}
     process.exit(0);
   });
   await new Promise(() => {});  // wait for SIGINT
 }
-
 async function cmdNodeList(flags) {
-  await ensureHub();
+  await ensureHub(flags);
   const r = await hubFetch('/api/contexts');
   if (r.status !== 200) fail(`/api/contexts: HTTP ${r.status}`, 2);
   emit({ contexts: r.data.contexts || [] }, !!flags.json);
@@ -362,7 +629,7 @@ async function cmdNodeAdd(flags) {
       body.remember_passphrase = true;
     }
   }
-  await ensureHub();
+  await ensureHub(flags);
   const r = await hubFetch('/api/contexts', { method: 'POST', body });
   if (r.status === 201) {
     emit({ added: r.data }, !!flags.json);
@@ -391,21 +658,21 @@ async function cmdNodeSync(positional, flags) {
   if (pp != null) overrides.passphrase = pp;
   const opts = { method: 'POST' };
   if (overrides.password || overrides.passphrase) opts.body = overrides;
-  await ensureHub();
+  await ensureHub(flags);
   const r = await hubFetch(`/api/contexts/${encodeURIComponent(name)}/sync`, opts);
   if (r.status !== 200) fail(`sync HTTP ${r.status}`, 2);
   emit(r.data, !!flags.json);
 }
 
 async function cmdAgentList(flags) {
-  await ensureHub();
+  await ensureHub(flags);
   const r = await hubFetch('/api/agents');
   if (r.status !== 200) fail(`/api/agents: HTTP ${r.status}`, 2);
   emit({ agents: r.data.agents || [] }, !!flags.json);
 }
 
 async function cmdLogs(flags) {
-  await ensureHub();
+  await ensureHub(flags);
   // Logs come from the hub's in-memory ring buffer.
   const logs = embeddedHub.getLogs();
   emit(logs, !!flags.json);

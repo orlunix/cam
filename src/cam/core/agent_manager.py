@@ -731,7 +731,11 @@ class AgentManager:
         # Use agent's machine fields first (set by poller on import),
         # fall back to context lookup for legacy agents.
         host, user, port = agent.machine_host, agent.machine_user, agent.machine_port
-        if not host:
+        if agent.transport_type == TransportType.LOCAL:
+            # Contextless agents imported from the local camc are still fully
+            # addressable by the local camc. Do not require a CAM context row.
+            host = user = port = None
+        elif not host:
             context = self._context_store.get(str(agent.context_id))
             if context is None:
                 raise AgentManagerError("Agent's context not found")

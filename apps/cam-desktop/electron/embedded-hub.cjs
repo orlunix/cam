@@ -1661,7 +1661,7 @@ async function pickPort() {
 
 /* ─────────────── Lifecycle ─────────────── */
 
-async function start({ dataDir } = {}) {
+async function start({ dataDir, apiToken } = {}) {
   if (state.server) {
     return {
       ok:        true,
@@ -1682,7 +1682,13 @@ async function start({ dataDir } = {}) {
     return { ok: false, error: state.lastError, state: publicState() };
   }
 
-  state.token = genToken();
+  // CAM-DESK-REMOTE-012 (2026-06-12): if the caller supplies a stable
+  // apiToken (from --api-token / CAMUI_API_TOKEN / a relay profile),
+  // adopt it so source restarts don't churn the token Desktop/mobile
+  // clients use. Otherwise generate a fresh one for the loopback Hub.
+  state.token = (typeof apiToken === 'string' && apiToken.length > 0)
+    ? apiToken
+    : genToken();
   state.port  = port;
 
   const srv = http.createServer(async (req, res) => {

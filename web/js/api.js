@@ -237,6 +237,12 @@ export class CamApi {
         headers: {},
         body: body != null ? JSON.stringify(body) : '',
       };
+      // CAM-DESK-REMOTE-012 (2026-06-12): the relay injects
+      // ``Authorization: Bearer <api-token>`` server-side when the
+      // forwarded frame lacks one. So when ``this.token`` is empty
+      // (the new Relay UX), we deliberately send NO authorization
+      // header and let the relay supply it. Direct mode (where
+      // ``this.token`` IS set) still carries its own bearer end-to-end.
       if (this.token) frame.headers['authorization'] = `Bearer ${this.token}`;
       this.ws.send(JSON.stringify(frame));
     });
