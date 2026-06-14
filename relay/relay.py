@@ -367,8 +367,10 @@ class Relay:
             writer.close()
             return
 
-        # Wait for response from server (with timeout)
-        timeout = 60 if "/upload" in path else 30
+        # Wait for response from server (with timeout). Agent input/key
+        # routes may complete remotely even when SSH/camc confirmation is slow,
+        # so keep the relay open longer to avoid false client failures.
+        timeout = 120 if ("/upload" in path or path.endswith("/input") or path.endswith("/key")) else 30
         try:
             resp_data = await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
