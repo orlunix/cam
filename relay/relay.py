@@ -541,11 +541,20 @@ class Relay:
                     log.debug("Server PONG received")
                     continue
 
-                # Check if this is a response to an HTTP proxy or API-WS request
-                if opcode == OP_TEXT and (self._proxy_pending or self._api_ws_clients):
+                # Source heartbeat frames keep Node/undici WebSocket
+                # connections alive across NAT/tunnel paths. They are internal
+                # control frames and must not be forwarded to mobile clients.
+                if opcode == OP_TEXT:
                     import json as _json
                     try:
                         msg = _json.loads(payload)
+                        if msg.get("type") == "source_heartbeat":
+                            continue
+                    except (ValueError, TypeError):
+                        msg = None
+
+                    # Check if this is a response to an HTTP proxy or API-WS request
+                    if msg is not None and (self._proxy_pending or self._api_ws_clients):
                         req_id = msg.get("id", "")
 
                         # HTTP proxy response
@@ -566,8 +575,6 @@ class Relay:
                                 except Exception:
                                     self._api_ws_clients.pop(req_id, None)
                             continue
-                    except (ValueError, TypeError):
-                        pass
 
                 # Forward to all clients
                 dead = []
@@ -582,33 +589,16 @@ class Relay:
                     self._clients.pop(cid, None)
                     log.info("Client %d dropped (write error)", cid)
 
-        async def _ping_loop():
-            """Actively ping the server to detect dead connections.
-
-            Without this, relay has no way to know when a server connection
-            dies silently (e.g. SSH tunnel drops, NAT timeout). The relay
-            would keep _server_writer set, sending mobile requests into a
-            dead pipe that times out after 30s.
-
-            With active pings, relay detects dead connections within ~50s
-            and clears _server_writer, allowing cam serve to reconnect.
-            """
-            await asyncio.sleep(5)  # Let connection stabilize
-            while True:
-                try:
-                    writer.write(make_frame(OP_PING, b"relay-keepalive"))
-                    await writer.drain()
-                    log.debug("Server PING sent (keepalive)")
-                except Exception as e:
-                    log.warning("Server PING failed: %s — connection dead", e)
-                    return
-                await asyncio.sleep(25)
-
         try:
+            # Do not actively ping the source connection here. Node's built-in
+            # WebSocket client can close when this hand-written relay sends a
+            # server-side ping through some tunnel/NAT paths, which makes the
+            # source flap every few seconds. The source owns reconnects; relay
+            # requests still fail fast through the existing proxy timeout if a
+            # stale writer is discovered.
             read_task = asyncio.create_task(_read_loop())
-            ping_task = asyncio.create_task(_ping_loop())
             done, pending = await asyncio.wait(
-                [read_task, ping_task], return_when=asyncio.FIRST_COMPLETED,
+                [read_task], return_when=asyncio.FIRST_COMPLETED,
             )
             for t in pending:
                 t.cancel()
