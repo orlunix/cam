@@ -215,7 +215,8 @@ export class CamApi {
         return;
       }
       const id = `req-${++this._reqCounter}`;
-      const timeout = path.includes("/upload") ? 60000 : 15000;
+      const isAgentInputPath = /\/api\/agents\/[^/]+\/(input|key)$/.test(path);
+      const timeout = path.includes("/upload") ? 60000 : (isAgentInputPath ? 90000 : 15000);
       const timer = setTimeout(() => {
         this._requestMap.delete(id);
         // Track consecutive timeouts — force reconnect after 2
