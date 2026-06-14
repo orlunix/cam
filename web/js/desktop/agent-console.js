@@ -1684,6 +1684,15 @@ export function mountAgentConsole({ api, state, showToast }) {
 
   /* ── Composer (textarea, IME-safe) ── */
 
+  function isRelayRequestTimeout(err) {
+    return /relay request timeout/i.test(err && err.message ? err.message : String(err || ''));
+  }
+
+  function refreshAfterSendTimeout(label) {
+    showToast(`${label} confirmation timed out; refreshing output.`, 'warning', 5000);
+    window.setTimeout(() => { void loadOutput({ viaPoll: false }); }, 250);
+  }
+
   async function doSend() {
     const agent = selectedAgent();
     if (!agent || !isAgentsMode()) return;
@@ -1694,8 +1703,12 @@ export function mountAgentConsole({ api, state, showToast }) {
     try {
       await api.sendInput(agent.id, text, true);
     } catch (e) {
-      inputEl.value = text;
-      showToast(`Send failed: ${e.message}`, 'error', 5000);
+      if (isRelayRequestTimeout(e)) {
+        refreshAfterSendTimeout('Send');
+      } else {
+        inputEl.value = text;
+        showToast(`Send failed: ${e.message}`, 'error', 5000);
+      }
     } finally {
       sendBtn.disabled = false;
       inputEl.focus();
@@ -1895,7 +1908,8 @@ export function mountAgentConsole({ api, state, showToast }) {
       try {
         await api.sendInput(agent.id, text, false);
       } catch (e) {
-        showToast(`Input failed: ${e.message}`, 'error', 5000);
+        if (isRelayRequestTimeout(e)) refreshAfterSendTimeout('Input');
+        else showToast(`Input failed: ${e.message}`, 'error', 5000);
       } finally {
         restoreQuickBtn(btn, selectedAgent() || agent);
       }
@@ -1911,7 +1925,8 @@ export function mountAgentConsole({ api, state, showToast }) {
       try {
         await api.sendKey(agent.id, key);
       } catch (e) {
-        showToast(`Key failed: ${e.message}`, 'error', 5000);
+        if (isRelayRequestTimeout(e)) refreshAfterSendTimeout('Key');
+        else showToast(`Key failed: ${e.message}`, 'error', 5000);
       } finally {
         restoreQuickBtn(btn, selectedAgent() || agent);
       }
