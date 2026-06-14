@@ -455,6 +455,7 @@ function startRelayConnector({ relayUrl, relayToken, json = false }) {
 
   let stopped = false;
   let ws = null;
+  let heartbeatTimer = null;
   let retryMs = 1000;
   const sid = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
 
@@ -471,6 +472,17 @@ function startRelayConnector({ relayUrl, relayToken, json = false }) {
     ws.addEventListener('open', () => {
       retryMs = 1000;
       logRelay('connected');
+      try { if (heartbeatTimer) clearInterval(heartbeatTimer); } catch {}
+      heartbeatTimer = setInterval(() => {
+        try {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'source_heartbeat', sid, ts: Date.now() }));
+          }
+        } catch (e) {
+          logRelay(`heartbeat failed: ${e && e.message || e}`);
+        }
+      }, 2000);
+      if (typeof heartbeatTimer.unref === 'function') heartbeatTimer.unref();
     });
 
     ws.addEventListener('message', (ev) => {
@@ -494,6 +506,8 @@ function startRelayConnector({ relayUrl, relayToken, json = false }) {
     });
 
     ws.addEventListener('close', (ev) => {
+      try { if (heartbeatTimer) clearInterval(heartbeatTimer); } catch {}
+      heartbeatTimer = null;
       if (stopped) return;
       const reason = ev && ev.reason ? ` (${ev.reason})` : '';
       logRelay(`disconnected${reason}; reconnecting in ${Math.round(retryMs / 1000)}s`);
@@ -505,7 +519,7 @@ function startRelayConnector({ relayUrl, relayToken, json = false }) {
 
     ws.addEventListener('error', (ev) => {
       const err = ev && (ev.error || ev.message) || 'connection error';
-      logRelay(String(err));
+      logRelay(err && err.stack || err && err.message || String(err));
     });
   }
 
@@ -513,6 +527,8 @@ function startRelayConnector({ relayUrl, relayToken, json = false }) {
   return {
     stop() {
       stopped = true;
+      try { if (heartbeatTimer) clearInterval(heartbeatTimer); } catch {}
+      heartbeatTimer = null;
       try { if (ws) ws.close(); } catch {}
     },
     sid,
@@ -568,9 +584,24 @@ async function cmdStart(flags) {
       'Press Ctrl+C to stop. (No daemon mode in source CLI.)\n',
     );
   }
+  // The Hub server and Node's built-in WebSocket implementation may not
+  // keep the event loop referenced across a relay reconnect. Keep the
+  // foreground source process alive until SIGINT so relay deployments
+  // recover instead of silently exiting.
+  const keepAlive = setInterval(() => {}, 60_000);
+  if (!flags.json) {
+    process.on('uncaughtException', (err) => {
+      process.stderr.write(`[fatal] ${err && err.stack || err}\n`);
+      process.exit(1);
+    });
+    process.on('exit', (code) => {
+      process.stderr.write(`[exit] camui source exiting code=${code}\n`);
+    });
+  }
   // Stop cleanly on SIGINT so the loopback socket is freed and any
   // pending store writes flush before we exit.
   process.on('SIGINT', async () => {
+    try { clearInterval(keepAlive); } catch {}
     try { relay && relay.stop && relay.stop(); } catch {}
     try { await embeddedHub.stop(); } catch {}
     process.exit(0);
