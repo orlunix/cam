@@ -197,6 +197,25 @@ class Relay:
         self._proxy_pending: dict[str, asyncio.Future] = {}
         self._api_ws_clients: dict[str, asyncio.StreamWriter] = {}  # ws_id → writer
 
+    async def _drop_server_connection(self, reason: str) -> None:
+        """Close a stale source connection so the source can reconnect."""
+        writer = self._server_writer
+        if writer is None:
+            return
+        log.warning("Dropping source connection: %s", reason)
+        self._server_writer = None
+        self._server_reader = None
+        self._server_sid = None
+        try:
+            writer.write(make_frame(OP_CLOSE, b""))
+            await asyncio.wait_for(writer.drain(), timeout=1.0)
+        except Exception:
+            pass
+        try:
+            writer.close()
+        except Exception:
+            pass
+
     def _inject_api_token_into_headers(self, headers, path):
         """Inject ``Authorization: Bearer <api_token>`` when:
 
@@ -376,6 +395,7 @@ class Relay:
         except asyncio.TimeoutError:
             log.error("Proxy %s: timeout waiting for server response", req_id)
             self._proxy_pending.pop(req_id, None)
+            await self._drop_server_connection(f"proxy {req_id} timed out for {path}")
             try:
                 writer.write(b"HTTP/1.1 504 Gateway Timeout\r\nContent-Length: 0\r\n\r\n")
                 await writer.drain()
@@ -472,24 +492,16 @@ class Relay:
 
     async def _handle_server(self, reader, writer, peer, sid: str | None = None) -> None:
         if self._server_writer is not None:
-            # Same sid (or no sid) → reconnect from the same instance, allow replacement
-            # Different sid → different instance, reject the newcomer
-            if sid and self._server_sid and sid != self._server_sid:
-                log.warning(
-                    "Server slot occupied by sid=%s, rejecting new sid=%s from %s",
-                    self._server_sid[:8], sid[:8], peer,
-                )
-                try:
-                    reason = b"server_slot_occupied"
-                    close_payload = struct.pack("!H", 4409) + reason
-                    writer.write(make_frame(OP_CLOSE, close_payload))
-                    await asyncio.wait_for(writer.drain(), timeout=2.0)
-                except Exception:
-                    pass
-                writer.close()
-                return
-
-            log.info("Server reconnecting (same instance), replacing old connection")
+            # A reconnecting source can have a new sid after process restart.
+            # Treat the latest authenticated /server connection as authoritative
+            # and replace the old slot instead of leaving Relay in a stale
+            # server_connected-but-unresponsive state.
+            log.info(
+                "Server reconnecting, replacing old sid=%s with sid=%s from %s",
+                self._server_sid[:8] if self._server_sid else "none",
+                sid[:8] if sid else "none",
+                peer,
+            )
             try:
                 reason = b"replaced by reconnect"
                 close_payload = struct.pack("!H", 1000) + reason
@@ -548,7 +560,7 @@ class Relay:
                     import json as _json
                     try:
                         msg = _json.loads(payload)
-                        if msg.get("type") == "source_heartbeat":
+                        if msg.get("type") in ("source_heartbeat", "relay_pong"):
                             continue
                     except (ValueError, TypeError):
                         msg = None
@@ -596,9 +608,23 @@ class Relay:
             # source flap every few seconds. The source owns reconnects; relay
             # requests still fail fast through the existing proxy timeout if a
             # stale writer is discovered.
+            async def _ping_loop():
+                import json as _json
+                import time as _time
+                while True:
+                    await asyncio.sleep(10)
+                    try:
+                        payload = _json.dumps({"type": "relay_ping", "ts": _time.time()}).encode()
+                        writer.write(make_frame(OP_TEXT, payload))
+                        await asyncio.wait_for(writer.drain(), timeout=3.0)
+                    except Exception as e:
+                        log.warning("Source relay_ping failed: %s", e)
+                        return
+
             read_task = asyncio.create_task(_read_loop())
+            ping_task = asyncio.create_task(_ping_loop())
             done, pending = await asyncio.wait(
-                [read_task], return_when=asyncio.FIRST_COMPLETED,
+                [read_task, ping_task], return_when=asyncio.FIRST_COMPLETED,
             )
             for t in pending:
                 t.cancel()
