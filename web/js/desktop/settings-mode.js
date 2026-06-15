@@ -18,7 +18,8 @@
  *
  *   Relay  — external relay endpoint that proxies to an existing Hub
  *            (CAM-DESK-REMOTE-012). User-typed relay URL + relay
- *            token + CAM API token.
+ *            token. The CAM API token is profile-managed on the source
+ *            side and injected by the relay.
  *
  * The earlier separate "Local" tab and the user-typed Direct URL/token
  * form are retired. Their safe main-process lifecycle code is reused
@@ -72,7 +73,7 @@ function bridgeDirectHub() {
   return (b && b.directHub) || null;
 }
 
-export function mountSettingsMode({ state, showToast, readConfig, saveConfig, connect }) {
+export function mountSettingsMode({ api, state, showToast, readConfig, saveConfig, connect }) {
   const panel = document.getElementById('mode-settings');
   if (!panel) return;
 
@@ -91,16 +92,17 @@ export function mountSettingsMode({ state, showToast, readConfig, saveConfig, co
     }
   } catch {}
 
-  /* ────────── Settings tabs (Direct / Relay only) ──────────
-   * CAM-DESK-REMOTE-014: active Settings has exactly two tabs.
-   * Unknown saved tab values (e.g. legacy 'local') are clamped to
-   * 'direct' so existing users do not crash on an unrendered tab. */
+  /* ────────── Settings tabs (Direct / Relay / Appearance) ──────────
+   * Active Settings has three tabs. Unknown saved tab values (e.g.
+   * legacy 'local') are clamped to 'direct' so existing users do not
+   * crash on an unrendered tab. */
   const tabButtons = panel.querySelectorAll('.settings-tab[data-tab]');
   const tabPanels  = panel.querySelectorAll('.settings-tab-panel[data-tab]');
   const TAB_KEY    = 'cam_desktop_settings_tab';
+  const VALID_TABS = ['direct', 'relay', 'appearance'];
 
   function applyTab(name) {
-    if (name !== 'direct' && name !== 'relay') name = 'direct';
+    if (!VALID_TABS.includes(name)) name = 'direct';
     tabButtons.forEach((b) => {
       const active = b.dataset.tab === name;
       b.setAttribute('aria-pressed', active ? 'true' : 'false');
@@ -116,7 +118,7 @@ export function mountSettingsMode({ state, showToast, readConfig, saveConfig, co
   function pickInitialTab() {
     try {
       const saved = localStorage.getItem(TAB_KEY);
-      if (saved === 'direct' || saved === 'relay') return saved;
+      if (VALID_TABS.includes(saved)) return saved;
     } catch {}
     if (_profileKind() === 'relay') return 'relay';
     return 'direct';
@@ -128,21 +130,27 @@ export function mountSettingsMode({ state, showToast, readConfig, saveConfig, co
   applyTab(pickInitialTab());
 
   /* ────────── Direct tab — app-managed Hub lifecycle ────────── */
-  mountDirectTab({ panel, state, showToast, saveConfig, connect });
+  mountDirectTab({ panel, api, state, showToast, readConfig, saveConfig, connect });
 
   /* ────────── Relay tab ──────────
    * The Relay user-mode points at an external relay endpoint that
-   * proxies REST traffic to an existing CAM Hub. Because the proxied
-   * requests still hit a token-protected /api/* surface, we need
-   * THREE inputs: relay URL + relay shared secret + the CAM Hub's API
-   * token. Without the third, the websocket connects but every proxied
-   * REST call fails 401. */
+   * proxies REST traffic to an existing CAM Hub. The Desktop UI only
+   * asks for Relay URL + Relay token; the source-side CAM API token is
+   * profile-managed and injected by relay/relay.py on /api/* forwarding. */
   mountRelayTab({ panel, readConfig, saveConfig, connect, showToast });
+
+  /* ────────── Appearance tab (CAM-DESK-SET-002) ──────────
+   * Theme (dark/light/system) + UI font size + agent-output font
+   * size. Stored in localStorage; applied immediately via body
+   * `data-theme` + CSS custom properties on `body.desktop`.
+   * `applyAppearance()` was already called at module-load time so
+   * the initial paint is correct before this mount runs. */
+  mountAppearanceTab({ panel, showToast });
 }
 
 /* ───────── Direct tab controller (CAM-DESK-DIRECT-010..019) ───────── */
 
-function mountDirectTab({ panel, state, showToast, saveConfig, connect }) {
+function mountDirectTab({ panel, api, state, showToast, readConfig, saveConfig, connect }) {
   const tabPanel = panel.querySelector('#settings-tab-direct');
   if (!tabPanel) return;
 
@@ -177,11 +185,18 @@ function mountDirectTab({ panel, state, showToast, saveConfig, connect }) {
 
   function summaryDetail(r) {
     if (!r) return '';
+    const range = r.apiPortRange && r.apiPortRange.start != null && r.apiPortRange.end != null
+      ? `${r.apiPortRange.start}..${r.apiPortRange.end}`
+      : `${r.apiPort}+`;
     switch (r.summary) {
       case 'running':       return 'Embedded CAM Hub is running on this machine.';
       case 'starting':      return 'Embedded CAM Hub is starting…';
-      case 'port-conflict': return `All candidate loopback ports (${r.apiPort}+) are in use. Free one of them and click Check again.`;
-      case 'stopped':       return 'Embedded CAM Hub is stopped. Click Start to launch it.';
+      case 'port-conflict': return `No fixed Direct port in ${range} could be bound, and the OS-assigned fallback also failed. Open Diagnostics and check Port candidates for the real bind error.`;
+      case 'stopped':
+        if (r.apiPortStatus && r.apiPortStatus.state === 'fallback-free') {
+          return `Fixed Direct ports (${range}) are unavailable, but an OS-assigned loopback port is available. Click Restart to recover.`;
+        }
+        return 'Embedded CAM Hub is stopped. Click Start to launch it.';
       case 'error':         return r.lastError || 'Embedded CAM Hub failed to start.';
       default:              return r.summary || '';
     }
@@ -196,14 +211,32 @@ function mountDirectTab({ panel, state, showToast, saveConfig, connect }) {
     targetEl.innerHTML = `Runtime: <strong>embedded</strong> (Electron Node${plat})`;
   }
 
+  function portCandidateSummary(r) {
+    const c = r && r.apiPortCandidates;
+    if (!c) return '—';
+    const errors = c.errors && Object.keys(c.errors).length
+      ? ' · ' + Object.entries(c.errors).map(([k, v]) => `${k}:${v}`).join(', ')
+      : '';
+    const first = c.firstFree == null ? 'none' : c.firstFree;
+    const fallback = c.fallback
+      ? ` · OS fallback: ${c.fallback}${c.fallbackError ? ` (${c.fallbackError})` : ''}`
+      : '';
+    return `${c.free}/${c.count} free · first free: ${first}${fallback}${errors}`;
+  }
+
   function renderDiagnostics(r) {
     if (!r) { diagGrid.textContent = '(no data)'; return; }
     const portState = r.apiPortStatus && r.apiPortStatus.state;
+    const cfg = typeof readConfig === 'function' ? readConfig() : {};
     const rows = [
       ['Runtime',        'embedded (Electron Node)'],
       ['Platform',       r.platform || '—'],
       ['API port',       `${r.apiPort}${portState ? ' — ' + portState : ''}`],
+      ['Port scan range', r.apiPortRange ? `${r.apiPortRange.start}..${r.apiPortRange.end}` : '—'],
+      ['Port candidates', portCandidateSummary(r)],
       ['Profile kind',   _profileKind()],
+      ['Saved Direct URL', cfg.serverUrl || '—'],
+      ['Renderer API mode', api && api.mode ? api.mode : (state && state.get ? state.get('connectionMode') : '—')],
     ];
     if (r.state && r.state.server) {
       const s = r.state.server;
@@ -229,11 +262,15 @@ function mountDirectTab({ panel, state, showToast, saveConfig, connect }) {
     // The embedded Hub is built in — there is no local-runtime
     // gate. Start is only blocked when the whole candidate port range
     // is exhausted (summary === 'port-conflict'). The hub-side
-    // start() does its own scan and will pick 8421..8429 if 8420 is
-    // taken, so a single foreign listener on 8420 must not block UI.
+    // start() does its own scan and will pick an alternate candidate if
+    // 8420 is busy (within the embedded Hub's configured scan range), so
+    // a single foreign listener on 8420 must not block UI.
     startBtn.disabled = !supported || owned || summary === 'port-conflict';
     stopBtn.disabled    = !supported || !owned;
-    restartBt.disabled  = !supported || !owned;
+    // Restart doubles as Direct recovery: when disconnected or when the
+    // previous loopback URL/token is stale, restart() is stop(no-op)+start
+    // and then we persist the fresh URL/token before reconnecting.
+    restartBt.disabled  = !supported;
   }
 
   async function refreshCheck() {
@@ -276,8 +313,9 @@ function mountDirectTab({ panel, state, showToast, saveConfig, connect }) {
       return;
     }
     if (!res || res.ok !== true) {
-      setStatus(res && res.error ? res.error : 'Start failed.', 'is-error');
-      setHint(res && res.error ? res.error : 'See Diagnostics for details.', 'is-error');
+      const msg = res && res.error ? res.error : 'Start failed.';
+      setStatus(msg, 'is-error');
+      setHint(msg, 'is-error');
       await refreshCheck();
       return;
     }
@@ -333,12 +371,16 @@ function mountDirectTab({ panel, state, showToast, saveConfig, connect }) {
 
   async function doRestart() {
     if (!bridgeDirectHub()) return;
-    setStatus('Restarting embedded Hub…');
+    setStatus('Restarting Direct connection…');
+    setHint('Starting a fresh embedded Hub and refreshing the Direct URL/token…');
     setBadge('starting');
+    [startBtn, stopBtn, restartBt].forEach((b) => { if (b) b.disabled = true; });
     try {
       const res = await bridgeDirectHub().restart();
-      if (!res || res.ok !== true) {
-        setStatus((res && res.error) || 'Restart failed.', 'is-error');
+      if (!res || res.ok !== true || !res.apiUrl || !res.apiToken) {
+        const msg = (res && res.error) || 'Restart failed.';
+        setStatus(msg, 'is-error');
+        setHint(msg, 'is-error');
       } else {
         saveConfig({
           serverUrl:  res.apiUrl,
@@ -350,12 +392,16 @@ function mountDirectTab({ panel, state, showToast, saveConfig, connect }) {
         const mode = await connect();
         if (mode !== 'disconnected') {
           setStatus(`Reconnected (${mode}).`, 'is-ok');
+          setHint('Direct profile was refreshed with a new embedded Hub URL/token.', 'is-ok');
+          showToast('Direct connection restarted', 'success');
         } else {
-          setStatus('Restarted but reconnect failed.', 'is-error');
+          setStatus('Restarted Hub but reconnect failed.', 'is-error');
+          setHint('Open Diagnostics and check Saved Direct URL, Renderer API mode, and Port candidates.', 'is-error');
         }
       }
     } catch (e) {
       setStatus(`Restart failed: ${e?.message || e}`, 'is-error');
+      setHint(`Restart failed: ${e?.message || e}`, 'is-error');
     }
     await refreshCheck();
   }
@@ -399,17 +445,11 @@ function mountRelayTab({ panel, readConfig, saveConfig, connect, showToast }) {
 
   const relayUrlEl   = panel.querySelector('#set-relay-url');
   const relayTokenEl = panel.querySelector('#set-relay-token');
-  // CAM-DESK-REMOTE-012 (2026-06-12): the CAM API token field is
-  // hidden in the Relay form. It is now profile-managed on the
-  // source side and injected by the relay; the legacy input
-  // (#set-relay-cam-token) stays in the DOM (display:none) so this
-  // querySelector still resolves and any stale localStorage value
-  // can be cleared without a follow-up cleanup pass.
   const camTokenEl   = panel.querySelector('#set-relay-cam-token');
 
-  // Initial fill from existing localStorage. The hidden CAM token
-  // input no longer gets repopulated — leave it empty so a future
-  // save() doesn't carry forward a stale bearer.
+  // Initial fill from existing localStorage. The hidden CAM token input
+  // is deliberately left empty so stale client-side bearer values do not
+  // survive into the two-field Relay model.
   const cfg = readConfig();
   if (relayUrlEl)   relayUrlEl.value   = cfg.relayUrl || '';
   if (relayTokenEl) relayTokenEl.value = cfg.relayToken || '';
@@ -430,11 +470,10 @@ function mountRelayTab({ panel, readConfig, saveConfig, connect, showToast }) {
       relaySetStatus('Set both Relay URL and Relay token.', 'is-error');
       return;
     }
-    // Tab-isolation: Relay clears the Direct serverUrl AND token so
-    // CamApi does not race Direct vs Relay, and the relay path no
-    // longer needs the CAM API token at the client (relay/relay.py
-    // injects it). Keeping token empty also means a later Direct
-    // login cannot accidentally inherit a stale relay-side bearer.
+    // Tab-isolation: Relay clears the Direct serverUrl AND token. The
+    // CAM API token is now owned by the source profile and injected by
+    // the relay on /api/* forwarding, so the renderer must not keep or
+    // send a stale client-side bearer.
     saveConfig({
       serverUrl:  '',
       token:      '',
@@ -448,10 +487,202 @@ function mountRelayTab({ panel, readConfig, saveConfig, connect, showToast }) {
       relaySetStatus(`Connected (${mode}).`, 'is-ok');
       showToast(`Connected (${mode})`, 'success');
     } else {
-      relaySetStatus(
-        'Connection failed — check Relay URL, Relay token, and source status.',
-        'is-error',
-      );
+      relaySetStatus('Connection failed — check Relay URL, Relay token, and source status.', 'is-error');
     }
   });
+}
+
+/* ───────── Appearance tab (CAM-DESK-SET-002) ─────────
+ *
+ * Theme + font-size are renderer-only preferences. Persisted via
+ * localStorage; applied immediately by setting `data-theme` on
+ * `body` and CSS custom properties (`--ui-font-size`,
+ * `--output-font-size`) on `body.desktop`. The light theme is
+ * implemented as `body.desktop[data-theme="light"]` overrides in
+ * `web/css/desktop.css`; the dark theme is the default (no
+ * attribute set).
+ *
+ * `applyAppearance()` is called once at module-load time so the
+ * initial paint is correct before any view mounts. It is also
+ * called again from `mountAppearanceTab` whenever a control
+ * changes. A `prefers-color-scheme` MediaQueryList listener keeps
+ * the "Match system" mode in sync if the OS theme switches.
+ */
+
+const APPEARANCE_THEME_KEY     = 'cam_desktop_theme';
+const APPEARANCE_UI_FONT_KEY   = 'cam_desktop_font_ui';
+const APPEARANCE_OUTPUT_KEY    = 'cam_desktop_font_output';
+const APPEARANCE_VALID_THEMES  = ['dark', 'light', 'system'];
+const APPEARANCE_UI_MIN        = 11;
+const APPEARANCE_UI_MAX        = 17;
+const APPEARANCE_UI_DEFAULT    = 13;
+const APPEARANCE_OUTPUT_MIN    = 10;
+const APPEARANCE_OUTPUT_MAX    = 20;
+const APPEARANCE_OUTPUT_DEFAULT = 13;
+
+function _readAppearanceTheme() {
+  try {
+    const v = localStorage.getItem(APPEARANCE_THEME_KEY);
+    if (APPEARANCE_VALID_THEMES.includes(v)) return v;
+  } catch {}
+  return 'dark';
+}
+function _readAppearanceFont(key, def, min, max) {
+  try {
+    const raw = localStorage.getItem(key);
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= min && n <= max) return n;
+  } catch {}
+  return def;
+}
+function _systemPrefersLight() {
+  try {
+    return !!(typeof window !== 'undefined' &&
+              window.matchMedia &&
+              window.matchMedia('(prefers-color-scheme: light)').matches);
+  } catch { return false; }
+}
+function _resolveEffectiveTheme(setting) {
+  if (setting === 'light') return 'light';
+  if (setting === 'dark')  return 'dark';
+  return _systemPrefersLight() ? 'light' : 'dark';
+}
+
+/** Apply the current saved appearance to the DOM. Idempotent.
+ *  Safe to call multiple times; safe to call before any view is
+ *  mounted (it only touches `<body>`). */
+export function applyAppearance() {
+  if (typeof document === 'undefined' || !document.body) return;
+  const body = document.body;
+  const themeSetting   = _readAppearanceTheme();
+  const effectiveTheme = _resolveEffectiveTheme(themeSetting);
+
+  // `data-theme` is only set when light; dark is the unattributed
+  // default so existing CSS continues to render as before.
+  if (effectiveTheme === 'light') {
+    body.setAttribute('data-theme', 'light');
+  } else {
+    body.removeAttribute('data-theme');
+  }
+  // Record the explicit user choice too, so the Appearance form can
+  // distinguish "system → currently light" from "explicit light".
+  body.setAttribute('data-theme-setting', themeSetting);
+
+  const ui = _readAppearanceFont(
+    APPEARANCE_UI_FONT_KEY, APPEARANCE_UI_DEFAULT,
+    APPEARANCE_UI_MIN, APPEARANCE_UI_MAX,
+  );
+  const out = _readAppearanceFont(
+    APPEARANCE_OUTPUT_KEY, APPEARANCE_OUTPUT_DEFAULT,
+    APPEARANCE_OUTPUT_MIN, APPEARANCE_OUTPUT_MAX,
+  );
+  body.style.setProperty('--ui-font-size', `${ui}px`);
+  body.style.setProperty('--output-font-size', `${out}px`);
+}
+
+// Side-effect at module load: apply persisted appearance before any
+// panel mounts, so the very first paint matches the saved choice.
+applyAppearance();
+
+// Keep "Match system" in sync if the OS theme flips while the app
+// is running. Best-effort: older browsers without addEventListener
+// on MQL fall through gracefully.
+try {
+  if (typeof window !== 'undefined' && window.matchMedia) {
+    const mq = window.matchMedia('(prefers-color-scheme: light)');
+    const onChange = () => {
+      if (_readAppearanceTheme() === 'system') applyAppearance();
+    };
+    if (typeof mq.addEventListener === 'function') mq.addEventListener('change', onChange);
+    else if (typeof mq.addListener === 'function')  mq.addListener(onChange);
+  }
+} catch {}
+
+function mountAppearanceTab({ panel, showToast }) {
+  const tabPanel = panel.querySelector('#settings-tab-appearance');
+  if (!tabPanel) return;
+
+  const themeSel       = tabPanel.querySelector('#appearance-theme');
+  const uiFontInput    = tabPanel.querySelector('#appearance-ui-font');
+  const uiFontValEl    = tabPanel.querySelector('#appearance-ui-font-val');
+  const outFontInput   = tabPanel.querySelector('#appearance-output-font');
+  const outFontValEl   = tabPanel.querySelector('#appearance-output-font-val');
+  const resetBtn       = tabPanel.querySelector('#appearance-reset');
+  const statusEl       = tabPanel.querySelector('#settings-status-appearance');
+
+  function setStatus(text, cls = '') {
+    if (!statusEl) return;
+    statusEl.textContent = text || '';
+    statusEl.classList.remove('is-error', 'is-ok');
+    if (cls) statusEl.classList.add(cls);
+  }
+
+  // Initialize controls from saved values.
+  function syncFromStorage() {
+    const theme = _readAppearanceTheme();
+    const ui    = _readAppearanceFont(
+      APPEARANCE_UI_FONT_KEY, APPEARANCE_UI_DEFAULT,
+      APPEARANCE_UI_MIN, APPEARANCE_UI_MAX,
+    );
+    const out   = _readAppearanceFont(
+      APPEARANCE_OUTPUT_KEY, APPEARANCE_OUTPUT_DEFAULT,
+      APPEARANCE_OUTPUT_MIN, APPEARANCE_OUTPUT_MAX,
+    );
+    if (themeSel)     themeSel.value         = theme;
+    if (uiFontInput)  uiFontInput.value      = String(ui);
+    if (uiFontValEl)  uiFontValEl.textContent = `${ui} px`;
+    if (outFontInput) outFontInput.value     = String(out);
+    if (outFontValEl) outFontValEl.textContent = `${out} px`;
+  }
+  syncFromStorage();
+
+  if (themeSel) {
+    themeSel.addEventListener('change', () => {
+      const v = themeSel.value;
+      if (!APPEARANCE_VALID_THEMES.includes(v)) return;
+      try { localStorage.setItem(APPEARANCE_THEME_KEY, v); } catch {}
+      applyAppearance();
+      setStatus(`Theme set to ${v}.`, 'is-ok');
+    });
+  }
+
+  function commitFont(input, valEl, key, min, max) {
+    if (!input) return;
+    let n = Number.parseInt(input.value, 10);
+    if (!Number.isFinite(n)) n = min;
+    if (n < min) n = min;
+    if (n > max) n = max;
+    input.value = String(n);
+    if (valEl) valEl.textContent = `${n} px`;
+    try { localStorage.setItem(key, String(n)); } catch {}
+    applyAppearance();
+  }
+  if (uiFontInput) {
+    uiFontInput.addEventListener('input', () => {
+      commitFont(uiFontInput, uiFontValEl, APPEARANCE_UI_FONT_KEY,
+                 APPEARANCE_UI_MIN, APPEARANCE_UI_MAX);
+    });
+  }
+  if (outFontInput) {
+    outFontInput.addEventListener('input', () => {
+      commitFont(outFontInput, outFontValEl, APPEARANCE_OUTPUT_KEY,
+                 APPEARANCE_OUTPUT_MIN, APPEARANCE_OUTPUT_MAX);
+    });
+  }
+
+  if (resetBtn) {
+    resetBtn.addEventListener('click', () => {
+      try {
+        localStorage.removeItem(APPEARANCE_THEME_KEY);
+        localStorage.removeItem(APPEARANCE_UI_FONT_KEY);
+        localStorage.removeItem(APPEARANCE_OUTPUT_KEY);
+      } catch {}
+      applyAppearance();
+      syncFromStorage();
+      setStatus('Reset to defaults.', 'is-ok');
+      if (typeof showToast === 'function') {
+        showToast('Appearance reset to defaults.', 'success');
+      }
+    });
+  }
 }
