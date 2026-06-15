@@ -18,9 +18,9 @@
   <script src="vendor/xterm/addon-fit.js?v=0.64.0"></script>
   <link rel="modulepreload" href="js/api.js?v=0.64.0">
   <link rel="modulepreload" href="js/state.js?v=0.64.0">
-  <link rel="modulepreload" href="js/desktop/app.js?v=0.64.0">
+  <link rel="modulepreload" href="js/desktop/app.js?v=0.64.1">
   <link rel="modulepreload" href="js/desktop/shell.js?v=0.64.0">
-  <link rel="modulepreload" href="js/desktop/agent-console.js?v=0.64.0">
+  <link rel="modulepreload" href="js/desktop/agent-console.js?v=0.64.1">
   <link rel="modulepreload" href="js/desktop/settings-mode.js?v=0.64.0">
   <link rel="modulepreload" href="js/desktop/start-agent-mode.js?v=0.64.0">
   <link rel="modulepreload" href="js/desktop/nodes-mode.js?v=0.64.0">
@@ -457,8 +457,9 @@
               <p class="settings-help">
                 Connect Desktop to an existing CAM Hub through a relay
                 endpoint. The relay forwards REST/WS to a Hub you cannot
-                reach directly — you still need that Hub's API token so
-                the proxied requests authenticate.
+                reach directly. The CAM API token is profile-managed on
+                the source side and injected by the relay; only the Relay
+                URL and Relay token are needed here.
               </p>
               <label>Relay URL
                 <input type="url" id="set-relay-url" placeholder="wss://relay:8443" autocomplete="off">
@@ -466,8 +467,8 @@
               <label>Relay token
                 <input type="password" id="set-relay-token" placeholder="Relay shared secret" autocomplete="off">
               </label>
-              <label>CAM API token
-                <input type="password" id="set-relay-cam-token" placeholder="Token of the CAM Hub behind the relay" autocomplete="off">
+              <label style="display:none" aria-hidden="true">CAM API token (deprecated)
+                <input type="password" id="set-relay-cam-token" placeholder="Profile-managed on the source side" autocomplete="off">
               </label>
             </div>
             <div class="settings-actions">
@@ -931,6 +932,6 @@
     </main>
   </div>
 
-  <script type="module" src="js/desktop/app.js?v=0.64.0"></script>
+  <script type="module" src="js/desktop/app.js?v=0.64.1"></script>
 </body>
 </html>

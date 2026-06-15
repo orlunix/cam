@@ -140,8 +140,16 @@ export class CamApi {
     const isGet = method === 'GET';
     const cacheKey = (isGet && this._isCacheable(path)) ? `cam_cache:${path}` : null;
 
-    // Retry up to 2 times for GET requests, no retry for mutations
-    const maxRetries = isGet ? 2 : 0;
+    const isRealtimeGet = isGet && (
+      path.includes('/output') ||
+      path.includes('/fulloutput') ||
+      path.includes('/logs') ||
+      path.includes('/api/ws')
+    );
+    // Retry lightweight GETs, but never retry live output/log polling. In Relay
+    // mode each retry can consume another socket timeout and make the selected
+    // agent pane look frozen even though the next poll could succeed.
+    const maxRetries = (isGet && !isRealtimeGet) ? 2 : 0;
     let lastError;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -215,13 +223,19 @@ export class CamApi {
         return;
       }
       const id = `req-${++this._reqCounter}`;
-      const timeout = path.includes("/upload") ? 60000 : 15000;
+      const isSlowMutation = path.includes('/upload') || path.endsWith('/input') || path.endsWith('/key');
+      // Relay/source side allows input/key/upload to take longer because
+      // SSH/tmux writes can be delayed by remote load while still succeeding.
+      // Read-side output polling should not have a tiny hard deadline: public
+      // relay links can legitimately take >8s. Keep it bounded, but disable
+      // request-level retries for realtime GETs in request() so one slow poll
+      // costs at most this timeout, not timeout * 3.
+      const timeout = isSlowMutation ? 120000 : 30000;
       const timer = setTimeout(() => {
         this._requestMap.delete(id);
-        // Track consecutive timeouts — force reconnect after 2
         this._consecutiveTimeouts++;
-        if (this._consecutiveTimeouts >= 5) {
-          console.warn('Relay: multiple timeouts, forcing reconnect');
+        if (!isSlowMutation || this._consecutiveTimeouts >= 2) {
+          console.warn('Relay: request timeout, forcing reconnect');
           this._consecutiveTimeouts = 0;
           if (this.ws) { try { this.ws.close(); } catch {} }
         }
@@ -338,7 +352,7 @@ export class CamApi {
       } catch {
         this._scheduleReconnect();
       }
-    }, 5000);
+    }, 1000);
   }
 
   // --- Event stream ---
