@@ -11,7 +11,7 @@
 import { api } from '../api.js?v=0.64.0';
 import { state } from '../state.js?v=0.64.0';
 import { mountShell } from './shell.js?v=0.64.0';
-import { mountAgentConsole } from './agent-console.js?v=0.64.0';
+import { mountAgentConsole } from './agent-console.js?v=0.64.1';
 import { mountSettingsMode } from './settings-mode.js?v=0.64.0';
 import { mountStartAgentMode } from './start-agent-mode.js?v=0.64.0';
 import { mountNodesMode } from './nodes-mode.js?v=0.64.0';
@@ -90,7 +90,10 @@ function resolveConnectionConfig(cfg) {
 }
 
 function hasConnectionConfig(cfg) {
-  if (cfg.profileKind === 'relay') return !!(cfg.relayUrl && cfg.relayToken && cfg.token);
+  // Relay's CAM API token is source/profile-managed and injected by the
+  // relay on /api/* forwarding. The Desktop client only needs the relay
+  // endpoint and relay shared secret.
+  if (cfg.profileKind === 'relay') return !!(cfg.relayUrl && cfg.relayToken);
   if (cfg.profileKind === 'direct') return !!(cfg.serverUrl && cfg.token);
   return false;
 }
@@ -138,6 +141,28 @@ async function loadAgents() {
   } catch (e) {
     if (api.mode !== 'disconnected') console.warn('listAgents failed:', e);
   }
+}
+
+async function loadSelectedAgent(agentId) {
+  if (!agentId) return;
+  try {
+    const resp = await api.getAgent(agentId);
+    const nextAgent = resp && (resp.agent || resp);
+    if (!nextAgent || !nextAgent.id) return;
+    const agents = Array.isArray(state.get('agents')) ? state.get('agents') : [];
+    const found = agents.some((a) => a && a.id === nextAgent.id);
+    state.set('agents', found
+      ? agents.map((a) => (a && a.id === nextAgent.id ? { ...a, ...nextAgent } : a))
+      : [nextAgent, ...agents]);
+  } catch (e) {
+    if (api.mode !== 'disconnected') console.warn('getAgent failed:', e);
+  }
+}
+
+function shouldPrioritizeSelectedRelayAgent() {
+  return api.mode === 'relay' &&
+    state.get('mode') === 'agents' &&
+    !!state.get('selectedAgentId');
 }
 
 /**
@@ -457,7 +482,10 @@ async function init() {
   // change much less frequently (only when the operator creates a
   // context or restarts the server), so refresh them on a slower
   // cadence to keep the dropdowns in Start mode fresh without spamming
-  // the server.
+  // the server. In Relay mode, when an agent is selected, prioritize the
+  // visible detail pane: avoid expensive global list/context refreshes that
+  // can queue behind the same relay/source connection and make output look
+  // stuck. Direct mode keeps the existing full refresh behavior.
   let pollTick = 0;
   setInterval(async () => {
     if (state.get('connectionMode') === 'disconnected') {
@@ -465,7 +493,14 @@ async function init() {
       if (hasConnectionConfig(cfg)) await connect();
       return;
     }
+
     pollTick = (pollTick + 1) % AGENT_SNAPSHOT_SYNC_EVERY_TICKS;
+
+    if (shouldPrioritizeSelectedRelayAgent()) {
+      await loadSelectedAgent(state.get('selectedAgentId'));
+      return;
+    }
+
     if (pollTick === 0) {
       // Every ~30s: refresh contexts/adapters, then refresh one
       // representative SSH context per endpoint so agent updated_at

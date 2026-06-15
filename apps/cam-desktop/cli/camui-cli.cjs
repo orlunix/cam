@@ -496,6 +496,16 @@ function startRelayConnector({ relayUrl, relayToken, json = false }) {
         let req = null;
         try { req = JSON.parse(text); }
         catch (_) { return; }
+        if (req && req.type === 'relay_ping') {
+          try {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'relay_pong', ts: req.ts || Date.now(), sid }));
+            }
+          } catch (e) {
+            logRelay(`send pong failed: ${e && e.message || e}`);
+          }
+          return;
+        }
         const resp = await relayFetch(req);
         try {
           if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(resp));
