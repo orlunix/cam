@@ -72,9 +72,8 @@ Direct / Relay  ·  (SSH attach, future)
   the API token, and connects the renderer directly to that Hub. Direct
   has no local WSL, Python, shell, `cam`, or `cam serve` prerequisite.
 - **Relay** — relay URL + relay token, used when the hub is unreachable.
-  The CAM API token is source/profile-managed and injected by the
-  relay on `/api/*` forwarding (CAM-DESK-REMOTE-012, 2026-06-12), so
-  the Desktop/mobile UI only asks for the two relay fields.
+  The source-side profile owns the CAM API token and the relay injects it
+  for `/api/*` forwarding.
 - **SSH attach** (future) — server-mediated WebSocket attach
   to the selected agent's controller. See TERM-001..005 + SSH-010..013.
 
@@ -149,9 +148,8 @@ The desktop binary is primarily a client of the **hub**:
   Controller-side operations go through Hub REST/WS calls (CamApi).
 - Public relay infrastructure is not Desktop's concern. External relay
   remains a user-provided endpoint, surfaced under the Relay tab as
-  relay URL + relay token only (CAM-DESK-REMOTE-012, 2026-06-12).
-  The CAM API token is source/profile-managed and injected by the
-  relay on `/api/*` forwarding — not user-facing.
+  relay URL + relay token. The source-side profile owns the CAM API token
+  (CAM-DESK-REMOTE-012).
 - Direct Hub lifecycle is active scope (CAM-DESK-DIRECT-010..019):
   embedded-hub readiness, start, stop/restart, generated token,
   Advanced/Diagnostics, and Nodes/Remotes management through Hub APIs.
@@ -202,11 +200,8 @@ Active connection modes (canonical IDs in DIRECT-010..019 and REMOTE-012..014):
    Hub. URL/token are internal generated profile state; users manage
    Nodes/Remotes rather than typing a Hub URL.
 2. **Relay** (REMOTE-012) — relay URL + relay token. The relay proxies
-   REST/WS for an unreachable hub. The CAM API token is source/profile-
-   managed (`--api-token` / `CAMUI_API_TOKEN` / `--profile NAME`
-   writes `~/.cam/camui/relay/<NAME>/profile.json`) and the relay
-   injects it on `/api/*` forwarding — the Desktop/mobile UI only
-   asks for the two relay fields (2026-06-12).
+   REST/WS for an unreachable hub; the source profile owns the CAM API
+   token and the relay injects it for `/api/*` forwarding.
 
 A previously-explored separate **Local** tab (LOC-010..024) is
 superseded. Its lifecycle pieces now belong to Direct.

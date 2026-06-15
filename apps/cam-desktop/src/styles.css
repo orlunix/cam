@@ -627,349 +627,462 @@ label {
   cursor: pointer;
 }
 
-/* ------ Workspace mode navigation ------ */
+/* ------ Mode switch (CAM-DESK-TODOS-010 / -017) ------ */
 
-.mode-panel {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
+.mode-switch {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
 }
 
-.mode-button {
-  padding: 8px 10px;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-.mode-button.active {
-  color: var(--text);
-  border-color: var(--accent);
-  background: var(--accent-bg);
-}
-
-/* ------ Todos / Notes worklog ------ */
-
-.worklog-page {
+.mode-switch-btn {
   flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 18px;
-  background: #0d0f12;
-}
-
-.worklog-hero,
-.worklog-card {
-  width: min(100%, 1280px);
-  margin: 0 auto;
-}
-
-.worklog-hero {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  margin-bottom: 14px;
-}
-
-.worklog-hero h2 {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 650;
-}
-
-.worklog-hero p {
-  margin: 4px 0 0;
-  font-size: 13px;
-}
-
-.worklog-actions,
-.worklog-store-actions,
-.worklog-detail-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
-.worklog-card {
-  display: grid;
-  gap: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
-  padding: 14px;
-}
-
-.worklog-tabs,
-.worklog-detail-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-
-.worklog-tabs button,
-.worklog-detail-tabs button {
   background: transparent;
-  border-color: transparent;
+  border: 1px solid var(--border);
   color: var(--muted);
-  font-size: 12px;
   padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
 }
 
-.worklog-tabs button.active,
-.worklog-detail-tabs button.active {
-  background: var(--panel-2);
-  border-color: var(--border-strong);
+.mode-switch-btn.active {
+  background: var(--accent-bg);
+  border-color: var(--accent);
   color: var(--text);
 }
 
-.worklog-store-card {
-  display: grid;
-  grid-template-columns: minmax(180px, 0.8fr) minmax(260px, 1.2fr) auto;
-  gap: 12px;
-  align-items: center;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #101318;
-  padding: 12px;
+.mode-switch-btn:hover {
+  color: var(--text);
 }
 
-.worklog-label {
-  display: block;
+.sidebar-todos-stub {
+  padding: 12px 16px;
+  font-size: 12px;
+}
+
+/* ------ Todos workspace (CAM-DESK-TODOS-010..016) ------ */
+
+.todos-mode {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  background: var(--bg);
+}
+
+.todos-header {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.todos-header-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.todos-header-row-top {
+  justify-content: space-between;
+}
+
+.todos-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.todos-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
   color: var(--muted);
+}
+
+.todos-status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.todos-status-dot.ok   { background: var(--ok); }
+.todos-status-dot.fail { background: var(--danger); }
+
+.todos-header-controls {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.todos-inline-field {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
   font-size: 11px;
-  margin-bottom: 3px;
+  color: var(--muted);
+}
+
+.todos-inline-field input,
+.todos-inline-field select,
+.todos-inline-field textarea {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 13px;
+  min-width: 140px;
+}
+
+.todos-inline-label {
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
-.worklog-store-card strong,
-.worklog-store-card code {
-  font-size: 12px;
+.todos-search input {
+  min-width: 220px;
 }
 
-.worklog-store-card code {
-  color: #d6dde4;
-  word-break: break-all;
-}
-
-.worklog-controls {
-  display: grid;
-  grid-template-columns: minmax(220px, 1.6fr) minmax(140px, 0.8fr) minmax(140px, 0.8fr) minmax(140px, 0.8fr);
-  gap: 10px;
-}
-
-.worklog-outline {
-  display: grid;
-  gap: 10px;
-}
-
-.worklog-project {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: #101318;
-  overflow: hidden;
-}
-
-.worklog-project > header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
-}
-
-.worklog-project h3,
-.worklog-detail h3 {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 650;
-}
-
-.worklog-project-toggle {
-  width: 26px;
-  padding: 3px 0;
-  font-size: 12px;
-}
-
-.worklog-item-list {
-  display: grid;
-}
-
-.worklog-row {
-  display: grid;
-  grid-template-columns: 52px minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  border: 0;
-  border-bottom: 1px solid var(--border);
-  border-radius: 0;
-  background: transparent;
-  padding: 10px 12px;
-  text-align: left;
-}
-
-.worklog-row:last-child {
-  border-bottom: 0;
-}
-
-.worklog-row:hover:not(:disabled) {
-  background: #171b20;
-}
-
-.worklog-row.active {
-  background: var(--accent-bg);
-  box-shadow: inset 3px 0 0 var(--accent);
-}
-
-.worklog-row-kind {
-  color: var(--muted);
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 12px;
-}
-
-.worklog-row-main {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.worklog-row-title {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.worklog-row-title strong {
-  color: #d7b46a;
-  font-size: 12px;
-}
-
-.worklog-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  justify-content: flex-end;
-}
-
-.worklog-tag {
-  color: #b6c6dc;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 2px 7px;
-  font-size: 11px;
-  background: #151a20;
-}
-
-.worklog-detail {
-  display: grid;
-  gap: 12px;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  background: #101318;
-  padding: 14px;
-}
-
-.worklog-detail > header {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.worklog-detail p {
-  margin: 3px 0 0;
-}
-
-.worklog-properties {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  margin: 0;
-}
-
-.worklog-properties div {
-  border: 1px solid var(--border);
-  border-radius: 6px;
+.todos-filter-btn {
+  align-self: end;
   background: var(--panel-2);
-  padding: 8px 10px;
-}
-
-.worklog-properties dt {
-  margin: 0 0 3px;
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.worklog-properties dd {
-  margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-}
-
-.worklog-detail-body {
-  min-height: 140px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
-  padding: 12px;
-  color: #d6dde4;
-}
-
-.worklog-detail-body p {
-  margin: 0;
-  line-height: 1.5;
-}
-
-.worklog-detail-body pre {
-  margin: 0;
-  overflow: auto;
-  white-space: pre-wrap;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 4px;
   font-size: 12px;
-  line-height: 1.5;
+  cursor: pointer;
+  position: relative;
 }
 
-.worklog-checklist,
-.worklog-history {
-  display: grid;
+.todos-filter-dot {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.todos-filter-popover {
+  display: flex;
+  gap: 12px;
+  align-items: end;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  flex-wrap: wrap;
+}
+
+.todos-tabs {
+  display: flex;
+  gap: 4px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.todos-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.todos-tab.active {
+  border-color: var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.todos-quickadd {
+  display: flex;
+  flex-direction: column;
   gap: 6px;
-  margin: 0;
-  padding-left: 18px;
-  line-height: 1.45;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
 }
 
-@media (max-width: 1080px) {
-  .worklog-store-card,
-  .worklog-controls,
-  .worklog-properties {
+.todos-quickadd-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.todos-quickadd-row input,
+.todos-quickadd-row textarea {
+  flex: 1;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.todos-btn-primary,
+.todos-btn-secondary {
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.todos-btn-primary {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+}
+
+.todos-btn-secondary {
+  background: var(--panel-2);
+}
+
+.todos-btn-primary:hover,
+.todos-btn-secondary:hover {
+  filter: brightness(1.1);
+}
+
+.todos-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+@media (max-width: 900px) {
+  .todos-body {
     grid-template-columns: 1fr;
   }
+}
 
-  .worklog-row {
-    grid-template-columns: 44px minmax(0, 1fr);
-  }
+.todos-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
 
-  .worklog-tags {
-    grid-column: 2;
-    justify-content: flex-start;
-  }
+.todos-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
 
-  .worklog-detail > header,
-  .worklog-hero {
-    flex-direction: column;
-  }
+.todos-row {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
 
-  .worklog-actions,
-  .worklog-detail-actions,
-  .worklog-store-actions {
-    justify-content: flex-start;
-  }
+.todos-row.selected {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.todos-row:hover {
+  border-color: var(--border-strong);
+}
+
+.todos-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.todos-row-glyph {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.todos-row-title {
+  flex: 1;
+  font-weight: 500;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.todos-row-progress {
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.todos-row-time {
+  font-size: 11px;
+  color: var(--muted-2);
+}
+
+.todos-row-preview {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.todos-row-chips {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.todos-chip {
+  font-size: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+
+.todos-chip-project {
+  color: var(--text);
+}
+
+.todos-detail {
+  padding: 12px 16px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.todos-detail-empty,
+.todos-detail-empty-pane {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 16px 0;
+  text-align: center;
+}
+
+.todos-detail-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.todos-detail-head h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.todos-detail-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--muted-2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.todos-detail-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.todos-detail-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  color: var(--muted);
+  padding: 4px 10px;
+  border-radius: 4px 4px 0 0;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.todos-detail-tab.active {
+  border-color: var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.todos-detail-pane {
+  padding-top: 8px;
+}
+
+.todos-detail-preview {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px;
+  font-size: 13px;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-x: auto;
+  margin: 0;
+}
+
+.todos-detail-raw {
+  width: 100%;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  resize: vertical;
+}
+
+.todos-checklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.todos-checklist-item label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.todos-checklist-done {
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.todos-detail-actions {
+  display: flex;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
 }

@@ -5,6 +5,7 @@ __pycache__/
 *.egg-info/
 dist/*
 !dist/camc
+!dist/skillm
 !dist/BUILD_LOG.md
 build/
 *.egg

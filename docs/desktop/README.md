@@ -23,11 +23,11 @@ Desktop UI  ──HTTP/WS──▶  CAM Hub/API  ──poll/route──▶  Remo
   and agent CLIs live on the remote nodes and are provisioned there.
 - **Workspace modes** in the left nav: **Agents** (default — agent
   list, output, composer, quick keys), **Start** (start a new agent),
-  **Settings** (connection profile), and **Nodes** (read-mostly view
-  of hub-provided controllers/nodes, see NODEUI-010..017). Contexts is
-  a future placeholder. Workspace modes are separate from connection
-  modes — switching to Nodes does not change how Desktop reaches the
-  hub.
+  **Settings** (connection profile), **Nodes** (hub-provided
+  controllers/nodes, see NODEUI-010..017), and **Skills** (Skillm
+  library management). Contexts is a future placeholder. Workspace
+  modes are separate from connection modes — switching workspace modes
+  does not change how Desktop reaches the hub.
 - **Active Settings exposes two connection modes**: Direct and Relay.
   Direct is the default app-managed embedded CAM Hub path: Desktop starts
   the Node/Electron Hub, generates the token, connects to it over
@@ -49,6 +49,15 @@ Desktop UI  ──HTTP/WS──▶  CAM Hub/API  ──poll/route──▶  Remo
   OpenSSH `ControlMaster` / `ControlPersist=600`. Repeat
   syncs/captures/uploads reuse the same authenticated connection
   instead of paying a TCP+auth handshake every call.
+- **Browse is a workspace browser** (CAM-DESK-FILE-010..017). Agent Browse
+  and Context Browse are two entry points into the same workspace-root file
+  contract. Relay and Direct must expose the same list/read API shape so
+  Desktop and mobile can share behavior without transport-specific renderer
+  branches.
+- **Skills wraps node-local `skillm`**. Desktop provides a thin UI over
+  managed `~/.cam/skillm` for repo connect/pull, node sync, and
+  global/workspace skill installs. The design is documented in
+  [`skillm-integration.md`](./skillm-integration.md).
 - **SSH attach** to the selected agent's controller is a future path
   (see SSH-010..013, status `proposed`).
 - **The separate Local tab is retired.** Its useful app-managed-Hub
@@ -57,11 +66,46 @@ Desktop UI  ──HTTP/WS──▶  CAM Hub/API  ──poll/route──▶  Remo
 - **Stable Req IDs** (`docs/desktop/requirements.md`) anchor all of the
   above. Implementation tasks and review replies cite them.
 
+## Relay Source Quick Start
+
+Relay mode has two token boundaries:
+
+- **Client → Relay**: Desktop/mobile users enter `Relay URL` + `Relay token`.
+- **Relay → Source Hub**: the source `camui start --profile NAME` owns the
+  CAM API token. The relay injects that token when forwarding `/api/*`, so
+  clients do not need to know or type it.
+
+Run the source directly against a relay server:
+
+```bash
+node apps/cam-desktop/cli/camui-cli.cjs start \
+  --profile hren7001 \
+  --relay-url ws://127.0.0.1:7001 \
+  --relay-token <RELAY_TOKEN>
+```
+
+For a relay reachable through SSH only, first create a local tunnel, then
+point the source at the tunnel:
+
+```bash
+ssh -fN -L 127.0.0.1:17001:127.0.0.1:7001 hren@hlren.duckdns.org
+node apps/cam-desktop/cli/camui-cli.cjs start \
+  --profile hren7001 \
+  --relay-url ws://127.0.0.1:17001 \
+  --relay-token <RELAY_TOKEN>
+```
+
+The profile file lives at `~/.cam/camui/relay/<profile>/profile.json` and
+is chmod'd to `0600`. Logs and status output show only a SHA-256 token
+fingerprint unless `--show-token` is explicitly used for debugging.
+
 ## Files
 
 - [`requirements.md`](./requirements.md) — canonical requirement registry
   with stable Req IDs. **Read this first.** Starts with the Architecture
   and Connection Model section that this README summarizes.
+- [`skillm-integration.md`](./skillm-integration.md) — Desktop Skillm v0
+  implementation contract and follow-up boundaries.
 - [`../desktop-ui-spec.md`](../desktop-ui-spec.md) — current milestone /
   product spec. Explains design direction; cite `requirements.md` IDs in
   reviews.

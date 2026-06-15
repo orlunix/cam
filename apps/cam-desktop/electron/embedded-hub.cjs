@@ -21,12 +21,22 @@
  *   GET  /api/agents/:id/fulloutput?format=ansi|plain      — full scrollback
  *   GET  /api/agents/:id/logs     — empty logs shape
  *
- * Mutating endpoints (POST /api/agents, PATCH /api/agents/:id,
- * DELETE /api/agents/:id, /restart, and context-copy cleanup paths
- * still return 501 Not Implemented with a JSON error
- * body so the renderer can surface it cleanly. They will be wired in
- * a later pass that pins down DIRECT-015..018 (node management +
- * credential references) and a remote-controller transport.
+ * Mutating endpoints implemented in this pass:
+ *   PATCH  /api/agents/:id           — edit name / auto_confirm / tags
+ *   DELETE /api/agents/:id           — graceful stop via `camc stop <id>`
+ *   DELETE /api/agents/:id/history   — remove via `camc rm <id>` (kills
+ *                                      tmux + drops the agent record)
+ *   GET    /api/agents/:id/cron      — list CamUI-managed automation
+ *   POST   /api/agents/:id/cron      — add agent loop or host cron job
+ *   DELETE /api/agents/:id/cron/:job — remove one automation item
+ *   POST   /api/agents/:id/input     — send text into the tmux pane
+ *   POST   /api/agents/:id/key       — send a named tmux key
+ *   POST   /api/agents/:id/upload    — upload a file via SSH
+ *
+ * Still stubbed (501): POST /api/agents (start), POST /api/agents/:id/restart,
+ * context-copy cleanup paths. They will be wired in a later pass that
+ * pins down DIRECT-015..018 (node management + credential references)
+ * and a remote-controller transport.
  *
  * WebSocket (`/api/ws`) is intentionally omitted in this pass:
  * `CamApi._connectEventStream()` tolerates ws failure and the
@@ -41,7 +51,10 @@
  * `crypto.randomBytes(24).toString('base64url')` on each Start.
  *
  * Lifecycle: a single owned server at 127.0.0.1:8420 (or first free
- * port in 8420..8429). Stop closes the server; restart = stop+start.
+ * port in 8420..8469). If the preferred fixed range cannot be bound
+ * (for example Windows excluded port ranges return EACCES), start
+ * falls back to an OS-assigned loopback port via listen(0) and returns
+ * the actual apiUrl. Stop closes the server; restart = stop+start.
  * The main process is the only thing that can lifecycle this — the
  * renderer-facing surface lives in `preload.cjs` as
  * `CamBridge.directHub.*`.
@@ -56,7 +69,7 @@ const os     = require('node:os');
 const path   = require('node:path');
 
 const DEFAULT_PORT       = 8420;
-const PORT_SCAN_RANGE    = 10;
+const PORT_SCAN_RANGE    = 50;
 const LOG_BUFFER_LINES   = 200;
 const DEFAULT_ADAPTERS   = ['claude', 'codex', 'cursor'];
 const STORE_VERSION      = 1;
@@ -319,6 +332,8 @@ let _sshTransport = null;
 const SYNC_DEFAULT_TIMEOUT_MS = 15000;
 const REMOTE_CAMC = '~/.cam/camc';
 const REMOTE_CAMC_UPLOAD_PATH = '.cam/camc.tmp';
+const REMOTE_SKILLM = '~/.cam/skillm';
+const REMOTE_SKILLM_UPLOAD_PATH = '.cam/skillm.tmp';
 
 function configure({ credentialStore, sshTransport } = {}) {
   if (credentialStore !== undefined) _credentialStore = credentialStore || null;
@@ -642,15 +657,15 @@ function _normalizeAgent(rec, ctx) {
     tmux_socket:    rec.tmux_socket || '',
     pid:            rec.pid || null,
     hostname:       rec.hostname || '',
-    created_at:      rec.created_at || null,
-    updated_at:      rec.updated_at || rec.last_active_at || rec.last_seen_at || rec.activity_at || rec.modified_at || rec.mtime || null,
-    last_active_at:  rec.last_active_at || null,
-    last_seen_at:    rec.last_seen_at || null,
-    activity_at:     rec.activity_at || null,
-    modified_at:     rec.modified_at || null,
-    mtime:           rec.mtime || null,
-    started_at:      rec.started_at   || null,
-    completed_at:    rec.completed_at || null,
+    created_at:      rec.created_at || t.created_at || null,
+    updated_at:      rec.updated_at || t.updated_at || rec.last_active_at || t.last_active_at || rec.last_seen_at || t.last_seen_at || rec.activity_at || t.activity_at || rec.modified_at || t.modified_at || rec.mtime || t.mtime || null,
+    last_active_at:  rec.last_active_at || t.last_active_at || null,
+    last_seen_at:    rec.last_seen_at || t.last_seen_at || null,
+    activity_at:     rec.activity_at || t.activity_at || null,
+    modified_at:     rec.modified_at || t.modified_at || null,
+    mtime:           rec.mtime || t.mtime || null,
+    started_at:      rec.started_at || t.started_at || null,
+    completed_at:    rec.completed_at || t.completed_at || null,
     exit_reason:     rec.exit_reason  || null,
     retry_count:    rec.retry_count  || 0,
     cost_estimate:  rec.cost_estimate || null,
@@ -822,7 +837,7 @@ async function _syncContextAgents(ctx, overrides = {}) {
   // results: 'updated' when the imported set differs in any way from
   // the previous snapshot, 'unchanged' otherwise. Order-independent
   // shallow comparison keyed on id+status+state.
-  function fp(a) { return `${a.id}|${a.status}|${a.state}|${a.task_name}`; }
+  function fp(a) { return `${a.id}|${a.status}|${a.state}|${a.task_name}|${a.updated_at || ''}`; }
   const prevSig = new Set(prev.map(fp));
   const newSig  = new Set(normalized.map(fp));
   const same = (prevSig.size === newSig.size)
@@ -946,6 +961,81 @@ async function _ensureRemoteCamc(baseOpts) {
   return { ok: true, installed: !remote, updated: !!remote, hash: local.hash };
 }
 
+function _bundledSkillmPath() {
+  const candidates = [];
+  if (process.resourcesPath) {
+    candidates.push(path.join(process.resourcesPath, 'skillm', 'skillm'));
+  }
+  candidates.push(path.resolve(__dirname, '..', '..', '..', 'dist', 'skillm'));
+  candidates.push('/data/tools/skillm/dist/skillm');
+  for (const c of candidates) {
+    try { if (fs.statSync(c).isFile()) return c; } catch (_) {}
+  }
+  return null;
+}
+
+function _readBundledSkillm() {
+  const p = _bundledSkillmPath();
+  if (!p) return { error: 'bundled_skillm_missing', detail: 'bundled skillm was not found in resources/skillm/skillm or dist/skillm' };
+  try {
+    const content = fs.readFileSync(p);
+    return {
+      content,
+      path: p,
+      hash: crypto.createHash('md5').update(content).digest('hex').slice(0, 12),
+    };
+  }
+  catch (e) { return { error: 'bundled_skillm_read_failed', detail: e && e.message }; }
+}
+
+async function _ensureRemoteSkillm(baseOpts) {
+  // Source-level route smokes may install an exec-only SSH transport
+  // stub. Keep those tests focused on command routing when upload is
+  // intentionally unavailable, matching _ensureRemoteCamc behavior.
+  if (!_sshTransport || typeof _sshTransport.writeRemoteFile !== 'function') {
+    return { ok: true, skipped: 'writeRemoteFile_unavailable' };
+  }
+
+  const local = _readBundledSkillm();
+  if (local.error) return { ok: false, error: local.error, detail: local.detail };
+
+  const remoteHash = await _sshTransport.execRemote({
+    ...baseOpts,
+    command: `bash -c 'test -x ${REMOTE_SKILLM} && md5sum ${REMOTE_SKILLM} 2>/dev/null | cut -c1-12'`,
+  });
+  const remote = remoteHash && remoteHash.ok ? String(remoteHash.stdout || '').trim() : '';
+  if (remote && remote === local.hash) {
+    return { ok: true, present: true, hash: remote };
+  }
+
+  const mkdir = await _sshTransport.execRemote({ ...baseOpts, command: 'mkdir -p ~/.cam' });
+  if (!mkdir || !mkdir.ok) {
+    return { ok: false, error: mkdir && mkdir.error || 'remote_mkdir_failed', detail: mkdir && (mkdir.detail || mkdir.stderr) || 'mkdir -p ~/.cam failed' };
+  }
+
+  const uploaded = await _sshTransport.writeRemoteFile({
+    ...baseOpts,
+    remotePath: REMOTE_SKILLM_UPLOAD_PATH,
+    content: local.content,
+  });
+  if (!uploaded || !uploaded.ok) {
+    return { ok: false, error: uploaded && uploaded.error || 'remote_skillm_upload_failed', detail: uploaded && uploaded.detail || 'failed to upload bundled skillm' };
+  }
+
+  const install = await _sshTransport.execRemote({ ...baseOpts, command: `chmod 700 ${REMOTE_SKILLM_UPLOAD_PATH} && mv ${REMOTE_SKILLM_UPLOAD_PATH} ${REMOTE_SKILLM}` });
+  if (!install || !install.ok) {
+    return { ok: false, error: install && install.error || 'remote_skillm_install_failed', detail: install && (install.detail || install.stderr) || 'failed to install ~/.cam/skillm' };
+  }
+
+  const verify = await _sshTransport.execRemote({ ...baseOpts, command: `test -x ${REMOTE_SKILLM}` });
+  if (!verify || !verify.ok) {
+    return { ok: false, error: verify && verify.error || 'remote_skillm_verify_failed', detail: verify && (verify.detail || verify.stderr) || '~/.cam/skillm is not executable after upload' };
+  }
+  const action = remote ? 'updated' : 'installed';
+  pushLog('info', `${action} bundled skillm on ${baseOpts.user}@${baseOpts.host}:${baseOpts.port || 22}`);
+  return { ok: true, installed: !remote, updated: !!remote, hash: local.hash };
+}
+
 function _shellQuote(s) {
   return `'${String(s == null ? '' : s).replace(/'/g, `'\\''`)}'`;
 }
@@ -976,6 +1066,385 @@ function _decodeUploadData(data) {
   } catch (e) {
     return { error: 'invalid_base64', detail: e && e.message || 'Invalid base64 data' };
   }
+}
+
+/* ─────────────── Workspace Browser (CAM-DESK-FILE-010..017) ───────────────
+ *
+ * Read-only directory listing + file read for the agent's working
+ * directory. The frontend's new Browse output mode hits this via
+ * agent-scoped endpoints; the same helpers also back the
+ * compatibility context-scoped endpoints below so mobile/Relay
+ * callers can drop in without remembering to switch routes.
+ *
+ * Path safety:
+ *   - The root is whatever `agent.context_path || agent.path ||
+ *     ctx.path` resolves to. We treat it as an opaque string from
+ *     the agent record; we never let the renderer pass a root.
+ *   - Subpaths are normalized with `posix.normalize` after stripping
+ *     leading `/`. We reject any subpath that starts with `..`,
+ *     contains `..` after normalize, or contains a `\0` byte. The
+ *     final joined path is reconstructed from the root + cleaned
+ *     subpath; we do NOT call `path.resolve` against the local
+ *     process — the root is a REMOTE path.
+ *   - For local-type contexts, we additionally verify the joined
+ *     real path stays under the realpath'd root using
+ *     `fs.realpathSync.native`. SFTP paths cannot be realpath'd
+ *     locally so we trust the normalized join + reject literal `..`
+ *     for the remote case.
+ *
+ * Response shapes (mirror docs):
+ *   list: { scope, agent_id?, context_name?, root, path, parent,
+ *           entries: [{name,type,size,mtime?}] }
+ *   read: { scope, agent_id?, context_name?, root, path, binary,
+ *           size, content }   // content = utf-8 text or base64 when binary
+ */
+const WORKSPACE_FILE_MAX_BYTES = 5 * 1024 * 1024;
+
+function _resolveBrowseRoot(agent, ctx) {
+  if (agent && typeof agent.context_path === 'string' && agent.context_path) return agent.context_path;
+  if (agent && typeof agent.path === 'string' && agent.path) return agent.path;
+  if (ctx && typeof ctx.path === 'string' && ctx.path) return ctx.path;
+  return '';
+}
+
+function _cleanBrowseSubpath(raw) {
+  let s = String(raw == null ? '' : raw);
+  if (s.includes('\0')) return { error: 'invalid_path', detail: 'NUL byte in path' };
+  // Normalize separators to forward slashes; SFTP/POSIX paths are
+  // forward-slash even when the renderer runs on Windows.
+  s = s.replace(/\\/g, '/');
+  // Strip leading slashes — sub is always relative to root.
+  while (s.startsWith('/')) s = s.slice(1);
+  if (!s || s === '.' || s === './') return { sub: '' };
+  // Refuse any segment of `..` or a literal `..` anywhere.
+  const segs = s.split('/').filter(Boolean);
+  for (const seg of segs) {
+    if (seg === '..') return { error: 'path_traversal', detail: 'parent traversal not allowed' };
+    if (seg === '.')  continue;
+  }
+  // Drive-letter / UNC absolute escape (defense in depth).
+  if (/^[A-Za-z]:[\\/]/.test(s) || s.startsWith('//') || s.startsWith('\\\\')) {
+    return { error: 'absolute_path', detail: 'absolute path not allowed' };
+  }
+  return { sub: segs.filter(p => p !== '.').join('/') };
+}
+
+function _joinBrowsePath(root, sub) {
+  if (!sub) return root;
+  // Use POSIX join — remote roots are POSIX even on Windows-hosted
+  // Electron via SFTP. Strip any trailing slash on root for safety.
+  const r = root.replace(/[\\/]+$/, '');
+  // Replace any host separators with forward slash and trim leading
+  // slashes (sub already validated by _cleanBrowseSubpath).
+  return r + '/' + sub;
+}
+
+function _parentBrowsePath(sub) {
+  if (!sub || sub === '') return null;
+  const segs = sub.split('/').filter(Boolean);
+  if (segs.length <= 1) return '';
+  return segs.slice(0, -1).join('/');
+}
+
+function _localPath(remotePath) {
+  // Convert a POSIX-style "remote" path back to the local OS path
+  // for the local-context branch. On Linux this is identity. On
+  // Windows the local renderer is rare for Browse v0; we still
+  // normalize separators to be safe.
+  if (process.platform === 'win32') {
+    return remotePath.replace(/\//g, path.sep);
+  }
+  return remotePath;
+}
+
+function _safeLocalPathUnderRoot(rootAbs, full) {
+  try {
+    const realRoot = fs.realpathSync.native(rootAbs);
+    let realFull;
+    try { realFull = fs.realpathSync.native(full); }
+    catch { realFull = full; }
+    if (realFull === realRoot) return true;
+    return realFull.startsWith(realRoot + path.sep) || realFull.startsWith(realRoot + '/');
+  } catch {
+    return false;
+  }
+}
+
+async function _browseList({ agent, ctx, root, sub }) {
+  const isLocal = !ctx || !ctx.machine || ctx.machine.type !== 'ssh';
+  const fullRemote = _joinBrowsePath(root, sub);
+
+  if (isLocal) {
+    const rootAbs = _localPath(root);
+    const fullAbs = _localPath(fullRemote);
+    if (!_safeLocalPathUnderRoot(rootAbs, fullAbs)) {
+      return { error: 'path_traversal', detail: 'resolved path is outside the workspace root' };
+    }
+    let dirents;
+    try {
+      dirents = fs.readdirSync(fullAbs, { withFileTypes: true });
+    } catch (e) {
+      const code = e && e.code;
+      return {
+        error:  code === 'ENOENT' ? 'not_found' : (code === 'EACCES' ? 'permission_denied' : 'list_failed'),
+        detail: e && e.message,
+      };
+    }
+    const entries = [];
+    for (const d of dirents) {
+      const name = d.name;
+      if (!name || name === '.' || name === '..') continue;
+      let size = 0;
+      let mtime = null;
+      try {
+        const st = fs.statSync(path.join(fullAbs, name));
+        if (st && st.size != null) size = st.size;
+        if (st && st.mtime) mtime = Math.floor(st.mtime.getTime() / 1000);
+      } catch { /* ignore per-entry errors */ }
+      entries.push({
+        name,
+        type: d.isDirectory() ? 'dir' : 'file',
+        size: d.isDirectory() ? 0 : size,
+        mtime,
+      });
+    }
+    entries.sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    return { entries };
+  }
+
+  // SSH branch via SFTP — uses the existing pooled connection.
+  if (!_sshTransport || typeof _sshTransport.listRemoteFiles !== 'function') {
+    return { error: 'ssh_transport_unavailable', detail: 'embedded Hub has no SSH transport configured' };
+  }
+  const baseBuilt = _sshBaseOptsForContext(ctx);
+  if (baseBuilt.error) return { error: baseBuilt.error, detail: baseBuilt.detail };
+  const res = await _sshTransport.listRemoteFiles({
+    ...baseBuilt.opts,
+    remotePath: fullRemote,
+  });
+  if (!res || !res.ok) {
+    return { error: (res && res.error) || 'sftp_readdir_failed', detail: (res && res.detail) || 'list failed' };
+  }
+  return { entries: res.entries || [] };
+}
+
+async function _browseRead({ agent, ctx, root, sub }) {
+  if (!sub) return { error: 'missing_path', detail: 'path is required' };
+  const isLocal = !ctx || !ctx.machine || ctx.machine.type !== 'ssh';
+  const fullRemote = _joinBrowsePath(root, sub);
+
+  if (isLocal) {
+    const rootAbs = _localPath(root);
+    const fullAbs = _localPath(fullRemote);
+    if (!_safeLocalPathUnderRoot(rootAbs, fullAbs)) {
+      return { error: 'path_traversal', detail: 'resolved path is outside the workspace root' };
+    }
+    let st;
+    try { st = fs.statSync(fullAbs); }
+    catch (e) {
+      const code = e && e.code;
+      return {
+        error:  code === 'ENOENT' ? 'not_found' : (code === 'EACCES' ? 'permission_denied' : 'stat_failed'),
+        detail: e && e.message,
+      };
+    }
+    if (st.isDirectory()) return { error: 'is_directory', detail: 'path is a directory' };
+    if (st.size > WORKSPACE_FILE_MAX_BYTES) {
+      return { error: 'too_large', detail: `file is ${st.size} bytes (max ${WORKSPACE_FILE_MAX_BYTES})`, size: st.size };
+    }
+    let data;
+    try { data = fs.readFileSync(fullAbs); }
+    catch (e) {
+      return { error: 'read_failed', detail: e && e.message };
+    }
+    return _packBrowseRead(data, st.size);
+  }
+
+  if (!_sshTransport || typeof _sshTransport.readRemoteFile !== 'function') {
+    return { error: 'ssh_transport_unavailable', detail: 'embedded Hub has no SSH transport configured' };
+  }
+  const baseBuilt = _sshBaseOptsForContext(ctx);
+  if (baseBuilt.error) return { error: baseBuilt.error, detail: baseBuilt.detail };
+  const res = await _sshTransport.readRemoteFile({
+    ...baseBuilt.opts,
+    remotePath: fullRemote,
+    maxBytes:   WORKSPACE_FILE_MAX_BYTES,
+  });
+  if (!res || !res.ok) {
+    return {
+      error:  (res && res.error)  || 'sftp_read_failed',
+      detail: (res && res.detail) || 'read failed',
+      size:   (res && res.size)   != null ? res.size : undefined,
+    };
+  }
+  return _packBrowseRead(res.content, res.size);
+}
+
+function _packBrowseRead(buf, sizeFromStat) {
+  const data = Buffer.isBuffer(buf) ? buf : Buffer.from(buf || '');
+  const size = Number.isFinite(sizeFromStat) ? sizeFromStat : data.length;
+  if (data.length === 0) return { binary: false, size: 0, content: '' };
+  // Binary heuristic: NUL byte in first 8 KiB → binary. Matches the
+  // Python files.py route so mobile + desktop stay consistent.
+  const head = data.slice(0, Math.min(data.length, 8192));
+  let isBinary = false;
+  for (let i = 0; i < head.length; i++) {
+    if (head[i] === 0) { isBinary = true; break; }
+  }
+  if (isBinary) {
+    return { binary: true, size, content: data.toString('base64') };
+  }
+  let text;
+  try { text = data.toString('utf8'); }
+  catch { text = data.toString('latin1'); }
+  return { binary: false, size, content: text };
+}
+
+async function _browseAgentList(agentId, rawPath) {
+  const resolved = _contextForAgent(agentId);
+  if (resolved.error && resolved.error !== 'context_not_found') {
+    return { httpStatus: resolved.error === 'agent_not_found' ? 404 : 502, body: { error: resolved.error, detail: `Browse unavailable: ${resolved.error}` } };
+  }
+  const agent = resolved.agent || {};
+  const ctx   = resolved.ctx  || null;
+  const root  = _resolveBrowseRoot(agent, ctx);
+  if (!root) {
+    return { httpStatus: 502, body: { error: 'workspace_missing', detail: 'Agent has no working directory recorded' } };
+  }
+  const cleaned = _cleanBrowseSubpath(rawPath);
+  if (cleaned.error) return { httpStatus: 400, body: { error: cleaned.error, detail: cleaned.detail } };
+  const sub = cleaned.sub || '';
+
+  const res = await _browseList({ agent, ctx, root, sub });
+  if (res.error) {
+    const badArgs = new Set(['invalid_path', 'path_traversal', 'absolute_path', 'is_directory']);
+    const status = res.error === 'not_found'
+      ? 404
+      : (badArgs.has(res.error) ? 400 : (res.error === 'permission_denied' ? 403 : 502));
+    return { httpStatus: status, body: { error: res.error, detail: res.detail } };
+  }
+  return {
+    httpStatus: 200,
+    body: {
+      scope:        'agent',
+      agent_id:     agent.id || String(agentId),
+      context_name: agent.context_name || (ctx && ctx.name) || null,
+      root,
+      path:         sub,
+      parent:       _parentBrowsePath(sub),
+      entries:      res.entries,
+    },
+  };
+}
+
+async function _browseAgentRead(agentId, rawPath) {
+  const resolved = _contextForAgent(agentId);
+  if (resolved.error && resolved.error !== 'context_not_found') {
+    return { httpStatus: resolved.error === 'agent_not_found' ? 404 : 502, body: { error: resolved.error, detail: `Browse unavailable: ${resolved.error}` } };
+  }
+  const agent = resolved.agent || {};
+  const ctx   = resolved.ctx  || null;
+  const root  = _resolveBrowseRoot(agent, ctx);
+  if (!root) {
+    return { httpStatus: 502, body: { error: 'workspace_missing', detail: 'Agent has no working directory recorded' } };
+  }
+  const cleaned = _cleanBrowseSubpath(rawPath);
+  if (cleaned.error) return { httpStatus: 400, body: { error: cleaned.error, detail: cleaned.detail } };
+  const sub = cleaned.sub || '';
+
+  const res = await _browseRead({ agent, ctx, root, sub });
+  if (res.error) {
+    const badArgs = new Set(['missing_path', 'invalid_path', 'path_traversal', 'absolute_path', 'is_directory', 'too_large']);
+    const status = res.error === 'not_found'
+      ? 404
+      : (badArgs.has(res.error) ? 400 : (res.error === 'permission_denied' ? 403 : 502));
+    return {
+      httpStatus: status,
+      body: { error: res.error, detail: res.detail, size: res.size },
+    };
+  }
+  return {
+    httpStatus: 200,
+    body: {
+      scope:        'agent',
+      agent_id:     agent.id || String(agentId),
+      context_name: agent.context_name || (ctx && ctx.name) || null,
+      root,
+      path:         sub,
+      binary:       res.binary,
+      size:         res.size,
+      content:      res.content,
+    },
+  };
+}
+
+async function _browseContextList(ctxNameOrId, rawPath) {
+  const ctx = findContextByName(String(ctxNameOrId || '')) || (state.store && Array.isArray(state.store.contexts) ? state.store.contexts.find(c => String(c.id || '') === String(ctxNameOrId)) : null);
+  if (!ctx) return { httpStatus: 404, body: { error: 'context_not_found', detail: `Context not found: ${ctxNameOrId}` } };
+  const root = ctx.path || '';
+  if (!root) return { httpStatus: 502, body: { error: 'workspace_missing', detail: 'Context has no working directory' } };
+  const cleaned = _cleanBrowseSubpath(rawPath);
+  if (cleaned.error) return { httpStatus: 400, body: { error: cleaned.error, detail: cleaned.detail } };
+  const sub = cleaned.sub || '';
+
+  const res = await _browseList({ ctx, root, sub });
+  if (res.error) {
+    const badArgs = new Set(['invalid_path', 'path_traversal', 'absolute_path', 'is_directory']);
+    const status = res.error === 'not_found'
+      ? 404
+      : (badArgs.has(res.error) ? 400 : (res.error === 'permission_denied' ? 403 : 502));
+    return { httpStatus: status, body: { error: res.error, detail: res.detail } };
+  }
+  return {
+    httpStatus: 200,
+    body: {
+      scope:        'context',
+      context_id:   String(ctx.id || ''),
+      context_name: ctx.name,
+      root,
+      path:         sub,
+      parent:       _parentBrowsePath(sub),
+      entries:      res.entries,
+    },
+  };
+}
+
+async function _browseContextRead(ctxNameOrId, rawPath) {
+  const ctx = findContextByName(String(ctxNameOrId || '')) || (state.store && Array.isArray(state.store.contexts) ? state.store.contexts.find(c => String(c.id || '') === String(ctxNameOrId)) : null);
+  if (!ctx) return { httpStatus: 404, body: { error: 'context_not_found', detail: `Context not found: ${ctxNameOrId}` } };
+  const root = ctx.path || '';
+  if (!root) return { httpStatus: 502, body: { error: 'workspace_missing', detail: 'Context has no working directory' } };
+  const cleaned = _cleanBrowseSubpath(rawPath);
+  if (cleaned.error) return { httpStatus: 400, body: { error: cleaned.error, detail: cleaned.detail } };
+  const sub = cleaned.sub || '';
+
+  const res = await _browseRead({ ctx, root, sub });
+  if (res.error) {
+    const badArgs = new Set(['missing_path', 'invalid_path', 'path_traversal', 'absolute_path', 'is_directory', 'too_large']);
+    const status = res.error === 'not_found'
+      ? 404
+      : (badArgs.has(res.error) ? 400 : (res.error === 'permission_denied' ? 403 : 502));
+    return {
+      httpStatus: status,
+      body: { error: res.error, detail: res.detail, size: res.size },
+    };
+  }
+  return {
+    httpStatus: 200,
+    body: {
+      scope:        'context',
+      context_id:   String(ctx.id || ''),
+      context_name: ctx.name,
+      root,
+      path:         sub,
+      binary:       res.binary,
+      size:         res.size,
+      content:      res.content,
+    },
+  };
 }
 
 function _sshBaseOptsForContext(ctx, timeoutMs = SYNC_DEFAULT_TIMEOUT_MS) {
@@ -1010,6 +1479,402 @@ function _sshBaseOptsForContext(ctx, timeoutMs = SYNC_DEFAULT_TIMEOUT_MS) {
 
 function _validTmuxKey(key) {
   return /^[A-Za-z0-9_-]{1,32}$/.test(String(key || ''));
+}
+
+/* ────────── Agent attribute edit (CAM-DESK-EDIT-016) ──────────
+ *
+ * PATCH /api/agents/:id translates a small body shape into a
+ * `camc update <id>` invocation on the agent's host. Supported
+ * fields (mirroring what camc itself exposes):
+ *   - name         (string)         — single rename
+ *   - auto_confirm (boolean)        — toggle
+ *   - tags_add     (string[])       — append tags one-by-one
+ *   - tags_remove  (string[])       — remove tags one-by-one
+ *
+ * Anything else (system_prompt, AGENTS.md edits, …) is out of
+ * scope today because the upstream camc CLI doesn't expose it.
+ * The renderer documents the supported field set so the edit
+ * popover only surfaces those fields.
+ */
+function _validTag(t) {
+  return typeof t === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(t);
+}
+
+async function _editAgent(agentId, body) {
+  const resolved = _contextForAgent(agentId);
+  if (resolved.error) {
+    return { ok: false, error: resolved.error, detail: `Edit unavailable: ${resolved.error}` };
+  }
+  const ctx = resolved.ctx;
+  const args = ['update', agentId];
+
+  let nextName = null;
+  let nextAuto = null;
+  const tagsAdd    = Array.isArray(body.tags_add)    ? body.tags_add    : [];
+  const tagsRemove = Array.isArray(body.tags_remove) ? body.tags_remove : [];
+  let changed = false;
+
+  if (typeof body.name === 'string') {
+    const n = body.name.trim();
+    if (!n)              return { ok: false, error: 'invalid_name', detail: 'name cannot be empty' };
+    if (n.length > 128)  return { ok: false, error: 'invalid_name', detail: 'name too long' };
+    args.push('--name', n);
+    nextName = n;
+    changed = true;
+  }
+  if (typeof body.auto_confirm === 'boolean') {
+    args.push('--auto-confirm', body.auto_confirm ? 'true' : 'false');
+    nextAuto = !!body.auto_confirm;
+    changed = true;
+  }
+  for (const t of tagsAdd) {
+    if (!_validTag(t)) return { ok: false, error: 'invalid_tag', detail: `bad tag: ${String(t)}` };
+    args.push('--tag', t);
+    changed = true;
+  }
+  for (const t of tagsRemove) {
+    if (!_validTag(t)) return { ok: false, error: 'invalid_tag', detail: `bad tag: ${String(t)}` };
+    args.push('--untag', t);
+    changed = true;
+  }
+  if (!changed) {
+    return { ok: false, error: 'nothing_to_update', detail: 'no editable fields provided' };
+  }
+
+  const exec = await _execCamcOnContext(ctx, args, { timeoutMs: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000) });
+  if (!exec.ok) {
+    return {
+      ok: false,
+      error:  exec.error || 'update_failed',
+      detail: exec.detail || exec.stderr || 'camc update failed',
+    };
+  }
+
+  // Mirror the change into the local store so the next poll cycle
+  // doesn't show stale data. camc's poll path will eventually
+  // overwrite this from agents.json — we're just bridging the gap.
+  if (state.store && Array.isArray(state.store.agents)) {
+    const a = state.store.agents.find(x =>
+      x && (String(x.id || '') === String(agentId) || (x.id && String(agentId).startsWith(x.id))),
+    );
+    if (a) {
+      if (!a.task || typeof a.task !== 'object') a.task = {};
+      if (nextName != null) {
+        a.task.name = nextName;
+        a.task_name = nextName;
+      }
+      if (nextAuto != null) {
+        a.task.auto_confirm = !!nextAuto;
+        a.auto_confirm = !!nextAuto;
+      }
+      if (tagsAdd.length || tagsRemove.length) {
+        const cur = Array.isArray(a.task.tags) ? a.task.tags.slice() : (Array.isArray(a.tags) ? a.tags.slice() : []);
+        for (const t of tagsAdd)    { if (!cur.includes(t)) cur.push(t); }
+        for (const t of tagsRemove) { const i = cur.indexOf(t); if (i >= 0) cur.splice(i, 1); }
+        a.task.tags = cur;
+        a.tags     = cur;
+      }
+      try { saveStore && saveStore(); } catch { /* noop */ }
+      return { ok: true, agent: a };
+    }
+  }
+  return { ok: true, agent: null };
+}
+
+/** Stop one agent gracefully via `camc stop <id>` on the agent's
+ *  context. Mirrors status into the local store so the renderer
+ *  updates immediately (next poll will overwrite from agents.json).
+ *
+ *  Returns `{ ok: true, agent }` on success, or `{ ok: false, error,
+ *  detail }` with error one of: agent_not_found, context_not_found,
+ *  store_unavailable, stop_failed.
+ */
+async function _stopAgent(agentId, { force = false } = {}) {
+  const resolved = _contextForAgent(agentId);
+  if (resolved.error) {
+    return { ok: false, error: resolved.error, detail: `Stop unavailable: ${resolved.error}` };
+  }
+  const ctx = resolved.ctx;
+  const agent = resolved.agent || {};
+  const canonicalId = String(agent.id || decodeURIComponent(String(agentId || '')));
+  const currentStatus = String(agent.status || '').toLowerCase();
+  const terminal = ['completed', 'failed', 'timeout', 'killed', 'stopped'].includes(currentStatus);
+  // Already terminal — no-op success so the UI menu can re-issue Stop
+  // without surfacing a false error. Force kill is still allowed for
+  // stopped agents because camc stop leaves tmux alive for resume.
+  if (terminal && !(force && currentStatus === 'stopped')) {
+    return { ok: true, agent, no_op: true };
+  }
+  const cmd = force ? 'kill' : 'stop';
+  const exec = await _execCamcOnContext(
+    ctx, [cmd, canonicalId],
+    { timeoutMs: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000) },
+  );
+  if (!exec.ok) {
+    return {
+      ok: false,
+      error:  exec.error || (force ? 'kill_failed' : 'stop_failed'),
+      detail: exec.detail || exec.stderr || `camc ${cmd} failed`,
+    };
+  }
+  // Mirror the change locally so the next render shows stopped/killed state.
+  if (state.store && Array.isArray(state.store.agents)) {
+    const a = state.store.agents.find(x =>
+      x && (String(x.id || '') === canonicalId || (x.id && canonicalId.startsWith(String(x.id)))),
+    );
+    if (a) {
+      a.status = force ? 'killed' : 'stopped';
+      a.state = a.status;
+      a.exit_reason = force ? 'Force killed by user' : 'Stopped by user';
+      a.completed_at = a.completed_at || new Date().toISOString();
+      try { saveStore && saveStore(); } catch { /* noop */ }
+      return { ok: true, agent: a };
+    }
+  }
+  return { ok: true, agent: null };
+}
+
+/** Remove one agent via `camc rm <id>` on the agent's context. Modern
+ *  camc always kills tmux on `rm` (the `--kill` flag is a deprecated
+ *  no-op), so Remove works even when the agent is running.
+ *
+ *  Mirrors removal into the local store on success. Returns
+ *  `{ ok: true, removed_id }` or `{ ok: false, error, detail }` with
+ *  error one of: agent_not_found, context_not_found, store_unavailable,
+ *  remove_failed.
+ */
+async function _removeAgent(agentId, { archive = false } = {}) {
+  const resolved = _contextForAgent(agentId);
+  if (resolved.error) {
+    return { ok: false, error: resolved.error, detail: `Remove unavailable: ${resolved.error}` };
+  }
+  const ctx = resolved.ctx;
+  const agent = resolved.agent || {};
+  const canonicalId = String(agent.id || decodeURIComponent(String(agentId || '')));
+  const args = ['rm', canonicalId, '--kill'];
+  if (archive) args.push('--archive');
+  const exec = await _execCamcOnContext(
+    ctx, args,
+    { timeoutMs: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000) },
+  );
+  if (!exec.ok) {
+    return {
+      ok: false,
+      error:  exec.error || 'remove_failed',
+      detail: exec.detail || exec.stderr || 'camc rm failed',
+    };
+  }
+  // Mirror: drop the agent row locally so the menu's Remove updates the
+  // list immediately. Match by exact id OR id prefix (same loose match
+  // _contextForAgent uses).
+  if (state.store && Array.isArray(state.store.agents)) {
+    const before = state.store.agents.length;
+    state.store.agents = state.store.agents.filter(x =>
+      !(x && (String(x.id || '') === canonicalId || (x.id && canonicalId.startsWith(String(x.id))))),
+    );
+    if (state.store.agents.length !== before) {
+      try { saveStore && saveStore(); } catch { /* noop */ }
+    }
+  }
+  return { ok: true, removed_id: canonicalId };
+}
+
+function _cronManagedPrefix(agentId) {
+  const id = String(agentId || '').trim().slice(0, 8) || 'agent';
+  return `agent-${id}-`;
+}
+
+function _validCronUiName(name) {
+  return typeof name === 'string' && /^[A-Za-z0-9_.-]{1,48}$/.test(name);
+}
+
+function _cronScheduleArgs(type, value) {
+  const t = String(type || '').trim();
+  const v = String(value || '').trim();
+  if (t === 'every') {
+    if (!/^\d+(m|h)$/.test(v)) return { error: 'invalid_schedule', detail: 'Every schedule must be like 30m or 2h' };
+    return { args: ['--every', v] };
+  }
+  if (t === 'daily') {
+    if (!/^([01]?\d|2[0-3]):[0-5]\d$/.test(v)) return { error: 'invalid_schedule', detail: 'Daily schedule must be HH:MM' };
+    return { args: ['--daily', v] };
+  }
+  if (t === 'in') {
+    if (!/^\d+(m|h)$/.test(v)) return { error: 'invalid_schedule', detail: 'Delay must be like 45m or 2h' };
+    return { args: ['--in', v] };
+  }
+  if (t === 'at') {
+    if (!v || !/^\d{4}-\d{2}-\d{2}T/.test(v)) return { error: 'invalid_schedule', detail: 'At schedule must be an ISO timestamp such as 2026-06-10T09:00:00-07:00' };
+    return { args: ['--at', v] };
+  }
+  return { error: 'invalid_schedule', detail: 'Schedule type must be every, daily, in, or at' };
+}
+
+function _agentWorkspacePath(agent, ctx) {
+  return String(agent && (agent.context_path || agent.path || agent.cwd) || ctx && ctx.path || '.');
+}
+
+function _decorateAgentCronJobs(agentId, jobs) {
+  const prefix = _cronManagedPrefix(agentId);
+  return (Array.isArray(jobs) ? jobs : [])
+    .filter(j => j && typeof j.name === 'string' && j.name.startsWith(prefix))
+    .map(j => ({ ...j, display_name: j.name.slice(prefix.length) || j.name, managed_prefix: prefix }));
+}
+
+async function _listAgentCron(agentId) {
+  const resolved = _contextForAgent(agentId);
+  if (resolved.error) {
+    return { ok: false, error: resolved.error, detail: `Automation unavailable: ${resolved.error}` };
+  }
+  const agent = resolved.agent || {};
+  const canonicalId = String(agent.id || decodeURIComponent(String(agentId || '')));
+  const exec = await _execCamcOnContext(resolved.ctx, ['cron', 'list', '--json'], { timeoutMs: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000) });
+  if (!exec.ok) {
+    return { ok: false, error: exec.error || 'cron_list_failed', detail: exec.detail || exec.stderr || 'camc cron list failed' };
+  }
+  let parsed;
+  try { parsed = JSON.parse(exec.stdout || '{}'); }
+  catch (e) { return { ok: false, error: 'invalid_json', detail: `camc cron list returned invalid JSON: ${e.message}` }; }
+  const allJobs = Array.isArray(parsed.jobs) ? parsed.jobs : [];
+
+  let loops = [];
+  let loopError = '';
+  const loopExec = await _execCamcOnContext(resolved.ctx, ['cron', 'list', '--loop', '--owner', canonicalId, '--json'], { timeoutMs: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000) });
+  if (loopExec.ok) {
+    try {
+      const loopParsed = JSON.parse(loopExec.stdout || '{}');
+      loops = Array.isArray(loopParsed.loops) ? loopParsed.loops : [];
+    } catch (e) {
+      loopError = `invalid loop JSON: ${e.message}`;
+    }
+  } else {
+    loopError = loopExec.detail || loopExec.stderr || loopExec.error || 'camc cron --loop list failed';
+  }
+
+  return {
+    ok: true,
+    agent_id: canonicalId,
+    context_name: resolved.ctx && resolved.ctx.name,
+    workspace: _agentWorkspacePath(agent, resolved.ctx),
+    count: _decorateAgentCronJobs(canonicalId, allJobs).length + loops.length,
+    all_count: allJobs.length,
+    jobs: _decorateAgentCronJobs(canonicalId, allJobs),
+    loops,
+    loop_error: loopError,
+  };
+}
+
+async function _addAgentLoop(agentId, body) {
+  const resolved = _contextForAgent(agentId);
+  if (resolved.error) {
+    return { ok: false, error: resolved.error, detail: `Loop unavailable: ${resolved.error}` };
+  }
+  const agent = resolved.agent || {};
+  const canonicalId = String(agent.id || decodeURIComponent(String(agentId || '')));
+  const name = String(body && body.name || '').trim();
+  if (!_validCronUiName(name)) {
+    return { ok: false, error: 'invalid_name', detail: 'Use letters, digits, dot, underscore, or dash; max 48 chars' };
+  }
+  const schedule = _cronScheduleArgs(body && body.schedule_type, body && body.schedule_value);
+  if (schedule.error) return { ok: false, error: schedule.error, detail: schedule.detail };
+  const text = String(body && body.text || '').trim();
+  if (!text) return { ok: false, error: 'missing_text', detail: 'Loop prompt text is required' };
+  if (text.length > 4000) return { ok: false, error: 'text_too_long', detail: 'Loop prompt text is too long' };
+
+  const args = [
+    'cron', 'add',
+    '--loop',
+    '--owner', canonicalId,
+    '--name', name,
+    ...schedule.args,
+    '--prompt', text,
+  ];
+  const exec = await _execCamcOnContext(resolved.ctx, args, { timeoutMs: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000) });
+  if (!exec.ok) {
+    return { ok: false, error: exec.error || 'loop_add_failed', detail: exec.detail || exec.stderr || 'camc cron add --loop failed' };
+  }
+  pushLog('info', `loop add ${name} for agent ${canonicalId}`);
+  const listed = await _listAgentCron(canonicalId);
+  return { ok: true, stdout: exec.stdout || '', stderr: exec.stderr || '', loops: listed.ok ? listed.loops : [] };
+}
+
+async function _addAgentCron(agentId, body) {
+  if (String(body && body.type || '').trim() === 'loop') {
+    return _addAgentLoop(agentId, body);
+  }
+  const resolved = _contextForAgent(agentId);
+  if (resolved.error) {
+    return { ok: false, error: resolved.error, detail: `Cron unavailable: ${resolved.error}` };
+  }
+  const agent = resolved.agent || {};
+  const canonicalId = String(agent.id || decodeURIComponent(String(agentId || '')));
+  const name = String(body && body.name || '').trim();
+  if (!_validCronUiName(name)) {
+    return { ok: false, error: 'invalid_name', detail: 'Use letters, digits, dot, underscore, or dash; max 48 chars' };
+  }
+  const schedule = _cronScheduleArgs(body && body.schedule_type, body && body.schedule_value);
+  if (schedule.error) return { ok: false, error: schedule.error, detail: schedule.detail };
+  const commandText = String(body && (body.command || body.shell) || '').trim();
+  const legacyMessage = String(body && body.text || '').trim();
+  if (!commandText && !legacyMessage) return { ok: false, error: 'missing_command', detail: 'Cron command is required' };
+  if (commandText.length > 4000 || legacyMessage.length > 4000) return { ok: false, error: 'text_too_long', detail: 'Cron command is too long' };
+
+  const timeout = Math.max(5, Math.min(3600, Number(body && body.timeout_seconds) || 60));
+  const maxAttempts = Math.max(1, Math.min(20, Number(body && body.max_attempts) || 3));
+  const ttlDaysRaw = Number(body && body.ttl_days);
+  const noExpire = !!(body && body.no_expire);
+  const cwd = String(body && body.cwd || _agentWorkspacePath(agent, resolved.ctx) || '.');
+  const cronName = `${_cronManagedPrefix(canonicalId)}${name}`;
+  const shellCmd = commandText || `${REMOTE_CAMC} msg send ${_shellQuote(canonicalId)} -t ${_shellQuote(legacyMessage)} --no-wait`;
+  const args = [
+    'cron', 'add',
+    '--name', cronName,
+    ...schedule.args,
+    '--timeout', String(timeout),
+    '--max-attempts', String(maxAttempts),
+    '--cwd', cwd,
+  ];
+  if (noExpire) args.push('--no-expire');
+  else if (Number.isFinite(ttlDaysRaw) && ttlDaysRaw > 0) args.push('--ttl-days', String(Math.min(3650, Math.floor(ttlDaysRaw))));
+  args.push('--shell', shellCmd);
+
+  const exec = await _execCamcOnContext(resolved.ctx, args, { timeoutMs: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000) });
+  if (!exec.ok) {
+    return { ok: false, error: exec.error || 'cron_add_failed', detail: exec.detail || exec.stderr || 'camc cron add failed' };
+  }
+  pushLog('info', `cron add ${cronName} for agent ${canonicalId}`);
+  const listed = await _listAgentCron(canonicalId);
+  return { ok: true, stdout: exec.stdout || '', stderr: exec.stderr || '', jobs: listed.ok ? listed.jobs : [] };
+}
+
+async function _removeAgentCron(agentId, jobKey) {
+  const resolved = _contextForAgent(agentId);
+  if (resolved.error) {
+    return { ok: false, error: resolved.error, detail: `Cron unavailable: ${resolved.error}` };
+  }
+  const agent = resolved.agent || {};
+  const canonicalId = String(agent.id || decodeURIComponent(String(agentId || '')));
+  let key = decodeURIComponent(String(jobKey || '')).trim();
+  const isLoop = key.startsWith('loop:');
+  if (key.startsWith('loop:') || key.startsWith('cron:')) key = key.slice(key.indexOf(':') + 1);
+  if (!key) return { ok: false, error: 'missing_job', detail: 'Automation id or name is required' };
+  const args = isLoop
+    ? ['cron', 'rm', '--loop', '--owner', canonicalId, key]
+    : ['cron', 'rm', key];
+  const exec = await _execCamcOnContext(resolved.ctx, args, { timeoutMs: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000) });
+  if (!exec.ok) {
+    return { ok: false, error: exec.error || (isLoop ? 'loop_remove_failed' : 'cron_remove_failed'), detail: exec.detail || exec.stderr || `camc cron rm${isLoop ? ' --loop' : ''} failed` };
+  }
+  pushLog('info', `${isLoop ? 'loop' : 'cron'} remove ${key} for agent ${canonicalId}`);
+  return { ok: true, removed: key, kind: isLoop ? 'loop' : 'cron', stdout: exec.stdout || '', stderr: exec.stderr || '' };
+}
+
+function _cronHttpStatus(error) {
+  const e = String(error || '');
+  if (e === 'agent_not_found') return 404;
+  if (['context_not_found', 'store_unavailable'].includes(e)) return e === 'store_unavailable' ? 503 : 404;
+  if (['invalid_name', 'invalid_schedule', 'missing_text', 'missing_command', 'text_too_long', 'missing_job'].includes(e)) return 400;
+  return 502;
 }
 
 async function _sendAgentKey(agentId, key) {
@@ -1202,7 +2067,7 @@ async function _execCamcOnContext(ctx, camcArgs, { overrides = {}, timeoutMs = S
   if (!ready.ok) {
     return { ok: false, error: ready.error || 'remote_camc_unavailable', detail: ready.detail || 'failed to prepare ~/.cam/camc on remote host' };
   }
-  const argStr = camcArgs.map(a => String(a)).join(' ');
+  const argStr = camcArgs.map(a => _shellQuote(a)).join(' ');
   const res = await _sshTransport.execRemote({ ...baseOpts, command: `${REMOTE_CAMC} ${argStr}` });
   if (!res || !res.ok) {
     const err = res || {};
@@ -1213,6 +2078,412 @@ async function _execCamcOnContext(ctx, camcArgs, { overrides = {}, timeoutMs = S
     return { ok: false, error: code, detail: err.detail || err.stderr || 'unknown exec failure', stderr: err.stderr || '', stdout: err.stdout || '' };
   }
   return { ok: true, stdout: String(res.stdout || ''), stderr: String(res.stderr || '') };
+}
+
+/* ─────────────── Skillm wrapper (CAM-DESK-SKILLM-010..014) ─────────────── */
+
+const SKILLM_DEFAULT_TIMEOUT_MS = 120000;
+const SKILLM_INSTALL_TIMEOUT_MS = 300000;
+const SKILLM_REPO_NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+const SKILLM_ARG_RE = /^[A-Za-z0-9_./:-]{1,180}$/;
+const SKILLM_AGENT_TOOLS = new Set(['claude', 'codex', 'openclaw', 'cursor']);
+
+function _skillmRedact(text, token) {
+  let out = String(text == null ? '' : text);
+  if (token) {
+    const raw = String(token);
+    const enc = encodeURIComponent(raw);
+    if (raw) out = out.split(raw).join('[redacted]');
+    if (enc && enc !== raw) out = out.split(enc).join('[redacted]');
+  }
+  return out.replace(/oauth2:[^@\s]+@/ig, 'oauth2:[redacted]@');
+}
+
+function _skillmContext(ctxName) {
+  const name = String(ctxName || '').trim();
+  if (!name) return { error: 'missing_context', detail: 'context is required' };
+  const ctx = findContextByName(name);
+  if (!ctx) return { error: 'context_not_found', detail: `context "${name}" not found` };
+  if (!ctx.machine || ctx.machine.type !== 'ssh') {
+    return { error: 'not_ssh', detail: 'Skillm v0 requires an SSH context/node' };
+  }
+  return { ctx };
+}
+
+function _skillmRepoUrl(repoUrl, token) {
+  const raw = String(repoUrl || '').trim();
+  if (!raw) return { error: 'missing_repo_url', detail: 'repoUrl is required' };
+  let u;
+  try { u = new URL(raw); }
+  catch { return { error: 'invalid_repo_url', detail: 'repoUrl must be a valid URL' }; }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') {
+    return { error: 'invalid_repo_url', detail: 'only http(s) Git URLs are supported in Desktop v0' };
+  }
+  const tok = String(token || '').trim();
+  if (tok) {
+    u.username = 'oauth2';
+    u.password = tok;
+  }
+  return { url: u.toString() };
+}
+
+function _skillmCommand(args, cwd) {
+  const argStr = (args || []).map(a => _shellQuote(a)).join(' ');
+  const cd = cwd ? `cd ${_shellQuote(cwd)} && ` : '';
+  return `${cd}${REMOTE_SKILLM} ${argStr}`;
+}
+
+async function _execSkillmOnContext(ctx, args, { token = '', timeoutMs = SKILLM_DEFAULT_TIMEOUT_MS, cwd = null } = {}) {
+  const built = _sshBaseOptsForContext(ctx, timeoutMs);
+  if (built.error) return { ok: false, error: built.error, detail: built.detail };
+  const baseOpts = built.opts;
+  const ready = await _ensureRemoteSkillm(baseOpts);
+  if (!ready.ok) {
+    return { ok: false, error: ready.error || 'remote_skillm_unavailable', detail: ready.detail || 'failed to prepare ~/.cam/skillm on remote host' };
+  }
+  const command = _skillmCommand(args, cwd || ctx.path || '');
+  const res = await _sshTransport.execRemote({ ...baseOpts, command, timeout_ms: timeoutMs });
+  if (!res || !res.ok) {
+    const err = res || {};
+    const detail = _skillmRedact(err.detail || err.stderr || err.stdout || 'skillm command failed', token);
+    const code = /skillm not found/i.test(detail) ? 'skillm_missing' : (err.error || 'skillm_failed');
+    return {
+      ok: false,
+      error: code,
+      detail,
+      stdout: _skillmRedact(err.stdout || '', token),
+      stderr: _skillmRedact(err.stderr || '', token),
+    };
+  }
+  return {
+    ok: true,
+    stdout: _skillmRedact(res.stdout || '', token),
+    stderr: _skillmRedact(res.stderr || '', token),
+  };
+}
+
+function _stripAnsi(s) {
+  return String(s || '').replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '');
+}
+
+function _parseSkillmJson(stdout) {
+  const raw = String(stdout || '').trim();
+  if (!raw) return null;
+  try {
+    const data = JSON.parse(raw);
+    const arr = Array.isArray(data) ? data : (Array.isArray(data.skills) ? data.skills : null);
+    if (!arr) return null;
+    return arr.map((x) => {
+      const name = String(x.name || x.id || '');
+      return {
+        name,
+        repo: String(x.repo || x.repository || (name.includes('/') ? name.split('/')[0] : '')),
+        commit: String(x.commit || x.sha || ''),
+        tags: Array.isArray(x.tags) ? x.tags.map(String) : [],
+        size: String(x.size || ''),
+        updated: String(x.updated || x.updated_at || ''),
+        category: String(x.category || ''),
+      };
+    }).filter(x => x.name);
+  } catch {
+    return null;
+  }
+}
+
+function _parseSkillmTable(stdout) {
+  const lines = _stripAnsi(stdout).split(/\r?\n/);
+  const skills = [];
+  let category = '';
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (!/[│┃┏┗┡└┌┬┴┼╇━─]/.test(line) && !/^Usage:/.test(trimmed)) {
+      category = trimmed;
+      continue;
+    }
+    if (!line.includes('│')) continue;
+    const cols = line.split('│').map(c => c.trim());
+    if (cols.length < 6) continue;
+    const name = cols[1];
+    if (!name || name === 'Name' || /[━─]/.test(name)) continue;
+    const tags = cols[3]
+      ? cols[3].split(/[,\s]+/).map(t => t.trim()).filter(Boolean)
+      : [];
+    skills.push({
+      name,
+      repo: name.includes('/') ? name.split('/')[0] : '',
+      commit: cols[2] || '',
+      tags,
+      size: cols[4] || '',
+      updated: cols[5] || '',
+      category,
+    });
+  }
+  return skills;
+}
+
+function _parseSkillmRepos(stdout) {
+  const lines = _stripAnsi(stdout).split(/\r?\n/);
+  const repos = [];
+  let last = null;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const active = /←\s*active|<-\s*active|\bactive\b/i.test(trimmed);
+    const clean = trimmed.replace(/←\s*active|<-\s*active|\bactive\b/ig, '').trim();
+    if (!clean) continue;
+    const looksLikeUrl = /^(https?:\/\/|git@|ssh:\/\/|file:\/\/|\/|\.\/|\.\.\/)/.test(clean);
+    if (looksLikeUrl && last && !last.url) {
+      last.url = clean;
+      if (active) last.active = true;
+      continue;
+    }
+    const m = clean.match(/^([A-Za-z0-9._-]{1,64})(?:\s+(.*))?$/);
+    if (!m) {
+      if (last && !last.url) {
+        last.url = clean;
+        if (active) last.active = true;
+      }
+      continue;
+    }
+    last = {
+      name: m[1],
+      url: (m[2] || '').trim(),
+      active,
+      local: /\(local\)/i.test(m[2] || ''),
+    };
+    repos.push(last);
+  }
+  return repos.map((r) => ({
+    ...r,
+    url: _skillmRedact(String(r.url || '').replace(/\(local\)/ig, '').trim(), ''),
+  }));
+}
+
+async function _skillmRepoListForContext(ctx) {
+  const exec = await _execSkillmOnContext(ctx, ['repo', 'list'], { timeoutMs: SKILLM_DEFAULT_TIMEOUT_MS });
+  if (!exec.ok) return { ok: false, error: exec.error, detail: exec.detail, stdout: exec.stdout || '', stderr: exec.stderr || '' };
+  return { ok: true, repos: _parseSkillmRepos(exec.stdout), raw: exec.stdout || '' };
+}
+
+async function _skillmPullRepo(ctx, repoName) {
+  const args = ['pull'];
+  if (repoName) args.push(repoName);
+  return _execSkillmOnContext(ctx, args, { timeoutMs: SKILLM_INSTALL_TIMEOUT_MS });
+}
+
+async function _skillmRefreshReposForContext(ctx, repoName = '') {
+  if (repoName && repoName !== 'all') {
+    const pulled = await _skillmPullRepo(ctx, repoName);
+    return [{ contextName: ctx.name, repoName, ok: pulled.ok, error: pulled.ok ? '' : pulled.error, detail: pulled.ok ? (pulled.stdout || '').trim() : pulled.detail }];
+  }
+  const listed = await _skillmRepoListForContext(ctx);
+  if (!listed.ok) return [{ contextName: ctx.name, repoName: '', ok: false, error: listed.error, detail: listed.detail }];
+  const targets = (listed.repos || []).filter(r => r && r.name && !r.local).map(r => r.name);
+  if (!targets.length) targets.push('');
+  const results = [];
+  for (const name of targets) {
+    // eslint-disable-next-line no-await-in-loop
+    const pulled = await _skillmPullRepo(ctx, name);
+    results.push({ contextName: ctx.name, repoName: name || '(active)', ok: pulled.ok, error: pulled.ok ? '' : pulled.error, detail: pulled.ok ? (pulled.stdout || '').trim() : pulled.detail });
+  }
+  return results;
+}
+
+async function _skillmStatus(ctxName) {
+  const found = _skillmContext(ctxName);
+  if (found.error) return { httpStatus: found.error === 'context_not_found' ? 404 : 400, body: found };
+  const exec = await _execSkillmOnContext(found.ctx, ['--version'], { timeoutMs: 30000 });
+  if (!exec.ok) {
+    return { httpStatus: 200, body: { ok: false, installed: false, contextName: found.ctx.name, error: exec.error, detail: exec.detail } };
+  }
+  return { httpStatus: 200, body: { ok: true, installed: true, contextName: found.ctx.name, version: (exec.stdout || '').trim() } };
+}
+
+async function _skillmRepos(ctxName) {
+  const found = _skillmContext(ctxName);
+  if (found.error) return { httpStatus: found.error === 'context_not_found' ? 404 : 400, body: found };
+  const exec = await _skillmRepoListForContext(found.ctx);
+  if (!exec.ok) {
+    return { httpStatus: 502, body: { ok: false, error: exec.error, detail: exec.detail, stdout: exec.stdout || '', stderr: exec.stderr || '' } };
+  }
+  return { httpStatus: 200, body: { ok: true, contextName: found.ctx.name, repos: exec.repos || [], raw: _skillmRedact(exec.raw || '', '') } };
+}
+
+async function _skillmList(ctxName, { repoName = '', sync = false } = {}) {
+  const found = _skillmContext(ctxName);
+  if (found.error) return { httpStatus: found.error === 'context_not_found' ? 404 : 400, body: found };
+  let syncResults = [];
+  if (sync) syncResults = await _skillmRefreshReposForContext(found.ctx, repoName || 'all');
+  let exec = await _execSkillmOnContext(found.ctx, ['list', '--json'], { timeoutMs: SKILLM_DEFAULT_TIMEOUT_MS });
+  let format = 'json';
+  let skills = exec.ok ? _parseSkillmJson(exec.stdout) : null;
+  if (!exec.ok || !skills) {
+    exec = await _execSkillmOnContext(found.ctx, ['list'], { timeoutMs: SKILLM_DEFAULT_TIMEOUT_MS });
+    format = 'table';
+    if (!exec.ok) {
+      return { httpStatus: 502, body: { ok: false, error: exec.error, detail: exec.detail, stdout: exec.stdout || '', stderr: exec.stderr || '' } };
+    }
+    skills = _parseSkillmTable(exec.stdout);
+  }
+  if (repoName && repoName !== 'all') {
+    skills = skills.filter(s => s.repo === repoName || String(s.name || '').startsWith(`${repoName}/`));
+  }
+  return {
+    httpStatus: 200,
+    body: {
+      ok: true,
+      contextName: found.ctx.name,
+      format,
+      repoName: repoName || 'all',
+      skills,
+      syncResults,
+      raw: exec.stdout || '',
+    },
+  };
+}
+
+async function _skillmConnectRepoOnContext(ctx, { repoName, repoUrl, token }) {
+  const name = String(repoName || 'main').trim() || 'main';
+  if (!SKILLM_REPO_NAME_RE.test(name)) {
+    return { ok: false, error: 'invalid_repo_name', detail: 'repo name must be 1-64 letters/digits/._-' };
+  }
+  if (repoUrl) {
+    const built = _skillmRepoUrl(repoUrl, token);
+    if (built.error) return { ok: false, error: built.error, detail: built.detail };
+    const add = await _execSkillmOnContext(ctx, ['repo', 'add', name, built.url], { token, timeoutMs: SKILLM_INSTALL_TIMEOUT_MS });
+    const addText = `${add.detail || ''}\n${add.stdout || ''}\n${add.stderr || ''}`;
+    if (!add.ok && !/exist|already/i.test(addText)) {
+      return { ok: false, error: add.error || 'repo_add_failed', detail: add.detail || 'repo add failed' };
+    }
+  }
+  const pull = await _execSkillmOnContext(ctx, ['pull', name], { token, timeoutMs: SKILLM_INSTALL_TIMEOUT_MS });
+  if (!pull.ok) {
+    return { ok: false, error: pull.error || 'repo_pull_failed', detail: pull.detail || 'repo pull failed' };
+  }
+  return { ok: true, contextName: ctx.name, repoName: name, stdout: pull.stdout || '' };
+}
+
+async function _skillmRepoAdd(body) {
+  const found = _skillmContext(body && body.contextName);
+  if (found.error) return { httpStatus: found.error === 'context_not_found' ? 404 : 400, body: found };
+  const result = await _skillmConnectRepoOnContext(found.ctx, body || {});
+  return { httpStatus: result.ok ? 200 : 502, body: result };
+}
+
+async function _skillmRepoConnect(body) {
+  return _skillmRepoAdd(body);
+}
+
+async function _skillmRepoRemove(body) {
+  const found = _skillmContext(body && body.contextName);
+  if (found.error) return { httpStatus: found.error === 'context_not_found' ? 404 : 400, body: found };
+  const repoName = String((body && body.repoName) || '').trim();
+  if (!SKILLM_REPO_NAME_RE.test(repoName)) {
+    return { httpStatus: 400, body: { ok: false, error: 'invalid_repo_name', detail: 'repo name must be 1-64 letters/digits/._-' } };
+  }
+  const exec = await _execSkillmOnContext(found.ctx, ['repo', 'rm', repoName, '--yes'], { timeoutMs: SKILLM_INSTALL_TIMEOUT_MS });
+  return {
+    httpStatus: exec.ok ? 200 : 502,
+    body: { ok: exec.ok, contextName: found.ctx.name, repoName, error: exec.ok ? '' : exec.error, detail: exec.ok ? (exec.stdout || '').trim() : exec.detail },
+  };
+}
+
+async function _skillmRepoUpdate(body) {
+  const found = _skillmContext(body && body.contextName);
+  if (found.error) return { httpStatus: found.error === 'context_not_found' ? 404 : 400, body: found };
+  const oldName = String((body && (body.oldName || body.repoName)) || '').trim();
+  const repoName = String((body && body.repoName) || '').trim();
+  const repoUrl = String((body && body.repoUrl) || '').trim();
+  if (!SKILLM_REPO_NAME_RE.test(oldName) || !SKILLM_REPO_NAME_RE.test(repoName)) {
+    return { httpStatus: 400, body: { ok: false, error: 'invalid_repo_name', detail: 'repo name must be 1-64 letters/digits/._-' } };
+  }
+  if (!repoUrl) return { httpStatus: 400, body: { ok: false, error: 'missing_repo_url', detail: 'editing or renaming a repo requires its Git URL' } };
+  const removed = await _execSkillmOnContext(found.ctx, ['repo', 'rm', oldName, '--yes'], { timeoutMs: SKILLM_INSTALL_TIMEOUT_MS });
+  const removeText = `${removed.detail || ''}\n${removed.stdout || ''}\n${removed.stderr || ''}`;
+  if (!removed.ok && !/not found|no such|missing/i.test(removeText)) {
+    return { httpStatus: 502, body: { ok: false, contextName: found.ctx.name, repoName: oldName, error: removed.error || 'repo_remove_failed', detail: removed.detail || 'repo remove failed' } };
+  }
+  const added = await _skillmConnectRepoOnContext(found.ctx, { ...body, repoName, repoUrl });
+  return { httpStatus: added.ok ? 200 : 502, body: { ...added, oldName } };
+}
+
+async function _skillmRepoRefresh(body) {
+  const contexts = Array.isArray(body && body.contexts) ? body.contexts.filter(Boolean) : [body && body.contextName].filter(Boolean);
+  const repoName = String((body && body.repoName) || '').trim();
+  const results = [];
+  for (const ctxName of contexts) {
+    const found = _skillmContext(ctxName);
+    if (found.error) {
+      results.push({ contextName: String(ctxName || ''), ok: false, error: found.error, detail: found.detail });
+      continue;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    const pulled = await _skillmRefreshReposForContext(found.ctx, repoName || 'all');
+    results.push(...pulled);
+  }
+  return { httpStatus: 200, body: { ok: results.every(r => r.ok), results } };
+}
+
+async function _skillmSync(body) {
+  return _skillmRepoRefresh(body);
+}
+
+function _validSkillArg(s) {
+  return typeof s === 'string' && SKILLM_ARG_RE.test(s);
+}
+
+async function _skillmInstall(body) {
+  const contexts = Array.isArray(body && body.contexts) ? body.contexts.filter(Boolean) : [];
+  const skills = Array.isArray(body && body.skills) ? body.skills.filter(Boolean) : [];
+  const agents = Array.isArray(body && body.agents) ? body.agents.filter(a => SKILLM_AGENT_TOOLS.has(a)) : [];
+  const scope = body && body.scope === 'global' ? 'global' : 'workspace';
+  const workspacePath = String((body && body.workspacePath) || '').trim();
+  const repoName = String((body && body.repoName) || '').trim();
+  if (!contexts.length) return { httpStatus: 400, body: { ok: false, error: 'missing_contexts', detail: 'contexts are required' } };
+  if (!skills.length) return { httpStatus: 400, body: { ok: false, error: 'missing_skills', detail: 'skills are required' } };
+  if (!agents.length) return { httpStatus: 400, body: { ok: false, error: 'missing_agents', detail: 'agents are required' } };
+  for (const s of skills) {
+    if (!_validSkillArg(s)) return { httpStatus: 400, body: { ok: false, error: 'invalid_skill', detail: `invalid skill: ${String(s)}` } };
+  }
+  const results = [];
+  for (const ctxName of contexts) {
+    const found = _skillmContext(ctxName);
+    if (found.error) {
+      results.push({ contextName: String(ctxName || ''), ok: false, error: found.error, detail: found.detail });
+      continue;
+    }
+    const ctx = found.ctx;
+    const syncResults = await _skillmRefreshReposForContext(ctx, repoName || 'all');
+    for (const syncResult of syncResults) {
+      if (!syncResult.ok) results.push({ ...syncResult, phase: 'sync' });
+    }
+    const projectRoot = workspacePath || ctx.path || '';
+    if (scope !== 'global' && !projectRoot) {
+      results.push({ contextName: ctx.name, ok: false, error: 'missing_workspace', detail: 'workspace path is required' });
+      continue;
+    }
+    for (const skill of skills) {
+      for (const agent of agents) {
+        const args = ['install', skill, '-a', agent];
+        if (repoName && repoName !== 'all') args.push('--repo', repoName);
+        if (scope === 'global') args.push('--global');
+        else args.push('--project-root', projectRoot);
+        // eslint-disable-next-line no-await-in-loop
+        const exec = await _execSkillmOnContext(ctx, args, { timeoutMs: SKILLM_INSTALL_TIMEOUT_MS, cwd: projectRoot || ctx.path || '' });
+        results.push({
+          contextName: ctx.name,
+          skill,
+          agent,
+          scope,
+          ok: exec.ok,
+          error: exec.ok ? '' : exec.error,
+          detail: exec.ok ? (exec.stdout || '').trim() : exec.detail,
+        });
+      }
+    }
+  }
+  return { httpStatus: 200, body: { ok: results.every(r => r.ok), results } };
 }
 
 /* ─────────────── SSH config parser (read-only, no shell) ─────────────── */
@@ -1421,6 +2692,74 @@ async function handle(req, res) {
     return res.end(JSON.stringify({ error: 'upgrade_required', detail: 'WS deferred in embedded Hub' }));
   }
 
+  // Skillm library management (CAM-DESK-SKILLM-010..014).
+  // Renderer supplies context names only; SSH credentials stay inside
+  // Electron main and route through the same pooled ssh2 transport as camc.
+  if (p === '/api/skillm/status' && method === 'GET') {
+    const out = await _skillmStatus(url.searchParams.get('context') || '');
+    return sendJson(res, out.httpStatus, out.body);
+  }
+  if (p === '/api/skillm/repos' && method === 'GET') {
+    const out = await _skillmRepos(url.searchParams.get('context') || '');
+    return sendJson(res, out.httpStatus, out.body);
+  }
+  if (p === '/api/skillm/list' && method === 'GET') {
+    const out = await _skillmList(url.searchParams.get('context') || '', {
+      repoName: url.searchParams.get('repo') || '',
+      sync: url.searchParams.get('sync') === '1',
+    });
+    return sendJson(res, out.httpStatus, out.body);
+  }
+  if (p === '/api/skillm/repos' && method === 'POST') {
+    let body;
+    try { body = await readJsonBody(req); }
+    catch (e) { return send400(res, e.message, e.message === 'body_too_large' ? 'body_too_large' : 'bad_request'); }
+    const out = await _skillmRepoAdd(body || {});
+    return sendJson(res, out.httpStatus, out.body);
+  }
+  if (p === '/api/skillm/repos' && method === 'PATCH') {
+    let body;
+    try { body = await readJsonBody(req); }
+    catch (e) { return send400(res, e.message, e.message === 'body_too_large' ? 'body_too_large' : 'bad_request'); }
+    const out = await _skillmRepoUpdate(body || {});
+    return sendJson(res, out.httpStatus, out.body);
+  }
+  if (p === '/api/skillm/repos' && method === 'DELETE') {
+    let body;
+    try { body = await readJsonBody(req); }
+    catch (e) { return send400(res, e.message, e.message === 'body_too_large' ? 'body_too_large' : 'bad_request'); }
+    const out = await _skillmRepoRemove(body || {});
+    return sendJson(res, out.httpStatus, out.body);
+  }
+  if (p === '/api/skillm/repos/refresh' && method === 'POST') {
+    let body;
+    try { body = await readJsonBody(req); }
+    catch (e) { return send400(res, e.message, e.message === 'body_too_large' ? 'body_too_large' : 'bad_request'); }
+    const out = await _skillmRepoRefresh(body || {});
+    return sendJson(res, out.httpStatus, out.body);
+  }
+  if (p === '/api/skillm/repo-connect' && method === 'POST') {
+    let body;
+    try { body = await readJsonBody(req); }
+    catch (e) { return send400(res, e.message, e.message === 'body_too_large' ? 'body_too_large' : 'bad_request'); }
+    const out = await _skillmRepoConnect(body || {});
+    return sendJson(res, out.httpStatus, out.body);
+  }
+  if (p === '/api/skillm/sync' && method === 'POST') {
+    let body;
+    try { body = await readJsonBody(req); }
+    catch (e) { return send400(res, e.message, e.message === 'body_too_large' ? 'body_too_large' : 'bad_request'); }
+    const out = await _skillmSync(body || {});
+    return sendJson(res, out.httpStatus, out.body);
+  }
+  if (p === '/api/skillm/install' && method === 'POST') {
+    let body;
+    try { body = await readJsonBody(req); }
+    catch (e) { return send400(res, e.message, e.message === 'body_too_large' ? 'body_too_large' : 'bad_request'); }
+    const out = await _skillmInstall(body || {});
+    return sendJson(res, out.httpStatus, out.body);
+  }
+
   // Contexts — CRUD against the embedded store
   // (CAM-DESK-DIRECT-014..016).
   if (p === '/api/contexts') {
@@ -1518,7 +2857,16 @@ async function handle(req, res) {
       return sendJson(res, 200, result);
     }
     if (method === 'POST' && sub === '/copy') return send501(res, 'context copy');
-    if (method === 'GET'   && (sub === '/files' || sub === '/files/read')) return sendJson(res, 200, { files: [] });
+    if (method === 'GET'   && sub === '/files') {
+      const subpath = url.searchParams.get('path') || '';
+      const out = await _browseContextList(existing.name, subpath);
+      return sendJson(res, out.httpStatus, out.body);
+    }
+    if (method === 'GET'   && sub === '/files/read') {
+      const subpath = url.searchParams.get('path') || '';
+      const out = await _browseContextRead(existing.name, subpath);
+      return sendJson(res, out.httpStatus, out.body);
+    }
     return send404(res);
   }
 
@@ -1535,9 +2883,69 @@ async function handle(req, res) {
   if (agentMatch) {
     const sub = agentMatch[2] || '';
     if (method === 'GET' && !sub)                          return send404(res);
-    if (method === 'PATCH' && !sub)                        return send501(res, 'edit agent');
-    if (method === 'DELETE' && !sub)                       return send501(res, 'stop agent');
-    if (method === 'DELETE' && sub === '/history')         return send501(res, 'delete agent history');
+    if (method === 'PATCH' && !sub) {
+      let body = {};
+      const ctype = (req.headers['content-type'] || '').toLowerCase();
+      if (ctype.includes('application/json')) {
+        try { body = await readJsonBody(req); }
+        catch (e) { return send400(res, e.message); }
+      }
+      const result = await _editAgent(agentMatch[1], body || {});
+      if (!result.ok) {
+        const bad = new Set(['nothing_to_update', 'invalid_args', 'invalid_tag', 'invalid_name']);
+        const status = result.error === 'agent_not_found'
+          ? 404
+          : (bad.has(result.error) ? 400 : 502);
+        return sendJson(res, status, { error: result.error, detail: result.detail });
+      }
+      return sendJson(res, 200, { ok: true, agent: result.agent || null });
+    }
+    if (method === 'DELETE' && !sub) {
+      const force = /^(1|true|yes)$/i.test(url.searchParams.get('force') || '');
+      const stopped = await _stopAgent(agentMatch[1], { force });
+      if (!stopped.ok) {
+        const status = stopped.error === 'agent_not_found' ? 404
+                     : stopped.error === 'context_not_found' ? 404
+                     : stopped.error === 'store_unavailable' ? 503
+                     : 502;
+        return sendJson(res, status, { error: stopped.error || 'stop_failed', detail: stopped.detail });
+      }
+      return sendJson(res, 200, { ok: true, agent: stopped.agent || null, no_op: !!stopped.no_op });
+    }
+    if (method === 'DELETE' && sub === '/history') {
+      const removed = await _removeAgent(agentMatch[1]);
+      if (!removed.ok) {
+        const status = removed.error === 'agent_not_found' ? 404
+                     : removed.error === 'context_not_found' ? 404
+                     : removed.error === 'store_unavailable' ? 503
+                     : 502;
+        return sendJson(res, status, { error: removed.error || 'remove_failed', detail: removed.detail });
+      }
+      return sendJson(res, 200, { ok: true, removed_id: removed.removed_id });
+    }
+    if (sub === '/cron') {
+      if (method === 'GET') {
+        const result = await _listAgentCron(agentMatch[1]);
+        if (!result.ok) return sendJson(res, _cronHttpStatus(result.error), { error: result.error, detail: result.detail });
+        return sendJson(res, 200, result);
+      }
+      if (method === 'POST') {
+        let body;
+        try { body = await readJsonBody(req); }
+        catch (e) { return send400(res, e.message, e.message === 'body_too_large' ? 'body_too_large' : 'bad_request'); }
+        const result = await _addAgentCron(agentMatch[1], body || {});
+        if (!result.ok) return sendJson(res, _cronHttpStatus(result.error), { error: result.error, detail: result.detail });
+        return sendJson(res, 201, result);
+      }
+    }
+    if (sub && sub.startsWith('/cron/')) {
+      if (method === 'DELETE') {
+        const key = sub.slice('/cron/'.length);
+        const result = await _removeAgentCron(agentMatch[1], key);
+        if (!result.ok) return sendJson(res, _cronHttpStatus(result.error), { error: result.error, detail: result.detail });
+        return sendJson(res, 200, result);
+      }
+    }
     if (method === 'POST'  && sub === '/restart')          return send501(res, 'restart agent');
     if (method === 'POST'  && sub === '/input') {
       let body;
@@ -1632,6 +3040,16 @@ async function handle(req, res) {
       }
       return sendJson(res, 200, { output: exec.stdout, offset: 0 });
     }
+    if (method === 'GET' && sub === '/workspace/files') {
+      const subpath = url.searchParams.get('path') || '';
+      const out = await _browseAgentList(agentMatch[1], subpath);
+      return sendJson(res, out.httpStatus, out.body);
+    }
+    if (method === 'GET' && sub === '/workspace/files/read') {
+      const subpath = url.searchParams.get('path') || '';
+      const out = await _browseAgentRead(agentMatch[1], subpath);
+      return sendJson(res, out.httpStatus, out.body);
+    }
     return send404(res);
   }
 
@@ -1640,15 +3058,60 @@ async function handle(req, res) {
 
 /* ─────────────── Port discovery ─────────────── */
 
-function portInUse(port) {
+function probePort(port) {
   return new Promise((resolve) => {
     const probe = http.createServer();
-    probe.once('error', () => resolve(true));
+    probe.once('error', (err) => {
+      const code = err && (err.code || err.message) || 'listen_error';
+      resolve({
+        port,
+        state: code === 'EADDRINUSE' ? 'busy' : 'unavailable',
+        error: String(code),
+      });
+    });
     probe.once('listening', () => {
-      probe.close(() => resolve(false));
+      probe.close(() => resolve({ port, state: 'free' }));
     });
     probe.listen({ host: '127.0.0.1', port });
   });
+}
+
+async function portInUse(port) {
+  const p = await probePort(port);
+  return p.state !== 'free';
+}
+
+async function scanPortCandidates() {
+  const out = [];
+  for (let p = DEFAULT_PORT; p < DEFAULT_PORT + PORT_SCAN_RANGE; p++) {
+    // eslint-disable-next-line no-await-in-loop
+    out.push(await probePort(p));
+  }
+  return out;
+}
+
+function summarizePortCandidates(candidates) {
+  const summary = {
+    count:       candidates.length,
+    free:        0,
+    busy:        0,
+    unavailable: 0,
+    firstFree:   null,
+    errors:      {},
+  };
+  for (const c of candidates) {
+    if (!c) continue;
+    if (c.state === 'free') {
+      summary.free += 1;
+      if (summary.firstFree == null) summary.firstFree = c.port;
+    } else if (c.state === 'busy') {
+      summary.busy += 1;
+    } else {
+      summary.unavailable += 1;
+    }
+    if (c.error) summary.errors[c.error] = (summary.errors[c.error] || 0) + 1;
+  }
+  return summary;
 }
 
 async function pickPort() {
@@ -1657,6 +3120,14 @@ async function pickPort() {
     if (!(await portInUse(p))) return p;
   }
   return null;
+}
+
+function portRangeInfo() {
+  return {
+    start: DEFAULT_PORT,
+    end:   DEFAULT_PORT + PORT_SCAN_RANGE - 1,
+    count: PORT_SCAN_RANGE,
+  };
 }
 
 /* ─────────────── Lifecycle ─────────────── */
@@ -1675,21 +3146,14 @@ async function start({ dataDir, apiToken } = {}) {
   if (dataDir && !state.store) loadStore(dataDir);
   if (!state.store) state.store = _emptyStore();
 
-  const port = await pickPort();
-  if (port == null) {
-    state.lastError = `No free loopback port in ${DEFAULT_PORT}..${DEFAULT_PORT + PORT_SCAN_RANGE - 1}.`;
-    pushLog('error', state.lastError);
-    return { ok: false, error: state.lastError, state: publicState() };
+  const preferredPort = await pickPort();
+  const listenPort = preferredPort == null ? 0 : preferredPort;
+  if (preferredPort == null) {
+    pushLog('warn', `No free preferred loopback port in ${DEFAULT_PORT}..${DEFAULT_PORT + PORT_SCAN_RANGE - 1}; trying OS-assigned fallback port`);
   }
 
-  // CAM-DESK-REMOTE-012 (2026-06-12): if the caller supplies a stable
-  // apiToken (from --api-token / CAMUI_API_TOKEN / a relay profile),
-  // adopt it so source restarts don't churn the token Desktop/mobile
-  // clients use. Otherwise generate a fresh one for the loopback Hub.
-  state.token = (typeof apiToken === 'string' && apiToken.length > 0)
-    ? apiToken
-    : genToken();
-  state.port  = port;
+  state.token = apiToken ? String(apiToken) : genToken();
+  state.port  = null;
 
   const srv = http.createServer(async (req, res) => {
     try {
@@ -1707,9 +3171,10 @@ async function start({ dataDir, apiToken } = {}) {
 
   await new Promise((resolve, reject) => {
     srv.once('error', reject);
-    srv.listen({ host: '127.0.0.1', port }, () => resolve());
+    srv.listen({ host: '127.0.0.1', port: listenPort }, () => resolve());
   }).catch((e) => {
-    state.lastError = `listen failed on 127.0.0.1:${port}: ${e && e.message}`;
+    const target = listenPort === 0 ? 'OS-assigned loopback port' : `127.0.0.1:${listenPort}`;
+    state.lastError = `listen failed on ${target}: ${e && e.message}`;
     pushLog('error', state.lastError);
   });
 
@@ -1719,15 +3184,18 @@ async function start({ dataDir, apiToken } = {}) {
     return { ok: false, error: state.lastError || 'listen failed', state: publicState() };
   }
 
+  const addr = srv.address();
+  const actualPort = addr && typeof addr === 'object' && addr.port ? addr.port : listenPort;
+  state.port      = actualPort;
   state.server    = srv;
   state.startedAt = Date.now();
   state.owned     = true;
   state.lastError = null;
-  pushLog('info', `embedded Hub listening on 127.0.0.1:${port}`);
+  pushLog('info', `embedded Hub listening on 127.0.0.1:${actualPort}`);
 
   return {
     ok:       true,
-    apiUrl:   `http://127.0.0.1:${port}`,
+    apiUrl:   `http://127.0.0.1:${actualPort}`,
     apiToken: state.token,
     state:    publicState(),
   };
@@ -1775,23 +3243,40 @@ async function check({ dataDir } = {}) {
     // only when ALL candidates are taken keeps the UI Start button
     // enabled when the default 8420 is busy but 8421+ is free, which
     // is the behavior start() would take anyway.
-    const defaultBusy = await portInUse(DEFAULT_PORT);
-    const startable   = await pickPort();
+    const candidates  = await scanPortCandidates();
+    const candidateSummary = summarizePortCandidates(candidates);
+    const startable   = candidateSummary.firstFree;
+    const defaultBusy = candidates[0] && candidates[0].state !== 'free';
     if (startable == null) {
-      probedPort = DEFAULT_PORT;
-      portState  = 'other';
-      summary    = 'port-conflict';
+      const fallback = await probePort(0);
+      candidateSummary.fallback = fallback.state === 'free' ? 'free' : 'unavailable';
+      if (fallback.error) {
+        candidateSummary.fallbackError = fallback.error;
+        candidateSummary.errors[fallback.error] = (candidateSummary.errors[fallback.error] || 0) + 1;
+      }
+      if (fallback.state === 'free') {
+        probedPort = 0;
+        portState  = 'fallback-free';
+        summary    = 'stopped';
+      } else {
+        probedPort = DEFAULT_PORT;
+        portState  = candidateSummary.unavailable > 0 ? 'unavailable' : 'other';
+        summary    = 'port-conflict';
+      }
     } else {
       probedPort = startable;
       portState  = defaultBusy ? 'alternate-free' : 'free';
       summary    = 'stopped';
     }
+    state.lastPortCandidates = candidateSummary;
   }
 
   return {
     platform:       process.platform,
     runtime:        'embedded',
     apiPort:        probedPort,
+    apiPortRange:   portRangeInfo(),
+    apiPortCandidates: state.lastPortCandidates || null,
     apiPortStatus:  { state: portState },
     summary,
     state:          publicState(),
