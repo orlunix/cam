@@ -63,6 +63,10 @@
       {
         "from": "../../src/camc",
         "to": "camc/camc"
+      },
+      {
+        "from": "../../dist/skillm",
+        "to": "skillm/skillm"
       }
     ],
     "win": {

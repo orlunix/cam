@@ -11,17 +11,20 @@
 import { api } from '../api.js?v=0.64.0';
 import { state } from '../state.js?v=0.64.0';
 import { mountShell } from './shell.js?v=0.64.0';
-import { mountAgentConsole } from './agent-console.js?v=0.64.0';
+import { mountAgentConsole } from './agent-console.js?v=0.64.1';
 import { mountSettingsMode } from './settings-mode.js?v=0.64.0';
 import { mountStartAgentMode } from './start-agent-mode.js?v=0.64.0';
 import { mountNodesMode } from './nodes-mode.js?v=0.64.0';
+import { mountSkillsMode } from './skills-mode.js?v=0.64.0';
+import { mountTodosMode } from './todos-mode.js?v=0.64.0';
 
 const POLL_INTERVAL_MS = 5000;
+const AGENT_SNAPSHOT_SYNC_EVERY_TICKS = 6; // ~30s at POLL_INTERVAL_MS.
 const PROFILE_KIND_KEY = 'cam_profile_kind';
 // `start`/`nodes` are real left-nav workspace modes like
 // `agents`/`settings`. `nodes` shows hub-provided controllers/nodes
 // (CAM-DESK-NODEUI-010..017) and is not a connection mode.
-const MODES = ['agents', 'settings', 'start', 'nodes'];
+const MODES = ['agents', 'settings', 'start', 'nodes', 'skills', 'todos'];
 const DEFAULT_MODE = 'agents';
 
 function readConfig() {
@@ -87,14 +90,9 @@ function resolveConnectionConfig(cfg) {
 }
 
 function hasConnectionConfig(cfg) {
-  // CAM-DESK-REMOTE-012 (2026-06-12): Relay requires only relayUrl +
-  // relayToken. The CAM API token is profile-managed on the source
-  // side and the relay injects it server-side, so a saved Relay
-  // profile with empty `cfg.token` must still be considered valid
-  // — otherwise autoStartConnection() / the reconnect loop treat
-  // the two-field Relay form as disconnected and never call
-  // CamApi.connect(). Direct mode still requires serverUrl + token
-  // end-to-end against the embedded Hub.
+  // Relay's CAM API token is source/profile-managed and injected by the
+  // relay on /api/* forwarding. The Desktop client only needs the relay
+  // endpoint and relay shared secret.
   if (cfg.profileKind === 'relay') return !!(cfg.relayUrl && cfg.relayToken);
   if (cfg.profileKind === 'direct') return !!(cfg.serverUrl && cfg.token);
   return false;
@@ -145,6 +143,28 @@ async function loadAgents() {
   }
 }
 
+async function loadSelectedAgent(agentId) {
+  if (!agentId) return;
+  try {
+    const resp = await api.getAgent(agentId);
+    const nextAgent = resp && (resp.agent || resp);
+    if (!nextAgent || !nextAgent.id) return;
+    const agents = Array.isArray(state.get('agents')) ? state.get('agents') : [];
+    const found = agents.some((a) => a && a.id === nextAgent.id);
+    state.set('agents', found
+      ? agents.map((a) => (a && a.id === nextAgent.id ? { ...a, ...nextAgent } : a))
+      : [nextAgent, ...agents]);
+  } catch (e) {
+    if (api.mode !== 'disconnected') console.warn('getAgent failed:', e);
+  }
+}
+
+function shouldPrioritizeSelectedRelayAgent() {
+  return api.mode === 'relay' &&
+    state.get('mode') === 'agents' &&
+    !!state.get('selectedAgentId');
+}
+
 /**
  * Load contexts + health (adapters) into AppState. Mirrors the mobile
  * web/js/app.js loadData() pattern so the desktop Start mode has a
@@ -171,6 +191,59 @@ async function loadContextsAndAdapters() {
   }
 }
 
+let snapshotSyncInFlight = false;
+
+function endpointKeyForContext(ctx) {
+  const m = (ctx && ctx.machine) || {};
+  const type = m.type || 'local';
+  if (type !== 'ssh') return '';
+  const host = String(m.host || '').trim();
+  const user = String(m.user || '').trim();
+  const port = Number(m.port || 22) || 22;
+  if (!host || !user) return '';
+  return `${type}|${user}|${host}|${port}`;
+}
+
+function representativeSyncContexts(contexts) {
+  const reps = new Map();
+  for (const ctx of Array.isArray(contexts) ? contexts : []) {
+    const m = (ctx && ctx.machine) || {};
+    if (m.type !== 'ssh') continue;
+    const auth = m.auth_method || (m.key_file ? 'key' : 'agent');
+    // Password one-shot contexts cannot be refreshed silently. Remembered
+    // password contexts are fine because the Hub decrypts in main only.
+    if (auth === 'password' && !m.credential_saved) continue;
+    const key = endpointKeyForContext(ctx);
+    if (key && !reps.has(key)) reps.set(key, ctx);
+  }
+  return [...reps.values()];
+}
+
+async function syncAgentSnapshotsFromContexts(reason = 'poll') {
+  if (api.mode !== 'direct') return;
+  if (snapshotSyncInFlight) return;
+  const contexts = representativeSyncContexts(state.get('contexts') || []);
+  if (contexts.length === 0) return;
+
+  snapshotSyncInFlight = true;
+  try {
+    let attempted = 0;
+    for (const ctx of contexts) {
+      try {
+        await api.syncContext(ctx.name);
+        attempted++;
+      } catch (e) {
+        console.warn(`background sync ${ctx.name} failed:`, e);
+      }
+    }
+    if (attempted > 0) await loadAgents();
+  } catch (e) {
+    console.warn(`background agent snapshot sync failed (${reason}):`, e);
+  } finally {
+    snapshotSyncInFlight = false;
+  }
+}
+
 async function connect() {
   const cfg = resolveConnectionConfig(readConfig());
   if (!hasConnectionConfig(cfg)) {
@@ -192,6 +265,7 @@ async function connect() {
   updateConnectionDot(mode);
   if (mode !== 'disconnected') {
     await Promise.all([loadAgents(), loadContextsAndAdapters()]);
+    if (mode === 'direct') void syncAgentSnapshotsFromContexts('connect');
     if (mode === 'relay') {
       try { api._requestRelayEventStream(); } catch {}
     }
@@ -217,7 +291,7 @@ function handleEvent(event) {
 /* ────────── Mode host ────────── */
 
 // Modes that survive a page reload.
-const PERSISTENT_MODES = new Set(['agents', 'settings', 'start', 'nodes']);
+const PERSISTENT_MODES = new Set(['agents', 'settings', 'start', 'nodes', 'skills', 'todos']);
 
 function setMode(next) {
   if (!MODES.includes(next)) next = DEFAULT_MODE;
@@ -375,7 +449,7 @@ async function init() {
   wireModeNav();
   api.onEvent(handleEvent);
 
-  mountShell({ api, state, showToast });
+  mountShell({ api, state, showToast, connect: autoStartConnection });
   mountAgentConsole({ api, state, showToast, setMode });
   mountSettingsMode({
     api,
@@ -389,7 +463,10 @@ async function init() {
   mountNodesMode({
     api, state, showToast, setMode,
     loadContextsAndAdapters, loadAgents,
+    connect: autoStartConnection,
   });
+  mountSkillsMode({ api, state, showToast });
+  mountTodosMode({ api, state, showToast });
 
   // First connection attempt.
   //
@@ -405,7 +482,10 @@ async function init() {
   // change much less frequently (only when the operator creates a
   // context or restarts the server), so refresh them on a slower
   // cadence to keep the dropdowns in Start mode fresh without spamming
-  // the server.
+  // the server. In Relay mode, when an agent is selected, prioritize the
+  // visible detail pane: avoid expensive global list/context refreshes that
+  // can queue behind the same relay/source connection and make output look
+  // stuck. Direct mode keeps the existing full refresh behavior.
   let pollTick = 0;
   setInterval(async () => {
     if (state.get('connectionMode') === 'disconnected') {
@@ -413,11 +493,20 @@ async function init() {
       if (hasConnectionConfig(cfg)) await connect();
       return;
     }
-    pollTick = (pollTick + 1) % 6;
+
+    pollTick = (pollTick + 1) % AGENT_SNAPSHOT_SYNC_EVERY_TICKS;
+
+    if (shouldPrioritizeSelectedRelayAgent()) {
+      await loadSelectedAgent(state.get('selectedAgentId'));
+      return;
+    }
+
     if (pollTick === 0) {
-      // Every 6th tick (~30s @ 5s POLL_INTERVAL): refresh contexts and
-      // adapters in addition to the agent list.
+      // Every ~30s: refresh contexts/adapters, then refresh one
+      // representative SSH context per endpoint so agent updated_at
+      // stays current without duplicating sibling contexts.
       await Promise.all([loadAgents(), loadContextsAndAdapters()]);
+      void syncAgentSnapshotsFromContexts('poll');
     } else {
       await loadAgents();
     }

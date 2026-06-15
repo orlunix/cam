@@ -424,6 +424,109 @@ async function writeRemoteFile(opts) {
   });
 }
 
+/* List directory entries via SFTP, returning a sorted (dirs-first
+ * then name) array of `{name, type:'dir'|'file', size, mtime}`.
+ * Used by the Desktop Workspace Browser (CAM-DESK-FILE-010..017).
+ * Read-only: never opens a writable handle. */
+async function listRemoteFiles(opts) {
+  if (_override) return _override({ ...opts, operation: 'listRemoteFiles' });
+  if (!opts || typeof opts.remotePath !== 'string' || !opts.remotePath) {
+    return { ok: false, error: 'invalid_args', detail: 'remotePath is required' };
+  }
+  return _withPooledClient(opts, (client, finish) => {
+    client.sftp((err, sftp) => {
+      if (err) return finish({ ok: false, error: 'sftp_failed', detail: err.message });
+      sftp.readdir(opts.remotePath, (readErr, list) => {
+        try { sftp.end(); } catch { /* noop */ }
+        if (readErr) {
+          return finish({
+            ok: false,
+            error:  readErr.code === 2 ? 'not_found' : 'sftp_readdir_failed',
+            detail: readErr.message,
+          });
+        }
+        const entries = (list || []).map(item => {
+          const longname = String(item.longname || '');
+          const isDir = longname.startsWith('d') ||
+            (item.attrs && typeof item.attrs.isDirectory === 'function' && item.attrs.isDirectory());
+          const size = (item.attrs && typeof item.attrs.size === 'number') ? item.attrs.size : 0;
+          const mtime = (item.attrs && typeof item.attrs.mtime === 'number') ? item.attrs.mtime : null;
+          return {
+            name: String(item.filename || ''),
+            type: isDir ? 'dir' : 'file',
+            size: isDir ? 0 : size,
+            mtime,
+          };
+        }).filter(e => e.name && e.name !== '.' && e.name !== '..');
+        // Mirror the mobile File Browser sort: directories first,
+        // then case-insensitive name order. The frontend sorts again
+        // defensively but doing it here keeps a remote call → render
+        // pipeline deterministic.
+        entries.sort((a, b) => {
+          if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+        finish({ ok: true, entries });
+      });
+    });
+  });
+}
+
+/* Read a remote file via SFTP. Size capped by `maxBytes`
+ * (default 5 MiB) to keep the renderer responsive — Workspace
+ * Browser is for previewing, not transferring. The returned
+ * `Buffer` is small enough to base64-encode safely for binary
+ * detection by the caller. */
+async function readRemoteFile(opts) {
+  if (_override) return _override({ ...opts, operation: 'readRemoteFile' });
+  if (!opts || typeof opts.remotePath !== 'string' || !opts.remotePath) {
+    return { ok: false, error: 'invalid_args', detail: 'remotePath is required' };
+  }
+  const maxBytes = Number.isFinite(opts.maxBytes) && opts.maxBytes > 0
+    ? Math.min(opts.maxBytes, 50 * 1024 * 1024) // hard ceiling 50 MiB
+    : 5 * 1024 * 1024;
+  return _withPooledClient(opts, (client, finish) => {
+    client.sftp((err, sftp) => {
+      if (err) return finish({ ok: false, error: 'sftp_failed', detail: err.message });
+      sftp.stat(opts.remotePath, (statErr, stats) => {
+        if (statErr) {
+          try { sftp.end(); } catch { /* noop */ }
+          return finish({
+            ok: false,
+            error:  statErr.code === 2 ? 'not_found' : 'sftp_stat_failed',
+            detail: statErr.message,
+          });
+        }
+        if (stats && stats.isDirectory && stats.isDirectory()) {
+          try { sftp.end(); } catch { /* noop */ }
+          return finish({ ok: false, error: 'is_directory', detail: 'path is a directory' });
+        }
+        const size = (stats && typeof stats.size === 'number') ? stats.size : 0;
+        if (size > maxBytes) {
+          try { sftp.end(); } catch { /* noop */ }
+          return finish({
+            ok: false,
+            error:  'too_large',
+            detail: `file is ${size} bytes (max ${maxBytes})`,
+            size,
+          });
+        }
+        sftp.readFile(opts.remotePath, (readErr, buf) => {
+          try { sftp.end(); } catch { /* noop */ }
+          if (readErr) {
+            return finish({
+              ok:     false,
+              error:  readErr.code === 2 ? 'not_found' : 'sftp_read_failed',
+              detail: readErr.message,
+            });
+          }
+          finish({ ok: true, content: buf || Buffer.alloc(0), size });
+        });
+      });
+    });
+  });
+}
+
 function closeAll() {
   for (const k of [..._pool.keys()]) _dropEntry(k, 'closeAll');
 }
@@ -601,6 +704,8 @@ async function openTerminalChannel(opts, hooks = {}) {
 module.exports = {
   execRemote,
   writeRemoteFile,
+  listRemoteFiles,
+  readRemoteFile,
   openTerminalChannel,
   setOverride,
   closeAll,
