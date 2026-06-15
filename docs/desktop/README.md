@@ -66,6 +66,39 @@ Desktop UI  ──HTTP/WS──▶  CAM Hub/API  ──poll/route──▶  Remo
 - **Stable Req IDs** (`docs/desktop/requirements.md`) anchor all of the
   above. Implementation tasks and review replies cite them.
 
+## Relay Source Quick Start
+
+Relay mode has two token boundaries:
+
+- **Client → Relay**: Desktop/mobile users enter `Relay URL` + `Relay token`.
+- **Relay → Source Hub**: the source `camui start --profile NAME` owns the
+  CAM API token. The relay injects that token when forwarding `/api/*`, so
+  clients do not need to know or type it.
+
+Run the source directly against a relay server:
+
+```bash
+node apps/cam-desktop/cli/camui-cli.cjs start \
+  --profile hren7001 \
+  --relay-url ws://127.0.0.1:7001 \
+  --relay-token <RELAY_TOKEN>
+```
+
+For a relay reachable through SSH only, first create a local tunnel, then
+point the source at the tunnel:
+
+```bash
+ssh -fN -L 127.0.0.1:17001:127.0.0.1:7001 hren@hlren.duckdns.org
+node apps/cam-desktop/cli/camui-cli.cjs start \
+  --profile hren7001 \
+  --relay-url ws://127.0.0.1:17001 \
+  --relay-token <RELAY_TOKEN>
+```
+
+The profile file lives at `~/.cam/camui/relay/<profile>/profile.json` and
+is chmod'd to `0600`. Logs and status output show only a SHA-256 token
+fingerprint unless `--show-token` is explicitly used for debugging.
+
 ## Files
 
 - [`requirements.md`](./requirements.md) — canonical requirement registry

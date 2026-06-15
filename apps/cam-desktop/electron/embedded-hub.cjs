@@ -3132,7 +3132,7 @@ function portRangeInfo() {
 
 /* ─────────────── Lifecycle ─────────────── */
 
-async function start({ dataDir } = {}) {
+async function start({ dataDir, apiToken } = {}) {
   if (state.server) {
     return {
       ok:        true,
@@ -3152,7 +3152,7 @@ async function start({ dataDir } = {}) {
     pushLog('warn', `No free preferred loopback port in ${DEFAULT_PORT}..${DEFAULT_PORT + PORT_SCAN_RANGE - 1}; trying OS-assigned fallback port`);
   }
 
-  state.token = genToken();
+  state.token = apiToken ? String(apiToken) : genToken();
   state.port  = null;
 
   const srv = http.createServer(async (req, res) => {

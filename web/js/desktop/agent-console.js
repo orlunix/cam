@@ -1307,12 +1307,16 @@ export function mountAgentConsole({ api, state, showToast }) {
   const fileInput = document.getElementById('composer-file-input');
   const uploadStatusEl = document.getElementById('composer-upload-status');
   let pollTimer = null;
+  let outputLoadingLabel = '';
+  let fetchStatusLabel = '';
   let outputHashPlain = null;
   let outputHashRich = null;
   let inflightOutput = false;
   let inflightHistory = false;
   let pendingHistoryLoad = false;
+  let pendingOutputRefresh = false;
   let currentAgentId = null;
+  const composerDrafts = new Map();
   let autoScroll = true;
   let composing = false; // IME composition state
   let outputHistoryLines = OUTPUT_HISTORY_INITIAL_LINES;
@@ -1428,6 +1432,59 @@ export function mountAgentConsole({ api, state, showToast }) {
   function bumpAndRefreshUserActivity(agentId) {
     bumpUserActivity(agentId);
     try { state.set('agents', [...(state.get('agents') || [])]); } catch { /* noop */ }
+  }
+
+  function isRelayRequestTimeout(err) {
+    return String(err?.message || err || "").toLowerCase().includes("relay request timeout");
+  }
+
+  function refreshOutputAfterSend() {
+    if (outputMode !== 'plain' && outputMode !== 'rich') return;
+    startFetchStatusTimer('Fetching');
+    if (inflightOutput || inflightHistory) {
+      pendingOutputRefresh = true;
+      return;
+    }
+    void loadOutput({ viaPoll: false });
+  }
+
+  function clearOutputLoadingTimer() {
+    outputLoadingLabel = '';
+  }
+
+  function clearFetchStatusTimer() {
+    fetchStatusLabel = '';
+    if (sendStatusPill) {
+      sendStatusPill.textContent = '';
+      sendStatusPill.hidden = true;
+    }
+  }
+
+  function startFetchStatusTimer(label = 'Fetching') {
+    if (fetchStatusLabel === label) return;
+    fetchStatusLabel = label;
+    if (sendStatusPill) {
+      sendStatusPill.textContent = `${label}...`;
+      sendStatusPill.hidden = false;
+    }
+  }
+
+  function startOutputLoadingTimer(label = 'Loading') {
+    if (outputLoadingLabel === label) return;
+    outputLoadingLabel = label;
+    renderPlaceholder(`${label}...`);
+  }
+
+  function saveComposerDraft(agentId = currentAgentId) {
+    if (!agentId || !inputEl) return;
+    const value = inputEl.value || '';
+    if (value) composerDrafts.set(agentId, value);
+    else composerDrafts.delete(agentId);
+  }
+
+  function restoreComposerDraft(agentId = currentAgentId) {
+    if (!inputEl) return;
+    inputEl.value = agentId ? (composerDrafts.get(agentId) || '') : '';
   }
 
   function isAgentsMode() {
@@ -1776,7 +1833,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       if (cached?.text) {
         renderCachedOutput(cached.text);
       } else {
-        renderPlaceholder('Loading…');
+        startOutputLoadingTimer('Loading');
         void loadOutput({ viaPoll: false });
       }
       updateHistoryControls();
@@ -1789,7 +1846,12 @@ export function mountAgentConsole({ api, state, showToast }) {
 
   function selectAgent(agentId) {
     if (agentId === currentAgentId) return;
+    clearOutputLoadingTimer();
+    clearFetchStatusTimer();
+    saveComposerDraft(currentAgentId);
     currentAgentId = agentId;
+    restoreComposerDraft(agentId);
+    pendingOutputRefresh = false;
     outputHashPlain = null;
     outputHashRich = null;
     autoScroll = true;
@@ -1858,7 +1920,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     if (cached?.text && renderCachedOutput(cached.text)) {
       if (outputMode === 'plain') outputHashPlain = cached.hash || null;
     } else {
-      renderPlaceholder('Loading…');
+      startOutputLoadingTimer('Loading');
     }
 
     setEnabled(isActiveStatus(agent.status) && isAgentsMode());
@@ -1876,23 +1938,23 @@ export function mountAgentConsole({ api, state, showToast }) {
   async function loadOutput(opts = {}) {
     if (outputMode === 'terminal' || outputMode === 'browse') return;
     const agent = selectedAgent();
-    if (!agent || inflightOutput || inflightHistory) return;
-    // CAM-DESK-OUT-022 (manual history): when the user has scrolled away
-    // from the bottom and is reading older output, suppress poll-driven
-    // refreshes so the visible viewport stays put. Manual refreshes
-    // (initial select, mode switch with empty cache, jump-to-bottom)
-    // pass viaPoll=false and proceed normally. A session that has
-    // already loaded full scrollback is exempt because re-applying the
-    // same immutable text is a no-op.
-    if (opts.viaPoll && !autoScroll && !isTerminalAgent(agent) && !outputHistoryFull) {
+    if (!agent) return;
+    if (inflightOutput || inflightHistory) {
+      if (opts.forceQueued) pendingOutputRefresh = true;
       return;
     }
+    // Polling should keep the captured text fresh even when the user has
+    // scrolled away from the bottom. `applyOutput` already preserves focus by
+    // only auto-scrolling when `autoScroll` is true; suppressing the fetch here
+    // made Relay sessions look frozen after the pane drifted off the tail.
     inflightOutput = true;
     const fetchMode = outputMode;
     try {
       if (outputHistoryFull) {
         const data = await api.agentFullOutput(agent.id, 0);
         if (data?.output) {
+          clearFetchStatusTimer();
+          setUploadStatus('');
           outputHistoryFull = true;
           applyOutput(agent.id, data.output, fetchMode, { full: true });
         } else if (
@@ -1908,26 +1970,47 @@ export function mountAgentConsole({ api, state, showToast }) {
           if (fetchMode === 'rich') outputHashRich = data.hash;
           else outputHashPlain = data.hash;
         }
+        clearFetchStatusTimer();
+        setUploadStatus('');
         // Do not mark history full from the bounded tail response. Some
         // backends report returned-line counts conservatively, and More+
         // should be the explicit full-buffer check.
         if (!data?.unchanged && typeof data?.output === 'string') {
           applyOutput(agent.id, data.output, fetchMode, { full: outputHistoryFull });
         } else if (
-          activePane().textContent === 'Loading…' ||
+          activePane().textContent.startsWith('Loading') ||
+          activePane().textContent.startsWith('Waiting for output') ||
+          activePane().textContent.startsWith('Waiting for relay output') ||
           (activePane().classList.contains('placeholder') && !activePane().textContent)
         ) {
-          renderPlaceholder('(waiting for output)');
+          startOutputLoadingTimer('Waiting for output');
         }
       }
     } catch (e) {
       if (api.mode !== 'disconnected') console.warn('agentOutput failed:', e);
-      if (activePane().textContent === 'Loading…') {
-        const msg = e?.message || String(e);
-        renderPlaceholder(`Output unavailable: ${msg}`);
+      const relayTimeout = isRelayRequestTimeout(e);
+      if (activePane().textContent.startsWith('Loading') ||
+          activePane().textContent.startsWith('Waiting for output') ||
+          activePane().textContent.startsWith('Waiting for relay output')) {
+        if (relayTimeout) {
+          startOutputLoadingTimer('Waiting for relay output');
+        } else {
+          clearOutputLoadingTimer();
+          clearFetchStatusTimer();
+          setUploadStatus('');
+          const msg = e?.message || String(e);
+          renderPlaceholder(`Output unavailable: ${msg}`);
+        }
       }
+      // If we already have rendered output, never replace it with a transient
+      // Relay timeout. The next poll will retry; the current pane should stay
+      // readable instead of flickering to an error.
     } finally {
       inflightOutput = false;
+      if (pendingOutputRefresh && !inflightHistory) {
+        pendingOutputRefresh = false;
+        window.setTimeout(() => { void loadOutput({ viaPoll: false }); }, 0);
+      }
       if (pendingHistoryLoad && !inflightHistory) {
         window.setTimeout(() => { void loadMoreOutputHistory('pending'); }, 0);
       }
@@ -2055,19 +2138,26 @@ export function mountAgentConsole({ api, state, showToast }) {
         outputEl.scrollTop = outputEl.scrollHeight;
       }
     }
+    clearOutputLoadingTimer();
+    clearFetchStatusTimer();
+    setUploadStatus('');
     updateHistoryControls();
   }
 
   function startPolling(agent) {
-    stopPolling();
+    stopPolling({ clearLoading: false });
     if (!agent || !isActiveStatus(agent.status)) return;
-    pollTimer = setInterval(() => { void loadOutput({ viaPoll: true }); }, 2000);
+    pollTimer = setInterval(() => { void loadOutput({ viaPoll: true }); }, 1000);
   }
 
-  function stopPolling() {
+  function stopPolling(opts = {}) {
     if (pollTimer) {
       clearInterval(pollTimer);
       pollTimer = null;
+    }
+    if (opts.clearLoading !== false) {
+      clearOutputLoadingTimer();
+      clearFetchStatusTimer();
     }
   }
 
@@ -2094,6 +2184,7 @@ export function mountAgentConsole({ api, state, showToast }) {
   const outputWrap = outputEl.closest('.agent-output-wrap');
   let moreHistoryBtn = null;
   let jumpBottomBtn = null;
+  let sendStatusPill = null;
   if (outputWrap) {
     const controls = document.createElement('div');
     controls.className = 'output-float-controls';
@@ -2105,10 +2196,12 @@ export function mountAgentConsole({ api, state, showToast }) {
       +   'title="Jump to bottom and resume auto-follow">'
       +   '<span aria-hidden="true">&#x2913;</span>'
       +   '<span class="sr-only">Jump to bottom</span>'
-      + '</button>';
+      + '</button>'
+      + '<div class="output-send-status" hidden aria-live="polite"></div>';
     outputWrap.appendChild(controls);
     moreHistoryBtn = controls.querySelector('.output-more-history');
     jumpBottomBtn = controls.querySelector('.output-jump-bottom');
+    sendStatusPill = controls.querySelector('.output-send-status');
 
     if (moreHistoryBtn) {
       moreHistoryBtn.addEventListener('click', () => {
@@ -2196,10 +2289,22 @@ export function mountAgentConsole({ api, state, showToast }) {
     inputEl.value = '';
     sendBtn.disabled = true;
     try {
+      startFetchStatusTimer('Sending');
+      saveComposerDraft(agent.id);
       await api.sendInput(agent.id, text, true);
+      composerDrafts.delete(agent.id);
       bumpAndRefreshUserActivity(agent.id);
+      refreshOutputAfterSend();
     } catch (e) {
       inputEl.value = text;
+      saveComposerDraft(agent.id);
+      if (isRelayRequestTimeout(e)) {
+        refreshOutputAfterSend();
+      }
+      if (!isRelayRequestTimeout(e)) {
+        clearFetchStatusTimer();
+        setUploadStatus('');
+      }
       showToast(`Send failed: ${e.message}`, 'error', 5000);
     } finally {
       sendBtn.disabled = false;
@@ -2211,6 +2316,7 @@ export function mountAgentConsole({ api, state, showToast }) {
 
   inputEl.addEventListener('compositionstart', () => { composing = true; });
   inputEl.addEventListener('compositionend', () => { composing = false; });
+  inputEl.addEventListener('input', () => { saveComposerDraft(currentAgentId); });
 
   inputEl.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
@@ -2295,8 +2401,10 @@ export function mountAgentConsole({ api, state, showToast }) {
       // mobile behavior: send without Enter so the agent sees just the
       // path string and the user can wrap it with prose if they want).
       if (resp && resp.path) {
+        startFetchStatusTimer('Sending');
         await api.sendInput(agent.id, resp.path, false);
         setUploadStatus(`Sent ${filename} -> ${resp.path}`, 'is-ok');
+        refreshOutputAfterSend();
       } else {
         setUploadStatus(`Uploaded ${filename} (no path returned)`, 'is-ok');
       }
@@ -2399,9 +2507,17 @@ export function mountAgentConsole({ api, state, showToast }) {
       const text = btn.dataset.input || '';
       btn.disabled = true;
       try {
+        startFetchStatusTimer('Sending');
         await api.sendInput(agent.id, text, false);
         bumpAndRefreshUserActivity(agent.id);
+        refreshOutputAfterSend();
       } catch (e) {
+        if (isRelayRequestTimeout(e)) {
+          refreshOutputAfterSend();
+        } else {
+          clearFetchStatusTimer();
+          setUploadStatus('');
+        }
         showToast(`Input failed: ${e.message}`, 'error', 5000);
       } finally {
         restoreQuickBtn(btn, selectedAgent() || agent);
@@ -2416,9 +2532,17 @@ export function mountAgentConsole({ api, state, showToast }) {
       const key = btn.dataset.key;
       btn.disabled = true;
       try {
+        startFetchStatusTimer('Sending');
         await api.sendKey(agent.id, key);
         bumpAndRefreshUserActivity(agent.id);
+        refreshOutputAfterSend();
       } catch (e) {
+        if (isRelayRequestTimeout(e)) {
+          refreshOutputAfterSend();
+        } else {
+          clearFetchStatusTimer();
+          setUploadStatus('');
+        }
         showToast(`Key failed: ${e.message}`, 'error', 5000);
       } finally {
         restoreQuickBtn(btn, selectedAgent() || agent);

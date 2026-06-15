@@ -45,8 +45,9 @@ Active Settings exposes two connection modes (canonical IDs in
   loopback, generates the API token, and connects the renderer to that
   Hub. The normal UI does not ask the user to type a Hub URL, run
   terminal commands, install WSL/Python, or install `cam`.
-- **Relay** (`REMOTE-012`) — relay URL + relay token + CAM API token,
-  for unreachable hubs.
+- **Relay** (`REMOTE-012`) — Desktop users enter Relay URL + Relay
+  token. The source-side `camui start --profile ...` owns the CAM API
+  token and the relay injects it for `/api/*` forwarding.
 
 Future and deferred modes (not active Settings tabs):
 
@@ -55,6 +56,39 @@ Future and deferred modes (not active Settings tabs):
 - **Local tab** (`LOC-010..024`) — superseded. Old separate Local
   experiment; its useful lifecycle pieces moved into Direct. See the
   historical docs linked above.
+
+## Relay Source Quick Start
+
+Use this when a CAM Hub/source is behind NAT or only reachable through an
+SSH tunnel. Start the relay server first, then connect the source with one
+foreground command:
+
+```bash
+node apps/cam-desktop/cli/camui-cli.cjs start \
+  --profile hren7001 \
+  --relay-url ws://127.0.0.1:7001 \
+  --relay-token <RELAY_TOKEN>
+```
+
+`--profile hren7001` creates or reuses
+`~/.cam/camui/relay/hren7001/profile.json`. That file stores the stable
+CAM API token with mode `0600`; Desktop/mobile clients do not type this
+token. They enter only the Relay URL and Relay token.
+
+If the relay is reachable only through SSH, create the tunnel first and
+point `camui start` at the local tunnel:
+
+```bash
+ssh -fN -L 127.0.0.1:17001:127.0.0.1:7001 hren@hlren.duckdns.org
+node apps/cam-desktop/cli/camui-cli.cjs start \
+  --profile hren7001 \
+  --relay-url ws://127.0.0.1:17001 \
+  --relay-token <RELAY_TOKEN>
+```
+
+On a Windows Desktop that cannot see the WSL loopback tunnel, expose the
+WSL tunnel on a routable local address and use that URL in Desktop, for
+example `http://10.124.11.38:17002`.
 
 ## Development
 

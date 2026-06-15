@@ -2369,7 +2369,8 @@ body.desktop textarea:focus-visible {
   pointer-events: auto;
 }
 .output-more-history,
-.output-jump-bottom {
+.output-jump-bottom,
+.output-send-status {
   background: var(--output-float-bg);
   color: var(--text);
   border: 1px solid var(--border);
@@ -2386,12 +2387,21 @@ body.desktop textarea:focus-visible {
   background: var(--output-float-bg-hover);
   border-color: var(--border-strong, var(--border));
 }
+.output-send-status {
+  position: absolute;
+  right: 0;
+  bottom: 36px;
+  color: var(--accent, #58a6ff);
+  border-color: rgba(88, 166, 255, 0.45);
+  cursor: default;
+}
 .output-more-history:disabled {
   opacity: 0.55;
   cursor: progress;
 }
 .output-more-history[hidden],
-.output-jump-bottom[hidden] {
+.output-jump-bottom[hidden],
+.output-send-status[hidden] {
   display: none;
 }
 .output-more-history[data-kind="success"] {

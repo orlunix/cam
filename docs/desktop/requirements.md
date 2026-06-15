@@ -31,7 +31,7 @@ The **active** user-visible connection modes are two:
 | Mode | User intent | Implementation surface |
 | --- | --- | --- |
 | **Direct** (default) | "Run CAM from this Desktop and let it manage my nodes." | Electron main starts an embedded Node/Electron CAM Hub, generates/persists its API token, connects the renderer to that local Hub over loopback, and uses Hub APIs to manage remotes/nodes. No local Python, WSL, macOS/Linux shell, or `cam` CLI is required. |
-| **Relay** | "Use an existing CAM Hub through a relay endpoint." | Relay URL + relay token + CAM API token. Relay proxies the same REST/WS surface. |
+| **Relay** | "Use an existing CAM Hub through a relay endpoint." | Desktop/mobile users enter Relay URL + relay token. The source profile owns the CAM API token and the relay injects it for `/api/*` forwarding. |
 
 **Managed** is **not** a third UI mode. The term refers to deployment
 policy around Direct: enterprise defaults, bundled runtime bits, node
@@ -291,7 +291,8 @@ in the Approved Baseline still applies (existing localStorage profile keys).
 | --- | --- | --- |
 | CAM-DESK-REMOTE-010 | superseded | Older pure-client Direct profile (user-entered hub URL + token). Superseded by CAM-DESK-DIRECT-010..019. |
 | CAM-DESK-REMOTE-011 | superseded | Older Direct mode connected to a reachable external hub URL. Superseded by app-managed Direct Hub lifecycle. |
-| CAM-DESK-REMOTE-012 | approved | **Relay** mode wraps the same hub/controller surface behind a relay endpoint (relay URL + relay token + CAM API token). The relay forwards REST/WS for unreachable hubs. The CAM API token is required because proxied REST calls still need bearer auth. |
+| CAM-DESK-REMOTE-012 | approved | **Relay** mode wraps the same hub/controller surface behind a relay endpoint. Desktop/mobile clients provide only Relay URL + Relay token. The source process (`camui start --profile NAME ...`) owns a stable CAM API token in `~/.cam/camui/relay/<NAME>/profile.json` and the relay injects it for `/api/*` forwarding when the client frame has no Authorization header. Existing clients that still send Authorization continue to work for compatibility, but new UI must not ask users for the CAM API token. |
+| CAM-DESK-REMOTE-012a | approved | Source deployment to relay must be one foreground command once the relay endpoint is reachable: `node apps/cam-desktop/cli/camui-cli.cjs start --profile <name> --relay-url ws://<relay> --relay-token <token>`. If the relay is available only through SSH, a prior tunnel such as `ssh -fN -L 127.0.0.1:17001:127.0.0.1:7001 hren@hlren.duckdns.org` is acceptable, and `camui start` should point to `ws://127.0.0.1:17001`. Diagnostics must report the profile path/source and a token fingerprint, never the raw token unless `--show-token` is explicitly passed. |
 | CAM-DESK-REMOTE-013 | approved | The downstream UI must not branch on which connection kind created the session (Direct or Relay). Both resolve into the same `CamApi` surface. |
 | CAM-DESK-REMOTE-014 | approved | The active Settings UI exposes exactly two connection modes: **Direct** and **Relay**. There is no separate "Managed" tab and no separate "Local" tab. |
 
