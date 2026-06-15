@@ -98,7 +98,7 @@ export class CamApi {
 
   // Only cache lightweight list endpoints, not file content
   _isCacheable(path) {
-    return !path.includes('/files/read') && !path.includes('/upload') && !path.includes('/output') && !path.includes('/fulloutput') && !path.includes('/logs');
+    return !path.includes('/skillm') && !path.includes('/files/read') && !path.includes('/workspace/files') && !path.includes('/upload') && !path.includes('/output') && !path.includes('/fulloutput') && !path.includes('/logs');
   }
 
   _pruneCache() {
@@ -140,8 +140,16 @@ export class CamApi {
     const isGet = method === 'GET';
     const cacheKey = (isGet && this._isCacheable(path)) ? `cam_cache:${path}` : null;
 
-    // Retry up to 2 times for GET requests, no retry for mutations
-    const maxRetries = isGet ? 2 : 0;
+    const isRealtimeGet = isGet && (
+      path.includes('/output') ||
+      path.includes('/fulloutput') ||
+      path.includes('/logs') ||
+      path.includes('/api/ws')
+    );
+    // Retry lightweight GETs, but never retry live output/log polling. In Relay
+    // mode each retry can consume another socket timeout and make the selected
+    // agent pane look frozen even though the next poll could succeed.
+    const maxRetries = (isGet && !isRealtimeGet) ? 2 : 0;
     let lastError;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -215,14 +223,19 @@ export class CamApi {
         return;
       }
       const id = `req-${++this._reqCounter}`;
-      const isAgentInputPath = /\/api\/agents\/[^/]+\/(input|key)$/.test(path);
-      const timeout = path.includes("/upload") ? 60000 : (isAgentInputPath ? 90000 : 15000);
+      const isSlowMutation = path.includes('/upload') || path.endsWith('/input') || path.endsWith('/key');
+      // Relay/source side allows input/key/upload to take longer because
+      // SSH/tmux writes can be delayed by remote load while still succeeding.
+      // Read-side output polling should not have a tiny hard deadline: public
+      // relay links can legitimately take >8s. Keep it bounded, but disable
+      // request-level retries for realtime GETs in request() so one slow poll
+      // costs at most this timeout, not timeout * 3.
+      const timeout = isSlowMutation ? 120000 : 30000;
       const timer = setTimeout(() => {
         this._requestMap.delete(id);
-        // Track consecutive timeouts — force reconnect after 2
         this._consecutiveTimeouts++;
-        if (this._consecutiveTimeouts >= 5) {
-          console.warn('Relay: multiple timeouts, forcing reconnect');
+        if (!isSlowMutation || this._consecutiveTimeouts >= 2) {
+          console.warn('Relay: request timeout, forcing reconnect');
           this._consecutiveTimeouts = 0;
           if (this.ws) { try { this.ws.close(); } catch {} }
         }
@@ -238,12 +251,6 @@ export class CamApi {
         headers: {},
         body: body != null ? JSON.stringify(body) : '',
       };
-      // CAM-DESK-REMOTE-012 (2026-06-12): the relay injects
-      // ``Authorization: Bearer <api-token>`` server-side when the
-      // forwarded frame lacks one. So when ``this.token`` is empty
-      // (the new Relay UX), we deliberately send NO authorization
-      // header and let the relay supply it. Direct mode (where
-      // ``this.token`` IS set) still carries its own bearer end-to-end.
       if (this.token) frame.headers['authorization'] = `Bearer ${this.token}`;
       this.ws.send(JSON.stringify(frame));
     });
@@ -345,7 +352,7 @@ export class CamApi {
       } catch {
         this._scheduleReconnect();
       }
-    }, 5000);
+    }, 1000);
   }
 
   // --- Event stream ---
@@ -451,6 +458,9 @@ export class CamApi {
   startAgent(body) { return this.request('POST', '/api/agents', body); }
   stopAgent(id, force = false) { return this.request('DELETE', `/api/agents/${id}?force=${force}`); }
   updateAgent(id, body) { return this.request('PATCH', `/api/agents/${id}`, body); }
+  agentCronJobs(id) { return this.request('GET', `/api/agents/${id}/cron`); }
+  createAgentCronJob(id, body) { return this.request('POST', `/api/agents/${id}/cron`, body); }
+  deleteAgentCronJob(id, jobKey) { return this.request('DELETE', `/api/agents/${id}/cron/${encodeURIComponent(jobKey)}`); }
   restartAgent(id) { return this.request('POST', `/api/agents/${id}/restart`); }
   deleteAgentHistory(id) { return this.request('DELETE', `/api/agents/${id}/history`); }
   agentLogs(id, tail = 100) { return this.request('GET', `/api/agents/${id}/logs?tail=${tail}`); }
@@ -475,6 +485,18 @@ export class CamApi {
   listFiles(contextId, path = '') { return this.request('GET', `/api/contexts/${contextId}/files?path=${encodeURIComponent(path)}`); }
   readFile(contextId, path) { return this.request('GET', `/api/contexts/${contextId}/files/read?path=${encodeURIComponent(path)}`); }
 
+  /* Workspace Browser (CAM-DESK-FILE-010..017): agent-scoped reads so
+   * Desktop's Browse mode resolves through the agent's recorded
+   * working directory rather than a separate context lookup. The
+   * mobile File Browser keeps using the `listFiles` / `readFile`
+   * context-scoped path above; both routes share helpers server-side. */
+  agentListWorkspaceFiles(agentId, path = '') {
+    return this.request('GET', `/api/agents/${encodeURIComponent(agentId)}/workspace/files?path=${encodeURIComponent(path)}`);
+  }
+  agentReadWorkspaceFile(agentId, path) {
+    return this.request('GET', `/api/agents/${encodeURIComponent(agentId)}/workspace/files/read?path=${encodeURIComponent(path)}`);
+  }
+
   // CAM-DESK-DIRECT-017: Desktop's embedded Hub exposes a read-only
   // suggestion list parsed from the user's ~/.ssh/config. Returns
   // `{ available, source, hosts:[{alias,host,user,port,identity_file}], note }`.
@@ -482,6 +504,28 @@ export class CamApi {
   // Hubs that do not implement this (e.g. external CAM server, relay)
   // will 404; the renderer treats that as "import unavailable".
   sshConfigHosts() { return this.request('GET', '/api/system/ssh-config'); }
+
+  // Skillm library management (CAM-DESK-SKILLM-010..014).
+  skillmStatus(contextName) {
+    return this.request('GET', `/api/skillm/status?context=${encodeURIComponent(contextName || '')}`);
+  }
+  skillmRepos(contextName) {
+    return this.request('GET', `/api/skillm/repos?context=${encodeURIComponent(contextName || '')}`);
+  }
+  skillmList(contextName, opts = {}) {
+    const qs = new URLSearchParams({ context: contextName || '' });
+    if (opts.repoName) qs.set('repo', opts.repoName);
+    if (opts.sync) qs.set('sync', '1');
+    return this.request('GET', `/api/skillm/list?${qs.toString()}`);
+  }
+  skillmRepoAdd(body) { return this.request('POST', '/api/skillm/repos', body); }
+  skillmRepoUpdate(body) { return this.request('PATCH', '/api/skillm/repos', body); }
+  skillmRepoRemove(body) { return this.request('DELETE', '/api/skillm/repos', body); }
+  skillmRepoRefresh(body) { return this.request('POST', '/api/skillm/repos/refresh', body); }
+  skillmRepoConnect(body) { return this.request('POST', '/api/skillm/repo-connect', body); }
+  skillmSync(body) { return this.request('POST', '/api/skillm/sync', body); }
+  skillmInstall(body) { return this.request('POST', '/api/skillm/install', body); }
+
 }
 
 export const api = new CamApi();
