@@ -33,7 +33,7 @@ import time
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "b63e868-dirty 2026-06-12 00:31"
+__build__ = "150ed38-dirty 2026-06-15 01:06"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -11887,8 +11887,27 @@ def cmd_capture(args):
         sys.stdout.write(output)
 
 
+def _send_text_from_args(args):
+    """Resolve camc send input from argv without shell quoting."""
+    sources = int(args.text is not None) + int(bool(getattr(args, "file", None))) + int(bool(getattr(args, "stdin", False)))
+    if sources != 1:
+        print("Provide exactly one of --text, --file, or --stdin", file=sys.stderr)
+        sys.exit(2)
+    if getattr(args, "file", None):
+        try:
+            with open(args.file, "r", encoding="utf-8") as f:
+                return f.read()
+        except OSError as e:
+            print("Unable to read --file: %s" % e, file=sys.stderr)
+            sys.exit(1)
+    if getattr(args, "stdin", False):
+        return sys.stdin.read()
+    return args.text
+
+
 def cmd_send(args):
     """Send text input to an agent's tmux session."""
+    text = _send_text_from_args(args)
     store = AgentStore()
     a = store.get(args.id)
     if a:
@@ -11901,7 +11920,7 @@ def cmd_send(args):
     send_enter = not getattr(args, "no_enter", False)
     tool = _agent_tool(a) if a else ""
     submit_delay = _tool_prompt_submit_delay(tool)
-    _send_with_submit_delay(session, args.text, send_enter=send_enter,
+    _send_with_submit_delay(session, text, send_enter=send_enter,
                             submit_delay=submit_delay)
     print("Sent.")
 
@@ -12191,7 +12210,9 @@ examples:
     # send
     snd = sub.add_parser("send", help="Send text input to agent tmux session")
     snd.add_argument("id", help="Agent ID (prefix match)")
-    snd.add_argument("--text", "-t", required=True, help="Text to send")
+    snd.add_argument("--text", "-t", help="Text to send")
+    snd.add_argument("--file", "-f", help="Read UTF-8 text to send from a file")
+    snd.add_argument("--stdin", action="store_true", help="Read UTF-8 text to send from stdin")
     snd.add_argument("--no-enter", action="store_true", help="Don't send Enter after text")
 
     # key
