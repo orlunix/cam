@@ -524,6 +524,13 @@ export function mountShell({ api, state, connect }) {
   const agentSettingsSave = document.getElementById('agent-settings-save');
   const agentSettingsReset = document.getElementById('agent-settings-reset');
   const agentSettingsStatus = document.getElementById('agent-settings-status');
+  const agentSystemPromptTarget = document.getElementById('agent-system-prompt-target');
+  const agentSystemPromptReload = document.getElementById('agent-system-prompt-reload');
+  const agentSystemPromptText = document.getElementById('agent-system-prompt-text');
+  const agentSystemPromptSave = document.getElementById('agent-system-prompt-save');
+  const agentSystemPromptReset = document.getElementById('agent-system-prompt-reset');
+  const agentSystemPromptClear = document.getElementById('agent-system-prompt-clear');
+  const agentSystemPromptStatus = document.getElementById('agent-system-prompt-status');
   const agentCronTarget = document.getElementById('agent-cron-target');
   const agentCronRefresh = document.getElementById('agent-cron-refresh');
   const agentCronName = document.getElementById('agent-cron-name');
@@ -541,16 +548,33 @@ export function mountShell({ api, state, connect }) {
   const agentCronAdd = document.getElementById('agent-cron-add');
   const agentCronStatus = document.getElementById('agent-cron-status');
   const agentCronList = document.getElementById('agent-cron-list');
+  const agentWorkflowTarget = document.getElementById('agent-workflow-target');
+  const agentWorkflowRefresh = document.getElementById('agent-workflow-refresh');
+  const agentWorkflowStatus = document.getElementById('agent-workflow-status');
+  const agentWorkflowVisual = document.getElementById('agent-workflow-visual');
+  const agentWorkflowSummary = document.getElementById('agent-workflow-summary');
+  const agentWorkflowCards = document.getElementById('agent-workflow-cards');
+  const agentWorkflowInspector = document.getElementById('agent-workflow-inspector');
+  const agentWorkflowRaw = document.getElementById('agent-workflow-raw');
+  const agentWorkflowViewBtns = Array.from(document.querySelectorAll('[data-agent-workflow-view]'));
 
   let _agentActionMenuEl = null;
   let _agentActionDocClick = null;
   let _agentActionEsc = null;
   let _agentSettingsAgentId = null;
   let _agentSettingsTab = 'attributes';
+  let _agentSystemPromptLoadedFor = null;
+  let _agentSystemPromptInitial = '';
+  let _agentSystemPromptLoading = false;
   let _agentCronLoadedFor = null;
   let _agentCronCwdFor = null;
   let _agentCronPayload = null;
   let _agentCronLoading = false;
+  let _agentWorkflowLoadedFor = null;
+  let _agentWorkflowLoading = false;
+  let _agentWorkflowPayload = null;
+  let _agentWorkflowSelectedNodeId = '';
+  let _agentWorkflowView = 'visual';
 
   function _safeTag(s) {
     return /^[A-Za-z0-9_-]{1,32}$/.test(String(s || ''));
@@ -603,6 +627,145 @@ export function mountShell({ api, state, connect }) {
   async function requireAgentSettingsConnected(label = 'Action') {
     const ok = await ensureAgentSettingsConnected();
     if (!ok) throw new Error(`${label} requires an active Direct or Relay connection`);
+  }
+
+  function systemPromptFileName(agent = activeSettingsAgent()) {
+    const tool = String(agent?.tool || agent?.adapter || agent?.task_tool || agent?.task?.tool || agent?.task?.adapter || '').toLowerCase();
+    if (tool === 'claude') return 'CLAUDE.md';
+    if (tool === 'codex' || tool === 'cursor') return 'AGENTS.md';
+    return '';
+  }
+
+  function systemPromptBlockMarkers(agent = activeSettingsAgent()) {
+    const id = String(agent?.id || _agentSettingsAgentId || '');
+    return {
+      begin: `<!-- camc:${id} begin -->`,
+      end:   `<!-- camc:${id} end -->`,
+    };
+  }
+
+  function extractSystemPromptBlock(text, agent = activeSettingsAgent()) {
+    const { begin, end } = systemPromptBlockMarkers(agent);
+    const raw = String(text || '');
+    const start = raw.indexOf(begin);
+    if (start < 0) return '';
+    const bodyStart = start + begin.length;
+    const stop = raw.indexOf(end, bodyStart);
+    if (stop < 0) return '';
+    return raw.slice(bodyStart, stop).replace(/^\r?\n/, '').replace(/\r?\n$/, '');
+  }
+
+  function agentSystemPromptMeta(agent = activeSettingsAgent()) {
+    return String(agent?.system_prompt || agent?.task?.system_prompt || '');
+  }
+
+  function setAgentSystemPromptStatus(text, cls = '') {
+    if (!agentSystemPromptStatus) return;
+    agentSystemPromptStatus.textContent = text || '';
+    agentSystemPromptStatus.classList.remove('is-error', 'is-ok');
+    if (cls) agentSystemPromptStatus.classList.add(cls);
+  }
+
+  function updateSystemPromptTarget(agent = activeSettingsAgent()) {
+    const file = systemPromptFileName(agent);
+    const root = agentWorkspacePath(agent);
+    if (agentSystemPromptTarget) {
+      agentSystemPromptTarget.textContent = agent
+        ? (file ? `Edits the camc marker block in ${root ? `${root}/` : ''}${file}.` : 'This agent tool has no AGENTS.md / CLAUDE.md mapping yet.')
+        : 'Select an agent to load its AGENTS.md / CLAUDE.md prompt block.';
+    }
+    const enabled = !!agent && !!file;
+    [agentSystemPromptReload, agentSystemPromptSave, agentSystemPromptReset, agentSystemPromptClear].forEach(btn => {
+      if (btn) btn.disabled = !enabled;
+    });
+    if (agentSystemPromptText) agentSystemPromptText.disabled = !enabled;
+  }
+
+  function resetSystemPromptForAgent(agent = activeSettingsAgent()) {
+    _agentSystemPromptLoadedFor = null;
+    _agentSystemPromptInitial = '';
+    if (agentSystemPromptText) agentSystemPromptText.value = agentSystemPromptMeta(agent);
+    setAgentSystemPromptStatus('');
+    updateSystemPromptTarget(agent);
+  }
+
+  async function loadAgentSystemPrompt({ force = false } = {}) {
+    const agent = activeSettingsAgent();
+    if (!agent) {
+      resetSystemPromptForAgent(null);
+      return;
+    }
+    const file = systemPromptFileName(agent);
+    updateSystemPromptTarget(agent);
+    if (!file) {
+      setAgentSystemPromptStatus('No system prompt file mapping for this agent tool.', 'is-error');
+      return;
+    }
+    if (!force && _agentSystemPromptLoadedFor === agent.id) return;
+    _agentSystemPromptLoading = true;
+    [agentSystemPromptReload, agentSystemPromptSave, agentSystemPromptReset, agentSystemPromptClear].forEach(btn => { if (btn) btn.disabled = true; });
+    setAgentSystemPromptStatus(`Loading ${file}...`);
+    try {
+      await requireAgentSettingsConnected('System Prompt');
+      let prompt = agentSystemPromptMeta(agent);
+      try {
+        const resp = await api.agentReadWorkspaceFile(agent.id, file);
+        if (resp && !resp.binary) {
+          const fromFile = extractSystemPromptBlock(resp.content || '', agent);
+          if (fromFile || !prompt) prompt = fromFile;
+        }
+      } catch (e) {
+        // A missing prompt file is fine; use metadata or empty text.
+        const msg = String(e?.message || e || '');
+        if (!/not_found|404/i.test(msg)) throw e;
+      }
+      _agentSystemPromptLoadedFor = agent.id;
+      _agentSystemPromptInitial = prompt;
+      if (agentSystemPromptText) agentSystemPromptText.value = prompt;
+      setAgentSystemPromptStatus(prompt ? `Loaded prompt block from ${file}.` : `No prompt block in ${file}.`, 'is-ok');
+    } catch (err) {
+      const fallback = agentSystemPromptMeta(agent);
+      _agentSystemPromptInitial = fallback;
+      if (agentSystemPromptText) agentSystemPromptText.value = fallback;
+      setAgentSystemPromptStatus(`Load failed: ${err?.message || err}`, 'is-error');
+    } finally {
+      _agentSystemPromptLoading = false;
+      updateSystemPromptTarget(agent);
+    }
+  }
+
+  async function saveAgentSystemPrompt() {
+    const agent = activeSettingsAgent();
+    if (!agent || !agentSystemPromptText) return;
+    const file = systemPromptFileName(agent);
+    if (!file) {
+      setAgentSystemPromptStatus('No system prompt file mapping for this agent tool.', 'is-error');
+      return;
+    }
+    const prompt = String(agentSystemPromptText.value || '');
+    if (prompt === _agentSystemPromptInitial) {
+      setAgentSystemPromptStatus('No changes.');
+      return;
+    }
+    [agentSystemPromptSave, agentSystemPromptReload, agentSystemPromptReset, agentSystemPromptClear].forEach(btn => { if (btn) btn.disabled = true; });
+    setAgentSystemPromptStatus('Saving prompt...');
+    try {
+      await requireAgentSettingsConnected('System Prompt save');
+      const resp = await api.updateAgent(agent.id, { system_prompt: prompt });
+      bumpUserActivity(agent.id);
+      _agentSystemPromptInitial = prompt;
+      _agentSystemPromptLoadedFor = agent.id;
+      const current = state.get('agents') || [];
+      const updated = resp && resp.agent && typeof resp.agent === 'object'
+        ? resp.agent
+        : { ...agent, system_prompt: prompt, task: { ...(agent.task || {}), system_prompt: prompt } };
+      state.set('agents', current.map(a => a.id === agent.id ? { ...a, ...updated } : a));
+      setAgentSystemPromptStatus(prompt ? `Saved prompt to ${file}.` : `Removed prompt block from ${file}.`, 'is-ok');
+    } catch (err) {
+      setAgentSystemPromptStatus(`Save failed: ${err?.message || err}`, 'is-error');
+    } finally {
+      updateSystemPromptTarget(activeSettingsAgent());
+    }
   }
 
   function setAgentCronStatus(text, cls = '') {
@@ -826,8 +989,246 @@ export function mountShell({ api, state, connect }) {
     }
   }
 
+  function workflowYamlPath() {
+    return 'workflow.yaml';
+  }
+
+  function setAgentWorkflowStatus(text, cls = '') {
+    if (!agentWorkflowStatus) return;
+    agentWorkflowStatus.textContent = text || '';
+    agentWorkflowStatus.classList.remove('is-error', 'is-ok');
+    if (cls) agentWorkflowStatus.classList.add(cls);
+  }
+
+  function yamlScalar(raw) {
+    let v = String(raw == null ? '' : raw).trim();
+    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+      v = v.slice(1, -1);
+    }
+    return v;
+  }
+
+  function parseWorkflowYamlV0(text) {
+    const lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+    const parsed = { workflow: '', version: '', goal: '', nodes: [] };
+    let inNodes = false;
+    let node = null;
+    let section = '';
+    function pushNode() {
+      if (!node) return;
+      if (!Array.isArray(node.needs)) node.needs = [];
+      if (!Array.isArray(node.steps)) node.steps = [];
+      if (!node.run) node.run = {};
+      if (!node.output_schema) node.output_schema = {};
+      if (!node.verify) node.verify = {};
+      parsed.nodes.push(node);
+    }
+    for (const line of lines) {
+      let m;
+      if (!inNodes) {
+        if ((m = line.match(/^workflow:\s*(.*)$/))) parsed.workflow = yamlScalar(m[1]);
+        else if ((m = line.match(/^version:\s*(.*)$/))) parsed.version = yamlScalar(m[1]);
+        else if ((m = line.match(/^goal:\s*(.*)$/))) parsed.goal = yamlScalar(m[1]);
+        else if (line.match(/^nodes:\s*$/)) inNodes = true;
+        continue;
+      }
+      if ((m = line.match(/^  - id:\s*(.*)$/))) {
+        pushNode();
+        node = { id: yamlScalar(m[1]), goal: '', needs: [], run: {}, steps: [], output_schema: {}, verify: {}, retry: null };
+        section = '';
+        continue;
+      }
+      if (!node) continue;
+      if ((m = line.match(/^    goal:\s*(.*)$/))) { node.goal = yamlScalar(m[1]); section = ''; continue; }
+      if ((m = line.match(/^    retry:\s*(.*)$/))) { node.retry = yamlScalar(m[1]); section = ''; continue; }
+      if ((m = line.match(/^    ([A-Za-z0-9_-]+):\s*$/))) { section = m[1]; continue; }
+      if (section === 'needs' && (m = line.match(/^      -\s*(.*)$/))) { node.needs.push(yamlScalar(m[1])); continue; }
+      if (section === 'steps' && (m = line.match(/^      -\s*(.*)$/))) { node.steps.push(yamlScalar(m[1])); continue; }
+      if (section === 'run' && (m = line.match(/^      ([A-Za-z0-9_-]+):\s*(.*)$/))) { node.run[m[1]] = yamlScalar(m[2]); continue; }
+      if (section === 'output_schema' && (m = line.match(/^      ([A-Za-z0-9_.-]+):\s*(.*)$/))) { node.output_schema[m[1]] = yamlScalar(m[2]); continue; }
+      if (section === 'verify' && (m = line.match(/^      ([A-Za-z0-9_.-]+):\s*(.*)$/))) { node.verify[m[1]] = yamlScalar(m[2]); continue; }
+    }
+    pushNode();
+    parsed.edges = parsed.nodes.flatMap(n => (n.needs || []).map(dep => ({ from: dep, to: n.id })));
+    return parsed;
+  }
+
+  function workflowVerifyLabel(node) {
+    const v = node?.verify || {};
+    if (v.command) return 'command';
+    if (v.human) return 'human';
+    if (v.criterion) return 'evaluator';
+    return 'auto';
+  }
+
+  function workflowRunLabel(node) {
+    const run = node?.run || {};
+    if (run.skill) return `skill: ${run.skill}`;
+    if (run.command) return `cmd: ${run.command}`;
+    return 'run: unset';
+  }
+
+  function workflowResetForAgent(agent = activeSettingsAgent()) {
+    _agentWorkflowLoadedFor = null;
+    _agentWorkflowLoading = false;
+    _agentWorkflowPayload = null;
+    _agentWorkflowSelectedNodeId = '';
+    const root = agentWorkspacePath(agent);
+    if (agentWorkflowTarget) {
+      agentWorkflowTarget.textContent = agent
+        ? `Loads ${root ? `${root}/` : ''}${workflowYamlPath()} from this agent workspace.`
+        : 'Select an agent to load workflow.yaml from its workspace.';
+    }
+    if (agentWorkflowRefresh) agentWorkflowRefresh.disabled = !agent;
+    setAgentWorkflowStatus('');
+    renderAgentWorkflow(agent);
+  }
+
+  function renderWorkflowInspector(node) {
+    if (!agentWorkflowInspector) return;
+    if (!node) {
+      agentWorkflowInspector.innerHTML = '<div class="empty-state">Select a workflow node to inspect its goal, run step, checklist, expected output, and verify rule.</div>';
+      return;
+    }
+    const needs = (node.needs || []).length ? (node.needs || []).map(n => `<span class="agent-workflow-chip">${escapeHtml(n)}</span>`).join('') : '<span class="form-hint">none</span>';
+    const steps = (node.steps || []).length ? `<ol>${(node.steps || []).map(step => `<li>${escapeHtml(step)}</li>`).join('')}</ol>` : '<p class="form-hint">No checklist steps.</p>';
+    const outKeys = Object.keys(node.output_schema || {});
+    const outputs = outKeys.length ? `<dl>${outKeys.map(k => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(node.output_schema[k])}</dd>`).join('')}</dl>` : '<p class="form-hint">No expected output schema.</p>';
+    const verify = node.verify || {};
+    const verifyRows = Object.keys(verify).length ? `<dl>${Object.keys(verify).map(k => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(verify[k])}</dd>`).join('')}</dl>` : '<p class="form-hint">Auto evaluator.</p>';
+    agentWorkflowInspector.innerHTML = `
+      <div class="agent-workflow-inspector-head">
+        <span class="agent-workflow-node-id">${escapeHtml(node.id)}</span>
+        <span class="agent-workflow-pill">verify: ${escapeHtml(workflowVerifyLabel(node))}</span>
+      </div>
+      <h4>${escapeHtml(node.goal || 'Untitled workflow node')}</h4>
+      <section><h5>Needs</h5><div class="agent-workflow-chip-row">${needs}</div></section>
+      <section><h5>Run</h5><p class="agent-workflow-mono">${escapeHtml(workflowRunLabel(node))}</p></section>
+      <section><h5>Checklist</h5>${steps}</section>
+      <section><h5>Expected output</h5>${outputs}</section>
+      <section><h5>Verify</h5>${verifyRows}</section>
+      <section><h5>Retry</h5><p>${escapeHtml(node.retry ?? 'default')}</p></section>
+    `;
+  }
+
+  function renderAgentWorkflow(agent = activeSettingsAgent()) {
+    if (!agentWorkflowCards || !agentWorkflowSummary || !agentWorkflowRaw || !agentWorkflowVisual) return;
+    const showRaw = _agentWorkflowView === 'raw';
+    agentWorkflowVisual.hidden = showRaw;
+    agentWorkflowRaw.hidden = !showRaw;
+    for (const btn of agentWorkflowViewBtns) {
+      const on = btn.dataset.agentWorkflowView === _agentWorkflowView;
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+    if (!agent) {
+      agentWorkflowSummary.innerHTML = '<div class="empty-state">Select an agent to load workflow.yaml.</div>';
+      agentWorkflowCards.innerHTML = '';
+      renderWorkflowInspector(null);
+      agentWorkflowRaw.textContent = '';
+      return;
+    }
+    if (_agentWorkflowLoading) {
+      agentWorkflowSummary.innerHTML = '<div class="empty-state">Loading workflow.yaml...</div>';
+      agentWorkflowCards.innerHTML = '';
+      renderWorkflowInspector(null);
+      return;
+    }
+    const payload = _agentWorkflowPayload;
+    if (!payload) {
+      agentWorkflowSummary.innerHTML = '<div class="empty-state">Click Refresh to read workflow.yaml from the selected agent workspace.</div>';
+      agentWorkflowCards.innerHTML = '';
+      renderWorkflowInspector(null);
+      agentWorkflowRaw.textContent = '';
+      return;
+    }
+    agentWorkflowRaw.textContent = payload.text || '';
+    const parsed = payload.parsed || { nodes: [], edges: [] };
+    const nodes = parsed.nodes || [];
+    const edges = parsed.edges || [];
+    if (!_agentWorkflowSelectedNodeId && nodes[0]) _agentWorkflowSelectedNodeId = nodes[0].id;
+    const selected = nodes.find(n => n.id === _agentWorkflowSelectedNodeId) || nodes[0] || null;
+    if (selected) _agentWorkflowSelectedNodeId = selected.id;
+    agentWorkflowSummary.innerHTML = `
+      <div class="agent-workflow-summary-main">
+        <div>
+          <div class="agent-workflow-title">${escapeHtml(parsed.workflow || 'workflow.yaml')}</div>
+          <div class="agent-workflow-goal">${escapeHtml(parsed.goal || 'No top-level goal declared.')}</div>
+        </div>
+        <div class="agent-workflow-stat-row">
+          <span class="agent-workflow-pill">${nodes.length} nodes</span>
+          <span class="agent-workflow-pill">${edges.length} edges</span>
+          ${parsed.version ? `<span class="agent-workflow-pill">v${escapeHtml(parsed.version)}</span>` : ''}
+        </div>
+      </div>
+    `;
+    agentWorkflowCards.innerHTML = nodes.length ? nodes.map((n, idx) => {
+      const needs = (n.needs || []).length ? (n.needs || []).join(', ') : 'entry';
+      const selectedClass = n.id === _agentWorkflowSelectedNodeId ? ' is-selected' : '';
+      const verify = workflowVerifyLabel(n);
+      const outputCount = Object.keys(n.output_schema || {}).length;
+      return `
+        <button type="button" class="agent-workflow-node-card${selectedClass}" data-workflow-node="${escapeAttr(n.id)}">
+          <div class="agent-workflow-node-top">
+            <span class="agent-workflow-node-index">${idx + 1}</span>
+            <span class="agent-workflow-node-id">${escapeHtml(n.id || `node-${idx + 1}`)}</span>
+          </div>
+          <div class="agent-workflow-node-goal">${escapeHtml(n.goal || 'No goal')}</div>
+          <div class="agent-workflow-node-run">${escapeHtml(workflowRunLabel(n))}</div>
+          <div class="agent-workflow-node-meta">needs ${escapeHtml(needs)} · ${n.steps.length} checks · ${outputCount} outputs</div>
+          <div class="agent-workflow-node-foot">
+            <span class="agent-workflow-pill">verify ${escapeHtml(verify)}</span>
+            <span class="agent-workflow-pill">retry ${escapeHtml(n.retry ?? 'default')}</span>
+          </div>
+        </button>`;
+    }).join('') : '<div class="empty-state">workflow.yaml loaded, but no nodes were found.</div>';
+    renderWorkflowInspector(selected);
+  }
+
+  async function loadAgentWorkflow({ force = false } = {}) {
+    const agent = activeSettingsAgent();
+    if (!agent) {
+      workflowResetForAgent(null);
+      return;
+    }
+    if (!force && _agentWorkflowLoadedFor === agent.id && _agentWorkflowPayload) {
+      renderAgentWorkflow(agent);
+      return;
+    }
+    _agentWorkflowLoading = true;
+    renderAgentWorkflow(agent);
+    setAgentWorkflowStatus('Loading workflow.yaml...');
+    if (agentWorkflowRefresh) agentWorkflowRefresh.disabled = true;
+    try {
+      await requireAgentSettingsConnected('Workflow');
+      const path = workflowYamlPath();
+      const resp = await api.agentReadWorkspaceFile(agent.id, path);
+      if (resp && resp.binary) throw new Error('workflow.yaml is binary and cannot be rendered');
+      const text = String(resp?.content || '');
+      const parsed = parseWorkflowYamlV0(text);
+      _agentWorkflowPayload = { text, parsed, path, root: resp?.root || agentWorkspacePath(agent) };
+      _agentWorkflowLoadedFor = agent.id;
+      _agentWorkflowSelectedNodeId = parsed.nodes[0]?.id || '';
+      const root = _agentWorkflowPayload.root || agentWorkspacePath(agent);
+      setAgentWorkflowStatus(`Loaded ${parsed.nodes.length} node(s) from ${root ? `${root}/` : ''}${path}.`, 'is-ok');
+    } catch (err) {
+      _agentWorkflowPayload = null;
+      _agentWorkflowLoadedFor = null;
+      const root = agentWorkspacePath(agent);
+      setAgentWorkflowStatus(`Workflow load failed from ${root ? `${root}/` : ''}${workflowYamlPath()}: ${err?.message || err}`, 'is-error');
+    } finally {
+      _agentWorkflowLoading = false;
+      if (agentWorkflowRefresh) agentWorkflowRefresh.disabled = false;
+      renderAgentWorkflow(agent);
+    }
+  }
+
+  function setAgentWorkflowView(view) {
+    _agentWorkflowView = view === 'raw' ? 'raw' : 'visual';
+    renderAgentWorkflow(activeSettingsAgent());
+  }
+
   function setAgentSettingsTab(tab) {
-    _agentSettingsTab = ['attributes', 'automation', 'workflow'].includes(tab) ? tab : 'attributes';
+    _agentSettingsTab = ['attributes', 'system-prompt', 'automation', 'workflow'].includes(tab) ? tab : 'attributes';
     for (const btn of agentSettingsTabs) {
       const on = btn.dataset.agentSettingsTab === _agentSettingsTab;
       btn.setAttribute('aria-pressed', on ? 'true' : 'false');
@@ -835,8 +1236,14 @@ export function mountShell({ api, state, connect }) {
     for (const panel of agentSettingsPanels) {
       panel.hidden = panel.dataset.agentSettingsPanel !== _agentSettingsTab;
     }
+    if (_agentSettingsTab === 'system-prompt' && agentSettingsPanel && !agentSettingsPanel.hidden) {
+      void loadAgentSystemPrompt();
+    }
     if (_agentSettingsTab === 'automation' && agentSettingsPanel && !agentSettingsPanel.hidden) {
       void loadAgentCron();
+    }
+    if (_agentSettingsTab === 'workflow' && agentSettingsPanel && !agentSettingsPanel.hidden) {
+      void loadAgentWorkflow();
     }
   }
 
@@ -849,12 +1256,14 @@ export function mountShell({ api, state, connect }) {
       if (agentSettingsTags) agentSettingsTags.value = '';
       if (agentSettingsSave) agentSettingsSave.disabled = true;
       if (agentSettingsReset) agentSettingsReset.disabled = true;
+      resetSystemPromptForAgent(null);
       if (agentCronTarget) agentCronTarget.textContent = 'Select an agent to manage automation.';
       if (agentCronAdd) agentCronAdd.disabled = true;
       _agentCronLoadedFor = null;
       _agentCronPayload = null;
       renderAgentCronJobs(null);
       setAgentCronStatus('');
+      workflowResetForAgent(null);
       setAgentSettingsStatus('');
       return;
     }
@@ -876,6 +1285,11 @@ export function mountShell({ api, state, connect }) {
     if (agentSettingsTags) agentSettingsTags.value = tags.join(', ');
     if (agentSettingsSave) agentSettingsSave.disabled = false;
     if (agentSettingsReset) agentSettingsReset.disabled = false;
+    if (_agentSystemPromptLoadedFor && _agentSystemPromptLoadedFor !== agent.id) {
+      resetSystemPromptForAgent(agent);
+    } else {
+      updateSystemPromptTarget(agent);
+    }
     if (agentCronTarget) {
       const host = agent.machine_host || agent.hostname || 'this node';
       const path = agent.context_path || agent.path || '';
@@ -891,6 +1305,13 @@ export function mountShell({ api, state, connect }) {
       _agentCronPayload = null;
       renderAgentCronJobs(agent);
       setAgentCronStatus('');
+    }
+    if (_agentWorkflowLoadedFor && _agentWorkflowLoadedFor !== agent.id) {
+      workflowResetForAgent(agent);
+    } else if (agentWorkflowTarget) {
+      const root = agentWorkspacePath(agent);
+      agentWorkflowTarget.textContent = `Loads ${root ? `${root}/` : ''}${workflowYamlPath()} from this agent workspace.`;
+      if (agentWorkflowRefresh) agentWorkflowRefresh.disabled = false;
     }
     setAgentSettingsStatus('');
   }
@@ -916,6 +1337,8 @@ export function mountShell({ api, state, connect }) {
     if (agentSettingsPanel) agentSettingsPanel.hidden = true;
     _agentSettingsAgentId = null;
     setAgentSettingsStatus('');
+    setAgentSystemPromptStatus('');
+    setAgentWorkflowStatus('');
   }
 
   function parseTagInput() {
@@ -1074,10 +1497,28 @@ export function mountShell({ api, state, connect }) {
   agentSettingsTabs.forEach(btn => btn.addEventListener('click', () => setAgentSettingsTab(btn.dataset.agentSettingsTab)));
   agentSettingsSave?.addEventListener('click', () => { void saveAgentSettingsAttributes(); });
   agentSettingsReset?.addEventListener('click', () => fillAgentSettings(activeSettingsAgent()));
+  agentSystemPromptReload?.addEventListener('click', () => { void loadAgentSystemPrompt({ force: true }); });
+  agentSystemPromptSave?.addEventListener('click', () => { void saveAgentSystemPrompt(); });
+  agentSystemPromptReset?.addEventListener('click', () => {
+    if (agentSystemPromptText) agentSystemPromptText.value = _agentSystemPromptInitial;
+    setAgentSystemPromptStatus('Reset to loaded prompt.');
+  });
+  agentSystemPromptClear?.addEventListener('click', () => {
+    if (agentSystemPromptText) agentSystemPromptText.value = '';
+    setAgentSystemPromptStatus('Prompt will be removed when saved.');
+  });
   agentCronScheduleType?.addEventListener('change', updateCronSchedulePlaceholder);
   agentCronTypeInputs.forEach(input => input.addEventListener('change', updateAutomationTypeUi));
   agentCronRefresh?.addEventListener('click', () => { void loadAgentCron({ force: true }); });
   agentCronAdd?.addEventListener('click', () => { void addAgentCronJob(); });
+  agentWorkflowRefresh?.addEventListener('click', () => { void loadAgentWorkflow({ force: true }); });
+  agentWorkflowViewBtns.forEach(btn => btn.addEventListener('click', () => setAgentWorkflowView(btn.dataset.agentWorkflowView)));
+  agentWorkflowCards?.addEventListener('click', (ev) => {
+    const card = ev.target.closest('[data-workflow-node]');
+    if (!card) return;
+    _agentWorkflowSelectedNodeId = card.dataset.workflowNode || '';
+    renderAgentWorkflow(activeSettingsAgent());
+  });
   agentCronList?.addEventListener('click', (ev) => {
     const btn = ev.target.closest('[data-cron-remove]');
     if (!btn) return;
@@ -1104,8 +1545,14 @@ export function mountShell({ api, state, connect }) {
         const prevSettingsAgent = _agentSettingsAgentId;
         if (s && s !== _agentSettingsAgentId) _agentSettingsAgentId = s;
         fillAgentSettings(activeSettingsAgent());
+        if (_agentSettingsTab === 'system-prompt' && _agentSettingsAgentId && _agentSettingsAgentId !== prevSettingsAgent) {
+          void loadAgentSystemPrompt({ force: true });
+        }
         if (_agentSettingsTab === 'automation' && _agentSettingsAgentId && _agentSettingsAgentId !== prevSettingsAgent) {
           void loadAgentCron({ force: true });
+        }
+        if (_agentSettingsTab === 'workflow' && _agentSettingsAgentId && _agentSettingsAgentId !== prevSettingsAgent) {
+          void loadAgentWorkflow({ force: true });
         }
       }
     }
