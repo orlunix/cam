@@ -25,6 +25,7 @@
   <link rel="modulepreload" href="js/desktop/start-agent-mode.js?v=0.64.0">
   <link rel="modulepreload" href="js/desktop/nodes-mode.js?v=0.64.0">
   <link rel="modulepreload" href="js/desktop/skills-mode.js?v=0.64.0">
+  <link rel="modulepreload" href="js/desktop/bots-mode.js?v=0.64.0">
 </head>
 <body class="desktop">
   <div id="desktop-app" class="desktop-layout">
@@ -54,6 +55,10 @@
         <button class="mode-nav-btn" data-mode="skills" aria-pressed="false">
           <span class="mode-nav-icon">&#9734;</span>
           <span class="mode-nav-label">Skills</span>
+        </button>
+        <button class="mode-nav-btn" data-mode="bots" aria-pressed="false">
+          <span class="mode-nav-icon">&#9670;</span>
+          <span class="mode-nav-label">Bots</span>
         </button>
         <button class="mode-nav-btn" data-mode="todos" aria-pressed="false">
           <span class="mode-nav-icon">&#9745;</span>
@@ -177,6 +182,7 @@
           </div>
           <div class="settings-tabs agent-settings-tabs" role="tablist" aria-label="Agent settings tabs">
             <button type="button" class="settings-tab" data-agent-settings-tab="attributes" aria-pressed="true">Attributes</button>
+            <button type="button" class="settings-tab" data-agent-settings-tab="system-prompt" aria-pressed="false">System Prompt</button>
             <button type="button" class="settings-tab" data-agent-settings-tab="automation" aria-pressed="false">Automation</button>
             <button type="button" class="settings-tab" data-agent-settings-tab="workflow" aria-pressed="false">Workflow</button>
           </div>
@@ -202,10 +208,50 @@
                 <div class="settings-status" id="agent-settings-status" aria-live="polite"></div>
               </section>
             </div>
+
+            <div class="settings-tab-panel" id="agent-settings-tab-system-prompt" data-agent-settings-panel="system-prompt" hidden>
+              <section class="settings-section agent-system-prompt-section">
+                <div class="agent-system-prompt-target">
+                  <div>
+                    <h3>System Prompt</h3>
+                    <p class="form-hint" id="agent-system-prompt-target">Select an agent to load its AGENTS.md / CLAUDE.md prompt block.</p>
+                  </div>
+                  <button type="button" class="btn-secondary" id="agent-system-prompt-reload">Reload</button>
+                </div>
+                <label>Prompt block
+                  <textarea id="agent-system-prompt-text" rows="14" placeholder="Instructions injected into the tool-specific AGENTS.md / CLAUDE.md block for this agent." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+                </label>
+                <p class="form-hint">Desktop preserves surrounding file content and only replaces the marker-delimited <code>camc:&lt;agent-id&gt;</code> block. Saving an empty prompt removes that block.</p>
+                <div class="settings-actions agent-settings-actions">
+                  <button type="button" class="btn-primary" id="agent-system-prompt-save">Save Prompt</button>
+                  <button type="button" class="btn-secondary" id="agent-system-prompt-reset">Reset</button>
+                  <button type="button" class="btn-secondary" id="agent-system-prompt-clear">Clear</button>
+                </div>
+                <div class="settings-status" id="agent-system-prompt-status" aria-live="polite"></div>
+              </section>
+            </div>
             <div class="settings-tab-panel" id="agent-settings-tab-workflow" data-agent-settings-panel="workflow" hidden>
-              <section class="settings-section">
-                <h3>Workflow</h3>
-                <p class="form-hint">Workflow controls are reserved for higher-level multi-step runs, reviewer handoff, and recovery flows. This tab is intentionally a placeholder until those semantics are finalized.</p>
+              <section class="settings-section agent-workflow-section">
+                <div class="agent-workflow-card agent-workflow-target">
+                  <div>
+                    <h3>Workflow</h3>
+                    <p class="form-hint" id="agent-workflow-target">Select an agent to load workflow.yaml from its workspace.</p>
+                  </div>
+                  <div class="agent-workflow-actions">
+                    <div class="output-mode-toggle agent-workflow-view-toggle" role="group" aria-label="Workflow view">
+                      <button type="button" class="output-mode-btn" data-agent-workflow-view="visual" aria-pressed="true">Visual</button>
+                      <button type="button" class="output-mode-btn" data-agent-workflow-view="raw" aria-pressed="false">Raw YAML</button>
+                    </div>
+                    <button type="button" class="btn-secondary" id="agent-workflow-refresh">Refresh</button>
+                  </div>
+                </div>
+                <div class="settings-status" id="agent-workflow-status" aria-live="polite"></div>
+                <div class="agent-workflow-visual" id="agent-workflow-visual">
+                  <div class="agent-workflow-card agent-workflow-summary" id="agent-workflow-summary"></div>
+                  <div class="agent-workflow-cards" id="agent-workflow-cards"></div>
+                  <div class="agent-workflow-card agent-workflow-inspector" id="agent-workflow-inspector"></div>
+                </div>
+                <pre class="agent-workflow-raw" id="agent-workflow-raw" tabindex="0" hidden></pre>
               </section>
             </div>
             <div class="settings-tab-panel" id="agent-settings-tab-automation" data-agent-settings-panel="automation" hidden>
@@ -847,6 +893,67 @@
         </div>
 
         <div class="settings-status skills-status" id="skillm-status" aria-live="polite"></div>
+      </section>
+
+
+      <!-- Bots workspace (CAM-DESK-BOTS-010..015) -->
+      <section class="mode-panel" id="mode-bots" data-mode="bots" hidden>
+        <div class="settings-header bots-header">
+          <h2>Bots</h2>
+          <p class="settings-help">
+            Reusable agent and workflow bundles: settings, files, scripts,
+            workflow YAML, loops, skills, and MCP references. V0 is a
+            read-only design surface while Hub bot list/dry-run/launch APIs
+            are wired.
+          </p>
+        </div>
+
+        <div class="bots-workbench">
+          <section class="bots-card bots-main-card">
+            <div class="bots-toolbar" aria-label="Bot filters">
+              <label>Search
+                <input type="search" id="bots-search" placeholder="Search name, tag, source..." autocomplete="off">
+              </label>
+              <label>Target
+                <select id="bots-target-filter">
+                  <option value="all">All targets</option>
+                  <option value="agent">Agent</option>
+                  <option value="workflow">Workflow</option>
+                </select>
+              </label>
+              <label>Source
+                <select id="bots-source-filter">
+                  <option value="all">All sources</option>
+                  <option value="workspace">Workspace</option>
+                  <option value="node">Node</option>
+                  <option value="camflow">CamFlow package</option>
+                  <option value="git">Git library</option>
+                </select>
+              </label>
+              <label>Sort
+                <select id="bots-sort">
+                  <option value="recent">Recently used</option>
+                  <option value="name">Name</option>
+                  <option value="updated">Updated</option>
+                </select>
+              </label>
+              <div class="bots-toolbar-actions">
+                <button type="button" class="btn-secondary" id="bots-refresh">Refresh</button>
+                <button type="button" class="btn-primary" id="bots-import">Import Bot</button>
+              </div>
+            </div>
+
+            <div class="bots-list" id="bots-list" aria-label="Bot list">
+              <div class="empty-state">Loading bots&hellip;</div>
+            </div>
+          </section>
+
+          <section class="bots-card bots-detail-card" id="bots-detail" aria-label="Bot detail">
+            <div class="empty-state">Select a bot to inspect its launch plan.</div>
+          </section>
+        </div>
+
+        <div class="settings-status bots-status" id="bots-status" aria-live="polite"></div>
       </section>
 
       <!-- Todos / Notes worklog (CAM-DESK-TODOS-010..017) -->

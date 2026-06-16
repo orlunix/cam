@@ -88,6 +88,8 @@ Areas:
 - `INP`: input composer and key sending.
 - `FILE`: uploads, attachments, and context files.
 - `SKILLM`: Desktop UI and Hub wrapper for node-local Skillm library management.
+- `WORKFLOW`: Agent Settings workflow editor for CamFlow DAG YAML.
+- `BOTS`: reusable agent/workflow template bundles and the Desktop Bots page.
 - `SET`: settings mode.
 - `PKG`: packaging and install.
 - `TERM`: future interactive terminal.
@@ -263,6 +265,19 @@ Implementation notes:
 - Storage in the first slice: a single JSON file at
   `<userData>/embedded-hub.json` with `{ contexts: [], agents: [],
   adapters: [...] }`. No native database dependency.
+
+### Bots / Agent Templates (BOTS)
+
+| ID | Status | Requirement |
+| --- | --- | --- |
+| CAM-DESK-BOTS-010 | implemented | Desktop exposes a top-level **Bots** workspace mode for reusable agent/workflow template bundles. A Bot is a manifest-backed package of launch defaults plus optional files, scripts, configs, loops, workflow YAML, skills, and MCP config references. Bots are a UI/Hub layer over existing CAM primitives; they do not introduce a second runtime or Desktop-owned database. |
+| CAM-DESK-BOTS-011 | proposed | The recommended V0 storage model is file/repository based: workspace-local bots live under `<workspace>/.cam/bots/<bot-id>/`, node-global bots live under `~/.cam/bots/<bot-id>/`, and Git-backed bot libraries are deferred until the local model is validated. Each bot has a manifest (`bot.yaml`) with schema `cam-bot/1`, id, name, description, target type (`agent` or `workflow`), launch defaults, and asset references. |
+| CAM-DESK-BOTS-012 | implemented | The Bots page uses a full-width management layout aligned with Nodes/Skills/Todos: header search/filter/sort, bot cards, and a card-style detail/editor with tabs for Overview, Settings, Files & Scripts, Workflow, Loops, Skills, MCP, and Raw Manifest. The primary action is Launch; dry-run preview must list file writes, skill installs, loop creation, and start/workflow actions before any mutation. |
+| CAM-DESK-BOTS-013 | proposed | Bot launch reuses existing Hub APIs where possible: Start Agent for `target.type=agent`, Workflow/CamFlow APIs for `target.type=workflow` once available, Skills APIs for requested skill installs, Automation APIs for optional loops/cron, and Browse/SFTP helpers for file/script/config copy. Renderer code never executes shell commands or receives credentials. |
+| CAM-DESK-BOTS-014 | proposed | Manifest validation must reject invalid schema/id, missing name/target, absolute or parent-traversal asset paths, unsafe target paths, ambiguous verify/workflow references, and unsupported destructive overwrite modes. Existing files are never overwritten silently; launch must offer skip/overwrite/copy choices. Unknown manifest keys remain visible in Raw Manifest and must be preserved where possible. |
+| CAM-DESK-BOTS-015 | approved | V0 implementation order is doc + fixtures, read-only Bots page, Hub list/read for workspace-local bots, dry-run, then launch prepared agent. Workflow execution, Git-backed bot libraries, save-current-agent-as-bot, and mobile parity are later slices. |
+
+See `docs/desktop/bots-page-plan.md` for the practical implementation plan.
 
 ### Todos / Worklog (TODOS)
 
@@ -621,7 +636,7 @@ Implementation notes:
 | CAM-DESK-EDIT-013 | verified | After save, Desktop must refresh the agent list and keep the same agent selected when it still exists. |
 | CAM-DESK-EDIT-014 | verified | Cancel must return to the previous selected-agent output without losing output mode, scroll state, or unsent composer text. |
 | CAM-DESK-EDIT-015 | verified | Edit errors must keep the form open and visible, with controls re-enabled and an actionable error. |
-| CAM-DESK-EDIT-016 | approved | The agent sidebar exposes a per-row `⋯` action menu with exactly `Settings`, `Stop`, and `Remove`; Stop calls `CamApi.stopAgent(id)` and Remove calls `CamApi.deleteAgentHistory(id)`, which Direct mode maps through CAM-DESK-DIRECT-020 to `camc stop` and `camc rm --kill`. `Settings` opens a full Agent Settings surface inside Agents mode, styled like the main Settings page with tabs for `Attributes`, `Automation`, and `Workflow`. P0 makes `Attributes` editable: agent name, auto-confirm toggle, and comma-separated tags. Save calls `CamApi.updateAgent(id, body)` (PATCH `/api/agents/{id}`) with `{ name?: string, auto_confirm?: boolean, tags_add?: string[], tags_remove?: string[] }`; the embedded Hub translates to `camc update <id> [--name X] [--auto-confirm true|false] [--tag T]… [--untag T]…`. Tags must match `^[A-Za-z0-9_-]{1,32}$`; invalid tags surface inline and skip the request. `Automation` is implemented as the card-style loop/cron scheduler surface described by CAM-DESK-CRON-010. `Workflow` remains a visible planning tab for higher-level orchestration. The settings surface never exposes credentials, system prompts, or AGENTS.md content until upstream camc has a safe update API. |
+| CAM-DESK-EDIT-016 | approved | The agent sidebar exposes a per-row `⋯` action menu with exactly `Settings`, `Stop`, and `Remove`; Stop calls `CamApi.stopAgent(id)` and Remove calls `CamApi.deleteAgentHistory(id)`, which Direct mode maps through CAM-DESK-DIRECT-020 to `camc stop` and `camc rm --kill`. `Settings` opens a full Agent Settings surface inside Agents mode, styled like the main Settings page with tabs for `Attributes`, `System Prompt`, `Automation`, and `Workflow`. P0 makes `Attributes` editable: agent name, auto-confirm toggle, and comma-separated tags. Save calls `CamApi.updateAgent(id, body)` (PATCH `/api/agents/{id}`) with `{ name?: string, auto_confirm?: boolean, tags_add?: string[], tags_remove?: string[] }`; the embedded Hub translates to `camc update <id> [--name X] [--auto-confirm true|false] [--tag T]… [--untag T]…`. Tags must match `^[A-Za-z0-9_-]{1,32}$`; invalid tags surface inline and skip the request. `Automation` is implemented as the card-style loop/cron scheduler surface described by CAM-DESK-CRON-010. `Workflow` remains a visible planning tab for higher-level orchestration. `System Prompt` loads and saves the camc marker block in the tool-specific `AGENTS.md` / `CLAUDE.md` file while preserving surrounding file content. The settings surface never exposes credentials. |
 | CAM-DESK-AGT-002 | approved | The desktop agent list maintains a local **user-activity** timestamp per agent (`user_activity_at`), distinct from the remote camc `updated_at`. The local timestamp is bumped whenever the user (a) clicks/selects an agent row, (b) sends input to it, (c) sends a quick-key or Esc/Tab/etc. key, (d) uploads a file to it. It is persisted to `localStorage['cam_desktop_user_activity_at']` as `{ agentId: ms }` and survives reloads. Default sort is `User activity` (`user_activity-desc`) and uses `user_activity_at` first with `created_at` / `started_at` fallback; the legacy `Updated` sort values (`updated-desc`, `updated-asc`, `date-desc`, `date-asc`) migrate transparently to `user_activity-…` via `parseSort`. The renderer never writes this timestamp back to camc; remote `updated_at` is treated as tmux capture activity (`tmux_activity_at`) and can be exposed by callers via a separate `agentTmuxActivityMs(agent)` helper if needed. Persistence cap: 1000 entries (oldest dropped) to keep localStorage bounded. |
 
 Implementation notes:
@@ -631,6 +646,41 @@ Implementation notes:
   stacking modals.
 - Do not add stop/kill/delete/retry controls in this pass unless explicitly
   requested; keep lifecycle/destructive actions separate.
+
+### Agent Settings Workflow
+
+The Workflow tab is scoped to the selected agent's workspace. It is not a
+top-level global page. The tab edits CamFlow DAG YAML visually while retaining a
+Raw YAML escape hatch for unsupported or future fields. The core mental model is:
+
+```text
+Node = Goal + Run + Checklist + Expected Output + Verify + Retry
+```
+
+| ID | Status | Requirement |
+| --- | --- | --- |
+| CAM-DESK-WORKFLOW-010 | approved | Agent Settings must include a `Workflow` tab alongside `Attributes`, `System Prompt`, `Loop`, and `Cron` / automation tabs. The tab opens the workflow file for the selected agent's workspace, defaulting to the conventional CamFlow workflow path when available. It must show the active file path, validation status, and actions for `Validate`, `Save`, `Run step` / `Run loop` when backend support exists, plus a `Raw YAML` toggle. |
+| CAM-DESK-WORKFLOW-011 | approved | The primary visual surface is a DAG/flow chart. Each workflow node is one editable card. Cards show at minimum: node id/name, run type or skill (`run.skill`, command runner, evaluator-related node when present), dependency/edge summary, checklist count, expected-output field count, verify mode, retry count, and runtime state when available. Edges are derived from `needs` / dependency fields and transition-like fields when present. V0 may use a deterministic topological-column layout with simple SVG/HTML connectors instead of adding a graph dependency. |
+| CAM-DESK-WORKFLOW-012 | approved | Selecting a card opens an inspector/editor inside the Workflow tab, not a modal. The editor must expose the first-class CamFlow node fields: `id`, `goal`, `needs`, `run.skill`, `steps[]`, `output_schema`, `verify`, and `retry`. Advanced fields such as environment, timeout, or unknown YAML keys should be preserved where possible and surfaced under an Advanced/Raw section. |
+| CAM-DESK-WORKFLOW-013 | approved | The Workflow editor must treat evaluator/verification as a first-class node section. `steps[]` are the checklist. `output_schema` is the expected structured output. `verify` supports these modes: auto evaluator from checklist when no explicit `verify` exists, evaluator criterion via `verify.criterion`, deterministic command via `verify.command` plus optional `verify.timeout`, and human review via `verify.human`. The UI must make it clear that command verify is deterministic, while criterion/default verify uses the built-in evaluator. |
+| CAM-DESK-WORKFLOW-014 | approved | The editor must support insert and delete operations without corrupting the DAG: add node, insert before selected, insert after selected, add parallel branch, delete selected. Delete must either reject when dependents exist or ask whether to reconnect dependents to the deleted node's dependencies versus deleting downstream nodes. Every operation must preserve unique filesystem-safe node ids and avoid cycles. |
+| CAM-DESK-WORKFLOW-015 | approved | Validation runs before save and on demand. It must catch invalid YAML, duplicate ids, missing required node fields, missing dependencies, cycles, unsupported verify keys, invalid verify mode combinations (only one of `criterion`, `command`, `human`), invalid retry/timeout values, and missing required expected-output/checklist fields. Validation errors should be attached to the relevant card/field and summarized at the top of the tab. |
+| CAM-DESK-WORKFLOW-016 | approved | Raw YAML mode must remain available because CamFlow may evolve faster than the visual editor. Switching between visual and raw modes must not silently drop unknown fields. If perfect comment preservation is not available in V0, the UI must warn before normalizing YAML on save. |
+| CAM-DESK-WORKFLOW-017 | approved | Runtime state, when available from CamFlow artifacts, should be overlaid on cards without changing the editable YAML model: waiting, ready, running, verified/success, verify failed, halted, retry count, and last feedback. Failed verify cards should show enough evaluator/command feedback to guide edits or retries. |
+
+Implementation notes:
+
+- Keep the Workflow tab visually aligned with the existing Agent Settings /
+  main Settings card style. It should be full-width inside the agent settings
+  surface, with cards and a stable inspector; avoid a global canvas-only page.
+- V0 should not add a large graph framework unless the plain SVG/topological
+  layout proves insufficient. The architecture is frozen; prefer a small
+  renderer over a new app stack.
+- For deterministic verification, prefer current CamFlow fields
+  (`output_schema`, `verify.command`, `verify.timeout`) before proposing new
+  YAML such as `expects.files_modified`. File expectations may be collected as
+  checklist items or output-schema fields until the runtime supports them
+  directly.
 
 ### Input Attachments
 

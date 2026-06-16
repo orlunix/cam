@@ -1605,8 +1605,25 @@ export function mountAgentConsole({ api, state, showToast }) {
     return {
       background: cssVar('--terminal-bg', '#0d1117'),
       foreground: cssVar('--terminal-fg', '#e6edf3'),
-      cursor: cssVar('--accent', '#58a6ff'),
+      cursor: cssVar('--ansi-bright-blue', '#79c0ff'),
+      cursorAccent: cssVar('--terminal-bg', '#0d1117'),
       selectionBackground: cssVar('--terminal-selection-bg', '#1f6feb66'),
+      black: cssVar('--ansi-black', '#484f58'),
+      red: cssVar('--ansi-red', '#ff7b72'),
+      green: cssVar('--ansi-green', '#7ee787'),
+      yellow: cssVar('--ansi-yellow', '#d29922'),
+      blue: cssVar('--ansi-blue', '#79c0ff'),
+      magenta: cssVar('--ansi-magenta', '#d2a8ff'),
+      cyan: cssVar('--ansi-cyan', '#76e3ea'),
+      white: cssVar('--ansi-white', '#c9d1d9'),
+      brightBlack: cssVar('--ansi-bright-black', '#6e7681'),
+      brightRed: cssVar('--ansi-bright-red', '#ffa198'),
+      brightGreen: cssVar('--ansi-bright-green', '#56d364'),
+      brightYellow: cssVar('--ansi-bright-yellow', '#e3b341'),
+      brightBlue: cssVar('--ansi-bright-blue', '#a5d6ff'),
+      brightMagenta: cssVar('--ansi-bright-magenta', '#e2c5ff'),
+      brightCyan: cssVar('--ansi-bright-cyan', '#b3f0ff'),
+      brightWhite: cssVar('--ansi-bright-white', '#ffffff'),
     };
   }
 
@@ -1940,7 +1957,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     const agent = selectedAgent();
     if (!agent) return;
     if (inflightOutput || inflightHistory) {
-      if (opts.forceQueued) pendingOutputRefresh = true;
+      if (opts.forceQueued || opts.viaPoll === true) pendingOutputRefresh = true;
       return;
     }
     // Polling should keep the captured text fresh even when the user has
@@ -1950,41 +1967,32 @@ export function mountAgentConsole({ api, state, showToast }) {
     inflightOutput = true;
     const fetchMode = outputMode;
     try {
-      if (outputHistoryFull) {
-        const data = await api.agentFullOutput(agent.id, 0);
-        if (data?.output) {
-          clearFetchStatusTimer();
-          setUploadStatus('');
-          outputHistoryFull = true;
-          applyOutput(agent.id, data.output, fetchMode, { full: true });
-        } else if (
-          activePane().textContent === '' ||
-          activePane().classList.contains('placeholder')
-        ) {
-          renderPlaceholder('(no captured output)');
-        }
-      } else {
-        const hash = fetchMode === 'rich' ? outputHashRich : outputHashPlain;
-        const data = await api.agentOutput(agent.id, outputHistoryLines, hash);
-        if (data?.hash) {
-          if (fetchMode === 'rich') outputHashRich = data.hash;
-          else outputHashPlain = data.hash;
-        }
-        clearFetchStatusTimer();
-        setUploadStatus('');
-        // Do not mark history full from the bounded tail response. Some
-        // backends report returned-line counts conservatively, and More+
-        // should be the explicit full-buffer check.
-        if (!data?.unchanged && typeof data?.output === 'string') {
-          applyOutput(agent.id, data.output, fetchMode, { full: outputHistoryFull });
-        } else if (
-          activePane().textContent.startsWith('Loading') ||
-          activePane().textContent.startsWith('Waiting for output') ||
-          activePane().textContent.startsWith('Waiting for relay output') ||
-          (activePane().classList.contains('placeholder') && !activePane().textContent)
-        ) {
-          startOutputLoadingTimer('Waiting for output');
-        }
+      // Live refresh must stay cheap. Even after the user manually loaded the
+      // full scrollback, polling `/fulloutput` every second can serialize a
+      // large tmux buffer and make Direct mode look frozen. More+/history is
+      // the only path that should ask for fulloutput; the live poll always
+      // refreshes the bounded tail and lets `applyOutput` preserve the current
+      // viewport when the user is reading older content.
+      const hash = fetchMode === 'rich' ? outputHashRich : outputHashPlain;
+      const data = await api.agentOutput(agent.id, outputHistoryLines, hash);
+      if (data?.hash) {
+        if (fetchMode === 'rich') outputHashRich = data.hash;
+        else outputHashPlain = data.hash;
+      }
+      clearFetchStatusTimer();
+      setUploadStatus('');
+      // Do not mark history full from the bounded tail response. Some
+      // backends report returned-line counts conservatively, and More+
+      // should be the explicit full-buffer check.
+      if (!data?.unchanged && typeof data?.output === 'string') {
+        applyOutput(agent.id, data.output, fetchMode, { full: outputHistoryFull });
+      } else if (
+        activePane().textContent.startsWith('Loading') ||
+        activePane().textContent.startsWith('Waiting for output') ||
+        activePane().textContent.startsWith('Waiting for relay output') ||
+        (activePane().classList.contains('placeholder') && !activePane().textContent)
+      ) {
+        startOutputLoadingTimer('Waiting for output');
       }
     } catch (e) {
       if (api.mode !== 'disconnected') console.warn('agentOutput failed:', e);
@@ -2296,15 +2304,19 @@ export function mountAgentConsole({ api, state, showToast }) {
       bumpAndRefreshUserActivity(agent.id);
       refreshOutputAfterSend();
     } catch (e) {
+      if (isRelayRequestTimeout(e)) {
+        // Relay send acknowledgements can time out after the source already
+        // wrote to tmux. Treat this as ack-unknown and keep polling instead
+        // of showing a false send-failed alarm or restoring stale text.
+        composerDrafts.delete(agent.id);
+        bumpAndRefreshUserActivity(agent.id);
+        refreshOutputAfterSend();
+        return;
+      }
       inputEl.value = text;
       saveComposerDraft(agent.id);
-      if (isRelayRequestTimeout(e)) {
-        refreshOutputAfterSend();
-      }
-      if (!isRelayRequestTimeout(e)) {
-        clearFetchStatusTimer();
-        setUploadStatus('');
-      }
+      clearFetchStatusTimer();
+      setUploadStatus('');
       showToast(`Send failed: ${e.message}`, 'error', 5000);
     } finally {
       sendBtn.disabled = false;
@@ -2402,8 +2414,14 @@ export function mountAgentConsole({ api, state, showToast }) {
       // path string and the user can wrap it with prose if they want).
       if (resp && resp.path) {
         startFetchStatusTimer('Sending');
-        await api.sendInput(agent.id, resp.path, false);
-        setUploadStatus(`Sent ${filename} -> ${resp.path}`, 'is-ok');
+        try {
+          await api.sendInput(agent.id, resp.path, false);
+          setUploadStatus(`Sent ${filename} -> ${resp.path}`, 'is-ok');
+        } catch (err) {
+          if (!isRelayRequestTimeout(err)) throw err;
+          bumpAndRefreshUserActivity(agent.id);
+          setUploadStatus(`Uploaded ${filename}; send acknowledgement timed out, checking output.`, 'is-ok');
+        }
         refreshOutputAfterSend();
       } else {
         setUploadStatus(`Uploaded ${filename} (no path returned)`, 'is-ok');
@@ -2513,11 +2531,12 @@ export function mountAgentConsole({ api, state, showToast }) {
         refreshOutputAfterSend();
       } catch (e) {
         if (isRelayRequestTimeout(e)) {
+          bumpAndRefreshUserActivity(agent.id);
           refreshOutputAfterSend();
-        } else {
-          clearFetchStatusTimer();
-          setUploadStatus('');
+          return;
         }
+        clearFetchStatusTimer();
+        setUploadStatus('');
         showToast(`Input failed: ${e.message}`, 'error', 5000);
       } finally {
         restoreQuickBtn(btn, selectedAgent() || agent);
@@ -2538,11 +2557,12 @@ export function mountAgentConsole({ api, state, showToast }) {
         refreshOutputAfterSend();
       } catch (e) {
         if (isRelayRequestTimeout(e)) {
+          bumpAndRefreshUserActivity(agent.id);
           refreshOutputAfterSend();
-        } else {
-          clearFetchStatusTimer();
-          setUploadStatus('');
+          return;
         }
+        clearFetchStatusTimer();
+        setUploadStatus('');
         showToast(`Key failed: ${e.message}`, 'error', 5000);
       } finally {
         restoreQuickBtn(btn, selectedAgent() || agent);

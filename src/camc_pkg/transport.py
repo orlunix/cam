@@ -369,10 +369,13 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
     if not env_setup:
         # Pull PATH from the explicit env if provided, otherwise from
         # the calling process. Either way we land an explicit `export
-        # PATH=...` inside the bash -l invocation so the launched
-        # command sees the same PATH preflight checked against.
+        # PATH=...` inside the bash invocation so the launched command
+        # sees the same PATH preflight checked against.
         env_setup = "export PATH=%s" % shlex.quote(env.get("PATH", os.environ.get("PATH", "")))
-    command_str = "env -u CLAUDECODE bash -l -c %s" % shlex.quote(env_setup + " && exec " + inner_cmd)
+    # Non-login bash: env_setup is the sole source of Anthropic/proxy
+    # overrides. `bash -l` would re-source ~/.bashrc and re-inject login
+    # session / ANTHROPIC_* exports before env_setup can win.
+    command_str = "env -u CLAUDECODE bash -c %s" % shlex.quote(env_setup + " && exec " + inner_cmd)
 
     try:
         proc = subprocess.Popen(
