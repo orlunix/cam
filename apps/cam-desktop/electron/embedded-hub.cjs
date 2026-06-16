@@ -72,8 +72,15 @@ const DEFAULT_PORT       = 8420;
 const PORT_SCAN_RANGE    = 50;
 const LOG_BUFFER_LINES   = 200;
 const DEFAULT_ADAPTERS   = ['claude', 'codex', 'cursor'];
+const SYSTEM_PROMPT_MAX_BYTES = 128 * 1024;
+const SYSTEM_PROMPT_FILES = { claude: 'CLAUDE.md', codex: 'AGENTS.md', cursor: 'AGENTS.md' };
 const STORE_VERSION      = 1;
 const HUB_PRODUCT_VERSION = 'cam-desktop-embedded-1';
+// Direct Plain/Rich output polls can arrive every second while the same SSH
+// endpoint is also syncing agents. Keep a very short cache and coalesce
+// duplicate in-flight captures so polls do not stack `camc capture` calls.
+const OUTPUT_CAPTURE_TTL_MS = 750;
+const OUTPUT_CAPTURE_CACHE_MAX = 100;
 
 /* ─────────────── State ─────────────── */
 
@@ -88,6 +95,8 @@ const state = {
   store:      null, // loaded JSON store
   dataDir:    null,
   storePath:  null,
+  outputCaptureCache: new Map(),
+  remoteCamcReadyCache: new Map(),
 };
 
 function tokenFingerprint(tok) {
@@ -913,7 +922,33 @@ function _readBundledCamc() {
   catch (e) { return { error: 'bundled_camc_read_failed', detail: e && e.message }; }
 }
 
-async function _ensureRemoteCamc(baseOpts) {
+function _remoteCamcReadyKey(baseOpts, localHash) {
+  const secret = baseOpts && (baseOpts.password || baseOpts.passphrase || '');
+  const secretDigest = secret
+    ? crypto.createHash('sha256').update(String(secret)).digest('hex').slice(0, 16)
+    : '';
+  return [
+    baseOpts && baseOpts.host || '',
+    baseOpts && baseOpts.user || '',
+    String(baseOpts && baseOpts.port || 22),
+    baseOpts && baseOpts.auth_method || '',
+    baseOpts && baseOpts.key_file || '',
+    secretDigest,
+    localHash || '',
+  ].join('|');
+}
+
+function _markRemoteCamcReady(baseOpts, localHash) {
+  if (!state.remoteCamcReadyCache) state.remoteCamcReadyCache = new Map();
+  state.remoteCamcReadyCache.set(_remoteCamcReadyKey(baseOpts, localHash), Date.now());
+}
+
+function _clearRemoteCamcReady(baseOpts, localHash) {
+  if (!state.remoteCamcReadyCache) return;
+  state.remoteCamcReadyCache.delete(_remoteCamcReadyKey(baseOpts, localHash));
+}
+
+async function _ensureRemoteCamc(baseOpts, { force = false } = {}) {
   // Test stubs used by source smokes may not implement uploads. In
   // that case, assume the stub has made camc available and keep the
   // older tests focused on list/capture behavior.
@@ -924,12 +959,18 @@ async function _ensureRemoteCamc(baseOpts) {
   const local = _readBundledCamc();
   if (local.error) return { ok: false, error: local.error, detail: local.detail };
 
+  const readyKey = _remoteCamcReadyKey(baseOpts, local.hash);
+  if (!force && state.remoteCamcReadyCache && state.remoteCamcReadyCache.has(readyKey)) {
+    return { ok: true, present: true, cached: true, hash: local.hash };
+  }
+
   const remoteHash = await _sshTransport.execRemote({
     ...baseOpts,
     command: `bash -c 'test -x ${REMOTE_CAMC} && md5sum ${REMOTE_CAMC} 2>/dev/null | cut -c1-12'`,
   });
   const remote = remoteHash && remoteHash.ok ? String(remoteHash.stdout || '').trim() : '';
   if (remote && remote === local.hash) {
+    _markRemoteCamcReady(baseOpts, local.hash);
     return { ok: true, present: true, hash: remote };
   }
 
@@ -957,6 +998,7 @@ async function _ensureRemoteCamc(baseOpts) {
     return { ok: false, error: verify && verify.error || 'remote_camc_verify_failed', detail: verify && (verify.detail || verify.stderr) || '~/.cam/camc is not executable after upload' };
   }
   const action = remote ? 'updated' : 'installed';
+  _markRemoteCamcReady(baseOpts, local.hash);
   pushLog('info', `${action} bundled camc on ${baseOpts.user}@${baseOpts.host}:${baseOpts.port || 22}`);
   return { ok: true, installed: !remote, updated: !!remote, hash: local.hash };
 }
@@ -1491,13 +1533,130 @@ function _validTmuxKey(key) {
  *   - tags_add     (string[])       — append tags one-by-one
  *   - tags_remove  (string[])       — remove tags one-by-one
  *
- * Anything else (system_prompt, AGENTS.md edits, …) is out of
- * scope today because the upstream camc CLI doesn't expose it.
- * The renderer documents the supported field set so the edit
- * popover only surfaces those fields.
+ * System prompt edits are handled in-process by writing the same
+ * marker-delimited block that camc run --system-prompt uses in
+ * AGENTS.md / CLAUDE.md. The prompt file write is intentionally
+ * separate from camc update because update only owns metadata.
  */
 function _validTag(t) {
   return typeof t === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(t);
+}
+
+function _agentToolName(agent) {
+  return String(
+    agent && (
+      agent.tool ||
+      agent.adapter ||
+      agent.task_tool ||
+      (agent.task && (agent.task.tool || agent.task.adapter)) ||
+      ''
+    ) || ''
+  ).trim().toLowerCase();
+}
+
+function _systemPromptFileForAgent(agent) {
+  return SYSTEM_PROMPT_FILES[_agentToolName(agent)] || null;
+}
+
+function _systemPromptMarkers(agentId) {
+  const id = String(agentId || '').trim();
+  return {
+    begin: `<!-- camc:${id} begin -->`,
+    end:   `<!-- camc:${id} end -->`,
+  };
+}
+
+function _escapeRegExp(s) {
+  return String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function _replaceSystemPromptBlock(existing, agentId, prompt) {
+  const { begin, end } = _systemPromptMarkers(agentId);
+  const text = String(existing || '');
+  const body = String(prompt || '').replace(/\r\n?/g, '\n').replace(/\s+$/g, '');
+  const re = new RegExp(`${_escapeRegExp(begin)}\\n[\\s\\S]*?\\n${_escapeRegExp(end)}\\n?`, 'g');
+  if (!body) {
+    return text.replace(re, '').replace(/\n{3,}/g, '\n\n').replace(/[ \t]+\n/g, '\n').replace(/\s+$/g, text.trim() ? '\n' : '');
+  }
+  const block = `${begin}\n${body}\n${end}\n`;
+  if (text.includes(begin)) return text.replace(re, block);
+  const sep = !text ? '' : (text.endsWith('\n\n') ? '' : (text.endsWith('\n') ? '\n' : '\n\n'));
+  return text + sep + block;
+}
+
+async function _writeAgentSystemPrompt(agentId, prompt) {
+  const resolved = _contextForAgent(agentId);
+  if (resolved.error) {
+    return { ok: false, error: resolved.error, detail: `System prompt unavailable: ${resolved.error}` };
+  }
+  const agent = resolved.agent || {};
+  const ctx = resolved.ctx || null;
+  const fileName = _systemPromptFileForAgent(agent);
+  if (!fileName) {
+    return { ok: false, error: 'unsupported_tool', detail: `No system prompt file mapping for tool '${_agentToolName(agent) || 'unknown'}'` };
+  }
+  const promptText = String(prompt == null ? '' : prompt);
+  if (Buffer.byteLength(promptText, 'utf8') > SYSTEM_PROMPT_MAX_BYTES) {
+    return { ok: false, error: 'system_prompt_too_large', detail: `system prompt exceeds ${SYSTEM_PROMPT_MAX_BYTES} bytes` };
+  }
+  const root = _resolveBrowseRoot(agent, ctx);
+  if (!root) {
+    return { ok: false, error: 'workspace_missing', detail: 'Agent has no working directory recorded' };
+  }
+
+  const current = await _browseRead({ agent, ctx, root, sub: fileName });
+  let existing = '';
+  if (!current.error && !current.binary) existing = String(current.content || '');
+  else if (current.error && current.error !== 'not_found') {
+    return { ok: false, error: current.error, detail: current.detail || 'failed to read existing prompt file' };
+  }
+  const nextText = _replaceSystemPromptBlock(existing, agent.id || agentId, promptText);
+  const fullRemote = _joinBrowsePath(root, fileName);
+  const isLocal = !ctx || !ctx.machine || ctx.machine.type !== 'ssh';
+
+  if (isLocal) {
+    const rootAbs = _localPath(root);
+    const fullAbs = _localPath(fullRemote);
+    if (!_safeLocalPathUnderRoot(rootAbs, fullAbs)) {
+      return { ok: false, error: 'path_traversal', detail: 'resolved prompt path is outside the workspace root' };
+    }
+    try {
+      fs.mkdirSync(path.dirname(fullAbs), { recursive: true });
+      fs.writeFileSync(fullAbs, nextText, 'utf8');
+    } catch (e) {
+      return { ok: false, error: 'system_prompt_write_failed', detail: e && e.message || 'write failed' };
+    }
+  } else {
+    if (!_sshTransport || typeof _sshTransport.writeRemoteFile !== 'function') {
+      return { ok: false, error: 'ssh_transport_unavailable', detail: 'embedded Hub has no SSH transport configured' };
+    }
+    const baseBuilt = _sshBaseOptsForContext(ctx);
+    if (baseBuilt.error) return { ok: false, error: baseBuilt.error, detail: baseBuilt.detail };
+    const res = await _sshTransport.writeRemoteFile({
+      ...baseBuilt.opts,
+      remotePath: fullRemote,
+      content: Buffer.from(nextText, 'utf8'),
+    });
+    if (!res || !res.ok) {
+      return { ok: false, error: res && res.error || 'system_prompt_write_failed', detail: res && res.detail || 'write failed' };
+    }
+  }
+
+  if (state.store && Array.isArray(state.store.agents)) {
+    const canonicalId = String(agent.id || agentId);
+    const a = state.store.agents.find(x => x && (String(x.id || '') === canonicalId || (x.id && canonicalId.startsWith(String(x.id)))));
+    if (a) {
+      if (!a.task || typeof a.task !== 'object') a.task = {};
+      a.task.system_prompt = promptText || '';
+      a.task.system_prompt_file = fullRemote;
+      a.task.system_prompt_source = promptText ? 'desktop' : '';
+      a.system_prompt = promptText || '';
+      a.system_prompt_file = fullRemote;
+      try { saveStore && saveStore(); } catch { /* noop */ }
+      return { ok: true, agent: a, system_prompt_file: fullRemote };
+    }
+  }
+  return { ok: true, agent: null, system_prompt_file: fullRemote };
 }
 
 async function _editAgent(agentId, body) {
@@ -1512,7 +1671,9 @@ async function _editAgent(agentId, body) {
   let nextAuto = null;
   const tagsAdd    = Array.isArray(body.tags_add)    ? body.tags_add    : [];
   const tagsRemove = Array.isArray(body.tags_remove) ? body.tags_remove : [];
+  const hasSystemPrompt = Object.prototype.hasOwnProperty.call(body || {}, 'system_prompt');
   let changed = false;
+  let metaChanged = false;
 
   if (typeof body.name === 'string') {
     const n = body.name.trim();
@@ -1521,33 +1682,46 @@ async function _editAgent(agentId, body) {
     args.push('--name', n);
     nextName = n;
     changed = true;
+    metaChanged = true;
   }
   if (typeof body.auto_confirm === 'boolean') {
     args.push('--auto-confirm', body.auto_confirm ? 'true' : 'false');
     nextAuto = !!body.auto_confirm;
     changed = true;
+    metaChanged = true;
   }
   for (const t of tagsAdd) {
     if (!_validTag(t)) return { ok: false, error: 'invalid_tag', detail: `bad tag: ${String(t)}` };
     args.push('--tag', t);
     changed = true;
+    metaChanged = true;
   }
   for (const t of tagsRemove) {
     if (!_validTag(t)) return { ok: false, error: 'invalid_tag', detail: `bad tag: ${String(t)}` };
     args.push('--untag', t);
     changed = true;
+    metaChanged = true;
   }
+  if (hasSystemPrompt) changed = true;
   if (!changed) {
     return { ok: false, error: 'nothing_to_update', detail: 'no editable fields provided' };
   }
 
-  const exec = await _execCamcOnContext(ctx, args, { timeoutMs: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000) });
-  if (!exec.ok) {
-    return {
-      ok: false,
-      error:  exec.error || 'update_failed',
-      detail: exec.detail || exec.stderr || 'camc update failed',
-    };
+  let promptResult = null;
+  if (hasSystemPrompt) {
+    promptResult = await _writeAgentSystemPrompt(agentId, body.system_prompt);
+    if (!promptResult.ok) return promptResult;
+  }
+
+  if (metaChanged) {
+    const exec = await _execCamcOnContext(ctx, args, { timeoutMs: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000) });
+    if (!exec.ok) {
+      return {
+        ok: false,
+        error:  exec.error || 'update_failed',
+        detail: exec.detail || exec.stderr || 'camc update failed',
+      };
+    }
   }
 
   // Mirror the change into the local store so the next poll cycle
@@ -1574,11 +1748,19 @@ async function _editAgent(agentId, body) {
         a.task.tags = cur;
         a.tags     = cur;
       }
+      if (promptResult && promptResult.ok) {
+        a.task.system_prompt = String(body.system_prompt || '');
+        a.system_prompt = String(body.system_prompt || '');
+        if (promptResult.system_prompt_file) {
+          a.task.system_prompt_file = promptResult.system_prompt_file;
+          a.system_prompt_file = promptResult.system_prompt_file;
+        }
+      }
       try { saveStore && saveStore(); } catch { /* noop */ }
       return { ok: true, agent: a };
     }
   }
-  return { ok: true, agent: null };
+  return { ok: true, agent: promptResult && promptResult.agent || null };
 }
 
 /** Stop one agent gracefully via `camc stop <id>` on the agent's
@@ -1947,6 +2129,93 @@ ${exec && exec.stderr || ''}`;
   return /unrecognized arguments:\s*--format/i.test(detail);
 }
 
+function _outputCaptureCacheKey(ctx, id, lines, format) {
+  return `${(ctx && ctx.name) || ''}|${id}|${lines}|${format || 'plain'}`;
+}
+
+function _pruneOutputCaptureCache() {
+  const cache = state.outputCaptureCache;
+  if (!cache || cache.size <= OUTPUT_CAPTURE_CACHE_MAX) return;
+  const entries = [...cache.entries()]
+    .map(([key, ent]) => ({ key, ts: ent && ent.ts || 0 }))
+    .sort((a, b) => a.ts - b.ts);
+  for (const { key } of entries.slice(0, Math.max(0, entries.length - OUTPUT_CAPTURE_CACHE_MAX))) {
+    cache.delete(key);
+  }
+}
+
+function _clearOutputCaptureCache(agentId) {
+  const cache = state.outputCaptureCache;
+  if (!cache) return;
+  if (!agentId) { cache.clear(); return; }
+  for (const key of [...cache.keys()]) {
+    if (key.includes(`|${agentId}|`)) cache.delete(key);
+  }
+}
+
+async function _captureAgentOutput(resolved, id, lines, format) {
+  const key = _outputCaptureCacheKey(resolved && resolved.ctx, id, lines, format);
+  const now = Date.now();
+  const cache = state.outputCaptureCache;
+  const hit = cache && cache.get(key);
+  if (hit) {
+    if (hit.value && now - hit.ts < OUTPUT_CAPTURE_TTL_MS) return hit.value;
+    if (hit.promise) return hit.promise;
+  }
+
+  const promise = (async () => {
+    let exec = await _execCamcOnContext(resolved.ctx, _captureArgs(id, lines, format));
+    if (!exec.ok && format === 'ansi' && _isUnsupportedCaptureFormat(exec)) {
+      exec = await _execCamcOnContext(resolved.ctx, _captureArgs(id, lines, 'plain', false));
+    }
+    if (!exec.ok) {
+      return {
+        ok: false,
+        error: exec.error,
+        detail: exec.detail || exec.error,
+      };
+    }
+    const output = exec.stdout || '';
+    const hash = crypto.createHash('md5').update(output).digest('hex').slice(0, 12);
+    const lineCount = output ? output.split('\n').length : 0;
+    return { ok: true, output, hash, lines: lineCount };
+  })();
+
+  if (cache) cache.set(key, { promise, ts: now });
+  const value = await promise;
+  if (cache) {
+    if (value && value.ok) cache.set(key, { value, ts: Date.now() });
+    else cache.delete(key);
+    _pruneOutputCaptureCache();
+  }
+  return value;
+}
+
+
+function _sendLooksDelivered(res) {
+  const stdout = String(res && res.stdout || '');
+  const stderr = String(res && res.stderr || res && res.detail || '');
+  if (/^Sent\.?\s*$/m.test(stdout)) return true;
+  // Some remote shells/config hooks write informational lines and the ssh2
+  // channel may close without a clean exit status. Treat a visible camc Sent
+  // marker as authoritative; do not treat argparse/required-field errors as
+  // delivered.
+  if (/^Sent\.?\s*$/m.test(`${stdout}
+${stderr}`) && !/error:|required|unrecognized arguments|usage:/i.test(stderr)) return true;
+  return false;
+}
+
+function _sendLogDetail(res) {
+  const parts = [];
+  const detail = res && res.detail != null ? String(res.detail) : '';
+  const stderr = res && res.stderr != null ? String(res.stderr) : '';
+  const stdout = res && res.stdout != null ? String(res.stdout) : '';
+  if (detail) parts.push(detail);
+  if (stderr && stderr !== detail) parts.push(stderr);
+  if (stdout && stdout !== detail && stdout !== stderr) parts.push(stdout);
+  return parts.join(' | ').replace(/\s+/g, ' ').trim().slice(0, 320);
+}
+
 async function _sendAgentInput(agentId, text, sendEnter = true) {
   const resolved = _contextForAgent(agentId);
   if (resolved.error) return { ok: false, error: resolved.error, detail: `Input unavailable: ${resolved.error}` };
@@ -1988,7 +2257,6 @@ async function _sendAgentInput(agentId, text, sendEnter = true) {
 
   const nonce = crypto.randomUUID();
   const remotePath = `.cam/camui-input-${nonce}.txt`;
-  const remoteScript = `.cam/camui-send-${nonce}.py`;
   const uploaded = await _sshTransport.writeRemoteFile({
     ...baseOpts,
     remotePath,
@@ -1998,36 +2266,31 @@ async function _sendAgentInput(agentId, text, sendEnter = true) {
     return { ok: false, error: uploaded && uploaded.error || 'remote_input_upload_failed', detail: uploaded && uploaded.detail || 'failed to upload input payload' };
   }
 
-  const script = `import os, pathlib, subprocess, sys
-agent = sys.argv[1]
-path = sys.argv[2]
-send_enter = sys.argv[3] == "1"
-text = pathlib.Path(path).read_text(encoding="utf-8")
-cmd = [os.path.expanduser("~/.cam/camc"), "send", agent, "--text", text]
-if not send_enter:
-    cmd.append("--no-enter")
-try:
-    rc = subprocess.call(cmd)
-finally:
-    for p in (path, __file__):
-        try:
-            os.remove(p)
-        except OSError:
-            pass
-raise SystemExit(rc)
-`;
-  const scriptUploaded = await _sshTransport.writeRemoteFile({
-    ...baseOpts,
-    remotePath: remoteScript,
-    content: Buffer.from(script, 'utf8'),
-  });
-  if (!scriptUploaded || !scriptUploaded.ok) {
-    return { ok: false, error: scriptUploaded && scriptUploaded.error || 'remote_script_upload_failed', detail: scriptUploaded && scriptUploaded.detail || 'failed to upload input helper script' };
-  }
-
-  const cmd = `python3 ${remoteScript} ${agentId} ${remotePath} ${sendEnter ? '1' : '0'}`;
+  // Use a fixed remote Python shim instead of `camc send --file` so
+  // older remote camc builds that only support `--text` still work. The
+  // user payload stays in the uploaded temp file and never enters the shell
+  // command line; Python passes it as a subprocess argv item to camc.
+  const sendPy = [
+    'import os,pathlib,subprocess,sys',
+    'agent=sys.argv[1]',
+    'path=sys.argv[2]',
+    'send_enter=sys.argv[3]=="1"',
+    'text=pathlib.Path(path).read_text(encoding="utf-8")',
+    'cmd=[os.path.expanduser("~/.cam/camc"),"send",agent,"--text",text]',
+    'cmd += [] if send_enter else ["--no-enter"]',
+    'raise SystemExit(subprocess.call(cmd))',
+  ].join(';');
+  const cleanupCmd = `rm -f ${_shellQuote(remotePath)}`;
+  const cmd = `python3 -c ${_shellQuote(sendPy)} ${_shellQuote(agentId)} ${_shellQuote(remotePath)} ${sendEnter ? '1' : '0'}; rc=$?; ${cleanupCmd}; exit $rc`;
   const res = await _sshTransport.execRemote({ ...baseOpts, command: cmd, timeout_ms: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000) });
   if (!res || !res.ok) {
+    if (_sendLooksDelivered(res)) {
+      const detail = _sendLogDetail(res);
+      pushLog('warn', `input ${agentId} delivered despite nonzero send result${detail ? `: ${detail}` : ''}`);
+      return { ok: true, stdout: res && res.stdout || '', stderr: res && res.stderr || '', ack: 'delivered_nonzero' };
+    }
+    const local = _readBundledCamc();
+    if (!local.error) _clearRemoteCamcReady(baseOpts, local.hash);
     return { ok: false, error: res && res.error || 'send_failed', detail: res && (res.detail || res.stderr) || 'remote send failed' };
   }
   return { ok: true, stdout: res.stdout || '', stderr: res.stderr || '' };
@@ -2892,7 +3155,7 @@ async function handle(req, res) {
       }
       const result = await _editAgent(agentMatch[1], body || {});
       if (!result.ok) {
-        const bad = new Set(['nothing_to_update', 'invalid_args', 'invalid_tag', 'invalid_name']);
+        const bad = new Set(['nothing_to_update', 'invalid_args', 'invalid_tag', 'invalid_name', 'unsupported_tool', 'system_prompt_too_large', 'workspace_missing', 'path_traversal']);
         const status = result.error === 'agent_not_found'
           ? 404
           : (bad.has(result.error) ? 400 : 502);
@@ -2956,9 +3219,11 @@ async function handle(req, res) {
       if (!text) return send400(res, 'text is required', 'missing_text');
       const sent = await _sendAgentInput(agentMatch[1], text, sendEnter);
       if (!sent.ok) {
-        pushLog('warn', `input ${agentMatch[1]} failed: ${sent.error}`);
+        const detail = _sendLogDetail(sent);
+        pushLog('warn', `input ${agentMatch[1]} failed: ${sent.error}${detail ? `: ${detail}` : ''}`);
         return sendJson(res, 502, { error: sent.error || 'send_failed', detail: sent.detail || 'send failed' });
       }
+      _clearOutputCaptureCache(agentMatch[1]);
       return sendJson(res, 200, { ok: true });
     }
     if (method === 'POST'  && sub === '/key') {
@@ -2973,6 +3238,7 @@ async function handle(req, res) {
         const status = sent.error === 'agent_not_found' ? 404 : (bad.has(sent.error) ? 400 : 502);
         return sendJson(res, status, { error: sent.error || 'send_key_failed', detail: sent.detail || 'send key failed' });
       }
+      _clearOutputCaptureCache(agentMatch[1]);
       return sendJson(res, 200, { ok: true });
     }
     if (method === 'POST'  && sub === '/upload') {
@@ -2986,6 +3252,7 @@ async function handle(req, res) {
         const status = uploaded.error === 'agent_not_found' ? 404 : (bad.has(uploaded.error) ? 400 : 502);
         return sendJson(res, status, { error: uploaded.error || 'upload_failed', detail: uploaded.detail || 'upload failed' });
       }
+      _clearOutputCaptureCache(agentMatch[1]);
       return sendJson(res, 200, uploaded);
     }
     if (method === 'GET'   && sub === '/logs')             return sendJson(res, 200, { logs: '', truncated: false });
@@ -3000,21 +3267,19 @@ async function handle(req, res) {
           detail: `Output unavailable: ${resolved.error}`,
         });
       }
-      let exec = await _execCamcOnContext(resolved.ctx, _captureArgs(id, lines, format));
-      if (!exec.ok && format === 'ansi' && _isUnsupportedCaptureFormat(exec)) {
-        exec = await _execCamcOnContext(resolved.ctx, _captureArgs(id, lines, 'plain', false));
-      }
-      if (!exec.ok) {
-        pushLog('warn', `output ${id} via ${resolved.ctx.name} failed: ${exec.error}`);
+      const captured = await _captureAgentOutput(resolved, id, lines, format);
+      if (!captured.ok) {
+        pushLog('warn', `output ${id} via ${resolved.ctx.name} failed: ${captured.error}`);
         return sendJson(res, 502, {
-          error:  exec.error,
-          detail: `Output unavailable: ${exec.detail || exec.error}`,
+          error:  captured.error,
+          detail: `Output unavailable: ${captured.detail || captured.error}`,
         });
       }
-      const output = exec.stdout;
-      const hash = crypto.createHash('md5').update(output).digest('hex').slice(0, 12);
-      const lineCount = output ? output.split('\n').length : 0;
-      return sendJson(res, 200, { output, hash, lines: lineCount });
+      const clientHash = url.searchParams.get('hash') || '';
+      if (clientHash && clientHash === captured.hash) {
+        return sendJson(res, 200, { unchanged: true, hash: captured.hash, lines: captured.lines });
+      }
+      return sendJson(res, 200, { output: captured.output, hash: captured.hash, lines: captured.lines });
     }
     if (method === 'GET'   && sub === '/fulloutput') {
       const id = agentMatch[1];
@@ -3027,18 +3292,15 @@ async function handle(req, res) {
         });
       }
       // lines=0 → full scrollback per `camc capture` default.
-      let exec = await _execCamcOnContext(resolved.ctx, _captureArgs(id, 0, format));
-      if (!exec.ok && format === 'ansi' && _isUnsupportedCaptureFormat(exec)) {
-        exec = await _execCamcOnContext(resolved.ctx, _captureArgs(id, 0, 'plain', false));
-      }
-      if (!exec.ok) {
-        pushLog('warn', `fulloutput ${id} via ${resolved.ctx.name} failed: ${exec.error}`);
+      const captured = await _captureAgentOutput(resolved, id, 0, format);
+      if (!captured.ok) {
+        pushLog('warn', `fulloutput ${id} via ${resolved.ctx.name} failed: ${captured.error}`);
         return sendJson(res, 502, {
-          error:  exec.error,
-          detail: `Output unavailable: ${exec.detail || exec.error}`,
+          error:  captured.error,
+          detail: `Output unavailable: ${captured.detail || captured.error}`,
         });
       }
-      return sendJson(res, 200, { output: exec.stdout, offset: 0 });
+      return sendJson(res, 200, { output: captured.output, offset: 0 });
     }
     if (method === 'GET' && sub === '/workspace/files') {
       const subpath = url.searchParams.get('path') || '';

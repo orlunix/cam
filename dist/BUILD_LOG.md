@@ -2946,3 +2946,40 @@ b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
 bb53b45 auto-confirm: input-box-aware guard + cursor-anchored rules
 005d020 auto-confirm: global input-cursor guard + remove loose substring rules
 ```
+## v1.2.0  150ed38-dirty 2026-06-15 01:06
+
+- Lines: 12457
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+bb53b45 auto-confirm: input-box-aware guard + cursor-anchored rules
+```
+## v1.2.0  150ed38-dirty 2026-06-15 09:35
+
+- Lines: 12457
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+bb53b45 auto-confirm: input-box-aware guard + cursor-anchored rules
+```
+
+## v1.2.0  150ed38-dirty 2026-06-15 18:06
+
+- Lines: 12460
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+bb53b45 auto-confirm: input-box-aware guard + cursor-anchored rules
+```
