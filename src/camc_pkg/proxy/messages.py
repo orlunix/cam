@@ -332,12 +332,6 @@ class Handler(BaseHTTPRequestHandler):
                 user_preview=last_user_preview_messages(req),
             )
             chat_payload = anthropic_messages_to_chat(req, upstream_model)
-            if stream:
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Cache-Control", "no-cache")
-                self.end_headers()
-                self.wfile.flush()
             raw = call_chat_completions(
                 chat_payload, self.server.api_key, self.server.timeout,
                 url=self.server.upstream_url,
@@ -355,6 +349,10 @@ class Handler(BaseHTTPRequestHandler):
                 **summarize_chat_response(raw)
             )
             if stream:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
                 self.wfile.write(sse_events(msg))
                 self.wfile.flush()
             else:
@@ -397,6 +395,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send_bytes(json_dumps(obj).encode("utf-8"), "application/json", status)
 
     def _send_bytes(self, body, content_type, status=200):
+        self._headers_sent = True
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
