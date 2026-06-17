@@ -202,6 +202,20 @@ function _startIdleTimer(entry) {
   }
 }
 
+function _dropEntryForOpts(opts, reason) {
+  try { _dropEntry(_poolKey(opts), reason); } catch { /* noop */ }
+}
+
+function _isRetryableChannelError(res) {
+  if (!res || res.ok) return false;
+  return ['sftp_failed', 'sftp_write_failed', 'exec_failed', 'connect_lost', 'connect_timeout'].includes(res.error);
+}
+
+async function _retryOnceAfterPoolDrop(opts, reason, fn) {
+  _dropEntryForOpts(opts, reason);
+  return fn();
+}
+
 function _dropEntry(key, _reason) {
   const entry = _pool.get(key);
   if (!entry) return;
@@ -378,13 +392,25 @@ async function execRemote(opts) {
   if (!opts || typeof opts.command !== 'string' || !opts.command) {
     return { ok: false, error: 'invalid_args', detail: 'command is required' };
   }
-  return _withPooledClient(opts, (client, finish) => {
+  const run = () => _withPooledClient(opts, (client, finish) => {
     client.exec(opts.command, { pty: false }, (err, stream) => {
       if (err) return finish({ ok: false, error: 'exec_failed', detail: err.message });
       let stdout = '';
       let stderr = '';
       stream.on('data', (d) => { stdout += d.toString('utf8'); });
+      stream.on('error', (streamErr) => {
+        finish({ ok: false, error: 'exec_failed', detail: streamErr && streamErr.message || 'stream error' });
+      });
       if (stream.stderr) stream.stderr.on('data', (d) => { stderr += d.toString('utf8'); });
+      const input = opts.stdin != null ? opts.stdin : opts.input;
+      if (input != null) {
+        try {
+          stream.write(Buffer.isBuffer(input) ? input : Buffer.from(String(input), 'utf8'));
+          stream.end();
+        } catch (writeErr) {
+          return finish({ ok: false, error: 'exec_failed', detail: writeErr && writeErr.message || 'stdin write failed' });
+        }
+      }
       stream.on('close', (exitCode, exitSignal) => {
         const code   = (typeof exitCode === 'number') ? exitCode : null;
         const signal = exitSignal || null;
@@ -401,6 +427,13 @@ async function execRemote(opts) {
       });
     });
   });
+  const first = await run();
+  if (_isRetryableChannelError(first) && first.timings && first.timings.pooled) {
+    const second = await _retryOnceAfterPoolDrop(opts, 'exec_retry_after_channel_error', run);
+    if (second && second.timings) second.timings.retried = true;
+    return second;
+  }
+  return first;
 }
 
 async function writeRemoteFile(opts) {
@@ -412,7 +445,7 @@ async function writeRemoteFile(opts) {
     return { ok: false, error: 'invalid_args', detail: 'content is required' };
   }
   const content = Buffer.isBuffer(opts.content) ? opts.content : Buffer.from(String(opts.content), 'utf8');
-  return _withPooledClient(opts, (client, finish) => {
+  const run = () => _withPooledClient(opts, (client, finish) => {
     client.sftp((err, sftp) => {
       if (err) return finish({ ok: false, error: 'sftp_failed', detail: err.message });
       sftp.writeFile(opts.remotePath, content, (writeErr) => {
@@ -422,6 +455,14 @@ async function writeRemoteFile(opts) {
       });
     });
   });
+  const first = await run();
+  if (_isRetryableChannelError(first) && first.timings && first.timings.pooled) {
+    const second = await _retryOnceAfterPoolDrop(opts, 'sftp_retry_after_channel_error', run);
+    if (second && second.timings) second.timings.retried = true;
+    return second;
+  }
+  if (_isRetryableChannelError(first)) _dropEntryForOpts(opts, 'sftp_channel_error');
+  return first;
 }
 
 /* List directory entries via SFTP, returning a sorted (dirs-first

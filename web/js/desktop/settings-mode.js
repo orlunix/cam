@@ -137,7 +137,7 @@ export function mountSettingsMode({ api, state, showToast, readConfig, saveConfi
    * proxies REST traffic to an existing CAM Hub. The Desktop UI only
    * asks for Relay URL + Relay token; the source-side CAM API token is
    * profile-managed and injected by relay/relay.py on /api/* forwarding. */
-  mountRelayTab({ panel, readConfig, saveConfig, connect, showToast });
+  mountRelayTab({ panel, api, readConfig, saveConfig, connect, showToast });
 
   /* ────────── Appearance tab (CAM-DESK-SET-002) ──────────
    * Theme (dark/light/system) + UI font size + agent-output font
@@ -438,7 +438,7 @@ function mountDirectTab({ panel, api, state, showToast, readConfig, saveConfig, 
 
 /* ───────── Relay tab controller (CAM-DESK-REMOTE-012) ───────── */
 
-function mountRelayTab({ panel, readConfig, saveConfig, connect, showToast }) {
+function mountRelayTab({ panel, api, readConfig, saveConfig, connect, showToast }) {
   const relayForm   = panel.querySelector('#settings-form-relay');
   const relayStatus = panel.querySelector('#settings-status-relay');
   if (!relayForm) return;
@@ -487,7 +487,17 @@ function mountRelayTab({ panel, readConfig, saveConfig, connect, showToast }) {
       relaySetStatus(`Connected (${mode}).`, 'is-ok');
       showToast(`Connected (${mode})`, 'success');
     } else {
-      relaySetStatus('Connection failed — check Relay URL, Relay token, and source status.', 'is-error');
+      let detail = api?.lastConnectError ? ` Detail: ${api.lastConnectError}.` : '';
+      if (window.CamBridge?.net?.probe && /^https?:\/\//i.test(ru)) {
+        try {
+          const probe = await window.CamBridge.net.probe(`${ru.replace(/\/$/, '')}/api/system/health`, 8000);
+          if (probe?.ok) detail += ` Main probe: HTTP ${probe.status} in ${probe.ms}ms.`;
+          else detail += ` Main probe: ${probe?.error || 'failed'}${probe?.detail ? ` (${probe.detail})` : ''}.`;
+        } catch (probeErr) {
+          detail += ` Main probe failed: ${probeErr?.message || probeErr}.`;
+        }
+      }
+      relaySetStatus(`Connection failed — check Relay URL, Relay token, and source status.${detail}`, 'is-error');
     }
   });
 }

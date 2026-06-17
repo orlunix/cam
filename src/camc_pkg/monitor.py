@@ -40,13 +40,13 @@ import time
 
 from camc_pkg import LOGS_DIR, log
 from camc_pkg.utils import _now_iso
-from camc_pkg.adapters import _load_config
+from camc_pkg.adapters import _load_config, _load_boot_config
 from camc_pkg.storage import AgentStore, EventStore
 from camc_pkg.transport import (
     capture_tmux, tmux_session_exists, tmux_send_input, tmux_send_key,
     tmux_kill_session, tmux_is_attached,
 )
-from camc_pkg.detection import detect_completion, is_ready_for_input
+from camc_pkg.detection import detect_completion, is_ready_for_input, is_ready_for_boot
 from camc_pkg.monitor_features import (
     MonitorSnapshot, MonitorRuntime, build_features,
 )
@@ -146,7 +146,26 @@ def _apply_action(action, *, session, agent_id, store, events_fn):
     return False, 0.0
 
 
-def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=None):
+def _task_prompt(agent):
+    task = agent.get("task")
+    if isinstance(task, dict):
+        return task.get("prompt") or ""
+    return agent.get("prompt") or ""
+
+
+def _refresh_boot_runtime(runtime, store, agent_id, boot_config):
+    rec = store.get(agent_id) or {}
+    runtime.in_initializing = rec.get("state") == "initializing"
+    if runtime.in_initializing:
+        runtime.boot_prompt = _task_prompt(rec)
+        if not runtime.boot_deadline:
+            boot_wait = (boot_config.startup_wait if boot_config
+                         else runtime.config.startup_wait)
+            runtime.boot_deadline = time.time() + boot_wait
+
+
+def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=None,
+                     boot_config=None):
     if pid_path:
         with open(pid_path, "w") as f:
             f.write(str(os.getpid()))
@@ -168,9 +187,14 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
     # (currently MailboxFeature + CronFeature) are still in the list
     # so test code can introspect them, but the driver skips them.
     runtime = MonitorRuntime(agent_id, config, now=time.time())
+    runtime.boot_config = boot_config
+    runtime.prompt_after_launch = bool(config.prompt_after_launch)
+    boot_wait = (boot_config.startup_wait if boot_config else config.startup_wait)
+    runtime.boot_deadline = time.time() + boot_wait
     runtime.last_health = runtime.last_change
     features = build_features()
     prev_output = ""
+    _refresh_boot_runtime(runtime, store, agent_id, boot_config)
 
     def _run_phase(snap, phase_name):
         """Apply the given phase hook on every enabled feature, in
@@ -197,6 +221,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
             now = time.time()
             runtime.cycle += 1
             cycle = runtime.cycle
+            _refresh_boot_runtime(runtime, store, agent_id, boot_config)
 
             # --- 1. Health check (every 15s) ---
             if now - runtime.last_health >= config.health_check_interval:
@@ -275,8 +300,12 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 l.strip() in ("❯", ">", "›")  # ❯  >  ›
                 for l in tail_lines
             )
-            prompt_visible = is_ready_for_input(output, config)
+            prompt_visible = (
+                is_ready_for_boot(output, boot_config, config)
+                if runtime.in_initializing
+                else is_ready_for_input(output, config))
             idle_for = now - runtime.last_change
+            runtime.prev_output = prev_output
 
             snap = MonitorSnapshot(
                 output=output, hash=h0, prev_hash=prev_h_for_log,
@@ -416,8 +445,11 @@ def _run_monitor(agent_id):
     _session = agent.get("tmux_session") or agent.get("session", "")
     _path = agent.get("context_path") or agent.get("path", "")
     config = _load_config(_tool)
+    boot_config = _load_boot_config(_tool)
     log.info("Tool=%s session=%s path=%s", _tool, _session, _path)
     log.info("Confirm rules: %s", [(p.pattern, r, e) for p, r, e in config.confirm_rules])
+    if boot_config:
+        log.info("Boot rules: %s", [(p.pattern, r, e) for p, r, e in boot_config.confirm_rules])
     from camc_pkg import PIDS_DIR
     try:
         os.makedirs(PIDS_DIR, exist_ok=True)
@@ -428,7 +460,8 @@ def _run_monitor(agent_id):
     max_restarts = 5
     for attempt in range(max_restarts + 1):
         try:
-            run_monitor_loop(_session, agent_id, config, store, pid_path=pid_path, events=events)
+            run_monitor_loop(_session, agent_id, config, store, pid_path=pid_path,
+                             events=events, boot_config=boot_config)
             break
         except Exception as e:
             log.error("Monitor crashed (attempt %d/%d): %s", attempt + 1, max_restarts, e, exc_info=True)

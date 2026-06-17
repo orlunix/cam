@@ -1,5 +1,5 @@
 /**
- * CAM API Client — supports direct HTTP and relay (REST-over-WS) modes.
+ * CAM API Client — supports direct HTTP, relay HTTP proxy, and legacy relay REST-over-WS modes.
  */
 
 export class CamApi {
@@ -17,6 +17,9 @@ export class CamApi {
     this._eventWs = null;
     this._pingTimer = null;
     this._consecutiveTimeouts = 0;
+    this._relayHttp = false;
+    this.lastConnectError = '';
+    this.lastConnectDiagnostics = null;
   }
 
   configure({ serverUrl, token, relayUrl, relayToken }) {
@@ -33,6 +36,17 @@ export class CamApi {
 
     const canDirect = !!(this.serverUrl && this.token);
     const canRelay = !!(this.relayUrl && this.relayToken);
+    const relayHttpUrl = canRelay && /^https?:\/\//i.test(this.relayUrl);
+    this._relayHttp = false;
+    this.lastConnectError = '';
+    this.lastConnectDiagnostics = {
+      serverUrl: this.serverUrl || '',
+      relayUrl: this.relayUrl || '',
+      canDirect,
+      canRelay,
+      relayHttpUrl: !!relayHttpUrl,
+      attempts: [],
+    };
 
     // If both available, skip direct when serverUrl points at relay origin
     // (phone scenario: serverUrl auto-detected to relay host)
@@ -49,16 +63,50 @@ export class CamApi {
           headers: { 'Authorization': `Bearer ${this.token}` },
           signal: AbortSignal.timeout(4000),
         }).then(r => {
-          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          this.lastConnectDiagnostics?.attempts.push({ kind: 'direct', url: `${this.serverUrl}/api/contexts`, status: r.status });
+          if (!r.ok) throw new Error(`direct HTTP ${r.status}`);
           return 'direct';
+        }).catch(e => {
+          this.lastConnectDiagnostics?.attempts.push({ kind: 'direct', url: `${this.serverUrl}/api/contexts`, error: e?.message || String(e) });
+          throw e;
         })
       );
     }
 
     if (canRelay) {
-      attempts.push(
-        this._connectRelay().then(() => 'relay')
-      );
+      if (relayHttpUrl) {
+        attempts.push(
+          fetch(`${this.relayUrl}/api/system/health`, {
+            signal: AbortSignal.timeout(8000),
+          }).then(r => {
+            this.lastConnectDiagnostics?.attempts.push({ kind: 'relay-http', url: `${this.relayUrl}/api/system/health`, status: r.status });
+            if (!r.ok) throw new Error(`relay HTTP ${r.status}`);
+            this.serverUrl = this.relayUrl;
+            this._relayHttp = true;
+            return 'relay';
+          }).catch(e => {
+            this.lastConnectDiagnostics?.attempts.push({ kind: 'relay-http', url: `${this.relayUrl}/api/system/health`, error: e?.message || String(e) });
+            this._relayHttp = false;
+            return this._connectRelay().then(() => {
+              this.lastConnectDiagnostics?.attempts.push({ kind: 'relay-ws-fallback', url: this._relayWsUrlForDiagnostics(), status: 'open' });
+              return 'relay';
+            }).catch(wsErr => {
+              this.lastConnectDiagnostics?.attempts.push({ kind: 'relay-ws-fallback', url: this._relayWsUrlForDiagnostics(), error: wsErr?.message || String(wsErr) });
+              throw wsErr;
+            });
+          })
+        );
+      } else {
+        attempts.push(
+          this._connectRelay().then(() => {
+            this.lastConnectDiagnostics?.attempts.push({ kind: 'relay-ws', url: this._relayWsUrlForDiagnostics(), status: 'open' });
+            return 'relay';
+          }).catch(e => {
+            this.lastConnectDiagnostics?.attempts.push({ kind: 'relay-ws', url: this._relayWsUrlForDiagnostics(), error: e?.message || String(e) });
+            throw e;
+          })
+        );
+      }
     }
 
     if (attempts.length === 0) {
@@ -77,7 +125,9 @@ export class CamApi {
       }
       return mode;
     } catch (e) {
-      console.warn('All connect attempts failed:', e);
+      const failures = (this.lastConnectDiagnostics?.attempts || []).filter(a => a.error || (a.status && Number(a.status) >= 400));
+      this.lastConnectError = failures.map(a => `${a.kind}: ${a.error || `HTTP ${a.status}`}`).join('; ') || e?.message || String(e);
+      console.warn('All connect attempts failed:', e, this.lastConnectDiagnostics);
       this.mode = 'disconnected';
       return 'disconnected';
     }
@@ -85,6 +135,7 @@ export class CamApi {
 
   disconnect() {
     this.mode = 'disconnected';
+    this._relayHttp = false;
     clearTimeout(this._reconnectTimer);
     clearInterval(this._pingTimer);
     this._pingTimer = null;
@@ -217,6 +268,9 @@ export class CamApi {
   }
 
   _relayRequest(method, path, body) {
+    if (this._relayHttp && this.serverUrl) {
+      return this._directRequest(method, path, body);
+    }
     return new Promise((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         reject(new Error('Relay not connected'));
@@ -257,6 +311,10 @@ export class CamApi {
   }
 
   // --- Relay WebSocket ---
+
+  _relayWsUrlForDiagnostics() {
+    return `${this.relayUrl.replace(/^http/, 'ws')}/client?token=<redacted>`;
+  }
 
   _connectRelay() {
     return new Promise((resolve, reject) => {
@@ -495,6 +553,9 @@ export class CamApi {
   }
   agentReadWorkspaceFile(agentId, path) {
     return this.request('GET', `/api/agents/${encodeURIComponent(agentId)}/workspace/files/read?path=${encodeURIComponent(path)}`);
+  }
+  agentWriteWorkspaceFile(agentId, path, content) {
+    return this.request('POST', `/api/agents/${encodeURIComponent(agentId)}/workspace/files/write`, { path, content });
   }
 
   // CAM-DESK-DIRECT-017: Desktop's embedded Hub exposes a read-only

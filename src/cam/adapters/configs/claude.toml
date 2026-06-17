@@ -24,10 +24,11 @@ display_name = "Claude Code"
 command = ["env", "CLAUDE_CODE_DISABLE_MOUSE=1", "claude", "--allowed-tools", "Bash,Edit,Read,Write,Glob,Grep,WebFetch,TodoWrite,NotebookEdit"]
 auto_permission_mode = true     # add --permission-mode auto to launch command (default on as of 2026-06-11)
 prompt_after_launch = true
-startup_wait = 30.0
+startup_wait = 90.0
 strip_ansi = true
 
-ready_pattern = "^[❯>]"
+# Bare input prompt OR placeholder hint — NOT Ink menus like "❯ 2. Yes".
+ready_pattern = "^[❯>](?!\\s*\\d+\\.)"
 ready_flags = ["MULTILINE"]
 
 [state]

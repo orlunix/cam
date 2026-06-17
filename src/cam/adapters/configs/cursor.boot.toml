@@ -1,0 +1,19 @@
+# Cursor Agent boot — workspace trust during initializing only.
+
+[adapter]
+name = "cursor"
+
+[launch]
+startup_wait = 15.0
+strip_ansi = true
+ready_pattern = "→"
+ready_flags = ["MULTILINE"]
+
+[[confirm]]
+pattern = "^\\W*\\[a\\]\\s*Trust this workspace"
+flags = ["MULTILINE"]
+response = "a"
+send_enter = false
+
+[monitor]
+confirm_recent_lines = 20

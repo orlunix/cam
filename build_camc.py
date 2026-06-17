@@ -48,6 +48,14 @@ MODULE_ORDER = [
     # cron_loop must follow cron (imports helpers from it). Both are
     # consumed by cli.py for the --loop CLI surface.
     "cron_loop",
+    "api_store",
+    "api_token",
+    "api_routing",
+    "api_resolver",
+    "proxy.common",
+    "proxy.textual_tools",
+    "proxy.messages",
+    "proxy.manager",
     "cli",
 ]
 
@@ -57,7 +65,10 @@ TOML_DIR = os.path.join(os.path.dirname(__file__), "src", "cam", "adapters", "co
 
 
 def read_module(name):
-    path = os.path.join(PKG_DIR, "%s.py" % name)
+    if "." in name:
+        path = os.path.join(PKG_DIR, name.replace(".", os.sep) + ".py")
+    else:
+        path = os.path.join(PKG_DIR, "%s.py" % name)
     with open(path, "r") as f:
         src = f.read()
     if name == "adapters":
@@ -66,19 +77,27 @@ def read_module(name):
 
 
 def _inject_embedded_configs(src):
-    """Replace empty _EMBEDDED_CONFIGS with TOML files from src/cam/adapters/configs/."""
+    """Inject adapter TOMLs and boot TOMLs from src/cam/adapters/configs/."""
     entries = []
+    boot_entries = []
     for fname in sorted(os.listdir(TOML_DIR)):
         if not fname.endswith(".toml"):
             continue
         with open(os.path.join(TOML_DIR, fname), "r") as f:
             content = f.read()
-        entries.append('    "%s": r"""%s"""' % (fname, content))
-    replacement = "_EMBEDDED_CONFIGS = {\n%s,\n}" % ",\n".join(entries)
-    return src.replace(
+        if fname.endswith(".boot.toml"):
+            boot_entries.append('    "%s": r"""%s"""' % (fname, content))
+        else:
+            entries.append('    "%s": r"""%s"""' % (fname, content))
+    src = src.replace(
         "_EMBEDDED_CONFIGS = {}  # populated by build_camc.py",
-        replacement,
+        "_EMBEDDED_CONFIGS = {\n%s,\n}" % ",\n".join(entries),
     )
+    src = src.replace(
+        "_EMBEDDED_BOOT_CONFIGS = {}  # populated by build_camc.py",
+        "_EMBEDDED_BOOT_CONFIGS = {\n%s,\n}" % ",\n".join(boot_entries),
+    )
+    return src
 
 
 def read_init():

@@ -1423,6 +1423,64 @@ async function _browseAgentRead(agentId, rawPath) {
   };
 }
 
+async function _browseAgentWrite(agentId, rawPath, content) {
+  const resolved = _contextForAgent(agentId);
+  if (resolved.error && resolved.error !== 'context_not_found') {
+    return { httpStatus: resolved.error === 'agent_not_found' ? 404 : 502, body: { error: resolved.error, detail: `Write unavailable: ${resolved.error}` } };
+  }
+  const agent = resolved.agent || {};
+  const ctx   = resolved.ctx  || null;
+  const root  = _resolveBrowseRoot(agent, ctx);
+  if (!root) {
+    return { httpStatus: 502, body: { error: 'workspace_missing', detail: 'Agent has no working directory recorded' } };
+  }
+  const cleaned = _cleanBrowseSubpath(rawPath);
+  if (cleaned.error) return { httpStatus: 400, body: { error: cleaned.error, detail: cleaned.detail } };
+  const sub = cleaned.sub || '';
+  if (!sub) return { httpStatus: 400, body: { error: 'missing_path', detail: 'path is required' } };
+  const body = String(content == null ? '' : content);
+  const max = WORKSPACE_FILE_MAX_BYTES;
+  if (Buffer.byteLength(body, 'utf8') > max) {
+    return { httpStatus: 400, body: { error: 'too_large', detail: `content exceeds ${max} bytes`, size: Buffer.byteLength(body, 'utf8') } };
+  }
+
+  const isLocal = !ctx || !ctx.machine || ctx.machine.type !== 'ssh';
+  if (isLocal) {
+    const safe = _safeLocalPathUnderRoot(root, sub);
+    if (safe.error) return { httpStatus: safe.error === 'permission_denied' ? 403 : 400, body: { error: safe.error, detail: safe.detail } };
+    try {
+      fs.mkdirSync(path.dirname(safe.full), { recursive: true });
+      fs.writeFileSync(safe.full, body, 'utf8');
+      return { httpStatus: 200, body: { ok: true, scope: 'agent', agent_id: agent.id || String(agentId), root, path: sub, size: Buffer.byteLength(body, 'utf8') } };
+    } catch (e) {
+      return { httpStatus: 502, body: { error: 'write_failed', detail: e && e.message || 'failed to write file' } };
+    }
+  }
+
+  if (!_sshTransport || typeof _sshTransport.writeRemoteFile !== 'function') {
+    return { httpStatus: 502, body: { error: 'ssh_upload_unavailable', detail: 'embedded Hub SSH transport cannot write workspace files' } };
+  }
+  const baseBuilt = _sshBaseOptsForContext(ctx, Math.max(SYNC_DEFAULT_TIMEOUT_MS, 60000));
+  if (baseBuilt.error) return { httpStatus: 502, body: { error: baseBuilt.error, detail: baseBuilt.detail } };
+  const baseOpts = baseBuilt.opts;
+  const fullRemote = _joinBrowsePath(root, sub);
+  const parent = fullRemote.split('/').slice(0, -1).join('/') || root;
+  const mkdir = await _sshTransport.execRemote({ ...baseOpts, command: `mkdir -p ${_shellQuote(parent)}` });
+  if (!mkdir || !mkdir.ok) {
+    return { httpStatus: 502, body: { error: mkdir && mkdir.error || 'remote_mkdir_failed', detail: mkdir && (mkdir.detail || mkdir.stderr) || 'failed to create parent directory' } };
+  }
+  const wrote = await _sshTransport.writeRemoteFile({
+    ...baseOpts,
+    remotePath: fullRemote,
+    content: Buffer.from(body, 'utf8'),
+  });
+  if (!wrote || !wrote.ok) {
+    return { httpStatus: 502, body: { error: wrote && wrote.error || 'remote_write_failed', detail: wrote && wrote.detail || 'failed to write remote file' } };
+  }
+  pushLog('info', `workspace write ${agentId}: ${fullRemote} (${Buffer.byteLength(body, 'utf8')} bytes)`);
+  return { httpStatus: 200, body: { ok: true, scope: 'agent', agent_id: agent.id || String(agentId), root, path: sub, size: Buffer.byteLength(body, 'utf8') } };
+}
+
 async function _browseContextList(ctxNameOrId, rawPath) {
   const ctx = findContextByName(String(ctxNameOrId || '')) || (state.store && Array.isArray(state.store.contexts) ? state.store.contexts.find(c => String(c.id || '') === String(ctxNameOrId)) : null);
   if (!ctx) return { httpStatus: 404, body: { error: 'context_not_found', detail: `Context not found: ${ctxNameOrId}` } };
@@ -2226,10 +2284,6 @@ async function _sendAgentInput(agentId, text, sendEnter = true) {
   if (!_sshTransport || typeof _sshTransport.execRemote !== 'function') {
     return { ok: false, error: 'ssh_transport_unavailable', detail: 'embedded Hub has no SSH transport configured' };
   }
-  if (typeof _sshTransport.writeRemoteFile !== 'function') {
-    return { ok: false, error: 'ssh_upload_unavailable', detail: 'embedded Hub SSH transport cannot upload long input payloads' };
-  }
-
   const m = ctx.machine;
   const baseOpts = {
     host:        m.host,
@@ -2255,34 +2309,17 @@ async function _sendAgentInput(agentId, text, sendEnter = true) {
     return { ok: false, error: ready.error || 'remote_camc_unavailable', detail: ready.detail || 'failed to prepare ~/.cam/camc on remote host' };
   }
 
-  const nonce = crypto.randomUUID();
-  const remotePath = `.cam/camui-input-${nonce}.txt`;
-  const uploaded = await _sshTransport.writeRemoteFile({
+  // Send interactive text through SSH exec stdin, not SFTP. This avoids
+  // remote temp files, remote FS latency, stale SFTP channel failures, and
+  // shell interpolation of user input. Remote camc owns tmux chunking,
+  // bracketed paste, and submit timing.
+  const cmd = `${REMOTE_CAMC} send ${_shellQuote(agentId)} --stdin${sendEnter ? '' : ' --no-enter'}`;
+  const res = await _sshTransport.execRemote({
     ...baseOpts,
-    remotePath,
-    content: Buffer.from(String(text || ''), 'utf8'),
+    command: cmd,
+    stdin: Buffer.from(String(text || ''), 'utf8'),
+    timeout_ms: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000),
   });
-  if (!uploaded || !uploaded.ok) {
-    return { ok: false, error: uploaded && uploaded.error || 'remote_input_upload_failed', detail: uploaded && uploaded.detail || 'failed to upload input payload' };
-  }
-
-  // Use a fixed remote Python shim instead of `camc send --file` so
-  // older remote camc builds that only support `--text` still work. The
-  // user payload stays in the uploaded temp file and never enters the shell
-  // command line; Python passes it as a subprocess argv item to camc.
-  const sendPy = [
-    'import os,pathlib,subprocess,sys',
-    'agent=sys.argv[1]',
-    'path=sys.argv[2]',
-    'send_enter=sys.argv[3]=="1"',
-    'text=pathlib.Path(path).read_text(encoding="utf-8")',
-    'cmd=[os.path.expanduser("~/.cam/camc"),"send",agent,"--text",text]',
-    'cmd += [] if send_enter else ["--no-enter"]',
-    'raise SystemExit(subprocess.call(cmd))',
-  ].join(';');
-  const cleanupCmd = `rm -f ${_shellQuote(remotePath)}`;
-  const cmd = `python3 -c ${_shellQuote(sendPy)} ${_shellQuote(agentId)} ${_shellQuote(remotePath)} ${sendEnter ? '1' : '0'}; rc=$?; ${cleanupCmd}; exit $rc`;
-  const res = await _sshTransport.execRemote({ ...baseOpts, command: cmd, timeout_ms: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000) });
   if (!res || !res.ok) {
     if (_sendLooksDelivered(res)) {
       const detail = _sendLogDetail(res);
@@ -3310,6 +3347,14 @@ async function handle(req, res) {
     if (method === 'GET' && sub === '/workspace/files/read') {
       const subpath = url.searchParams.get('path') || '';
       const out = await _browseAgentRead(agentMatch[1], subpath);
+      return sendJson(res, out.httpStatus, out.body);
+    }
+    if (method === 'POST' && sub === '/workspace/files/write') {
+      let body;
+      try { body = await readJsonBody(req); }
+      catch (e) { return send400(res, e.message); }
+      const subpath = body && body.path != null ? String(body.path) : '';
+      const out = await _browseAgentWrite(agentMatch[1], subpath, body && body.content);
       return sendJson(res, out.httpStatus, out.body);
     }
     return send404(res);

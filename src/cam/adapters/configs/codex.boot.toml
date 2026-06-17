@@ -1,0 +1,29 @@
+# Codex boot — first-run trust / directory prompts during initializing only.
+
+[adapter]
+name = "codex"
+
+[launch]
+startup_wait = 20.0
+ready_pattern = "^[›>]"
+ready_flags = ["MULTILINE"]
+prompt_submit_delay = 0.5
+
+[[confirm]]
+pattern = "Yes, allow Codex to work in this folder"
+response = "1"
+send_enter = true
+
+[[confirm]]
+pattern = "Do you trust the contents of this directory"
+response = "1"
+send_enter = true
+
+[[confirm]]
+pattern = "Press enter to continue"
+flags = ["IGNORECASE"]
+response = ""
+send_enter = true
+
+[monitor]
+confirm_recent_lines = 20

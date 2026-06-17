@@ -26,6 +26,13 @@ def ClaudeAdapter():
     return ConfigurableAdapter.from_toml(_CONFIGS_DIR / "claude.toml")
 
 
+def ClaudeBootAdapter():
+    """Load Claude boot config for initializing-phase detection tests."""
+    from camc_pkg.adapters import AdapterConfig, _parse_toml
+    text = (_CONFIGS_DIR / "claude.boot.toml").read_text(encoding="utf-8")
+    return AdapterConfig(_parse_toml(text))
+
+
 def CodexAdapter():
     """Load Codex adapter from TOML config."""
     return ConfigurableAdapter.from_toml(_CONFIGS_DIR / "codex.toml")
@@ -261,9 +268,39 @@ class TestClaudeAdapter:
         output = '────\n❯\xa0Try "fix lint errors"\n────\n'
         assert adapter.is_ready_for_input(output) is True
 
-    def test_startup_wait_is_30s(self):
+    def test_startup_wait_is_90s(self):
         adapter = ClaudeAdapter()
-        assert adapter.get_startup_wait() == 30.0
+        assert adapter.get_startup_wait() == 90.0
+
+    def test_is_ready_not_on_ink_menu(self):
+        adapter = ClaudeAdapter()
+        theme = "Choose the text style\n ❯ 2. Dark mode ✔\n"
+        assert adapter.is_ready_for_input(theme) is False
+
+    def test_auto_confirm_theme_picker(self):
+        from camc_pkg.detection import should_boot_confirm
+        adapter = ClaudeBootAdapter()
+        screen = "Let's get started.\nChoose the text style that looks best\n ❯ 2. Dark mode ✔\n"
+        confirm = should_boot_confirm(screen, adapter)
+        assert confirm is not None
+        response, send_enter, _pat, _matched = confirm
+        assert response == ""
+        assert send_enter is True
+
+    def test_auto_confirm_api_key_dialog(self):
+        from camc_pkg.detection import should_boot_confirm
+        adapter = ClaudeBootAdapter()
+        screen = (
+            "Detected a custom API key in your environment\n"
+            "Do you want to use this API key?\n"
+            "  1. Yes\n"
+            "❯ 2. No (recommended)\n"
+        )
+        confirm = should_boot_confirm(screen, adapter)
+        assert confirm is not None
+        response, send_enter, _pat, _matched = confirm
+        assert response == "1"
+        assert send_enter is False
 
 
 class TestCodexAdapter:

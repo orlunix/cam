@@ -95,6 +95,12 @@ contextBridge.exposeInMainWorld('CamBridge', {
     },
   },
 
+  net: {
+    probe(url, timeoutMs) {
+      return ipcRenderer.invoke('net:probe', { url, timeoutMs });
+    },
+  },
+
   // Terminal mode (CAM-DESK-TERM-001..005). The renderer xterm.js
   // never opens its own SSH — every channel goes through main, which
   // resolves the agent's owning context, decrypts the remembered
