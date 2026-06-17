@@ -20,6 +20,7 @@ cam/
 | `src/cam/` | Full cam server |
 | `src/camc_pkg/` | Standalone camc core (cli, monitor, api_store, …) |
 | `src/camc_pkg/proxy/` | **IHUB proxy** — `common.py`, `messages.py`, `textual_tools.py`, `manager.py` |
+| `src/camc_pkg/api_routing.py` | Translator mode selection (embedded / direct / external) |
 | `src/cam/adapters/configs/*.toml` | Adapter configs (embedded by `build_camc.py`) |
 | `dist/camc` | Built single-file deploy |
 
@@ -66,6 +67,7 @@ See `benchmarks/README.md`.
 | Path | Role |
 |------|------|
 | `docs/camc-api-proxy-plan.md` | Product plan |
+| `docs/api-routing.md` | Three translator modes + api-models.json schema |
 | `docs/inference-hub.md` | Operator guide |
 | `docs/debug-notes/` | Debug session logs |
 

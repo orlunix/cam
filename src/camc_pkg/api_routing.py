@@ -1,13 +1,8 @@
 """API routing: tool protocol, upstream protocol, and translator mode selection.
 
-Three supported deployment patterns (see docs/api-routing.md):
-
-1. **embedded** — camc starts completions_to_messages → OpenAI Chat Completions upstream
-2. **direct** — Claude speaks Anthropic to upstream that already exposes /v1/messages
-3. **external** — user runs CC Switch / LiteLLM; camc only points ANTHROPIC_BASE_URL
+Three deployment patterns (docs/api-routing.md):
+embedded, direct, external.
 """
-
-from __future__ import annotations
 
 # Wire protocol ids (keys in providers.*.endpoints)
 PROTO_ANTHROPIC_MESSAGES = "anthropic_messages"

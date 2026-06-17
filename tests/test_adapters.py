@@ -143,7 +143,9 @@ class TestClaudeAdapter:
 
     def test_auto_confirm_proceed(self):
         adapter = ClaudeAdapter()
-        result = adapter.should_auto_confirm("Do you want to proceed?")
+        result = adapter.should_auto_confirm(
+            "Do you want to proceed?\n❯ 1. Yes  2. No"
+        )
         assert result is not None
         assert isinstance(result, ConfirmAction)
         assert result.response == "1"
@@ -151,14 +153,15 @@ class TestClaudeAdapter:
 
     def test_auto_confirm_yes_menu(self):
         adapter = ClaudeAdapter()
-        result = adapter.should_auto_confirm("1. Yes  2. Yes, don't ask again  3. No")
+        result = adapter.should_auto_confirm(
+            "❯ 1. Yes  2. Yes, don't ask again  3. No")
         assert result is not None
         assert result.response == "1"
         assert result.send_enter is False
 
     def test_auto_confirm_allow_menu(self):
         adapter = ClaudeAdapter()
-        result = adapter.should_auto_confirm("1. Allow for this session")
+        result = adapter.should_auto_confirm("❯ 1. Allow for this session")
         assert result is not None
         assert result.response == "1"
         assert result.send_enter is False
@@ -166,7 +169,7 @@ class TestClaudeAdapter:
     def test_auto_confirm_strips_ansi(self):
         adapter = ClaudeAdapter()
         result = adapter.should_auto_confirm(
-            "\x1B[1m1. Yes\x1B[0m  2. No"
+            "\x1B[1m❯ 1. Yes\x1B[0m  2. No"
         )
         assert result is not None
         assert result.response == "1"
@@ -191,12 +194,10 @@ class TestClaudeAdapter:
         assert adapter.needs_prompt_after_launch()
         assert adapter.get_startup_wait() > 0
 
-    def test_auto_confirm_trust_folder(self):
+    def test_auto_confirm_trust_folder_is_boot_only(self):
         adapter = ClaudeAdapter()
-        result = adapter.should_auto_confirm("1. Yes, I trust this folder  2. No, exit")
-        assert result is not None
-        assert result.response == "1"
-        assert result.send_enter is False
+        screen = "1. Yes, I trust this folder  2. No, exit"
+        assert adapter.should_auto_confirm(screen) is None
 
     def test_completion_returns_none_for_single_prompt(self):
         adapter = ClaudeAdapter()
@@ -316,18 +317,15 @@ class TestCodexAdapter:
         adapter = CodexAdapter()
         assert adapter.needs_prompt_after_launch()
 
-    def test_auto_confirm_trust_dialog(self):
+    def test_auto_confirm_trust_dialog_is_boot_only(self):
         adapter = CodexAdapter()
         result = adapter.should_auto_confirm(
             "1. Yes, allow Codex to work in this folder without asking for approval\n"
             "2. No, ask me to approve edits and commands"
         )
-        assert result is not None
-        assert isinstance(result, ConfirmAction)
-        assert result.response == "1"
-        assert result.send_enter is True
+        assert result is None
 
-    def test_auto_confirm_new_trust_directory_dialog(self):
+    def test_auto_confirm_new_trust_directory_dialog_is_boot_only(self):
         adapter = CodexAdapter()
         result = adapter.should_auto_confirm(
             "Do you trust the contents of this directory?\n\n"
@@ -336,30 +334,9 @@ class TestCodexAdapter:
             "  2. No, quit\n\n"
             "Press enter to continue"
         )
-        assert result is not None
-        assert isinstance(result, ConfirmAction)
-        assert result.response == "1"
-        assert result.send_enter is True
+        assert result is None
 
-    def test_auto_confirm_new_trust_directory_dialog_bottom_menu(self):
-        adapter = CodexAdapter()
-        result = adapter.should_auto_confirm(
-            "╭────────────────────────────────────────╮\n"
-            "│ >_ OpenAI Codex                        │\n"
-            "│ model: gpt-5.5                         │\n"
-            "│ directory: /tmp/project                │\n"
-            "╰────────────────────────────────────────╯\n"
-            "Tip: Press Tab to queue a message.\n\n"
-            "› 1. Yes, continue\n"
-            "  2. No, quit\n\n"
-            "  Press enter to continue"
-        )
-        assert result is not None
-        assert isinstance(result, ConfirmAction)
-        assert result.response == "1"
-        assert result.send_enter is True
-
-    def test_auto_confirm_retry_without_sandbox(self):
+    def test_auto_confirm_numbered_menu_at_runtime(self):
         adapter = CodexAdapter()
         result = adapter.should_auto_confirm(
             "Reason: command failed; retry without sandbox?\n"
@@ -371,7 +348,7 @@ class TestCodexAdapter:
         assert result is not None
         assert isinstance(result, ConfirmAction)
         assert result.response == "1"
-        assert result.send_enter is True
+        assert result.send_enter is False
 
     def test_no_auto_confirm_press_enter_stale_scrollback(self):
         adapter = CodexAdapter()

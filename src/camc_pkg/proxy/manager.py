@@ -140,29 +140,15 @@ def ensure_proxy(plan, token):
     runs = _load_runs()
     rec = runs.get(key)
 
-    if rec and _pid_alive(rec.get("pid")) and _health_ok(rec.get("port") or port):
-        return int(rec.get("port") or port), rec
-
     if rec and rec.get("pid") and not _pid_alive(rec.get("pid")):
         runs.pop(key, None)
 
-    # Reuse an already-listening proxy (e.g. manual start or stale proxy-runs.json).
-    if _health_ok(port):
-        if not rec:
-            rec = {
-                "route": route,
-                "port": port,
-                "pid": None,
-                "upstream_url": upstream_url,
-                "model": plan.get("model"),
-                "api": plan.get("name"),
-                "log": os.path.join(LOGS_DIR, "proxy-%s.log" % route),
-                "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "reused": True,
-            }
-            runs[key] = rec
-            _save_runs(runs)
-        return port, rec
+    # Reuse only when run record matches this route+upstream (never blind port reuse).
+    if rec and rec.get("upstream_url") == upstream_url and rec.get("route") == route:
+        if _pid_alive(rec.get("pid")) and _health_ok(rec.get("port") or port):
+            return int(rec.get("port") or port), rec
+        if not rec.get("pid") and _health_ok(rec.get("port") or port):
+            return int(rec.get("port") or port), rec
 
     pid, log_path = _start_proxy(
         route=route,

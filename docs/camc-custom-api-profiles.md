@@ -4,6 +4,9 @@ Date: 2026-06-15
 
 Status: **partial** — Claude + 6 curated IHUB models only (`camc run -t claude --api NAME`)
 
+Routing architecture (embedded / direct / external): **`docs/api-routing.md`**
+(includes three end-to-end JSON + token + run examples).
+
 ## Supported today
 
 ```bash
