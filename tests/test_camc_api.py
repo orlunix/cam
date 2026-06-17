@@ -31,6 +31,7 @@ class TestApiStore:
         data = ensure_ready()
         assert "glm-5.1" in data["apis"]
         assert data["apis"]["glm-5.1"]["model"].startswith("nvidia/")
+        assert "openai-chat-gateway" in data.get("_templates", {})
 
     def test_alias_resolution(self, api_models_file):
         data = ensure_ready()
@@ -115,3 +116,91 @@ class TestApiResolver:
             json.dump(data, f)
         with pytest.raises(ValueError, match="not supported for --api"):
             resolve_run_plan("claude", "my-custom")
+
+    def test_allow_run_custom_api(self, api_models_file):
+        data = ensure_ready()
+        data["providers"]["my-gw"] = {
+            "display_name": "Gateway",
+            "auth_key": "my_gw",
+            "env_names": ["MY_GW_KEY"],
+            "base_url": "https://gw.example/v1",
+            "upstream_protocol": "openai_chat_completions",
+            "translator": "embedded",
+            "catalog_path": "",
+            "endpoints": {"openai_chat_completions": "/chat/completions"},
+        }
+        data["apis"]["my-custom"] = {
+            "provider": "my-gw",
+            "model": "my-model",
+            "enabled": True,
+            "allow_run": True,
+            "aliases": [],
+        }
+        rebuild_aliases(data)
+        with open(api_models_file, "w") as f:
+            json.dump(data, f)
+        plan = resolve_run_plan("claude", "my-custom")
+        assert plan["translator"] == "embedded"
+        assert plan["mode"] == "proxy"
+
+    def test_external_translator_plan(self, api_models_file):
+        data = ensure_ready()
+        data["providers"]["cc-switch"] = {
+            "display_name": "CC Switch",
+            "auth_key": "cc_switch",
+            "env_names": ["OPENAI_API_KEY"],
+            "base_url": "http://127.0.0.1:15721",
+            "client_base_url": "http://127.0.0.1:15721",
+            "upstream_protocol": "anthropic_messages",
+            "translator": "external",
+            "catalog_path": "",
+            "endpoints": {"anthropic_messages": ""},
+        }
+        data["apis"]["via-cc"] = {
+            "provider": "cc-switch",
+            "model": "glm-5.1",
+            "enabled": True,
+            "allow_run": True,
+            "aliases": [],
+        }
+        rebuild_aliases(data)
+        with open(api_models_file, "w") as f:
+            json.dump(data, f)
+        plan = resolve_run_plan("claude", "via-cc")
+        assert plan["translator"] == "external"
+        assert plan["mode"] == "external"
+        assert plan["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:15721"
+        assert plan["route"] is None
+
+
+class TestApiProxyStart:
+    def test_api_plan_sets_model_alias_without_default_override(self, api_models_file, monkeypatch):
+        """--api NAME must use plan name, not glm-5.1 default."""
+        from argparse import Namespace
+        from camc_pkg import cli as camc_cli
+
+        data = ensure_ready()
+        data["apis"]["glm-5.1"]["enabled"] = True
+        with open(api_models_file, "w") as f:
+            json.dump(data, f)
+
+        captured = {}
+
+        def _fake_ensure(plan, token):
+            captured["plan"] = plan
+            return 18324, {"pid": 1}
+
+        monkeypatch.setattr("camc_pkg.proxy.manager.ensure_proxy", _fake_ensure)
+        monkeypatch.setenv("INFERENCE_HUB_TOKEN", "test-token")
+
+        args = Namespace(
+            route="completions_to_messages",
+            port=None,
+            api_name="glm-5.1",
+            upstream_url=None,
+            upstream_model=None,
+            model_alias=None,
+            debug=False,
+        )
+        camc_cli.cmd_api_proxy_start(args)
+        assert captured["plan"]["name"] == "glm-5.1"

@@ -3203,3 +3203,52 @@ b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
 64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
 6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
 ```
+## v1.2.0  7e72491-dirty 2026-06-16 21:31
+
+- Lines: 14697
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+```
+
+## v1.2.0  7e72491-dirty 2026-06-16 21:52
+
+- Lines: 14696
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+```
+## v1.2.0  7e72491-dirty 2026-06-16 23:22
+
+- Lines: 14739
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+```
+## v1.2.0  7e72491-dirty 2026-06-17 00:10
+
+- Lines: 14804
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+```
