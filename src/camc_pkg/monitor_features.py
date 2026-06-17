@@ -112,6 +112,13 @@ class MonitorRuntime(object):
         self.idle_confirmed = False
         self.cycle = 0
         self.feature_state = {}
+        # Boot / initializing: monitor uses <tool>.boot.toml + <tool>.toml.
+        self.boot_config = None
+        self.in_initializing = False
+        self.boot_prompt_sent = False
+        self.boot_deadline = 0.0
+        self.boot_prompt = ""
+        self.prompt_after_launch = False
         # Back-compat alias for any leftover v0 callers / tests.
         self.step_state = self.feature_state
 
@@ -245,9 +252,10 @@ class StateManagerFeature(MonitorFeature):
 
     def after_confirm(self, snap, runtime):
         actions = []
-        actions.extend(self._detect_state_change(snap, runtime))
-        actions.extend(self._update_output_change(snap, runtime))
-        actions.extend(self._detect_idle(snap, runtime))
+        if not runtime.in_initializing:
+            actions.extend(self._detect_state_change(snap, runtime))
+            actions.extend(self._update_output_change(snap, runtime))
+            actions.extend(self._detect_idle(snap, runtime))
         return actions
 
     # -- private phase implementations -------------------------------------
@@ -258,11 +266,11 @@ class StateManagerFeature(MonitorFeature):
         done_pattern → mark has_worked only."""
         actions = []
         if snap.screen_busy:
-            if not runtime.has_worked:
+            if not runtime.has_worked and not runtime.in_initializing:
                 runtime.has_worked = True
                 actions.append({"kind": "log", "level": "info",
                                 "msg": "Busy signal detected, has_worked=True"})
-            if not runtime.left_initializing:
+            if not runtime.left_initializing and not runtime.in_initializing:
                 runtime.left_initializing = True
                 actions.append({"kind": "log", "level": "info",
                                 "msg": "First busy seen — left initializing permanently"})
@@ -354,6 +362,61 @@ class StateManagerFeature(MonitorFeature):
 
 
 # ===========================================================================
+# BootPromptFeature — prompt injection at end of initializing phase
+# ===========================================================================
+
+@register_feature
+class BootPromptFeature(MonitorFeature):
+    """After boot confirms, inject task prompt when boot ready_pattern matches."""
+
+    name = "boot_prompt"
+    order = 15
+
+    def after_confirm(self, snap, runtime):
+        if not runtime.in_initializing or runtime.boot_prompt_sent:
+            return []
+        from camc_pkg.detection import is_ready_for_boot
+        actions = []
+        boot_cfg = runtime.boot_config
+        tool_cfg = runtime.config
+        boot_wait = boot_cfg.startup_wait if boot_cfg else tool_cfg.startup_wait
+        if snap.now > runtime.boot_deadline:
+            actions.append({"kind": "log", "level": "warning",
+                            "msg": "Boot timeout (%.0fs) — leaving initializing" % boot_wait})
+            actions.append({"kind": "store_update", "fields": {"state": "idle"}})
+            runtime.boot_prompt_sent = True
+            runtime.in_initializing = False
+            runtime.left_initializing = True
+            return actions
+        if not is_ready_for_boot(snap.output, boot_cfg, tool_cfg):
+            return actions
+        prompt = (runtime.boot_prompt or "").strip()
+        if prompt and runtime.prompt_after_launch:
+            cfg = boot_cfg or tool_cfg
+            if cfg.prompt_submit_delay > 0:
+                actions.append({"kind": "send_input",
+                                "text": prompt, "send_enter": False})
+                actions.append({"kind": "halt_cycle",
+                                "sleep": cfg.prompt_submit_delay})
+                actions.append({"kind": "send_key", "key": "Enter"})
+            else:
+                actions.append({"kind": "send_input",
+                                "text": prompt, "send_enter": True})
+            actions.append({"kind": "log", "level": "info",
+                            "msg": "Boot: prompt injected (%d chars)" % len(prompt)})
+        else:
+            actions.append({"kind": "log", "level": "info",
+                            "msg": "Boot: ready (interactive, no prompt)"})
+        runtime.boot_prompt_sent = True
+        runtime.in_initializing = False
+        runtime.left_initializing = True
+        actions.append({"kind": "store_update", "fields": {"state": "idle"}})
+        actions.append({"kind": "event", "name": "boot_ready",
+                        "detail": {"prompt_sent": bool(prompt)}})
+        return actions
+
+
+# ===========================================================================
 # AutoConfirmationFeature — owns the cooldown-gated dialog auto-confirm
 # ===========================================================================
 
@@ -382,8 +445,10 @@ class AutoConfirmationFeature(MonitorFeature):
     order = 20
 
     def confirm(self, snap, runtime):
-        from camc_pkg.detection import should_auto_confirm, input_residue_count
+        from camc_pkg.detection import (
+            should_auto_confirm, should_confirm_initializing, input_residue_count)
         actions = []
+        init_phase = runtime.in_initializing
         cfg = runtime.config
         confirm_cd = snap.now - runtime.last_confirm
         if confirm_cd < cfg.confirm_cooldown:
@@ -391,21 +456,25 @@ class AutoConfirmationFeature(MonitorFeature):
                             "msg": "[%d] Confirm cooldown (%.1fs remaining)"
                                    % (snap.cycle, cfg.confirm_cooldown - confirm_cd)})
             return actions
-        # spam-fix: if our last_response chars leaked into the input
-        # box, send a backspace to clean them up one per cycle. The
-        # rest of the auto-confirm flow stays suppressed by
-        # has_input_cursor (condition 2) until the input is clean.
         residue = input_residue_count(snap.output, runtime.last_confirm_response)
-        if residue > 0:
+        if residue > 0 and not init_phase:
             actions.append({"kind": "log", "level": "info",
                             "msg": "[%d] Backspace to clean input residue (%d chars)"
                                    % (snap.cycle, residue)})
             actions.append({"kind": "send_key", "key": "BSpace"})
             actions.append({"kind": "halt_cycle", "sleep": cfg.confirm_sleep})
             return actions
-        confirm = should_auto_confirm(snap.output, cfg,
-                                       last_response=runtime.last_confirm_response,
-                                       prev_output=runtime.prev_output or "")
+        if init_phase:
+            confirm, rule_cfg = should_confirm_initializing(
+                snap.output, runtime.boot_config, runtime.config,
+                last_response=runtime.last_confirm_response,
+                prev_output=runtime.prev_output or "")
+            cfg = rule_cfg
+        else:
+            confirm = should_auto_confirm(
+                snap.output, runtime.config,
+                last_response=runtime.last_confirm_response,
+                prev_output=runtime.prev_output or "")
         if not confirm:
             return actions
         response, send_enter, pat_str, matched = confirm
@@ -437,9 +506,11 @@ class AutoConfirmationFeature(MonitorFeature):
         runtime.last_confirm_response = response
         runtime.last_change = snap.now
         runtime.idle_confirmed = False
-        runtime.has_worked = True
+        if not init_phase:
+            runtime.has_worked = True
         actions.append({"kind": "event", "name": "auto_confirm",
-                        "detail": {"pattern": pat_str, "response": response}})
+                        "detail": {"pattern": pat_str, "response": response,
+                                   "initializing": init_phase}})
         actions.append({"kind": "halt_cycle", "sleep": cfg.confirm_sleep})
         return actions
 

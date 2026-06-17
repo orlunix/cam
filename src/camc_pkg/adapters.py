@@ -14,6 +14,8 @@ from camc_pkg.utils import compile_pattern
 
 _EMBEDDED_CONFIGS = {}  # populated by build_camc.py
 
+_EMBEDDED_BOOT_CONFIGS = {}  # populated by build_camc.py
+
 
 def _load_dev_configs_fallback():
     """When running camc from the dev source tree (python3 -m camc_pkg or
@@ -30,7 +32,7 @@ def _load_dev_configs_fallback():
     if not os.path.isdir(cfg_dir):
         return
     for fname in sorted(os.listdir(cfg_dir)):
-        if not fname.endswith(".toml"):
+        if not fname.endswith(".toml") or fname.endswith(".boot.toml"):
             continue
         try:
             with open(os.path.join(cfg_dir, fname)) as f:
@@ -44,6 +46,26 @@ def _load_dev_configs_fallback():
 # built single-file camc with injected configs is unaffected.
 if not _EMBEDDED_CONFIGS:
     _load_dev_configs_fallback()
+
+
+def _load_dev_boot_configs_fallback():
+    here = os.path.dirname(os.path.abspath(__file__))
+    cfg_dir = os.path.normpath(
+        os.path.join(here, "..", "cam", "adapters", "configs"))
+    if not os.path.isdir(cfg_dir):
+        return
+    for fname in sorted(os.listdir(cfg_dir)):
+        if not fname.endswith(".boot.toml"):
+            continue
+        try:
+            with open(os.path.join(cfg_dir, fname)) as f:
+                _EMBEDDED_BOOT_CONFIGS[fname] = f.read()
+        except OSError:
+            pass
+
+
+if not _EMBEDDED_BOOT_CONFIGS:
+    _load_dev_boot_configs_fallback()
 
 
 # ===========================================================================
@@ -392,6 +414,55 @@ def install_default_configs(target_dir=None, force=False):
             continue
         results[fname] = "overwritten" if existed else "created"
     return results
+
+
+def install_default_boot_configs(target_dir=None, force=False):
+    """Write embedded ``<tool>.boot.toml`` files to CONFIGS_DIR."""
+    out_dir = target_dir or CONFIGS_DIR
+    try:
+        os.makedirs(out_dir)
+    except OSError:
+        pass
+    results = {}
+    for fname, content in _EMBEDDED_BOOT_CONFIGS.items():
+        path = os.path.join(out_dir, fname)
+        if os.path.exists(path) and not force:
+            results[fname] = "skipped_exists"
+            continue
+        existed = os.path.exists(path)
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                f.write(content)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+            os.replace(tmp, path)
+        except OSError as e:
+            log.warning("install_default_boot_configs: %s: %s", path, e)
+            results[fname] = "error:%s" % e
+            continue
+        results[fname] = "overwritten" if existed else "created"
+    return results
+
+
+def _load_boot_config(tool):
+    """Load boot config for initializing phase (``<tool>.boot.toml``)."""
+    key = "%s.boot.toml" % tool
+    if key not in _EMBEDDED_BOOT_CONFIGS:
+        return None
+    config = _parse_toml(_EMBEDDED_BOOT_CONFIGS[key])
+    toml_path = os.path.join(CONFIGS_DIR, key)
+    if os.path.exists(toml_path):
+        try:
+            ext = load_toml(toml_path)
+            _merge_toml(config, ext)
+            log.info("Merged external boot config: %s", toml_path)
+        except Exception as e:
+            log.warning("Failed to load external boot config %s: %s", toml_path, e)
+    return AdapterConfig(config)
 
 
 def _load_config(tool):

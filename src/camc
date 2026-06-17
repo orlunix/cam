@@ -8,6 +8,9 @@ Edit the source in src/camc_pkg/ and rebuild with build_camc.py.
 from datetime import datetime
 from datetime import datetime, timedelta, timezone
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
+from urllib.parse import urlparse
 from uuid import uuid4
 from uuid import uuid4, uuid5, NAMESPACE_DNS as _UUID_NS
 import argparse
@@ -20,6 +23,7 @@ import re as _re
 import shlex
 import shutil
 import signal
+import socket
 import socket as _sock
 import socket as _socket
 import sqlite3
@@ -27,13 +31,16 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
+import uuid
 
 # ===========================================================================
 # Constants and logging
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "150ed38-dirty 2026-06-15 01:06"
+__build__ = "c61c56c-dirty 2026-06-16 18:13"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -376,10 +383,11 @@ display_name = "Claude Code"
 command = ["env", "CLAUDE_CODE_DISABLE_MOUSE=1", "claude", "--allowed-tools", "Bash,Edit,Read,Write,Glob,Grep,WebFetch,TodoWrite,NotebookEdit"]
 auto_permission_mode = true     # add --permission-mode auto to launch command (default on as of 2026-06-11)
 prompt_after_launch = true
-startup_wait = 30.0
+startup_wait = 90.0
 strip_ansi = true
 
-ready_pattern = "^[❯>]"
+# Bare input prompt OR placeholder hint — NOT Ink menus like "❯ 2. Yes".
+ready_pattern = "^[❯>](?!\\s*\\d+\\.)"
 ready_flags = ["MULTILINE"]
 
 [state]
@@ -652,15 +660,6 @@ flags = ["MULTILINE"]
 response = "y"
 send_enter = false
 
-[[confirm]]
-# Workspace trust dialog — the `[a]` hotkey label sits directly before
-# "Trust this workspace". Anchoring on the bracketed hotkey lets this
-# fire only when the dialog is actually drawn.
-pattern = "^\\W*\\[a\\]\\s*Trust this workspace"
-flags = ["MULTILINE"]
-response = "a"
-send_enter = false
-
 [monitor]
 # Cursor shows "Thinking..." while busy, "· X.Y%" usage after done.
 # Line-start anchor + 3-dot/ellipsis requirement avoids URL / filename
@@ -685,6 +684,94 @@ install_hint = "ensure 'cursor' is in PATH"
 """,
 }
 
+_EMBEDDED_BOOT_CONFIGS = {
+    "claude.boot.toml": r"""# Claude Code boot — used only during initializing (camc run monitor boot phase).
+# Runtime permission dialogs stay in claude.toml [[confirm]].
+
+[adapter]
+name = "claude"
+
+[launch]
+startup_wait = 90.0
+strip_ansi = true
+ready_pattern = "^[❯>](?!\\s*\\d+\\.)"
+ready_flags = ["MULTILINE"]
+
+[[confirm]]
+pattern = "Choose the text style that looks best"
+response = ""
+send_enter = true
+
+[[confirm]]
+pattern = "Do you want to use this API key"
+response = "1"
+send_enter = false
+
+[[confirm]]
+pattern = "Ask a teammate to run /team-onboarding"
+response = ""
+send_enter = true
+
+[[confirm]]
+pattern = "Press Enter to continue"
+response = ""
+send_enter = true
+
+[monitor]
+confirm_recent_lines = 20
+""",
+    "codex.boot.toml": r"""# Codex boot — first-run trust / directory prompts during initializing only.
+
+[adapter]
+name = "codex"
+
+[launch]
+startup_wait = 20.0
+ready_pattern = "^[›>]"
+ready_flags = ["MULTILINE"]
+prompt_submit_delay = 0.5
+
+[[confirm]]
+pattern = "Yes, allow Codex to work in this folder"
+response = "1"
+send_enter = true
+
+[[confirm]]
+pattern = "Do you trust the contents of this directory"
+response = "1"
+send_enter = true
+
+[[confirm]]
+pattern = "Press enter to continue"
+flags = ["IGNORECASE"]
+response = ""
+send_enter = true
+
+[monitor]
+confirm_recent_lines = 20
+""",
+    "cursor.boot.toml": r"""# Cursor Agent boot — workspace trust during initializing only.
+
+[adapter]
+name = "cursor"
+
+[launch]
+startup_wait = 15.0
+strip_ansi = true
+ready_pattern = "→"
+ready_flags = ["MULTILINE"]
+
+[[confirm]]
+pattern = "^\\W*\\[a\\]\\s*Trust this workspace"
+flags = ["MULTILINE"]
+response = "a"
+send_enter = false
+
+[monitor]
+confirm_recent_lines = 20
+""",
+}
+
 
 def _load_dev_configs_fallback():
     """When running camc from the dev source tree (python3 -m camc_pkg or
@@ -701,7 +788,7 @@ def _load_dev_configs_fallback():
     if not os.path.isdir(cfg_dir):
         return
     for fname in sorted(os.listdir(cfg_dir)):
-        if not fname.endswith(".toml"):
+        if not fname.endswith(".toml") or fname.endswith(".boot.toml"):
             continue
         try:
             with open(os.path.join(cfg_dir, fname)) as f:
@@ -715,6 +802,26 @@ def _load_dev_configs_fallback():
 # built single-file camc with injected configs is unaffected.
 if not _EMBEDDED_CONFIGS:
     _load_dev_configs_fallback()
+
+
+def _load_dev_boot_configs_fallback():
+    here = os.path.dirname(os.path.abspath(__file__))
+    cfg_dir = os.path.normpath(
+        os.path.join(here, "..", "cam", "adapters", "configs"))
+    if not os.path.isdir(cfg_dir):
+        return
+    for fname in sorted(os.listdir(cfg_dir)):
+        if not fname.endswith(".boot.toml"):
+            continue
+        try:
+            with open(os.path.join(cfg_dir, fname)) as f:
+                _EMBEDDED_BOOT_CONFIGS[fname] = f.read()
+        except OSError:
+            pass
+
+
+if not _EMBEDDED_BOOT_CONFIGS:
+    _load_dev_boot_configs_fallback()
 
 
 # ===========================================================================
@@ -1063,6 +1170,55 @@ def install_default_configs(target_dir=None, force=False):
             continue
         results[fname] = "overwritten" if existed else "created"
     return results
+
+
+def install_default_boot_configs(target_dir=None, force=False):
+    """Write embedded ``<tool>.boot.toml`` files to CONFIGS_DIR."""
+    out_dir = target_dir or CONFIGS_DIR
+    try:
+        os.makedirs(out_dir)
+    except OSError:
+        pass
+    results = {}
+    for fname, content in _EMBEDDED_BOOT_CONFIGS.items():
+        path = os.path.join(out_dir, fname)
+        if os.path.exists(path) and not force:
+            results[fname] = "skipped_exists"
+            continue
+        existed = os.path.exists(path)
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                f.write(content)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+            os.replace(tmp, path)
+        except OSError as e:
+            log.warning("install_default_boot_configs: %s: %s", path, e)
+            results[fname] = "error:%s" % e
+            continue
+        results[fname] = "overwritten" if existed else "created"
+    return results
+
+
+def _load_boot_config(tool):
+    """Load boot config for initializing phase (``<tool>.boot.toml``)."""
+    key = "%s.boot.toml" % tool
+    if key not in _EMBEDDED_BOOT_CONFIGS:
+        return None
+    config = _parse_toml(_EMBEDDED_BOOT_CONFIGS[key])
+    toml_path = os.path.join(CONFIGS_DIR, key)
+    if os.path.exists(toml_path):
+        try:
+            ext = load_toml(toml_path)
+            _merge_toml(config, ext)
+            log.info("Merged external boot config: %s", toml_path)
+        except Exception as e:
+            log.warning("Failed to load external boot config %s: %s", toml_path, e)
+    return AdapterConfig(config)
 
 
 def _load_config(tool):
@@ -1866,10 +2022,13 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
     if not env_setup:
         # Pull PATH from the explicit env if provided, otherwise from
         # the calling process. Either way we land an explicit `export
-        # PATH=...` inside the bash -l invocation so the launched
-        # command sees the same PATH preflight checked against.
+        # PATH=...` inside the bash invocation so the launched command
+        # sees the same PATH preflight checked against.
         env_setup = "export PATH=%s" % shlex.quote(env.get("PATH", os.environ.get("PATH", "")))
-    command_str = "env -u CLAUDECODE bash -l -c %s" % shlex.quote(env_setup + " && exec " + inner_cmd)
+    # Non-login bash: env_setup is the sole source of Anthropic/proxy
+    # overrides. `bash -l` would re-source ~/.bashrc and re-inject login
+    # session / ANTHROPIC_* exports before env_setup can win.
+    command_str = "env -u CLAUDECODE bash -c %s" % shlex.quote(env_setup + " && exec " + inner_cmd)
 
     try:
         proc = subprocess.Popen(
@@ -2073,6 +2232,45 @@ def is_ready_for_input(output, config):
         return True
     clean = strip_ansi(output) if config.strip_ansi else output
     return bool(config.ready_pattern.search(clean))
+
+
+def should_boot_confirm(output, config, last_response="", prev_output=""):
+    """Boot-phase confirm rules — no input-cursor guard (onboarding menus)."""
+    if config.strip_ansi:
+        output = strip_ansi(output)
+    clean = clean_for_confirm(output)
+    lines = [l for l in clean.splitlines() if l.strip()]
+    recent = "\n".join(lines[-config.confirm_recent_lines:])
+    for pattern, response, send_enter in config.confirm_rules:
+        m = pattern.search(recent)
+        if m:
+            return (response, send_enter, pattern.pattern, m.group())
+    return None
+
+
+def should_confirm_initializing(output, boot_config, tool_config,
+                                last_response="", prev_output=""):
+    """During initializing: boot.toml first, then tool.toml [[confirm]]."""
+    if boot_config:
+        hit = should_boot_confirm(
+            output, boot_config, last_response=last_response, prev_output=prev_output)
+        if hit:
+            return hit, boot_config
+    if tool_config:
+        hit = should_auto_confirm(
+            output, tool_config, last_response=last_response, prev_output=prev_output)
+        if hit:
+            return hit, tool_config
+    return None, tool_config
+
+
+def is_ready_for_boot(output, boot_config, tool_config):
+    """Ready if either boot or tool ready_pattern matches."""
+    if boot_config and is_ready_for_input(output, boot_config):
+        return True
+    if tool_config and is_ready_for_input(output, tool_config):
+        return True
+    return False
 
 
 # ===========================================================================
@@ -3251,6 +3449,13 @@ class MonitorRuntime(object):
         self.idle_confirmed = False
         self.cycle = 0
         self.feature_state = {}
+        # Boot / initializing: monitor uses <tool>.boot.toml + <tool>.toml.
+        self.boot_config = None
+        self.in_initializing = False
+        self.boot_prompt_sent = False
+        self.boot_deadline = 0.0
+        self.boot_prompt = ""
+        self.prompt_after_launch = False
         # Back-compat alias for any leftover v0 callers / tests.
         self.step_state = self.feature_state
 
@@ -3384,9 +3589,10 @@ class StateManagerFeature(MonitorFeature):
 
     def after_confirm(self, snap, runtime):
         actions = []
-        actions.extend(self._detect_state_change(snap, runtime))
-        actions.extend(self._update_output_change(snap, runtime))
-        actions.extend(self._detect_idle(snap, runtime))
+        if not runtime.in_initializing:
+            actions.extend(self._detect_state_change(snap, runtime))
+            actions.extend(self._update_output_change(snap, runtime))
+            actions.extend(self._detect_idle(snap, runtime))
         return actions
 
     # -- private phase implementations -------------------------------------
@@ -3397,11 +3603,11 @@ class StateManagerFeature(MonitorFeature):
         done_pattern → mark has_worked only."""
         actions = []
         if snap.screen_busy:
-            if not runtime.has_worked:
+            if not runtime.has_worked and not runtime.in_initializing:
                 runtime.has_worked = True
                 actions.append({"kind": "log", "level": "info",
                                 "msg": "Busy signal detected, has_worked=True"})
-            if not runtime.left_initializing:
+            if not runtime.left_initializing and not runtime.in_initializing:
                 runtime.left_initializing = True
                 actions.append({"kind": "log", "level": "info",
                                 "msg": "First busy seen — left initializing permanently"})
@@ -3492,6 +3698,60 @@ class StateManagerFeature(MonitorFeature):
 
 
 # ===========================================================================
+# BootPromptFeature — prompt injection at end of initializing phase
+# ===========================================================================
+
+@register_feature
+class BootPromptFeature(MonitorFeature):
+    """After boot confirms, inject task prompt when boot ready_pattern matches."""
+
+    name = "boot_prompt"
+    order = 15
+
+    def after_confirm(self, snap, runtime):
+        if not runtime.in_initializing or runtime.boot_prompt_sent:
+            return []
+        actions = []
+        boot_cfg = runtime.boot_config
+        tool_cfg = runtime.config
+        boot_wait = boot_cfg.startup_wait if boot_cfg else tool_cfg.startup_wait
+        if snap.now > runtime.boot_deadline:
+            actions.append({"kind": "log", "level": "warning",
+                            "msg": "Boot timeout (%.0fs) — leaving initializing" % boot_wait})
+            actions.append({"kind": "store_update", "fields": {"state": "idle"}})
+            runtime.boot_prompt_sent = True
+            runtime.in_initializing = False
+            runtime.left_initializing = True
+            return actions
+        if not is_ready_for_boot(snap.output, boot_cfg, tool_cfg):
+            return actions
+        prompt = (runtime.boot_prompt or "").strip()
+        if prompt and runtime.prompt_after_launch:
+            cfg = boot_cfg or tool_cfg
+            if cfg.prompt_submit_delay > 0:
+                actions.append({"kind": "send_input",
+                                "text": prompt, "send_enter": False})
+                actions.append({"kind": "halt_cycle",
+                                "sleep": cfg.prompt_submit_delay})
+                actions.append({"kind": "send_key", "key": "Enter"})
+            else:
+                actions.append({"kind": "send_input",
+                                "text": prompt, "send_enter": True})
+            actions.append({"kind": "log", "level": "info",
+                            "msg": "Boot: prompt injected (%d chars)" % len(prompt)})
+        else:
+            actions.append({"kind": "log", "level": "info",
+                            "msg": "Boot: ready (interactive, no prompt)"})
+        runtime.boot_prompt_sent = True
+        runtime.in_initializing = False
+        runtime.left_initializing = True
+        actions.append({"kind": "store_update", "fields": {"state": "idle"}})
+        actions.append({"kind": "event", "name": "boot_ready",
+                        "detail": {"prompt_sent": bool(prompt)}})
+        return actions
+
+
+# ===========================================================================
 # AutoConfirmationFeature — owns the cooldown-gated dialog auto-confirm
 # ===========================================================================
 
@@ -3521,6 +3781,7 @@ class AutoConfirmationFeature(MonitorFeature):
 
     def confirm(self, snap, runtime):
         actions = []
+        init_phase = runtime.in_initializing
         cfg = runtime.config
         confirm_cd = snap.now - runtime.last_confirm
         if confirm_cd < cfg.confirm_cooldown:
@@ -3528,21 +3789,25 @@ class AutoConfirmationFeature(MonitorFeature):
                             "msg": "[%d] Confirm cooldown (%.1fs remaining)"
                                    % (snap.cycle, cfg.confirm_cooldown - confirm_cd)})
             return actions
-        # spam-fix: if our last_response chars leaked into the input
-        # box, send a backspace to clean them up one per cycle. The
-        # rest of the auto-confirm flow stays suppressed by
-        # has_input_cursor (condition 2) until the input is clean.
         residue = input_residue_count(snap.output, runtime.last_confirm_response)
-        if residue > 0:
+        if residue > 0 and not init_phase:
             actions.append({"kind": "log", "level": "info",
                             "msg": "[%d] Backspace to clean input residue (%d chars)"
                                    % (snap.cycle, residue)})
             actions.append({"kind": "send_key", "key": "BSpace"})
             actions.append({"kind": "halt_cycle", "sleep": cfg.confirm_sleep})
             return actions
-        confirm = should_auto_confirm(snap.output, cfg,
-                                       last_response=runtime.last_confirm_response,
-                                       prev_output=runtime.prev_output or "")
+        if init_phase:
+            confirm, rule_cfg = should_confirm_initializing(
+                snap.output, runtime.boot_config, runtime.config,
+                last_response=runtime.last_confirm_response,
+                prev_output=runtime.prev_output or "")
+            cfg = rule_cfg
+        else:
+            confirm = should_auto_confirm(
+                snap.output, runtime.config,
+                last_response=runtime.last_confirm_response,
+                prev_output=runtime.prev_output or "")
         if not confirm:
             return actions
         response, send_enter, pat_str, matched = confirm
@@ -3574,9 +3839,11 @@ class AutoConfirmationFeature(MonitorFeature):
         runtime.last_confirm_response = response
         runtime.last_change = snap.now
         runtime.idle_confirmed = False
-        runtime.has_worked = True
+        if not init_phase:
+            runtime.has_worked = True
         actions.append({"kind": "event", "name": "auto_confirm",
-                        "detail": {"pattern": pat_str, "response": response}})
+                        "detail": {"pattern": pat_str, "response": response,
+                                   "initializing": init_phase}})
         actions.append({"kind": "halt_cycle", "sleep": cfg.confirm_sleep})
         return actions
 
@@ -3715,7 +3982,26 @@ def _apply_action(action, *, session, agent_id, store, events_fn):
     return False, 0.0
 
 
-def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=None):
+def _task_prompt(agent):
+    task = agent.get("task")
+    if isinstance(task, dict):
+        return task.get("prompt") or ""
+    return agent.get("prompt") or ""
+
+
+def _refresh_boot_runtime(runtime, store, agent_id, boot_config):
+    rec = store.get(agent_id) or {}
+    runtime.in_initializing = rec.get("state") == "initializing"
+    if runtime.in_initializing:
+        runtime.boot_prompt = _task_prompt(rec)
+        if not runtime.boot_deadline:
+            boot_wait = (boot_config.startup_wait if boot_config
+                         else runtime.config.startup_wait)
+            runtime.boot_deadline = time.time() + boot_wait
+
+
+def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=None,
+                     boot_config=None):
     if pid_path:
         with open(pid_path, "w") as f:
             f.write(str(os.getpid()))
@@ -3737,9 +4023,14 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
     # (currently MailboxFeature + CronFeature) are still in the list
     # so test code can introspect them, but the driver skips them.
     runtime = MonitorRuntime(agent_id, config, now=time.time())
+    runtime.boot_config = boot_config
+    runtime.prompt_after_launch = bool(config.prompt_after_launch)
+    boot_wait = (boot_config.startup_wait if boot_config else config.startup_wait)
+    runtime.boot_deadline = time.time() + boot_wait
     runtime.last_health = runtime.last_change
     features = build_features()
     prev_output = ""
+    _refresh_boot_runtime(runtime, store, agent_id, boot_config)
 
     def _run_phase(snap, phase_name):
         """Apply the given phase hook on every enabled feature, in
@@ -3766,6 +4057,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
             now = time.time()
             runtime.cycle += 1
             cycle = runtime.cycle
+            _refresh_boot_runtime(runtime, store, agent_id, boot_config)
 
             # --- 1. Health check (every 15s) ---
             if now - runtime.last_health >= config.health_check_interval:
@@ -3844,8 +4136,12 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 l.strip() in ("❯", ">", "›")  # ❯  >  ›
                 for l in tail_lines
             )
-            prompt_visible = is_ready_for_input(output, config)
+            prompt_visible = (
+                is_ready_for_boot(output, boot_config, config)
+                if runtime.in_initializing
+                else is_ready_for_input(output, config))
             idle_for = now - runtime.last_change
+            runtime.prev_output = prev_output
 
             snap = MonitorSnapshot(
                 output=output, hash=h0, prev_hash=prev_h_for_log,
@@ -3984,8 +4280,11 @@ def _run_monitor(agent_id):
     _session = agent.get("tmux_session") or agent.get("session", "")
     _path = agent.get("context_path") or agent.get("path", "")
     config = _load_config(_tool)
+    boot_config = _load_boot_config(_tool)
     log.info("Tool=%s session=%s path=%s", _tool, _session, _path)
     log.info("Confirm rules: %s", [(p.pattern, r, e) for p, r, e in config.confirm_rules])
+    if boot_config:
+        log.info("Boot rules: %s", [(p.pattern, r, e) for p, r, e in boot_config.confirm_rules])
     try:
         os.makedirs(PIDS_DIR, exist_ok=True)
     except OSError:
@@ -3995,7 +4294,8 @@ def _run_monitor(agent_id):
     max_restarts = 5
     for attempt in range(max_restarts + 1):
         try:
-            run_monitor_loop(_session, agent_id, config, store, pid_path=pid_path, events=events)
+            run_monitor_loop(_session, agent_id, config, store, pid_path=pid_path,
+                             events=events, boot_config=boot_config)
             break
         except Exception as e:
             log.error("Monitor crashed (attempt %d/%d): %s", attempt + 1, max_restarts, e, exc_info=True)
@@ -4196,46 +4496,6 @@ def _launch_agent(task, workdir):
     if not create_tmux_session(session, launch_cmd, workdir, env_setup=env_setup, inherit_env=True):
         return None
 
-    # Startup: wait for readiness, auto-confirm, send prompt.
-    # Ready-gated injection (matches cmd_run): the prompt is sent ONLY
-    # when ready_pattern was actually observed. Sending the prompt at
-    # a non-ready screen (e.g. an unmatched trust dialog or still-
-    # loading welcome screen) consumes the body as keystrokes into the
-    # dialog and the trailing Enter confirms the dialog — the prompt
-    # never reaches the agent.
-    if config.prompt_after_launch:
-        elapsed, confirmed, ready = 0.0, False, False
-        while elapsed < config.startup_wait:
-            time.sleep(1); elapsed += 1
-            output = capture_tmux(session)
-            if not output.strip():
-                continue
-            if confirmed and is_ready_for_input(output, config):
-                ready = True
-                break
-            confirm = should_auto_confirm(output, config)
-            if confirm:
-                tmux_send_input(session, confirm[0], send_enter=confirm[1])
-                confirmed = True
-                time.sleep(3); elapsed += 3
-                continue
-            if is_ready_for_input(output, config):
-                ready = True
-                break
-        if not ready:
-            log.warning(
-                "Ready prompt not detected after %ss; not injecting prompt. "
-                "Agent %s is alive in tmux session %s — inspect with: "
-                "camc capture %s",
-                int(config.startup_wait), agent_id, session, agent_id)
-        elif prompt.strip():
-            if config.prompt_submit_delay > 0:
-                tmux_send_input(session, prompt, send_enter=False)
-                time.sleep(config.prompt_submit_delay)
-                tmux_send_key(session, "Enter")
-            else:
-                tmux_send_input(session, prompt, send_enter=True)
-
     store = AgentStore()
     import socket as _sock
     ctx_name = context.get("name", "") if isinstance(context, dict) else ""
@@ -4260,7 +4520,7 @@ def _launch_agent(task, workdir):
     }
     store.save(agent)
 
-    # Spawn background monitor
+    # Spawn background monitor (boot + tool TOML during initializing).
     try:
         proc = subprocess.Popen(
             [sys.executable, os.path.abspath(sys.argv[0]), "_monitor", agent_id] if os.path.isfile(sys.argv[0]) else [sys.executable, "-m", "camc_pkg", "_monitor", agent_id],
@@ -6310,6 +6570,1520 @@ LoopStore.replace_envelope = _replace_envelope
 
 
 # ===========================================================================
+# api_store
+# ===========================================================================
+
+API_MODELS_FILE = os.path.join(CAM_DIR, "api-models.json")
+PROXY_RUNS_FILE = os.path.join(CAM_DIR, "proxy-runs.json")
+TOKEN_ENV_FILE = os.path.join(CAM_DIR, "token.env")
+
+DEFAULT_PROVIDER = "inference-hub"
+IHUB_BASE = "https://inference-api.nvidia.com/v1"
+
+CURATED_APIS = [
+    ("glm-5.1", "nvidia/zai-org/eccn-glm-5.1", ["glm", "glm51"]),
+    ("deepseek-v4-pro", "nvidia/deepseek-ai/eccn-deepseek-v4-pro", ["deepseek", "ds-v4"]),
+    ("kimi-k2.6", "nvidia/moonshotai/eccn-kimi-k2.6", ["kimi", "k2.6"]),
+    ("minimax-m2.7", "nvidia/minimaxai/eccn-minimax-m2.7", ["minimax", "m2.7"]),
+    ("qwen3-5-397b", "nvidia/qwen/eccn-qwen3-5-397b-a17b", ["qwen397", "qwen3.5"]),
+    ("nemotron-3-ultra", "nvidia/nvidia/eccn-nemotron-3-ultra", ["nemotron", "nemo-ultra"]),
+]
+
+
+def _default_seed():
+    apis = {}
+    for key, model, aliases in CURATED_APIS:
+        apis[key] = {
+            "provider": DEFAULT_PROVIDER,
+            "model": model,
+            "enabled": False,
+            "aliases": list(aliases),
+        }
+    return {
+        "version": 1,
+        "default": "glm-5.1",
+        "default_provider": DEFAULT_PROVIDER,
+        "providers": {
+            DEFAULT_PROVIDER: {
+                "display_name": "NVIDIA Inference Hub",
+                "auth_key": "inference_hub",
+                "env_names": [
+                    "INFERENCE_HUB_TOKEN",
+                    "INFERENCE_HUB_API_KEY",
+                    "INFERENCE_API_KEY",
+                ],
+                "base_url": IHUB_BASE,
+                "endpoints": {
+                    "openai_chat_completions": "/chat/completions",
+                    "anthropic_messages": "/messages",
+                },
+            },
+        },
+        "apis": apis,
+        "_templates": {},
+        "_aliases": {},
+        "_catalog": {},
+    }
+
+
+def load_api_models():
+    """Load api-models.json; return seed if missing."""
+    if not os.path.isfile(API_MODELS_FILE):
+        return _default_seed()
+    with open(API_MODELS_FILE, "r") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError("api-models.json must be a JSON object")
+    return data
+
+
+def save_api_models(data):
+    os.makedirs(CAM_DIR, exist_ok=True)
+    rebuild_aliases(data)
+    tmp = API_MODELS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp, API_MODELS_FILE)
+
+
+def ensure_ready():
+    """Create seed file if missing; return data dict."""
+    if os.path.isfile(API_MODELS_FILE):
+        data = load_api_models()
+        rebuild_aliases(data)
+        return data
+    data = _default_seed()
+    save_api_models(data)
+    return data
+
+
+def rebuild_aliases(data):
+    """Rebuild flat _aliases index from apis.*.aliases."""
+    aliases = {}
+    apis = data.get("apis") or {}
+    for key, entry in apis.items():
+        if not isinstance(entry, dict):
+            continue
+        aliases[key] = key
+        aliases[key.lower()] = key
+        for alias in entry.get("aliases") or []:
+            if isinstance(alias, str) and alias.strip():
+                aliases[alias] = key
+                aliases[alias.lower()] = key
+        model = entry.get("model")
+        if isinstance(model, str) and model:
+            aliases[model] = key
+    data["_aliases"] = aliases
+
+
+def resolve_api_name(data, name):
+    """Resolve API key from name or alias."""
+    if not name:
+        raise ValueError("--api name is required")
+    apis = data.get("apis") or {}
+    if name in apis:
+        return name
+    aliases = data.get("_aliases") or {}
+    key = aliases.get(name) or aliases.get(name.lower())
+    if key and key in apis:
+        return key
+    raise ValueError("unknown API %r (not in api-models.json)" % name)
+
+
+def get_api_entry(data, name):
+    key = resolve_api_name(data, name)
+    return key, dict((data.get("apis") or {}).get(key) or {})
+
+
+def get_provider(data, provider_id):
+    providers = data.get("providers") or {}
+    if provider_id not in providers:
+        raise ValueError("unknown provider %r" % provider_id)
+    return dict(providers[provider_id])
+
+
+def upstream_chat_url(data, api_entry, provider):
+    if api_entry.get("url"):
+        return str(api_entry["url"])
+    base = str(provider.get("base_url") or "").rstrip("/")
+    endpoints = provider.get("endpoints") or {}
+    path = endpoints.get("openai_chat_completions") or "/chat/completions"
+    if not path.startswith("/"):
+        path = "/" + path
+    return base + path
+
+
+def list_apis(data, show_all=False):
+    rows = []
+    for key, entry in sorted((data.get("apis") or {}).items()):
+        if not isinstance(entry, dict):
+            continue
+        enabled = entry.get("enabled", True)
+        if not show_all and enabled is False:
+            continue
+        rows.append({
+            "name": key,
+            "model": entry.get("model", ""),
+            "provider": entry.get("provider", data.get("default_provider")),
+            "enabled": enabled,
+            "aliases": entry.get("aliases") or [],
+        })
+    return rows
+
+
+def _fetch_ihub_model_ids(token, timeout=5.0):
+    url = IHUB_BASE + "/models"
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": "Bearer %s" % token},
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+    ids = []
+    for item in body.get("data") or []:
+        if isinstance(item, dict) and item.get("id"):
+            ids.append(str(item["id"]))
+    return ids
+
+
+def check_provider(data, token_resolver):
+    """Ping IHUB, refresh enabled flags and _catalog. Returns summary dict."""
+
+    provider_id = data.get("default_provider") or DEFAULT_PROVIDER
+    provider = get_provider(data, provider_id)
+    auth_key = provider.get("auth_key") or "inference_hub"
+    token, source = resolve_token(auth_key, provider.get("env_names") or [], cli_token=None)
+
+    result = {
+        "provider": provider_id,
+        "reachable": False,
+        "token_source": source,
+        "model_count": 0,
+        "apis": [],
+        "error": None,
+    }
+
+    if not token:
+        result["error"] = "no token found; set INFERENCE_HUB_TOKEN in ~/.cam/token.env"
+        return result
+
+    try:
+        ids = set(_fetch_ihub_model_ids(token))
+        result["reachable"] = True
+        result["model_count"] = len(ids)
+    except (urllib.error.URLError, urllib.error.HTTPError, socket.timeout, ValueError) as exc:
+        result["error"] = str(exc)
+        return result
+
+    apis = data.get("apis") or {}
+    for key, entry in apis.items():
+        if not isinstance(entry, dict):
+            continue
+        model = entry.get("model")
+        if not model:
+            continue
+        if model in ids:
+            entry["enabled"] = True
+            entry["enabled_reason"] = "ihub_catalog"
+        else:
+            entry["enabled"] = False
+            entry["enabled_reason"] = "id_not_on_key"
+        result["apis"].append({
+            "name": key,
+            "model": model,
+            "enabled": entry.get("enabled"),
+            "reason": entry.get("enabled_reason"),
+        })
+
+    data["_catalog"] = {
+        "synced_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "provider": provider_id,
+        "ids": sorted(ids),
+    }
+    save_api_models(data)
+    return result
+
+
+# ===========================================================================
+# api_token
+# ===========================================================================
+
+LEGACY_TOKEN_ENV = os.path.expanduser("~/.cam/inference-hub.env")
+MY_TOKENS_YAML = os.path.expanduser("~/.my_tokens.yaml")
+
+
+def _read_token_env(path):
+    if not os.path.isfile(path):
+        return {}
+    out = {}
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            out[k.strip()] = v.strip().strip("'\"")
+    return out
+
+
+def _read_yaml_flat(path):
+    if not os.path.isfile(path):
+        return {}
+    out = {}
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" not in line:
+                continue
+            k, _, v = line.partition(":")
+            out[k.strip()] = v.strip().strip("'\"")
+    return out
+
+
+def _normalize_key(key):
+    return re.sub(r"[-\s]+", "_", str(key or "").lower())
+
+
+def resolve_token(auth_key, env_names, cli_token=None):
+    """Return (token, source_label). First hit wins."""
+    if cli_token:
+        return cli_token.strip(), "cli"
+
+    names = list(env_names or [])
+    ak = _normalize_key(auth_key)
+    if ak and ak not in [_normalize_key(n) for n in names]:
+        names.append(auth_key)
+
+    for name in names:
+        val = os.environ.get(name, "").strip()
+        if val:
+            return val, "env:%s" % name
+
+    for path, label in ((TOKEN_ENV_FILE, "token.env"), (LEGACY_TOKEN_ENV, "inference-hub.env")):
+        file_vals = _read_token_env(path)
+        for name in names:
+            if name in file_vals and file_vals[name]:
+                return file_vals[name], "%s:%s" % (label, name)
+        if ak in file_vals and file_vals[ak]:
+            return file_vals[ak], "%s:%s" % (label, ak)
+
+    yaml_vals = _read_yaml_flat(MY_TOKENS_YAML)
+    for key in (auth_key, ak):
+        if key in yaml_vals and yaml_vals[key]:
+            return yaml_vals[key], "my_tokens.yaml:%s" % key
+
+    return "", "none"
+
+
+# ===========================================================================
+# api_resolver
+# ===========================================================================
+
+PROXY_ROUTES = {
+    ("anthropic_messages", "openai_chat_completions"): {
+        "route": "completions_to_messages",
+        "port": 18324,
+    },
+}
+
+TOOL_PROTOCOL = {
+    "claude": "anthropic_messages",
+    "codex": "openai_responses",
+    "cursor": "anthropic_messages",
+}
+
+# Supported today: Claude + curated Inference Hub models only.
+API_SUPPORTED_TOOLS = frozenset(["claude"])
+CURATED_API_KEYS = frozenset(key for key, _model, _aliases in CURATED_APIS)
+
+# One shared Claude Code config for all --api runs (onboarding once).
+CLAUDE_API_CONFIG_DIR = os.path.join(CAM_DIR, "claude-api")
+
+
+def supported_api_models_text():
+    """Comma-separated curated API keys for error messages."""
+    return ", ".join(sorted(CURATED_API_KEYS))
+
+
+def validate_api_run(tool, api_key):
+    """Raise ValueError if tool/model is not supported for --api today."""
+    if tool not in API_SUPPORTED_TOOLS:
+        raise ValueError(
+            "--api is not supported for tool %r. "
+            "Only Claude is supported today: camc run -t claude --api NAME. "
+            "Codex and Cursor: use normal login without --api "
+            "(future Codex will use CODEX_HOME isolation; not implemented). "
+            "Supported models: %s."
+            % (tool, supported_api_models_text())
+        )
+    if api_key not in CURATED_API_KEYS:
+        raise ValueError(
+            "API %r is not supported for --api. "
+            "Only curated Inference Hub models are supported: %s. "
+            "Run: camc api check"
+            % (api_key, supported_api_models_text())
+        )
+
+
+def ensure_claude_api_config_dir():
+    """Seed ~/.cam/claude-api/ so first-run dialogs only happen once."""
+    os.makedirs(CLAUDE_API_CONFIG_DIR, exist_ok=True)
+    settings_path = os.path.join(CLAUDE_API_CONFIG_DIR, "settings.json")
+    claude_path = os.path.join(CLAUDE_API_CONFIG_DIR, ".claude.json")
+    if os.path.isfile(settings_path) and os.path.isfile(claude_path):
+        return CLAUDE_API_CONFIG_DIR
+
+    settings = {"theme": "dark"}
+    claude_json = {
+        "numStartups": 1,
+        "customApiKeyResponses": {
+            "approved": ["sk-camc-local"],
+            "rejected": [],
+        },
+        "tipsHistory": {"new-user-warmup": 1},
+    }
+    # Reuse any existing onboarded claude-* profile as donor.
+    try:
+        for name in sorted(os.listdir(CAM_DIR)):
+            if not name.startswith("claude-"):
+                continue
+            donor = os.path.join(CAM_DIR, name)
+            try:
+                with open(os.path.join(donor, "settings.json"), "r") as f:
+                    settings = json.load(f)
+            except (IOError, ValueError):
+                pass
+            try:
+                with open(os.path.join(donor, ".claude.json"), "r") as f:
+                    raw = json.load(f)
+                claude_json["numStartups"] = max(int(raw.get("numStartups") or 1), 1)
+                if isinstance(raw.get("customApiKeyResponses"), dict):
+                    approved = list(raw["customApiKeyResponses"].get("approved") or [])
+                    if "sk-camc-local" not in approved:
+                        approved.append("sk-camc-local")
+                    claude_json["customApiKeyResponses"] = {
+                        "approved": approved,
+                        "rejected": list(raw["customApiKeyResponses"].get("rejected") or []),
+                    }
+                if isinstance(raw.get("tipsHistory"), dict):
+                    claude_json["tipsHistory"] = dict(raw["tipsHistory"])
+            except (IOError, ValueError):
+                pass
+            break
+    except OSError:
+        pass
+
+    with open(settings_path, "w") as f:
+        json.dump(settings, f, indent=2)
+        f.write("\n")
+    with open(claude_path, "w") as f:
+        json.dump(claude_json, f, indent=2)
+        f.write("\n")
+    return CLAUDE_API_CONFIG_DIR
+
+
+def resolve_run_plan(tool, api_name, no_api_proxy=False, proxy_debug=False):
+    """Return plan dict for camc run --api."""
+    data = ensure_ready()
+    key = resolve_api_name(data, api_name)
+    validate_api_run(tool, key)
+    api_entry = dict((data.get("apis") or {}).get(key) or {})
+    if api_entry.get("enabled") is False:
+        reason = api_entry.get("enabled_reason") or "disabled"
+        raise ValueError("API %r is disabled (%s)" % (key, reason))
+
+    provider_id = api_entry.get("provider") or data.get("default_provider")
+    provider = get_provider(data, provider_id)
+    upstream_url = upstream_chat_url(data, api_entry, provider)
+    tool_proto = TOOL_PROTOCOL.get(tool, "anthropic_messages")
+    upstream_proto = "openai_chat_completions"
+    client_model = key
+
+    plan = {
+        "name": key,
+        "tool": tool,
+        "provider": provider_id,
+        "model": api_entry.get("model"),
+        "mode": "direct",
+        "route": None,
+        "upstream_url": upstream_url,
+        "local_base_url": upstream_url,
+        "upstream_proto": upstream_proto,
+        "tool_proto": tool_proto,
+        "auth_key": provider.get("auth_key") or "inference_hub",
+        "env_names": provider.get("env_names") or [],
+        "proxy_debug": proxy_debug,
+        "env": {},
+    }
+
+    if tool_proto == upstream_proto:
+        plan["mode"] = "direct"
+        plan["local_base_url"] = upstream_url
+    else:
+        route_info = PROXY_ROUTES.get((tool_proto, upstream_proto))
+        if not route_info:
+            raise ValueError(
+                "tool %r cannot use API %r without proxy (no route %s -> %s)"
+                % (tool, key, tool_proto, upstream_proto)
+            )
+        if no_api_proxy:
+            raise ValueError(
+                "API %r requires proxy route %s but --no-api-proxy was set"
+                % (key, route_info["route"])
+            )
+        plan["mode"] = "proxy"
+        plan["route"] = route_info["route"]
+        plan["proxy_port"] = route_info["port"]
+        plan["local_base_url"] = "http://127.0.0.1:%d" % route_info["port"]
+
+    plan["env"] = _build_env_overrides(tool, plan, client_model)
+    return plan
+
+
+def _build_env_overrides(tool, plan, client_model):
+    env = {}
+    if tool == "claude":
+        base = plan["local_base_url"].rstrip("/")
+        env["ANTHROPIC_BASE_URL"] = base
+        env["ANTHROPIC_API_KEY"] = "sk-camc-local"
+        env["ANTHROPIC_MODEL"] = client_model
+        env["ANTHROPIC_AUTH_TOKEN"] = ""
+        env["CLAUDE_CONFIG_DIR"] = ensure_claude_api_config_dir()
+    return env
+
+
+# ===========================================================================
+# proxy.common
+# ===========================================================================
+
+DROP_ANTHROPIC_KEYS = frozenset({
+    "output_config",
+    "context_management",
+    "metadata",
+})
+
+
+def json_dumps(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def json_loads(data):
+    return json.loads(data.decode("utf-8"))
+
+
+def resolve_upstream_model(model, default):
+    """Map camc API profile names to Inference Hub model ids."""
+    value = str(model or default or "").strip()
+    default = str(default or "").strip()
+    if value.endswith("[1m]"):
+        value = value[:-4]
+    if not value and default:
+        value = default
+    if not value:
+        return default
+
+    # Already a full IHUB model id (vendor/org/...).
+    if "/" in value:
+        return value
+
+    mapped = _ihub_model_for_api_name(value)
+    if mapped:
+        return mapped
+
+    # Proxy started with --upstream-model; use when client model is the alias.
+    if default and "/" in default:
+        return default
+
+    return value
+
+
+def _ihub_model_for_api_name(name):
+    """Resolve short API name via ~/.cam/api-models.json."""
+    if not name:
+        return None
+    try:
+        data = ensure_ready()
+        key = resolve_api_name(data, name)
+        entry = (data.get("apis") or {}).get(key) or {}
+        model = entry.get("model")
+        if isinstance(model, str) and model.strip():
+            return model.strip()
+    except (ValueError, IOError, OSError):
+        pass
+    return None
+
+
+def text_from_content(content):
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return "" if content is None else str(content)
+    parts = []
+    for part in content:
+        if isinstance(part, dict) and part.get("type") == "text":
+            text = part.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+        elif isinstance(part, str):
+            parts.append(part)
+    return "\n".join(x for x in parts if x)
+
+
+def call_chat_completions(payload, api_key, timeout, url=None):
+    body = json_dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        body,
+        method="POST",
+        headers={
+            "Authorization": "Bearer %s" % api_key,
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json_loads(resp.read())
+
+
+def upstream_error_detail(exc):
+    return exc.read().decode("utf-8", "replace")
+
+
+class ProxyLogger(object):
+    def __init__(self, route, enabled, path):
+        self.route = route
+        self.enabled = bool(enabled)
+        self.path = path
+
+    def log(self, event, **fields):
+        if not self.enabled:
+            return
+        row = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "event": event}
+        row.update(fields)
+        try:
+            d = os.path.dirname(self.path)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            with open(self.path, "a") as f:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
+
+class RequestTimer(object):
+    def __init__(self):
+        self._start = time.time()
+
+    @property
+    def elapsed_ms(self):
+        return int((time.time() - self._start) * 1000)
+
+
+def last_user_preview_messages(req, limit=120):
+    for msg in reversed(req.get("messages") or []):
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            text = text_from_content(msg.get("content"))
+            if text:
+                return text[:limit]
+    return ""
+
+
+def summarize_chat_response(raw):
+    choices = raw.get("choices") or []
+    msg = ((choices[0] or {}).get("message") or {}) if choices else {}
+    return {
+        "finish_reason": (choices[0] or {}).get("finish_reason") if choices else None,
+        "has_tool_calls": bool(msg.get("tool_calls")),
+        "content_len": len(str(msg.get("content") or "")),
+    }
+
+
+# ===========================================================================
+# proxy.textual_tools
+# ===========================================================================
+
+TOOL_CALL_RE = re.compile(
+    r"<tool_call>\s*(?P<name>[^<\s]+)(?P<body>.*?)</\s*tool_call\s*>",
+    re.DOTALL,
+)
+ARG_RE = re.compile(
+    r"<arg_key>\s*(?P<key>.*?)\s*</\s*arg_key\s*>\s*"
+    r"<arg_value>\s*(?P<value>.*?)\s*</\s*arg_value\s*>",
+    re.DOTALL,
+)
+
+# DeepSeek DSML markers use fullwidth vertical bar (U+FF5C).
+_DSML = "\uFF5C"
+DSML_INVOKE_RE = re.compile(
+    r"<" + _DSML + r"DSML" + _DSML
+    + r"invoke\s+name=\"(?P<name>[^\"]+)\"\s*>(?P<body>.*?)</"
+    + _DSML + r"DSML" + _DSML + r"invoke>",
+    re.DOTALL,
+)
+DSML_PARAM_RE = re.compile(
+    r"<" + _DSML + r"DSML" + _DSML
+    + r"parameter\s+name=\"(?P<key>[^\"]+)\"[^>]*>(?P<value>.*?)</"
+    + _DSML + r"DSML" + _DSML + r"parameter>",
+    re.DOTALL,
+)
+DSML_STRAY_RE = re.compile(
+    r"</?" + _DSML + r"DSML" + _DSML + r"(?:tool_calls|function_calls|invoke|parameter)[^>]*>",
+    re.DOTALL,
+)
+
+
+def tool_names(req):
+    names = set()
+    for tool in req.get("tools") or []:
+        if isinstance(tool, dict) and isinstance(tool.get("name"), str):
+            names.add(tool["name"])
+    return names
+
+
+def normalize_tool_name(raw_name, valid_names):
+    name = raw_name.strip()
+    if name in valid_names:
+        return name
+    underscored = name.replace("-", "_")
+    if underscored in valid_names:
+        return underscored
+    return name
+
+
+def _tool_block(name, args, idx):
+    return {
+        "type": "tool_use",
+        "id": "toolu_ihub_%d_%d" % (int(time.time() * 1000), idx),
+        "name": name,
+        "input": args,
+    }
+
+
+def parse_textual_tool_calls(text, valid_names):
+    blocks = []
+    for idx, match in enumerate(TOOL_CALL_RE.finditer(text), start=1):
+        args = {}
+        for arg in ARG_RE.finditer(match.group("body")):
+            key = arg.group("key").strip()
+            if key:
+                args[key] = arg.group("value").strip()
+        blocks.append(_tool_block(
+            normalize_tool_name(match.group("name"), valid_names), args, idx))
+    return blocks, TOOL_CALL_RE.sub("", text).strip()
+
+
+def parse_dsml_tool_calls(text, valid_names):
+    blocks = []
+    for idx, match in enumerate(DSML_INVOKE_RE.finditer(text), start=1):
+        args = {}
+        for arg in DSML_PARAM_RE.finditer(match.group("body")):
+            key = arg.group("key").strip()
+            if key:
+                args[key] = arg.group("value").strip()
+        blocks.append(_tool_block(
+            normalize_tool_name(match.group("name"), valid_names), args, idx))
+    if not blocks:
+        return [], text
+    cleaned = DSML_INVOKE_RE.sub("", text)
+    cleaned = DSML_STRAY_RE.sub("", cleaned).strip()
+    return blocks, cleaned
+
+
+def parse_dsml_fragment(text, valid_names):
+    """Handle truncated DSML (closing tags only) from DeepSeek."""
+    marker = "</" + _DSML + "DSML" + _DSML + "invoke>"
+    if marker not in text and (_DSML + "DSML" + _DSML) not in text:
+        return [], text
+    if DSML_INVOKE_RE.search(text):
+        return [], text
+    body = text.split(marker)[0]
+    body = DSML_STRAY_RE.sub("", body).strip()
+    if not body:
+        return [], text
+    name = "Task" if "Task" in valid_names else None
+    if not name:
+        for candidate in ("Bash", "Write", "Edit", "Read"):
+            if candidate in valid_names:
+                name = candidate
+                break
+    if not name:
+        return [], text
+    inp = {"prompt": body} if name == "Task" else {"command": "true"}
+    if name != "Task":
+        inp = {"description": body[:2000]}
+    return [_tool_block(name, inp, 1)], ""
+
+
+def _extract_json_objects(text):
+    """Yield top-level {...} substrings with balanced braces."""
+    i = 0
+    while i < len(text):
+        if text[i] != "{":
+            i += 1
+            continue
+        depth = 0
+        for j in range(i, len(text)):
+            ch = text[j]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    yield text[i:j + 1]
+                    i = j + 1
+                    break
+        else:
+            break
+
+
+def _infer_tool_from_args(args):
+    if not isinstance(args, dict) or not args:
+        return None
+    keys = set(args.keys())
+    if "file_path" in keys or "path" in keys and "pattern" not in keys and "command" not in keys:
+        if "old_string" in keys or "new_string" in keys or "replace_all" in keys:
+            return "Edit"
+        return "Read"
+    if "pattern" in keys and ("path" in keys or "glob_pattern" in keys):
+        return "Glob"
+    if "command" in keys:
+        return "Bash"
+    if "prompt" in keys or "description" in keys:
+        return "Task"
+    return None
+
+
+def parse_json_tool_calls(text, valid_names):
+    """GPT-OSS sometimes emits tool JSON as plain text."""
+    blocks = []
+    remaining = text
+    for chunk in list(_extract_json_objects(text)):
+        try:
+            obj = json.loads(chunk)
+        except (ValueError, TypeError):
+            continue
+        name = obj.get("tool") or obj.get("name")
+        args = obj.get("arguments") or obj.get("input")
+        if not isinstance(name, str) or not name.strip():
+            name = _infer_tool_from_args(obj if isinstance(args, dict) else obj)
+            args = obj if isinstance(args, dict) else {}
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if not isinstance(args, dict):
+            args = obj if isinstance(obj, dict) else {"value": args}
+        blocks.append(_tool_block(normalize_tool_name(name, valid_names), args, len(blocks) + 1))
+        remaining = remaining.replace(chunk, "", 1)
+    return blocks, remaining.strip()
+
+
+def parse_all_textual_tool_calls(text, valid_names):
+    cleaned = text.split("<|call|>")[0].split("</|call|>")[0]
+    blocks, remaining = parse_textual_tool_calls(cleaned, valid_names)
+    if blocks:
+        return blocks, remaining
+    blocks, remaining = parse_dsml_tool_calls(remaining, valid_names)
+    if blocks:
+        return blocks, remaining
+    blocks, remaining = parse_json_tool_calls(remaining, valid_names)
+    if blocks:
+        return blocks, remaining
+    return parse_dsml_fragment(remaining, valid_names)
+
+
+def rewrite_anthropic_response(req, resp):
+    text_parts = []
+    passthrough = []
+    for part in resp.get("content") or []:
+        if isinstance(part, dict) and part.get("type") == "text":
+            text = part.get("text")
+            if isinstance(text, str):
+                text_parts.append(text)
+        elif isinstance(part, dict):
+            passthrough.append(part)
+    text = "\n".join(text_parts)
+    tool_blocks, remaining = parse_all_textual_tool_calls(text, tool_names(req))
+    if not tool_blocks:
+        return resp
+    rewritten = dict(resp)
+    content = []
+    if remaining:
+        content.append({"type": "text", "text": remaining})
+    content.extend(passthrough)
+    content.extend(tool_blocks)
+    rewritten["content"] = content
+    rewritten["stop_reason"] = "tool_use"
+    rewritten.setdefault("stop_sequence", None)
+    return rewritten
+
+
+# ===========================================================================
+# proxy.messages
+# ===========================================================================
+
+ROUTE = "completions_to_messages"
+
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+
+
+def anthropic_tools_to_openai(tools):
+    out = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        name = tool.get("name")
+        if not name:
+            continue
+        schema = tool.get("input_schema") or {"type": "object", "properties": {}}
+        out.append({
+            "type": "function",
+            "function": {
+                "name": str(name),
+                "description": str(tool.get("description") or ""),
+                "parameters": schema,
+            },
+        })
+    return out
+
+
+def _append_system(messages, text):
+    text = str(text or "").strip()
+    if not text:
+        return
+    if messages and messages[0].get("role") == "system":
+        prev = str(messages[0].get("content") or "").strip()
+        messages[0]["content"] = (prev + "\n\n" + text).strip() if prev else text
+    else:
+        messages.insert(0, {"role": "system", "content": text})
+
+
+def anthropic_messages_to_chat(req, upstream_model):
+    messages = []
+
+    system = req.get("system")
+    if isinstance(system, str) and system.strip():
+        _append_system(messages, system)
+    elif isinstance(system, list):
+        parts = []
+        for block in system:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        if parts:
+            _append_system(messages, "\n\n".join(parts))
+
+    for msg in req.get("messages") or []:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "user")
+        content = msg.get("content")
+
+        # IHUB/Qwen reject system messages after the first turn — fold into user text.
+        if role == "system":
+            if isinstance(content, str):
+                _append_system(messages, content)
+            elif isinstance(content, list):
+                parts = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text = block.get("text")
+                        if isinstance(text, str):
+                            parts.append(text)
+                if parts:
+                    _append_system(messages, "\n\n".join(parts))
+            continue
+
+        if isinstance(content, str):
+            messages.append({"role": role, "content": content})
+            continue
+        if not isinstance(content, list):
+            continue
+
+        if role == "assistant":
+            text_parts = []
+            tool_calls = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    text_parts.append(str(part.get("text") or ""))
+                elif part.get("type") == "tool_use":
+                    tool_calls.append({
+                        "id": str(part.get("id") or "call_%s" % uuid.uuid4().hex[:8]),
+                        "type": "function",
+                        "function": {
+                            "name": str(part.get("name") or "tool"),
+                            "arguments": json_dumps(part.get("input") or {}),
+                        },
+                    })
+            assistant = {"role": "assistant", "content": "\n".join(text_parts) if text_parts else ""}
+            if tool_calls:
+                assistant["tool_calls"] = tool_calls
+            messages.append(assistant)
+            continue
+
+        if role == "user":
+            text_parts = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    text_parts.append(str(part.get("text") or ""))
+                elif part.get("type") == "tool_result":
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": str(part.get("tool_use_id") or ""),
+                        "content": text_from_content(part.get("content")) or "",
+                    })
+            if text_parts:
+                messages.append({"role": "user", "content": "\n".join(text_parts)})
+            continue
+
+        messages.append({"role": role, "content": text_from_content(content)})
+
+    payload = {
+        "model": upstream_model,
+        "messages": messages,
+        "max_tokens": int(req.get("max_tokens") or 4096),
+    }
+    if "temperature" in req:
+        payload["temperature"] = req["temperature"]
+    if "top_p" in req:
+        payload["top_p"] = req["top_p"]
+    tools = anthropic_tools_to_openai(req.get("tools") or [])
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+    return payload
+
+
+def _assistant_blocks_from_chat_message(msg):
+    """Map OpenAI chat message -> Anthropic content blocks."""
+    content = []
+    text = msg.get("content")
+    reasoning = msg.get("reasoning_content")
+    tool_calls = msg.get("tool_calls") or []
+
+    # Proxied reasoning models often leave content empty. Claude Code expects
+    # text/tool_use blocks — not thinking blocks with null signatures.
+    if not isinstance(text, str) or not text.strip():
+        if isinstance(reasoning, str) and reasoning.strip():
+            text = reasoning
+
+    if isinstance(text, str) and text.strip():
+        content.append({"type": "text", "text": text})
+
+    for call in tool_calls:
+        fn = call.get("function") or {}
+        args_raw = fn.get("arguments") or "{}"
+        try:
+            args = json_loads(str(args_raw).encode("utf-8"))
+        except (ValueError, TypeError):
+            args = {"raw": str(args_raw)}
+        content.append({
+            "type": "tool_use",
+            "id": str(call.get("id") or "toolu_%s" % uuid.uuid4().hex[:12]),
+            "name": str(fn.get("name") or "tool"),
+            "input": args if isinstance(args, dict) else {"value": args},
+        })
+    return content, bool(tool_calls)
+
+
+def chat_to_anthropic_message(req, chat_raw):
+    choices = chat_raw.get("choices") or []
+    msg = ((choices[0] or {}).get("message") or {}) if choices else {}
+    content, has_tools = _assistant_blocks_from_chat_message(msg)
+
+    usage = chat_raw.get("usage") or {}
+    stop_reason = "tool_use" if has_tools else "end_turn"
+    return {
+        "id": str(chat_raw.get("id") or "msg_%s" % uuid.uuid4().hex[:12]),
+        "type": "message",
+        "role": "assistant",
+        "model": req.get("model"),
+        "stop_reason": stop_reason,
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": int(usage.get("prompt_tokens") or 0),
+            "output_tokens": int(usage.get("completion_tokens") or 0),
+        },
+        "content": content or [{"type": "text", "text": ""}],
+    }
+
+
+def sse_events(message):
+    start = dict(message)
+    start["content"] = []
+    start["stop_reason"] = None
+    start["stop_sequence"] = None
+    chunks = [
+        "event: message_start\n"
+        "data: %s\n\n" % json_dumps({"type": "message_start", "message": start})
+    ]
+    for idx, block in enumerate(message.get("content") or []):
+        start_block = block
+        if block.get("type") == "text":
+            start_block = {"type": "text", "text": ""}
+        elif block.get("type") == "tool_use":
+            start_block = {
+                "type": "tool_use",
+                "id": block.get("id"),
+                "name": block.get("name"),
+                "input": {},
+            }
+        chunks.append(
+            "event: content_block_start\n"
+            "data: %s\n\n" % json_dumps({
+                "type": "content_block_start",
+                "index": idx,
+                "content_block": start_block,
+            })
+        )
+        if block.get("type") == "text" and block.get("text"):
+            chunks.append(
+                "event: content_block_delta\n"
+                "data: %s\n\n" % json_dumps({
+                    "type": "content_block_delta",
+                    "index": idx,
+                    "delta": {"type": "text_delta", "text": block.get("text")},
+                })
+            )
+        elif block.get("type") == "tool_use":
+            chunks.append(
+                "event: content_block_delta\n"
+                "data: %s\n\n" % json_dumps({
+                    "type": "content_block_delta",
+                    "index": idx,
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": json_dumps(block.get("input") or {}),
+                    },
+                })
+            )
+        chunks.append(
+            "event: content_block_stop\n"
+            "data: %s\n\n" % json_dumps({"type": "content_block_stop", "index": idx})
+        )
+    chunks.append(
+        "event: message_delta\n"
+        "data: %s\n\n" % json_dumps({
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": message.get("stop_reason"),
+                "stop_sequence": message.get("stop_sequence"),
+            },
+            "usage": message.get("usage") or {},
+        })
+    )
+    chunks.append("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+    return "".join(chunks).encode("utf-8")
+
+
+class Handler(BaseHTTPRequestHandler):
+    def _path(self):
+        return urlparse(self.path).path.rstrip("/") or "/"
+
+    def do_GET(self):
+        path = self._path()
+        if path in ("/", "/health", "/v1"):
+            self._send_json({"ok": True, "route": ROUTE})
+            return
+        if path == "/v1/models":
+            self._send_json({
+                "object": "list",
+                "data": [{"id": self.server.model_alias, "object": "model"}],
+            })
+            return
+        self.send_error(404)
+
+    def do_POST(self):
+        if self._path() != "/v1/messages":
+            self.send_error(404)
+            return
+        timer = RequestTimer()
+        client_model = ""
+        upstream_model = ""
+        stream = False
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+            req = json_loads(self.rfile.read(length))
+            for key in list(req.keys()):
+                if key in DROP_ANTHROPIC_KEYS:
+                    req.pop(key, None)
+            stream = bool(req.get("stream"))
+            client_model = str(req.get("model") or "")
+            upstream_model = resolve_upstream_model(req.get("model"), self.server.upstream_model)
+            self.server.debug.log(
+                "request_start",
+                path=self.path,
+                client_model=client_model,
+                upstream_model=upstream_model,
+                stream=stream,
+                max_tokens=req.get("max_tokens"),
+                message_count=len(req.get("messages") or []),
+                tool_count=len(req.get("tools") or []),
+                user_preview=last_user_preview_messages(req),
+            )
+            chat_payload = anthropic_messages_to_chat(req, upstream_model)
+            if stream:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.flush()
+            raw = call_chat_completions(
+                chat_payload, self.server.api_key, self.server.timeout,
+                url=self.server.upstream_url,
+            )
+            msg = rewrite_anthropic_response(req, chat_to_anthropic_message(req, raw))
+            self.server.debug.log(
+                "request_done",
+                path=self.path,
+                client_model=client_model,
+                upstream_model=upstream_model,
+                stream=stream,
+                latency_ms=timer.elapsed_ms,
+                stop_reason=msg.get("stop_reason"),
+                usage=msg.get("usage") or {},
+                **summarize_chat_response(raw)
+            )
+            if stream:
+                self.wfile.write(sse_events(msg))
+                self.wfile.flush()
+            else:
+                self._send_json(msg)
+        except urllib.error.HTTPError as exc:
+            detail = upstream_error_detail(exc)[:500]
+            self.server.debug.log(
+                "request_error",
+                path=self.path,
+                client_model=client_model,
+                upstream_model=upstream_model,
+                stream=stream,
+                latency_ms=timer.elapsed_ms,
+                status=exc.code,
+                error=detail,
+            )
+            self._send_json(
+                {"type": "error", "error": {"type": "upstream_error", "message": detail}},
+                status=exc.code,
+            )
+        except Exception as exc:
+            detail = str(exc)
+            status = 500
+            self.server.debug.log(
+                "request_error",
+                path=self.path,
+                client_model=client_model,
+                upstream_model=upstream_model,
+                stream=stream,
+                latency_ms=timer.elapsed_ms,
+                status=status,
+                error=detail,
+            )
+            self._send_json(
+                {"type": "error", "error": {"type": "proxy_error", "message": detail}},
+                status=status,
+            )
+
+    def _send_json(self, obj, status=200):
+        self._send_bytes(json_dumps(obj).encode("utf-8"), "application/json", status)
+
+    def _send_bytes(self, body, content_type, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        sys.stdout.write("[%s] %s - %s\n" % (ROUTE, self.address_string(), fmt % args))
+        sys.stdout.flush()
+
+
+class Server(ThreadingHTTPServer):
+    def __init__(self, addr, handler, api_key, model_alias, upstream_model,
+                 upstream_url, timeout, debug):
+        ThreadingHTTPServer.__init__(self, addr, handler)
+        self.api_key = api_key
+        self.model_alias = model_alias
+        self.upstream_model = upstream_model
+        self.upstream_url = upstream_url
+        self.timeout = timeout
+        self.debug = debug
+
+
+def run_proxy(argv=None):
+    p = argparse.ArgumentParser(description="Route: chat/completions -> anthropic/messages")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=18324)
+    p.add_argument("--model-alias", default="glm-5.1")
+    p.add_argument("--upstream-model", default="")
+    p.add_argument("--upstream-url", required=True)
+    p.add_argument("--ready-file", default="")
+    p.add_argument("--timeout", type=float, default=600.0)
+    p.add_argument("--debug", action="store_true")
+    p.add_argument("--debug-log", default="")
+    args = p.parse_args(argv)
+
+    api_key = os.environ.get("INFERENCE_HUB_API_KEY", "").strip()
+    if not api_key:
+        api_key = os.environ.get("INFERENCE_HUB_TOKEN", "").strip()
+    if not api_key:
+        raise SystemExit("INFERENCE_HUB_API_KEY is required for proxy")
+
+    upstream = resolve_upstream_model(args.upstream_model or args.model_alias, args.model_alias)
+    debug_log = args.debug_log or os.path.join(LOGS_DIR, "proxy-messages-llm.jsonl")
+    debug = ProxyLogger(ROUTE, args.debug, debug_log)
+    httpd = Server(
+        (args.host, args.port),
+        Handler,
+        api_key=api_key,
+        model_alias=args.model_alias,
+        upstream_model=upstream,
+        upstream_url=args.upstream_url,
+        timeout=args.timeout,
+        debug=debug,
+    )
+    host, port = httpd.server_address[:2]
+    if args.ready_file:
+        with open(args.ready_file, "w") as handle:
+            handle.write("%s:%s" % (host, port))
+    sys.stdout.write(
+        "[%s] http://%s:%s/v1/messages -> %s model=%s\n" % (
+            ROUTE, host, port, args.upstream_url, upstream)
+    )
+    sys.stdout.flush()
+    httpd.serve_forever()
+    return 0
+
+
+# ===========================================================================
+# proxy.manager
+# ===========================================================================
+
+ROUTE_DEFAULTS = {
+    "completions_to_messages": {
+        "port": 18324,
+        "from_proto": "anthropic_messages",
+        "to_proto": "openai_chat_completions",
+    },
+}
+
+
+def _load_runs():
+    if not os.path.isfile(PROXY_RUNS_FILE):
+        return {}
+    try:
+        with open(PROXY_RUNS_FILE, "r") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (IOError, ValueError):
+        return {}
+
+
+def _save_runs(data):
+    os.makedirs(CAM_DIR, exist_ok=True)
+    tmp = PROXY_RUNS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp, PROXY_RUNS_FILE)
+
+
+def _run_key(route, upstream_url):
+    raw = "%s|%s" % (route, upstream_url or "")
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _pid_alive(pid):
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _health_ok(port, timeout=1.0):
+    url = "http://127.0.0.1:%d/health" % int(port)
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return resp.status == 200
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError):
+        return False
+
+
+def _camc_argv():
+    script = os.path.abspath(sys.argv[0])
+    if os.path.isfile(script):
+        return [sys.executable, script, "_proxy"]
+    return [sys.executable, "-m", "camc_pkg", "_proxy"]
+
+
+def _start_proxy(route, port, model_alias, upstream_model, upstream_url,
+                 proxy_debug=False, token=""):
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    ready_file = os.path.join(CAM_DIR, "proxy-ready-%s.tmp" % route)
+    log_path = os.path.join(LOGS_DIR, "proxy-%s.log" % route)
+    argv = _camc_argv() + [
+        route,
+        "--port", str(port),
+        "--model-alias", model_alias,
+        "--upstream-model", upstream_model or model_alias,
+        "--upstream-url", upstream_url,
+        "--ready-file", ready_file,
+    ]
+    if proxy_debug:
+        argv.append("--debug")
+
+    env = os.environ.copy()
+    if token:
+        env["INFERENCE_HUB_API_KEY"] = token
+        env["INFERENCE_HUB_TOKEN"] = token
+
+    with open(log_path, "a") as logf:
+        proc = subprocess.Popen(
+            argv,
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+            env=env,
+            start_new_session=True,
+        )
+
+    deadline = time.time() + 15.0
+    while time.time() < deadline:
+        if os.path.isfile(ready_file):
+            break
+        if proc.poll() is not None:
+            raise RuntimeError("proxy %s exited early (see %s)" % (route, log_path))
+        time.sleep(0.2)
+
+    if not _health_ok(port, timeout=0.5):
+        time.sleep(0.5)
+    if not _health_ok(port):
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+        raise RuntimeError("proxy %s failed health check on port %d" % (route, port))
+
+    try:
+        os.remove(ready_file)
+    except OSError:
+        pass
+
+    return proc.pid, log_path
+
+
+def ensure_proxy(plan, token):
+    """Start or reuse proxy for plan; return (port, run_record)."""
+    if plan.get("mode") != "proxy":
+        return None, None
+
+    route = plan.get("route")
+    port = int(plan.get("proxy_port") or ROUTE_DEFAULTS.get(route, {}).get("port") or 18324)
+    upstream_url = plan.get("upstream_url") or ""
+    key = _run_key(route, upstream_url)
+    runs = _load_runs()
+    rec = runs.get(key)
+
+    if rec and _pid_alive(rec.get("pid")) and _health_ok(rec.get("port") or port):
+        return int(rec.get("port") or port), rec
+
+    if rec and rec.get("pid") and not _pid_alive(rec.get("pid")):
+        runs.pop(key, None)
+
+    # Reuse an already-listening proxy (e.g. manual start or stale proxy-runs.json).
+    if _health_ok(port):
+        if not rec:
+            rec = {
+                "route": route,
+                "port": port,
+                "pid": None,
+                "upstream_url": upstream_url,
+                "model": plan.get("model"),
+                "api": plan.get("name"),
+                "log": os.path.join(LOGS_DIR, "proxy-%s.log" % route),
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "reused": True,
+            }
+            runs[key] = rec
+            _save_runs(runs)
+        return port, rec
+
+    pid, log_path = _start_proxy(
+        route=route,
+        port=port,
+        model_alias=plan.get("name") or "api",
+        upstream_model=plan.get("model") or "",
+        upstream_url=upstream_url,
+        proxy_debug=bool(plan.get("proxy_debug")),
+        token=token,
+    )
+    rec = {
+        "route": route,
+        "port": port,
+        "pid": pid,
+        "upstream_url": upstream_url,
+        "model": plan.get("model"),
+        "api": plan.get("name"),
+        "log": log_path,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    runs[key] = rec
+    _save_runs(runs)
+    return port, rec
+
+
+def proxy_status():
+    runs = _load_runs()
+    rows = []
+    for key, rec in sorted(runs.items()):
+        alive = _pid_alive(rec.get("pid"))
+        healthy = _health_ok(rec.get("port") or 0) if alive else False
+        rows.append({
+            "key": key,
+            "route": rec.get("route"),
+            "port": rec.get("port"),
+            "pid": rec.get("pid"),
+            "alive": alive,
+            "healthy": healthy,
+            "api": rec.get("api"),
+            "model": rec.get("model"),
+            "upstream_url": rec.get("upstream_url"),
+            "log": rec.get("log"),
+        })
+    return rows
+
+
+def proxy_stop(route=None):
+    runs = _load_runs()
+    stopped = []
+    for key, rec in list(runs.items()):
+        if route and rec.get("route") != route:
+            continue
+        pid = rec.get("pid")
+        if pid and _pid_alive(pid):
+            try:
+                os.kill(int(pid), signal.SIGTERM)
+            except OSError:
+                pass
+        stopped.append(rec)
+        runs.pop(key, None)
+    _save_runs(runs)
+    return stopped
+
+
+# ===========================================================================
 # cli
 # ===========================================================================
 
@@ -6504,6 +8278,17 @@ def cmd_init(args):
     print("Writing adapter configs...")
     results = install_default_configs(force=getattr(args, "force", False))
     for filename, status in results.items():
+        if status == "skipped_exists":
+            print("  · %s: exists (use --force to overwrite)" % filename)
+        elif status in ("created", "overwritten"):
+            print_success(filename)
+        else:
+            print_error("%s: %s" % (filename, status))
+
+    print()
+    print("Writing boot configs...")
+    boot_results = install_default_boot_configs(force=getattr(args, "force", False))
+    for filename, status in boot_results.items():
         if status == "skipped_exists":
             print("  · %s: exists (use --force to overwrite)" % filename)
         elif status in ("created", "overwritten"):
@@ -6836,6 +8621,50 @@ def cmd_run(args):
     # preflight + tmux launch so PATH-related checks can't pass at
     # preflight and then fail in tmux (or vice versa).
     runtime = build_runtime_env(env_setup=env_setup)
+    api_plan = None
+    api_name = getattr(args, "api", None)
+    if api_name:
+        try:
+            api_plan = resolve_run_plan(
+                tool,
+                api_name,
+                no_api_proxy=bool(getattr(args, "no_api_proxy", False)),
+                proxy_debug=bool(getattr(args, "proxy_debug", False)),
+            )
+        except ValueError as e:
+            print_error(str(e))
+            sys.exit(1)
+        token, token_src = resolve_token(
+            api_plan.get("auth_key"),
+            api_plan.get("env_names") or [],
+            cli_token=getattr(args, "api_token", None),
+        )
+        if not token:
+            print_error(
+                "No API token for provider %s (set INFERENCE_HUB_TOKEN in ~/.cam/token.env)"
+                % api_plan.get("provider")
+            )
+            sys.exit(1)
+        if api_plan.get("mode") == "proxy":
+            try:
+                port, _proxy_rec = ensure_proxy(api_plan, token)
+            except RuntimeError as e:
+                print_error(str(e))
+                sys.exit(1)
+            if port:
+                base = "http://127.0.0.1:%d" % int(port)
+                api_plan["local_base_url"] = base
+                overrides = api_plan.get("env") or {}
+                if tool == "claude":
+                    overrides["ANTHROPIC_BASE_URL"] = base
+                api_plan["env"] = overrides
+        for key, val in (api_plan.get("env") or {}).items():
+            if val == "":
+                runtime.env.pop(key, None)
+            else:
+                runtime.env[key] = val
+        print_info("API %s via %s (token: %s)" % (
+            api_plan.get("name"), api_plan.get("mode"), token_src))
     tool_binary = config.command[0] if config.command else None
     # F-08 (adapter-owned): prefer the adapter's [readiness] block
     # over runtime_env's hardcoded _TOOL_SPECS fallback. None when
@@ -6957,7 +8786,7 @@ def cmd_run(args):
     transport = "ssh" if ctx_host and ctx_host not in ("localhost", "127.0.0.1") else "local"
     tags = getattr(args, "tag", None) or []
     store = AgentStore()
-    store.save({
+    agent_rec = {
         "id": agent_id,
         "session_id": session_uuid,
         "task": {"name": name or "", "tool": tool, "prompt": prompt,
@@ -6981,65 +8810,19 @@ def cmd_run(args):
         "hostname": _sock.gethostname(),
         "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
         "retry_count": 0, "cost_estimate": None, "files_changed": [],
-    })
+    }
+    if api_plan:
+        agent_rec["api"] = {
+            "name": api_plan.get("name"),
+            "provider": api_plan.get("provider"),
+            "model": api_plan.get("model"),
+            "mode": api_plan.get("mode"),
+            "route": api_plan.get("route"),
+            "base_url": api_plan.get("local_base_url"),
+        }
+    store.save(agent_rec)
 
-    # Startup: clear any confirm/trust dialogs, then wait for the ready
-    # prompt before injecting the user prompt.
-    #
-    # Robustness invariant (codex-camc-prompt-injection-design): the
-    # prompt is sent ONLY when ready_pattern is detected. Sending the
-    # prompt at a non-ready screen (e.g. an unmatched trust dialog)
-    # loses the prompt body — keystrokes are typed into the dialog and
-    # the trailing Enter confirms it. If ready never arrives within the
-    # budget, log a warning and skip injection; the agent stays alive
-    # in tmux for the operator to inspect via `camc capture`.
-    if config.prompt_after_launch:
-        elapsed = 0.0
-        ready = False
-        last_hash = ""    # dedup: skip same-screen re-fires within startup window
-        last_response = ""  # last response sent (input-box guard)
-        prev_output = ""    # previous capture (input-box guard "changed" condition)
-        while elapsed < config.startup_wait:
-            time.sleep(1); elapsed += 1
-            output = capture_tmux(session)
-            if not output.strip():
-                continue
-            confirm = should_auto_confirm(output, config,
-                                           last_response=last_response,
-                                           prev_output=prev_output)
-            prev_output = output
-            if confirm:
-                response, send_enter, _pat, _matched = confirm
-                # Dedup by hash1 (digits stripped) of the recent slice.
-                import re as _re
-                _digits = _re.compile(r"[0-9]+")
-                tail = "\n".join([l for l in output.splitlines() if l.strip()][-config.confirm_recent_lines:])
-                cur_hash = hashlib.md5(_digits.sub("", tail).encode("utf-8", errors="replace")).hexdigest()
-                if cur_hash == last_hash:
-                    continue
-                last_hash = cur_hash
-                last_response = response
-                _send_confirm_response(session, response, send_enter)
-                time.sleep(3); elapsed += 3
-                continue
-            if is_ready_for_input(output, config):
-                ready = True
-                break
-        if not ready:
-            print_warning(
-                "Ready prompt not detected after %ss; not injecting prompt. "
-                "Agent %s is alive in tmux session %s — inspect with: "
-                "camc capture %s" %
-                (int(config.startup_wait), agent_id, session, agent_id))
-        elif prompt.strip():
-            if config.prompt_submit_delay > 0:
-                tmux_send_input(session, prompt, send_enter=False)
-                time.sleep(config.prompt_submit_delay)
-                tmux_send_key(session, "Enter")
-            else:
-                tmux_send_input(session, prompt, send_enter=True)
-
-    # Spawn background monitor
+    # Spawn background monitor (boot + tool TOML during initializing).
     try:
         proc = subprocess.Popen(
             [sys.executable, _CAMC_SCRIPT, "_monitor", agent_id] if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg", "_monitor", agent_id],
@@ -11304,6 +13087,187 @@ def _cmd_cron_rm_loop(args):
     sys.exit(0)
 
 
+def cmd_api(args):
+    """API profile dispatch: list / check / proxy."""
+    sub = getattr(args, "api_cmd", None)
+    if sub == "list":
+        cmd_api_list(args)
+    elif sub == "check":
+        cmd_api_check(args)
+    elif sub == "proxy":
+        cmd_api_proxy(args)
+    else:
+        sys.stderr.write(
+            "usage: camc api {list,check,proxy} ...\n"
+            "  list [--all]              list configured APIs\n"
+            "  check                     ping provider and refresh enabled flags\n"
+            "  proxy {start,status,logs,stop} ...   debug proxy controls\n"
+        )
+        sys.exit(1)
+
+
+def cmd_api_list(args):
+    data = ensure_ready()
+    rows = list_apis(data, show_all=bool(getattr(args, "all", False)))
+    if _want_json(args):
+        print(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        print("No APIs configured (edit ~/.cam/api-models.json)")
+        return
+    for row in rows:
+        aliases = row.get("aliases") or []
+        alias_s = (" aliases=%s" % ",".join(aliases)) if aliases else ""
+        en = "enabled" if row.get("enabled") is not False else "disabled"
+        print("%-18s %-40s %s%s" % (
+            row.get("name"), row.get("model"), en, alias_s))
+
+
+def cmd_api_check(args):
+    data = ensure_ready()
+    result = check_provider(data, token_resolver=None)
+    if _want_json(args):
+        print(json.dumps(result, indent=2))
+        if result.get("error") and not result.get("reachable"):
+            sys.exit(1)
+        return
+    if result.get("error") and not result.get("reachable"):
+        print_error(result.get("error"))
+        sys.exit(1)
+    print("Provider %s: reachable (%d models, token=%s)" % (
+        result.get("provider"), result.get("model_count"), result.get("token_source")))
+    for row in result.get("apis") or []:
+        flag = "ok" if row.get("enabled") else "off"
+        print("  %-18s %s (%s)" % (row.get("name"), flag, row.get("reason")))
+
+
+def cmd_api_proxy(args):
+    proxy_sub = getattr(args, "proxy_cmd", None)
+    if proxy_sub == "start":
+        cmd_api_proxy_start(args)
+    elif proxy_sub == "status":
+        cmd_api_proxy_status(args)
+    elif proxy_sub == "logs":
+        cmd_api_proxy_logs(args)
+    elif proxy_sub == "stop":
+        cmd_api_proxy_stop(args)
+    else:
+        sys.stderr.write(
+            "usage: camc api proxy {start,status,logs,stop} ...\n"
+            "  start ROUTE [--port N] [--upstream-url URL] [--upstream-model M]\n"
+            "              [--model-alias A] [--api NAME] [--debug]\n"
+            "  status\n"
+            "  logs [--follow] [ROUTE]\n"
+            "  stop [ROUTE]\n"
+        )
+        sys.exit(1)
+
+
+def cmd_api_proxy_start(args):
+
+    route = args.route
+    if route not in ROUTE_DEFAULTS:
+        print_error("unknown proxy route %r" % route)
+        sys.exit(1)
+    defaults = ROUTE_DEFAULTS[route]
+    port = int(args.port or defaults.get("port") or 18324)
+    api_name = getattr(args, "api_name", None)
+    upstream_url = getattr(args, "upstream_url", None)
+    upstream_model = getattr(args, "upstream_model", None) or ""
+    model_alias = getattr(args, "model_alias", None) or "glm-5.1"
+
+    if api_name:
+        plan = resolve_run_plan("claude", api_name, proxy_debug=bool(args.debug))
+        upstream_url = upstream_url or plan.get("upstream_url")
+        upstream_model = upstream_model or plan.get("model") or api_name
+        model_alias = model_alias or plan.get("name")
+        plan["proxy_port"] = port
+        plan["proxy_debug"] = bool(args.debug)
+    else:
+        if not upstream_url:
+            print_error("--upstream-url is required (or use --api NAME)")
+            sys.exit(1)
+        plan = {
+            "mode": "proxy",
+            "route": route,
+            "name": model_alias,
+            "model": upstream_model or model_alias,
+            "upstream_url": upstream_url,
+            "proxy_port": port,
+            "proxy_debug": bool(args.debug),
+            "auth_key": "inference_hub",
+            "env_names": ["INFERENCE_HUB_TOKEN", "INFERENCE_HUB_API_KEY"],
+        }
+
+    token, src = resolve_token(plan.get("auth_key"), plan.get("env_names") or [])
+    if not token:
+        print_error("no API token found")
+        sys.exit(1)
+    try:
+        used_port, rec = ensure_proxy(plan, token)
+    except RuntimeError as e:
+        print_error(str(e))
+        sys.exit(1)
+    print("proxy %s listening on :%s (pid=%s, token=%s)" % (
+        route, used_port, (rec or {}).get("pid"), src))
+
+
+def cmd_api_proxy_status(args):
+    rows = proxy_status()
+    if _want_json(args):
+        print(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        print("No proxy runs recorded")
+        return
+    for row in rows:
+        health = "healthy" if row.get("healthy") else ("dead" if not row.get("alive") else "unhealthy")
+        print("%s :%s pid=%s %s api=%s" % (
+            row.get("route"), row.get("port"), row.get("pid"), health, row.get("api")))
+
+
+def cmd_api_proxy_logs(args):
+    route = getattr(args, "route", None)
+    rows = proxy_status()
+    if route:
+        rows = [r for r in rows if r.get("route") == route]
+    if not rows:
+        print_error("no proxy log found%s" % (" for route %s" % route if route else ""))
+        sys.exit(1)
+    log_path = rows[0].get("log")
+    if not log_path or not os.path.isfile(log_path):
+        print_error("log file missing: %s" % log_path)
+        sys.exit(1)
+    if getattr(args, "follow", False):
+        subprocess.call(["tail", "-f", log_path])
+    else:
+        subprocess.call(["tail", "-n", "80", log_path])
+
+
+def cmd_api_proxy_stop(args):
+    route = getattr(args, "route", None)
+    stopped = proxy_stop(route=route)
+    if not stopped:
+        print("No matching proxy to stop")
+        return
+    for rec in stopped:
+        print("stopped %s (pid=%s)" % (rec.get("route"), rec.get("pid")))
+
+
+def _run_proxy(argv):
+    """Hidden entry: camc _proxy ROUTE [args...]"""
+    if len(argv) < 2:
+        sys.stderr.write("usage: camc _proxy ROUTE [options]\n")
+        sys.exit(2)
+    route = argv[1]
+    rest = argv[2:]
+    if route == "completions_to_messages":
+        run_proxy(rest)
+        return
+    sys.stderr.write("unknown proxy route: %s\n" % route)
+    sys.exit(2)
+
+
 def cmd_cron(args):
     """Cron dispatch: add / rm / list / tick / run."""
     sub = getattr(args, "cron_cmd", None)
@@ -11857,6 +13821,7 @@ def cmd_version(args):
         print("  %s%s" % (name, exists))
 
 
+
 def cmd_capture(args):
     """Capture tmux screen output for an agent."""
     store = AgentStore()
@@ -12056,6 +14021,14 @@ examples:
                    help="Inline system prompt; injected into CLAUDE.md/AGENTS.md in workdir before launch")
     r.add_argument("--system-file", dest="system_file", default=None,
                    help="Path to a file whose contents become the system prompt (overrides --system-prompt)")
+    r.add_argument("--api", default=None, metavar="NAME",
+                   help="API profile from ~/.cam/api-models.json (e.g. glm-5.1)")
+    r.add_argument("--api-token", dest="api_token", default=None,
+                   help="One-off bearer token (default: ~/.cam/token.env)")
+    r.add_argument("--no-api-proxy", action="store_true",
+                   help="Fail if the API requires a local protocol proxy")
+    r.add_argument("--proxy-debug", action="store_true",
+                   help="Enable JSONL debug logs for the API proxy")
 
     # list
     ls = sub.add_parser("list", aliases=["ls"], help="List agents")
@@ -12266,6 +14239,29 @@ examples:
     heal_p = sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
     heal_p.add_argument("--upgrade", action="store_true", help="Kill ALL monitors and restart with current camc binary")
 
+    # api — Inference Hub / custom API profiles
+    api_p = sub.add_parser("api", help="API profiles (list/check)")
+    api_sub = api_p.add_subparsers(dest="api_cmd", parser_class=CamArgumentParser)
+    ap_ls = api_sub.add_parser("list", help="List configured APIs")
+    ap_ls.add_argument("--all", action="store_true", help="Include disabled APIs")
+    api_sub.add_parser("check", help="Ping provider and refresh enabled flags")
+    ap_px = api_sub.add_parser("proxy", help=argparse.SUPPRESS)
+    ap_px_sub = ap_px.add_subparsers(dest="proxy_cmd", parser_class=CamArgumentParser)
+    ap_px_start = ap_px_sub.add_parser("start", help=argparse.SUPPRESS)
+    ap_px_start.add_argument("route", help=argparse.SUPPRESS)
+    ap_px_start.add_argument("--port", type=int, default=None)
+    ap_px_start.add_argument("--upstream-url", dest="upstream_url", default=None)
+    ap_px_start.add_argument("--upstream-model", dest="upstream_model", default=None)
+    ap_px_start.add_argument("--model-alias", dest="model_alias", default=None)
+    ap_px_start.add_argument("--api", dest="api_name", default=None, metavar="NAME")
+    ap_px_start.add_argument("--debug", action="store_true")
+    ap_px_sub.add_parser("status", help=argparse.SUPPRESS)
+    ap_px_logs = ap_px_sub.add_parser("logs", help=argparse.SUPPRESS)
+    ap_px_logs.add_argument("route", nargs="?", default=None)
+    ap_px_logs.add_argument("-f", "--follow", action="store_true")
+    ap_px_stop = ap_px_sub.add_parser("stop", help=argparse.SUPPRESS)
+    ap_px_stop.add_argument("route", nargs="?", default=None)
+
     # cron — scheduled jobs (P0)
     cron_p = sub.add_parser("cron", help="Scheduled jobs (add/rm/tick)")
     cron_sub = cron_p.add_subparsers(dest="cron_cmd", parser_class=CamArgumentParser)
@@ -12388,6 +14384,11 @@ examples:
         _run_monitor(sys.argv[2])
         return
 
+    # Hidden _proxy subcommand (protocol proxy worker)
+    if len(sys.argv) >= 3 and sys.argv[1] == "_proxy":
+        _run_proxy(sys.argv[1:])
+        return
+
     # Command aliases (expand before argparse sees them)
     _aliases = {"a": "attach", "ls": "list"}
     if len(sys.argv) > 1 and sys.argv[1] in _aliases:
@@ -12445,6 +14446,7 @@ examples:
         "sync": cmd_sync,
         "db-migrate": cmd_db_migrate,
         "version": cmd_version,
+        "api": cmd_api,
     }
     if args.command in cmds:
         cmds[args.command](args)

@@ -2983,3 +2983,223 @@ b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
 6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
 bb53b45 auto-confirm: input-box-aware guard + cursor-anchored rules
 ```
+## v1.2.0  c61c56c-dirty 2026-06-16 01:35
+
+- Lines: 13902
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+```
+
+## v1.2.0  c61c56c-dirty 2026-06-16 01:55
+
+- Lines: 13920
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+```
+
+## v1.2.0  c61c56c-dirty 2026-06-16 02:26
+
+- Lines: 13951
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+```
+
+## v1.2.0  c61c56c-dirty 2026-06-16 02:50
+
+- Lines: 14016
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+```
+
+## v1.2.0  c61c56c-dirty 2026-06-16 02:56
+
+- Lines: 14006
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+```
+
+## v1.2.0  c61c56c-dirty 2026-06-16 02:59
+
+- Lines: 14082
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+```
+
+## v1.2.0  c61c56c-dirty 2026-06-16 03:37
+
+- Lines: 14181
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+```
+
+## v1.2.0  c61c56c-dirty 2026-06-16 03:51
+
+- Lines: 14216
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+```
+
+## v1.2.0  c61c56c-dirty 2026-06-16 07:37
+
+- Lines: 14216
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+```
+
+## v1.2.0  c61c56c-dirty 2026-06-16 08:19
+
+- Lines: 14330
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+```
+
+## v1.2.0  c61c56c-dirty 2026-06-16 08:24
+
+- Lines: 14364
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+```
+
+## v1.2.0  c61c56c-dirty 2026-06-16 08:39
+
+- Lines: 14409
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+```
+
+## v1.2.0  c61c56c-dirty 2026-06-16 08:56
+
+- Lines: 14430
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+```
+
+## v1.2.0  c61c56c-dirty 2026-06-16 16:35
+
+- Lines: 14429
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+```
+
+## v1.2.0  c61c56c-dirty 2026-06-16 16:42
+
+- Lines: 14459
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+```
+
+## v1.2.0  c61c56c-dirty 2026-06-16 17:49
+
+- Lines: 14459
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+```
+
+## v1.2.0  c61c56c-dirty 2026-06-16 18:13
+
+- Lines: 14459
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
+6e9d817 auto-confirm: spam-fix backspace cleanup for leaked response chars
+```

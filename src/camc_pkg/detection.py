@@ -179,3 +179,42 @@ def is_ready_for_input(output, config):
         return True
     clean = strip_ansi(output) if config.strip_ansi else output
     return bool(config.ready_pattern.search(clean))
+
+
+def should_boot_confirm(output, config, last_response="", prev_output=""):
+    """Boot-phase confirm rules — no input-cursor guard (onboarding menus)."""
+    if config.strip_ansi:
+        output = strip_ansi(output)
+    clean = clean_for_confirm(output)
+    lines = [l for l in clean.splitlines() if l.strip()]
+    recent = "\n".join(lines[-config.confirm_recent_lines:])
+    for pattern, response, send_enter in config.confirm_rules:
+        m = pattern.search(recent)
+        if m:
+            return (response, send_enter, pattern.pattern, m.group())
+    return None
+
+
+def should_confirm_initializing(output, boot_config, tool_config,
+                                last_response="", prev_output=""):
+    """During initializing: boot.toml first, then tool.toml [[confirm]]."""
+    if boot_config:
+        hit = should_boot_confirm(
+            output, boot_config, last_response=last_response, prev_output=prev_output)
+        if hit:
+            return hit, boot_config
+    if tool_config:
+        hit = should_auto_confirm(
+            output, tool_config, last_response=last_response, prev_output=prev_output)
+        if hit:
+            return hit, tool_config
+    return None, tool_config
+
+
+def is_ready_for_boot(output, boot_config, tool_config):
+    """Ready if either boot or tool ready_pattern matches."""
+    if boot_config and is_ready_for_input(output, boot_config):
+        return True
+    if tool_config and is_ready_for_input(output, tool_config):
+        return True
+    return False

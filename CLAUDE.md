@@ -6,6 +6,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 CAM (Coding Agent Manager) is "PM2 for AI coding agents." It manages Claude Code, Codex, Cursor, and other AI CLI tools via TMUX sessions, with auto-confirm, completion detection, background monitoring, and remote execution.
 
+## Code layout (production vs test)
+
+| Tree | Purpose |
+|------|---------|
+| `src/camc_pkg/proxy/` | **Production** IHUB proxy (embedded in `dist/camc`) |
+| `tests/proxy/` | Proxy translator tests |
+| `dev/ihub_proxy/` | Dev/reference proxies only |
+| `benchmarks/` | Manual E2E harnesses (not imported by camc) |
+
+Full rules: `docs/code-layout.md`.
+
 ## Build & Test Commands
 
 ```bash

@@ -198,6 +198,21 @@ body.desktop select,
 body.desktop textarea {
   border-radius: var(--control-radius);
 }
+body.desktop button,
+body.desktop .btn-primary,
+body.desktop .btn-secondary,
+body.desktop .btn-danger,
+body.desktop .output-mode-btn,
+body.desktop .settings-tab,
+body.desktop .todos-tab,
+body.desktop .sidebar-section-menu-btn,
+body.desktop .row-edit-btn {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.2;
+}
 body.desktop button:focus-visible,
 body.desktop input:focus-visible,
 body.desktop select:focus-visible,
@@ -3811,7 +3826,8 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
   font-size: 12px;
 }
 .todos-card input,
-.todos-card select {
+.todos-card select,
+.todos-card textarea {
   background: var(--control-bg);
   border: 1px solid var(--control-border);
   color: var(--text);
@@ -3820,7 +3836,8 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
   font: inherit;
 }
 .todos-card input:focus,
-.todos-card select:focus {
+.todos-card select:focus,
+.todos-card textarea:focus {
   outline: 1px solid var(--accent);
   outline-offset: -1px;
   border-color: var(--accent);
@@ -4081,13 +4098,143 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
   padding-left: 18px;
   line-height: 1.45;
 }
+
+.todos-preview {
+  display: grid;
+  gap: 10px;
+}
+.todos-goal {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--bg-card);
+  color: var(--text);
+  font-weight: 600;
+}
+.todos-project-manager {
+  display: grid;
+  gap: 10px;
+}
+.todos-project-create {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  padding: 10px 12px;
+}
+.todos-project-manage-head {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto auto;
+  gap: 8px;
+}
+.todos-project-name-input {
+  min-width: 0;
+  font-weight: 700;
+}
+.todos-project-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.todos-project-task-list {
+  display: grid;
+}
+.todos-project-task {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 220px);
+  gap: 10px;
+  align-items: center;
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 8px 12px;
+}
+.todos-project-task:last-child {
+  border-bottom: 0;
+}
+.todos-project-task-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+}
+.todos-project-task-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.todos-project-task-title strong {
+  color: #d7b46a;
+  font-size: 12px;
+}
+.todos-entry-list {
+  display: grid;
+  gap: 10px;
+}
+.todos-entry {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  padding: 10px;
+}
+.todos-entry textarea,
+.todos-add-entry textarea {
+  width: 100%;
+  min-height: 54px;
+  box-sizing: border-box;
+  resize: vertical;
+}
+.todos-check-entry {
+  grid-template-columns: 92px minmax(0, 1fr) auto;
+  align-items: center;
+}
+.todos-check-entry textarea {
+  min-height: 38px;
+}
+.todos-check-toggle {
+  display: inline-flex;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  white-space: nowrap;
+}
+.todos-entry-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.todos-add-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
 .todos-status {
   padding: 0 16px 12px;
 }
 @media (max-width: 1100px) {
   .todos-store-card,
   .todos-controls,
-  .todos-properties {
+  .todos-properties,
+  .todos-project-create,
+  .todos-project-manage-head,
+  .todos-project-task,
+  .todos-check-entry,
+  .todos-add-entry {
     grid-template-columns: minmax(0, 1fr);
   }
   .todos-row {
@@ -4104,12 +4251,14 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
   }
   .todos-actions,
   .todos-store-actions,
-  .todos-detail-actions {
+  .todos-detail-actions,
+  .todos-project-actions,
+  .todos-entry-actions {
     justify-content: flex-start;
   }
 }
 
-/* Agent Settings: Workflow DAG preview */
+/* Agent Settings: Workflow card editor */
 .agent-workflow-section {
   display: flex;
   flex-direction: column;
@@ -4182,39 +4331,47 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
   white-space: nowrap;
 }
 .agent-workflow-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  display: flex;
+  flex-direction: column;
   gap: 10px;
 }
 .agent-workflow-node-card {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-height: 172px;
+  display: block;
   border: 1px solid var(--border);
   border-radius: var(--control-radius);
   background: var(--control-bg);
   color: var(--text);
   text-align: left;
   padding: 12px;
-  cursor: pointer;
   box-shadow: none;
 }
 .agent-workflow-node-card:hover,
-.agent-workflow-node-card:focus-visible {
+.agent-workflow-node-card:focus-within {
   border-color: var(--accent);
   background: var(--control-bg-hover);
-  outline: none;
 }
 .agent-workflow-node-card.is-selected {
   border-color: var(--accent);
   box-shadow: inset 3px 0 0 var(--accent);
 }
-.agent-workflow-node-top {
-  display: flex;
+.agent-workflow-node-head {
+  display: grid;
+  grid-template-columns: 28px minmax(120px, 0.7fr) minmax(140px, 0.8fr) minmax(220px, 1.5fr) auto;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+  width: 100%;
   min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.agent-workflow-node-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: var(--radius-sm);
 }
 .agent-workflow-node-index {
   display: inline-flex;
@@ -4253,11 +4410,99 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
+.agent-workflow-node-brief {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  margin-top: 10px;
+}
 .agent-workflow-node-meta {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
-  margin-top: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-workflow-fold {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+.agent-workflow-node-card.is-expanded .agent-workflow-fold {
+  color: var(--accent);
+  border-color: var(--accent-soft);
+  background: var(--accent-soft);
+}
+.agent-workflow-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.agent-workflow-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.agent-workflow-field.wide {
+  grid-column: 1 / -1;
+}
+.agent-workflow-field span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.agent-workflow-field input,
+.agent-workflow-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: var(--control-radius);
+  background: var(--input-bg);
+  color: var(--text);
+  font-family: var(--mono-font);
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 8px 9px;
+}
+.agent-workflow-field textarea {
+  min-height: 74px;
+  resize: vertical;
+}
+.agent-workflow-field input:focus,
+.agent-workflow-field textarea:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.agent-workflow-node-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.agent-workflow-dirty {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  border: 1px solid var(--warn-border, #8a6d1d);
+  border-radius: var(--radius-sm);
+  background: var(--warn-soft, rgba(187, 128, 9, 0.15));
+  color: var(--warn, #d29922);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
 }
 .agent-workflow-inspector h4 {
   margin: 8px 0 12px;
@@ -4308,6 +4553,8 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
 }
 .agent-workflow-raw {
   margin: 0;
+  width: 100%;
+  box-sizing: border-box;
   min-height: 420px;
   max-height: 68vh;
   overflow: auto;
@@ -4319,6 +4566,7 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
   font-size: var(--output-font-size);
   line-height: 1.5;
   padding: 14px;
+  resize: vertical;
   user-select: text;
   white-space: pre;
 }
@@ -4332,10 +4580,120 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
   .agent-workflow-actions {
     justify-content: flex-start;
   }
-  .agent-workflow-inspector dl {
+  .agent-workflow-inspector dl,
+  .agent-workflow-node-head,
+  .agent-workflow-node-brief,
+  .agent-workflow-editor-grid {
     grid-template-columns: 1fr;
   }
+  .agent-workflow-node-meta {
+    white-space: normal;
+  }
 }
+
+/* Workflow V1 hierarchy cleanup */
+.agent-workflow-inspector {
+  display: none !important;
+}
+.agent-workflow-card.agent-workflow-summary {
+  padding: 10px 12px;
+  box-shadow: none;
+}
+.agent-workflow-node-card {
+  padding: 0;
+  overflow: hidden;
+}
+.agent-workflow-node-head {
+  grid-template-columns: 28px minmax(88px, 0.55fr) minmax(96px, 0.65fr) minmax(0, 1fr) minmax(58px, max-content);
+  min-height: 42px;
+  padding: 9px 12px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.agent-workflow-node-card.is-expanded .agent-workflow-node-head {
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
+}
+.agent-workflow-node-brief {
+  margin: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-bg, var(--bg-card));
+}
+.agent-workflow-editor-sections {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+.agent-workflow-editor-section {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  padding: 10px;
+}
+.agent-workflow-editor-section h4 {
+  margin: 0 0 8px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+}
+.agent-workflow-editor-section.split {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.agent-workflow-editor-grid.compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.agent-workflow-editor-grid.compact .agent-workflow-field.wide {
+  grid-column: span 2;
+}
+.agent-workflow-field textarea[rows="3"] {
+  min-height: 62px;
+}
+.agent-workflow-field textarea[rows="5"] {
+  min-height: 92px;
+}
+.agent-workflow-node-actions {
+  margin: 0;
+  padding: 0 12px 12px;
+}
+.agent-workflow-fold {
+  min-width: 0;
+  max-width: 72px;
+  box-sizing: border-box;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-workflow-actions .btn-primary,
+.agent-workflow-actions .btn-secondary,
+.agent-workflow-node-actions .btn-secondary,
+.agent-workflow-node-actions .btn-danger {
+  min-height: 30px;
+  padding: 6px 10px;
+}
+@media (max-width: 1100px) {
+  .agent-workflow-node-head {
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+  }
+  .agent-workflow-node-run,
+  .agent-workflow-node-meta {
+    grid-column: 2 / -1;
+  }
+  .agent-workflow-editor-section.split,
+  .agent-workflow-editor-grid.compact {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .agent-workflow-editor-grid.compact .agent-workflow-field.wide {
+    grid-column: auto;
+  }
+}
+
 /* ───────── Bots bundles/workflows (CAM-DESK-BOTS-010..015) ───────── */
 #mode-bots .bots-header,
 #mode-bots .bots-workbench,
@@ -4666,13 +5024,13 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
   border: 1px solid var(--border);
   border-radius: var(--control-radius);
   background: var(--bg-card);
-  padding: 14px;
+  padding: 10px 12px;
 }
 .agent-system-prompt-target h3 {
   margin: 0 0 4px;
 }
 .agent-system-prompt-section textarea {
-  min-height: 280px;
+  min-height: 260px;
   resize: vertical;
   font-family: var(--mono-font);
   font-size: var(--output-font-size);

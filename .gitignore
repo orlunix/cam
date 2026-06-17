@@ -40,6 +40,10 @@ android/cam-release.keystore
 # Log files
 scripts/*.log
 
+# Benchmark generated workspaces (keep pinned summaries only)
+benchmarks/**/runs/*
+!benchmarks/**/runs/comparison-api-bench-final.json
+
 # Images
 .cam-images/
 

@@ -21,6 +21,8 @@
 const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, Menu, clipboard } = require('electron');
 const path = require('node:path');
 const url  = require('node:url');
+const http = require('node:http');
+const https = require('node:https');
 
 const embeddedHub     = require('./embedded-hub.cjs');
 const credentialStore = require('./credential-store.cjs');
@@ -57,6 +59,42 @@ function resolveWebRoot() {
     return path.join(process.resourcesPath, 'web');
   }
   return path.resolve(__dirname, '..', '..', '..', 'web');
+}
+
+
+function netProbe(target, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    let u;
+    try { u = new URL(String(target || '')); }
+    catch (e) { resolve({ ok: false, error: 'invalid_url', detail: e && e.message || String(e) }); return; }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+      resolve({ ok: false, error: 'unsupported_protocol', detail: u.protocol });
+      return;
+    }
+    const lib = u.protocol === 'https:' ? https : http;
+    const started = Date.now();
+    const req = lib.request(u, { method: 'GET', timeout: timeoutMs }, (res) => {
+      let bytes = 0;
+      res.on('data', (chunk) => { bytes += chunk ? chunk.length : 0; });
+      res.on('end', () => resolve({
+        ok: res.statusCode >= 200 && res.statusCode < 400,
+        status: res.statusCode,
+        statusText: res.statusMessage || '',
+        bytes,
+        ms: Date.now() - started,
+      }));
+    });
+    req.on('timeout', () => {
+      try { req.destroy(new Error('probe timeout')); } catch {}
+    });
+    req.on('error', (e) => resolve({
+      ok: false,
+      error: e && (e.code || e.name) || 'probe_failed',
+      detail: e && e.message || String(e),
+      ms: Date.now() - started,
+    }));
+    req.end();
+  });
 }
 
 function createMainWindow() {
@@ -340,6 +378,7 @@ app.whenReady().then(() => {
   // Narrow file picker for the Nodes "Add Host" key-file field.
   // Argument-free; main owns the dialog config.
   ipcMain.handle('files:pickPrivateKey', () => filesPickPrivateKey());
+  ipcMain.handle('net:probe', (_event, payload) => netProbe(payload && payload.url || '', payload && payload.timeoutMs || 8000));
 
   // Terminal mode (CAM-DESK-TERM-001..005). Secrets stay in main.
   ipcMain.handle('term:open',   (event, p) => termOpen(event, p));

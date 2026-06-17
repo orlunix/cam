@@ -1,0 +1,34 @@
+# Claude Code boot — used only during initializing (camc run monitor boot phase).
+# Runtime permission dialogs stay in claude.toml [[confirm]].
+
+[adapter]
+name = "claude"
+
+[launch]
+startup_wait = 90.0
+strip_ansi = true
+ready_pattern = "^[❯>](?!\\s*\\d+\\.)"
+ready_flags = ["MULTILINE"]
+
+[[confirm]]
+pattern = "Choose the text style that looks best"
+response = ""
+send_enter = true
+
+[[confirm]]
+pattern = "Do you want to use this API key"
+response = "1"
+send_enter = false
+
+[[confirm]]
+pattern = "Ask a teammate to run /team-onboarding"
+response = ""
+send_enter = true
+
+[[confirm]]
+pattern = "Press Enter to continue"
+response = ""
+send_enter = true
+
+[monitor]
+confirm_recent_lines = 20
