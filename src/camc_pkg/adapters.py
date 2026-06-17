@@ -336,6 +336,56 @@ class AdapterConfig(object):
 # up as ['--version', '--version'], state.patterns doubled, etc.
 _APPEND_LIST_KEYS = frozenset({"confirm"})
 
+# Runtime [[confirm]] rules moved to *.boot.toml — stale ~/.cam/configs/*.toml
+# copies must not re-append them via confirm merge.
+_RETIRED_RUNTIME_CONFIRM = {
+    "cursor": (
+        r"Trust this workspace",
+        r"Run\s*\(once\)",
+        r"Run\s*\(always\)",
+    ),
+    "codex": (
+        r"Yes, allow Codex to work in this folder",
+        r"Do you trust the contents of this directory",
+        r"retry without sandbox",
+        r"Press enter to confirm or esc to cancel",
+    ),
+    "claude": (
+        r"trust this folder",
+        r"Do you want to proceed",
+        r"Allow once",
+        r"Allow always",
+    ),
+}
+
+
+def _retired_runtime_confirm_res(tool):
+    patterns = _RETIRED_RUNTIME_CONFIRM.get(tool) or ()
+    return tuple(re.compile(p, re.IGNORECASE) for p in patterns)
+
+
+def _scrub_retired_runtime_confirm_rules(rules, tool):
+    """Drop boot-only confirm rules from stale external runtime TOML."""
+    if not isinstance(rules, list):
+        return rules
+    retired = _retired_runtime_confirm_res(tool)
+    if not retired:
+        return rules
+    kept = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            kept.append(rule)
+            continue
+        pat = str(rule.get("pattern") or "")
+        if any(r.search(pat) for r in retired):
+            log.info(
+                "Skipping retired runtime [[confirm]] from external %s.toml: %s",
+                tool, pat[:80],
+            )
+            continue
+        kept.append(rule)
+    return kept
+
 
 def _merge_toml(base, override):
     """Merge ``override`` TOML dict into ``base``.
@@ -481,11 +531,15 @@ def _load_config(tool):
 
     config = _parse_toml(_EMBEDDED_CONFIGS[key])
 
-    # Merge external overrides if present
+    # Merge external overrides if present (runtime only — scrub boot-only rules).
     toml_path = os.path.join(CONFIGS_DIR, "%s.toml" % tool)
     if os.path.exists(toml_path):
         try:
             ext = load_toml(toml_path)
+            if isinstance(ext.get("confirm"), list):
+                ext = dict(ext)
+                ext["confirm"] = _scrub_retired_runtime_confirm_rules(
+                    ext.get("confirm"), tool)
             _merge_toml(config, ext)
             log.info("Merged external config: %s", toml_path)
         except Exception as e:

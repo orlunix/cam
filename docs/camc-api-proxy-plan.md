@@ -1,7 +1,7 @@
 # camc API Proxy & Inference Hub Integration — Plan
 
 Date: 2026-06-16
-Status: **plan only** (not implemented)
+Status: **partial — Claude `--api` shipped** (see below). Remaining items are P1/P2.
 Extends: `docs/camc-custom-api-profiles.md`, `docs/inference-hub.md`
 
 ## Summary
@@ -27,7 +27,7 @@ Prototype originally lived in `dev/ihub_proxy/` (Python 3.10+, external process,
 | **Models** | 6 curated NVIDIA IHUB profiles: `glm-5.1`, `deepseek-v4-pro`, `kimi-k2.6`, `minimax-m2.7`, `qwen3-5-397b`, `nemotron-3-ultra` |
 | **Login** | Isolated `CLAUDE_CONFIG_DIR=~/.cam/claude-api/`; subscription login in `~/.claude/` unchanged when `--api` is omitted |
 | **Not supported** | `camc run -t codex --api …` and `camc run -t cursor --api …` — resolver prints an error and exits |
-| **Custom APIs** | User-added `apis.*` entries are rejected until explicitly allowlisted |
+| **Custom APIs** | Set `"allow_run": true` in `api-models.json` (see `docs/api-routing.md`) |
 
 ### Codex / Cursor (documented, not implemented)
 
@@ -1018,7 +1018,7 @@ camc env --tool claude --api glm-5.1
 
 | Concern | Implementation |
 |---------|----------------|
-| **Idempotent ensure** | If port in `proxy-runs.json` + health OK → reuse |
+| **Idempotent ensure** | Reuse only when `proxy-runs.json` record matches **both** `route` and `upstream_url` (SHA256 key); different upstream never reuses blindly |
 | **Port allocation** | Default from route table; collision → next free port in 18324–18339 |
 | **Process** | `camc _proxy <route> …` subprocess, `start_new_session=True` |
 | **PID / state** | `~/.cam/api/proxy-runs.json` |
