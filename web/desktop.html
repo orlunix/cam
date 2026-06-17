@@ -214,16 +214,16 @@
                 <div class="agent-system-prompt-target">
                   <div>
                     <h3>System Prompt</h3>
-                    <p class="form-hint" id="agent-system-prompt-target">Select an agent to load its AGENTS.md / CLAUDE.md prompt block.</p>
+                    <p class="form-hint" id="agent-system-prompt-target">Select an agent to load its prompt file.</p>
                   </div>
                   <button type="button" class="btn-secondary" id="agent-system-prompt-reload">Reload</button>
                 </div>
-                <label>Prompt block
-                  <textarea id="agent-system-prompt-text" rows="14" placeholder="Instructions injected into the tool-specific AGENTS.md / CLAUDE.md block for this agent." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+                <label>Prompt
+                  <textarea id="agent-system-prompt-text" rows="14" placeholder="Agent-specific instructions for AGENTS.md / CLAUDE.md." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
                 </label>
-                <p class="form-hint">Desktop preserves surrounding file content and only replaces the marker-delimited <code>camc:&lt;agent-id&gt;</code> block. Saving an empty prompt removes that block.</p>
+                <p class="form-hint">Only the <code>camc:&lt;agent-id&gt;</code> block is changed. Empty prompt removes the block.</p>
                 <div class="settings-actions agent-settings-actions">
-                  <button type="button" class="btn-primary" id="agent-system-prompt-save">Save Prompt</button>
+                  <button type="button" class="btn-primary" id="agent-system-prompt-save">Save</button>
                   <button type="button" class="btn-secondary" id="agent-system-prompt-reset">Reset</button>
                   <button type="button" class="btn-secondary" id="agent-system-prompt-clear">Clear</button>
                 </div>
@@ -243,15 +243,19 @@
                       <button type="button" class="output-mode-btn" data-agent-workflow-view="raw" aria-pressed="false">Raw YAML</button>
                     </div>
                     <button type="button" class="btn-secondary" id="agent-workflow-refresh">Refresh</button>
+                    <button type="button" class="btn-secondary" id="agent-workflow-validate">Validate</button>
+                    <button type="button" class="btn-secondary" id="agent-workflow-add">Add node</button>
+                    <button type="button" class="btn-primary" id="agent-workflow-save">Save</button>
+                    <button type="button" class="btn-secondary" id="agent-workflow-expand">Expand all</button>
+                    <button type="button" class="btn-secondary" id="agent-workflow-collapse">Collapse all</button>
                   </div>
                 </div>
                 <div class="settings-status" id="agent-workflow-status" aria-live="polite"></div>
                 <div class="agent-workflow-visual" id="agent-workflow-visual">
                   <div class="agent-workflow-card agent-workflow-summary" id="agent-workflow-summary"></div>
                   <div class="agent-workflow-cards" id="agent-workflow-cards"></div>
-                  <div class="agent-workflow-card agent-workflow-inspector" id="agent-workflow-inspector"></div>
                 </div>
-                <pre class="agent-workflow-raw" id="agent-workflow-raw" tabindex="0" hidden></pre>
+                <textarea class="agent-workflow-raw" id="agent-workflow-raw" spellcheck="false" hidden></textarea>
               </section>
             </div>
             <div class="settings-tab-panel" id="agent-settings-tab-automation" data-agent-settings-panel="automation" hidden>
@@ -961,7 +965,7 @@
         <div class="settings-header todos-header">
           <h2>Todos</h2>
           <p class="settings-help">
-            Structured Markdown worklog for tasks, notes, checklists, and project history.
+            Structured Markdown worklog for tasks, task notes, checklists, and project history.
             V0 is local and mock-safe while the todocli backend contract is wired.
           </p>
         </div>
@@ -971,13 +975,10 @@
             <div class="todos-card-head">
               <div class="todos-tabs" role="tablist" aria-label="Todos workspace tabs">
                 <button type="button" class="todos-tab active" data-todos-tab="inbox" role="tab" aria-selected="true">Inbox</button>
-                <button type="button" class="todos-tab" data-todos-tab="tasks" role="tab" aria-selected="false">Tasks</button>
-                <button type="button" class="todos-tab" data-todos-tab="notes" role="tab" aria-selected="false">Notes</button>
                 <button type="button" class="todos-tab" data-todos-tab="projects" role="tab" aria-selected="false">Projects</button>
                 <button type="button" class="todos-tab" data-todos-tab="archive" role="tab" aria-selected="false">Archive</button>
               </div>
               <div class="todos-actions">
-                <button type="button" class="btn-secondary" id="todos-new-note">New note</button>
                 <button type="button" class="btn-primary" id="todos-new-task">New task</button>
               </div>
             </div>
@@ -1000,7 +1001,7 @@
 
             <section class="todos-controls" aria-label="Todo filters">
               <label>Search
-                <input type="search" id="todos-search" placeholder="Search todos, notes, tags..." autocomplete="off">
+                <input type="search" id="todos-search" placeholder="Search tasks, notes, tags..." autocomplete="off">
               </label>
               <label>Project
                 <select id="todos-project-filter"><option value="all">All</option></select>
