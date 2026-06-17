@@ -13,7 +13,6 @@ from camc_pkg.transport import (
     capture_tmux, tmux_session_exists, tmux_send_input,
     tmux_kill_session, create_tmux_session,
 )
-from camc_pkg.detection import should_auto_confirm, is_ready_for_input
 
 
 class SchedulerError(Exception):
@@ -194,46 +193,6 @@ def _launch_agent(task, workdir):
     if not create_tmux_session(session, launch_cmd, workdir, env_setup=env_setup, inherit_env=True):
         return None
 
-    # Startup: wait for readiness, auto-confirm, send prompt.
-    # Ready-gated injection (matches cmd_run): the prompt is sent ONLY
-    # when ready_pattern was actually observed. Sending the prompt at
-    # a non-ready screen (e.g. an unmatched trust dialog or still-
-    # loading welcome screen) consumes the body as keystrokes into the
-    # dialog and the trailing Enter confirms the dialog — the prompt
-    # never reaches the agent.
-    if config.prompt_after_launch:
-        elapsed, confirmed, ready = 0.0, False, False
-        while elapsed < config.startup_wait:
-            time.sleep(1); elapsed += 1
-            output = capture_tmux(session)
-            if not output.strip():
-                continue
-            if confirmed and is_ready_for_input(output, config):
-                ready = True
-                break
-            confirm = should_auto_confirm(output, config)
-            if confirm:
-                tmux_send_input(session, confirm[0], send_enter=confirm[1])
-                confirmed = True
-                time.sleep(3); elapsed += 3
-                continue
-            if is_ready_for_input(output, config):
-                ready = True
-                break
-        if not ready:
-            log.warning(
-                "Ready prompt not detected after %ss; not injecting prompt. "
-                "Agent %s is alive in tmux session %s — inspect with: "
-                "camc capture %s",
-                int(config.startup_wait), agent_id, session, agent_id)
-        elif prompt.strip():
-            if config.prompt_submit_delay > 0:
-                tmux_send_input(session, prompt, send_enter=False)
-                time.sleep(config.prompt_submit_delay)
-                tmux_send_key(session, "Enter")
-            else:
-                tmux_send_input(session, prompt, send_enter=True)
-
     store = AgentStore()
     import socket as _sock
     ctx_name = context.get("name", "") if isinstance(context, dict) else ""
@@ -258,7 +217,7 @@ def _launch_agent(task, workdir):
     }
     store.save(agent)
 
-    # Spawn background monitor
+    # Spawn background monitor (boot + tool TOML during initializing).
     try:
         proc = subprocess.Popen(
             [sys.executable, os.path.abspath(sys.argv[0]), "_monitor", agent_id] if os.path.isfile(sys.argv[0]) else [sys.executable, "-m", "camc_pkg", "_monitor", agent_id],
