@@ -328,6 +328,26 @@ class Relay:
 
         # API requests — proxy through connected server
         if path.startswith("/api/"):
+            if method == "OPTIONS":
+                resp = (
+                    "HTTP/1.1 204 No Content\r\n"
+                    "Access-Control-Allow-Origin: *\r\n"
+                    "Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS\r\n"
+                    "Access-Control-Allow-Headers: Authorization, Content-Type\r\n"
+                    "Access-Control-Allow-Private-Network: true\r\n"
+                    "Access-Control-Max-Age: 600\r\n"
+                    "Content-Length: 0\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                writer.write(resp.encode())
+                await writer.drain()
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+                return
             log.info("HTTP-API %s %s from %s", method, path, peer)
             # Read request body if present
             body = ""
@@ -417,6 +437,10 @@ class Relay:
             f"Content-Type: {content_type}\r\n"
             f"Content-Length: {len(resp_body)}\r\n"
             f"Access-Control-Allow-Origin: *\r\n"
+            f"Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS\r\n"
+            f"Access-Control-Allow-Headers: Authorization, Content-Type\r\n"
+            f"Access-Control-Allow-Private-Network: true\r\n"
+            f"Connection: close\r\n"
             f"\r\n"
         )
         try:
@@ -425,6 +449,10 @@ class Relay:
         except ConnectionError:
             log.warning("Proxy %s: client disconnected before response sent", req_id)
         writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
 
     async def _serve_static(self, writer: asyncio.StreamWriter, method: str, path: str) -> None:
         """Serve a static file from web_root."""

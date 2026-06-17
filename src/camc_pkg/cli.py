@@ -69,13 +69,12 @@ def _gen_agent_id():
 
 from camc_pkg import __version__, CAM_DIR, CONFIGS_DIR, CONTEXT_FILE, LOGS_DIR, PIDS_DIR, SOCKETS_DIR, log
 from camc_pkg.utils import _now_iso, _time_ago, _load_default_context, _build_command, _kill_monitor, _run
-from camc_pkg.adapters import _EMBEDDED_CONFIGS, _load_config, install_default_configs
+from camc_pkg.adapters import _EMBEDDED_CONFIGS, _load_config, install_default_configs, install_default_boot_configs
 from camc_pkg.storage import AgentStore, EventStore
 from camc_pkg.transport import (
     _find_tmux_socket, capture_tmux, tmux_session_exists,
     tmux_send_input, tmux_send_key, tmux_kill_session, create_tmux_session,
 )
-from camc_pkg.detection import should_auto_confirm, is_ready_for_input
 from camc_pkg.system_prompt import (
     target_file, write_block, strip_block, has_block, load_prompt_text,
 )
@@ -234,6 +233,17 @@ def cmd_init(args):
     print("Writing adapter configs...")
     results = install_default_configs(force=getattr(args, "force", False))
     for filename, status in results.items():
+        if status == "skipped_exists":
+            print("  · %s: exists (use --force to overwrite)" % filename)
+        elif status in ("created", "overwritten"):
+            print_success(filename)
+        else:
+            print_error("%s: %s" % (filename, status))
+
+    print()
+    print("Writing boot configs...")
+    boot_results = install_default_boot_configs(force=getattr(args, "force", False))
+    for filename, status in boot_results.items():
         if status == "skipped_exists":
             print("  · %s: exists (use --force to overwrite)" % filename)
         elif status in ("created", "overwritten"):
@@ -569,6 +579,59 @@ def cmd_run(args):
     # preflight and then fail in tmux (or vice versa).
     from camc_pkg.runtime_env import build_runtime_env
     runtime = build_runtime_env(env_setup=env_setup)
+    api_plan = None
+    api_name = getattr(args, "api", None)
+    if api_name:
+        from camc_pkg.api_resolver import resolve_run_plan
+        from camc_pkg.api_token import resolve_token
+        from camc_pkg.proxy.manager import ensure_proxy
+        try:
+            api_plan = resolve_run_plan(
+                tool,
+                api_name,
+                no_api_proxy=bool(getattr(args, "no_api_proxy", False)),
+                proxy_debug=bool(getattr(args, "proxy_debug", False)),
+            )
+        except ValueError as e:
+            print_error(str(e))
+            sys.exit(1)
+        token, token_src = resolve_token(
+            api_plan.get("auth_key"),
+            api_plan.get("env_names") or [],
+            cli_token=getattr(args, "api_token", None),
+        )
+        if not token:
+            env_names = api_plan.get("env_names") or ["INFERENCE_HUB_TOKEN"]
+            print_error(
+                "No API token for provider %s (set %s in ~/.cam/token.env)"
+                % (api_plan.get("provider"), " or ".join(env_names[:3]))
+            )
+            sys.exit(1)
+        if api_plan.get("mode") == "proxy":
+            try:
+                port, _proxy_rec = ensure_proxy(api_plan, token)
+            except RuntimeError as e:
+                print_error(str(e))
+                sys.exit(1)
+            if port:
+                base = "http://127.0.0.1:%d" % int(port)
+                api_plan["local_base_url"] = base
+                overrides = api_plan.get("env") or {}
+                if tool == "claude":
+                    overrides["ANTHROPIC_BASE_URL"] = base
+                api_plan["env"] = overrides
+        elif api_plan.get("env", {}).get("_API_USE_RESOLVED_TOKEN") == "1":
+            overrides = dict(api_plan.get("env") or {})
+            overrides.pop("_API_USE_RESOLVED_TOKEN", None)
+            overrides["ANTHROPIC_API_KEY"] = token
+            api_plan["env"] = overrides
+        for key, val in (api_plan.get("env") or {}).items():
+            if val == "":
+                runtime.env.pop(key, None)
+            else:
+                runtime.env[key] = val
+        print_info("API %s via %s (token: %s)" % (
+            api_plan.get("name"), api_plan.get("mode"), token_src))
     tool_binary = config.command[0] if config.command else None
     # F-08 (adapter-owned): prefer the adapter's [readiness] block
     # over runtime_env's hardcoded _TOOL_SPECS fallback. None when
@@ -691,7 +754,7 @@ def cmd_run(args):
     transport = "ssh" if ctx_host and ctx_host not in ("localhost", "127.0.0.1") else "local"
     tags = getattr(args, "tag", None) or []
     store = AgentStore()
-    store.save({
+    agent_rec = {
         "id": agent_id,
         "session_id": session_uuid,
         "task": {"name": name or "", "tool": tool, "prompt": prompt,
@@ -715,65 +778,19 @@ def cmd_run(args):
         "hostname": _sock.gethostname(),
         "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
         "retry_count": 0, "cost_estimate": None, "files_changed": [],
-    })
+    }
+    if api_plan:
+        agent_rec["api"] = {
+            "name": api_plan.get("name"),
+            "provider": api_plan.get("provider"),
+            "model": api_plan.get("model"),
+            "mode": api_plan.get("mode"),
+            "route": api_plan.get("route"),
+            "base_url": api_plan.get("local_base_url"),
+        }
+    store.save(agent_rec)
 
-    # Startup: clear any confirm/trust dialogs, then wait for the ready
-    # prompt before injecting the user prompt.
-    #
-    # Robustness invariant (codex-camc-prompt-injection-design): the
-    # prompt is sent ONLY when ready_pattern is detected. Sending the
-    # prompt at a non-ready screen (e.g. an unmatched trust dialog)
-    # loses the prompt body — keystrokes are typed into the dialog and
-    # the trailing Enter confirms it. If ready never arrives within the
-    # budget, log a warning and skip injection; the agent stays alive
-    # in tmux for the operator to inspect via `camc capture`.
-    if config.prompt_after_launch:
-        elapsed = 0.0
-        ready = False
-        last_hash = ""    # dedup: skip same-screen re-fires within startup window
-        last_response = ""  # last response sent (input-box guard)
-        prev_output = ""    # previous capture (input-box guard "changed" condition)
-        while elapsed < config.startup_wait:
-            time.sleep(1); elapsed += 1
-            output = capture_tmux(session)
-            if not output.strip():
-                continue
-            confirm = should_auto_confirm(output, config,
-                                           last_response=last_response,
-                                           prev_output=prev_output)
-            prev_output = output
-            if confirm:
-                response, send_enter, _pat, _matched = confirm
-                # Dedup by hash1 (digits stripped) of the recent slice.
-                import re as _re
-                _digits = _re.compile(r"[0-9]+")
-                tail = "\n".join([l for l in output.splitlines() if l.strip()][-config.confirm_recent_lines:])
-                cur_hash = hashlib.md5(_digits.sub("", tail).encode("utf-8", errors="replace")).hexdigest()
-                if cur_hash == last_hash:
-                    continue
-                last_hash = cur_hash
-                last_response = response
-                _send_confirm_response(session, response, send_enter)
-                time.sleep(3); elapsed += 3
-                continue
-            if is_ready_for_input(output, config):
-                ready = True
-                break
-        if not ready:
-            print_warning(
-                "Ready prompt not detected after %ss; not injecting prompt. "
-                "Agent %s is alive in tmux session %s — inspect with: "
-                "camc capture %s" %
-                (int(config.startup_wait), agent_id, session, agent_id))
-        elif prompt.strip():
-            if config.prompt_submit_delay > 0:
-                tmux_send_input(session, prompt, send_enter=False)
-                time.sleep(config.prompt_submit_delay)
-                tmux_send_key(session, "Enter")
-            else:
-                tmux_send_input(session, prompt, send_enter=True)
-
-    # Spawn background monitor
+    # Spawn background monitor (boot + tool TOML during initializing).
     try:
         proc = subprocess.Popen(
             [sys.executable, _CAMC_SCRIPT, "_monitor", agent_id] if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg", "_monitor", agent_id],
@@ -5058,6 +5075,196 @@ def _cmd_cron_rm_loop(args):
     sys.exit(0)
 
 
+def cmd_api(args):
+    """API profile dispatch: list / check / proxy."""
+    sub = getattr(args, "api_cmd", None)
+    if sub == "list":
+        cmd_api_list(args)
+    elif sub == "check":
+        cmd_api_check(args)
+    elif sub == "proxy":
+        cmd_api_proxy(args)
+    else:
+        sys.stderr.write(
+            "usage: camc api {list,check,proxy} ...\n"
+            "  list [--all]              list configured APIs\n"
+            "  check                     ping provider and refresh enabled flags\n"
+            "  proxy {start,status,logs,stop} ...   debug proxy controls\n"
+        )
+        sys.exit(1)
+
+
+def cmd_api_list(args):
+    from camc_pkg.api_store import ensure_ready, list_apis
+    data = ensure_ready()
+    rows = list_apis(data, show_all=bool(getattr(args, "all", False)))
+    if _want_json(args):
+        print(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        print("No APIs configured (edit ~/.cam/api-models.json)")
+        return
+    for row in rows:
+        aliases = row.get("aliases") or []
+        alias_s = (" aliases=%s" % ",".join(aliases)) if aliases else ""
+        en = "enabled" if row.get("enabled") is not False else "disabled"
+        print("%-18s %-40s %s%s" % (
+            row.get("name"), row.get("model"), en, alias_s))
+
+
+def cmd_api_check(args):
+    from camc_pkg.api_store import check_provider, ensure_ready
+    data = ensure_ready()
+    result = check_provider(data, token_resolver=None)
+    if _want_json(args):
+        print(json.dumps(result, indent=2))
+        if result.get("error") and not result.get("reachable"):
+            sys.exit(1)
+        return
+    if result.get("error") and not result.get("reachable"):
+        print_error(result.get("error"))
+        sys.exit(1)
+    print("Provider %s: reachable (%d models, token=%s)" % (
+        result.get("provider"), result.get("model_count"), result.get("token_source")))
+    for row in result.get("apis") or []:
+        flag = "ok" if row.get("enabled") else "off"
+        print("  %-18s %s (%s)" % (row.get("name"), flag, row.get("reason")))
+
+
+def cmd_api_proxy(args):
+    proxy_sub = getattr(args, "proxy_cmd", None)
+    if proxy_sub == "start":
+        cmd_api_proxy_start(args)
+    elif proxy_sub == "status":
+        cmd_api_proxy_status(args)
+    elif proxy_sub == "logs":
+        cmd_api_proxy_logs(args)
+    elif proxy_sub == "stop":
+        cmd_api_proxy_stop(args)
+    else:
+        sys.stderr.write(
+            "usage: camc api proxy {start,status,logs,stop} ...\n"
+            "  start ROUTE [--port N] [--upstream-url URL] [--upstream-model M]\n"
+            "              [--model-alias A] [--api NAME] [--debug]\n"
+            "  status\n"
+            "  logs [--follow] [ROUTE]\n"
+            "  stop [ROUTE]\n"
+        )
+        sys.exit(1)
+
+
+def cmd_api_proxy_start(args):
+    from camc_pkg.api_resolver import resolve_run_plan
+    from camc_pkg.api_token import resolve_token
+    from camc_pkg.proxy.manager import ROUTE_DEFAULTS, ensure_proxy
+
+    route = args.route
+    if route not in ROUTE_DEFAULTS:
+        print_error("unknown proxy route %r" % route)
+        sys.exit(1)
+    defaults = ROUTE_DEFAULTS[route]
+    port = int(args.port or defaults.get("port") or 18324)
+    api_name = getattr(args, "api_name", None)
+    upstream_url = getattr(args, "upstream_url", None)
+    upstream_model = getattr(args, "upstream_model", None) or ""
+    model_alias = getattr(args, "model_alias", None) or "glm-5.1"
+
+    if api_name:
+        plan = resolve_run_plan("claude", api_name, proxy_debug=bool(args.debug))
+        upstream_url = upstream_url or plan.get("upstream_url")
+        upstream_model = upstream_model or plan.get("model") or api_name
+        model_alias = model_alias or plan.get("name")
+        plan["proxy_port"] = port
+        plan["proxy_debug"] = bool(args.debug)
+    else:
+        if not upstream_url:
+            print_error("--upstream-url is required (or use --api NAME)")
+            sys.exit(1)
+        plan = {
+            "mode": "proxy",
+            "route": route,
+            "name": model_alias,
+            "model": upstream_model or model_alias,
+            "upstream_url": upstream_url,
+            "proxy_port": port,
+            "proxy_debug": bool(args.debug),
+            "auth_key": "inference_hub",
+            "env_names": ["INFERENCE_HUB_TOKEN", "INFERENCE_HUB_API_KEY"],
+        }
+
+    token, src = resolve_token(plan.get("auth_key"), plan.get("env_names") or [])
+    if not token:
+        print_error("no API token found")
+        sys.exit(1)
+    try:
+        used_port, rec = ensure_proxy(plan, token)
+    except RuntimeError as e:
+        print_error(str(e))
+        sys.exit(1)
+    print("proxy %s listening on :%s (pid=%s, token=%s)" % (
+        route, used_port, (rec or {}).get("pid"), src))
+
+
+def cmd_api_proxy_status(args):
+    from camc_pkg.proxy.manager import proxy_status
+    rows = proxy_status()
+    if _want_json(args):
+        print(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        print("No proxy runs recorded")
+        return
+    for row in rows:
+        health = "healthy" if row.get("healthy") else ("dead" if not row.get("alive") else "unhealthy")
+        print("%s :%s pid=%s %s api=%s" % (
+            row.get("route"), row.get("port"), row.get("pid"), health, row.get("api")))
+
+
+def cmd_api_proxy_logs(args):
+    from camc_pkg.proxy.manager import proxy_status
+    route = getattr(args, "route", None)
+    rows = proxy_status()
+    if route:
+        rows = [r for r in rows if r.get("route") == route]
+    if not rows:
+        print_error("no proxy log found%s" % (" for route %s" % route if route else ""))
+        sys.exit(1)
+    log_path = rows[0].get("log")
+    if not log_path or not os.path.isfile(log_path):
+        print_error("log file missing: %s" % log_path)
+        sys.exit(1)
+    if getattr(args, "follow", False):
+        subprocess.call(["tail", "-f", log_path])
+    else:
+        subprocess.call(["tail", "-n", "80", log_path])
+
+
+def cmd_api_proxy_stop(args):
+    from camc_pkg.proxy.manager import proxy_stop
+    route = getattr(args, "route", None)
+    stopped = proxy_stop(route=route)
+    if not stopped:
+        print("No matching proxy to stop")
+        return
+    for rec in stopped:
+        print("stopped %s (pid=%s)" % (rec.get("route"), rec.get("pid")))
+
+
+def _run_proxy(argv):
+    """Hidden entry: camc _proxy ROUTE [args...]"""
+    if len(argv) < 2:
+        sys.stderr.write("usage: camc _proxy ROUTE [options]\n")
+        sys.exit(2)
+    route = argv[1]
+    rest = argv[2:]
+    if route == "completions_to_messages":
+        from camc_pkg.proxy.messages import run_proxy
+        run_proxy(rest)
+        return
+    sys.stderr.write("unknown proxy route: %s\n" % route)
+    sys.exit(2)
+
+
 def cmd_cron(args):
     """Cron dispatch: add / rm / list / tick / run."""
     sub = getattr(args, "cron_cmd", None)
@@ -5624,6 +5831,7 @@ def cmd_version(args):
         print("  %s%s" % (name, exists))
 
 
+
 def cmd_capture(args):
     """Capture tmux screen output for an agent."""
     store = AgentStore()
@@ -5823,6 +6031,14 @@ examples:
                    help="Inline system prompt; injected into CLAUDE.md/AGENTS.md in workdir before launch")
     r.add_argument("--system-file", dest="system_file", default=None,
                    help="Path to a file whose contents become the system prompt (overrides --system-prompt)")
+    r.add_argument("--api", default=None, metavar="NAME",
+                   help="API profile from ~/.cam/api-models.json (e.g. glm-5.1)")
+    r.add_argument("--api-token", dest="api_token", default=None,
+                   help="One-off bearer token (default: ~/.cam/token.env)")
+    r.add_argument("--no-api-proxy", action="store_true",
+                   help="Fail if the API requires a local protocol proxy")
+    r.add_argument("--proxy-debug", action="store_true",
+                   help="Enable JSONL debug logs for the API proxy")
 
     # list
     ls = sub.add_parser("list", aliases=["ls"], help="List agents")
@@ -6033,6 +6249,29 @@ examples:
     heal_p = sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
     heal_p.add_argument("--upgrade", action="store_true", help="Kill ALL monitors and restart with current camc binary")
 
+    # api — Inference Hub / custom API profiles
+    api_p = sub.add_parser("api", help="API profiles (list/check)")
+    api_sub = api_p.add_subparsers(dest="api_cmd", parser_class=CamArgumentParser)
+    ap_ls = api_sub.add_parser("list", help="List configured APIs")
+    ap_ls.add_argument("--all", action="store_true", help="Include disabled APIs")
+    api_sub.add_parser("check", help="Ping provider and refresh enabled flags")
+    ap_px = api_sub.add_parser("proxy", help=argparse.SUPPRESS)
+    ap_px_sub = ap_px.add_subparsers(dest="proxy_cmd", parser_class=CamArgumentParser)
+    ap_px_start = ap_px_sub.add_parser("start", help=argparse.SUPPRESS)
+    ap_px_start.add_argument("route", help=argparse.SUPPRESS)
+    ap_px_start.add_argument("--port", type=int, default=None)
+    ap_px_start.add_argument("--upstream-url", dest="upstream_url", default=None)
+    ap_px_start.add_argument("--upstream-model", dest="upstream_model", default=None)
+    ap_px_start.add_argument("--model-alias", dest="model_alias", default=None)
+    ap_px_start.add_argument("--api", dest="api_name", default=None, metavar="NAME")
+    ap_px_start.add_argument("--debug", action="store_true")
+    ap_px_sub.add_parser("status", help=argparse.SUPPRESS)
+    ap_px_logs = ap_px_sub.add_parser("logs", help=argparse.SUPPRESS)
+    ap_px_logs.add_argument("route", nargs="?", default=None)
+    ap_px_logs.add_argument("-f", "--follow", action="store_true")
+    ap_px_stop = ap_px_sub.add_parser("stop", help=argparse.SUPPRESS)
+    ap_px_stop.add_argument("route", nargs="?", default=None)
+
     # cron — scheduled jobs (P0)
     cron_p = sub.add_parser("cron", help="Scheduled jobs (add/rm/tick)")
     cron_sub = cron_p.add_subparsers(dest="cron_cmd", parser_class=CamArgumentParser)
@@ -6155,6 +6394,11 @@ examples:
         _run_monitor(sys.argv[2])
         return
 
+    # Hidden _proxy subcommand (protocol proxy worker)
+    if len(sys.argv) >= 3 and sys.argv[1] == "_proxy":
+        _run_proxy(sys.argv[1:])
+        return
+
     # Command aliases (expand before argparse sees them)
     _aliases = {"a": "attach", "ls": "list"}
     if len(sys.argv) > 1 and sys.argv[1] in _aliases:
@@ -6212,6 +6456,7 @@ examples:
         "sync": cmd_sync,
         "db-migrate": cmd_db_migrate,
         "version": cmd_version,
+        "api": cmd_api,
     }
     if args.command in cmds:
         cmds[args.command](args)

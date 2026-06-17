@@ -68,15 +68,6 @@ flags = ["MULTILINE"]
 response = "y"
 send_enter = false
 
-[[confirm]]
-# Workspace trust dialog — the `[a]` hotkey label sits directly before
-# "Trust this workspace". Anchoring on the bracketed hotkey lets this
-# fire only when the dialog is actually drawn.
-pattern = "^\\W*\\[a\\]\\s*Trust this workspace"
-flags = ["MULTILINE"]
-response = "a"
-send_enter = false
-
 [monitor]
 # Cursor shows "Thinking..." while busy, "· X.Y%" usage after done.
 # Line-start anchor + 3-dot/ellipsis requirement avoids URL / filename

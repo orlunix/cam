@@ -550,6 +550,11 @@ export function mountShell({ api, state, connect }) {
   const agentCronList = document.getElementById('agent-cron-list');
   const agentWorkflowTarget = document.getElementById('agent-workflow-target');
   const agentWorkflowRefresh = document.getElementById('agent-workflow-refresh');
+  const agentWorkflowValidate = document.getElementById('agent-workflow-validate');
+  const agentWorkflowAdd = document.getElementById('agent-workflow-add');
+  const agentWorkflowSave = document.getElementById('agent-workflow-save');
+  const agentWorkflowExpand = document.getElementById('agent-workflow-expand');
+  const agentWorkflowCollapse = document.getElementById('agent-workflow-collapse');
   const agentWorkflowStatus = document.getElementById('agent-workflow-status');
   const agentWorkflowVisual = document.getElementById('agent-workflow-visual');
   const agentWorkflowSummary = document.getElementById('agent-workflow-summary');
@@ -575,6 +580,8 @@ export function mountShell({ api, state, connect }) {
   let _agentWorkflowPayload = null;
   let _agentWorkflowSelectedNodeId = '';
   let _agentWorkflowView = 'visual';
+  let _agentWorkflowExpanded = new Set();
+  let _agentWorkflowDirty = false;
 
   function _safeTag(s) {
     return /^[A-Za-z0-9_-]{1,32}$/.test(String(s || ''));
@@ -1073,42 +1080,161 @@ export function mountShell({ api, state, connect }) {
     _agentWorkflowLoading = false;
     _agentWorkflowPayload = null;
     _agentWorkflowSelectedNodeId = '';
+    _agentWorkflowExpanded = new Set();
+    _agentWorkflowDirty = false;
     const root = agentWorkspacePath(agent);
     if (agentWorkflowTarget) {
       agentWorkflowTarget.textContent = agent
-        ? `Loads ${root ? `${root}/` : ''}${workflowYamlPath()} from this agent workspace.`
+        ? `Edits ${root ? `${root}/` : ''}${workflowYamlPath()} in this agent workspace.`
         : 'Select an agent to load workflow.yaml from its workspace.';
     }
-    if (agentWorkflowRefresh) agentWorkflowRefresh.disabled = !agent;
+    [agentWorkflowRefresh, agentWorkflowValidate, agentWorkflowAdd, agentWorkflowSave, agentWorkflowExpand, agentWorkflowCollapse].forEach(btn => {
+      if (btn) btn.disabled = !agent;
+    });
     setAgentWorkflowStatus('');
     renderAgentWorkflow(agent);
   }
 
-  function renderWorkflowInspector(node) {
-    if (!agentWorkflowInspector) return;
-    if (!node) {
-      agentWorkflowInspector.innerHTML = '<div class="empty-state">Select a workflow node to inspect its goal, run step, checklist, expected output, and verify rule.</div>';
-      return;
+  function workflowLinesFromTextarea(value) {
+    return String(value || '').replace(/\r\n?/g, '\n').split('\n').map(s => s.trim()).filter(Boolean);
+  }
+
+  function workflowObjectFromLines(value) {
+    const obj = {};
+    for (const line of workflowLinesFromTextarea(value)) {
+      const idx = line.indexOf(':');
+      if (idx <= 0) continue;
+      const key = line.slice(0, idx).trim();
+      const val = line.slice(idx + 1).trim();
+      if (key) obj[key] = val;
     }
-    const needs = (node.needs || []).length ? (node.needs || []).map(n => `<span class="agent-workflow-chip">${escapeHtml(n)}</span>`).join('') : '<span class="form-hint">none</span>';
-    const steps = (node.steps || []).length ? `<ol>${(node.steps || []).map(step => `<li>${escapeHtml(step)}</li>`).join('')}</ol>` : '<p class="form-hint">No checklist steps.</p>';
-    const outKeys = Object.keys(node.output_schema || {});
-    const outputs = outKeys.length ? `<dl>${outKeys.map(k => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(node.output_schema[k])}</dd>`).join('')}</dl>` : '<p class="form-hint">No expected output schema.</p>';
-    const verify = node.verify || {};
-    const verifyRows = Object.keys(verify).length ? `<dl>${Object.keys(verify).map(k => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(verify[k])}</dd>`).join('')}</dl>` : '<p class="form-hint">Auto evaluator.</p>';
-    agentWorkflowInspector.innerHTML = `
-      <div class="agent-workflow-inspector-head">
-        <span class="agent-workflow-node-id">${escapeHtml(node.id)}</span>
-        <span class="agent-workflow-pill">verify: ${escapeHtml(workflowVerifyLabel(node))}</span>
-      </div>
-      <h4>${escapeHtml(node.goal || 'Untitled workflow node')}</h4>
-      <section><h5>Needs</h5><div class="agent-workflow-chip-row">${needs}</div></section>
-      <section><h5>Run</h5><p class="agent-workflow-mono">${escapeHtml(workflowRunLabel(node))}</p></section>
-      <section><h5>Checklist</h5>${steps}</section>
-      <section><h5>Expected output</h5>${outputs}</section>
-      <section><h5>Verify</h5>${verifyRows}</section>
-      <section><h5>Retry</h5><p>${escapeHtml(node.retry ?? 'default')}</p></section>
-    `;
+    return obj;
+  }
+
+  function workflowYamlValue(v) {
+    const s = String(v == null ? '' : v);
+    if (!s) return '""';
+    if (/^[A-Za-z0-9_.@/:+\-]+$/.test(s)) return s;
+    return JSON.stringify(s);
+  }
+
+  function workflowObjectYaml(obj, indent = '      ') {
+    const keys = Object.keys(obj || {}).filter(k => String(k || '').trim());
+    if (!keys.length) return [];
+    return keys.map(k => `${indent}${k}: ${workflowYamlValue(obj[k])}`);
+  }
+
+  function serializeWorkflowYaml(parsed) {
+    const p = parsed || { nodes: [] };
+    const out = [];
+    out.push(`workflow: ${workflowYamlValue(p.workflow || 'workflow')}`);
+    if (p.version) out.push(`version: ${workflowYamlValue(p.version)}`);
+    if (p.goal) out.push(`goal: ${workflowYamlValue(p.goal)}`);
+    out.push('nodes:');
+    for (const node of (p.nodes || [])) {
+      out.push(`  - id: ${workflowYamlValue(node.id || 'node')}`);
+      if (node.goal) out.push(`    goal: ${workflowYamlValue(node.goal)}`);
+      const needs = Array.isArray(node.needs) ? node.needs.filter(Boolean) : [];
+      if (needs.length) {
+        out.push('    needs:');
+        needs.forEach(n => out.push(`      - ${workflowYamlValue(n)}`));
+      }
+      const run = node.run || {};
+      if (Object.keys(run).length) {
+        out.push('    run:');
+        out.push(...workflowObjectYaml(run));
+      }
+      const steps = Array.isArray(node.steps) ? node.steps.filter(Boolean) : [];
+      if (steps.length) {
+        out.push('    steps:');
+        steps.forEach(step => out.push(`      - ${workflowYamlValue(step)}`));
+      }
+      const output = node.output_schema || {};
+      if (Object.keys(output).length) {
+        out.push('    output_schema:');
+        out.push(...workflowObjectYaml(output));
+      }
+      const verify = node.verify || {};
+      if (Object.keys(verify).length) {
+        out.push('    verify:');
+        out.push(...workflowObjectYaml(verify));
+      }
+      if (node.retry != null && String(node.retry).trim() !== '') out.push(`    retry: ${workflowYamlValue(node.retry)}`);
+    }
+    return out.join('\n') + '\n';
+  }
+
+  function syncWorkflowRawFromParsed() {
+    if (!_agentWorkflowPayload) return;
+    _agentWorkflowPayload.text = serializeWorkflowYaml(_agentWorkflowPayload.parsed);
+    if (agentWorkflowRaw) agentWorkflowRaw.value = _agentWorkflowPayload.text;
+  }
+
+  function validateWorkflow(parsed) {
+    const errors = [];
+    const ids = new Set();
+    for (const [idx, node] of (parsed?.nodes || []).entries()) {
+      const where = node.id || `node ${idx + 1}`;
+      if (!node.id) errors.push(`${where}: id is required`);
+      if (node.id && ids.has(node.id)) errors.push(`${where}: duplicate id`);
+      if (node.id) ids.add(node.id);
+      if (!node.goal) errors.push(`${where}: goal is recommended`);
+      if (!node.run || (!node.run.skill && !node.run.command)) errors.push(`${where}: run.skill or run.command is required`);
+      const v = node.verify || {};
+      const modes = ['criterion', 'command', 'human'].filter(k => v[k]);
+      if (modes.length > 1) errors.push(`${where}: verify can use only one of criterion, command, human`);
+    }
+    for (const node of (parsed?.nodes || [])) {
+      for (const dep of (node.needs || [])) {
+        if (!ids.has(dep)) errors.push(`${node.id}: missing dependency ${dep}`);
+      }
+    }
+    return errors;
+  }
+
+  function workflowMarkDirty() {
+    _agentWorkflowDirty = true;
+    syncWorkflowRawFromParsed();
+    setAgentWorkflowStatus('Unsaved workflow edits. Click Save to write workflow.yaml.');
+  }
+
+  function workflowNodeById(id) {
+    const nodes = _agentWorkflowPayload?.parsed?.nodes || [];
+    return nodes.find(n => n.id === id) || null;
+  }
+
+  function renderWorkflowInspector(_node) {
+    // Workflow V1 edits inline in cards; the old side inspector is intentionally retired.
+  }
+
+
+  function nextWorkflowNodeId(prefix = 'node') {
+    const nodes = _agentWorkflowPayload?.parsed?.nodes || [];
+    let n = nodes.length + 1;
+    let id = `${prefix}-${n}`;
+    while (nodes.some(x => x.id === id)) id = `${prefix}-${++n}`;
+    return id;
+  }
+
+  function addWorkflowNode(afterId = '') {
+    if (!_agentWorkflowPayload) {
+      _agentWorkflowPayload = {
+        text: '',
+        parsed: { workflow: 'workflow', version: '1', goal: '', nodes: [], edges: [] },
+        path: workflowYamlPath(),
+        root: agentWorkspacePath(activeSettingsAgent()),
+      };
+      _agentWorkflowLoadedFor = activeSettingsAgent()?.id || null;
+    }
+    const nodes = _agentWorkflowPayload.parsed.nodes || (_agentWorkflowPayload.parsed.nodes = []);
+    const id = nextWorkflowNodeId('node');
+    const node = { id, goal: '', needs: afterId ? [afterId] : [], run: {}, steps: [], output_schema: {}, verify: {}, retry: null };
+    const idx = afterId ? nodes.findIndex(n => n.id === afterId) : -1;
+    nodes.splice(idx >= 0 ? idx + 1 : nodes.length, 0, node);
+    _agentWorkflowExpanded.add(id);
+    _agentWorkflowSelectedNodeId = id;
+    workflowMarkDirty();
+    renderAgentWorkflow(activeSettingsAgent());
   }
 
   function renderAgentWorkflow(agent = activeSettingsAgent()) {
@@ -1124,7 +1250,7 @@ export function mountShell({ api, state, connect }) {
       agentWorkflowSummary.innerHTML = '<div class="empty-state">Select an agent to load workflow.yaml.</div>';
       agentWorkflowCards.innerHTML = '';
       renderWorkflowInspector(null);
-      agentWorkflowRaw.textContent = '';
+      agentWorkflowRaw.value = '';
       return;
     }
     if (_agentWorkflowLoading) {
@@ -1138,20 +1264,17 @@ export function mountShell({ api, state, connect }) {
       agentWorkflowSummary.innerHTML = '<div class="empty-state">Click Refresh to read workflow.yaml from the selected agent workspace.</div>';
       agentWorkflowCards.innerHTML = '';
       renderWorkflowInspector(null);
-      agentWorkflowRaw.textContent = '';
+      agentWorkflowRaw.value = '';
       return;
     }
-    agentWorkflowRaw.textContent = payload.text || '';
+    agentWorkflowRaw.value = payload.text || '';
     const parsed = payload.parsed || { nodes: [], edges: [] };
     const nodes = parsed.nodes || [];
     const edges = parsed.edges || [];
-    if (!_agentWorkflowSelectedNodeId && nodes[0]) _agentWorkflowSelectedNodeId = nodes[0].id;
-    const selected = nodes.find(n => n.id === _agentWorkflowSelectedNodeId) || nodes[0] || null;
-    if (selected) _agentWorkflowSelectedNodeId = selected.id;
     agentWorkflowSummary.innerHTML = `
       <div class="agent-workflow-summary-main">
         <div>
-          <div class="agent-workflow-title">${escapeHtml(parsed.workflow || 'workflow.yaml')}</div>
+          <div class="agent-workflow-title">${escapeHtml(parsed.workflow || 'workflow.yaml')}${_agentWorkflowDirty ? ' <span class="agent-workflow-dirty">unsaved</span>' : ''}</div>
           <div class="agent-workflow-goal">${escapeHtml(parsed.goal || 'No top-level goal declared.')}</div>
         </div>
         <div class="agent-workflow-stat-row">
@@ -1162,26 +1285,74 @@ export function mountShell({ api, state, connect }) {
       </div>
     `;
     agentWorkflowCards.innerHTML = nodes.length ? nodes.map((n, idx) => {
+      const expanded = _agentWorkflowExpanded.has(n.id);
       const needs = (n.needs || []).length ? (n.needs || []).join(', ') : 'entry';
-      const selectedClass = n.id === _agentWorkflowSelectedNodeId ? ' is-selected' : '';
       const verify = workflowVerifyLabel(n);
       const outputCount = Object.keys(n.output_schema || {}).length;
+      const selectedClass = n.id === _agentWorkflowSelectedNodeId ? ' is-selected' : '';
+      const outputText = Object.keys(n.output_schema || {}).map(k => `${k}: ${n.output_schema[k]}`).join('\n');
+      const verifyText = Object.keys(n.verify || {}).map(k => `${k}: ${n.verify[k]}`).join('\n');
       return `
-        <button type="button" class="agent-workflow-node-card${selectedClass}" data-workflow-node="${escapeAttr(n.id)}">
-          <div class="agent-workflow-node-top">
+        <article class="agent-workflow-node-card${selectedClass}${expanded ? ' is-expanded' : ''}" data-workflow-node="${escapeAttr(n.id)}">
+          <button type="button" class="agent-workflow-node-head" data-workflow-toggle="${escapeAttr(n.id)}" aria-expanded="${expanded ? 'true' : 'false'}">
             <span class="agent-workflow-node-index">${idx + 1}</span>
             <span class="agent-workflow-node-id">${escapeHtml(n.id || `node-${idx + 1}`)}</span>
-          </div>
-          <div class="agent-workflow-node-goal">${escapeHtml(n.goal || 'No goal')}</div>
-          <div class="agent-workflow-node-run">${escapeHtml(workflowRunLabel(n))}</div>
-          <div class="agent-workflow-node-meta">needs ${escapeHtml(needs)} · ${n.steps.length} checks · ${outputCount} outputs</div>
-          <div class="agent-workflow-node-foot">
-            <span class="agent-workflow-pill">verify ${escapeHtml(verify)}</span>
-            <span class="agent-workflow-pill">retry ${escapeHtml(n.retry ?? 'default')}</span>
-          </div>
-        </button>`;
-    }).join('') : '<div class="empty-state">workflow.yaml loaded, but no nodes were found.</div>';
-    renderWorkflowInspector(selected);
+            <span class="agent-workflow-node-run">${escapeHtml(workflowRunLabel(n))}</span>
+            <span class="agent-workflow-node-meta">needs ${escapeHtml(needs)} · ${n.steps.length} checks · ${outputCount} outputs · verify ${escapeHtml(verify)}</span>
+            <span class="agent-workflow-fold">${expanded ? 'Collapse' : 'Edit'}</span>
+          </button>
+          ${expanded ? `
+            <div class="agent-workflow-node-brief">
+              <div class="agent-workflow-node-goal">${escapeHtml(n.goal || 'No goal')}</div>
+              <div class="agent-workflow-node-foot">
+                <span class="agent-workflow-pill">retry ${escapeHtml(n.retry ?? 'default')}</span>
+                ${(n.needs || []).map(dep => `<span class="agent-workflow-chip">${escapeHtml(dep)}</span>`).join('')}
+              </div>
+            </div>
+            <div class="agent-workflow-editor-sections">
+              <section class="agent-workflow-editor-section">
+                <h4>Identity</h4>
+                <div class="agent-workflow-editor-grid compact">
+                  <label class="agent-workflow-field"><span>ID</span><input data-wf-field="id" value="${escapeAttr(n.id || '')}"></label>
+                  <label class="agent-workflow-field"><span>Needs</span><input data-wf-field="needs" value="${escapeAttr((n.needs || []).join(', '))}" placeholder="node-a, node-b"></label>
+                  <label class="agent-workflow-field"><span>Retry</span><input data-wf-field="retry" value="${escapeAttr(n.retry ?? '')}" placeholder="default"></label>
+                </div>
+              </section>
+              <section class="agent-workflow-editor-section">
+                <h4>Goal</h4>
+                <label class="agent-workflow-field wide"><textarea data-wf-field="goal" rows="3">${escapeHtml(n.goal || '')}</textarea></label>
+              </section>
+              <section class="agent-workflow-editor-section">
+                <h4>Run</h4>
+                <div class="agent-workflow-editor-grid compact">
+                  <label class="agent-workflow-field"><span>Skill</span><input data-wf-field="run.skill" value="${escapeAttr(n.run?.skill || '')}" placeholder="analyzer / evaluator / codex"></label>
+                  <label class="agent-workflow-field wide"><span>Command</span><input data-wf-field="run.command" value="${escapeAttr(n.run?.command || '')}" placeholder="pytest -q"></label>
+                </div>
+              </section>
+              <section class="agent-workflow-editor-section">
+                <h4>Checklist</h4>
+                <label class="agent-workflow-field wide"><textarea data-wf-field="steps" rows="5">${escapeHtml((n.steps || []).join('\n'))}</textarea></label>
+              </section>
+              <section class="agent-workflow-editor-section split">
+                <div>
+                  <h4>Expected Output</h4>
+                  <label class="agent-workflow-field wide"><textarea data-wf-field="output_schema" rows="5">${escapeHtml(outputText)}</textarea></label>
+                </div>
+                <div>
+                  <h4>Verify</h4>
+                  <label class="agent-workflow-field wide"><textarea data-wf-field="verify" rows="5" placeholder="criterion: ...\ncommand: ...\nhuman: true">${escapeHtml(verifyText)}</textarea></label>
+                </div>
+              </section>
+            </div>
+            <div class="agent-workflow-node-actions">
+              <button type="button" class="btn-secondary" data-wf-insert-after="${escapeAttr(n.id)}">Insert after</button>
+              <button type="button" class="btn-secondary" data-wf-duplicate="${escapeAttr(n.id)}">Duplicate</button>
+              <button type="button" class="btn-danger" data-wf-delete="${escapeAttr(n.id)}">Delete</button>
+            </div>
+          ` : ''}
+        </article>`;
+    }).join('') : '<div class="empty-state">workflow.yaml loaded, but no nodes were found. Click Add node to start.</div>';
+    renderWorkflowInspector(null);
   }
 
   async function loadAgentWorkflow({ force = false } = {}) {
@@ -1207,12 +1378,15 @@ export function mountShell({ api, state, connect }) {
       const parsed = parseWorkflowYamlV0(text);
       _agentWorkflowPayload = { text, parsed, path, root: resp?.root || agentWorkspacePath(agent) };
       _agentWorkflowLoadedFor = agent.id;
+      _agentWorkflowExpanded = new Set(parsed.nodes[0]?.id ? [parsed.nodes[0].id] : []);
       _agentWorkflowSelectedNodeId = parsed.nodes[0]?.id || '';
+      _agentWorkflowDirty = false;
       const root = _agentWorkflowPayload.root || agentWorkspacePath(agent);
       setAgentWorkflowStatus(`Loaded ${parsed.nodes.length} node(s) from ${root ? `${root}/` : ''}${path}.`, 'is-ok');
     } catch (err) {
       _agentWorkflowPayload = null;
       _agentWorkflowLoadedFor = null;
+      _agentWorkflowDirty = false;
       const root = agentWorkspacePath(agent);
       setAgentWorkflowStatus(`Workflow load failed from ${root ? `${root}/` : ''}${workflowYamlPath()}: ${err?.message || err}`, 'is-error');
     } finally {
@@ -1512,12 +1686,115 @@ export function mountShell({ api, state, connect }) {
   agentCronRefresh?.addEventListener('click', () => { void loadAgentCron({ force: true }); });
   agentCronAdd?.addEventListener('click', () => { void addAgentCronJob(); });
   agentWorkflowRefresh?.addEventListener('click', () => { void loadAgentWorkflow({ force: true }); });
-  agentWorkflowViewBtns.forEach(btn => btn.addEventListener('click', () => setAgentWorkflowView(btn.dataset.agentWorkflowView)));
-  agentWorkflowCards?.addEventListener('click', (ev) => {
-    const card = ev.target.closest('[data-workflow-node]');
-    if (!card) return;
-    _agentWorkflowSelectedNodeId = card.dataset.workflowNode || '';
+  agentWorkflowValidate?.addEventListener('click', () => {
+    const errors = validateWorkflow(_agentWorkflowPayload?.parsed);
+    setAgentWorkflowStatus(errors.length ? `Validation: ${errors.slice(0, 3).join('; ')}${errors.length > 3 ? ` (+${errors.length - 3} more)` : ''}` : 'Workflow validates.', errors.length ? 'is-error' : 'is-ok');
+  });
+  agentWorkflowAdd?.addEventListener('click', () => { addWorkflowNode(_agentWorkflowSelectedNodeId); });
+  agentWorkflowSave?.addEventListener('click', async () => {
+    const agent = activeSettingsAgent();
+    if (!agent || !_agentWorkflowPayload) return;
+    try {
+      await requireAgentSettingsConnected('Workflow save');
+      if (_agentWorkflowView === 'raw' && agentWorkflowRaw) {
+        _agentWorkflowPayload.text = agentWorkflowRaw.value || '';
+        _agentWorkflowPayload.parsed = parseWorkflowYamlV0(_agentWorkflowPayload.text);
+      } else {
+        syncWorkflowRawFromParsed();
+      }
+      const errors = validateWorkflow(_agentWorkflowPayload.parsed);
+      if (errors.length) throw new Error(errors.slice(0, 3).join('; '));
+      await api.agentWriteWorkspaceFile(agent.id, workflowYamlPath(), _agentWorkflowPayload.text || '');
+      _agentWorkflowDirty = false;
+      setAgentWorkflowStatus('Saved workflow.yaml.', 'is-ok');
+      renderAgentWorkflow(agent);
+    } catch (err) {
+      setAgentWorkflowStatus(`Save failed: ${err?.message || err}`, 'is-error');
+    }
+  });
+  agentWorkflowExpand?.addEventListener('click', () => {
+    _agentWorkflowExpanded = new Set((_agentWorkflowPayload?.parsed?.nodes || []).map(n => n.id).filter(Boolean));
     renderAgentWorkflow(activeSettingsAgent());
+  });
+  agentWorkflowCollapse?.addEventListener('click', () => {
+    _agentWorkflowExpanded = new Set();
+    renderAgentWorkflow(activeSettingsAgent());
+  });
+  agentWorkflowViewBtns.forEach(btn => btn.addEventListener('click', () => setAgentWorkflowView(btn.dataset.agentWorkflowView)));
+  agentWorkflowRaw?.addEventListener('input', () => {
+    if (!_agentWorkflowPayload) return;
+    _agentWorkflowPayload.text = agentWorkflowRaw.value || '';
+    _agentWorkflowPayload.parsed = parseWorkflowYamlV0(_agentWorkflowPayload.text);
+    _agentWorkflowDirty = true;
+    setAgentWorkflowStatus('Unsaved raw YAML edits. Click Save to write workflow.yaml.');
+  });
+  agentWorkflowCards?.addEventListener('click', (ev) => {
+    const toggle = ev.target.closest('[data-workflow-toggle]');
+    if (toggle) {
+      const id = toggle.dataset.workflowToggle || '';
+      _agentWorkflowSelectedNodeId = id;
+      if (_agentWorkflowExpanded.has(id)) _agentWorkflowExpanded.delete(id); else _agentWorkflowExpanded.add(id);
+      renderAgentWorkflow(activeSettingsAgent());
+      return;
+    }
+    const card = ev.target.closest('[data-workflow-node]');
+    if (card) _agentWorkflowSelectedNodeId = card.dataset.workflowNode || '';
+    const insertAfter = ev.target.closest('[data-wf-insert-after]');
+    const duplicate = ev.target.closest('[data-wf-duplicate]');
+    const del = ev.target.closest('[data-wf-delete]');
+    const nodes = _agentWorkflowPayload?.parsed?.nodes || [];
+    if (insertAfter || duplicate) {
+      const baseId = (insertAfter && insertAfter.dataset.wfInsertAfter) || (duplicate && duplicate.dataset.wfDuplicate) || '';
+      const idx = nodes.findIndex(n => n.id === baseId);
+      const base = nodes[idx] || {};
+      let id = `${baseId || 'node'}-next`;
+      let n = 2;
+      while (nodes.some(x => x.id === id)) id = `${baseId || 'node'}-${n++}`;
+      const node = duplicate ? JSON.parse(JSON.stringify(base)) : { id, goal: '', needs: baseId ? [baseId] : [], run: {}, steps: [], output_schema: {}, verify: {}, retry: null };
+      node.id = id;
+      nodes.splice(idx >= 0 ? idx + 1 : nodes.length, 0, node);
+      _agentWorkflowExpanded.add(id);
+      _agentWorkflowSelectedNodeId = id;
+      workflowMarkDirty();
+      renderAgentWorkflow(activeSettingsAgent());
+      return;
+    }
+    if (del) {
+      const id = del.dataset.wfDelete || '';
+      const dependents = nodes.filter(n => (n.needs || []).includes(id)).map(n => n.id);
+      if (dependents.length && !confirm(`Delete ${id}? Dependents still reference it: ${dependents.join(', ')}`)) return;
+      const idx = nodes.findIndex(n => n.id === id);
+      if (idx >= 0) nodes.splice(idx, 1);
+      _agentWorkflowExpanded.delete(id);
+      _agentWorkflowSelectedNodeId = nodes[0]?.id || '';
+      workflowMarkDirty();
+      renderAgentWorkflow(activeSettingsAgent());
+    }
+  });
+  agentWorkflowCards?.addEventListener('input', (ev) => {
+    const field = ev.target?.dataset?.wfField;
+    if (!field) return;
+    const card = ev.target.closest('[data-workflow-node]');
+    const node = workflowNodeById(card?.dataset?.workflowNode || '');
+    if (!node) return;
+    const val = ev.target.value;
+    if (field === 'id') {
+      const old = node.id;
+      node.id = val.trim();
+      if (old && old !== node.id) {
+        for (const n of (_agentWorkflowPayload?.parsed?.nodes || [])) n.needs = (n.needs || []).map(dep => dep === old ? node.id : dep);
+        if (_agentWorkflowExpanded.delete(old)) _agentWorkflowExpanded.add(node.id);
+        _agentWorkflowSelectedNodeId = node.id;
+      }
+    } else if (field === 'goal') node.goal = val;
+    else if (field === 'needs') node.needs = val.split(',').map(s => s.trim()).filter(Boolean);
+    else if (field === 'run.skill') { node.run = node.run || {}; if (val.trim()) node.run.skill = val.trim(); else delete node.run.skill; }
+    else if (field === 'run.command') { node.run = node.run || {}; if (val.trim()) node.run.command = val.trim(); else delete node.run.command; }
+    else if (field === 'retry') node.retry = val.trim() || null;
+    else if (field === 'steps') node.steps = workflowLinesFromTextarea(val);
+    else if (field === 'output_schema') node.output_schema = workflowObjectFromLines(val);
+    else if (field === 'verify') node.verify = workflowObjectFromLines(val);
+    workflowMarkDirty();
   });
   agentCronList?.addEventListener('click', (ev) => {
     const btn = ev.target.closest('[data-cron-remove]');
