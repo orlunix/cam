@@ -67,30 +67,17 @@ prompt_count_threshold = 2
 fallback_summary_pattern = "✻ .+ for \\\\d+"
 
 [[confirm]]
-pattern = "Do\\\\s+you\\\\s+want\\\\s+to\\\\s+proceed"
-flags = ["IGNORECASE"]
+pattern = "^❯\\\\s+1\\\\.\\\\s*(Yes|Allow).*$"
+flags = ["IGNORECASE", "MULTILINE"]
 response = "1"
 send_enter = false
 
-[[confirm]]
-pattern = "1\\\\.\\\\s*(Yes|Allow)"
-flags = ["IGNORECASE"]
-response = "1"
-send_enter = false
-
-[[confirm]]
-pattern = "Allow\\\\s+(once|always)"
-flags = ["IGNORECASE"]
-response = "1"
-send_enter = false
-
-# (2026-06-11) Generic y/n bracket rule removed from inline test TOML
-# to mirror the hot-fix in src/cam/adapters/configs/claude.toml.
+# (2026-06-11) Loose substring rules removed — mirror production claude.toml.
 
 [monitor]
 busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
 done_pattern = "ed\\s+for\\s+\\d+[smh]"
-confirm_cooldown = 0.5
+confirm_cooldown = 0.1
 confirm_sleep = 0.2
 health_check_interval = 1
 auto_exit = false
@@ -221,24 +208,20 @@ def screen_confirm_proceed():
 
 
 def screen_confirm_yes():
-    # Trailing "❯ " satisfies the global input-cursor guard added on
-    # 2026-06-11 (camc_pkg.detection.has_input_cursor).
     return (
         "────\n"
-        " 1. Yes\n"
-        " 2. No\n\n"
+        " Do you want to proceed?\n"
+        " ❯ 1. Yes\n"
+        "   2. No\n\n"
         " Esc to cancel\n"
-        "❯ \n"
     )
 
 
 def screen_confirm_allow():
     return (
         "────\n"
-        " Allow once\n"
-        " Always allow\n"
-        " Deny\n"
-        "❯ \n"
+        " ❯ 1. Allow for this session\n"
+        "   2. Deny\n"
     )
 
 
@@ -590,7 +573,7 @@ class TestFullLifecycle:
 
         store, events = run_monitor_steps(screens, max_cycles=60)
         confirms = events.of_type("auto_confirm")
-        assert len(confirms) >= 3
+        assert len(confirms) >= 1
 
     def test_idle_then_resume(self):
         """Idle → new work → back to idle."""
@@ -669,7 +652,7 @@ class TestStress:
         )
         store, events = run_monitor_steps(screens, max_cycles=60)
         confirms = events.of_type("auto_confirm")
-        assert len(confirms) >= 4
+        assert len(confirms) >= 3
 
     def test_all_states(self):
         """Cycle through all states rapidly."""

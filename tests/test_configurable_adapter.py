@@ -188,8 +188,7 @@ class TestCodexToml:
     # menus handled by the rules above. See the hot-fix block in
     # src/cam/adapters/configs/codex.toml.
     @pytest.mark.parametrize("output,expect_match", [
-        ("1. Yes, allow Codex to work in this folder\n2. No", True),
-        ("1. Yes, continue\n2. No, quit\nPress Enter to continue", True),
+        ("› 1. Yes, allow Codex to work in this folder\n2. No", True),
         ("Press Enter to continue", False),
         ("Just some normal output", False),
     ])
@@ -200,28 +199,41 @@ class TestCodexToml:
         else:
             assert result is None
 
-    def test_trust_dialog_sends_1(self, codex_adapter):
+    def test_trust_dialog_is_boot_only(self):
+        from camc_pkg.detection import should_boot_confirm
+        from camc_pkg.adapters import AdapterConfig, _parse_toml
+        from pathlib import Path
+        configs = Path(__file__).resolve().parent.parent / "src" / "cam" / "adapters" / "configs"
+        boot = AdapterConfig(_parse_toml((configs / "codex.boot.toml").read_text(encoding="utf-8")))
         output = "1. Yes, allow Codex to work in this folder\n2. No"
-        result = codex_adapter.should_auto_confirm(output)
-        assert result.response == "1"
-        assert result.send_enter is True
+        hit = should_boot_confirm(output, boot)
+        assert hit is not None
+        assert hit[0] == "1"
+        assert hit[1] is True
 
-    def test_trust_continue_menu_sends_1(self, codex_adapter):
-        output = "1. Yes, continue\n2. No, quit\nPress Enter to continue"
-        result = codex_adapter.should_auto_confirm(output)
-        assert result.response == "1"
-        assert result.send_enter is True
+    def test_trust_continue_menu_is_boot_only(self):
+        from camc_pkg.detection import should_boot_confirm
+        from camc_pkg.adapters import AdapterConfig, _parse_toml
+        from pathlib import Path
+        configs = Path(__file__).resolve().parent.parent / "src" / "cam" / "adapters" / "configs"
+        boot = AdapterConfig(_parse_toml((configs / "codex.boot.toml").read_text(encoding="utf-8")))
+        output = (
+            "Do you trust the contents of this directory?\n"
+            "1. Yes, continue\n"
+            "2. No, quit"
+        )
+        hit = should_boot_confirm(output, boot)
+        assert hit is not None
+        assert hit[0] == "1"
 
-    def test_retry_without_sandbox_sends_1(self, codex_adapter):
+    def test_retry_without_sandbox_is_boot_only(self, codex_adapter):
         output = (
             "Reason: command failed; retry without sandbox?\n"
             "1. Yes, proceed (y)\n"
             "2. No, and tell Codex what to do differently (esc)\n"
             "Press enter to confirm or esc to cancel"
         )
-        result = codex_adapter.should_auto_confirm(output)
-        assert result.response == "1"
-        assert result.send_enter is True
+        assert codex_adapter.should_auto_confirm(output) is None
 
     # ── detect_completion (prompt_count strategy) ──
 
@@ -297,12 +309,17 @@ class TestCursorAdapter:
     # ("\(y\)" / "Run \(always") in cursor.toml. See the hot-fix block
     # in src/cam/adapters/configs/cursor.toml.
 
-    def test_auto_confirm_trust_workspace(self, cursor_adapter):
+    def test_trust_workspace_is_boot_only(self, cursor_adapter):
+        from camc_pkg.detection import should_boot_confirm
+        from camc_pkg.adapters import AdapterConfig, _parse_toml
+        from pathlib import Path
+        configs = Path(__file__).resolve().parent.parent / "src" / "cam" / "adapters" / "configs"
+        boot = AdapterConfig(_parse_toml((configs / "cursor.boot.toml").read_text(encoding="utf-8")))
         output = "▶ [a] Trust this workspace\n  [q] Quit\n  Use arrow keys to navigate"
-        result = cursor_adapter.should_auto_confirm(output)
-        assert result is not None
-        assert result.response == "a"
-        assert result.send_enter is False
+        assert cursor_adapter.should_auto_confirm(output) is None
+        hit = should_boot_confirm(output, boot)
+        assert hit is not None
+        assert hit[0] == "a"
 
     def test_stale_trust_workspace_does_not_auto_confirm(self, cursor_adapter):
         output = (
@@ -662,7 +679,7 @@ class TestAutoExitConfig:
 
 
 class TestGlobalInputCursorGuard:
-    """The three spec-mandated tests for the global guard."""
+    """Input-box guard + cursor-anchored TOML rules (production style)."""
 
     def _camc_cfg(self, rules):
         from camc_pkg.adapters import AdapterConfig as CamcAdapterConfig
@@ -671,35 +688,38 @@ class TestGlobalInputCursorGuard:
             "confirm": rules,
         })
 
-    def test_no_cursor_no_confirm(self):
-        """Prompt token in mid-block prose but no input cursor on
-        screen → should return None unconditionally."""
+    def test_anchored_rule_ignores_prose_lists(self):
+        """Loose prose must not match cursor-anchored menu rules."""
         from camc_pkg.detection import should_auto_confirm
         cfg = self._camc_cfg([
-            {"pattern": r"1\. Yes", "response": "1", "send_enter": False},
+            {
+                "pattern": r"^❯\s+1\.\s*Yes",
+                "flags": ["MULTILINE"],
+                "response": "1",
+                "send_enter": False,
+            },
         ])
-        # No ❯/›/`> ` anywhere in the last 5 non-empty lines.
         screen = (
             "Here is some markdown prose:\n"
             "  1. Yes, do it\n"
             "  2. No, skip it\n"
-            "These are list items, not a real prompt.\n"
-            "Final paragraph of agent narration.\n"
         )
         assert should_auto_confirm(screen, cfg) is None
 
-    def test_cursor_present_confirm_fires(self):
-        """Cursor at the last line + a numbered menu in the recent
-        window → confirm fires normally."""
+    def test_anchored_menu_confirm_fires(self):
+        """Active menu line with selection cursor fires confirm."""
         from camc_pkg.detection import should_auto_confirm
         cfg = self._camc_cfg([
-            {"pattern": r"1\. Yes", "response": "1", "send_enter": False},
+            {
+                "pattern": r"^❯\s+1\.\s*Yes",
+                "flags": ["MULTILINE"],
+                "response": "1",
+                "send_enter": False,
+            },
         ])
         screen = (
             "Do you want to proceed?\n"
-            "1. Yes\n"
-            "2. No\n"
-            "❯ \n"   # input cursor visible on last line
+            "❯ 1. Yes  2. No\n"
         )
         result = should_auto_confirm(screen, cfg)
         assert result is not None
@@ -707,16 +727,21 @@ class TestGlobalInputCursorGuard:
         assert response == "1"
         assert send_enter is False
 
-    def test_cursor_without_dialog(self):
-        """Cursor present but no rule pattern matches → None.
-        Guard must not over-fire; rule matching still applies."""
+    def test_bare_input_cursor_blocks_confirm(self):
+        """Bare input cursor means the user is typing — skip confirm."""
         from camc_pkg.detection import should_auto_confirm
         cfg = self._camc_cfg([
-            {"pattern": r"1\. Yes", "response": "1", "send_enter": False},
+            {
+                "pattern": r"^❯\s+1\.\s*Yes",
+                "flags": ["MULTILINE"],
+                "response": "1",
+                "send_enter": False,
+            },
         ])
         screen = (
-            "Some agent narration with the cursor visible:\n"
-            "❯ tell me about cats\n"
-            "No dialog here, no numbered menu.\n"
+            "Do you want to proceed?\n"
+            "1. Yes\n"
+            "2. No\n"
+            "❯ \n"
         )
         assert should_auto_confirm(screen, cfg) is None

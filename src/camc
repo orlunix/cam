@@ -40,7 +40,7 @@ import uuid
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "c61c56c-dirty 2026-06-16 18:13"
+__build__ = "7e72491-dirty 2026-06-17 00:10"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1092,6 +1092,56 @@ class AdapterConfig(object):
 # up as ['--version', '--version'], state.patterns doubled, etc.
 _APPEND_LIST_KEYS = frozenset({"confirm"})
 
+# Runtime [[confirm]] rules moved to *.boot.toml — stale ~/.cam/configs/*.toml
+# copies must not re-append them via confirm merge.
+_RETIRED_RUNTIME_CONFIRM = {
+    "cursor": (
+        r"Trust this workspace",
+        r"Run\s*\(once\)",
+        r"Run\s*\(always\)",
+    ),
+    "codex": (
+        r"Yes, allow Codex to work in this folder",
+        r"Do you trust the contents of this directory",
+        r"retry without sandbox",
+        r"Press enter to confirm or esc to cancel",
+    ),
+    "claude": (
+        r"trust this folder",
+        r"Do you want to proceed",
+        r"Allow once",
+        r"Allow always",
+    ),
+}
+
+
+def _retired_runtime_confirm_res(tool):
+    patterns = _RETIRED_RUNTIME_CONFIRM.get(tool) or ()
+    return tuple(re.compile(p, re.IGNORECASE) for p in patterns)
+
+
+def _scrub_retired_runtime_confirm_rules(rules, tool):
+    """Drop boot-only confirm rules from stale external runtime TOML."""
+    if not isinstance(rules, list):
+        return rules
+    retired = _retired_runtime_confirm_res(tool)
+    if not retired:
+        return rules
+    kept = []
+    for rule in rules:
+        if not isinstance(rule, dict):
+            kept.append(rule)
+            continue
+        pat = str(rule.get("pattern") or "")
+        if any(r.search(pat) for r in retired):
+            log.info(
+                "Skipping retired runtime [[confirm]] from external %s.toml: %s",
+                tool, pat[:80],
+            )
+            continue
+        kept.append(rule)
+    return kept
+
 
 def _merge_toml(base, override):
     """Merge ``override`` TOML dict into ``base``.
@@ -1237,11 +1287,15 @@ def _load_config(tool):
 
     config = _parse_toml(_EMBEDDED_CONFIGS[key])
 
-    # Merge external overrides if present
+    # Merge external overrides if present (runtime only — scrub boot-only rules).
     toml_path = os.path.join(CONFIGS_DIR, "%s.toml" % tool)
     if os.path.exists(toml_path):
         try:
             ext = load_toml(toml_path)
+            if isinstance(ext.get("confirm"), list):
+                ext = dict(ext)
+                ext["confirm"] = _scrub_retired_runtime_confirm_rules(
+                    ext.get("confirm"), tool)
             _merge_toml(config, ext)
             log.info("Merged external config: %s", toml_path)
         except Exception as e:
@@ -6580,6 +6634,48 @@ TOKEN_ENV_FILE = os.path.join(CAM_DIR, "token.env")
 DEFAULT_PROVIDER = "inference-hub"
 IHUB_BASE = "https://inference-api.nvidia.com/v1"
 
+# Provider templates (copy into providers/apis — not active until referenced).
+PROVIDER_TEMPLATES = {
+    "openai-chat-gateway": {
+        "display_name": "OpenAI Chat Completions gateway",
+        "auth_key": "openai_gateway",
+        "env_names": ["OPENAI_API_KEY", "OPENAI_GATEWAY_API_KEY"],
+        "base_url": "https://llm.example.com/v1",
+        "upstream_protocol": "openai_chat_completions",
+        "translator": "embedded",
+        "catalog_path": "/models",
+        "endpoints": {
+            "openai_chat_completions": "/chat/completions",
+        },
+    },
+    "anthropic-direct": {
+        "display_name": "Native Anthropic Messages API",
+        "auth_key": "anthropic",
+        "env_names": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
+        "base_url": "https://api.anthropic.com",
+        "upstream_protocol": "anthropic_messages",
+        "translator": "direct",
+        "catalog_path": "/v1/models",
+        "endpoints": {
+            "anthropic_messages": "/v1/messages",
+        },
+    },
+    "cc-switch": {
+        "display_name": "CC Switch local routing",
+        "auth_key": "cc_switch",
+        "env_names": ["CC_SWITCH_API_KEY", "OPENAI_API_KEY"],
+        "base_url": "http://127.0.0.1:15721",
+        "client_base_url": "http://127.0.0.1:15721",
+        "upstream_protocol": "anthropic_messages",
+        "translator": "external",
+        "external_translator": True,
+        "catalog_path": "",
+        "endpoints": {
+            "anthropic_messages": "",
+        },
+    },
+}
+
 CURATED_APIS = [
     ("glm-5.1", "nvidia/zai-org/eccn-glm-5.1", ["glm", "glm51"]),
     ("deepseek-v4-pro", "nvidia/deepseek-ai/eccn-deepseek-v4-pro", ["deepseek", "ds-v4"]),
@@ -6613,6 +6709,9 @@ def _default_seed():
                     "INFERENCE_API_KEY",
                 ],
                 "base_url": IHUB_BASE,
+                "upstream_protocol": "openai_chat_completions",
+                "translator": "embedded",
+                "catalog_path": "/models",
                 "endpoints": {
                     "openai_chat_completions": "/chat/completions",
                     "anthropic_messages": "/messages",
@@ -6620,7 +6719,7 @@ def _default_seed():
             },
         },
         "apis": apis,
-        "_templates": {},
+        "_templates": dict(PROVIDER_TEMPLATES),
         "_aliases": {},
         "_catalog": {},
     }
@@ -6704,14 +6803,42 @@ def get_provider(data, provider_id):
 
 
 def upstream_chat_url(data, api_entry, provider):
+    """Legacy name: upstream URL for openai_chat_completions."""
     if api_entry.get("url"):
         return str(api_entry["url"])
+    return provider_endpoint_url(provider, PROTO_OPENAI_CHAT)
+
+
+def catalog_url(provider):
+    """GET URL for provider model catalog (empty = skip catalog sync)."""
+    path = str(provider.get("catalog_path") if "catalog_path" in provider else "/models")
+    if not path:
+        return ""
     base = str(provider.get("base_url") or "").rstrip("/")
-    endpoints = provider.get("endpoints") or {}
-    path = endpoints.get("openai_chat_completions") or "/chat/completions"
+    if not base:
+        return ""
     if not path.startswith("/"):
         path = "/" + path
     return base + path
+
+
+def fetch_model_catalog(provider, token, timeout=5.0):
+    """Fetch model ids from provider catalog endpoint. Returns set of ids."""
+    url = catalog_url(provider)
+    if not url:
+        return set()
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": "Bearer %s" % token},
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+    ids = set()
+    for item in body.get("data") or []:
+        if isinstance(item, dict) and item.get("id"):
+            ids.add(str(item["id"]))
+    return ids
 
 
 def list_apis(data, show_all=False):
@@ -6733,23 +6860,16 @@ def list_apis(data, show_all=False):
 
 
 def _fetch_ihub_model_ids(token, timeout=5.0):
-    url = IHUB_BASE + "/models"
-    req = urllib.request.Request(
-        url,
-        headers={"Authorization": "Bearer %s" % token},
-        method="GET",
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
-    ids = []
-    for item in body.get("data") or []:
-        if isinstance(item, dict) and item.get("id"):
-            ids.append(str(item["id"]))
-    return ids
+    """Backward-compat wrapper for IHUB catalog."""
+    provider = {
+        "base_url": IHUB_BASE,
+        "catalog_path": "/models",
+    }
+    return fetch_model_catalog(provider, token, timeout=timeout)
 
 
 def check_provider(data, token_resolver):
-    """Ping IHUB, refresh enabled flags and _catalog. Returns summary dict."""
+    """Ping provider catalog, refresh enabled flags and _catalog."""
 
     provider_id = data.get("default_provider") or DEFAULT_PROVIDER
     provider = get_provider(data, provider_id)
@@ -6763,19 +6883,29 @@ def check_provider(data, token_resolver):
         "model_count": 0,
         "apis": [],
         "error": None,
+        "catalog_skipped": False,
     }
 
     if not token:
-        result["error"] = "no token found; set INFERENCE_HUB_TOKEN in ~/.cam/token.env"
+        result["error"] = (
+            "no token found; set one of %s in ~/.cam/token.env"
+            % ", ".join(provider.get("env_names") or ["INFERENCE_HUB_TOKEN"])
+        )
         return result
 
-    try:
-        ids = set(_fetch_ihub_model_ids(token))
+    catalog = catalog_url(provider)
+    if not catalog:
         result["reachable"] = True
-        result["model_count"] = len(ids)
-    except (urllib.error.URLError, urllib.error.HTTPError, socket.timeout, ValueError) as exc:
-        result["error"] = str(exc)
-        return result
+        result["catalog_skipped"] = True
+        ids = set()
+    else:
+        try:
+            ids = fetch_model_catalog(provider, token)
+            result["reachable"] = True
+            result["model_count"] = len(ids)
+        except (urllib.error.URLError, urllib.error.HTTPError, socket.timeout, ValueError) as exc:
+            result["error"] = str(exc)
+            return result
 
     apis = data.get("apis") or {}
     for key, entry in apis.items():
@@ -6784,12 +6914,20 @@ def check_provider(data, token_resolver):
         model = entry.get("model")
         if not model:
             continue
+        if not catalog:
+            result["apis"].append({
+                "name": key,
+                "model": model,
+                "enabled": entry.get("enabled"),
+                "reason": entry.get("enabled_reason") or "catalog_skipped",
+            })
+            continue
         if model in ids:
             entry["enabled"] = True
-            entry["enabled_reason"] = "ihub_catalog"
+            entry["enabled_reason"] = "catalog"
         else:
             entry["enabled"] = False
-            entry["enabled_reason"] = "id_not_on_key"
+            entry["enabled_reason"] = "id_not_on_key" if ids else "catalog_skipped"
         result["apis"].append({
             "name": key,
             "model": model,
@@ -6797,11 +6935,12 @@ def check_provider(data, token_resolver):
             "reason": entry.get("enabled_reason"),
         })
 
-    data["_catalog"] = {
-        "synced_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "provider": provider_id,
-        "ids": sorted(ids),
-    }
+    if ids:
+        data["_catalog"] = {
+            "synced_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "provider": provider_id,
+            "ids": sorted(ids),
+        }
     save_api_models(data)
     return result
 
@@ -6814,40 +6953,92 @@ LEGACY_TOKEN_ENV = os.path.expanduser("~/.cam/inference-hub.env")
 MY_TOKENS_YAML = os.path.expanduser("~/.my_tokens.yaml")
 
 
-def _read_token_env(path):
+def _normalize_key(key):
+    """Canonical key for case/hyphen-insensitive lookup."""
+    return re.sub(r"[-\s]+", "_", str(key or "").lower().strip())
+
+
+def _strip_quotes(value):
+    return str(value or "").strip().strip("'\"")
+
+
+def _read_kv_file(path, sep):
+    """Read simple KEY<sep>VALUE lines from a dotenv or flat-yaml file."""
     if not os.path.isfile(path):
         return {}
     out = {}
     with open(path, "r") as f:
-        for line in f:
-            line = line.strip()
+        for raw in f:
+            line = raw.strip()
             if not line or line.startswith("#"):
                 continue
-            if "=" not in line:
+            if line.startswith("export "):
+                line = line[7:].lstrip()
+            if sep not in line:
                 continue
-            k, _, v = line.partition("=")
-            out[k.strip()] = v.strip().strip("'\"")
+            k, _, v = line.partition(sep)
+            key = k.strip()
+            val = _strip_quotes(v)
+            if key and val:
+                out[key] = val
     return out
+
+
+def _read_token_env(path):
+    return _read_kv_file(path, "=")
 
 
 def _read_yaml_flat(path):
-    if not os.path.isfile(path):
-        return {}
-    out = {}
-    with open(path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if ":" not in line:
-                continue
-            k, _, v = line.partition(":")
-            out[k.strip()] = v.strip().strip("'\"")
-    return out
+    return _read_kv_file(path, ":")
 
 
-def _normalize_key(key):
-    return re.sub(r"[-\s]+", "_", str(key or "").lower())
+def _index_by_normalized_key(flat_dict):
+    """Map normalized key -> (original_key, value). First entry wins."""
+    index = {}
+    for key, value in flat_dict.items():
+        nk = _normalize_key(key)
+        if nk and nk not in index:
+            index[nk] = (key, value)
+    return index
+
+
+def _lookup_in_index(index, label, *candidates):
+    """Case/hyphen-insensitive lookup; returns (token, source_label)."""
+    for candidate in candidates:
+        if not candidate:
+            continue
+        hit = index.get(_normalize_key(candidate))
+        if hit:
+            orig, val = hit
+            val = _strip_quotes(val)
+            if val:
+                return val, "%s:%s" % (label, orig)
+    return "", ""
+
+
+def _lookup_in_environ(env_names, auth_key):
+    """Resolve from process environment (exact name first, then case-insensitive)."""
+    for name in env_names or []:
+        val = os.environ.get(name, "").strip()
+        if val:
+            return val, "env:%s" % name
+
+    norm_env = {}
+    for key, value in os.environ.items():
+        nk = _normalize_key(key)
+        if nk and nk not in norm_env:
+            norm_env[nk] = (key, value)
+
+    for candidate in list(env_names or []) + [auth_key]:
+        if not candidate:
+            continue
+        hit = norm_env.get(_normalize_key(candidate))
+        if hit:
+            orig, val = hit
+            val = val.strip()
+            if val:
+                return val, "env:%s" % orig
+    return "", ""
 
 
 def resolve_token(auth_key, env_names, cli_token=None):
@@ -6857,46 +7048,186 @@ def resolve_token(auth_key, env_names, cli_token=None):
 
     names = list(env_names or [])
     ak = _normalize_key(auth_key)
-    if ak and ak not in [_normalize_key(n) for n in names]:
-        names.append(auth_key)
+    if ak:
+        for name in names:
+            if _normalize_key(name) == ak:
+                break
+        else:
+            names.append(auth_key)
 
+    token, src = _lookup_in_environ(names, auth_key)
+    if token:
+        return token, src
+
+    candidates = []
+    seen = set()
     for name in names:
-        val = os.environ.get(name, "").strip()
-        if val:
-            return val, "env:%s" % name
+        nk = _normalize_key(name)
+        if nk and nk not in seen:
+            seen.add(nk)
+            candidates.append(name)
+    if ak and ak not in seen:
+        candidates.append(auth_key)
 
     for path, label in ((TOKEN_ENV_FILE, "token.env"), (LEGACY_TOKEN_ENV, "inference-hub.env")):
-        file_vals = _read_token_env(path)
-        for name in names:
-            if name in file_vals and file_vals[name]:
-                return file_vals[name], "%s:%s" % (label, name)
-        if ak in file_vals and file_vals[ak]:
-            return file_vals[ak], "%s:%s" % (label, ak)
+        token, src = _lookup_in_index(_index_by_normalized_key(_read_token_env(path)), label, *candidates)
+        if token:
+            return token, src
 
-    yaml_vals = _read_yaml_flat(MY_TOKENS_YAML)
-    for key in (auth_key, ak):
-        if key in yaml_vals and yaml_vals[key]:
-            return yaml_vals[key], "my_tokens.yaml:%s" % key
+    token, src = _lookup_in_index(
+        _index_by_normalized_key(_read_yaml_flat(MY_TOKENS_YAML)),
+        "my_tokens.yaml",
+        *candidates,
+    )
+    if token:
+        return token, src
 
     return "", "none"
 
 
 # ===========================================================================
-# api_resolver
+# api_routing
 # ===========================================================================
 
+# Wire protocol ids (keys in providers.*.endpoints)
+PROTO_ANTHROPIC_MESSAGES = "anthropic_messages"
+PROTO_OPENAI_CHAT = "openai_chat_completions"
+PROTO_OPENAI_RESPONSES = "openai_responses"
+
+# How camc reaches the model
+TRANSLATOR_EMBEDDED = "embedded"
+TRANSLATOR_DIRECT = "direct"
+TRANSLATOR_EXTERNAL = "external"
+
+TOOL_PROTOCOL = {
+    "claude": PROTO_ANTHROPIC_MESSAGES,
+    "codex": PROTO_OPENAI_RESPONSES,
+    "cursor": PROTO_ANTHROPIC_MESSAGES,
+}
+
+# Embedded stdlib proxy routes (tool_proto, upstream_proto) -> route metadata
 PROXY_ROUTES = {
-    ("anthropic_messages", "openai_chat_completions"): {
+    (PROTO_ANTHROPIC_MESSAGES, PROTO_OPENAI_CHAT): {
         "route": "completions_to_messages",
         "port": 18324,
     },
+    # Future codex --api:
+    # (PROTO_OPENAI_RESPONSES, PROTO_OPENAI_CHAT): {
+    #     "route": "completions_to_responses",
+    #     "port": 18325,
+    # },
 }
 
-TOOL_PROTOCOL = {
-    "claude": "anthropic_messages",
-    "codex": "openai_responses",
-    "cursor": "anthropic_messages",
-}
+
+def provider_endpoint_url(provider, protocol):
+    """Join provider.base_url + providers.endpoints[protocol]."""
+    base = str(provider.get("base_url") or "").rstrip("/")
+    if not base:
+        raise ValueError("provider missing base_url")
+    endpoints = provider.get("endpoints") or {}
+    path = endpoints.get(protocol)
+    if path is None:
+        raise ValueError(
+            "provider %r has no endpoint for protocol %r"
+            % (provider.get("display_name") or "?", protocol)
+        )
+    path = str(path)
+    if path == "":
+        return base
+    if not path.startswith("/"):
+        path = "/" + path
+    return base + path
+
+
+def resolve_upstream_protocol(provider, api_entry):
+    """Which upstream wire format this API uses."""
+    proto = api_entry.get("upstream_protocol") or provider.get("upstream_protocol")
+    if proto:
+        return str(proto)
+    # Backward compat: inference-hub and most gateways default to chat completions.
+    return PROTO_OPENAI_CHAT
+
+
+def resolve_translator(provider, api_entry, tool_proto, upstream_proto):
+    """Pick embedded proxy, direct passthrough, or external translator."""
+    explicit = api_entry.get("translator") or provider.get("translator")
+    if explicit:
+        return str(explicit)
+
+    if tool_proto == upstream_proto:
+        if provider.get("external_translator"):
+            return TRANSLATOR_EXTERNAL
+        return TRANSLATOR_DIRECT
+
+    if PROXY_ROUTES.get((tool_proto, upstream_proto)):
+        return TRANSLATOR_EMBEDDED
+
+    raise ValueError(
+        "no translator for tool protocol %s -> upstream %s "
+        "(set apis.*.translator or providers.*.translator)"
+        % (tool_proto, upstream_proto)
+    )
+
+
+def resolve_upstream_url(provider, api_entry, upstream_proto):
+    """Full upstream URL for embedded proxy or direct Anthropic."""
+    if api_entry.get("url"):
+        return str(api_entry["url"])
+    return provider_endpoint_url(provider, upstream_proto)
+
+
+def resolve_client_base_url(provider, api_entry):
+    """URL Claude/Codex should call (may differ from upstream for external translators)."""
+    if api_entry.get("client_url"):
+        return str(api_entry["client_url"]).rstrip("/")
+    client_base = provider.get("client_base_url") or provider.get("base_url")
+    if not client_base:
+        raise ValueError("provider missing client_base_url / base_url")
+    return str(client_base).rstrip("/")
+
+
+def build_routing_plan(tool, provider, api_entry, api_key):
+    """Compute translator mode, URLs, and proxy route (if any)."""
+    tool_proto = TOOL_PROTOCOL.get(tool, PROTO_ANTHROPIC_MESSAGES)
+    upstream_proto = resolve_upstream_protocol(provider, api_entry)
+    translator = resolve_translator(provider, api_entry, tool_proto, upstream_proto)
+    upstream_url = resolve_upstream_url(provider, api_entry, upstream_proto)
+
+    plan = {
+        "translator": translator,
+        "tool_protocol": tool_proto,
+        "upstream_protocol": upstream_proto,
+        "upstream_url": upstream_url,
+        "mode": translator,
+        "route": None,
+        "proxy_port": None,
+        "local_base_url": upstream_url,
+    }
+
+    if translator == TRANSLATOR_EMBEDDED:
+        route_info = PROXY_ROUTES.get((tool_proto, upstream_proto))
+        if not route_info:
+            raise ValueError(
+                "embedded translator not configured for %s -> %s"
+                % (tool_proto, upstream_proto)
+            )
+        plan["mode"] = "proxy"  # cli.ProxyManager legacy field
+        plan["route"] = route_info["route"]
+        plan["proxy_port"] = route_info["port"]
+        plan["local_base_url"] = "http://127.0.0.1:%d" % route_info["port"]
+    elif translator == TRANSLATOR_EXTERNAL:
+        plan["local_base_url"] = resolve_client_base_url(provider, api_entry)
+    elif translator == TRANSLATOR_DIRECT:
+        plan["local_base_url"] = upstream_url
+    else:
+        raise ValueError("unknown translator mode %r" % translator)
+
+    return plan
+
+
+# ===========================================================================
+# api_resolver
+# ===========================================================================
 
 # Supported today: Claude + curated Inference Hub models only.
 API_SUPPORTED_TOOLS = frozenset(["claude"])
@@ -6911,7 +7242,14 @@ def supported_api_models_text():
     return ", ".join(sorted(CURATED_API_KEYS))
 
 
-def validate_api_run(tool, api_key):
+def is_api_runnable(api_key, api_entry):
+    """Whether camc run --api may use this API profile today."""
+    if api_entry.get("allow_run") is True:
+        return True
+    return api_key in CURATED_API_KEYS
+
+
+def validate_api_run(tool, api_key, api_entry=None):
     """Raise ValueError if tool/model is not supported for --api today."""
     if tool not in API_SUPPORTED_TOOLS:
         raise ValueError(
@@ -6922,10 +7260,12 @@ def validate_api_run(tool, api_key):
             "Supported models: %s."
             % (tool, supported_api_models_text())
         )
-    if api_key not in CURATED_API_KEYS:
+    entry = api_entry or {}
+    if not is_api_runnable(api_key, entry):
         raise ValueError(
             "API %r is not supported for --api. "
             "Only curated Inference Hub models are supported: %s. "
+            "Custom providers: set allow_run=true in api-models.json (see docs/api-routing.md). "
             "Run: camc api check"
             % (api_key, supported_api_models_text())
         )
@@ -6992,69 +7332,77 @@ def resolve_run_plan(tool, api_name, no_api_proxy=False, proxy_debug=False):
     """Return plan dict for camc run --api."""
     data = ensure_ready()
     key = resolve_api_name(data, api_name)
-    validate_api_run(tool, key)
     api_entry = dict((data.get("apis") or {}).get(key) or {})
+    validate_api_run(tool, key, api_entry)
     if api_entry.get("enabled") is False:
         reason = api_entry.get("enabled_reason") or "disabled"
         raise ValueError("API %r is disabled (%s)" % (key, reason))
 
     provider_id = api_entry.get("provider") or data.get("default_provider")
     provider = get_provider(data, provider_id)
-    upstream_url = upstream_chat_url(data, api_entry, provider)
-    tool_proto = TOOL_PROTOCOL.get(tool, "anthropic_messages")
-    upstream_proto = "openai_chat_completions"
+    routing = build_routing_plan(tool, provider, api_entry, key)
     client_model = key
+
+    if routing["translator"] == TRANSLATOR_EMBEDDED and no_api_proxy:
+        raise ValueError(
+            "API %r requires embedded proxy route %s but --no-api-proxy was set"
+            % (key, routing.get("route"))
+        )
 
     plan = {
         "name": key,
         "tool": tool,
         "provider": provider_id,
         "model": api_entry.get("model"),
-        "mode": "direct",
-        "route": None,
-        "upstream_url": upstream_url,
-        "local_base_url": upstream_url,
-        "upstream_proto": upstream_proto,
-        "tool_proto": tool_proto,
+        "mode": routing["mode"],
+        "translator": routing["translator"],
+        "route": routing.get("route"),
+        "upstream_url": routing["upstream_url"],
+        "local_base_url": routing["local_base_url"],
+        "upstream_protocol": routing["upstream_protocol"],
+        "tool_protocol": routing["tool_protocol"],
+        "upstream_proto": routing["upstream_protocol"],
         "auth_key": provider.get("auth_key") or "inference_hub",
         "env_names": provider.get("env_names") or [],
         "proxy_debug": proxy_debug,
+        "proxy_port": routing.get("proxy_port"),
         "env": {},
     }
 
-    if tool_proto == upstream_proto:
-        plan["mode"] = "direct"
-        plan["local_base_url"] = upstream_url
-    else:
-        route_info = PROXY_ROUTES.get((tool_proto, upstream_proto))
-        if not route_info:
-            raise ValueError(
-                "tool %r cannot use API %r without proxy (no route %s -> %s)"
-                % (tool, key, tool_proto, upstream_proto)
-            )
-        if no_api_proxy:
-            raise ValueError(
-                "API %r requires proxy route %s but --no-api-proxy was set"
-                % (key, route_info["route"])
-            )
-        plan["mode"] = "proxy"
-        plan["route"] = route_info["route"]
-        plan["proxy_port"] = route_info["port"]
-        plan["local_base_url"] = "http://127.0.0.1:%d" % route_info["port"]
-
-    plan["env"] = _build_env_overrides(tool, plan, client_model)
+    plan["env"] = _build_env_overrides(tool, plan, provider, api_entry, client_model)
     return plan
 
 
-def _build_env_overrides(tool, plan, client_model):
+def _build_env_overrides(tool, plan, provider, api_entry, client_model):
     env = {}
-    if tool == "claude":
-        base = plan["local_base_url"].rstrip("/")
-        env["ANTHROPIC_BASE_URL"] = base
-        env["ANTHROPIC_API_KEY"] = "sk-camc-local"
-        env["ANTHROPIC_MODEL"] = client_model
+    if tool != "claude":
+        return env
+
+    base = plan["local_base_url"].rstrip("/")
+    translator = plan.get("translator") or plan.get("mode")
+    env["ANTHROPIC_BASE_URL"] = base
+    env["ANTHROPIC_MODEL"] = client_model
+    env["CLAUDE_CONFIG_DIR"] = ensure_claude_api_config_dir()
+
+    if translator == TRANSLATOR_EMBEDDED:
+        # Real token goes to embedded proxy; Claude uses local placeholder.
+        env["ANTHROPIC_API_KEY"] = str(
+            api_entry.get("client_api_key")
+            or provider.get("client_api_key")
+            or "sk-camc-local"
+        )
         env["ANTHROPIC_AUTH_TOKEN"] = ""
-        env["CLAUDE_CONFIG_DIR"] = ensure_claude_api_config_dir()
+    elif translator == TRANSLATOR_EXTERNAL:
+        env["ANTHROPIC_API_KEY"] = str(
+            api_entry.get("client_api_key")
+            or provider.get("client_api_key")
+            or "sk-camc-local"
+        )
+        env["ANTHROPIC_AUTH_TOKEN"] = ""
+    elif translator == TRANSLATOR_DIRECT:
+        # Caller merges resolved bearer token into env after resolve_run_plan.
+        env["ANTHROPIC_AUTH_TOKEN"] = ""
+        env["_API_USE_RESOLVED_TOKEN"] = "1"
     return env
 
 
@@ -7732,12 +8080,6 @@ class Handler(BaseHTTPRequestHandler):
                 user_preview=last_user_preview_messages(req),
             )
             chat_payload = anthropic_messages_to_chat(req, upstream_model)
-            if stream:
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Cache-Control", "no-cache")
-                self.end_headers()
-                self.wfile.flush()
             raw = call_chat_completions(
                 chat_payload, self.server.api_key, self.server.timeout,
                 url=self.server.upstream_url,
@@ -7755,6 +8097,10 @@ class Handler(BaseHTTPRequestHandler):
                 **summarize_chat_response(raw)
             )
             if stream:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
                 self.wfile.write(sse_events(msg))
                 self.wfile.flush()
             else:
@@ -7797,6 +8143,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send_bytes(json_dumps(obj).encode("utf-8"), "application/json", status)
 
     def _send_bytes(self, body, content_type, status=200):
+        self._headers_sent = True
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -7996,29 +8343,15 @@ def ensure_proxy(plan, token):
     runs = _load_runs()
     rec = runs.get(key)
 
-    if rec and _pid_alive(rec.get("pid")) and _health_ok(rec.get("port") or port):
-        return int(rec.get("port") or port), rec
-
     if rec and rec.get("pid") and not _pid_alive(rec.get("pid")):
         runs.pop(key, None)
 
-    # Reuse an already-listening proxy (e.g. manual start or stale proxy-runs.json).
-    if _health_ok(port):
-        if not rec:
-            rec = {
-                "route": route,
-                "port": port,
-                "pid": None,
-                "upstream_url": upstream_url,
-                "model": plan.get("model"),
-                "api": plan.get("name"),
-                "log": os.path.join(LOGS_DIR, "proxy-%s.log" % route),
-                "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "reused": True,
-            }
-            runs[key] = rec
-            _save_runs(runs)
-        return port, rec
+    # Reuse only when run record matches this route+upstream (never blind port reuse).
+    if rec and rec.get("upstream_url") == upstream_url and rec.get("route") == route:
+        if _pid_alive(rec.get("pid")) and _health_ok(rec.get("port") or port):
+            return int(rec.get("port") or port), rec
+        if not rec.get("pid") and _health_ok(rec.get("port") or port):
+            return int(rec.get("port") or port), rec
 
     pid, log_path = _start_proxy(
         route=route,
@@ -8639,10 +8972,12 @@ def cmd_run(args):
             api_plan.get("env_names") or [],
             cli_token=getattr(args, "api_token", None),
         )
-        if not token:
+        translator = api_plan.get("translator") or api_plan.get("mode")
+        if not token and translator != "external":
+            env_names = api_plan.get("env_names") or ["INFERENCE_HUB_TOKEN"]
             print_error(
-                "No API token for provider %s (set INFERENCE_HUB_TOKEN in ~/.cam/token.env)"
-                % api_plan.get("provider")
+                "No API token for provider %s (set %s in ~/.cam/token.env)"
+                % (api_plan.get("provider"), " or ".join(env_names[:3]))
             )
             sys.exit(1)
         if api_plan.get("mode") == "proxy":
@@ -8658,13 +8993,21 @@ def cmd_run(args):
                 if tool == "claude":
                     overrides["ANTHROPIC_BASE_URL"] = base
                 api_plan["env"] = overrides
+        elif api_plan.get("env", {}).get("_API_USE_RESOLVED_TOKEN") == "1":
+            overrides = dict(api_plan.get("env") or {})
+            overrides.pop("_API_USE_RESOLVED_TOKEN", None)
+            overrides["ANTHROPIC_API_KEY"] = token
+            api_plan["env"] = overrides
         for key, val in (api_plan.get("env") or {}).items():
             if val == "":
                 runtime.env.pop(key, None)
             else:
                 runtime.env[key] = val
-        print_info("API %s via %s (token: %s)" % (
-            api_plan.get("name"), api_plan.get("mode"), token_src))
+        print_info("API %s via %s/%s (token: %s)" % (
+            api_plan.get("name"),
+            api_plan.get("translator") or api_plan.get("mode"),
+            api_plan.get("upstream_protocol"),
+            token_src if token else "none"))
     tool_binary = config.command[0] if config.command else None
     # F-08 (adapter-owned): prefer the adapter's [readiness] block
     # over runtime_env's hardcoded _TOOL_SPECS fallback. None when
@@ -13174,19 +13517,21 @@ def cmd_api_proxy_start(args):
     api_name = getattr(args, "api_name", None)
     upstream_url = getattr(args, "upstream_url", None)
     upstream_model = getattr(args, "upstream_model", None) or ""
-    model_alias = getattr(args, "model_alias", None) or "glm-5.1"
+    model_alias = getattr(args, "model_alias", None)
 
     if api_name:
         plan = resolve_run_plan("claude", api_name, proxy_debug=bool(args.debug))
         upstream_url = upstream_url or plan.get("upstream_url")
         upstream_model = upstream_model or plan.get("model") or api_name
-        model_alias = model_alias or plan.get("name")
+        model_alias = model_alias or plan.get("name") or api_name
         plan["proxy_port"] = port
         plan["proxy_debug"] = bool(args.debug)
     else:
         if not upstream_url:
             print_error("--upstream-url is required (or use --api NAME)")
             sys.exit(1)
+        if not model_alias:
+            model_alias = "glm-5.1"
         plan = {
             "mode": "proxy",
             "route": route,

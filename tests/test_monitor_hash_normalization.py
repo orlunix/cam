@@ -369,8 +369,7 @@ class TestSnapshotShapeAndAutoConfirm:
         rt.last_confirm = 0.0
         feat = _mf.AutoConfirmationFeature()
         snap = _mk_snap(
-            # Trailing ❯ so the global input-cursor guard allows the rule.
-            output="Do you want to proceed?\n1. Yes\n2. No\n❯ \n",
+            output="Do you want to proceed?\n1. Yes\n2. No\n",
             now=100.0,
         )
         kinds = [a["kind"] for a in feat.confirm(snap, rt)]

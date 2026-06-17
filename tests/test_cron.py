@@ -28,6 +28,8 @@ def home(monkeypatch, tmp_path):
     cam = tmp_path / ".cam"
     cron_dir = cam / "cron"
     cron_dir.mkdir(parents=True)
+    loops_dir = cam / "loops"
+    loops_dir.mkdir(parents=True)
     monkeypatch.setattr(_cron, "CRON_DIR", str(cron_dir))
     monkeypatch.setattr(_cron, "CRON_JOBS_DIR", str(cron_dir / "jobs.d"))
     monkeypatch.setattr(_cron, "CRON_LEGACY_FILE", str(cron_dir / "jobs.json"))
@@ -41,6 +43,11 @@ def home(monkeypatch, tmp_path):
     monkeypatch.setattr(_cron, "CRON_LOGS_DIR", str(cron_dir / "logs"))
     monkeypatch.setattr(_cron, "CRON_HUMAN_LOG", str(cron_dir / "cron.log"))
     monkeypatch.setattr(_cron, "_emit_event", lambda *args, **kwargs: None)
+    try:
+        from camc_pkg import cron_loop as _cron_loop
+        monkeypatch.setattr(_cron_loop, "LOOPS_DIR", str(loops_dir))
+    except Exception:
+        pass
     try:
         from camc_pkg import cli as _cli
         monkeypatch.setattr(_cli, "_emit_event", lambda *args, **kwargs: None)
@@ -356,6 +363,21 @@ class TestCrontabBlock:
         result = _cron.ensure_tick_if_needed(runner=ct)
         assert result == "removed"
         assert _cron.CRON_BEGIN not in ct.current
+
+    def test_ensure_tick_keeps_block_when_enabled_loops_exist(self, home):
+        """Isolated LOOPS_DIR: enabled loops count like cron jobs for tick."""
+        from camc_pkg import cron_loop as _cron_loop
+
+        owner = {"id": "owner1", "task": {"name": "owner1"}}
+        store = _cron_loop.LoopStore("owner1")
+        store.add(_cron_loop.build_loop(
+            "tick-loop", _cron.parse_every("30m"), "nudge", owner))
+
+        ct = _FakeCrontab("# u\n%s\nline\n%s\n" % (
+            _cron.CRON_BEGIN, _cron.CRON_END))
+        result = _cron.ensure_tick_if_needed(runner=ct)
+        assert result == "repaired"
+        assert _cron.CRON_BEGIN in ct.current
 
     def test_ensure_tick_refuses_to_touch_corrupt(self, home):
         ct = _FakeCrontab("")

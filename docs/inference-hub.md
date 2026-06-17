@@ -192,22 +192,26 @@ Claude Code
   -> model nvidia/zai-org/eccn-glm-5.1
 ```
 
-Codex uses **OpenAI `/v1/responses`**. The sibling route translates that wire
-to the same upstream:
+Codex uses **OpenAI `/v1/responses`**. A sibling route **would** translate that wire
+to the same upstream (planned / dev-only today — **not** in production `src/camc_pkg/proxy/`):
 
 ```text
-Codex CLI
+Codex CLI  (future / dev reference)
   -> OPENAI_BASE_URL=http://127.0.0.1:18325      (completions_to_responses)
   -> https://inference-api.nvidia.com/v1/chat/completions
   -> model nvidia/zai-org/eccn-glm-5.1
 ```
 
+> **Production `src/camc_pkg/proxy/`** currently ships **`completions_to_messages` only**
+> (`:18324`, Claude Code + IHUB). `completions_to_responses` exists under
+> `dev/ihub_proxy/` for manual experiments, not embedded in `dist/camc`.
+
 ### Protocol routes
 
-| Route | Frontend | Upstream | Use case |
-|-------|----------|----------|----------|
-| `completions_to_messages` | Anthropic `/v1/messages` | IHUB `/v1/chat/completions` | Claude Code + GLM |
-| `completions_to_responses` | OpenAI `/v1/responses` | IHUB `/v1/chat/completions` | Codex + GLM |
+| Route | Frontend | Upstream | Status |
+|-------|----------|----------|--------|
+| `completions_to_messages` | Anthropic `/v1/messages` | IHUB `/v1/chat/completions` | **Production** (`src/camc_pkg/proxy/messages.py`) |
+| `completions_to_responses` | OpenAI `/v1/responses` | IHUB `/v1/chat/completions` | **Dev only** (`dev/ihub_proxy/`); Codex `--api` P1 |
 
 Source: **`src/camc_pkg/proxy/`** (embedded in `dist/camc`). Optional standalone
 copy for manual debug: `dev/ihub_proxy/` → `~/.cam/ihub-proxy/` (not auto-synced;
@@ -333,6 +337,9 @@ the agent session (`unset ANTHROPIC_AUTH_TOKEN`). You do **not** need
   native `/v1/messages`. GLM-5.1 needs the local proxy for tool calling.
 
 ## Alternative: CC Switch and LiteLLM
+
+> **Full walkthrough with config JSON:** `docs/api-routing.md` — Examples 1 (embedded),
+> 2 (direct), 3 (external).
 
 The stdlib routes above are the CAM default (fast, no pip deps). Two common
 community alternatives solve the same protocol mismatch with different tradeoffs.

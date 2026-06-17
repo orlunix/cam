@@ -61,17 +61,17 @@ def _mk_snap(output="hello\n❯ ", **overrides):
 # ---------------------------------------------------------------------------
 
 def test_registry_includes_state_manager_and_auto_confirmation_and_placeholders():
-    """The default v1 set is StateManagerFeature(10) →
+    """The default v1 set is StateManagerFeature(10) → BootPromptFeature(15) →
     AutoConfirmationFeature(20) → MailboxFeature(30, disabled) →
     CronFeature(40, disabled). build_features() returns DISABLED
     features too so the driver / introspection code can see them."""
     feats = mf.build_features()
     by_name = {f.name: f for f in feats}
-    assert {"state_manager", "auto_confirm", "mailbox", "cron"} <= set(by_name)
+    assert {"state_manager", "boot_prompt", "auto_confirm", "mailbox", "cron"} <= set(by_name)
     # Order ascending.
     names = [f.name for f in feats]
-    assert names == ["state_manager", "auto_confirm", "mailbox", "cron"]
-    assert [f.order for f in feats] == [10, 20, 30, 40]
+    assert names == ["state_manager", "boot_prompt", "auto_confirm", "mailbox", "cron"]
+    assert [f.order for f in feats] == [10, 15, 20, 30, 40]
 
 
 def test_placeholders_are_disabled_by_default():
@@ -264,9 +264,7 @@ def test_auto_confirmation_returns_send_input_and_halt_cycle():
     runtime.last_confirm = 0.0
     feat = mf.AutoConfirmationFeature()
     snap = _mk_snap(
-        # Includes ❯ on the last line so the global input-cursor guard
-        # (camc_pkg.detection.should_auto_confirm) allows the rule.
-        output="Do you want to proceed?\n1. Yes\n2. No\n❯ \n",
+        output="Do you want to proceed?\n1. Yes\n2. No\n",
         now=1000.0, prompt_visible=False, bare_prompt=False,
     )
     actions = feat.confirm(snap, runtime)
@@ -327,10 +325,9 @@ def test_auto_confirmation_no_1_spam_guard_python_side():
     assert runtime.last_confirm == 200.0
 
 
-def test_auto_confirmation_no_bare_prompt_skip_python_side():
-    """v2 is TOML-only: a bare prompt visible in the tail MUST NOT
-    suppress a matching TOML rule. The legacy bare_prompt skip was
-    archived on 2026-06-10."""
+def test_auto_confirmation_bare_input_cursor_blocks_python_side():
+    """Bare input cursor at the bottom blocks confirm — keystrokes would
+    land in the user's input box instead of the menu."""
     confirm_rules = [(re.compile(r"1\. Yes"), "1", False)]
     cfg = _Cfg(confirm_rules=confirm_rules)
     runtime = mf.MonitorRuntime("aid", cfg, now=500.0)
@@ -338,8 +335,8 @@ def test_auto_confirmation_no_bare_prompt_skip_python_side():
     feat = mf.AutoConfirmationFeature()
     snap = _mk_snap(output="\n1. Yes\n❯ ", bare_prompt=True, now=500.0)
     kinds = [a["kind"] for a in feat.confirm(snap, runtime)]
-    assert "send_input" in kinds
-    assert "halt_cycle" in kinds
+    assert "send_input" not in kinds
+    assert "halt_cycle" not in kinds
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +403,7 @@ def test_successful_confirm_halt_also_skips_after_confirm():
     runtime.idle_confirmed = True
     features = mf.build_features()
     snap = _mk_snap(
-        output="Do you want to proceed?\n1. Yes\n2. No\n❯ \n",
+        output="Do you want to proceed?\n1. Yes\n2. No\n",
         changed=True, now=300.0,
     )
     applied, halted, phases = _drive_three_phases(features, snap, runtime)
@@ -474,7 +471,7 @@ def test_auto_confirmation_fires_purely_from_toml_rule():
     runtime.last_confirm = 0.0
     feat = mf.AutoConfirmationFeature()
     snap = _mk_snap(
-        output="Do you want to proceed?\n1. Yes\n2. No\n❯ \n",
+        output="Do you want to proceed?\n1. Yes\n2. No\n",
         bare_prompt=True, screen_busy=True, screen_done=True,
         tail_lines=["1111", "❯", "1. Yes"],
         now=10.0,

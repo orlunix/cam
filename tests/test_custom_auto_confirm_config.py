@@ -93,13 +93,12 @@ class TestCustomConfirmRuleLoads:
             % rule_patterns)
 
         # And should_auto_confirm should fire on a screen that matches it.
-        # The trailing "❯ " line satisfies the global input-cursor guard
-        # added on 2026-06-11 (camc_pkg.detection.has_input_cursor).
+        # Do not append a bare input cursor — that blocks confirm via the
+        # input-box guard (has_input_cursor).
         screen = (
             "Working on the build...\n"
             "Please confirm: launch the rockets?\n"
             "(y/n)\n"
-            "❯ \n"
         )
         out = should_auto_confirm(screen, cfg)
         assert out is not None, "custom rule did not fire"
@@ -184,9 +183,8 @@ class TestCustomConfirmRuleLoads:
         assert any("launch the rockets" in p for p in patterns), \
             "custom [[confirm]] rule did not append: %r" % patterns
         # Embedded confirm rules also still present (i.e. APPEND, not
-        # OVERRIDE) — pick one stable marker that's in the embedded
-        # claude.toml.
-        assert any("proceed" in p.lower() for p in patterns), \
+        # OVERRIDE) — pick one stable marker from embedded claude.toml.
+        assert any("Yes|Allow" in p for p in patterns), \
             "embedded confirm rules dropped on merge: %r" % patterns
 
     def test_external_config_does_not_drop_embedded_defaults(
@@ -197,9 +195,31 @@ class TestCustomConfirmRuleLoads:
         (tmp_path / "claude.toml").write_text(
             "[[confirm]]\npattern=\"My rule\"\nresponse=\"y\"\n")
         cfg = _adapters._load_config("claude")
-        screen = "Do you want to proceed?\n1. Yes, do it\n2. No\n❯ \n"
+        screen = "❯ 1. Yes  2. No"
         out = should_auto_confirm(screen, cfg)
         assert out is not None, "embedded rule was dropped after merge"
+
+    def test_stale_cursor_trust_rule_scrubbed_on_merge(self, tmp_path, monkeypatch):
+        """Stale ~/.cam/configs/cursor.toml must not re-append boot-only rules."""
+        monkeypatch.setattr(_adapters, "CONFIGS_DIR", str(tmp_path))
+        stale = (
+            "[[confirm]]\n"
+            'pattern = "^\\\\W*\\\\[a\\\\]\\\\s*Trust this workspace"\n'
+            "response = \"a\"\n"
+            "send_enter = false\n"
+            "[[confirm]]\n"
+            'pattern = "My custom runtime rule"\n'
+            "response = \"x\"\n"
+            "send_enter = false\n"
+        )
+        (tmp_path / "cursor.toml").write_text(stale)
+
+        cfg = _adapters._load_config("cursor")
+        patterns = [r[0].pattern for r in cfg.confirm_rules]
+        assert not any("Trust this workspace" in p for p in patterns), (
+            "retired trust rule was merged: %r" % patterns)
+        assert any("My custom runtime rule" in p for p in patterns), (
+            "custom rule was dropped: %r" % patterns)
 
 
 # ---------------------------------------------------------------------------

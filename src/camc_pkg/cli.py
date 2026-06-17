@@ -600,7 +600,8 @@ def cmd_run(args):
             api_plan.get("env_names") or [],
             cli_token=getattr(args, "api_token", None),
         )
-        if not token:
+        translator = api_plan.get("translator") or api_plan.get("mode")
+        if not token and translator != "external":
             env_names = api_plan.get("env_names") or ["INFERENCE_HUB_TOKEN"]
             print_error(
                 "No API token for provider %s (set %s in ~/.cam/token.env)"
@@ -630,8 +631,11 @@ def cmd_run(args):
                 runtime.env.pop(key, None)
             else:
                 runtime.env[key] = val
-        print_info("API %s via %s (token: %s)" % (
-            api_plan.get("name"), api_plan.get("mode"), token_src))
+        print_info("API %s via %s/%s (token: %s)" % (
+            api_plan.get("name"),
+            api_plan.get("translator") or api_plan.get("mode"),
+            api_plan.get("upstream_protocol"),
+            token_src if token else "none"))
     tool_binary = config.command[0] if config.command else None
     # F-08 (adapter-owned): prefer the adapter's [readiness] block
     # over runtime_env's hardcoded _TOOL_SPECS fallback. None when
@@ -5167,19 +5171,21 @@ def cmd_api_proxy_start(args):
     api_name = getattr(args, "api_name", None)
     upstream_url = getattr(args, "upstream_url", None)
     upstream_model = getattr(args, "upstream_model", None) or ""
-    model_alias = getattr(args, "model_alias", None) or "glm-5.1"
+    model_alias = getattr(args, "model_alias", None)
 
     if api_name:
         plan = resolve_run_plan("claude", api_name, proxy_debug=bool(args.debug))
         upstream_url = upstream_url or plan.get("upstream_url")
         upstream_model = upstream_model or plan.get("model") or api_name
-        model_alias = model_alias or plan.get("name")
+        model_alias = model_alias or plan.get("name") or api_name
         plan["proxy_port"] = port
         plan["proxy_debug"] = bool(args.debug)
     else:
         if not upstream_url:
             print_error("--upstream-url is required (or use --api NAME)")
             sys.exit(1)
+        if not model_alias:
+            model_alias = "glm-5.1"
         plan = {
             "mode": "proxy",
             "route": route,
