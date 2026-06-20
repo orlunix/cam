@@ -224,4 +224,43 @@ class TestApiProxyStart:
             debug=False,
         )
         camc_cli.cmd_api_proxy_start(args)
-        assert captured["plan"]["name"] == "glm-5.1"
+        plan = captured["plan"]
+        assert plan["name"] == "glm-5.1"
+        assert plan["route"] == "completions_to_messages"
+        assert plan["proxy_port"] == 18324
+        assert plan["tool_protocol"] == "anthropic_messages"
+
+    def test_api_proxy_start_responses_route_uses_codex_plan(self, api_models_file, monkeypatch):
+        """completions_to_responses --api must build Codex/openai_responses plan."""
+        from argparse import Namespace
+        from camc_pkg import cli as camc_cli
+
+        data = ensure_ready()
+        data["apis"]["glm-5.1"]["enabled"] = True
+        with open(api_models_file, "w") as f:
+            json.dump(data, f)
+
+        captured = {}
+
+        def _fake_ensure(plan, token):
+            captured["plan"] = plan
+            return 18325, {"pid": 1}
+
+        monkeypatch.setattr("camc_pkg.proxy.manager.ensure_proxy", _fake_ensure)
+        monkeypatch.setenv("INFERENCE_HUB_TOKEN", "test-token")
+
+        args = Namespace(
+            route="completions_to_responses",
+            port=None,
+            api_name="glm-5.1",
+            upstream_url=None,
+            upstream_model=None,
+            model_alias=None,
+            debug=False,
+        )
+        camc_cli.cmd_api_proxy_start(args)
+        plan = captured["plan"]
+        assert plan["name"] == "glm-5.1"
+        assert plan["route"] == "completions_to_responses"
+        assert plan["proxy_port"] == 18325
+        assert plan["tool_protocol"] == "openai_responses"
