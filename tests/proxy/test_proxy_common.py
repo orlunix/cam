@@ -1,6 +1,6 @@
 """Integration tests for API proxy model resolution (production: camc_pkg.proxy.common)."""
 
-from camc_pkg.proxy.common import resolve_upstream_model
+from camc_pkg.proxy.common import resolve_upstream_model, text_from_content
 
 
 def test_resolve_short_api_name_to_ihub_id():
@@ -26,3 +26,13 @@ def test_resolve_glm_alias():
         "glm-5.1",
         "",
     ) == "nvidia/zai-org/eccn-glm-5.1"
+
+
+def test_text_from_content_responses_input_text():
+  content = [{"type": "input_text", "text": "fix the bucket bug"}]
+  assert text_from_content(content) == "fix the bucket bug"
+
+
+def test_text_from_content_responses_output_text():
+  content = [{"type": "output_text", "text": "done"}]
+  assert text_from_content(content) == "done"

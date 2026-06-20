@@ -3252,3 +3252,224 @@ fce5cc1 camc cron: add per-agent loop scheduling
 b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
 64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
 ```
+## v1.2.0  6a85f45-dirty 2026-06-17 01:13
+
+- Lines: 15370
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 01:21
+
+- Lines: 15388
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 01:22
+
+- Lines: 15406
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 01:32
+
+- Lines: 15408
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 01:46
+
+- Lines: 15408
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 18:49
+
+- Lines: 15408
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 18:50
+
+- Lines: 15408
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 22:41
+
+- Lines: 15725
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 22:41
+
+- Lines: 15715
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 22:47
+
+- Lines: 15718
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 22:58
+
+- Lines: 15719
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 23:01
+
+- Lines: 15727
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 23:03
+
+- Lines: 15732
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 23:04
+
+- Lines: 15745
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-19 03:31
+
+- Lines: 15762
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-19 18:38
+
+- Lines: 15760
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-19 20:18
+
+- Lines: 15760
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+

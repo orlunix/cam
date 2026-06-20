@@ -202,16 +202,16 @@ Codex CLI  (future / dev reference)
   -> model nvidia/zai-org/eccn-glm-5.1
 ```
 
-> **Production `src/camc_pkg/proxy/`** currently ships **`completions_to_messages` only**
-> (`:18324`, Claude Code + IHUB). `completions_to_responses` exists under
-> `dev/ihub_proxy/` for manual experiments, not embedded in `dist/camc`.
+> **Production `src/camc_pkg/proxy/`** ships **`completions_to_messages`** (`:18324`, Claude)
+> and **`completions_to_responses`** (`:18325`, Codex + IHUB). Dev copies remain under
+> `dev/ihub_proxy/` for manual experiments.
 
 ### Protocol routes
 
 | Route | Frontend | Upstream | Status |
 |-------|----------|----------|--------|
 | `completions_to_messages` | Anthropic `/v1/messages` | IHUB `/v1/chat/completions` | **Production** (`src/camc_pkg/proxy/messages.py`) |
-| `completions_to_responses` | OpenAI `/v1/responses` | IHUB `/v1/chat/completions` | **Dev only** (`dev/ihub_proxy/`); Codex `--api` P1 |
+| `completions_to_responses` | OpenAI `/v1/responses` | IHUB `/v1/chat/completions` | **Production** (`src/camc_pkg/proxy/responses.py`, Codex `--api`) |
 
 Source: **`src/camc_pkg/proxy/`** (embedded in `dist/camc`). Optional standalone
 copy for manual debug: `dev/ihub_proxy/` → `~/.cam/ihub-proxy/` (not auto-synced;
@@ -331,7 +331,8 @@ the agent session (`unset ANTHROPIC_AUTH_TOKEN`). You do **not** need
 - GLM-5.1 can be slow on cold start. Increase camc startup wait or send
   prompts manually with `camc send <id> "..."`.
 - The proxy drops Claude-only params (`output_config`, `context_management`)
-  before calling chat/completions.
+  before calling chat/completions. See `docs/api-model-metadata.md` for how
+  model context limits are synced and exposed to agents.
 - Anthropic-family models on IHUB can also be used **without** this proxy by
   pointing `ANTHROPIC_BASE_URL=https://inference-api.nvidia.com` directly at
   native `/v1/messages`. GLM-5.1 needs the local proxy for tool calling.

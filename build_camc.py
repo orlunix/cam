@@ -49,12 +49,14 @@ MODULE_ORDER = [
     # consumed by cli.py for the --loop CLI surface.
     "cron_loop",
     "api_store",
+    "api_metadata",
     "api_token",
     "api_routing",
     "api_resolver",
     "proxy.common",
     "proxy.textual_tools",
     "proxy.messages",
+    "proxy.responses",
     "proxy.manager",
     "cli",
 ]
