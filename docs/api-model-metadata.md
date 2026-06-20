@@ -61,7 +61,8 @@ Hybrid of both:
 2. **Curated seed fallbacks** when cost map fields are null (shipped in `api_metadata.py`)
 3. **Proxy** `GET /v1/models` returns LiteLLM-style token limits from `metadata`
 4. **Codex** `~/.cam/codex-api/camc-model-catalog.json` + `model_catalog_json` in `config.toml` (cloned from `gpt-5.5` row in `~/.codex/models_cache.json`)
-5. **Claude** `camc run -t claude --api` sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW` from `apis.*.metadata.context_window` so auto-compact triggers at the correct fraction of the real window (not the 200K default)
+5. **Claude** `camc run -t claude --api` (or enabled per-tool default) sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW` from `apis.*.metadata.context_window` so auto-compact triggers at the correct fraction of the real window (not the 200K default)
+6. **Defaults** — metadata sync runs on `camc api check`; per-tool run defaults are opt-in via `camc api default set` and require `enabled: true` (see `docs/camc-api-proxy-plan.md`)
 
 ## Schema: `apis.<name>.metadata`
 

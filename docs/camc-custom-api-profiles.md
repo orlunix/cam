@@ -2,7 +2,7 @@
 
 Date: 2026-06-15
 
-Status: **partial** — Claude + 6 curated IHUB models only (`camc run -t claude --api NAME`)
+Status: **partial** — Claude + Codex + 6 curated IHUB models (`camc run -t claude|codex --api NAME`). Cursor `--api` not supported. Opt-in per-tool defaults: `camc api default set`.
 
 Routing architecture (embedded / direct / external): **`docs/api-routing.md`**
 (includes three end-to-end JSON + token + run examples).
@@ -11,24 +11,20 @@ Routing architecture (embedded / direct / external): **`docs/api-routing.md`**
 
 ```bash
 camc run -t claude --api glm-5.1 -n claude-proxy-work "..."
+camc run -t codex  --api glm-5.1 -n codex-proxy-work "..."
 ```
 
 | Tool | `--api` | Notes |
 |------|---------|-------|
-| **claude** | ✅ | 6 curated models; isolated `~/.cam/claude-api/` |
-| **codex** | ❌ | Use normal login; future: `CODEX_HOME` isolation (see plan doc) |
-| **cursor** | ❌ | Not supported |
+| **claude** | ✅ | 6 curated models; isolated `~/.cam/claude-api/`; proxy route `completions_to_messages` (:18324) |
+| **codex** | ✅ | Same curated models; isolated `~/.cam/codex-api/`; proxy route `completions_to_responses` (:18325) |
+| **cursor** | ❌ | Not supported — use normal login |
+
+Optional **per-tool default** (opt-in): `camc api default set glm-5.1 --tool claude`. Empty/missing → login. `camc run --no-default-api` skips default.
 
 Unsupported combinations print a clear error and exit (no silent fallback).
 
-## Goal (future)
-
-Allow a camc agent to select a named custom API provider at launch time:
-
-```bash
-# NOT YET:
-# camc run -t codex  --api nvidia-ai -n codex-proxy-work "..."
-```
+## Goal (extended profiles)
 
 The same logical API provider must be usable by different tools even when
 those tools need different protocol endpoints. For example, Claude Code may
