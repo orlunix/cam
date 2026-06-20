@@ -32,6 +32,12 @@ PROXY_ROUTES = {
     },
 }
 
+# Debug proxy CLI: requested embedded route -> tool for resolve_run_plan().
+PROXY_ROUTE_TOOL = {
+    "completions_to_messages": "claude",
+    "completions_to_responses": "codex",
+}
+
 
 def provider_endpoint_url(provider, protocol):
     """Join provider.base_url + providers.endpoints[protocol]."""
