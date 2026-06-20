@@ -580,7 +580,20 @@ def cmd_run(args):
     from camc_pkg.runtime_env import build_runtime_env
     runtime = build_runtime_env(env_setup=env_setup)
     api_plan = None
-    api_name = getattr(args, "api", None)
+    cli_api = getattr(args, "api", None)
+    api_name = None
+    api_source = "login"
+    if cli_api or not getattr(args, "no_default_api", False):
+        from camc_pkg.api_store import resolve_run_api_name
+        try:
+            api_name, api_source = resolve_run_api_name(
+                tool,
+                cli_api=cli_api,
+                no_default_api=bool(getattr(args, "no_default_api", False)),
+            )
+        except ValueError as e:
+            print_error(str(e))
+            sys.exit(1)
     if api_name:
         from camc_pkg.api_resolver import resolve_run_plan
         from camc_pkg.api_token import resolve_token
@@ -639,11 +652,16 @@ def cmd_run(args):
                 runtime.env.pop(key, None)
             else:
                 runtime.env[key] = val
-        print_info("API %s via %s/%s (token: %s)" % (
+        src_bits = []
+        if api_source == "default":
+            src_bits.append("default")
+        if token:
+            src_bits.append("token: %s" % token_src)
+        print_info("API %s via %s/%s (%s)" % (
             api_plan.get("name"),
             api_plan.get("translator") or api_plan.get("mode"),
             api_plan.get("upstream_protocol"),
-            token_src if token else "none"))
+            ", ".join(src_bits) if src_bits else "none"))
     tool_binary = config.command[0] if config.command else None
     # F-08 (adapter-owned): prefer the adapter's [readiness] block
     # over runtime_env's hardcoded _TOOL_SPECS fallback. None when
@@ -5088,19 +5106,22 @@ def _cmd_cron_rm_loop(args):
 
 
 def cmd_api(args):
-    """API profile dispatch: list / check / proxy."""
+    """API profile dispatch: list / check / default / proxy."""
     sub = getattr(args, "api_cmd", None)
     if sub == "list":
         cmd_api_list(args)
     elif sub == "check":
         cmd_api_check(args)
+    elif sub == "default":
+        cmd_api_default(args)
     elif sub == "proxy":
         cmd_api_proxy(args)
     else:
         sys.stderr.write(
-            "usage: camc api {list,check,proxy} ...\n"
+            "usage: camc api {list,check,default,proxy} ...\n"
             "  list [--all]              list configured APIs\n"
             "  check                     ping provider and refresh enabled flags\n"
+            "  default {set,clear,show}  per-tool default API (empty = login)\n"
             "  proxy {start,status,logs,stop} ...   debug proxy controls\n"
         )
         sys.exit(1)
@@ -5144,6 +5165,71 @@ def cmd_api_check(args):
     for row in result.get("apis") or []:
         flag = "ok" if row.get("enabled") else "off"
         print("  %-18s %s (%s)" % (row.get("name"), flag, row.get("reason")))
+
+
+def cmd_api_default(args):
+    sub = getattr(args, "default_cmd", None)
+    if sub == "set":
+        cmd_api_default_set(args)
+    elif sub == "clear":
+        cmd_api_default_clear(args)
+    elif sub == "show":
+        cmd_api_default_show(args)
+    else:
+        sys.stderr.write(
+            "usage: camc api default {set,clear,show} ...\n"
+            "  set NAME --tool {claude,codex}\n"
+            "  clear --tool {claude,codex}\n"
+            "  show\n"
+        )
+        sys.exit(1)
+
+
+def cmd_api_default_set(args):
+    from camc_pkg.api_store import ensure_ready, set_tool_default_api
+    tool = getattr(args, "tool", None) or "claude"
+    name = getattr(args, "name", None)
+    if not name:
+        print_error("API name is required")
+        sys.exit(1)
+    data = ensure_ready()
+    try:
+        key = set_tool_default_api(data, tool, name)
+    except ValueError as e:
+        print_error(str(e))
+        sys.exit(1)
+    print("Default API for %s set to %s" % (tool, key))
+
+
+def cmd_api_default_clear(args):
+    from camc_pkg.api_store import ensure_ready, clear_tool_default_api
+    tool = getattr(args, "tool", None)
+    if not tool:
+        print_error("--tool is required (claude or codex)")
+        sys.exit(1)
+    data = ensure_ready()
+    try:
+        clear_tool_default_api(data, tool)
+    except ValueError as e:
+        print_error(str(e))
+        sys.exit(1)
+    print("Default API cleared for %s (login path)" % tool)
+
+
+def cmd_api_default_show(args):
+    from camc_pkg.api_store import ensure_ready, list_tool_default_apis
+    data = ensure_ready()
+    rows = list_tool_default_apis(data)
+    if _want_json(args):
+        print(json.dumps(rows, indent=2))
+        return
+    for row in rows:
+        if row.get("mode") == "login":
+            print("%-8s (login)" % row.get("tool"))
+            continue
+        flag = "enabled" if row.get("enabled") else "disabled"
+        print("%-8s %s (%s, %s)" % (
+            row.get("tool"), row.get("api"), flag, row.get("reason") or "unknown"))
 
 
 def cmd_api_proxy(args):
@@ -6059,6 +6145,8 @@ examples:
                    help="Path to a file whose contents become the system prompt (overrides --system-prompt)")
     r.add_argument("--api", default=None, metavar="NAME",
                    help="API profile from ~/.cam/api-models.json (e.g. glm-5.1)")
+    r.add_argument("--no-default-api", dest="no_default_api", action="store_true",
+                   help="Skip per-tool default API; use normal OAuth/login")
     r.add_argument("--api-token", dest="api_token", default=None,
                    help="One-off bearer token (default: ~/.cam/token.env)")
     r.add_argument("--no-api-proxy", action="store_true",
@@ -6281,6 +6369,16 @@ examples:
     ap_ls = api_sub.add_parser("list", help="List configured APIs")
     ap_ls.add_argument("--all", action="store_true", help="Include disabled APIs")
     api_sub.add_parser("check", help="Ping provider and refresh enabled flags")
+    ap_def = api_sub.add_parser("default", help="Per-tool default API profile")
+    ap_def_sub = ap_def.add_subparsers(dest="default_cmd", parser_class=CamArgumentParser)
+    ap_def_set = ap_def_sub.add_parser("set", help="Set default API for a tool")
+    ap_def_set.add_argument("name", help="API profile name (e.g. glm-5.1)")
+    ap_def_set.add_argument("--tool", "-t", required=True, choices=["claude", "codex"],
+                            help="Tool to configure (codex empty = login)")
+    ap_def_clear = ap_def_sub.add_parser("clear", help="Clear default API (use login)")
+    ap_def_clear.add_argument("--tool", "-t", required=True, choices=["claude", "codex"])
+    ap_def_show = ap_def_sub.add_parser("show", help="Show per-tool default API settings")
+    ap_def_show.add_argument("--json", action="store_true", help="Output as JSON")
     ap_px = api_sub.add_parser("proxy", help=argparse.SUPPRESS)
     ap_px_sub = ap_px.add_subparsers(dest="proxy_cmd", parser_class=CamArgumentParser)
     ap_px_start = ap_px_sub.add_parser("start", help=argparse.SUPPRESS)
