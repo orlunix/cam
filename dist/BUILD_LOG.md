@@ -3486,3 +3486,29 @@ c61c56c Update desktop agent settings and bots workflows
 fce5cc1 camc cron: add per-agent loop scheduling
 ```
 
+## v1.2.0  e31beae-dirty 2026-06-20 10:54
+
+- Lines: 15963
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+```
+
+## v1.2.0  e31beae-dirty 2026-06-20 11:01
+
+- Lines: 15959
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+```
+
