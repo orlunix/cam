@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 
 from camc_pkg import CAM_DIR, LOGS_DIR
+from camc_pkg.api_metadata import sync_metadata_in_data
 
 API_MODELS_FILE = os.path.join(CAM_DIR, "api-models.json")
 PROXY_RUNS_FILE = os.path.join(CAM_DIR, "proxy-runs.json")
@@ -325,5 +326,19 @@ def check_provider(data, token_resolver):
             "provider": provider_id,
             "ids": sorted(ids),
         }
+
+    metadata_updated = 0
+    metadata_error = None
+    try:
+        metadata_updated = sync_metadata_in_data(data, provider)
+    except (urllib.error.URLError, urllib.error.HTTPError, socket.timeout, ValueError) as exc:
+        metadata_error = str(exc)
+        # Still apply fallbacks without cost map.
+        sync_metadata_in_data(data, provider, cost_map={})
+
+    result["metadata_updated"] = metadata_updated
+    if metadata_error:
+        result["metadata_error"] = metadata_error
+
     save_api_models(data)
     return result

@@ -81,6 +81,8 @@ class TestApiResolver:
         assert plan["route"] == "completions_to_messages"
         assert plan["env"]["ANTHROPIC_BASE_URL"].startswith("http://127.0.0.1:")
         assert plan["env"]["ANTHROPIC_MODEL"] == "glm-5.1"
+        assert plan["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "202752"
+        assert "CLAUDE_CODE_MAX_CONTEXT_TOKENS" not in plan["env"]
 
     def test_disabled_api_rejected(self, api_models_file):
         ensure_ready()
@@ -95,13 +97,32 @@ class TestApiResolver:
         with pytest.raises(ValueError, match="no-api-proxy"):
             resolve_run_plan("claude", "glm-5.1", no_api_proxy=True)
 
-    def test_codex_api_not_supported(self, api_models_file):
+    def test_codex_api_proxy_plan(self, api_models_file):
         data = ensure_ready()
         data["apis"]["glm-5.1"]["enabled"] = True
         with open(api_models_file, "w") as f:
             json.dump(data, f)
-        with pytest.raises(ValueError, match="not supported for tool 'codex'"):
-            resolve_run_plan("codex", "glm-5.1")
+        plan = resolve_run_plan("codex", "glm-5.1")
+        assert plan["mode"] == "proxy"
+        assert plan["route"] == "completions_to_responses"
+        assert plan["env"]["CAMC_CODEX_API_KEY"] == "sk-camc-local"
+        from camc_pkg.api_resolver import ensure_codex_api_config_dir
+        catalog_path = ensure_codex_api_config_dir("/tmp/v1", "glm-5.1")
+        assert catalog_path.endswith("codex-api")
+        cfg = open(os.path.join(catalog_path, "config.toml")).read()
+        assert "model_catalog_json" in cfg
+        assert "camc-model-catalog.json" in cfg
+        cat = json.load(open(os.path.join(catalog_path, "camc-model-catalog.json")))
+        assert cat["models"][0]["slug"] == "glm-5.1"
+        assert cat["models"][0]["context_window"] == 202752
+
+    def test_cursor_api_not_supported(self, api_models_file):
+        data = ensure_ready()
+        data["apis"]["glm-5.1"]["enabled"] = True
+        with open(api_models_file, "w") as f:
+            json.dump(data, f)
+        with pytest.raises(ValueError, match="not supported for tool 'cursor'"):
+            resolve_run_plan("cursor", "glm-5.1")
 
     def test_non_curated_api_not_supported(self, api_models_file):
         data = ensure_ready()
