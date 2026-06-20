@@ -192,19 +192,18 @@ Claude Code
   -> model nvidia/zai-org/eccn-glm-5.1
 ```
 
-Codex uses **OpenAI `/v1/responses`**. A sibling route **would** translate that wire
-to the same upstream (planned / dev-only today — **not** in production `src/camc_pkg/proxy/`):
+Codex uses **OpenAI `/v1/responses`**. Production route **`completions_to_responses`** translates that wire to IHUB chat completions:
 
 ```text
-Codex CLI  (future / dev reference)
-  -> OPENAI_BASE_URL=http://127.0.0.1:18325      (completions_to_responses)
+Codex CLI  (camc run -t codex --api NAME)
+  -> OPENAI_BASE_URL=http://127.0.0.1:18325/v1   (completions_to_responses)
   -> https://inference-api.nvidia.com/v1/chat/completions
   -> model nvidia/zai-org/eccn-glm-5.1
 ```
 
 > **Production `src/camc_pkg/proxy/`** ships **`completions_to_messages`** (`:18324`, Claude)
 > and **`completions_to_responses`** (`:18325`, Codex + IHUB). Dev copies remain under
-> `dev/ihub_proxy/` for manual experiments.
+> `dev/ihub_proxy/` for manual experiments only.
 
 ### Protocol routes
 
@@ -466,10 +465,9 @@ For Hermes runtime auth, set **`OPENAI_API_KEY`** in the env file (not only
 `CUSTOM_API_KEY`). Hermes checks `OPENAI_API_KEY` at inference time for
 `provider: custom`.
 
-### CAM / camc (planned)
+### CAM / camc
 
-See `docs/camc-custom-api-profiles.md`. Future `camc run --api <provider>`
-support will reference env vars, not inline secrets.
+See `docs/camc-custom-api-profiles.md` and `docs/camc-api-proxy-plan.md`. Use `camc run -t claude|codex --api NAME` or opt-in `camc api default set`. Tokens live in `~/.cam/token.env`, not inline.
 
 ## Troubleshooting
 

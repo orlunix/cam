@@ -68,6 +68,9 @@ CURATED_APIS = [
     ("nemotron-3-ultra", "nvidia/nvidia/eccn-nemotron-3-ultra", ["nemotron", "nemo-ultra"]),
 ]
 
+# Tools that may have a per-tool default API (empty = normal OAuth/login).
+DEFAULT_API_TOOLS = ("claude", "codex")
+
 
 def _default_seed():
     apis = {}
@@ -176,6 +179,97 @@ def resolve_api_name(data, name):
 def get_api_entry(data, name):
     key = resolve_api_name(data, name)
     return key, dict((data.get("apis") or {}).get(key) or {})
+
+
+def _normalize_default_name(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def resolve_tool_default_api(data, tool):
+    """Return opt-in run default from defaults.<tool>, or None for login path."""
+    if tool not in DEFAULT_API_TOOLS:
+        return None
+    defaults = data.get("defaults")
+    if not isinstance(defaults, dict) or tool not in defaults:
+        return None
+    return _normalize_default_name(defaults.get(tool))
+
+
+def list_tool_default_apis(data):
+    """Return per-tool default status rows for display/CLI."""
+    rows = []
+    for tool in DEFAULT_API_TOOLS:
+        name = resolve_tool_default_api(data, tool)
+        if not name:
+            rows.append({
+                "tool": tool,
+                "api": None,
+                "mode": "login",
+                "enabled": None,
+                "reason": None,
+            })
+            continue
+        key, entry = get_api_entry(data, name)
+        enabled = entry.get("enabled") is not False
+        rows.append({
+            "tool": tool,
+            "api": key,
+            "mode": "api",
+            "enabled": enabled,
+            "reason": entry.get("enabled_reason"),
+        })
+    return rows
+
+
+def set_tool_default_api(data, tool, api_name):
+    """Set defaults.<tool> to api_name; sync legacy top-level default for Claude."""
+    if tool not in DEFAULT_API_TOOLS:
+        raise ValueError("unsupported tool %r for default API (use: claude, codex)" % tool)
+    key = resolve_api_name(data, api_name)
+    defaults = data.get("defaults")
+    if not isinstance(defaults, dict):
+        defaults = {}
+        data["defaults"] = defaults
+    defaults[tool] = key
+    if tool == "claude":
+        data["default"] = key
+    save_api_models(data)
+    return key
+
+
+def clear_tool_default_api(data, tool):
+    """Clear defaults.<tool>; empty tool default means normal login."""
+    if tool not in DEFAULT_API_TOOLS:
+        raise ValueError("unsupported tool %r for default API (use: claude, codex)" % tool)
+    defaults = data.get("defaults")
+    if isinstance(defaults, dict) and tool in defaults:
+        defaults.pop(tool)
+    if tool == "claude":
+        data.pop("default", None)
+    save_api_models(data)
+
+
+def resolve_run_api_name(tool, cli_api=None, no_default_api=False, data=None):
+    """Pick API profile for camc run: explicit --api, tool default, or login."""
+    if cli_api:
+        return _normalize_default_name(cli_api), "cli"
+    if no_default_api:
+        return None, "login"
+    data = data or ensure_ready()
+    name = resolve_tool_default_api(data, tool)
+    if not name:
+        return None, "login"
+    key, entry = get_api_entry(data, name)
+    if entry.get("enabled") is False:
+        reason = entry.get("enabled_reason") or "disabled"
+        raise ValueError(
+            "Default API %r for tool %r is disabled (%s). Run: camc api check"
+            % (key, tool, reason)
+        )
+    return key, "default"
 
 
 def get_provider(data, provider_id):
