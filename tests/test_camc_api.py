@@ -264,3 +264,127 @@ class TestApiProxyStart:
         assert plan["route"] == "completions_to_responses"
         assert plan["proxy_port"] == 18325
         assert plan["tool_protocol"] == "openai_responses"
+
+
+class TestApiDefaults:
+    def test_seed_does_not_auto_apply_run_default(self, api_models_file):
+        from camc_pkg.api_store import _default_seed, resolve_run_api_name
+        data = _default_seed()
+        name, source = resolve_run_api_name("claude", data=data)
+        assert name is None
+        assert source == "login"
+        assert data.get("defaults") in (None, {})
+
+    def test_legacy_top_level_default_stays_login(self, api_models_file):
+        from camc_pkg.api_store import resolve_run_api_name, resolve_tool_default_api
+        data = ensure_ready()
+        data.pop("defaults", None)
+        data["default"] = "glm-5.1"
+        data["apis"]["glm-5.1"]["enabled"] = True
+        with open(api_models_file, "w") as f:
+            json.dump(data, f)
+        assert resolve_tool_default_api(data, "claude") is None
+        name, source = resolve_run_api_name("claude", data=data)
+        assert name is None
+        assert source == "login"
+
+    def test_codex_empty_means_login(self, api_models_file):
+        from camc_pkg.api_store import resolve_run_api_name
+        data = ensure_ready()
+        data["defaults"] = {"claude": "glm-5.1", "codex": None}
+        data["apis"]["glm-5.1"]["enabled"] = True
+        with open(api_models_file, "w") as f:
+            json.dump(data, f)
+        name, source = resolve_run_api_name("codex", data=data)
+        assert name is None
+        assert source == "login"
+
+    def test_default_requires_enabled(self, api_models_file):
+        from camc_pkg.api_store import resolve_run_api_name
+        data = ensure_ready()
+        data["defaults"] = {"claude": "glm-5.1"}
+        data["apis"]["glm-5.1"]["enabled"] = False
+        data["apis"]["glm-5.1"]["enabled_reason"] = "id_not_on_key"
+        with open(api_models_file, "w") as f:
+            json.dump(data, f)
+        with pytest.raises(ValueError, match="disabled"):
+            resolve_run_api_name("claude", data=data)
+
+    def test_default_used_when_enabled(self, api_models_file):
+        from camc_pkg.api_store import resolve_run_api_name
+        data = ensure_ready()
+        data["defaults"] = {"claude": "glm-5.1"}
+        data["apis"]["glm-5.1"]["enabled"] = True
+        with open(api_models_file, "w") as f:
+            json.dump(data, f)
+        name, source = resolve_run_api_name("claude", data=data)
+        assert name == "glm-5.1"
+        assert source == "default"
+
+    def test_no_default_api_skips_default(self, api_models_file):
+        from camc_pkg.api_store import resolve_run_api_name
+        data = ensure_ready()
+        data["defaults"] = {"claude": "glm-5.1"}
+        data["apis"]["glm-5.1"]["enabled"] = True
+        with open(api_models_file, "w") as f:
+            json.dump(data, f)
+        name, source = resolve_run_api_name("claude", no_default_api=True, data=data)
+        assert name is None
+        assert source == "login"
+
+    def test_set_and_clear_default(self, api_models_file):
+        from camc_pkg.api_store import (
+            clear_tool_default_api,
+            resolve_tool_default_api,
+            set_tool_default_api,
+        )
+        data = ensure_ready()
+        set_tool_default_api(data, "codex", "glm-5.1")
+        data = ensure_ready()
+        assert resolve_tool_default_api(data, "codex") == "glm-5.1"
+        clear_tool_default_api(data, "codex")
+        data = ensure_ready()
+        assert resolve_tool_default_api(data, "codex") is None
+
+    def test_default_show_json(self, api_models_file, capsys):
+        from argparse import Namespace
+        from camc_pkg import cli as camc_cli
+
+        data = ensure_ready()
+        data["defaults"] = {"claude": "glm-5.1"}
+        data["apis"]["glm-5.1"]["enabled"] = True
+        with open(api_models_file, "w") as f:
+            json.dump(data, f)
+        camc_cli.cmd_api_default_show(Namespace(json=True))
+        out = json.loads(capsys.readouterr().out)
+        claude = next(r for r in out if r["tool"] == "claude")
+        codex = next(r for r in out if r["tool"] == "codex")
+        assert claude["api"] == "glm-5.1"
+        assert claude["enabled"] is True
+        assert codex["mode"] == "login"
+
+    def test_default_show_accepts_json_flag(self, tmp_path):
+        import subprocess
+        import sys
+
+        from camc_pkg.api_store import _default_seed
+
+        cam_dir = tmp_path / ".cam"
+        cam_dir.mkdir()
+        path = cam_dir / "api-models.json"
+        data = _default_seed()
+        data["defaults"] = {"claude": "glm-5.1"}
+        data["apis"]["glm-5.1"]["enabled"] = True
+        path.write_text(json.dumps(data) + "\n")
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env = dict(os.environ)
+        env["HOME"] = str(tmp_path)
+        env["PYTHONPATH"] = os.path.join(repo, "src")
+        out = subprocess.check_output(
+            [sys.executable, "-m", "camc_pkg", "api", "default", "show", "--json"],
+            env=env,
+            cwd=repo,
+            stderr=subprocess.STDOUT,
+        ).decode()
+        rows = json.loads(out)
+        assert any(r["tool"] == "claude" and r["api"] == "glm-5.1" for r in rows)
