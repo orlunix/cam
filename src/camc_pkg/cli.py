@@ -5185,10 +5185,16 @@ def cmd_api_proxy_start(args):
     model_alias = getattr(args, "model_alias", None)
 
     if api_name:
-        plan = resolve_run_plan("claude", api_name, proxy_debug=bool(args.debug))
+        from camc_pkg.api_routing import PROXY_ROUTE_TOOL
+        tool = PROXY_ROUTE_TOOL.get(route)
+        if not tool:
+            print_error("no tool mapping for proxy route %r" % route)
+            sys.exit(1)
+        plan = resolve_run_plan(tool, api_name, proxy_debug=bool(args.debug))
         upstream_url = upstream_url or plan.get("upstream_url")
         upstream_model = upstream_model or plan.get("model") or api_name
         model_alias = model_alias or plan.get("name") or api_name
+        plan["route"] = route
         plan["proxy_port"] = port
         plan["proxy_debug"] = bool(args.debug)
     else:

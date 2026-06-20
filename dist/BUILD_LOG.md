@@ -3473,3 +3473,16 @@ fce5cc1 camc cron: add per-agent loop scheduling
 b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
 ```
 
+## v1.2.0  55ac593-dirty 2026-06-19 21:30
+
+- Lines: 15771
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+```
+
