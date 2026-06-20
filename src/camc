@@ -40,7 +40,7 @@ import uuid
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "7e72491-dirty 2026-06-17 00:10"
+__build__ = "6a85f45-dirty 2026-06-17 01:46"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -7111,11 +7111,10 @@ PROXY_ROUTES = {
         "route": "completions_to_messages",
         "port": 18324,
     },
-    # Future codex --api:
-    # (PROTO_OPENAI_RESPONSES, PROTO_OPENAI_CHAT): {
-    #     "route": "completions_to_responses",
-    #     "port": 18325,
-    # },
+    (PROTO_OPENAI_RESPONSES, PROTO_OPENAI_CHAT): {
+        "route": "completions_to_responses",
+        "port": 18325,
+    },
 }
 
 
@@ -7229,12 +7228,16 @@ def build_routing_plan(tool, provider, api_entry, api_key):
 # api_resolver
 # ===========================================================================
 
-# Supported today: Claude + curated Inference Hub models only.
-API_SUPPORTED_TOOLS = frozenset(["claude"])
+# Supported today: Claude + Codex with curated Inference Hub models.
+API_SUPPORTED_TOOLS = frozenset(["claude", "codex"])
 CURATED_API_KEYS = frozenset(key for key, _model, _aliases in CURATED_APIS)
 
 # One shared Claude Code config for all --api runs (onboarding once).
 CLAUDE_API_CONFIG_DIR = os.path.join(CAM_DIR, "claude-api")
+# Isolated Codex home — does not touch ~/.codex/ OAuth login.
+CODEX_API_CONFIG_DIR = os.path.join(CAM_DIR, "codex-api")
+CODEX_API_PROVIDER = "camc-ihub"
+CODEX_API_ENV_KEY = "CAMC_CODEX_API_KEY"
 
 
 def supported_api_models_text():
@@ -7254,9 +7257,8 @@ def validate_api_run(tool, api_key, api_entry=None):
     if tool not in API_SUPPORTED_TOOLS:
         raise ValueError(
             "--api is not supported for tool %r. "
-            "Only Claude is supported today: camc run -t claude --api NAME. "
-            "Codex and Cursor: use normal login without --api "
-            "(future Codex will use CODEX_HOME isolation; not implemented). "
+            "Supported today: camc run -t claude|codex --api NAME. "
+            "Cursor: use normal login without --api (not implemented). "
             "Supported models: %s."
             % (tool, supported_api_models_text())
         )
@@ -7328,6 +7330,37 @@ def ensure_claude_api_config_dir():
     return CLAUDE_API_CONFIG_DIR
 
 
+def ensure_codex_api_config_dir(base_url, model_name):
+    """Seed ~/.cam/codex-api/ for Codex --api (isolated from ~/.codex/)."""
+    os.makedirs(CODEX_API_CONFIG_DIR, exist_ok=True)
+    base_url = str(base_url or "").rstrip("/")
+    if base_url and not base_url.endswith("/v1"):
+        base_url = base_url + "/v1"
+    model_name = str(model_name or "api")
+    config_path = os.path.join(CODEX_API_CONFIG_DIR, "config.toml")
+    content = (
+        'model = "%s"\n'
+        'model_provider = "%s"\n'
+        '\n'
+        '[model_providers.%s]\n'
+        'name = "CAM Inference Hub Proxy"\n'
+        'base_url = "%s"\n'
+        'env_key = "%s"\n'
+        'wire_api = "responses"\n'
+    ) % (model_name, CODEX_API_PROVIDER, CODEX_API_PROVIDER, base_url, CODEX_API_ENV_KEY)
+    try:
+        prev = ""
+        if os.path.isfile(config_path):
+            with open(config_path, "r") as f:
+                prev = f.read()
+        if prev != content:
+            with open(config_path, "w") as f:
+                f.write(content)
+    except IOError:
+        pass
+    return CODEX_API_CONFIG_DIR
+
+
 def resolve_run_plan(tool, api_name, no_api_proxy=False, proxy_debug=False):
     """Return plan dict for camc run --api."""
     data = ensure_ready()
@@ -7375,34 +7408,45 @@ def resolve_run_plan(tool, api_name, no_api_proxy=False, proxy_debug=False):
 
 def _build_env_overrides(tool, plan, provider, api_entry, client_model):
     env = {}
-    if tool != "claude":
-        return env
-
     base = plan["local_base_url"].rstrip("/")
     translator = plan.get("translator") or plan.get("mode")
-    env["ANTHROPIC_BASE_URL"] = base
-    env["ANTHROPIC_MODEL"] = client_model
-    env["CLAUDE_CONFIG_DIR"] = ensure_claude_api_config_dir()
 
-    if translator == TRANSLATOR_EMBEDDED:
-        # Real token goes to embedded proxy; Claude uses local placeholder.
-        env["ANTHROPIC_API_KEY"] = str(
-            api_entry.get("client_api_key")
-            or provider.get("client_api_key")
-            or "sk-camc-local"
-        )
-        env["ANTHROPIC_AUTH_TOKEN"] = ""
-    elif translator == TRANSLATOR_EXTERNAL:
-        env["ANTHROPIC_API_KEY"] = str(
-            api_entry.get("client_api_key")
-            or provider.get("client_api_key")
-            or "sk-camc-local"
-        )
-        env["ANTHROPIC_AUTH_TOKEN"] = ""
-    elif translator == TRANSLATOR_DIRECT:
-        # Caller merges resolved bearer token into env after resolve_run_plan.
-        env["ANTHROPIC_AUTH_TOKEN"] = ""
-        env["_API_USE_RESOLVED_TOKEN"] = "1"
+    if tool == "claude":
+        env["ANTHROPIC_BASE_URL"] = base
+        env["ANTHROPIC_MODEL"] = client_model
+        env["CLAUDE_CONFIG_DIR"] = ensure_claude_api_config_dir()
+        if translator == TRANSLATOR_EMBEDDED:
+            env["ANTHROPIC_API_KEY"] = str(
+                api_entry.get("client_api_key")
+                or provider.get("client_api_key")
+                or "sk-camc-local"
+            )
+            env["ANTHROPIC_AUTH_TOKEN"] = ""
+        elif translator == TRANSLATOR_EXTERNAL:
+            env["ANTHROPIC_API_KEY"] = str(
+                api_entry.get("client_api_key")
+                or provider.get("client_api_key")
+                or "sk-camc-local"
+            )
+            env["ANTHROPIC_AUTH_TOKEN"] = ""
+        elif translator == TRANSLATOR_DIRECT:
+            env["ANTHROPIC_AUTH_TOKEN"] = ""
+            env["_API_USE_RESOLVED_TOKEN"] = "1"
+        return env
+
+    if tool == "codex":
+        if translator == TRANSLATOR_EMBEDDED:
+            env[CODEX_API_ENV_KEY] = str(
+                api_entry.get("client_api_key")
+                or provider.get("client_api_key")
+                or "sk-camc-local"
+            )
+        elif translator == TRANSLATOR_DIRECT:
+            env["_API_USE_RESOLVED_TOKEN"] = "1"
+            env[CODEX_API_ENV_KEY] = ""
+        # CODEX_HOME + config.toml finalized after proxy port is known (cmd_run).
+        return env
+
     return env
 
 
@@ -7474,10 +7518,12 @@ def text_from_content(content):
         return "" if content is None else str(content)
     parts = []
     for part in content:
-        if isinstance(part, dict) and part.get("type") == "text":
-            text = part.get("text")
-            if isinstance(text, str):
-                parts.append(text)
+        if isinstance(part, dict):
+            typ = part.get("type")
+            if typ in ("text", "input_text", "output_text"):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
         elif isinstance(part, str):
             parts.append(part)
     return "\n".join(x for x in parts if x)
@@ -7549,6 +7595,25 @@ def summarize_chat_response(raw):
         "has_tool_calls": bool(msg.get("tool_calls")),
         "content_len": len(str(msg.get("content") or "")),
     }
+
+
+def last_user_preview_responses(req, limit=120):
+    """Best-effort user text preview from a Responses API request."""
+    instructions = str(req.get("instructions") or "").strip()
+    if instructions:
+        return instructions[:limit]
+    inp = req.get("input")
+    if isinstance(inp, str) and inp.strip():
+        return inp.strip()[:limit]
+    if isinstance(inp, list):
+        for item in reversed(inp):
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "message" and item.get("role") == "user":
+                text = text_from_content(item.get("content"))
+                if text:
+                    return text[:limit]
+    return ""
 
 
 # ===========================================================================
@@ -8213,6 +8278,496 @@ def run_proxy(argv=None):
 
 
 # ===========================================================================
+# proxy.responses
+# ===========================================================================
+
+ROUTE = "completions_to_responses"
+NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
+
+SKIP_CHAT_FUNCTIONS = frozenset({
+    "shell_command",
+    "list_mcp_resources",
+    "list_mcp_resource_templates",
+    "read_mcp_resource",
+})
+
+PROXY_TOOL_HINT = (
+    "MCP tools are exposed as chat functions named mcp__<server>__<tool>. "
+    "Call the concrete mcp__... function directly instead of shell_command "
+    "or MCP resource-list/read helpers."
+)
+
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+
+
+def clean_ident(value):
+    return NAME_RE.sub("_", str(value or "")).strip("_")
+
+
+def namespace_ident(namespace):
+    raw = clean_ident(namespace)
+    if not raw:
+        return ""
+    if raw.startswith("mcp__"):
+        return raw
+    return "mcp__%s" % raw
+
+
+def flatten_name(namespace, name):
+    right = clean_ident(name) or "tool"
+    left = namespace_ident(namespace)
+    if not left:
+        return right[:64]
+    return ("%s__%s" % (left, right))[:64]
+
+
+def schema_for_chat(schema):
+    if isinstance(schema, dict) and schema:
+        return schema
+    return {"type": "object", "properties": {}}
+
+
+def translate_tools(tools):
+    chat_tools = []
+    reverse = {}
+    used = set()
+
+    def add_tool(namespace, tool):
+        name = str(tool.get("name") or "").strip()
+        if not name:
+            return
+        if namespace is None and name in SKIP_CHAT_FUNCTIONS:
+            return
+        flat = flatten_name(namespace, name)
+        base = flat
+        idx = 2
+        while flat in used:
+            suffix = "_%d" % idx
+            flat = "%s%s" % (base[:64 - len(suffix)], suffix)
+            idx += 1
+        used.add(flat)
+        reverse[flat] = (namespace, name)
+        desc = str(tool.get("description") or "")
+        if namespace:
+            flat_hint = flatten_name(namespace, name)
+            desc = (
+                "Tool name: %s\nOriginal namespace: %s.%s\n%s"
+                % (flat_hint, namespace, name, desc)
+            ).strip()
+        chat_tools.append({
+            "type": "function",
+            "function": {
+                "name": flat,
+                "description": desc,
+                "parameters": schema_for_chat(tool.get("parameters")),
+            },
+        })
+
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        typ = tool.get("type")
+        if typ == "function":
+            add_tool(None, tool)
+        elif typ == "namespace":
+            ns = str(tool.get("name") or "").strip() or None
+            for child in tool.get("tools") or []:
+                if isinstance(child, dict) and child.get("type") == "function":
+                    add_tool(ns, child)
+    return chat_tools, reverse
+
+
+def content_item_text(content):
+    if isinstance(content, list):
+        return text_from_content(content)
+    return "" if content is None else str(content)
+
+
+def translate_input(input_items, instructions, reverse):
+    messages = []
+    system_parts = [x for x in (instructions, PROXY_TOOL_HINT) if x]
+    if system_parts:
+        messages.append({"role": "system", "content": "\n\n".join(system_parts)})
+    if isinstance(input_items, str):
+        messages.append({"role": "user", "content": input_items})
+        return messages
+    if not isinstance(input_items, list):
+        return messages
+
+    for item in input_items:
+        if not isinstance(item, dict):
+            continue
+        typ = item.get("type")
+        if typ == "message":
+            role = str(item.get("role") or "user")
+            if role == "developer":
+                role = "system"
+            if role not in ("system", "user", "assistant", "tool"):
+                role = "user"
+            messages.append({
+                "role": role,
+                "content": content_item_text(item.get("content")),
+            })
+        elif typ == "function_call":
+            name = str(item.get("name") or "")
+            namespace = item.get("namespace")
+            if namespace:
+                flat = flatten_name(str(namespace), name)
+            else:
+                flat = flatten_name(None, name)
+            call_id = str(item.get("call_id") or item.get("id") or "call_%d" % (len(messages) + 1))
+            messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": flat,
+                        "arguments": str(item.get("arguments") or "{}"),
+                    },
+                }],
+            })
+        elif typ == "function_call_output":
+            messages.append({
+                "role": "tool",
+                "tool_call_id": str(item.get("call_id") or ""),
+                "content": content_item_text(item.get("output")),
+            })
+    return messages
+
+
+def build_chat_payload(req, upstream_model):
+    chat_tools, reverse = translate_tools(req.get("tools") or [])
+    payload = {
+        "model": upstream_model,
+        "messages": translate_input(
+            req.get("input"),
+            str(req.get("instructions") or ""),
+            reverse,
+        ),
+    }
+    if chat_tools:
+        payload["tools"] = chat_tools
+        payload["tool_choice"] = (
+            "auto" if req.get("tool_choice") in (None, "auto") else req.get("tool_choice")
+        )
+        payload["parallel_tool_calls"] = bool(req.get("parallel_tool_calls", False))
+    max_tokens = req.get("max_output_tokens") or req.get("max_tokens")
+    if max_tokens:
+        payload["max_tokens"] = int(max_tokens)
+    return payload, reverse
+
+
+def split_flat_mcp_name(flat):
+    if flat.startswith("mcp__"):
+        parts = flat.split("__", 2)
+        if len(parts) == 3 and parts[1] and parts[2]:
+            return "mcp__%s" % parts[1], parts[2]
+    return None, flat
+
+
+def textual_tool_call_items(content, reverse):
+    text = "" if content is None else str(content)
+    output = []
+    for idx, match in enumerate(TOOL_CALL_RE.finditer(text), start=1):
+        raw_name = match.group("name").strip()
+        flat = clean_ident(raw_name) or raw_name
+        namespace, name = reverse.get(flat, split_flat_mcp_name(flat))
+        args = {}
+        for arg in ARG_RE.finditer(match.group("body")):
+            key = arg.group("key").strip()
+            if key:
+                args[key] = arg.group("value").strip()
+        item = {
+            "id": "call_%d" % idx,
+            "type": "function_call",
+            "status": "completed",
+            "call_id": "call_%d" % idx,
+            "name": name,
+            "arguments": json_dumps(args),
+        }
+        if namespace:
+            item["namespace"] = namespace
+        output.append(item)
+    return output, TOOL_CALL_RE.sub("", text).strip()
+
+
+def responses_output_from_chat(raw, reverse):
+    choices = raw.get("choices") or []
+    msg = ((choices[0] or {}).get("message") or {}) if choices else {}
+    output = []
+    for idx, call in enumerate(msg.get("tool_calls") or []):
+        fn = call.get("function") or {}
+        flat = str(fn.get("name") or "")
+        namespace, name = reverse.get(flat, split_flat_mcp_name(flat))
+        item = {
+            "id": str(call.get("id") or "call_%d" % (idx + 1)),
+            "type": "function_call",
+            "status": "completed",
+            "call_id": str(call.get("id") or "call_%d" % (idx + 1)),
+            "name": name,
+            "arguments": str(fn.get("arguments") or "{}"),
+        }
+        if namespace:
+            item["namespace"] = namespace
+        output.append(item)
+    content = msg.get("content")
+    if content:
+        text_calls, remaining = textual_tool_call_items(content, reverse)
+        output.extend(text_calls)
+        if remaining:
+            output.append({
+                "id": "msg_1",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": remaining}],
+            })
+    return output
+
+
+def responses_payload(req, chat_raw, reverse):
+    usage = chat_raw.get("usage") or {}
+    output = responses_output_from_chat(chat_raw, reverse)
+    return {
+        "id": str(chat_raw.get("id") or "resp_%d" % int(time.time() * 1000)),
+        "object": "response",
+        "created_at": int(time.time()),
+        "status": "completed",
+        "model": req.get("model"),
+        "output": output,
+        "usage": {
+            "input_tokens": int(usage.get("prompt_tokens") or 0),
+            "output_tokens": int(usage.get("completion_tokens") or 0),
+            "total_tokens": int(usage.get("total_tokens") or 0),
+        },
+    }
+
+
+def sse_events(resp):
+    events = [
+        {"type": "response.created", "response": dict(resp, status="in_progress", output=[])},
+    ]
+    for idx, item in enumerate(resp.get("output") or []):
+        events.append({
+            "type": "response.output_item.added",
+            "output_index": idx,
+            "item": item,
+        })
+        if item.get("type") == "message":
+            text = text_from_content(item.get("content"))
+            events.append({
+                "type": "response.content_part.added",
+                "output_index": idx,
+                "item_id": item.get("id"),
+                "content_index": 0,
+                "part": {"type": "output_text", "text": ""},
+            })
+            if text:
+                events.append({
+                    "type": "response.output_text.delta",
+                    "output_index": idx,
+                    "item_id": item.get("id"),
+                    "content_index": 0,
+                    "delta": text,
+                })
+            events.append({
+                "type": "response.output_text.done",
+                "output_index": idx,
+                "item_id": item.get("id"),
+                "content_index": 0,
+                "text": text,
+            })
+            events.append({
+                "type": "response.content_part.done",
+                "output_index": idx,
+                "item_id": item.get("id"),
+                "content_index": 0,
+                "part": {"type": "output_text", "text": text},
+            })
+        events.append({
+            "type": "response.output_item.done",
+            "output_index": idx,
+            "item": item,
+        })
+    events.append({"type": "response.completed", "response": resp})
+    return "".join(
+        "event: %s\ndata: %s\n\n" % (e["type"], json_dumps(e)) for e in events
+    ).encode("utf-8")
+
+
+class Handler(BaseHTTPRequestHandler):
+    def _path(self):
+        return urlparse(self.path).path.rstrip("/") or "/"
+
+    def do_GET(self):
+        path = self._path()
+        if path in ("/", "/health", "/v1"):
+            self._send_json({"ok": True, "route": ROUTE})
+            return
+        if path == "/v1/models":
+            self._send_json({
+                "object": "list",
+                "data": [{"id": self.server.model_alias, "object": "model"}],
+            })
+            return
+        self.send_error(404)
+
+    def do_POST(self):
+        if self._path() != "/v1/responses":
+            self.send_error(404)
+            return
+        timer = RequestTimer()
+        client_model = ""
+        upstream_model = ""
+        stream = False
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+            req = json_loads(self.rfile.read(length))
+            client_model = str(req.get("model") or "")
+            upstream_model = resolve_upstream_model(req.get("model"), self.server.upstream_model)
+            stream = bool(req.get("stream"))
+            self.server.debug.log(
+                "request_start",
+                path=self.path,
+                client_model=client_model,
+                upstream_model=upstream_model,
+                stream=stream,
+                max_tokens=req.get("max_output_tokens") or req.get("max_tokens"),
+                input_items=len(req.get("input") or []) if isinstance(req.get("input"), list) else 1,
+                tool_count=len(req.get("tools") or []),
+                user_preview=last_user_preview_responses(req),
+            )
+            chat_payload, reverse = build_chat_payload(req, upstream_model)
+            raw = call_chat_completions(
+                chat_payload, self.server.api_key, self.server.timeout,
+                url=self.server.upstream_url,
+            )
+            resp = responses_payload(req, raw, reverse)
+            self.server.debug.log(
+                "request_done",
+                path=self.path,
+                client_model=client_model,
+                upstream_model=upstream_model,
+                stream=stream,
+                latency_ms=timer.elapsed_ms,
+                response_id=resp.get("id"),
+                output_items=len(resp.get("output") or []),
+                usage=resp.get("usage") or {},
+                **summarize_chat_response(raw)
+            )
+            if stream:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(sse_events(resp))
+                self.wfile.flush()
+            else:
+                self._send_json(resp)
+        except urllib.error.HTTPError as exc:
+            detail = upstream_error_detail(exc)[:500]
+            self.server.debug.log(
+                "request_error",
+                path=self.path,
+                client_model=client_model,
+                upstream_model=upstream_model,
+                stream=stream,
+                latency_ms=timer.elapsed_ms,
+                status=exc.code,
+                error=detail,
+            )
+            self._send_json({"error": {"message": detail}}, status=exc.code)
+        except Exception as exc:
+            detail = str(exc)
+            self.server.debug.log(
+                "request_error",
+                path=self.path,
+                client_model=client_model,
+                upstream_model=upstream_model,
+                stream=stream,
+                latency_ms=timer.elapsed_ms,
+                status=500,
+                error=detail,
+            )
+            self._send_json({"error": {"message": detail}}, status=500)
+
+    def _send_json(self, obj, status=200):
+        self._send_bytes(json_dumps(obj).encode("utf-8"), "application/json", status)
+
+    def _send_bytes(self, body, content_type, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        sys.stdout.write("[%s] %s - %s\n" % (ROUTE, self.address_string(), fmt % args))
+        sys.stdout.flush()
+
+
+class Server(ThreadingHTTPServer):
+    def __init__(self, addr, handler, api_key, model_alias, upstream_model,
+                 upstream_url, timeout, debug):
+        ThreadingHTTPServer.__init__(self, addr, handler)
+        self.api_key = api_key
+        self.model_alias = model_alias
+        self.upstream_model = upstream_model
+        self.upstream_url = upstream_url
+        self.timeout = timeout
+        self.debug = debug
+
+
+def run_proxy(argv=None):
+    p = argparse.ArgumentParser(description="Route: chat/completions -> openai/responses")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=18325)
+    p.add_argument("--model-alias", default="glm-5.1")
+    p.add_argument("--upstream-model", default="")
+    p.add_argument("--upstream-url", required=True)
+    p.add_argument("--ready-file", default="")
+    p.add_argument("--timeout", type=float, default=600.0)
+    p.add_argument("--debug", action="store_true")
+    p.add_argument("--debug-log", default="")
+    args = p.parse_args(argv)
+
+    api_key = os.environ.get("INFERENCE_HUB_API_KEY", "").strip()
+    if not api_key:
+        api_key = os.environ.get("INFERENCE_HUB_TOKEN", "").strip()
+    if not api_key:
+        raise SystemExit("INFERENCE_HUB_API_KEY is required for proxy")
+
+    upstream = resolve_upstream_model(args.upstream_model or args.model_alias, args.model_alias)
+    debug_log = args.debug_log or os.path.join(LOGS_DIR, "proxy-responses-llm.jsonl")
+    debug = ProxyLogger(ROUTE, args.debug, debug_log)
+    httpd = Server(
+        (args.host, args.port),
+        Handler,
+        api_key=api_key,
+        model_alias=args.model_alias,
+        upstream_model=upstream,
+        upstream_url=args.upstream_url,
+        timeout=args.timeout,
+        debug=debug,
+    )
+    host, port = httpd.server_address[:2]
+    if args.ready_file:
+        with open(args.ready_file, "w") as handle:
+            handle.write("%s:%s" % (host, port))
+    sys.stdout.write(
+        "[%s] http://%s:%s/v1/responses -> %s model=%s\n" % (
+            ROUTE, host, port, args.upstream_url, upstream)
+    )
+    sys.stdout.flush()
+    httpd.serve_forever()
+    return 0
+
+
+# ===========================================================================
 # proxy.manager
 # ===========================================================================
 
@@ -8220,6 +8775,11 @@ ROUTE_DEFAULTS = {
     "completions_to_messages": {
         "port": 18324,
         "from_proto": "anthropic_messages",
+        "to_proto": "openai_chat_completions",
+    },
+    "completions_to_responses": {
+        "port": 18325,
+        "from_proto": "openai_responses",
         "to_proto": "openai_chat_completions",
     },
 }
@@ -8261,12 +8821,23 @@ def _pid_alive(pid):
 
 
 def _health_ok(port, timeout=1.0):
+    return _health_route(port, timeout) is not None
+
+
+def _health_route(port, timeout=1.0):
     url = "http://127.0.0.1:%d/health" % int(port)
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
-            return resp.status == 200
-    except (urllib.error.URLError, urllib.error.HTTPError, ValueError):
-        return False
+            if resp.status != 200:
+                return None
+            raw = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(raw) if raw else {}
+            if not isinstance(data, dict) or not data.get("ok"):
+                return None
+            route = data.get("route")
+            return route if route else None
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, TypeError):
+        return None
 
 
 def _camc_argv():
@@ -8352,6 +8923,31 @@ def ensure_proxy(plan, token):
             return int(rec.get("port") or port), rec
         if not rec.get("pid") and _health_ok(rec.get("port") or port):
             return int(rec.get("port") or port), rec
+
+    # Reuse an already-listening proxy on this port when health reports the same
+    # route and no other upstream is registered for that port+route.
+    if _health_route(port) == route:
+        conflict = any(
+            r.get("port") == port
+            and r.get("route") == route
+            and r.get("upstream_url") not in ("", upstream_url)
+            for r in runs.values()
+        )
+        if not conflict:
+            rec = {
+                "route": route,
+                "port": port,
+                "pid": None,
+                "upstream_url": upstream_url,
+                "model": plan.get("model"),
+                "api": plan.get("name"),
+                "log": os.path.join(LOGS_DIR, "proxy-%s.log" % route),
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "reused": True,
+            }
+            runs[key] = rec
+            _save_runs(runs)
+            return port, rec
 
     pid, log_path = _start_proxy(
         route=route,
@@ -8992,11 +9588,17 @@ def cmd_run(args):
                 overrides = api_plan.get("env") or {}
                 if tool == "claude":
                     overrides["ANTHROPIC_BASE_URL"] = base
+                elif tool == "codex":
+                    overrides["CODEX_HOME"] = ensure_codex_api_config_dir(
+                        base + "/v1", api_plan.get("name") or "api")
                 api_plan["env"] = overrides
         elif api_plan.get("env", {}).get("_API_USE_RESOLVED_TOKEN") == "1":
             overrides = dict(api_plan.get("env") or {})
             overrides.pop("_API_USE_RESOLVED_TOKEN", None)
-            overrides["ANTHROPIC_API_KEY"] = token
+            if tool == "claude":
+                overrides["ANTHROPIC_API_KEY"] = token
+            elif tool == "codex":
+                overrides[CODEX_API_ENV_KEY] = token
             api_plan["env"] = overrides
         for key, val in (api_plan.get("env") or {}).items():
             if val == "":
@@ -13607,6 +14209,8 @@ def _run_proxy(argv):
     route = argv[1]
     rest = argv[2:]
     if route == "completions_to_messages":
+        run_proxy(rest)
+    elif route == "completions_to_responses":
         run_proxy(rest)
         return
     sys.stderr.write("unknown proxy route: %s\n" % route)

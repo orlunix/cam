@@ -19,6 +19,11 @@ ROUTE_DEFAULTS = {
         "from_proto": "anthropic_messages",
         "to_proto": "openai_chat_completions",
     },
+    "completions_to_responses": {
+        "port": 18325,
+        "from_proto": "openai_responses",
+        "to_proto": "openai_chat_completions",
+    },
 }
 
 
@@ -58,12 +63,23 @@ def _pid_alive(pid):
 
 
 def _health_ok(port, timeout=1.0):
+    return _health_route(port, timeout) is not None
+
+
+def _health_route(port, timeout=1.0):
     url = "http://127.0.0.1:%d/health" % int(port)
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
-            return resp.status == 200
-    except (urllib.error.URLError, urllib.error.HTTPError, ValueError):
-        return False
+            if resp.status != 200:
+                return None
+            raw = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(raw) if raw else {}
+            if not isinstance(data, dict) or not data.get("ok"):
+                return None
+            route = data.get("route")
+            return route if route else None
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, TypeError):
+        return None
 
 
 def _camc_argv():
@@ -74,7 +90,7 @@ def _camc_argv():
 
 
 def _start_proxy(route, port, model_alias, upstream_model, upstream_url,
-                 proxy_debug=False, token=""):
+                 proxy_debug=False, token="", api_name=""):
     os.makedirs(LOGS_DIR, exist_ok=True)
     ready_file = os.path.join(CAM_DIR, "proxy-ready-%s.tmp" % route)
     log_path = os.path.join(LOGS_DIR, "proxy-%s.log" % route)
@@ -86,6 +102,8 @@ def _start_proxy(route, port, model_alias, upstream_model, upstream_url,
         "--upstream-url", upstream_url,
         "--ready-file", ready_file,
     ]
+    if api_name:
+        argv.extend(["--api-name", api_name])
     if proxy_debug:
         argv.append("--debug")
 
@@ -150,6 +168,31 @@ def ensure_proxy(plan, token):
         if not rec.get("pid") and _health_ok(rec.get("port") or port):
             return int(rec.get("port") or port), rec
 
+    # Reuse an already-listening proxy on this port when health reports the same
+    # route and no other upstream is registered for that port+route.
+    if _health_route(port) == route:
+        conflict = any(
+            r.get("port") == port
+            and r.get("route") == route
+            and r.get("upstream_url") not in ("", upstream_url)
+            for r in runs.values()
+        )
+        if not conflict:
+            rec = {
+                "route": route,
+                "port": port,
+                "pid": None,
+                "upstream_url": upstream_url,
+                "model": plan.get("model"),
+                "api": plan.get("name"),
+                "log": os.path.join(LOGS_DIR, "proxy-%s.log" % route),
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "reused": True,
+            }
+            runs[key] = rec
+            _save_runs(runs)
+            return port, rec
+
     pid, log_path = _start_proxy(
         route=route,
         port=port,
@@ -158,6 +201,7 @@ def ensure_proxy(plan, token):
         upstream_url=upstream_url,
         proxy_debug=bool(plan.get("proxy_debug")),
         token=token,
+        api_name=plan.get("name") or "",
     )
     rec = {
         "route": route,

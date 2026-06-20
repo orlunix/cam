@@ -620,11 +620,19 @@ def cmd_run(args):
                 overrides = api_plan.get("env") or {}
                 if tool == "claude":
                     overrides["ANTHROPIC_BASE_URL"] = base
+                elif tool == "codex":
+                    from camc_pkg.api_resolver import ensure_codex_api_config_dir
+                    overrides["CODEX_HOME"] = ensure_codex_api_config_dir(
+                        base + "/v1", api_plan.get("name") or "api")
                 api_plan["env"] = overrides
         elif api_plan.get("env", {}).get("_API_USE_RESOLVED_TOKEN") == "1":
             overrides = dict(api_plan.get("env") or {})
             overrides.pop("_API_USE_RESOLVED_TOKEN", None)
-            overrides["ANTHROPIC_API_KEY"] = token
+            if tool == "claude":
+                overrides["ANTHROPIC_API_KEY"] = token
+            elif tool == "codex":
+                from camc_pkg.api_resolver import CODEX_API_ENV_KEY
+                overrides[CODEX_API_ENV_KEY] = token
             api_plan["env"] = overrides
         for key, val in (api_plan.get("env") or {}).items():
             if val == "":
@@ -5128,8 +5136,11 @@ def cmd_api_check(args):
     if result.get("error") and not result.get("reachable"):
         print_error(result.get("error"))
         sys.exit(1)
-    print("Provider %s: reachable (%d models, token=%s)" % (
-        result.get("provider"), result.get("model_count"), result.get("token_source")))
+    print("Provider %s: reachable (%d models, token=%s, metadata=%d apis)" % (
+        result.get("provider"), result.get("model_count"), result.get("token_source"),
+        result.get("metadata_updated") or 0))
+    if result.get("metadata_error"):
+        print("  metadata sync: partial (%s)" % result.get("metadata_error"))
     for row in result.get("apis") or []:
         flag = "ok" if row.get("enabled") else "off"
         print("  %-18s %s (%s)" % (row.get("name"), flag, row.get("reason")))
@@ -5264,8 +5275,11 @@ def _run_proxy(argv):
     route = argv[1]
     rest = argv[2:]
     if route == "completions_to_messages":
-        from camc_pkg.proxy.messages import run_proxy
-        run_proxy(rest)
+        from camc_pkg.proxy.messages import run_messages_proxy
+        run_messages_proxy(rest)
+    elif route == "completions_to_responses":
+        from camc_pkg.proxy.responses import run_responses_proxy
+        run_responses_proxy(rest)
         return
     sys.stderr.write("unknown proxy route: %s\n" % route)
     sys.exit(2)

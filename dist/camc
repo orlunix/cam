@@ -40,7 +40,7 @@ import uuid
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "7e72491-dirty 2026-06-17 00:10"
+__build__ = "6a85f45-dirty 2026-06-19 20:18"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -6941,8 +6941,314 @@ def check_provider(data, token_resolver):
             "provider": provider_id,
             "ids": sorted(ids),
         }
+
+    metadata_updated = 0
+    metadata_error = None
+    try:
+        metadata_updated = sync_metadata_in_data(data, provider)
+    except (urllib.error.URLError, urllib.error.HTTPError, socket.timeout, ValueError) as exc:
+        metadata_error = str(exc)
+        # Still apply fallbacks without cost map.
+        sync_metadata_in_data(data, provider, cost_map={})
+
+    result["metadata_updated"] = metadata_updated
+    if metadata_error:
+        result["metadata_error"] = metadata_error
+
     save_api_models(data)
     return result
+
+
+# ===========================================================================
+# api_metadata
+# ===========================================================================
+
+DEFAULT_MAX_OUTPUT_TOKENS = 131072
+DEFAULT_EFFECTIVE_CONTEXT_PERCENT = 95
+CODEX_CATALOG_TEMPLATE_SLUG = "gpt-5.5"
+CODEX_MODELS_CACHE_FILE = os.path.expanduser("~/.codex/models_cache.json")
+
+# Curated fallbacks when IHUB cost map omits fields (see docs/api-model-metadata.md).
+CURATED_METADATA_FALLBACKS = {
+    "glm-5.1": {
+        "context_window": 202752,
+        "max_output_tokens": 131072,
+        "supports_tools": True,
+        "supports_reasoning": True,
+    },
+    "deepseek-v4-pro": {
+        "context_window": 1048576,
+        "max_output_tokens": 131072,
+        "supports_tools": True,
+        "supports_reasoning": True,
+    },
+    "qwen3-5-397b": {
+        "context_window": 262144,
+        "max_output_tokens": 131072,
+        "supports_tools": True,
+        "supports_reasoning": True,
+    },
+    "kimi-k2.6": {
+        "context_window": 262144,
+        "max_output_tokens": 131072,
+        "supports_tools": True,
+        "supports_reasoning": True,
+    },
+    "minimax-m2.7": {
+        "context_window": 196608,
+        "max_output_tokens": 131072,
+        "supports_tools": True,
+        "supports_reasoning": True,
+    },
+    "nemotron-3-ultra": {
+        "context_window": 128000,
+        "max_output_tokens": 65536,
+        "supports_tools": True,
+        "supports_reasoning": False,
+    },
+}
+
+DISPLAY_NAMES = {
+    "glm-5.1": "GLM 5.1",
+    "deepseek-v4-pro": "DeepSeek V4 Pro",
+    "qwen3-5-397b": "Qwen3.5 397B",
+    "kimi-k2.6": "Kimi K2.6",
+    "minimax-m2.7": "MiniMax M2.7",
+    "nemotron-3-ultra": "Nemotron 3 Ultra",
+}
+
+
+def litellm_cost_map_url(provider):
+    """LiteLLM cost map lives at host root, not under provider base_url /v1."""
+    base = str(provider.get("base_url") if provider else "" or "").rstrip("/")
+    if not base:
+        return ""
+    if base.endswith("/v1"):
+        base = base[:-3]
+    return base + "/public/litellm_model_cost_map"
+
+
+def fetch_litellm_cost_map(provider, timeout=30.0):
+    """Fetch LiteLLM public cost map (no auth). Returns dict or {}."""
+    url = litellm_cost_map_url(provider)
+    if not url:
+        return {}
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+    return body if isinstance(body, dict) else {}
+
+
+def metadata_from_cost_entry(entry):
+    """Map one LiteLLM cost-map row to camc metadata fields."""
+    if not isinstance(entry, dict):
+        return {}
+    out = {}
+    for src, dst in (
+        ("max_input_tokens", "context_window"),
+        ("max_output_tokens", "max_output_tokens"),
+    ):
+        val = entry.get(src)
+        if val is not None:
+            try:
+                out[dst] = int(val)
+            except (TypeError, ValueError):
+                pass
+    if out.get("max_output_tokens") is None:
+        val = entry.get("max_tokens")
+        if val is not None:
+            try:
+                out["max_output_tokens"] = int(val)
+            except (TypeError, ValueError):
+                pass
+    if entry.get("supports_function_calling") is not None:
+        out["supports_tools"] = bool(entry.get("supports_function_calling"))
+    if entry.get("supports_reasoning") is not None:
+        out["supports_reasoning"] = bool(entry.get("supports_reasoning"))
+    if entry.get("mode"):
+        out["mode"] = str(entry.get("mode"))
+    if out:
+        out["source"] = "litellm_cost_map"
+    return out
+
+
+def apply_metadata_fallbacks(api_key, metadata):
+    """Fill gaps from curated seed defaults."""
+    merged = dict(metadata or {})
+    fb = CURATED_METADATA_FALLBACKS.get(api_key) or {}
+    for key, val in fb.items():
+        if merged.get(key) is None:
+            merged[key] = val
+    if merged.get("max_output_tokens") is None and merged.get("context_window"):
+        merged["max_output_tokens"] = min(
+            int(merged["context_window"]),
+            DEFAULT_MAX_OUTPUT_TOKENS,
+        )
+    if merged.get("supports_tools") is None:
+        merged["supports_tools"] = True
+    if merged.get("supports_reasoning") is None:
+        merged["supports_reasoning"] = bool(fb.get("supports_reasoning", True))
+    # Codex: IHUB GLM/DeepSeek paths use reasoning_content, not OpenAI thinking params.
+    if "reasoning_levels" not in merged:
+        merged["reasoning_levels"] = []
+    if "supports_reasoning_summaries" not in merged:
+        merged["supports_reasoning_summaries"] = False
+    return merged
+
+
+def merge_api_metadata(api_key, model_id, cost_map, synced_at=None):
+    """Build metadata dict for one API profile."""
+    entry = (cost_map or {}).get(model_id) if model_id else None
+    meta = metadata_from_cost_entry(entry)
+    if not meta.get("source"):
+        meta["source"] = "curated_fallback"
+    meta = apply_metadata_fallbacks(api_key, meta)
+    meta["synced_at"] = synced_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return meta
+
+
+def sync_metadata_in_data(data, provider, cost_map=None, synced_at=None):
+    """Merge metadata into apis.*; return count updated."""
+    if cost_map is None:
+        try:
+            cost_map = fetch_litellm_cost_map(provider)
+        except (urllib.error.URLError, urllib.error.HTTPError, ValueError, socket.timeout):
+            cost_map = {}
+    synced_at = synced_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    updated = 0
+    apis = data.get("apis") or {}
+    for key, entry in apis.items():
+        if not isinstance(entry, dict):
+            continue
+        model = entry.get("model")
+        if not isinstance(model, str) or not model.strip():
+            continue
+        entry["metadata"] = merge_api_metadata(key, model.strip(), cost_map, synced_at=synced_at)
+        updated += 1
+    if cost_map:
+        data["_metadata_catalog"] = {
+            "synced_at": synced_at,
+            "provider": data.get("default_provider"),
+            "source_url": litellm_cost_map_url(provider),
+            "entry_count": len(cost_map),
+        }
+    return updated
+
+
+def resolve_api_metadata(api_name, data=None):
+    """Return metadata dict for an API key (loads api-models.json if needed)."""
+
+    if data is None:
+        data = load_api_models()
+    _key, entry = get_api_entry(data, api_name)
+    meta = entry.get("metadata")
+    if isinstance(meta, dict) and meta.get("context_window"):
+        return apply_metadata_fallbacks(_key, meta)
+    model = entry.get("model")
+    return merge_api_metadata(_key, str(model or ""), {})
+
+
+def openai_model_object(model_id, metadata=None):
+    """OpenAI-compatible /v1/models row with optional token limits."""
+    obj = {
+        "id": str(model_id),
+        "object": "model",
+        "created": 1677610602,
+        "owned_by": "camc",
+    }
+    meta = metadata or {}
+    ctx = meta.get("context_window")
+    if ctx is not None:
+        obj["max_input_tokens"] = int(ctx)
+    out = meta.get("max_output_tokens")
+    if out is not None:
+        obj["max_output_tokens"] = int(out)
+    return obj
+
+
+def openai_models_list_response(model_id, metadata=None):
+    return {
+        "object": "list",
+        "data": [openai_model_object(model_id, metadata)],
+    }
+
+
+def claude_context_env_overrides(api_name, metadata=None):
+    """Env override so Claude Code auto-compact uses camc metadata context window."""
+    if metadata is None:
+        meta = resolve_api_metadata(api_name)
+    else:
+        meta = apply_metadata_fallbacks(api_name, metadata)
+    ctx = meta.get("context_window")
+    if ctx is None:
+        return {}
+    return {
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": str(int(ctx)),
+    }
+
+
+def load_codex_catalog_template(cache_path=None):
+    """Clone a known-good Codex model row from ~/.codex/models_cache.json."""
+    path = cache_path or CODEX_MODELS_CACHE_FILE
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r") as handle:
+            data = json.load(handle)
+    except (IOError, ValueError):
+        return None
+    for model in data.get("models") or []:
+        if isinstance(model, dict) and model.get("slug") == CODEX_CATALOG_TEMPLATE_SLUG:
+            return json.loads(json.dumps(model))
+    return None
+
+
+def codex_catalog_model(api_name, metadata=None, template=None):
+    """One Codex model_catalog.json entry (clone official template + overlay)."""
+    meta = apply_metadata_fallbacks(api_name, metadata or {})
+    slug = str(api_name)
+    ctx = int(meta.get("context_window") or DEFAULT_MAX_OUTPUT_TOKENS)
+    entry = template if template is not None else load_codex_catalog_template()
+    if not isinstance(entry, dict):
+        raise ValueError(
+            "Codex model catalog template %r not found in %s; run `codex` once "
+            "to populate models_cache.json"
+            % (CODEX_CATALOG_TEMPLATE_SLUG, CODEX_MODELS_CACHE_FILE)
+        )
+    entry = json.loads(json.dumps(entry))
+    entry["slug"] = slug
+    entry["display_name"] = DISPLAY_NAMES.get(slug, slug)
+    entry["description"] = "CAM Inference Hub proxy (%s)" % slug
+    entry["context_window"] = ctx
+    entry["max_context_window"] = ctx
+    entry["effective_context_window_percent"] = DEFAULT_EFFECTIVE_CONTEXT_PERCENT
+    entry["supported_reasoning_levels"] = list(meta.get("reasoning_levels") or [])
+    entry["supports_reasoning_summaries"] = bool(meta.get("supports_reasoning_summaries"))
+    entry["supports_parallel_tool_calls"] = bool(meta.get("supports_tools", True))
+    entry["supported_in_api"] = True
+    entry["visibility"] = "list"
+    entry["priority"] = 1000
+    if not entry.get("supported_reasoning_levels"):
+        entry["default_reasoning_level"] = "low"
+        entry["default_reasoning_summary"] = "none"
+    return entry
+
+
+def write_codex_model_catalog(catalog_path, api_name, metadata=None):
+    """Write ~/.cam/codex-api/camc-model-catalog.json for Codex --api."""
+    model = codex_catalog_model(api_name, metadata)
+    payload = {"models": [model]}
+    os.makedirs(os.path.dirname(catalog_path), exist_ok=True)
+    tmp = catalog_path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp, catalog_path)
+    return catalog_path
+
+
+def curated_api_keys():
+    return [key for key, _model, _aliases in CURATED_APIS]
 
 
 # ===========================================================================
@@ -7111,11 +7417,10 @@ PROXY_ROUTES = {
         "route": "completions_to_messages",
         "port": 18324,
     },
-    # Future codex --api:
-    # (PROTO_OPENAI_RESPONSES, PROTO_OPENAI_CHAT): {
-    #     "route": "completions_to_responses",
-    #     "port": 18325,
-    # },
+    (PROTO_OPENAI_RESPONSES, PROTO_OPENAI_CHAT): {
+        "route": "completions_to_responses",
+        "port": 18325,
+    },
 }
 
 
@@ -7229,12 +7534,16 @@ def build_routing_plan(tool, provider, api_entry, api_key):
 # api_resolver
 # ===========================================================================
 
-# Supported today: Claude + curated Inference Hub models only.
-API_SUPPORTED_TOOLS = frozenset(["claude"])
+# Supported today: Claude + Codex with curated Inference Hub models.
+API_SUPPORTED_TOOLS = frozenset(["claude", "codex"])
 CURATED_API_KEYS = frozenset(key for key, _model, _aliases in CURATED_APIS)
 
 # One shared Claude Code config for all --api runs (onboarding once).
 CLAUDE_API_CONFIG_DIR = os.path.join(CAM_DIR, "claude-api")
+# Isolated Codex home — does not touch ~/.codex/ OAuth login.
+CODEX_API_CONFIG_DIR = os.path.join(CAM_DIR, "codex-api")
+CODEX_API_PROVIDER = "camc-ihub"
+CODEX_API_ENV_KEY = "CAMC_CODEX_API_KEY"
 
 
 def supported_api_models_text():
@@ -7254,9 +7563,8 @@ def validate_api_run(tool, api_key, api_entry=None):
     if tool not in API_SUPPORTED_TOOLS:
         raise ValueError(
             "--api is not supported for tool %r. "
-            "Only Claude is supported today: camc run -t claude --api NAME. "
-            "Codex and Cursor: use normal login without --api "
-            "(future Codex will use CODEX_HOME isolation; not implemented). "
+            "Supported today: camc run -t claude|codex --api NAME. "
+            "Cursor: use normal login without --api (not implemented). "
             "Supported models: %s."
             % (tool, supported_api_models_text())
         )
@@ -7328,6 +7636,49 @@ def ensure_claude_api_config_dir():
     return CLAUDE_API_CONFIG_DIR
 
 
+def ensure_codex_api_config_dir(base_url, api_name):
+    """Seed ~/.cam/codex-api/ for Codex --api (isolated from ~/.codex/)."""
+
+    os.makedirs(CODEX_API_CONFIG_DIR, exist_ok=True)
+    base_url = str(base_url or "").rstrip("/")
+    if base_url and not base_url.endswith("/v1"):
+        base_url = base_url + "/v1"
+    api_name = str(api_name or "api")
+    catalog_path = os.path.join(CODEX_API_CONFIG_DIR, "camc-model-catalog.json")
+    metadata = resolve_api_metadata(api_name)
+    write_codex_model_catalog(catalog_path, api_name, metadata)
+    config_path = os.path.join(CODEX_API_CONFIG_DIR, "config.toml")
+    content = (
+        'model = "%s"\n'
+        'model_provider = "%s"\n'
+        'model_catalog_json = "%s"\n'
+        '\n'
+        '[model_providers.%s]\n'
+        'name = "CAM Inference Hub Proxy"\n'
+        'base_url = "%s"\n'
+        'env_key = "%s"\n'
+        'wire_api = "responses"\n'
+    ) % (
+        api_name,
+        CODEX_API_PROVIDER,
+        catalog_path,
+        CODEX_API_PROVIDER,
+        base_url,
+        CODEX_API_ENV_KEY,
+    )
+    try:
+        prev = ""
+        if os.path.isfile(config_path):
+            with open(config_path, "r") as f:
+                prev = f.read()
+        if prev != content:
+            with open(config_path, "w") as f:
+                f.write(content)
+    except IOError:
+        pass
+    return CODEX_API_CONFIG_DIR
+
+
 def resolve_run_plan(tool, api_name, no_api_proxy=False, proxy_debug=False):
     """Return plan dict for camc run --api."""
     data = ensure_ready()
@@ -7375,34 +7726,46 @@ def resolve_run_plan(tool, api_name, no_api_proxy=False, proxy_debug=False):
 
 def _build_env_overrides(tool, plan, provider, api_entry, client_model):
     env = {}
-    if tool != "claude":
-        return env
-
     base = plan["local_base_url"].rstrip("/")
     translator = plan.get("translator") or plan.get("mode")
-    env["ANTHROPIC_BASE_URL"] = base
-    env["ANTHROPIC_MODEL"] = client_model
-    env["CLAUDE_CONFIG_DIR"] = ensure_claude_api_config_dir()
 
-    if translator == TRANSLATOR_EMBEDDED:
-        # Real token goes to embedded proxy; Claude uses local placeholder.
-        env["ANTHROPIC_API_KEY"] = str(
-            api_entry.get("client_api_key")
-            or provider.get("client_api_key")
-            or "sk-camc-local"
-        )
-        env["ANTHROPIC_AUTH_TOKEN"] = ""
-    elif translator == TRANSLATOR_EXTERNAL:
-        env["ANTHROPIC_API_KEY"] = str(
-            api_entry.get("client_api_key")
-            or provider.get("client_api_key")
-            or "sk-camc-local"
-        )
-        env["ANTHROPIC_AUTH_TOKEN"] = ""
-    elif translator == TRANSLATOR_DIRECT:
-        # Caller merges resolved bearer token into env after resolve_run_plan.
-        env["ANTHROPIC_AUTH_TOKEN"] = ""
-        env["_API_USE_RESOLVED_TOKEN"] = "1"
+    if tool == "claude":
+        env["ANTHROPIC_BASE_URL"] = base
+        env["ANTHROPIC_MODEL"] = client_model
+        env["CLAUDE_CONFIG_DIR"] = ensure_claude_api_config_dir()
+        if translator == TRANSLATOR_EMBEDDED:
+            env["ANTHROPIC_API_KEY"] = str(
+                api_entry.get("client_api_key")
+                or provider.get("client_api_key")
+                or "sk-camc-local"
+            )
+            env["ANTHROPIC_AUTH_TOKEN"] = ""
+        elif translator == TRANSLATOR_EXTERNAL:
+            env["ANTHROPIC_API_KEY"] = str(
+                api_entry.get("client_api_key")
+                or provider.get("client_api_key")
+                or "sk-camc-local"
+            )
+            env["ANTHROPIC_AUTH_TOKEN"] = ""
+        elif translator == TRANSLATOR_DIRECT:
+            env["ANTHROPIC_AUTH_TOKEN"] = ""
+            env["_API_USE_RESOLVED_TOKEN"] = "1"
+        env.update(claude_context_env_overrides(client_model, api_entry.get("metadata")))
+        return env
+
+    if tool == "codex":
+        if translator == TRANSLATOR_EMBEDDED:
+            env[CODEX_API_ENV_KEY] = str(
+                api_entry.get("client_api_key")
+                or provider.get("client_api_key")
+                or "sk-camc-local"
+            )
+        elif translator == TRANSLATOR_DIRECT:
+            env["_API_USE_RESOLVED_TOKEN"] = "1"
+            env[CODEX_API_ENV_KEY] = ""
+        # CODEX_HOME + config.toml finalized after proxy port is known (cmd_run).
+        return env
+
     return env
 
 
@@ -7474,10 +7837,12 @@ def text_from_content(content):
         return "" if content is None else str(content)
     parts = []
     for part in content:
-        if isinstance(part, dict) and part.get("type") == "text":
-            text = part.get("text")
-            if isinstance(text, str):
-                parts.append(text)
+        if isinstance(part, dict):
+            typ = part.get("type")
+            if typ in ("text", "input_text", "output_text"):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
         elif isinstance(part, str):
             parts.append(part)
     return "\n".join(x for x in parts if x)
@@ -7549,6 +7914,25 @@ def summarize_chat_response(raw):
         "has_tool_calls": bool(msg.get("tool_calls")),
         "content_len": len(str(msg.get("content") or "")),
     }
+
+
+def last_user_preview_responses(req, limit=120):
+    """Best-effort user text preview from a Responses API request."""
+    instructions = str(req.get("instructions") or "").strip()
+    if instructions:
+        return instructions[:limit]
+    inp = req.get("input")
+    if isinstance(inp, str) and inp.strip():
+        return inp.strip()[:limit]
+    if isinstance(inp, list):
+        for item in reversed(inp):
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "message" and item.get("role") == "user":
+                text = text_from_content(item.get("content"))
+                if text:
+                    return text[:limit]
+    return ""
 
 
 # ===========================================================================
@@ -7773,7 +8157,7 @@ def rewrite_anthropic_response(req, resp):
 # proxy.messages
 # ===========================================================================
 
-ROUTE = "completions_to_messages"
+MESSAGES_ROUTE = "completions_to_messages"
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -7966,7 +8350,7 @@ def chat_to_anthropic_message(req, chat_raw):
     }
 
 
-def sse_events(message):
+def messages_sse_events(message):
     start = dict(message)
     start["content"] = []
     start["stop_reason"] = None
@@ -8034,20 +8418,24 @@ def sse_events(message):
     return "".join(chunks).encode("utf-8")
 
 
-class Handler(BaseHTTPRequestHandler):
+class MessagesHandler(BaseHTTPRequestHandler):
     def _path(self):
         return urlparse(self.path).path.rstrip("/") or "/"
 
     def do_GET(self):
         path = self._path()
         if path in ("/", "/health", "/v1"):
-            self._send_json({"ok": True, "route": ROUTE})
+            self._send_json({"ok": True, "route": MESSAGES_ROUTE})
             return
         if path == "/v1/models":
-            self._send_json({
-                "object": "list",
-                "data": [{"id": self.server.model_alias, "object": "model"}],
-            })
+            meta = getattr(self.server, "model_metadata", None) or {}
+            if openai_models_list_response:
+                self._send_json(openai_models_list_response(self.server.model_alias, meta))
+            else:
+                self._send_json({
+                    "object": "list",
+                    "data": [{"id": self.server.model_alias, "object": "model"}],
+                })
             return
         self.send_error(404)
 
@@ -8062,9 +8450,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length") or "0")
             req = json_loads(self.rfile.read(length))
-            for key in list(req.keys()):
-                if key in DROP_ANTHROPIC_KEYS:
-                    req.pop(key, None)
+            dropped_keys = [k for k in list(req.keys()) if k in DROP_ANTHROPIC_KEYS]
+            for key in dropped_keys:
+                req.pop(key, None)
             stream = bool(req.get("stream"))
             client_model = str(req.get("model") or "")
             upstream_model = resolve_upstream_model(req.get("model"), self.server.upstream_model)
@@ -8078,6 +8466,7 @@ class Handler(BaseHTTPRequestHandler):
                 message_count=len(req.get("messages") or []),
                 tool_count=len(req.get("tools") or []),
                 user_preview=last_user_preview_messages(req),
+                dropped_keys=dropped_keys or None,
             )
             chat_payload = anthropic_messages_to_chat(req, upstream_model)
             raw = call_chat_completions(
@@ -8101,7 +8490,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
-                self.wfile.write(sse_events(msg))
+                self.wfile.write(messages_sse_events(msg))
                 self.wfile.flush()
             else:
                 self._send_json(msg)
@@ -8151,13 +8540,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, fmt, *args):
-        sys.stdout.write("[%s] %s - %s\n" % (ROUTE, self.address_string(), fmt % args))
+        sys.stdout.write("[%s] %s - %s\n" % (MESSAGES_ROUTE, self.address_string(), fmt % args))
         sys.stdout.flush()
 
 
-class Server(ThreadingHTTPServer):
+class MessagesServer(ThreadingHTTPServer):
     def __init__(self, addr, handler, api_key, model_alias, upstream_model,
-                 upstream_url, timeout, debug):
+                 upstream_url, timeout, debug, model_metadata=None):
         ThreadingHTTPServer.__init__(self, addr, handler)
         self.api_key = api_key
         self.model_alias = model_alias
@@ -8165,9 +8554,10 @@ class Server(ThreadingHTTPServer):
         self.upstream_url = upstream_url
         self.timeout = timeout
         self.debug = debug
+        self.model_metadata = model_metadata or {}
 
 
-def run_proxy(argv=None):
+def run_messages_proxy(argv=None):
     p = argparse.ArgumentParser(description="Route: chat/completions -> anthropic/messages")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=18324)
@@ -8178,6 +8568,7 @@ def run_proxy(argv=None):
     p.add_argument("--timeout", type=float, default=600.0)
     p.add_argument("--debug", action="store_true")
     p.add_argument("--debug-log", default="")
+    p.add_argument("--api-name", default="", help="API profile for model metadata")
     args = p.parse_args(argv)
 
     api_key = os.environ.get("INFERENCE_HUB_API_KEY", "").strip()
@@ -8187,17 +8578,24 @@ def run_proxy(argv=None):
         raise SystemExit("INFERENCE_HUB_API_KEY is required for proxy")
 
     upstream = resolve_upstream_model(args.upstream_model or args.model_alias, args.model_alias)
+    model_metadata = {}
+    if args.api_name and resolve_api_metadata:
+        try:
+            model_metadata = resolve_api_metadata(args.api_name)
+        except (ValueError, IOError, OSError):
+            model_metadata = {}
     debug_log = args.debug_log or os.path.join(LOGS_DIR, "proxy-messages-llm.jsonl")
-    debug = ProxyLogger(ROUTE, args.debug, debug_log)
-    httpd = Server(
+    debug = ProxyLogger(MESSAGES_ROUTE, args.debug, debug_log)
+    httpd = MessagesServer(
         (args.host, args.port),
-        Handler,
+        MessagesHandler,
         api_key=api_key,
         model_alias=args.model_alias,
         upstream_model=upstream,
         upstream_url=args.upstream_url,
         timeout=args.timeout,
         debug=debug,
+        model_metadata=model_metadata,
     )
     host, port = httpd.server_address[:2]
     if args.ready_file:
@@ -8205,7 +8603,510 @@ def run_proxy(argv=None):
             handle.write("%s:%s" % (host, port))
     sys.stdout.write(
         "[%s] http://%s:%s/v1/messages -> %s model=%s\n" % (
-            ROUTE, host, port, args.upstream_url, upstream)
+            MESSAGES_ROUTE, host, port, args.upstream_url, upstream)
+    )
+    sys.stdout.flush()
+    httpd.serve_forever()
+    return 0
+
+
+# ===========================================================================
+# proxy.responses
+# ===========================================================================
+
+RESPONSES_ROUTE = "completions_to_responses"
+NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
+
+SKIP_CHAT_FUNCTIONS = frozenset({
+    "shell_command",
+    "list_mcp_resources",
+    "list_mcp_resource_templates",
+    "read_mcp_resource",
+})
+
+PROXY_TOOL_HINT = (
+    "MCP tools are exposed as chat functions named mcp__<server>__<tool>. "
+    "Call the concrete mcp__... function directly instead of shell_command "
+    "or MCP resource-list/read helpers."
+)
+
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+
+
+def clean_ident(value):
+    return NAME_RE.sub("_", str(value or "")).strip("_")
+
+
+def namespace_ident(namespace):
+    raw = clean_ident(namespace)
+    if not raw:
+        return ""
+    if raw.startswith("mcp__"):
+        return raw
+    return "mcp__%s" % raw
+
+
+def flatten_name(namespace, name):
+    right = clean_ident(name) or "tool"
+    left = namespace_ident(namespace)
+    if not left:
+        return right[:64]
+    return ("%s__%s" % (left, right))[:64]
+
+
+def schema_for_chat(schema):
+    if isinstance(schema, dict) and schema:
+        return schema
+    return {"type": "object", "properties": {}}
+
+
+def translate_tools(tools):
+    chat_tools = []
+    reverse = {}
+    used = set()
+
+    def add_tool(namespace, tool):
+        name = str(tool.get("name") or "").strip()
+        if not name:
+            return
+        if namespace is None and name in SKIP_CHAT_FUNCTIONS:
+            return
+        flat = flatten_name(namespace, name)
+        base = flat
+        idx = 2
+        while flat in used:
+            suffix = "_%d" % idx
+            flat = "%s%s" % (base[:64 - len(suffix)], suffix)
+            idx += 1
+        used.add(flat)
+        reverse[flat] = (namespace, name)
+        desc = str(tool.get("description") or "")
+        if namespace:
+            flat_hint = flatten_name(namespace, name)
+            desc = (
+                "Tool name: %s\nOriginal namespace: %s.%s\n%s"
+                % (flat_hint, namespace, name, desc)
+            ).strip()
+        chat_tools.append({
+            "type": "function",
+            "function": {
+                "name": flat,
+                "description": desc,
+                "parameters": schema_for_chat(tool.get("parameters")),
+            },
+        })
+
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        typ = tool.get("type")
+        if typ == "function":
+            add_tool(None, tool)
+        elif typ == "namespace":
+            ns = str(tool.get("name") or "").strip() or None
+            for child in tool.get("tools") or []:
+                if isinstance(child, dict) and child.get("type") == "function":
+                    add_tool(ns, child)
+    return chat_tools, reverse
+
+
+def content_item_text(content):
+    if isinstance(content, list):
+        return text_from_content(content)
+    return "" if content is None else str(content)
+
+
+def translate_input(input_items, instructions, reverse):
+    messages = []
+    system_parts = [x for x in (instructions, PROXY_TOOL_HINT) if x]
+    if system_parts:
+        messages.append({"role": "system", "content": "\n\n".join(system_parts)})
+    if isinstance(input_items, str):
+        messages.append({"role": "user", "content": input_items})
+        return messages
+    if not isinstance(input_items, list):
+        return messages
+
+    for item in input_items:
+        if not isinstance(item, dict):
+            continue
+        typ = item.get("type")
+        if typ == "message":
+            role = str(item.get("role") or "user")
+            if role == "developer":
+                role = "system"
+            if role not in ("system", "user", "assistant", "tool"):
+                role = "user"
+            messages.append({
+                "role": role,
+                "content": content_item_text(item.get("content")),
+            })
+        elif typ == "function_call":
+            name = str(item.get("name") or "")
+            namespace = item.get("namespace")
+            if namespace:
+                flat = flatten_name(str(namespace), name)
+            else:
+                flat = flatten_name(None, name)
+            call_id = str(item.get("call_id") or item.get("id") or "call_%d" % (len(messages) + 1))
+            messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": flat,
+                        "arguments": str(item.get("arguments") or "{}"),
+                    },
+                }],
+            })
+        elif typ == "function_call_output":
+            messages.append({
+                "role": "tool",
+                "tool_call_id": str(item.get("call_id") or ""),
+                "content": content_item_text(item.get("output")),
+            })
+    return messages
+
+
+def build_chat_payload(req, upstream_model):
+    chat_tools, reverse = translate_tools(req.get("tools") or [])
+    payload = {
+        "model": upstream_model,
+        "messages": translate_input(
+            req.get("input"),
+            str(req.get("instructions") or ""),
+            reverse,
+        ),
+    }
+    if chat_tools:
+        payload["tools"] = chat_tools
+        payload["tool_choice"] = (
+            "auto" if req.get("tool_choice") in (None, "auto") else req.get("tool_choice")
+        )
+        payload["parallel_tool_calls"] = bool(req.get("parallel_tool_calls", False))
+    max_tokens = req.get("max_output_tokens") or req.get("max_tokens")
+    if max_tokens:
+        payload["max_tokens"] = int(max_tokens)
+    return payload, reverse
+
+
+def split_flat_mcp_name(flat):
+    if flat.startswith("mcp__"):
+        parts = flat.split("__", 2)
+        if len(parts) == 3 and parts[1] and parts[2]:
+            return "mcp__%s" % parts[1], parts[2]
+    return None, flat
+
+
+def textual_tool_call_items(content, reverse):
+    text = "" if content is None else str(content)
+    output = []
+    for idx, match in enumerate(TOOL_CALL_RE.finditer(text), start=1):
+        raw_name = match.group("name").strip()
+        flat = clean_ident(raw_name) or raw_name
+        namespace, name = reverse.get(flat, split_flat_mcp_name(flat))
+        args = {}
+        for arg in ARG_RE.finditer(match.group("body")):
+            key = arg.group("key").strip()
+            if key:
+                args[key] = arg.group("value").strip()
+        item = {
+            "id": "call_%d" % idx,
+            "type": "function_call",
+            "status": "completed",
+            "call_id": "call_%d" % idx,
+            "name": name,
+            "arguments": json_dumps(args),
+        }
+        if namespace:
+            item["namespace"] = namespace
+        output.append(item)
+    return output, TOOL_CALL_RE.sub("", text).strip()
+
+
+def responses_output_from_chat(raw, reverse):
+    choices = raw.get("choices") or []
+    msg = ((choices[0] or {}).get("message") or {}) if choices else {}
+    output = []
+    for idx, call in enumerate(msg.get("tool_calls") or []):
+        fn = call.get("function") or {}
+        flat = str(fn.get("name") or "")
+        namespace, name = reverse.get(flat, split_flat_mcp_name(flat))
+        item = {
+            "id": str(call.get("id") or "call_%d" % (idx + 1)),
+            "type": "function_call",
+            "status": "completed",
+            "call_id": str(call.get("id") or "call_%d" % (idx + 1)),
+            "name": name,
+            "arguments": str(fn.get("arguments") or "{}"),
+        }
+        if namespace:
+            item["namespace"] = namespace
+        output.append(item)
+    content = msg.get("content")
+    if content:
+        text_calls, remaining = textual_tool_call_items(content, reverse)
+        output.extend(text_calls)
+        if remaining:
+            output.append({
+                "id": "msg_1",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": remaining}],
+            })
+    return output
+
+
+def responses_payload(req, chat_raw, reverse):
+    usage = chat_raw.get("usage") or {}
+    output = responses_output_from_chat(chat_raw, reverse)
+    return {
+        "id": str(chat_raw.get("id") or "resp_%d" % int(time.time() * 1000)),
+        "object": "response",
+        "created_at": int(time.time()),
+        "status": "completed",
+        "model": req.get("model"),
+        "output": output,
+        "usage": {
+            "input_tokens": int(usage.get("prompt_tokens") or 0),
+            "output_tokens": int(usage.get("completion_tokens") or 0),
+            "total_tokens": int(usage.get("total_tokens") or 0),
+        },
+    }
+
+
+def responses_sse_events(resp):
+    events = [
+        {"type": "response.created", "response": dict(resp, status="in_progress", output=[])},
+    ]
+    for idx, item in enumerate(resp.get("output") or []):
+        events.append({
+            "type": "response.output_item.added",
+            "output_index": idx,
+            "item": item,
+        })
+        if item.get("type") == "message":
+            text = text_from_content(item.get("content"))
+            events.append({
+                "type": "response.content_part.added",
+                "output_index": idx,
+                "item_id": item.get("id"),
+                "content_index": 0,
+                "part": {"type": "output_text", "text": ""},
+            })
+            if text:
+                events.append({
+                    "type": "response.output_text.delta",
+                    "output_index": idx,
+                    "item_id": item.get("id"),
+                    "content_index": 0,
+                    "delta": text,
+                })
+            events.append({
+                "type": "response.output_text.done",
+                "output_index": idx,
+                "item_id": item.get("id"),
+                "content_index": 0,
+                "text": text,
+            })
+            events.append({
+                "type": "response.content_part.done",
+                "output_index": idx,
+                "item_id": item.get("id"),
+                "content_index": 0,
+                "part": {"type": "output_text", "text": text},
+            })
+        events.append({
+            "type": "response.output_item.done",
+            "output_index": idx,
+            "item": item,
+        })
+    events.append({"type": "response.completed", "response": resp})
+    return "".join(
+        "event: %s\ndata: %s\n\n" % (e["type"], json_dumps(e)) for e in events
+    ).encode("utf-8")
+
+
+class ResponsesHandler(BaseHTTPRequestHandler):
+    def _path(self):
+        return urlparse(self.path).path.rstrip("/") or "/"
+
+    def do_GET(self):
+        path = self._path()
+        if path in ("/", "/health", "/v1"):
+            self._send_json({"ok": True, "route": RESPONSES_ROUTE})
+            return
+        if path == "/v1/models":
+            meta = getattr(self.server, "model_metadata", None) or {}
+            if openai_models_list_response:
+                self._send_json(openai_models_list_response(self.server.model_alias, meta))
+            else:
+                self._send_json({
+                    "object": "list",
+                    "data": [{"id": self.server.model_alias, "object": "model"}],
+                })
+            return
+        self.send_error(404)
+
+    def do_POST(self):
+        if self._path() != "/v1/responses":
+            self.send_error(404)
+            return
+        timer = RequestTimer()
+        client_model = ""
+        upstream_model = ""
+        stream = False
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+            req = json_loads(self.rfile.read(length))
+            client_model = str(req.get("model") or "")
+            upstream_model = resolve_upstream_model(req.get("model"), self.server.upstream_model)
+            stream = bool(req.get("stream"))
+            self.server.debug.log(
+                "request_start",
+                path=self.path,
+                client_model=client_model,
+                upstream_model=upstream_model,
+                stream=stream,
+                max_tokens=req.get("max_output_tokens") or req.get("max_tokens"),
+                input_items=len(req.get("input") or []) if isinstance(req.get("input"), list) else 1,
+                tool_count=len(req.get("tools") or []),
+                user_preview=last_user_preview_responses(req),
+            )
+            chat_payload, reverse = build_chat_payload(req, upstream_model)
+            raw = call_chat_completions(
+                chat_payload, self.server.api_key, self.server.timeout,
+                url=self.server.upstream_url,
+            )
+            resp = responses_payload(req, raw, reverse)
+            self.server.debug.log(
+                "request_done",
+                path=self.path,
+                client_model=client_model,
+                upstream_model=upstream_model,
+                stream=stream,
+                latency_ms=timer.elapsed_ms,
+                response_id=resp.get("id"),
+                output_items=len(resp.get("output") or []),
+                usage=resp.get("usage") or {},
+                **summarize_chat_response(raw)
+            )
+            if stream:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(responses_sse_events(resp))
+                self.wfile.flush()
+            else:
+                self._send_json(resp)
+        except urllib.error.HTTPError as exc:
+            detail = upstream_error_detail(exc)[:500]
+            self.server.debug.log(
+                "request_error",
+                path=self.path,
+                client_model=client_model,
+                upstream_model=upstream_model,
+                stream=stream,
+                latency_ms=timer.elapsed_ms,
+                status=exc.code,
+                error=detail,
+            )
+            self._send_json({"error": {"message": detail}}, status=exc.code)
+        except Exception as exc:
+            detail = str(exc)
+            self.server.debug.log(
+                "request_error",
+                path=self.path,
+                client_model=client_model,
+                upstream_model=upstream_model,
+                stream=stream,
+                latency_ms=timer.elapsed_ms,
+                status=500,
+                error=detail,
+            )
+            self._send_json({"error": {"message": detail}}, status=500)
+
+    def _send_json(self, obj, status=200):
+        self._send_bytes(json_dumps(obj).encode("utf-8"), "application/json", status)
+
+    def _send_bytes(self, body, content_type, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        sys.stdout.write("[%s] %s - %s\n" % (RESPONSES_ROUTE, self.address_string(), fmt % args))
+        sys.stdout.flush()
+
+
+class ResponsesServer(ThreadingHTTPServer):
+    def __init__(self, addr, handler, api_key, model_alias, upstream_model,
+                 upstream_url, timeout, debug, model_metadata=None):
+        ThreadingHTTPServer.__init__(self, addr, handler)
+        self.api_key = api_key
+        self.model_alias = model_alias
+        self.upstream_model = upstream_model
+        self.upstream_url = upstream_url
+        self.timeout = timeout
+        self.debug = debug
+        self.model_metadata = model_metadata or {}
+
+
+def run_responses_proxy(argv=None):
+    p = argparse.ArgumentParser(description="Route: chat/completions -> openai/responses")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=18325)
+    p.add_argument("--model-alias", default="glm-5.1")
+    p.add_argument("--upstream-model", default="")
+    p.add_argument("--upstream-url", required=True)
+    p.add_argument("--ready-file", default="")
+    p.add_argument("--timeout", type=float, default=600.0)
+    p.add_argument("--debug", action="store_true")
+    p.add_argument("--debug-log", default="")
+    p.add_argument("--api-name", default="", help="API profile for model metadata")
+    args = p.parse_args(argv)
+
+    api_key = os.environ.get("INFERENCE_HUB_API_KEY", "").strip()
+    if not api_key:
+        api_key = os.environ.get("INFERENCE_HUB_TOKEN", "").strip()
+    if not api_key:
+        raise SystemExit("INFERENCE_HUB_API_KEY is required for proxy")
+
+    upstream = resolve_upstream_model(args.upstream_model or args.model_alias, args.model_alias)
+    model_metadata = {}
+    if args.api_name and resolve_api_metadata:
+        try:
+            model_metadata = resolve_api_metadata(args.api_name)
+        except (ValueError, IOError, OSError):
+            model_metadata = {}
+    debug_log = args.debug_log or os.path.join(LOGS_DIR, "proxy-responses-llm.jsonl")
+    debug = ProxyLogger(RESPONSES_ROUTE, args.debug, debug_log)
+    httpd = ResponsesServer(
+        (args.host, args.port),
+        ResponsesHandler,
+        api_key=api_key,
+        model_alias=args.model_alias,
+        upstream_model=upstream,
+        upstream_url=args.upstream_url,
+        timeout=args.timeout,
+        debug=debug,
+        model_metadata=model_metadata,
+    )
+    host, port = httpd.server_address[:2]
+    if args.ready_file:
+        with open(args.ready_file, "w") as handle:
+            handle.write("%s:%s" % (host, port))
+    sys.stdout.write(
+        "[%s] http://%s:%s/v1/responses -> %s model=%s\n" % (
+            RESPONSES_ROUTE, host, port, args.upstream_url, upstream)
     )
     sys.stdout.flush()
     httpd.serve_forever()
@@ -8220,6 +9121,11 @@ ROUTE_DEFAULTS = {
     "completions_to_messages": {
         "port": 18324,
         "from_proto": "anthropic_messages",
+        "to_proto": "openai_chat_completions",
+    },
+    "completions_to_responses": {
+        "port": 18325,
+        "from_proto": "openai_responses",
         "to_proto": "openai_chat_completions",
     },
 }
@@ -8261,12 +9167,23 @@ def _pid_alive(pid):
 
 
 def _health_ok(port, timeout=1.0):
+    return _health_route(port, timeout) is not None
+
+
+def _health_route(port, timeout=1.0):
     url = "http://127.0.0.1:%d/health" % int(port)
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
-            return resp.status == 200
-    except (urllib.error.URLError, urllib.error.HTTPError, ValueError):
-        return False
+            if resp.status != 200:
+                return None
+            raw = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(raw) if raw else {}
+            if not isinstance(data, dict) or not data.get("ok"):
+                return None
+            route = data.get("route")
+            return route if route else None
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, TypeError):
+        return None
 
 
 def _camc_argv():
@@ -8277,7 +9194,7 @@ def _camc_argv():
 
 
 def _start_proxy(route, port, model_alias, upstream_model, upstream_url,
-                 proxy_debug=False, token=""):
+                 proxy_debug=False, token="", api_name=""):
     os.makedirs(LOGS_DIR, exist_ok=True)
     ready_file = os.path.join(CAM_DIR, "proxy-ready-%s.tmp" % route)
     log_path = os.path.join(LOGS_DIR, "proxy-%s.log" % route)
@@ -8289,6 +9206,8 @@ def _start_proxy(route, port, model_alias, upstream_model, upstream_url,
         "--upstream-url", upstream_url,
         "--ready-file", ready_file,
     ]
+    if api_name:
+        argv.extend(["--api-name", api_name])
     if proxy_debug:
         argv.append("--debug")
 
@@ -8353,6 +9272,31 @@ def ensure_proxy(plan, token):
         if not rec.get("pid") and _health_ok(rec.get("port") or port):
             return int(rec.get("port") or port), rec
 
+    # Reuse an already-listening proxy on this port when health reports the same
+    # route and no other upstream is registered for that port+route.
+    if _health_route(port) == route:
+        conflict = any(
+            r.get("port") == port
+            and r.get("route") == route
+            and r.get("upstream_url") not in ("", upstream_url)
+            for r in runs.values()
+        )
+        if not conflict:
+            rec = {
+                "route": route,
+                "port": port,
+                "pid": None,
+                "upstream_url": upstream_url,
+                "model": plan.get("model"),
+                "api": plan.get("name"),
+                "log": os.path.join(LOGS_DIR, "proxy-%s.log" % route),
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "reused": True,
+            }
+            runs[key] = rec
+            _save_runs(runs)
+            return port, rec
+
     pid, log_path = _start_proxy(
         route=route,
         port=port,
@@ -8361,6 +9305,7 @@ def ensure_proxy(plan, token):
         upstream_url=upstream_url,
         proxy_debug=bool(plan.get("proxy_debug")),
         token=token,
+        api_name=plan.get("name") or "",
     )
     rec = {
         "route": route,
@@ -8992,11 +9937,17 @@ def cmd_run(args):
                 overrides = api_plan.get("env") or {}
                 if tool == "claude":
                     overrides["ANTHROPIC_BASE_URL"] = base
+                elif tool == "codex":
+                    overrides["CODEX_HOME"] = ensure_codex_api_config_dir(
+                        base + "/v1", api_plan.get("name") or "api")
                 api_plan["env"] = overrides
         elif api_plan.get("env", {}).get("_API_USE_RESOLVED_TOKEN") == "1":
             overrides = dict(api_plan.get("env") or {})
             overrides.pop("_API_USE_RESOLVED_TOKEN", None)
-            overrides["ANTHROPIC_API_KEY"] = token
+            if tool == "claude":
+                overrides["ANTHROPIC_API_KEY"] = token
+            elif tool == "codex":
+                overrides[CODEX_API_ENV_KEY] = token
             api_plan["env"] = overrides
         for key, val in (api_plan.get("env") or {}).items():
             if val == "":
@@ -13477,8 +14428,11 @@ def cmd_api_check(args):
     if result.get("error") and not result.get("reachable"):
         print_error(result.get("error"))
         sys.exit(1)
-    print("Provider %s: reachable (%d models, token=%s)" % (
-        result.get("provider"), result.get("model_count"), result.get("token_source")))
+    print("Provider %s: reachable (%d models, token=%s, metadata=%d apis)" % (
+        result.get("provider"), result.get("model_count"), result.get("token_source"),
+        result.get("metadata_updated") or 0))
+    if result.get("metadata_error"):
+        print("  metadata sync: partial (%s)" % result.get("metadata_error"))
     for row in result.get("apis") or []:
         flag = "ok" if row.get("enabled") else "off"
         print("  %-18s %s (%s)" % (row.get("name"), flag, row.get("reason")))
@@ -13607,7 +14561,9 @@ def _run_proxy(argv):
     route = argv[1]
     rest = argv[2:]
     if route == "completions_to_messages":
-        run_proxy(rest)
+        run_messages_proxy(rest)
+    elif route == "completions_to_responses":
+        run_responses_proxy(rest)
         return
     sys.stderr.write("unknown proxy route: %s\n" % route)
     sys.exit(2)
