@@ -68,6 +68,7 @@ See `benchmarks/README.md`.
 |------|------|
 | `docs/camc-api-proxy-plan.md` | Product plan |
 | `docs/api-routing.md` | Three translator modes + api-models.json schema |
+| `docs/api-model-metadata.md` | IHUB metadata sync, Codex catalog, proxy `/v1/models` |
 | `docs/inference-hub.md` | Operator guide |
 | `docs/debug-notes/` | Debug session logs |
 

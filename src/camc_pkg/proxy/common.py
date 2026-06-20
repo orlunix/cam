@@ -71,10 +71,12 @@ def text_from_content(content):
         return "" if content is None else str(content)
     parts = []
     for part in content:
-        if isinstance(part, dict) and part.get("type") == "text":
-            text = part.get("text")
-            if isinstance(text, str):
-                parts.append(text)
+        if isinstance(part, dict):
+            typ = part.get("type")
+            if typ in ("text", "input_text", "output_text"):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
         elif isinstance(part, str):
             parts.append(part)
     return "\n".join(x for x in parts if x)
@@ -146,3 +148,22 @@ def summarize_chat_response(raw):
         "has_tool_calls": bool(msg.get("tool_calls")),
         "content_len": len(str(msg.get("content") or "")),
     }
+
+
+def last_user_preview_responses(req, limit=120):
+    """Best-effort user text preview from a Responses API request."""
+    instructions = str(req.get("instructions") or "").strip()
+    if instructions:
+        return instructions[:limit]
+    inp = req.get("input")
+    if isinstance(inp, str) and inp.strip():
+        return inp.strip()[:limit]
+    if isinstance(inp, list):
+        for item in reversed(inp):
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "message" and item.get("role") == "user":
+                text = text_from_content(item.get("content"))
+                if text:
+                    return text[:limit]
+    return ""
