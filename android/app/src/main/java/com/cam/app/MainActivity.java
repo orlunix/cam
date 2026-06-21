@@ -34,18 +34,13 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Allow file:// URIs for APK install intent
         StrictMode.VmPolicy.Builder builder = new StrictMode.VmPolicy.Builder();
         StrictMode.setVmPolicy(builder.build());
 
         Window window = getWindow();
-
-        // Draw behind system bars
         window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
         window.setStatusBarColor(Color.TRANSPARENT);
         window.setNavigationBarColor(Color.TRANSPARENT);
-
-        // Immersive sticky fullscreen
         window.getDecorView().setSystemUiVisibility(
             View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
             | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
@@ -55,12 +50,9 @@ public class MainActivity extends Activity {
             | View.SYSTEM_UI_FLAG_FULLSCREEN
         );
 
-        // Content extends behind system bars
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             window.setDecorFitsSystemWindows(false);
         }
-
-        // Display cutout (notch) support
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             WindowManager.LayoutParams lp = window.getAttributes();
             lp.layoutInDisplayCutoutMode =
@@ -68,18 +60,13 @@ public class MainActivity extends Activity {
             window.setAttributes(lp);
         }
 
-        // Use XML layout with match_parent WebView
         setContentView(R.layout.activity_main);
-
         WebView.setWebContentsDebuggingEnabled(true);
 
         webView = findViewById(R.id.webview);
         webView.setBackgroundColor(Color.parseColor("#111111"));
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         webView.setVerticalScrollBarEnabled(false);
-
-        // Clear stale cache from previous APK versions
-        webView.clearCache(true);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -95,19 +82,18 @@ public class MainActivity extends Activity {
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
-            public boolean shouldOverrideUrlLoading(WebView view, android.webkit.WebResourceRequest request) {
+            public boolean shouldOverrideUrlLoading(WebView view,
+                    android.webkit.WebResourceRequest request) {
                 Uri uri = request.getUrl();
                 String scheme = uri.getScheme();
-                // Open http/https URLs in external browser (e.g. APK download)
                 if ("http".equals(scheme) || "https".equals(scheme)) {
-                    Intent intent = new Intent(Intent.ACTION_VIEW, uri);
-                    startActivity(intent);
+                    startActivity(new Intent(Intent.ACTION_VIEW, uri));
                     return true;
                 }
                 return false;
             }
-
         });
+
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public boolean onConsoleMessage(ConsoleMessage cm) {
@@ -123,9 +109,8 @@ public class MainActivity extends Activity {
                     fileUploadCallback.onReceiveValue(null);
                 }
                 fileUploadCallback = callback;
-                Intent intent = params.createIntent();
                 try {
-                    startActivityForResult(intent, FILE_CHOOSER_REQUEST);
+                    startActivityForResult(params.createIntent(), FILE_CHOOSER_REQUEST);
                 } catch (Exception e) {
                     fileUploadCallback = null;
                     return false;
@@ -134,7 +119,6 @@ public class MainActivity extends Activity {
             }
         });
 
-        // Expose native bridge to JavaScript
         webView.addJavascriptInterface(new Object() {
             @JavascriptInterface
             public void restartApp(String route) {
@@ -160,8 +144,6 @@ public class MainActivity extends Activity {
                     fos.write(apkBytes);
                     fos.close();
                     apkFile.setReadable(true, false);
-                    Log.d(TAG, "APK saved: " + apkFile.length() + " bytes");
-
                     Intent intent = new Intent(Intent.ACTION_VIEW);
                     intent.setDataAndType(Uri.fromFile(apkFile),
                             "application/vnd.android.package-archive");
@@ -180,9 +162,8 @@ public class MainActivity extends Activity {
                     return getPackageManager()
                         .getPackageInfo(getPackageName(), 0).versionName;
                 } catch (Exception e) {
-                    Log.e(TAG, "getAppVersion failed", e);
+                    return "unknown";
                 }
-                return "unknown";
             }
 
             @JavascriptInterface
@@ -191,15 +172,13 @@ public class MainActivity extends Activity {
                     return getPackageManager()
                         .getPackageInfo(getPackageName(), 0).versionCode;
                 } catch (Exception e) {
-                    Log.e(TAG, "getAppVersionCode failed", e);
+                    return 0;
                 }
-                return 0;
             }
         }, "CamBridge");
 
-        // Load page with route from Intent (set by restartApp) or default
         String route = getIntent().getStringExtra("route");
-        String url = "file:///android_asset/web/index.html" + (route != null ? route : "");
+        String url = "file:///android_asset/web/mobile.html" + (route != null ? route : "");
         webView.loadUrl(url);
     }
 
