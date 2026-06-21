@@ -1,0 +1,276 @@
+/* CamUI Mobile V2 — UI overrides (2.1.0 shell + keyboard-safe layout). */
+
+/* Android WebView: no 100dvh / env(safe-area) — they cause IME black gap above keyboard */
+html.camui-v2,
+html.camui-v2 body.camui-v2 {
+  height: 100% !important;
+  min-height: 0 !important;
+  max-height: 100%;
+}
+
+body.camui-v2 #app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+body.camui-v2 #content {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding-bottom: 12px !important;
+}
+
+body.camui-v2 #content.agent-detail-active {
+  display: flex;
+  flex-direction: column;
+  height: auto !important;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  padding-bottom: 0 !important;
+}
+
+body.camui-v2 #content.agent-detail-active .output-section {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+body.camui-v2 #content.agent-detail-active .output-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+body.camui-v2 #content.agent-detail-active .output-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+}
+
+body.camui-v2 #content.agent-detail-active .input-section {
+  flex-shrink: 0;
+  padding-bottom: 8px !important;
+}
+
+body.camui-v2 .logo {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+body.camui-v2 .v2-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  vertical-align: middle;
+  color: #111;
+  background: linear-gradient(135deg, #4a9eff, #3dd68c);
+  border-radius: 4px;
+}
+
+body.camui-v2 .relay-hint {
+  margin: 0 16px 12px;
+  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-dim);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+body.camui-v2 .relay-hint strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+body.camui-v2 #conn-label {
+  max-width: 42vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.camui-v2 .v2-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 120px;
+  color: #888;
+  font-size: 14px;
+}
+
+body.camui-v2 .checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text);
+  cursor: pointer;
+}
+
+body.camui-v2 .checkbox-row input {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
+body.camui-v2 .inflight-toast,
+body.camui-v2 .toast {
+  max-width: calc(100% - 24px);
+}
+
+/* Tab bar (agent settings, skills) */
+body.camui-v2 .mobile-tab-bar {
+  display: flex;
+  gap: 4px;
+  margin: 0 12px 12px;
+  padding: 4px;
+  overflow-x: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  -webkit-overflow-scrolling: touch;
+}
+
+body.camui-v2 .mobile-tab {
+  flex: 1 0 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-dim);
+  background: transparent;
+  border: 0;
+  border-radius: calc(var(--radius) - 2px);
+  white-space: nowrap;
+}
+
+body.camui-v2 .mobile-tab.active {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+/* Agent settings */
+body.camui-v2 .mobile-settings-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+body.camui-v2 .mobile-settings-header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+body.camui-v2 .mobile-settings-panel {
+  padding: 0 12px 24px;
+}
+
+body.camui-v2 .settings-status {
+  margin: 8px 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+body.camui-v2 .settings-status.is-ok { color: #3dd68c; }
+body.camui-v2 .settings-status.is-error { color: #ff6b6b; }
+
+body.camui-v2 .mobile-cron-card {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+body.camui-v2 .mobile-cron-card h4 {
+  margin: 0 0 4px;
+  font-size: 14px;
+}
+
+body.camui-v2 .mobile-cron-card p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* Skillm lists (compact mobile) */
+body.camui-v2 .skillm-repo-list,
+body.camui-v2 .skillm-skill-list,
+body.camui-v2 .skillm-node-list {
+  margin: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  overflow: hidden;
+}
+
+body.camui-v2 .skillm-repo-row,
+body.camui-v2 .skillm-skill-row,
+body.camui-v2 .skillm-node-row {
+  display: grid;
+  gap: 4px 8px;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+body.camui-v2 .skillm-repo-row:last-child,
+body.camui-v2 .skillm-skill-row:last-child,
+body.camui-v2 .skillm-node-row:last-child {
+  border-bottom: 0;
+}
+
+body.camui-v2 .skillm-repo-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+body.camui-v2 .skillm-skill-row {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+body.camui-v2 .skillm-node-row {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+body.camui-v2 .skillm-repo-name,
+body.camui-v2 .skillm-skill-name,
+body.camui-v2 .skillm-node-name {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+body.camui-v2 .skillm-repo-url,
+body.camui-v2 .skillm-skill-meta,
+body.camui-v2 .skillm-node-path {
+  font-size: 11px;
+  color: var(--text-dim);
+  word-break: break-all;
+}
+
+body.camui-v2 .skillm-repo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+body.camui-v2 .skillm-skill-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+body.camui-v2 .skillm-skill-tags span {
+  padding: 2px 6px;
+  font-size: 10px;
+  color: var(--text-dim);
+  background: var(--bg-hover);
+  border-radius: 4px;
+}

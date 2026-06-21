@@ -36,7 +36,7 @@ VERSION=$(head -1 "$VERSION_FILE" | tr -d '[:space:]')
 IFS='.' read -r V_MAJOR V_MINOR V_PATCH <<< "$VERSION"
 VERSION_CODE=$(( V_MAJOR * 10000 + V_MINOR * 100 + V_PATCH ))
 
-echo "=== CAM APK Build v${VERSION} (code: ${VERSION_CODE}) ==="
+echo "=== CamUI Mobile V2 APK Build v${VERSION} (code: ${VERSION_CODE}) ==="
 
 # Verify tools
 for tool in "$BUILD_TOOLS/aapt2" "$BUILD_TOOLS/d8" "$BUILD_TOOLS/apksigner" "$BUILD_TOOLS/zipalign"; do
@@ -60,12 +60,12 @@ echo "[0/6] Stamping version v${VERSION}..."
 sed -i "s/android:versionCode=\"[^\"]*\"/android:versionCode=\"${VERSION_CODE}\"/" "$SRC_DIR/AndroidManifest.xml"
 sed -i "s/android:versionName=\"[^\"]*\"/android:versionName=\"${VERSION}\"/" "$SRC_DIR/AndroidManifest.xml"
 
-# Web assets: update cam-version meta tag and cache-busting ?v= query strings
-sed -i "s/content=\"v[^\"]*\"/content=\"v${VERSION}\"/" "$WEB_DIR/index.html"
-sed -i "s/?v=[^\"]*/?v=${VERSION}/g" "$WEB_DIR/index.html"
-sed -i "s/?v=[^']*'/?v=${VERSION}'/g" "$WEB_DIR/js/app.js"
-sed -i "s/cam-v[^']*/cam-v${VERSION}/" "$WEB_DIR/sw.js"
-sed -i "s/?v=[^']*'/?v=${VERSION}'/g" "$WEB_DIR/sw.js"
+# Web assets: stamp CamUI V2 entry
+sed -i "s/content=\"v[^\"]*\"/content=\"v${VERSION}\"/" "$WEB_DIR/mobile.html"
+sed -i "s/?v=[0-9][^\"']*/?v=${VERSION}/g" "$WEB_DIR/mobile.html"
+sed -i "s/?v=[0-9][^\"']*/?v=${VERSION}/g" "$WEB_DIR/js/mobile/app.js"
+sed -i "s/?v=[0-9][^\"']*/?v=${VERSION}/g" "$WEB_DIR/js/mobile/settings.js"
+sed -i "s/?v=[0-9][^\"']*/?v=${VERSION}/g" "$WEB_DIR/css/mobile.css" 2>/dev/null || true
 
 # Clean
 rm -rf "$BUILD_DIR"
@@ -141,8 +141,8 @@ fi
     --out "$BUILD_DIR/cam.apk" \
     "$BUILD_DIR/app.aligned.apk"
 
-# Also create versioned copy
-cp "$BUILD_DIR/cam.apk" "$BUILD_DIR/cam-v${VERSION}.apk"
+# Also create versioned copy (CamUI V2)
+cp "$BUILD_DIR/cam.apk" "$BUILD_DIR/camui-v2-${VERSION}.apk"
 
 # Verify
 "$BUILD_TOOLS/apksigner" verify "$BUILD_DIR/cam.apk"
@@ -152,5 +152,5 @@ echo ""
 echo "=== BUILD SUCCESS ==="
 echo "Version: v${VERSION} (versionCode: ${VERSION_CODE})"
 echo "APK: $BUILD_DIR/cam.apk ($SIZE)"
-echo "APK: $BUILD_DIR/cam-v${VERSION}.apk"
+echo "APK: $BUILD_DIR/camui-v2-${VERSION}.apk"
 echo "Install: adb install $BUILD_DIR/cam.apk"
