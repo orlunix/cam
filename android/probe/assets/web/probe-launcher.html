@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CamUI WebView Probe</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #111; color: #e0e0e0; padding: 20px; }
+    h1 { color: #4a9eff; font-size: 20px; }
+    a {
+      display: block; margin: 12px 0; padding: 14px 16px;
+      background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
+      color: #e0e0e0; text-decoration: none; font-size: 15px;
+    }
+    a strong { color: #3dd68c; }
+    p { font-size: 13px; color: #888; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <h1>CamUI WebView Probe</h1>
+  <p>Same shell as WebAppCapsule (virtual HTTPS assets). Pick a level, then screenshot / app-switch test.</p>
+  <a href="probe-a.html"><strong>A</strong> — bare HTML (shell only)</a>
+  <a href="probe-b.html"><strong>B</strong> — CamUI CSS, no JS</a>
+  <a href="mobile.html?native=1"><strong>C</strong> — full CamUI mobile.html</a>
+  <p style="margin-top:24px">Reference: WebAppCapsule pattern — https://appassets.androidplatform.net/web/...</p>
+</body>
+</html>
