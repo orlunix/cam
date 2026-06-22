@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en" class="camui-v2">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Probe B — CamUI shell CSS</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/mobile.css">
+  <style>html.native-shell #header{display:none!important}</style>
+</head>
+<body class="camui-v2 native-chrome">
+  <div id="app">
+    <header id="header" style="display:none"></header>
+    <main id="content">
+      <h2 style="padding:16px;color:#4a9eff">CamUI Probe B</h2>
+      <p style="padding:0 16px;font-size:14px;color:#ccc">
+        Same CSS shell as CamUI (mobile.css + style.css). No app.js, no API, no visualViewport hacks.
+      </p>
+      <span style="display:inline-block;margin:16px;padding:4px 10px;background:#d29922;color:#111;border-radius:4px;font-weight:700;font-size:11px">PROBE B</span>
+      <div style="margin:0 16px;display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div style="border:1px solid #333;padding:12px;text-align:center">TL</div>
+        <div style="border:1px solid #333;padding:12px;text-align:center">TR</div>
+        <div style="border:1px solid #333;padding:12px;text-align:center">BL</div>
+        <div style="border:1px solid #333;padding:12px;text-align:center">BR</div>
+      </div>
+      <p style="padding:16px;font-size:12px;color:#888">
+        If A is OK but B drifts → CSS/viewport shell issue.<br>
+        If B is OK but full CamUI drifts → JS (app.js / agent-detail).
+      </p>
+    </main>
+  </div>
+  <div style="flex-shrink:0;padding:12px;background:#1a1a1a;border-top:1px solid #333;font-size:12px;color:#666;text-align:center">
+    Sticky footer — clip test
+  </div>
+</body>
+</html>

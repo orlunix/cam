@@ -1,16 +1,16 @@
 /**
  * CamUI Mobile V2 — entry (Relay-only, camui-start Hub via relay).
  */
-import { api } from '../api.js?v=2.1.3';
-import { state } from '../state.js?v=2.1.3';
-import { renderDashboard } from './views/dashboard.js?v=2.1.3';
-import { renderAgentDetail } from './views/agent-detail.js?v=2.1.3';
-import { renderStartAgent } from './views/start-agent.js?v=2.1.3';
-import { renderSettings } from './settings.js?v=2.1.3';
-import { renderFileBrowser } from './views/file-browser.js?v=2.1.3';
-import { renderNodes } from './nodes.js?v=2.1.3';
-import { renderSkills } from './skills.js?v=2.1.3';
-import { renderAgentSettings } from './agent-settings.js?v=2.1.3';
+import { api } from '../api.js?v=2.2.0';
+import { state } from '../state.js?v=2.2.0';
+import { renderDashboard } from './views/dashboard.js?v=2.2.0';
+import { renderAgentDetail } from './views/agent-detail.js?v=2.2.0';
+import { renderStartAgent } from './views/start-agent.js?v=2.2.0';
+import { renderSettings } from './settings.js?v=2.2.0';
+import { renderFileBrowser } from './views/file-browser.js?v=2.2.0';
+import { renderNodes } from './nodes.js?v=2.2.0';
+import { renderSkills } from './skills.js?v=2.2.0';
+import { renderAgentSettings } from './agent-settings.js?v=2.2.0';
 
 const PROFILE_KIND_KEY = 'cam_profile_kind';
 
