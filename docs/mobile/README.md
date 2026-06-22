@@ -44,15 +44,15 @@ Mobile is a **pure client** of the existing Hub/API. It must not change Start Se
 
 Source of truth: `android/VERSION` (semver `major.minor.patch`). `android/build.sh` stamps `mobile.html`, `app.js`, and AndroidManifest.
 
-| Phase | Bump | Example |
-|-------|------|---------|
-| **Daily / iterative builds** | **Patch** (小版本, third number) | `2.1.0` → `2.1.1` → `2.1.2` |
-| **Official release** | **Minor** (中版本, second number); reset patch to `0` | `2.1.3` → **`2.2.0`** |
+| Line | Branch | Version range | Shell |
+|------|--------|---------------|--------|
+| **WebView** | `master` | **`2.2.0`+** (patch: `2.2.1`, `2.2.2`, …) | `MainActivity` → `mobile.html` |
+| **Native** | `camui-mobile-native` | **`2.1.x` only** (frozen at `2.1.21`) | `NativeHostActivity` + native UI |
 
 Rules:
 
-- Use **patch** for every in-progress APK while features are still being validated.
-- Use **minor** only when the milestone is stable and ready to ship as a release (e.g. tag, announce, wider rollout).
+- **WebView** (`master`): bump **patch** per APK during iteration; next stable gate = **`2.3.0`** (not `2.2.x` minor unless release).
+- **Native** (`camui-mobile-native`): stay on **2.1.x**; do not consume `2.2+` on that branch.
 - Reserve **major** for breaking product changes (V1 → V2 was `1.x` → `2.0.0`).
 
 Build: `cd android && ./build.sh` → `build/cam.apk` and `build/camui-v2-<version>.apk`.
