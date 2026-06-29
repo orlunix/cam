@@ -109,26 +109,27 @@ helpers in `cli.py` provide transparent access across both shapes.
 
 ## 4. Module map (`src/camc_pkg/`)
 
-| Module | LOC | Responsibility |
-|---|---|---|
-| `cli.py` | 5371 | Argparse dispatcher + thin command handlers (`cmd_<name>`) |
-| `cron.py` | 1068 | `CronStore`, schedule parsing, tick loop, crontab install/uninstall |
-| `monitor.py` | 391 | Per-agent observer loop; capture → detect → auto-confirm → state |
-| `scheduler.py` | 371 | DAG runner for `camc apply` |
-| `transport.py` | 362 | Tmux primitives (`capture_tmux`, `tmux_send_input`, …) |
-| `adapters.py` | 283 | TOML parser + embedded configs + `AdapterConfig` |
-| `formatters.py` | 269 | Table / JSON output (rich-optional) |
-| `storage.py` | 242 | `AgentStore`, `EventStore` |
-| `migrate.py` | 229 | SQLite → JSON migration |
-| `remote.py` | 205 | SSH helpers for `cam sync` |
-| `utils.py` | 156 | ANSI strip, pattern compile, subprocess helpers, `_now_iso` |
-| `machine_store.py` | 100 | `machines.json` accessor |
-| `context_store.py` | 92 | `contexts.json` accessor |
-| `detection.py` | 89 | `detect_state`, `should_auto_confirm`, `is_ready_for_input` |
+Current snapshot as of the active 2026-06 refactor discussion. LOC is approximate
+and should not be treated as a correctness metric; the generated `src/camc` /
+`dist/camc` artifacts are built from these modules and are not edited directly.
 
-**Service boundary today.** `cli.py` is still 5K lines because many `cmd_*`
-handlers also contain logic. The simplification target (§9) is to demote
-`cmd_*` to ~20 lines each that delegate to a service module.
+| Module / area | Approx LOC | Responsibility | Refactor note |
+|---|---:|---|---|
+| `cli.py` | 6,840 | Main argparse parser + most `cmd_*` handlers | Biggest maintainability target; feature command adapters should move out |
+| `cron.py` + `cron_loop.py` | 2,005 | Host cron, cron workers, per-agent loop records | Core/service logic is already partly modular; CLI shims still live in `cli.py` |
+| `api_*` + `proxy/*` | ~2,800 | API profiles, routing, Claude/Codex protocol proxy | Keep while custom API support is active |
+| `monitor.py` + `monitor_features.py` | ~1,030 | Long-running pane observer, auto-confirm, state management | Core monitor path; do not remove for size |
+| `transport.py` + `runtime_env.py` | ~1,300 | tmux operations, tool/path/env hardening | Critical for PDX/DC stability |
+| `fast_capture.py` + `prelude/*` | ~600 | Data-plane fast path for capture and simple send text using `agents.json`, `--no-fast-path` rollback, and build-time hook registry | Release-sensitive; see `docs/camc-refactor-development-plan.md` |
+| `storage.py`, `machine_store.py`, `context_store.py` | ~450 | JSON stores and local registries | Candidate for shared store helper |
+| `scheduler.py`, `migrate.py`, `remote.py`, `formatters.py`, `utils.py`, `detection.py`, `system_prompt.py` | ~1,500 | Supporting features and compatibility | Review deletion only with usage evidence |
+
+**Service boundary today.** Core feature modules exist, but the CLI adapter
+layer is still monolithic. `cli.py` contains the parser and substantial feature
+logic for lifecycle, archive, msg, cron, API, machine/context, capture/send/key,
+and maintenance commands. The simplification target (§9 and
+`docs/camc-refactor-development-plan.md`) is to demote `cmd_*` handlers to thin
+shims that delegate to feature services.
 
 ## 5. Monitor — observer-only contract
 
@@ -322,6 +323,10 @@ that choice explicit per machine — see §9.6.
 
 ## 9. Planned features (simplification roadmap)
 
+The active implementation plan for this roadmap is now
+`docs/camc-refactor-development-plan.md`. That document is the working plan for
+control-plane/data-plane separation, fast-path policy, `agents.json` capture/send-text experiments, CLI feature-module extraction, and deletion/deprecation review.
+
 Forward-looking work items. Each gets a stable feature ID (`F-NN`) so it
 can be referenced from issues, commits, and other docs without re-typing
 the description. §9.6 is **not** numbered — it documents the current
@@ -337,6 +342,7 @@ design that is already in place.
 | **F-04** | Mailbox `claim → pending → reply` state machine | §9.4 + §6.3/§6.4 | `messages.jsonl` schema, new `messaging.py` | planned |
 | **F-05** | Monitor observer-only + pluggable `rule_engine` | §9.5 + §5 | `monitor.py`, new `rule_engine.py` | planned |
 | **F-06** | Per-machine tool resolution (Tier A / Tier B) | §9.6 + §8 | `machines.json` schema, `_preflight` in `cli.py`, `transport.py` tmux discovery | planned |
+| **F-07** | Control-plane/data-plane split + fast-path governance | refactor plan | `build_camc.py`, `prelude/*`, `fast_capture.py`, hot-path tests | active |
 
 Cross-refs from earlier sections:
 
@@ -630,6 +636,7 @@ detailed docs in place rather than copying their content:
 - Architecture diagram (full system, cam + camc + transport): `docs/architecture-full.md`
 - Mermaid version: `docs/architecture-mermaid.md`
 - Roadmap that produced today's state: `docs/migration-v3-unified.md`
+- Active camc refactor plan: `docs/camc-refactor-development-plan.md`
 - Heal details (Phase 1 / 2 / 2.5 / 3): `docs/heal-hooks-spec.md`
 - Cron details (parsing grammar, lock, hostname filter): `docs/camc-cron-spec.md`
 - Exit / stop / kill / migrate semantics: `docs/exit-stop-kill-migrate-spec.md`

@@ -1,9 +1,610 @@
-#!/usr/bin/env python3
+#!/bin/sh
+''':'
+_camc_prelude_trim_trailing_ws() {
+    while :; do
+        case "$_camc_out" in
+            *" ") _camc_out=${_camc_out%?} ;;
+            *"	") _camc_out=${_camc_out%?} ;;
+            *) break ;;
+        esac
+    done
+}
+
+_camc_prelude_same_host() {
+    _camc_left="$1"
+    _camc_right="$2"
+    if [ -z "$_camc_left" ] || [ -z "$_camc_right" ]; then return 0; fi
+    if [ "$_camc_left" = "$_camc_right" ]; then return 0; fi
+    _camc_left_short=${_camc_left%%.*}
+    _camc_right_short=${_camc_right%%.*}
+    [ "$_camc_left_short" = "$_camc_right_short" ]
+}
+
+_camc_prelude_default_socket() {
+    _camc_session_for_socket="$1"
+    [ -n "$_camc_session_for_socket" ] || return 1
+    for _camc_sock_dir in "/tmp/cam-sockets" "/tmp/cam-agent-sockets" "${HOME}/.local/share/cam/sockets"; do
+        _camc_candidate="${_camc_sock_dir}/${_camc_session_for_socket}.sock"
+        if [ -e "$_camc_candidate" ]; then
+            printf "%s" "$_camc_candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+_camc_prelude_lookup_agent_json() {
+    _camc_want="$1"
+    _camc_agents="${HOME}/.cam/agents.json"
+    [ -r "$_camc_agents" ] || return 1
+    awk -v want="$_camc_want" '
+      function val(line) {
+        sub(/^[[:space:]]*"[^"]+":[[:space:]]*"/, "", line)
+        sub(/",?[[:space:]]*$/, "", line)
+        gsub(/\\"/, "\"", line)
+        gsub(/\\\\/, "\\", line)
+        return line
+      }
+      function reset() { hit=0; host=""; session=""; socket=""; tmux="" }
+      BEGIN { in_agent=0; reset() }
+      /^  [{]$/ { in_agent=1; reset(); next }
+      in_agent {
+        if ($0 ~ /^[[:space:]]*"id":[[:space:]]*"/) {
+          if (val($0) == want) hit=1
+        } else if ($0 ~ /^[[:space:]]*"hostname":[[:space:]]*"/) {
+          host=val($0)
+        } else if ($0 ~ /^[[:space:]]*"tmux_session":[[:space:]]*"/) {
+          session=val($0)
+        } else if ($0 ~ /^[[:space:]]*"session":[[:space:]]*"/) {
+          if (session == "") session=val($0)
+        } else if ($0 ~ /^[[:space:]]*"tmux_socket":[[:space:]]*"/) {
+          socket=val($0)
+        } else if ($0 ~ /^[[:space:]]*"tmux_bin":[[:space:]]*"/) {
+          tmux=val($0)
+        }
+        if ($0 ~ /^  [}],?$/) {
+          if (hit && session != "") {
+            print host "\t" session "\t" socket "\t" tmux
+            exit 0
+          }
+          in_agent=0
+          reset()
+        }
+      }
+    ' "$_camc_agents"
+}
+
+_camc_prelude_send_text_to_tmux() {
+    _camc_session="$1"
+    _camc_socket="$2"
+    _camc_tmux="$3"
+    _camc_text="$4"
+    _camc_send_enter="$5"
+    _camc_target="${_camc_session}:0.0"
+
+    if [ "$_camc_tmux" != "tmux" ] && [ ! -x "$_camc_tmux" ]; then
+        echo "tmux binary not found: $_camc_tmux" >&2
+        return 1
+    fi
+    if [ -n "$_camc_socket" ] && [ ! -e "$_camc_socket" ]; then
+        echo "tmux socket not found: $_camc_socket" >&2
+        return 1
+    fi
+
+    if [ -n "$_camc_socket" ]; then
+        "$_camc_tmux" -u -S "$_camc_socket" send-keys -t "$_camc_target" -l -- "$_camc_text"
+    else
+        "$_camc_tmux" -u send-keys -t "$_camc_target" -l -- "$_camc_text"
+    fi
+    _camc_rc=$?
+    if [ "$_camc_rc" -ne 0 ]; then return "$_camc_rc"; fi
+
+    if [ "$_camc_send_enter" = "1" ]; then
+        sleep 0.15 2>/dev/null || sleep 1
+        if [ -n "$_camc_socket" ]; then
+            "$_camc_tmux" -u -S "$_camc_socket" send-keys -t "$_camc_target" Enter
+        else
+            "$_camc_tmux" -u send-keys -t "$_camc_target" Enter
+        fi
+        _camc_rc=$?
+        if [ "$_camc_rc" -ne 0 ]; then return "$_camc_rc"; fi
+    fi
+
+    printf "Sent.\n"
+    return 0
+}
+
+_camc_prelude_capture() {
+    if [ "$1" = "send" ]; then
+        shift
+        _camc_id=""
+        _camc_text=""
+        _camc_have_text=0
+        _camc_send_enter=1
+        _camc_unsafe=0
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --text|-t)
+                    shift
+                    if [ $# -eq 0 ]; then echo "--text requires a value" >&2; return 2; fi
+                    if [ "$_camc_have_text" = "1" ]; then _camc_unsafe=1; break; fi
+                    _camc_text="$1"
+                    _camc_have_text=1
+                    ;;
+                --no-enter)
+                    _camc_send_enter=0
+                    ;;
+                --no-fast-path)
+                    return 1
+                    ;;
+                --file|-f|--stdin)
+                    _camc_unsafe=1
+                    ;;
+                --*)
+                    _camc_unsafe=1
+                    ;;
+                *)
+                    if [ -z "$_camc_id" ]; then _camc_id="$1"; else _camc_unsafe=1; fi
+                    ;;
+            esac
+            shift
+        done
+        if [ "$_camc_unsafe" = "1" ] || [ "$_camc_have_text" != "1" ] || [ -z "$_camc_id" ]; then
+            return 1
+        fi
+        _camc_ok=0
+        if [ "${#_camc_id}" -eq 8 ]; then
+            case "$_camc_id" in
+                *[!0-9a-fA-F]*) _camc_ok=0 ;;
+                *) _camc_ok=1 ;;
+            esac
+        fi
+        if [ "$_camc_ok" != "1" ]; then return 1; fi
+        case "$_camc_text" in
+            *'
+'*) return 1 ;;
+        esac
+        if [ "${#_camc_text}" -gt 8000 ]; then return 1; fi
+
+        _camc_meta=$(_camc_prelude_lookup_agent_json "$_camc_id" 2>/dev/null || true)
+        if [ -z "$_camc_meta" ]; then return 1; fi
+        _camc_host=$(printf '%s' "$_camc_meta" | cut -f1)
+        _camc_session=$(printf '%s' "$_camc_meta" | cut -f2)
+        _camc_socket=$(printf '%s' "$_camc_meta" | cut -f3)
+        _camc_tmux=$(printf '%s' "$_camc_meta" | cut -f4)
+        _camc_myhost=$(hostname 2>/dev/null || uname -n)
+        if ! _camc_prelude_same_host "$_camc_host" "$_camc_myhost" || [ -z "$_camc_session" ]; then
+            return 1
+        fi
+        if [ -z "$_camc_socket" ]; then
+            _camc_socket=$(_camc_prelude_default_socket "$_camc_session" 2>/dev/null || true)
+        fi
+        if [ -z "$_camc_tmux" ]; then
+            if [ -x /bin/tmux ]; then _camc_tmux="/bin/tmux"; else _camc_tmux="tmux"; fi
+        fi
+        _camc_prelude_send_text_to_tmux "$_camc_session" "$_camc_socket" "$_camc_tmux" "$_camc_text" "$_camc_send_enter"
+        return "$?"
+    fi
+
+    [ "$1" = "capture" ] || return 1
+
+    _camc_json=0
+    _camc_no_fast_path=0
+    for _camc_arg in "$@"; do
+        if [ "$_camc_arg" = "--json" ]; then _camc_json=1; fi
+        if [ "$_camc_arg" = "--no-fast-path" ]; then _camc_no_fast_path=1; fi
+    done
+
+    if [ "$_camc_json" != "1" ] && [ "$_camc_no_fast_path" != "1" ]; then
+        if (
+            shift
+            _camc_id=""
+            _camc_lines="0"
+            _camc_format="plain"
+            _camc_unsafe=0
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    --lines|-n)
+                        shift
+                        if [ $# -eq 0 ]; then _camc_unsafe=1; break; fi
+                        _camc_lines="$1"
+                        ;;
+                    --format)
+                        shift
+                        if [ $# -eq 0 ]; then _camc_unsafe=1; break; fi
+                        _camc_format="$1"
+                        ;;
+                    --*)
+                        _camc_unsafe=1
+                        ;;
+                    *)
+                        if [ -z "$_camc_id" ]; then _camc_id="$1"; else _camc_unsafe=1; fi
+                        ;;
+                esac
+                shift
+            done
+            if [ "$_camc_unsafe" != "1" ] && [ -n "$_camc_id" ]; then
+                _camc_ok=0
+                if [ "${#_camc_id}" -eq 8 ]; then
+                    case "$_camc_id" in
+                        *[!0-9a-fA-F]*) _camc_ok=0 ;;
+                        *) _camc_ok=1 ;;
+                    esac
+                fi
+                if [ "$_camc_ok" = "1" ]; then
+                    _camc_meta=$(_camc_prelude_lookup_agent_json "$_camc_id" 2>/dev/null || true)
+                    if [ -n "$_camc_meta" ]; then
+                        _camc_host=$(printf '%s' "$_camc_meta" | cut -f1)
+                        _camc_session=$(printf '%s' "$_camc_meta" | cut -f2)
+                        _camc_socket=$(printf '%s' "$_camc_meta" | cut -f3)
+                        _camc_tmux=$(printf '%s' "$_camc_meta" | cut -f4)
+                        _camc_myhost=$(hostname 2>/dev/null || uname -n)
+                        if _camc_prelude_same_host "$_camc_host" "$_camc_myhost" && [ -n "$_camc_session" ]; then
+                            if [ -z "$_camc_socket" ]; then
+                                _camc_socket=$(_camc_prelude_default_socket "$_camc_session" 2>/dev/null || true)
+                            fi
+                            if [ -z "$_camc_tmux" ]; then
+                                if [ -x /bin/tmux ]; then _camc_tmux="/bin/tmux"; else _camc_tmux="tmux"; fi
+                            fi
+                            _camc_host_ok=1
+                            case "$_camc_format" in plain|ansi) ;; *) _camc_host_ok=0 ;; esac
+                            case "$_camc_lines" in ''|*[!0-9-]*) _camc_host_ok=0 ;; esac
+                            if [ "$_camc_host_ok" = "1" ]; then
+                                if [ "$_camc_lines" -le 0 ]; then _camc_start="-"; else _camc_start="-$_camc_lines"; fi
+                                if [ "$_camc_tmux" = "tmux" ] || [ -x "$_camc_tmux" ]; then
+                                    if [ -z "$_camc_socket" ] || [ -e "$_camc_socket" ]; then
+                                        if [ -n "$_camc_socket" ]; then
+                                            if [ "$_camc_format" = "ansi" ]; then
+                                                _camc_out=$("$_camc_tmux" -u -S "$_camc_socket" capture-pane -p -J -e -t "$_camc_session:0.0" -S "$_camc_start")
+                                            else
+                                                _camc_out=$("$_camc_tmux" -u -S "$_camc_socket" capture-pane -p -J -t "$_camc_session:0.0" -S "$_camc_start")
+                                            fi
+                                        else
+                                            if [ "$_camc_format" = "ansi" ]; then
+                                                _camc_out=$("$_camc_tmux" -u capture-pane -p -J -e -t "$_camc_session:0.0" -S "$_camc_start")
+                                            else
+                                                _camc_out=$("$_camc_tmux" -u capture-pane -p -J -t "$_camc_session:0.0" -S "$_camc_start")
+                                            fi
+                                        fi
+                                        _camc_rc=$?
+                                        if [ "$_camc_rc" -eq 0 ]; then
+                                            _camc_prelude_trim_trailing_ws
+                                            printf "%s" "$_camc_out"
+                                            exit 0
+                                        fi
+                                    fi
+                                fi
+                            fi
+                        fi
+                    fi
+                fi
+            fi
+            exit 1
+        ); then
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+_camc_prelude_dispatch() {
+    _camc_rc=1
+    _camc_prelude_capture "$@"
+    _camc_rc=$?
+    case "$_camc_rc" in
+        0) return 0 ;;
+        1) ;;
+        2) return 2 ;;
+        *) return "$_camc_rc" ;;
+    esac
+    return 1
+}
+
+_camc_prelude_dispatch "$@"
+_camc_rc=$?
+case "$_camc_rc" in
+    0) exit 0 ;;
+    1) ;;
+    2) exit 2 ;;
+    *) exit "$_camc_rc" ;;
+esac
+
+exec python3 "$0" "$@"
+:'''
 """camc — Standalone coding agent manager (single-file build).
 
 Auto-generated from camc_pkg/ package. Do not edit directly.
 Edit the source in src/camc_pkg/ and rebuild with build_camc.py.
 """
+
+# ===========================================================================
+# early fast capture bootstrap
+# ===========================================================================
+import json
+import os
+import re
+import subprocess
+import sys
+
+
+
+
+_HEX = set("0123456789abcdefABCDEF")
+
+
+def is_exact_agent_id(value):
+    """True when value is an exact 8-char hex agent id."""
+    if not value or len(value) != 8:
+        return False
+    return all(ch in _HEX for ch in value)
+
+
+def _same_host_short(left, right):
+    if not left or not right:
+        return True
+    if left == right:
+        return True
+    return left.split(".", 1)[0] == right.split(".", 1)[0]
+
+
+def _default_socket_for_session(session):
+    if not session:
+        return None
+    candidates = [
+        os.path.join("/tmp/cam-sockets", session + ".sock"),
+        os.path.join("/tmp/cam-agent-sockets", session + ".sock"),
+        os.path.join(os.path.expanduser("~"), ".local", "share", "cam", "sockets", session + ".sock"),
+    ]
+    for sock in candidates:
+        if os.path.exists(sock):
+            return sock
+    return None
+
+
+def lookup_agent_from_agents_json(agent_id, path=None, my_hostname=None):
+    """Return capture metadata for an exact agent id from ~/.cam/agents.json.
+
+    This is intentionally a narrow fast-path helper, not the full AgentStore
+    resolver. It supports only exact 8-hex ids and falls back to None on any
+    unreadable or unexpected JSON shape.
+    """
+    if not is_exact_agent_id(agent_id):
+        return None
+    path = path or os.path.join(os.path.expanduser("~"), ".cam", "agents.json")
+    try:
+        with open(path, "r") as f:
+            agents = json.load(f)
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(agents, list):
+        return None
+    my_hostname = my_hostname or _hostname()
+    for agent in agents:
+        if not isinstance(agent, dict) or agent.get("id") != agent_id:
+            continue
+        if not _same_host_short(agent.get("hostname") or "", my_hostname or ""):
+            return None
+        session = agent.get("tmux_session") or agent.get("session") or ""
+        if not session:
+            return None
+        socket_path = agent.get("tmux_socket") or _default_socket_for_session(session)
+        tmux_bin = agent.get("tmux_bin") or ("/bin/tmux" if os.path.exists("/bin/tmux") else "tmux")
+        return {
+            "session": session,
+            "socket": socket_path,
+            "tmux_bin": tmux_bin,
+        }
+    return None
+
+
+def _hostname():
+    try:
+        import socket
+        return socket.gethostname()
+    except Exception:
+        return ""
+
+_FAST_ANSI_RE = re.compile(
+    r"\x1B\[[0-9;?]*[ -/]*[@-~]"
+    r"|\x1B\][^\x07]*\x07"
+    r"|\x1B[()][AB012]"
+    r"|\x1B[@-_]"
+)
+
+
+def _fast_strip_ansi(text):
+    return _FAST_ANSI_RE.sub("", text)
+
+
+def _fast_err(stderr, msg):
+    stderr.write(msg + "\n")
+
+
+
+def _parse_id_capture_argv(argv, stderr):
+    """Parse simple `capture <8hex-id> [--lines N] [--format plain|ansi]`.
+
+    Returns None when argv needs the full CLI (prefix ids, --json, tmux
+    metadata flags, or unknown options).
+    """
+    opts = {
+        "agent_id": None,
+        "lines": 0,
+        "format": "plain",
+    }
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok in ("--lines", "-n"):
+            i += 1
+            if i >= len(argv):
+                _fast_err(stderr, tok + " requires a value")
+                return None
+            try:
+                opts["lines"] = int(argv[i])
+            except ValueError:
+                _fast_err(stderr, tok + " must be an integer")
+                return None
+            i += 1
+            continue
+        if tok == "--format":
+            i += 1
+            if i >= len(argv):
+                _fast_err(stderr, "--format requires a value")
+                return None
+            opts["format"] = argv[i].lower()
+            i += 1
+            continue
+        if tok in ("--fast", "--no-fast-path", "--json"):
+            return None
+        if tok.startswith("--tmux-"):
+            return None
+        if tok.startswith("-"):
+            return None
+        if opts["agent_id"] is not None:
+            return None
+        if not is_exact_agent_id(tok):
+            return None
+        opts["agent_id"] = tok
+        i += 1
+        continue
+    if not opts["agent_id"]:
+        return None
+    if opts["format"] not in ("plain", "ansi"):
+        _fast_err(stderr, "--format must be plain or ansi")
+        return None
+    return opts
+
+
+def fast_capture_from_values(session, socket_path=None, tmux_bin=None, lines=0,
+                             fmt="plain", json_output=False,
+                             stdout=None, stderr=None):
+    stdout = stdout or sys.stdout
+    stderr = stderr or sys.stderr
+    if not session:
+        _fast_err(stderr, "tmux session is required")
+        return 2
+    fmt = (fmt or "plain").lower()
+    if fmt not in ("plain", "ansi"):
+        _fast_err(stderr, "--format must be plain or ansi")
+        return 2
+    try:
+        lines = int(lines or 0)
+    except (TypeError, ValueError):
+        _fast_err(stderr, "--lines must be an integer")
+        return 2
+
+    tmux = tmux_bin or "tmux"
+    if tmux_bin and not os.path.exists(tmux_bin):
+        _fast_err(stderr, "tmux binary not found: " + tmux_bin)
+        return 1
+    if socket_path and not os.path.exists(socket_path):
+        _fast_err(stderr, "tmux socket not found: " + socket_path)
+        return 1
+
+    full_scroll = not lines or lines <= 0
+    start_flag = "-" if full_scroll else "-%d" % lines
+    timeout = 60 if full_scroll else 15
+    target = "%s:0.0" % session
+    base = [tmux, "-u"]
+    if socket_path:
+        base += ["-S", socket_path]
+    args = base + ["capture-pane", "-p", "-J"]
+    if fmt == "ansi":
+        args.append("-e")
+    args += ["-t", target, "-S", start_flag]
+
+    try:
+        p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, err = p.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            p.kill()
+        except Exception:
+            pass
+        _fast_err(stderr, "tmux capture timed out")
+        return 1
+    except OSError as e:
+        _fast_err(stderr, "tmux capture failed: %s" % e)
+        return 1
+
+    if p.returncode != 0:
+        msg = err.decode("utf-8", errors="replace").strip()
+        _fast_err(stderr, msg or "tmux capture failed")
+        return p.returncode or 1
+
+    text = out.decode("utf-8", errors="replace")
+    if len(text.strip()) < 20:
+        alt = list(args)
+        alt.insert(alt.index("capture-pane") + 1, "-a")
+        try:
+            p2 = subprocess.Popen(alt, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            alt_out, _ = p2.communicate(timeout=timeout)
+            alt_text = alt_out.decode("utf-8", errors="replace")
+            if p2.returncode == 0 and len(alt_text.strip()) > len(text.strip()):
+                text = alt_text
+        except Exception:
+            pass
+
+    if fmt != "ansi":
+        text = _fast_strip_ansi(text)
+    text = text.rstrip()
+    if json_output:
+        import hashlib
+        stdout.write(json.dumps({
+            "content": text,
+            "hash": hashlib.md5(text.encode("utf-8")).hexdigest()[:8],
+            "format": fmt,
+        }, indent=2))
+        stdout.write("\n")
+    else:
+        stdout.write(text)
+    return 0
+
+
+def early_capture_main(argv=None, stdout=None, stderr=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    stdout = stdout or sys.stdout
+    stderr = stderr or sys.stderr
+    if not argv:
+        return None
+    # Only default exact-id capture is handled here. Complex forms, --json,
+    # prefixes, names, and unsupported flags fall through to the Python CLI.
+    json_output = False
+    if argv and argv[0] == "--json":
+        json_output = True
+        argv = argv[1:]
+    if not argv or argv[0] != "capture":
+        return None
+
+    rest = argv[1:]
+    if json_output:
+        return None
+
+    id_opts = _parse_id_capture_argv(rest, stderr)
+    if not id_opts:
+        return None
+    meta = lookup_agent_from_agents_json(id_opts["agent_id"])
+    if not meta:
+        return None
+    rc = fast_capture_from_values(
+        meta.get("session"),
+        socket_path=meta.get("socket"),
+        tmux_bin=meta.get("tmux_bin"),
+        lines=id_opts.get("lines"),
+        fmt=id_opts.get("format"),
+        json_output=False,
+        stdout=stdout,
+        stderr=stderr,
+    )
+    if rc:
+        return None
+    return rc
+
+_fast_capture_exit = early_capture_main()
+if _fast_capture_exit is not None:
+    sys.exit(_fast_capture_exit)
 
 from datetime import datetime
 from datetime import datetime, timedelta, timezone
@@ -40,7 +641,7 @@ import uuid
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "7e72491-dirty 2026-06-17 00:10"
+__build__ = "68d1d37-dirty 2026-06-26 05:57"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -504,7 +1105,12 @@ display_name = "OpenAI Codex"
 command = ["codex", "-c", "features.goals=true"]
 prompt_after_launch = true
 startup_wait = 20.0
-ready_pattern = "^[›>]"
+# 2026-06-23 PDX hotfix: include U+276F ❯ in addition to U+203A ›
+# and ASCII '>'. Some Codex builds render the input prompt with ❯,
+# others with ›. Accept all three so the launch loop sees readiness
+# regardless of the build variant. The character class is anchored
+# at line start so unrelated prose can't false-trigger.
+ready_pattern = "^[❯›>]"
 ready_flags = ["MULTILINE"]
 prompt_submit_delay = 0.5
 
@@ -608,7 +1214,7 @@ name = "cursor"
 display_name = "Cursor Agent"
 
 [launch]
-command = ["agent", "--workspace", "{path}"]
+command = ["cursor-agent", "--workspace", "{path}"]
 prompt_after_launch = true
 startup_wait = 15.0
 strip_ansi = true
@@ -677,10 +1283,10 @@ exit_command = "/exit"        # command to send if exit_action = "send_exit"
 # Adapter-owned readiness (F-08). Cursor: binary + version only —
 # no required auth files in current code.
 [readiness]
-binary = "cursor"
+binary = "cursor-agent"
 version_args = ["--version"]
 version_required = true
-install_hint = "ensure 'cursor' is in PATH"
+install_hint = "ensure 'cursor-agent' is in PATH"
 """,
 }
 
@@ -727,7 +1333,9 @@ name = "codex"
 
 [launch]
 startup_wait = 20.0
-ready_pattern = "^[›>]"
+# 2026-06-23 PDX hotfix: include U+276F ❯ alongside U+203A › and '>'
+# so the boot ready check works across Codex build variants.
+ready_pattern = "^[❯›>]"
 ready_flags = ["MULTILINE"]
 prompt_submit_delay = 0.5
 
@@ -1301,6 +1909,37 @@ def _load_config(tool):
         except Exception as e:
             log.warning("Failed to load external config %s: %s", toml_path, e)
 
+    # 2026-06-23 PDX hotfix: defensively normalize a stale external
+    # codex.toml ready_pattern that doesn't include U+203A '›' (the
+    # current Codex prompt). Older deployments still have
+    # ~/.cam/configs/codex.toml carrying patterns like '^\\s*[❯>]'
+    # which override the embedded `^[❯›>]` after merge. Without this
+    # scrub, codex panes stay in 'initializing' indefinitely because
+    # the launch ready check never sees its cursor. The scrub fires
+    # only when (a) the tool is codex, (b) launch.ready_pattern is
+    # set, and (c) the pattern as written does not contain '›' —
+    # so a user who deliberately authored a different pattern (e.g.
+    # one that already covers '›' via a different class or via the
+    # \\u203a escape) is not overridden.
+    if tool == "codex":
+        launch = config.get("launch") or {}
+        rp = launch.get("ready_pattern")
+        if isinstance(rp, str) and rp and "›" not in rp:
+            launch["ready_pattern"] = "^\\s*[❯›>]"
+            log.info(
+                "Codex external ready_pattern normalized (was %r) "
+                "to cover '❯'/'›'/'>'; see CAM-PDX hotfix 2026-06-23",
+                rp,
+            )
+            # Make sure flags include MULTILINE so ^ matches each line.
+            flags = launch.get("ready_flags")
+            if not isinstance(flags, list):
+                flags = []
+            if "MULTILINE" not in flags:
+                flags = list(flags) + ["MULTILINE"]
+            launch["ready_flags"] = flags
+            config["launch"] = launch
+
     return AdapterConfig(config)
 
 
@@ -1545,6 +2184,150 @@ _TOOL_SPECS = {
 
 
 # ---------------------------------------------------------------------------
+# Golden paths (2026-06-23 PDX hardening). Independent of user PATH /
+# shell / tmux config drift so camc agents resolve stable executables
+# even when the caller's env is messy.
+# ---------------------------------------------------------------------------
+
+# /bin/tmux is the on-box system tmux on every NVIDIA container/VM we
+# care about. Prefer it over PATH (which can be poisoned by the user's
+# login shell) so camc-owned sessions are independent of user setup.
+_GOLDEN_TMUX_PATHS = (
+    "/bin/tmux",
+)
+
+# Per-tool ordered preference list. Absolute paths; first existing +
+# executable wins. PATH/env is the fallback after this list is
+# exhausted (unless --use-env-tool is set).
+_GOLDEN_TOOL_PATHS = {
+    "claude": (
+        "/home/tools_ai/anthropic-ai/claude/stable/claude",
+        "/home/tools_ai/anthropic-ai/claude/latest/claude",
+        "/home/prgn_share/tools/claude-code/bin/claude",
+    ),
+    "codex": (
+        "/home/tools_ai/openai/codex/stable/bin/codex",
+        "/home/tools_ai/openai/codex/latest/bin/codex",
+        "/home/prgn_share/tools/codex/bin/codex",
+        "~/.local/bin/codex",
+    ),
+    "cursor": (
+        "/home/prgn_share/tools/cursor/cursor-cli/latest/bin/cursor-agent",
+        "/home/tools_ai/cursor/cursor-cli/latest/bin/cursor-agent",
+    ),
+}
+
+# Alias set used for PATH/env fallback resolution. Some tools ship
+# under multiple binary names (cursor's CLI binary is `cursor-agent`
+# in some packages and `agent` in others) — the alias list lets us
+# locate any of them without forcing one specific install.
+_PATH_TOOL_ALIASES = {
+    "claude": ("claude",),
+    "codex": ("codex",),
+    "cursor": ("cursor-agent", "agent"),
+}
+
+
+def _is_executable_file(path):
+    try:
+        return os.path.isfile(path) and os.access(path, os.X_OK)
+    except OSError:
+        return False
+
+
+def resolve_tmux_bin(runtime=None):
+    """Resolve the tmux binary camc should drive new sessions with.
+
+    Order:
+      1) /bin/tmux (golden) — preferred so camc is independent of user
+         PATH drift and unusual login shells.
+      2) PATH lookup via runtime.env (fallback). When this fires the
+         caller SHOULD surface a warning so operators know camc is
+         depending on user PATH rather than the golden binary.
+
+    Returns (path_or_None, source_str). source_str is 'golden' or
+    'env' or 'missing'. Callers that just want the path can ignore
+    source_str.
+    """
+    for golden in _GOLDEN_TMUX_PATHS:
+        if _is_executable_file(golden):
+            return golden, "golden"
+    if runtime is not None:
+        env_path = resolve_tool(runtime, "tmux")
+        if env_path:
+            return env_path, "env"
+    return None, "missing"
+
+
+def resolve_tool_with_source(runtime, tool, use_env_tool=False):
+    """Resolve a tool's absolute binary path with source attribution.
+
+    ``tool`` is the user-facing name (claude / codex / cursor). The
+    return shape is a dict so callers (cli.cmd_run, the agent-record
+    manifest writer) can record the resolution provenance without a
+    second round of detection.
+
+    Returns:
+        {
+          "tool":     "claude" | "codex" | "cursor" | <unknown>,
+          "bin":      absolute path or None,
+          "source":   "golden" | "env" | "env-forced" | "missing",
+          "warnings": [<str>, ...],
+        }
+
+    Resolution order (default):
+      1) Golden absolute paths from ``_GOLDEN_TOOL_PATHS[tool]``.
+      2) PATH/env lookup using ``_PATH_TOOL_ALIASES[tool]``.
+
+    With ``use_env_tool=True``, the golden list is skipped entirely;
+    only the alias-based PATH lookup runs, and ``source`` is set to
+    ``env-forced`` on success so the agent record can mark the run.
+
+    Configured explicit paths (from adapter readiness.binary or the
+    user's external config) are handled in ``check_tool_readiness``
+    one level up — this helper is the golden-vs-PATH split only.
+    """
+    result = {
+        "tool":     tool,
+        "bin":      None,
+        "source":   "missing",
+        "warnings": [],
+    }
+    aliases = _PATH_TOOL_ALIASES.get(tool, (tool,))
+    if use_env_tool:
+        for alias in aliases:
+            p = resolve_tool(runtime, alias) if runtime is not None else None
+            if p and _is_executable_file(p):
+                result["bin"] = p
+                result["source"] = "env-forced"
+                result["warnings"].append(
+                    "tool resolved from PATH (--use-env-tool); golden "
+                    "paths skipped: %s" % p)
+                return result
+        result["warnings"].append(
+            "tool %r not found in PATH (--use-env-tool); aliases tried: %s"
+            % (tool, ", ".join(aliases)))
+        return result
+    # Default: golden first.
+    for golden in _GOLDEN_TOOL_PATHS.get(tool, ()):
+        candidate = _expand_runtime_path(runtime, golden)
+        if _is_executable_file(candidate):
+            result["bin"] = candidate
+            result["source"] = "golden"
+            return result
+    # Golden exhausted — fall through to PATH/env aliases.
+    for alias in aliases:
+        p = resolve_tool(runtime, alias) if runtime is not None else None
+        if p and _is_executable_file(p):
+            result["bin"] = p
+            result["source"] = "env"
+            result["warnings"].append(
+                "tool resolved from PATH (no golden path present): %s" % p)
+            return result
+    return result
+
+
+# ---------------------------------------------------------------------------
 # check_tool_readiness — the meat
 # ---------------------------------------------------------------------------
 
@@ -1573,7 +2356,8 @@ def _spec_from_readiness(readiness):
     return spec
 
 
-def check_tool_readiness(runtime, selected_tool, tool_binary=None, readiness=None):
+def check_tool_readiness(runtime, selected_tool, tool_binary=None,
+                          readiness=None, use_env_tool=False):
     """Return a dict shaped:
 
         {
@@ -1609,13 +2393,24 @@ def check_tool_readiness(runtime, selected_tool, tool_binary=None, readiness=Non
         spec = _TOOL_SPECS.get(selected_tool, {})
         readiness_source = "fallback"
 
-    # ---- tmux (required, always checked from runtime env) ----
-    tmux_path = resolve_tool(runtime, "tmux")
+    # ---- tmux (required) ----
+    # 2026-06-23 PDX hardening: prefer the golden /bin/tmux over PATH
+    # so camc isn't subject to user shell / PATH drift. Falls back to
+    # the runtime-env PATH lookup if golden is missing; that fallback
+    # produces a warning so operators can see camc is depending on
+    # user PATH rather than the on-box tmux.
+    tmux_path, tmux_source = resolve_tmux_bin(runtime)
     if not tmux_path:
         issues.append(("error",
-            "tmux not found in effective PATH. Install: apt install tmux"))
+            "tmux not found (golden /bin/tmux missing and no PATH match). "
+            "Install: apt install tmux"))
     else:
         resolved["tmux"] = tmux_path
+        resolved["tmux_source"] = tmux_source
+        if tmux_source == "env":
+            issues.append(("warn",
+                "tmux resolved from PATH (%s); golden /bin/tmux not present"
+                % tmux_path))
         rc, out = run_probe(runtime, [tmux_path, "-V"], timeout=3)
         if rc != 0:
             # F2: any non-zero rc (including -1 timeout/OSError) means
@@ -1648,11 +2443,84 @@ def check_tool_readiness(runtime, selected_tool, tool_binary=None, readiness=Non
     bin_name = tool_binary
     if bin_name in (None, "", "env", "/usr/bin/env"):
         bin_name = spec.get("binary") or selected_tool
-    tool_path = resolve_tool(runtime, bin_name)
+
+    # 2026-06-23 PDX hardening: prefer configured explicit absolute
+    # executables, then golden paths, then PATH. ``use_env_tool=True``
+    # is the explicit advanced opt-out: skip configured/golden paths
+    # and resolve from PATH aliases only.
+    tool_path = None
+    tool_resolution = {
+        "tool": selected_tool, "bin": None,
+        "source": "missing", "warnings": [],
+    }
+    configured_abs = bin_name if os.path.isabs(bin_name) else ""
+    if configured_abs and not use_env_tool:
+        if _is_executable_file(configured_abs):
+            tool_path = configured_abs
+            tool_resolution = {
+                "tool": selected_tool, "bin": tool_path,
+                "source": "configured", "warnings": [],
+            }
+        else:
+            issues.append(("warn",
+                "configured tool path is not executable; falling back "
+                "to golden/PATH: %s" % configured_abs))
+
+    # Spec-binary override: when the adapter readiness (or fallback
+    # spec) declares a custom binary that differs from the selected
+    # tool aliases (e.g. 'widget_custom'), that binary is the canonical
+    # PATH alias. This path deliberately does NOT override a configured
+    # absolute executable above.
+    spec_binary = spec.get("binary")
+    if not tool_path and spec_binary and spec_binary not in _PATH_TOOL_ALIASES.get(
+            selected_tool, (selected_tool,)):
+        if os.path.isabs(spec_binary) and not use_env_tool:
+            tool_path = spec_binary if _is_executable_file(spec_binary) else None
+            tool_resolution = {
+                "tool": selected_tool, "bin": tool_path,
+                "source": "configured" if tool_path else "missing",
+                "warnings": [],
+            }
+        elif not os.path.isabs(spec_binary):
+            tool_path = resolve_tool(runtime, spec_binary)
+            tool_resolution = {
+                "tool":     selected_tool,
+                "bin":      tool_path,
+                "source":   "env-forced" if use_env_tool else "env",
+                "warnings": (
+                    ["tool resolved from PATH using adapter-spec binary "
+                     "%r: %s" % (spec_binary, tool_path)] if tool_path else []),
+            }
+            for w in tool_resolution["warnings"]:
+                issues.append(("warn", w))
+
+    if not tool_path:
+        tool_resolution = resolve_tool_with_source(
+            runtime, selected_tool, use_env_tool=use_env_tool)
+        tool_path = tool_resolution.get("bin")
+        for w in tool_resolution.get("warnings", []) or []:
+            issues.append(("warn", w))
+        if not tool_path and not (use_env_tool and os.path.isabs(bin_name)):
+            # Last-resort: try the legacy bin_name (may be a custom
+            # alias the spec inherited from _TOOL_SPECS). Do not use
+            # an absolute configured path here when --use-env-tool was
+            # requested; that option means PATH/env only.
+            tool_path = resolve_tool(runtime, bin_name)
+            if tool_path:
+                tool_resolution = {
+                    "tool": selected_tool, "bin": tool_path,
+                    "source": "env-forced" if use_env_tool else "env",
+                    "warnings": [
+                        "tool resolved from PATH via legacy bin_name=%s: %s"
+                        % (bin_name, tool_path)],
+                }
+                issues.append(("warn", tool_resolution["warnings"][0]))
+    resolved["tool_resolution"] = tool_resolution
     if not tool_path:
         hint = spec.get("install_hint", "ensure '%s' is in effective PATH" % bin_name)
         issues.append(("error",
-            "'%s' not found in effective PATH. Install: %s" % (bin_name, hint)))
+            "'%s' not found (golden paths missing AND no PATH match). "
+            "Install: %s" % (bin_name, hint)))
     else:
         resolved["tool"] = tool_path
         version_args = spec.get("version_args", ["--version"])
@@ -1716,6 +2584,171 @@ def check_tool_readiness(runtime, selected_tool, tool_binary=None, readiness=Non
 # ===========================================================================
 # transport
 # ===========================================================================
+
+# ---------------------------------------------------------------------------
+# camc-owned tmux config template (2026-06-23 PDX hardening)
+# ---------------------------------------------------------------------------
+#
+# camc launches every agent into its own tmux server (private socket via
+# -S). The new tmux server still reads ~/.tmux.conf by default; on PDX
+# a user .tmux.conf has been observed to crash the server during
+# startup-command injection. Pointing the new server at a small
+# camc-managed config with `-f <path>` makes camc tmux behavior
+# independent of user config.
+#
+# v1 template content kept tmux 2.7 compatible (no `set-option -ga`,
+# no `assume-paste-time`). The 'camc-template-version' header lets the
+# next slice auto-refresh the template when we bump the version; the
+# 'camc-template-sha256' header tracks the hash of the managed body
+# so a user-modified file is left alone.
+
+_CAMC_TMUX_CONFIG_VERSION = 1
+_CAMC_TMUX_CONFIG_BODY = (
+    "# camc-managed: true\n"
+    "# camc-template: tmux\n"
+    "# camc-template-version: {version}\n"
+    "# camc-template-sha256: {sha}\n"
+    "#\n"
+    "# Edit this file to override; the 'camc-managed' header is what\n"
+    "# camc uses to decide whether to refresh on version bumps. Once\n"
+    "# you modify the file, change or remove the sha line so camc\n"
+    "# leaves it alone.\n"
+    "\n"
+    "set-option -g history-limit 50000\n"
+    "set-option -g status off\n"
+    "set-option -g mouse off\n"
+    'set-option -g default-terminal "screen-256color"\n'
+)
+
+
+def _camc_tmux_config_path():
+    return os.path.join(CAM_DIR, "configs", "tmux.conf")
+
+
+def _camc_tmux_body_sha(text):
+    """Hash a tmux config body while ignoring its sha header line."""
+    canonical_for_hash = "\n".join(
+        l for l in text.splitlines()
+        if not l.startswith("# camc-template-sha256:")
+    )
+    return hashlib.sha256(
+        canonical_for_hash.encode("utf-8")).hexdigest()[:16]
+
+
+def _camc_tmux_managed_body(version=_CAMC_TMUX_CONFIG_VERSION):
+    """Return the canonical body for a given template version. The
+    sha line is computed over the *non-sha* lines so the hash is
+    deterministic and self-referential without recursion."""
+    no_sha = _CAMC_TMUX_CONFIG_BODY.format(version=version, sha="<pending>")
+    sha = _camc_tmux_body_sha(no_sha)
+    return _CAMC_TMUX_CONFIG_BODY.format(version=version, sha=sha)
+
+
+def _camc_tmux_existing_meta(path):
+    """Return (managed, version, sha) for an existing tmux config
+    file, or (False, 0, '') when the file isn't camc-managed."""
+    try:
+        with open(path, "r") as f:
+            head = f.read(2048)
+    except (OSError, IOError):
+        return False, 0, ""
+    managed = ("# camc-managed: true" in head)
+    if not managed:
+        return False, 0, ""
+    version = 0
+    sha = ""
+    for line in head.splitlines():
+        if line.startswith("# camc-template-version:"):
+            try:
+                version = int(line.split(":", 1)[1].strip())
+            except (ValueError, IndexError):
+                version = 0
+        elif line.startswith("# camc-template-sha256:"):
+            sha = line.split(":", 1)[1].strip()
+    return True, version, sha
+
+
+def ensure_camc_tmux_config(path=None):
+    """Make sure ``~/.cam/configs/tmux.conf`` exists with the current
+    v1 template body.
+
+    Behavior:
+      * Missing file -> created with the v1 body (mode 0600).
+      * File exists and is camc-managed AND matches the expected
+        sha of its declared version -> refresh to current version
+        if older (idempotent on the current version).
+      * File exists and is camc-managed but has been MODIFIED
+        (sha mismatch on its declared version) -> leave alone +
+        log a warning.
+      * File exists and is NOT camc-managed (user-authored) ->
+        leave alone, no log.
+
+    Returns the file path. Safe to call from many sites; the lock
+    cost is one fs stat + one read on the file.
+    """
+    path = path or _camc_tmux_config_path()
+    body = _camc_tmux_managed_body(_CAMC_TMUX_CONFIG_VERSION)
+    try:
+        os.makedirs(os.path.dirname(path))
+    except OSError:
+        pass
+    if not os.path.exists(path):
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(body)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+            os.replace(tmp, path)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+            log.info("camc tmux config created at %s (v%d)",
+                     path, _CAMC_TMUX_CONFIG_VERSION)
+        except OSError as e:
+            log.warning("failed to create camc tmux config %s: %s", path, e)
+        return path
+    # File exists — decide whether to refresh.
+    managed, existing_version, existing_sha = _camc_tmux_existing_meta(path)
+    if not managed:
+        # User-authored file; leave alone.
+        return path
+    try:
+        with open(path, "r") as f:
+            existing_text = f.read()
+    except (OSError, IOError) as e:
+        log.warning("failed to read camc tmux config %s: %s", path, e)
+        return path
+    actual_sha = _camc_tmux_body_sha(existing_text)
+    if existing_sha != actual_sha:
+        log.warning(
+            "camc tmux config at %s is camc-managed but has been "
+            "modified locally (sha mismatch); refusing to refresh",
+            path)
+        return path
+    if existing_version < _CAMC_TMUX_CONFIG_VERSION:
+        # Managed AND unmodified AND older — refresh.
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(body)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+            os.replace(tmp, path)
+            log.info("camc tmux config refreshed: %s (v%d -> v%d)",
+                     path, existing_version, _CAMC_TMUX_CONFIG_VERSION)
+        except OSError as e:
+            log.warning(
+                "failed to refresh camc tmux config %s: %s", path, e)
+    return path
+
 
 def _detect_tmux_bin():
     """Current `tmux` on PATH, used for new session creation and as the
@@ -2003,8 +3036,28 @@ def tmux_kill_session(session_id):
     return rc == 0
 
 
+def _tmux_paste_startup_command(tmux, socket, target, text):
+    """Paste a startup command into a freshly-created shell pane.
+
+    Some PDX tmux builds have been observed to drop the whole server on
+    ``send-keys -l -- <long command>`` before Enter is even sent. The
+    buffer/paste path avoids that literal-key injection code path while
+    preserving the conservative two-step launch model: create shell
+    first, paste command second.
+    """
+    try:
+        _run([tmux, "-u", "-S", socket, "set-buffer", text], check=True)
+        _run([tmux, "-u", "-S", socket, "paste-buffer", "-t", target],
+             check=True)
+        return True
+    except Exception as e:
+        log.debug("tmux startup paste-buffer failed, falling back: %s", e)
+        return False
+
+
 def create_tmux_session(session_id, command, workdir, env_setup=None,
-                        inherit_env=True, env=None, tmux_bin=None):
+                        inherit_env=True, env=None, tmux_bin=None,
+                        tmux_config=None):
     """Create a detached tmux session named `session_id`.
 
     F-08: `env` and `tmux_bin` are optional. When provided (the new
@@ -2036,13 +3089,40 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
     # Source tmux binary: explicit arg wins; else module-level default.
     tmux = tmux_bin or TMUX_BIN
 
+    # 2026-06-23 PDX hardening: ensure the new tmux server starts with
+    # camc's own config (`-f <path>`) instead of inheriting the user's
+    # ~/.tmux.conf, which on PDX has crashed servers mid-startup.
+    # ``tmux_config`` defaults to ``ensure_camc_tmux_config()``; pass
+    # an empty string to opt out (e.g. test fixtures that don't want
+    # to touch disk). For follow-up operations (capture/send/attach)
+    # the existing -S socket isolation is sufficient — tmux client
+    # commands don't need -f since the config was loaded at server
+    # start.
+    if tmux_config is None:
+        try:
+            tmux_config = ensure_camc_tmux_config()
+        except Exception as e:
+            log.warning("camc tmux config ensure failed; "
+                        "new-session will inherit user ~/.tmux.conf: %s", e)
+            tmux_config = ""
+
+    def _tmux_new_session_argv(extra_args):
+        """Build the tmux new-session argv with -f <config> injected
+        before -S so it applies to the newly created server."""
+        argv = [tmux, "-u"]
+        if tmux_config:
+            argv += ["-f", tmux_config]
+        argv += ["-S", socket, "new-session",
+                 "-d", "-x", "220", "-y", "50",
+                 "-s", session_id, "-c", workdir]
+        argv += extra_args
+        return argv
+
     if inherit_env:
         # Shell mode: start tmux with user's default shell, inherit all env.
         # Then send the command via send-keys.
         try:
-            tmux_cmd = [tmux, "-u", "-S", socket, "new-session",
-                 "-d", "-x", "220", "-y", "50",
-                 "-s", session_id, "-c", workdir]
+            tmux_cmd = _tmux_new_session_argv([])
             proc = subprocess.Popen(
                 tmux_cmd,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -2055,12 +3135,15 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
                 return False
             _run([tmux, "-u", "-S", socket, "set-option", "-t", session_id,
                   "history-limit", "50000"])
-            # Send the command via send-keys. Small pause before Enter
-            # so the literal text flushes before Enter races in.
+            # Paste the command through a tmux buffer instead of
+            # send-keys -l. On some PDX tmux builds, literal send-keys
+            # can drop the whole server before Enter is sent.
             inner_cmd = " ".join(shlex.quote(arg) for arg in command)
             target = "%s:0.0" % session_id
-            _run([tmux, "-u", "-S", socket, "send-keys", "-t", target,
-                  "-l", "--", inner_cmd])
+            if not _tmux_paste_startup_command(tmux, socket, target,
+                                               inner_cmd):
+                _run([tmux, "-u", "-S", socket, "send-keys", "-t", target,
+                      "-l", "--", inner_cmd])
             import time as _t
             _t.sleep(0.15)
             _run([tmux, "-u", "-S", socket, "send-keys", "-t", target, "Enter"])
@@ -2086,9 +3169,7 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
 
     try:
         proc = subprocess.Popen(
-            [tmux, "-u", "-S", socket, "new-session",
-             "-d", "-x", "220", "-y", "50",
-             "-s", session_id, "-c", workdir, command_str],
+            _tmux_new_session_argv([command_str]),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=env,
         )
@@ -4545,7 +5626,9 @@ def _launch_agent(task, workdir):
     launch_cmd = _build_command(config, prompt, workdir)
 
     context = _load_default_context()
-    env_setup = context.get("env_setup") or None
+    # context.json is scheduler metadata only; it must not inject
+    # runtime env setup into agent launches.
+    env_setup = None
 
     if not create_tmux_session(session, launch_cmd, workdir, env_setup=env_setup, inherit_env=True):
         return None
@@ -6677,13 +7760,22 @@ PROVIDER_TEMPLATES = {
 }
 
 CURATED_APIS = [
-    ("glm-5.1", "nvidia/zai-org/eccn-glm-5.1", ["glm", "glm51"]),
+    ("glm-5.2", "nvidia/zai-org/eccn-glm-5.2", ["glm", "glm52", "glm51", "glm-5.1"]),
     ("deepseek-v4-pro", "nvidia/deepseek-ai/eccn-deepseek-v4-pro", ["deepseek", "ds-v4"]),
     ("kimi-k2.6", "nvidia/moonshotai/eccn-kimi-k2.6", ["kimi", "k2.6"]),
-    ("minimax-m2.7", "nvidia/minimaxai/eccn-minimax-m2.7", ["minimax", "m2.7"]),
+    ("minimax-m3", "nvidia/minimaxai/eccn-minimax-m3", ["minimax", "m3", "m2.7", "minimax-m2.7"]),
     ("qwen3-5-397b", "nvidia/qwen/eccn-qwen3-5-397b-a17b", ["qwen397", "qwen3.5"]),
     ("nemotron-3-ultra", "nvidia/nvidia/eccn-nemotron-3-ultra", ["nemotron", "nemo-ultra"]),
 ]
+
+# Superseded curated profile keys → current key (defaults + api check merge).
+CURATED_LEGACY_MIGRATIONS = {
+    "glm-5.1": "glm-5.2",
+    "minimax-m2.7": "minimax-m3",
+}
+
+# Tools that may have a per-tool default API (empty = normal OAuth/login).
+DEFAULT_API_TOOLS = ("claude", "codex")
 
 
 def _default_seed():
@@ -6697,7 +7789,7 @@ def _default_seed():
         }
     return {
         "version": 1,
-        "default": "glm-5.1",
+        "default": "glm-5.2",
         "default_provider": DEFAULT_PROVIDER,
         "providers": {
             DEFAULT_PROVIDER: {
@@ -6746,11 +7838,40 @@ def save_api_models(data):
     os.replace(tmp, API_MODELS_FILE)
 
 
+def merge_curated_apis(data):
+    """Refresh curated IHUB profiles (model ids, aliases) and migrate legacy keys."""
+    apis = data.setdefault("apis", {})
+    curated_keys = set()
+    for key, model, aliases in CURATED_APIS:
+        curated_keys.add(key)
+        entry = apis.get(key)
+        if not isinstance(entry, dict):
+            entry = {}
+            apis[key] = entry
+        entry.setdefault("provider", DEFAULT_PROVIDER)
+        entry["model"] = model
+        entry["aliases"] = list(aliases)
+        entry.setdefault("enabled", False)
+    for old_key in list(apis.keys()):
+        if old_key in CURATED_LEGACY_MIGRATIONS and old_key not in curated_keys:
+            apis.pop(old_key, None)
+    legacy = data.get("default")
+    if legacy in CURATED_LEGACY_MIGRATIONS:
+        data["default"] = CURATED_LEGACY_MIGRATIONS[legacy]
+    defaults = data.get("defaults")
+    if isinstance(defaults, dict):
+        for tool, name in list(defaults.items()):
+            if name in CURATED_LEGACY_MIGRATIONS:
+                defaults[tool] = CURATED_LEGACY_MIGRATIONS[name]
+    rebuild_aliases(data)
+
+
 def ensure_ready():
     """Create seed file if missing; return data dict."""
     if os.path.isfile(API_MODELS_FILE):
         data = load_api_models()
-        rebuild_aliases(data)
+        merge_curated_apis(data)
+        save_api_models(data)
         return data
     data = _default_seed()
     save_api_models(data)
@@ -6793,6 +7914,97 @@ def resolve_api_name(data, name):
 def get_api_entry(data, name):
     key = resolve_api_name(data, name)
     return key, dict((data.get("apis") or {}).get(key) or {})
+
+
+def _normalize_default_name(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def resolve_tool_default_api(data, tool):
+    """Return opt-in run default from defaults.<tool>, or None for login path."""
+    if tool not in DEFAULT_API_TOOLS:
+        return None
+    defaults = data.get("defaults")
+    if not isinstance(defaults, dict) or tool not in defaults:
+        return None
+    return _normalize_default_name(defaults.get(tool))
+
+
+def list_tool_default_apis(data):
+    """Return per-tool default status rows for display/CLI."""
+    rows = []
+    for tool in DEFAULT_API_TOOLS:
+        name = resolve_tool_default_api(data, tool)
+        if not name:
+            rows.append({
+                "tool": tool,
+                "api": None,
+                "mode": "login",
+                "enabled": None,
+                "reason": None,
+            })
+            continue
+        key, entry = get_api_entry(data, name)
+        enabled = entry.get("enabled") is not False
+        rows.append({
+            "tool": tool,
+            "api": key,
+            "mode": "api",
+            "enabled": enabled,
+            "reason": entry.get("enabled_reason"),
+        })
+    return rows
+
+
+def set_tool_default_api(data, tool, api_name):
+    """Set defaults.<tool> to api_name; sync legacy top-level default for Claude."""
+    if tool not in DEFAULT_API_TOOLS:
+        raise ValueError("unsupported tool %r for default API (use: claude, codex)" % tool)
+    key = resolve_api_name(data, api_name)
+    defaults = data.get("defaults")
+    if not isinstance(defaults, dict):
+        defaults = {}
+        data["defaults"] = defaults
+    defaults[tool] = key
+    if tool == "claude":
+        data["default"] = key
+    save_api_models(data)
+    return key
+
+
+def clear_tool_default_api(data, tool):
+    """Clear defaults.<tool>; empty tool default means normal login."""
+    if tool not in DEFAULT_API_TOOLS:
+        raise ValueError("unsupported tool %r for default API (use: claude, codex)" % tool)
+    defaults = data.get("defaults")
+    if isinstance(defaults, dict) and tool in defaults:
+        defaults.pop(tool)
+    if tool == "claude":
+        data.pop("default", None)
+    save_api_models(data)
+
+
+def resolve_run_api_name(tool, cli_api=None, no_default_api=False, data=None):
+    """Pick API profile for camc run: explicit --api, tool default, or login."""
+    if cli_api:
+        return _normalize_default_name(cli_api), "cli"
+    if no_default_api:
+        return None, "login"
+    data = data or ensure_ready()
+    name = resolve_tool_default_api(data, tool)
+    if not name:
+        return None, "login"
+    key, entry = get_api_entry(data, name)
+    if entry.get("enabled") is False:
+        reason = entry.get("enabled_reason") or "disabled"
+        raise ValueError(
+            "Default API %r for tool %r is disabled (%s). Run: camc api check"
+            % (key, tool, reason)
+        )
+    return key, "default"
 
 
 def get_provider(data, provider_id):
@@ -6907,6 +8119,7 @@ def check_provider(data, token_resolver):
             result["error"] = str(exc)
             return result
 
+    merge_curated_apis(data)
     apis = data.get("apis") or {}
     for key, entry in apis.items():
         if not isinstance(entry, dict):
@@ -6941,8 +8154,328 @@ def check_provider(data, token_resolver):
             "provider": provider_id,
             "ids": sorted(ids),
         }
+
+    metadata_updated = 0
+    metadata_error = None
+    try:
+        metadata_updated = sync_metadata_in_data(data, provider)
+    except (urllib.error.URLError, urllib.error.HTTPError, socket.timeout, ValueError) as exc:
+        metadata_error = str(exc)
+        # Still apply fallbacks without cost map.
+        sync_metadata_in_data(data, provider, cost_map={})
+
+    result["metadata_updated"] = metadata_updated
+    if metadata_error:
+        result["metadata_error"] = metadata_error
+
     save_api_models(data)
     return result
+
+
+# ===========================================================================
+# api_metadata
+# ===========================================================================
+
+DEFAULT_MAX_OUTPUT_TOKENS = 131072
+DEFAULT_EFFECTIVE_CONTEXT_PERCENT = 95
+CODEX_CATALOG_TEMPLATE_SLUG = "gpt-5.5"
+CODEX_MODELS_CACHE_FILE = os.path.expanduser("~/.codex/models_cache.json")
+
+# Curated fallbacks when IHUB cost map omits fields (see docs/api-model-metadata.md).
+CURATED_METADATA_FALLBACKS = {
+    "glm-5.2": {
+        "context_window": 1048576,
+        "max_output_tokens": 131072,
+        "supports_tools": True,
+        "supports_reasoning": True,
+    },
+    "glm-5.1": {
+        "context_window": 202752,
+        "max_output_tokens": 131072,
+        "supports_tools": True,
+        "supports_reasoning": True,
+    },
+    "deepseek-v4-pro": {
+        "context_window": 1048576,
+        "max_output_tokens": 131072,
+        "supports_tools": True,
+        "supports_reasoning": True,
+    },
+    "qwen3-5-397b": {
+        "context_window": 262144,
+        "max_output_tokens": 131072,
+        "supports_tools": True,
+        "supports_reasoning": True,
+    },
+    "kimi-k2.6": {
+        "context_window": 262144,
+        "max_output_tokens": 131072,
+        "supports_tools": True,
+        "supports_reasoning": True,
+    },
+    "minimax-m3": {
+        "context_window": 1048576,
+        "max_output_tokens": 131072,
+        "supports_tools": True,
+        "supports_reasoning": True,
+    },
+    "minimax-m2.7": {
+        "context_window": 196608,
+        "max_output_tokens": 131072,
+        "supports_tools": True,
+        "supports_reasoning": True,
+    },
+    "nemotron-3-ultra": {
+        "context_window": 128000,
+        "max_output_tokens": 65536,
+        "supports_tools": True,
+        "supports_reasoning": False,
+    },
+}
+
+DISPLAY_NAMES = {
+    "glm-5.2": "GLM 5.2",
+    "glm-5.1": "GLM 5.1",
+    "deepseek-v4-pro": "DeepSeek V4 Pro",
+    "qwen3-5-397b": "Qwen3.5 397B",
+    "kimi-k2.6": "Kimi K2.6",
+    "minimax-m3": "MiniMax M3",
+    "minimax-m2.7": "MiniMax M2.7",
+    "nemotron-3-ultra": "Nemotron 3 Ultra",
+}
+
+
+def litellm_cost_map_url(provider):
+    """LiteLLM cost map lives at host root, not under provider base_url /v1."""
+    base = str(provider.get("base_url") if provider else "" or "").rstrip("/")
+    if not base:
+        return ""
+    if base.endswith("/v1"):
+        base = base[:-3]
+    return base + "/public/litellm_model_cost_map"
+
+
+def fetch_litellm_cost_map(provider, timeout=30.0):
+    """Fetch LiteLLM public cost map (no auth). Returns dict or {}."""
+    url = litellm_cost_map_url(provider)
+    if not url:
+        return {}
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+    return body if isinstance(body, dict) else {}
+
+
+def metadata_from_cost_entry(entry):
+    """Map one LiteLLM cost-map row to camc metadata fields."""
+    if not isinstance(entry, dict):
+        return {}
+    out = {}
+    for src, dst in (
+        ("max_input_tokens", "context_window"),
+        ("max_output_tokens", "max_output_tokens"),
+    ):
+        val = entry.get(src)
+        if val is not None:
+            try:
+                out[dst] = int(val)
+            except (TypeError, ValueError):
+                pass
+    if out.get("max_output_tokens") is None:
+        val = entry.get("max_tokens")
+        if val is not None:
+            try:
+                out["max_output_tokens"] = int(val)
+            except (TypeError, ValueError):
+                pass
+    if entry.get("supports_function_calling") is not None:
+        out["supports_tools"] = bool(entry.get("supports_function_calling"))
+    if entry.get("supports_reasoning") is not None:
+        out["supports_reasoning"] = bool(entry.get("supports_reasoning"))
+    if entry.get("mode"):
+        out["mode"] = str(entry.get("mode"))
+    if out:
+        out["source"] = "litellm_cost_map"
+    return out
+
+
+def apply_metadata_fallbacks(api_key, metadata):
+    """Fill gaps from curated seed defaults."""
+    merged = dict(metadata or {})
+    fb = CURATED_METADATA_FALLBACKS.get(api_key) or {}
+    for key, val in fb.items():
+        if merged.get(key) is None:
+            merged[key] = val
+    if merged.get("max_output_tokens") is None and merged.get("context_window"):
+        merged["max_output_tokens"] = min(
+            int(merged["context_window"]),
+            DEFAULT_MAX_OUTPUT_TOKENS,
+        )
+    if merged.get("supports_tools") is None:
+        merged["supports_tools"] = True
+    if merged.get("supports_reasoning") is None:
+        merged["supports_reasoning"] = bool(fb.get("supports_reasoning", True))
+    # Codex: IHUB GLM/DeepSeek paths use reasoning_content, not OpenAI thinking params.
+    if "reasoning_levels" not in merged:
+        merged["reasoning_levels"] = []
+    if "supports_reasoning_summaries" not in merged:
+        merged["supports_reasoning_summaries"] = False
+    return merged
+
+
+def merge_api_metadata(api_key, model_id, cost_map, synced_at=None):
+    """Build metadata dict for one API profile."""
+    entry = (cost_map or {}).get(model_id) if model_id else None
+    meta = metadata_from_cost_entry(entry)
+    if not meta.get("source"):
+        meta["source"] = "curated_fallback"
+    meta = apply_metadata_fallbacks(api_key, meta)
+    meta["synced_at"] = synced_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return meta
+
+
+def sync_metadata_in_data(data, provider, cost_map=None, synced_at=None):
+    """Merge metadata into apis.*; return count updated."""
+    if cost_map is None:
+        try:
+            cost_map = fetch_litellm_cost_map(provider)
+        except (urllib.error.URLError, urllib.error.HTTPError, ValueError, socket.timeout):
+            cost_map = {}
+    synced_at = synced_at or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    updated = 0
+    apis = data.get("apis") or {}
+    for key, entry in apis.items():
+        if not isinstance(entry, dict):
+            continue
+        model = entry.get("model")
+        if not isinstance(model, str) or not model.strip():
+            continue
+        entry["metadata"] = merge_api_metadata(key, model.strip(), cost_map, synced_at=synced_at)
+        updated += 1
+    if cost_map:
+        data["_metadata_catalog"] = {
+            "synced_at": synced_at,
+            "provider": data.get("default_provider"),
+            "source_url": litellm_cost_map_url(provider),
+            "entry_count": len(cost_map),
+        }
+    return updated
+
+
+def resolve_api_metadata(api_name, data=None):
+    """Return metadata dict for an API key (loads api-models.json if needed)."""
+
+    if data is None:
+        data = load_api_models()
+    _key, entry = get_api_entry(data, api_name)
+    meta = entry.get("metadata")
+    if isinstance(meta, dict) and meta.get("context_window"):
+        return apply_metadata_fallbacks(_key, meta)
+    model = entry.get("model")
+    return merge_api_metadata(_key, str(model or ""), {})
+
+
+def openai_model_object(model_id, metadata=None):
+    """OpenAI-compatible /v1/models row with optional token limits."""
+    obj = {
+        "id": str(model_id),
+        "object": "model",
+        "created": 1677610602,
+        "owned_by": "camc",
+    }
+    meta = metadata or {}
+    ctx = meta.get("context_window")
+    if ctx is not None:
+        obj["max_input_tokens"] = int(ctx)
+    out = meta.get("max_output_tokens")
+    if out is not None:
+        obj["max_output_tokens"] = int(out)
+    return obj
+
+
+def openai_models_list_response(model_id, metadata=None):
+    return {
+        "object": "list",
+        "data": [openai_model_object(model_id, metadata)],
+    }
+
+
+def claude_context_env_overrides(api_name, metadata=None):
+    """Env override so Claude Code auto-compact uses camc metadata context window."""
+    if metadata is None:
+        meta = resolve_api_metadata(api_name)
+    else:
+        meta = apply_metadata_fallbacks(api_name, metadata)
+    ctx = meta.get("context_window")
+    if ctx is None:
+        return {}
+    return {
+        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": str(int(ctx)),
+    }
+
+
+def load_codex_catalog_template(cache_path=None):
+    """Clone a known-good Codex model row from ~/.codex/models_cache.json."""
+    path = cache_path or CODEX_MODELS_CACHE_FILE
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r") as handle:
+            data = json.load(handle)
+    except (IOError, ValueError):
+        return None
+    for model in data.get("models") or []:
+        if isinstance(model, dict) and model.get("slug") == CODEX_CATALOG_TEMPLATE_SLUG:
+            return json.loads(json.dumps(model))
+    return None
+
+
+def codex_catalog_model(api_name, metadata=None, template=None):
+    """One Codex model_catalog.json entry (clone official template + overlay)."""
+    meta = apply_metadata_fallbacks(api_name, metadata or {})
+    slug = str(api_name)
+    ctx = int(meta.get("context_window") or DEFAULT_MAX_OUTPUT_TOKENS)
+    entry = template if template is not None else load_codex_catalog_template()
+    if not isinstance(entry, dict):
+        raise ValueError(
+            "Codex model catalog template %r not found in %s; run `codex` once "
+            "to populate models_cache.json"
+            % (CODEX_CATALOG_TEMPLATE_SLUG, CODEX_MODELS_CACHE_FILE)
+        )
+    entry = json.loads(json.dumps(entry))
+    entry["slug"] = slug
+    entry["display_name"] = DISPLAY_NAMES.get(slug, slug)
+    entry["description"] = "CAM Inference Hub proxy (%s)" % slug
+    entry["context_window"] = ctx
+    entry["max_context_window"] = ctx
+    entry["effective_context_window_percent"] = DEFAULT_EFFECTIVE_CONTEXT_PERCENT
+    entry["supported_reasoning_levels"] = list(meta.get("reasoning_levels") or [])
+    entry["supports_reasoning_summaries"] = bool(meta.get("supports_reasoning_summaries"))
+    entry["supports_parallel_tool_calls"] = bool(meta.get("supports_tools", True))
+    entry["supported_in_api"] = True
+    entry["visibility"] = "list"
+    entry["priority"] = 1000
+    if not entry.get("supported_reasoning_levels"):
+        entry["default_reasoning_level"] = "low"
+        entry["default_reasoning_summary"] = "none"
+    return entry
+
+
+def write_codex_model_catalog(catalog_path, api_name, metadata=None):
+    """Write ~/.cam/codex-api/camc-model-catalog.json for Codex --api."""
+    model = codex_catalog_model(api_name, metadata)
+    payload = {"models": [model]}
+    os.makedirs(os.path.dirname(catalog_path), exist_ok=True)
+    tmp = catalog_path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp, catalog_path)
+    return catalog_path
+
+
+def curated_api_keys():
+    return [key for key, _model, _aliases in CURATED_APIS]
 
 
 # ===========================================================================
@@ -7111,11 +8644,16 @@ PROXY_ROUTES = {
         "route": "completions_to_messages",
         "port": 18324,
     },
-    # Future codex --api:
-    # (PROTO_OPENAI_RESPONSES, PROTO_OPENAI_CHAT): {
-    #     "route": "completions_to_responses",
-    #     "port": 18325,
-    # },
+    (PROTO_OPENAI_RESPONSES, PROTO_OPENAI_CHAT): {
+        "route": "completions_to_responses",
+        "port": 18325,
+    },
+}
+
+# Debug proxy CLI: requested embedded route -> tool for resolve_run_plan().
+PROXY_ROUTE_TOOL = {
+    "completions_to_messages": "claude",
+    "completions_to_responses": "codex",
 }
 
 
@@ -7229,12 +8767,16 @@ def build_routing_plan(tool, provider, api_entry, api_key):
 # api_resolver
 # ===========================================================================
 
-# Supported today: Claude + curated Inference Hub models only.
-API_SUPPORTED_TOOLS = frozenset(["claude"])
+# Supported today: Claude + Codex with curated Inference Hub models.
+API_SUPPORTED_TOOLS = frozenset(["claude", "codex"])
 CURATED_API_KEYS = frozenset(key for key, _model, _aliases in CURATED_APIS)
 
 # One shared Claude Code config for all --api runs (onboarding once).
 CLAUDE_API_CONFIG_DIR = os.path.join(CAM_DIR, "claude-api")
+# Isolated Codex home — does not touch ~/.codex/ OAuth login.
+CODEX_API_CONFIG_DIR = os.path.join(CAM_DIR, "codex-api")
+CODEX_API_PROVIDER = "camc-ihub"
+CODEX_API_ENV_KEY = "CAMC_CODEX_API_KEY"
 
 
 def supported_api_models_text():
@@ -7254,9 +8796,8 @@ def validate_api_run(tool, api_key, api_entry=None):
     if tool not in API_SUPPORTED_TOOLS:
         raise ValueError(
             "--api is not supported for tool %r. "
-            "Only Claude is supported today: camc run -t claude --api NAME. "
-            "Codex and Cursor: use normal login without --api "
-            "(future Codex will use CODEX_HOME isolation; not implemented). "
+            "Supported today: camc run -t claude|codex --api NAME. "
+            "Cursor: use normal login without --api (not implemented). "
             "Supported models: %s."
             % (tool, supported_api_models_text())
         )
@@ -7328,6 +8869,49 @@ def ensure_claude_api_config_dir():
     return CLAUDE_API_CONFIG_DIR
 
 
+def ensure_codex_api_config_dir(base_url, api_name):
+    """Seed ~/.cam/codex-api/ for Codex --api (isolated from ~/.codex/)."""
+
+    os.makedirs(CODEX_API_CONFIG_DIR, exist_ok=True)
+    base_url = str(base_url or "").rstrip("/")
+    if base_url and not base_url.endswith("/v1"):
+        base_url = base_url + "/v1"
+    api_name = str(api_name or "api")
+    catalog_path = os.path.join(CODEX_API_CONFIG_DIR, "camc-model-catalog.json")
+    metadata = resolve_api_metadata(api_name)
+    write_codex_model_catalog(catalog_path, api_name, metadata)
+    config_path = os.path.join(CODEX_API_CONFIG_DIR, "config.toml")
+    content = (
+        'model = "%s"\n'
+        'model_provider = "%s"\n'
+        'model_catalog_json = "%s"\n'
+        '\n'
+        '[model_providers.%s]\n'
+        'name = "CAM Inference Hub Proxy"\n'
+        'base_url = "%s"\n'
+        'env_key = "%s"\n'
+        'wire_api = "responses"\n'
+    ) % (
+        api_name,
+        CODEX_API_PROVIDER,
+        catalog_path,
+        CODEX_API_PROVIDER,
+        base_url,
+        CODEX_API_ENV_KEY,
+    )
+    try:
+        prev = ""
+        if os.path.isfile(config_path):
+            with open(config_path, "r") as f:
+                prev = f.read()
+        if prev != content:
+            with open(config_path, "w") as f:
+                f.write(content)
+    except IOError:
+        pass
+    return CODEX_API_CONFIG_DIR
+
+
 def resolve_run_plan(tool, api_name, no_api_proxy=False, proxy_debug=False):
     """Return plan dict for camc run --api."""
     data = ensure_ready()
@@ -7375,34 +8959,46 @@ def resolve_run_plan(tool, api_name, no_api_proxy=False, proxy_debug=False):
 
 def _build_env_overrides(tool, plan, provider, api_entry, client_model):
     env = {}
-    if tool != "claude":
-        return env
-
     base = plan["local_base_url"].rstrip("/")
     translator = plan.get("translator") or plan.get("mode")
-    env["ANTHROPIC_BASE_URL"] = base
-    env["ANTHROPIC_MODEL"] = client_model
-    env["CLAUDE_CONFIG_DIR"] = ensure_claude_api_config_dir()
 
-    if translator == TRANSLATOR_EMBEDDED:
-        # Real token goes to embedded proxy; Claude uses local placeholder.
-        env["ANTHROPIC_API_KEY"] = str(
-            api_entry.get("client_api_key")
-            or provider.get("client_api_key")
-            or "sk-camc-local"
-        )
-        env["ANTHROPIC_AUTH_TOKEN"] = ""
-    elif translator == TRANSLATOR_EXTERNAL:
-        env["ANTHROPIC_API_KEY"] = str(
-            api_entry.get("client_api_key")
-            or provider.get("client_api_key")
-            or "sk-camc-local"
-        )
-        env["ANTHROPIC_AUTH_TOKEN"] = ""
-    elif translator == TRANSLATOR_DIRECT:
-        # Caller merges resolved bearer token into env after resolve_run_plan.
-        env["ANTHROPIC_AUTH_TOKEN"] = ""
-        env["_API_USE_RESOLVED_TOKEN"] = "1"
+    if tool == "claude":
+        env["ANTHROPIC_BASE_URL"] = base
+        env["ANTHROPIC_MODEL"] = client_model
+        env["CLAUDE_CONFIG_DIR"] = ensure_claude_api_config_dir()
+        if translator == TRANSLATOR_EMBEDDED:
+            env["ANTHROPIC_API_KEY"] = str(
+                api_entry.get("client_api_key")
+                or provider.get("client_api_key")
+                or "sk-camc-local"
+            )
+            env["ANTHROPIC_AUTH_TOKEN"] = ""
+        elif translator == TRANSLATOR_EXTERNAL:
+            env["ANTHROPIC_API_KEY"] = str(
+                api_entry.get("client_api_key")
+                or provider.get("client_api_key")
+                or "sk-camc-local"
+            )
+            env["ANTHROPIC_AUTH_TOKEN"] = ""
+        elif translator == TRANSLATOR_DIRECT:
+            env["ANTHROPIC_AUTH_TOKEN"] = ""
+            env["_API_USE_RESOLVED_TOKEN"] = "1"
+        env.update(claude_context_env_overrides(client_model, api_entry.get("metadata")))
+        return env
+
+    if tool == "codex":
+        if translator == TRANSLATOR_EMBEDDED:
+            env[CODEX_API_ENV_KEY] = str(
+                api_entry.get("client_api_key")
+                or provider.get("client_api_key")
+                or "sk-camc-local"
+            )
+        elif translator == TRANSLATOR_DIRECT:
+            env["_API_USE_RESOLVED_TOKEN"] = "1"
+            env[CODEX_API_ENV_KEY] = ""
+        # CODEX_HOME + config.toml finalized after proxy port is known (cmd_run).
+        return env
+
     return env
 
 
@@ -7474,10 +9070,12 @@ def text_from_content(content):
         return "" if content is None else str(content)
     parts = []
     for part in content:
-        if isinstance(part, dict) and part.get("type") == "text":
-            text = part.get("text")
-            if isinstance(text, str):
-                parts.append(text)
+        if isinstance(part, dict):
+            typ = part.get("type")
+            if typ in ("text", "input_text", "output_text"):
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
         elif isinstance(part, str):
             parts.append(part)
     return "\n".join(x for x in parts if x)
@@ -7549,6 +9147,25 @@ def summarize_chat_response(raw):
         "has_tool_calls": bool(msg.get("tool_calls")),
         "content_len": len(str(msg.get("content") or "")),
     }
+
+
+def last_user_preview_responses(req, limit=120):
+    """Best-effort user text preview from a Responses API request."""
+    instructions = str(req.get("instructions") or "").strip()
+    if instructions:
+        return instructions[:limit]
+    inp = req.get("input")
+    if isinstance(inp, str) and inp.strip():
+        return inp.strip()[:limit]
+    if isinstance(inp, list):
+        for item in reversed(inp):
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "message" and item.get("role") == "user":
+                text = text_from_content(item.get("content"))
+                if text:
+                    return text[:limit]
+    return ""
 
 
 # ===========================================================================
@@ -7773,7 +9390,7 @@ def rewrite_anthropic_response(req, resp):
 # proxy.messages
 # ===========================================================================
 
-ROUTE = "completions_to_messages"
+MESSAGES_ROUTE = "completions_to_messages"
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -7966,7 +9583,7 @@ def chat_to_anthropic_message(req, chat_raw):
     }
 
 
-def sse_events(message):
+def messages_sse_events(message):
     start = dict(message)
     start["content"] = []
     start["stop_reason"] = None
@@ -8034,20 +9651,24 @@ def sse_events(message):
     return "".join(chunks).encode("utf-8")
 
 
-class Handler(BaseHTTPRequestHandler):
+class MessagesHandler(BaseHTTPRequestHandler):
     def _path(self):
         return urlparse(self.path).path.rstrip("/") or "/"
 
     def do_GET(self):
         path = self._path()
         if path in ("/", "/health", "/v1"):
-            self._send_json({"ok": True, "route": ROUTE})
+            self._send_json({"ok": True, "route": MESSAGES_ROUTE})
             return
         if path == "/v1/models":
-            self._send_json({
-                "object": "list",
-                "data": [{"id": self.server.model_alias, "object": "model"}],
-            })
+            meta = getattr(self.server, "model_metadata", None) or {}
+            if openai_models_list_response:
+                self._send_json(openai_models_list_response(self.server.model_alias, meta))
+            else:
+                self._send_json({
+                    "object": "list",
+                    "data": [{"id": self.server.model_alias, "object": "model"}],
+                })
             return
         self.send_error(404)
 
@@ -8062,9 +9683,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length") or "0")
             req = json_loads(self.rfile.read(length))
-            for key in list(req.keys()):
-                if key in DROP_ANTHROPIC_KEYS:
-                    req.pop(key, None)
+            dropped_keys = [k for k in list(req.keys()) if k in DROP_ANTHROPIC_KEYS]
+            for key in dropped_keys:
+                req.pop(key, None)
             stream = bool(req.get("stream"))
             client_model = str(req.get("model") or "")
             upstream_model = resolve_upstream_model(req.get("model"), self.server.upstream_model)
@@ -8078,6 +9699,7 @@ class Handler(BaseHTTPRequestHandler):
                 message_count=len(req.get("messages") or []),
                 tool_count=len(req.get("tools") or []),
                 user_preview=last_user_preview_messages(req),
+                dropped_keys=dropped_keys or None,
             )
             chat_payload = anthropic_messages_to_chat(req, upstream_model)
             raw = call_chat_completions(
@@ -8101,7 +9723,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
-                self.wfile.write(sse_events(msg))
+                self.wfile.write(messages_sse_events(msg))
                 self.wfile.flush()
             else:
                 self._send_json(msg)
@@ -8151,13 +9773,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, fmt, *args):
-        sys.stdout.write("[%s] %s - %s\n" % (ROUTE, self.address_string(), fmt % args))
+        sys.stdout.write("[%s] %s - %s\n" % (MESSAGES_ROUTE, self.address_string(), fmt % args))
         sys.stdout.flush()
 
 
-class Server(ThreadingHTTPServer):
+class MessagesServer(ThreadingHTTPServer):
     def __init__(self, addr, handler, api_key, model_alias, upstream_model,
-                 upstream_url, timeout, debug):
+                 upstream_url, timeout, debug, model_metadata=None):
         ThreadingHTTPServer.__init__(self, addr, handler)
         self.api_key = api_key
         self.model_alias = model_alias
@@ -8165,9 +9787,10 @@ class Server(ThreadingHTTPServer):
         self.upstream_url = upstream_url
         self.timeout = timeout
         self.debug = debug
+        self.model_metadata = model_metadata or {}
 
 
-def run_proxy(argv=None):
+def run_messages_proxy(argv=None):
     p = argparse.ArgumentParser(description="Route: chat/completions -> anthropic/messages")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=18324)
@@ -8178,6 +9801,7 @@ def run_proxy(argv=None):
     p.add_argument("--timeout", type=float, default=600.0)
     p.add_argument("--debug", action="store_true")
     p.add_argument("--debug-log", default="")
+    p.add_argument("--api-name", default="", help="API profile for model metadata")
     args = p.parse_args(argv)
 
     api_key = os.environ.get("INFERENCE_HUB_API_KEY", "").strip()
@@ -8187,17 +9811,24 @@ def run_proxy(argv=None):
         raise SystemExit("INFERENCE_HUB_API_KEY is required for proxy")
 
     upstream = resolve_upstream_model(args.upstream_model or args.model_alias, args.model_alias)
+    model_metadata = {}
+    if args.api_name and resolve_api_metadata:
+        try:
+            model_metadata = resolve_api_metadata(args.api_name)
+        except (ValueError, IOError, OSError):
+            model_metadata = {}
     debug_log = args.debug_log or os.path.join(LOGS_DIR, "proxy-messages-llm.jsonl")
-    debug = ProxyLogger(ROUTE, args.debug, debug_log)
-    httpd = Server(
+    debug = ProxyLogger(MESSAGES_ROUTE, args.debug, debug_log)
+    httpd = MessagesServer(
         (args.host, args.port),
-        Handler,
+        MessagesHandler,
         api_key=api_key,
         model_alias=args.model_alias,
         upstream_model=upstream,
         upstream_url=args.upstream_url,
         timeout=args.timeout,
         debug=debug,
+        model_metadata=model_metadata,
     )
     host, port = httpd.server_address[:2]
     if args.ready_file:
@@ -8205,7 +9836,510 @@ def run_proxy(argv=None):
             handle.write("%s:%s" % (host, port))
     sys.stdout.write(
         "[%s] http://%s:%s/v1/messages -> %s model=%s\n" % (
-            ROUTE, host, port, args.upstream_url, upstream)
+            MESSAGES_ROUTE, host, port, args.upstream_url, upstream)
+    )
+    sys.stdout.flush()
+    httpd.serve_forever()
+    return 0
+
+
+# ===========================================================================
+# proxy.responses
+# ===========================================================================
+
+RESPONSES_ROUTE = "completions_to_responses"
+NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
+
+SKIP_CHAT_FUNCTIONS = frozenset({
+    "shell_command",
+    "list_mcp_resources",
+    "list_mcp_resource_templates",
+    "read_mcp_resource",
+})
+
+PROXY_TOOL_HINT = (
+    "MCP tools are exposed as chat functions named mcp__<server>__<tool>. "
+    "Call the concrete mcp__... function directly instead of shell_command "
+    "or MCP resource-list/read helpers."
+)
+
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+
+
+def clean_ident(value):
+    return NAME_RE.sub("_", str(value or "")).strip("_")
+
+
+def namespace_ident(namespace):
+    raw = clean_ident(namespace)
+    if not raw:
+        return ""
+    if raw.startswith("mcp__"):
+        return raw
+    return "mcp__%s" % raw
+
+
+def flatten_name(namespace, name):
+    right = clean_ident(name) or "tool"
+    left = namespace_ident(namespace)
+    if not left:
+        return right[:64]
+    return ("%s__%s" % (left, right))[:64]
+
+
+def schema_for_chat(schema):
+    if isinstance(schema, dict) and schema:
+        return schema
+    return {"type": "object", "properties": {}}
+
+
+def translate_tools(tools):
+    chat_tools = []
+    reverse = {}
+    used = set()
+
+    def add_tool(namespace, tool):
+        name = str(tool.get("name") or "").strip()
+        if not name:
+            return
+        if namespace is None and name in SKIP_CHAT_FUNCTIONS:
+            return
+        flat = flatten_name(namespace, name)
+        base = flat
+        idx = 2
+        while flat in used:
+            suffix = "_%d" % idx
+            flat = "%s%s" % (base[:64 - len(suffix)], suffix)
+            idx += 1
+        used.add(flat)
+        reverse[flat] = (namespace, name)
+        desc = str(tool.get("description") or "")
+        if namespace:
+            flat_hint = flatten_name(namespace, name)
+            desc = (
+                "Tool name: %s\nOriginal namespace: %s.%s\n%s"
+                % (flat_hint, namespace, name, desc)
+            ).strip()
+        chat_tools.append({
+            "type": "function",
+            "function": {
+                "name": flat,
+                "description": desc,
+                "parameters": schema_for_chat(tool.get("parameters")),
+            },
+        })
+
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        typ = tool.get("type")
+        if typ == "function":
+            add_tool(None, tool)
+        elif typ == "namespace":
+            ns = str(tool.get("name") or "").strip() or None
+            for child in tool.get("tools") or []:
+                if isinstance(child, dict) and child.get("type") == "function":
+                    add_tool(ns, child)
+    return chat_tools, reverse
+
+
+def content_item_text(content):
+    if isinstance(content, list):
+        return text_from_content(content)
+    return "" if content is None else str(content)
+
+
+def translate_input(input_items, instructions, reverse):
+    messages = []
+    system_parts = [x for x in (instructions, PROXY_TOOL_HINT) if x]
+    if system_parts:
+        messages.append({"role": "system", "content": "\n\n".join(system_parts)})
+    if isinstance(input_items, str):
+        messages.append({"role": "user", "content": input_items})
+        return messages
+    if not isinstance(input_items, list):
+        return messages
+
+    for item in input_items:
+        if not isinstance(item, dict):
+            continue
+        typ = item.get("type")
+        if typ == "message":
+            role = str(item.get("role") or "user")
+            if role == "developer":
+                role = "system"
+            if role not in ("system", "user", "assistant", "tool"):
+                role = "user"
+            messages.append({
+                "role": role,
+                "content": content_item_text(item.get("content")),
+            })
+        elif typ == "function_call":
+            name = str(item.get("name") or "")
+            namespace = item.get("namespace")
+            if namespace:
+                flat = flatten_name(str(namespace), name)
+            else:
+                flat = flatten_name(None, name)
+            call_id = str(item.get("call_id") or item.get("id") or "call_%d" % (len(messages) + 1))
+            messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": flat,
+                        "arguments": str(item.get("arguments") or "{}"),
+                    },
+                }],
+            })
+        elif typ == "function_call_output":
+            messages.append({
+                "role": "tool",
+                "tool_call_id": str(item.get("call_id") or ""),
+                "content": content_item_text(item.get("output")),
+            })
+    return messages
+
+
+def build_chat_payload(req, upstream_model):
+    chat_tools, reverse = translate_tools(req.get("tools") or [])
+    payload = {
+        "model": upstream_model,
+        "messages": translate_input(
+            req.get("input"),
+            str(req.get("instructions") or ""),
+            reverse,
+        ),
+    }
+    if chat_tools:
+        payload["tools"] = chat_tools
+        payload["tool_choice"] = (
+            "auto" if req.get("tool_choice") in (None, "auto") else req.get("tool_choice")
+        )
+        payload["parallel_tool_calls"] = bool(req.get("parallel_tool_calls", False))
+    max_tokens = req.get("max_output_tokens") or req.get("max_tokens")
+    if max_tokens:
+        payload["max_tokens"] = int(max_tokens)
+    return payload, reverse
+
+
+def split_flat_mcp_name(flat):
+    if flat.startswith("mcp__"):
+        parts = flat.split("__", 2)
+        if len(parts) == 3 and parts[1] and parts[2]:
+            return "mcp__%s" % parts[1], parts[2]
+    return None, flat
+
+
+def textual_tool_call_items(content, reverse):
+    text = "" if content is None else str(content)
+    output = []
+    for idx, match in enumerate(TOOL_CALL_RE.finditer(text), start=1):
+        raw_name = match.group("name").strip()
+        flat = clean_ident(raw_name) or raw_name
+        namespace, name = reverse.get(flat, split_flat_mcp_name(flat))
+        args = {}
+        for arg in ARG_RE.finditer(match.group("body")):
+            key = arg.group("key").strip()
+            if key:
+                args[key] = arg.group("value").strip()
+        item = {
+            "id": "call_%d" % idx,
+            "type": "function_call",
+            "status": "completed",
+            "call_id": "call_%d" % idx,
+            "name": name,
+            "arguments": json_dumps(args),
+        }
+        if namespace:
+            item["namespace"] = namespace
+        output.append(item)
+    return output, TOOL_CALL_RE.sub("", text).strip()
+
+
+def responses_output_from_chat(raw, reverse):
+    choices = raw.get("choices") or []
+    msg = ((choices[0] or {}).get("message") or {}) if choices else {}
+    output = []
+    for idx, call in enumerate(msg.get("tool_calls") or []):
+        fn = call.get("function") or {}
+        flat = str(fn.get("name") or "")
+        namespace, name = reverse.get(flat, split_flat_mcp_name(flat))
+        item = {
+            "id": str(call.get("id") or "call_%d" % (idx + 1)),
+            "type": "function_call",
+            "status": "completed",
+            "call_id": str(call.get("id") or "call_%d" % (idx + 1)),
+            "name": name,
+            "arguments": str(fn.get("arguments") or "{}"),
+        }
+        if namespace:
+            item["namespace"] = namespace
+        output.append(item)
+    content = msg.get("content")
+    if content:
+        text_calls, remaining = textual_tool_call_items(content, reverse)
+        output.extend(text_calls)
+        if remaining:
+            output.append({
+                "id": "msg_1",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": remaining}],
+            })
+    return output
+
+
+def responses_payload(req, chat_raw, reverse):
+    usage = chat_raw.get("usage") or {}
+    output = responses_output_from_chat(chat_raw, reverse)
+    return {
+        "id": str(chat_raw.get("id") or "resp_%d" % int(time.time() * 1000)),
+        "object": "response",
+        "created_at": int(time.time()),
+        "status": "completed",
+        "model": req.get("model"),
+        "output": output,
+        "usage": {
+            "input_tokens": int(usage.get("prompt_tokens") or 0),
+            "output_tokens": int(usage.get("completion_tokens") or 0),
+            "total_tokens": int(usage.get("total_tokens") or 0),
+        },
+    }
+
+
+def responses_sse_events(resp):
+    events = [
+        {"type": "response.created", "response": dict(resp, status="in_progress", output=[])},
+    ]
+    for idx, item in enumerate(resp.get("output") or []):
+        events.append({
+            "type": "response.output_item.added",
+            "output_index": idx,
+            "item": item,
+        })
+        if item.get("type") == "message":
+            text = text_from_content(item.get("content"))
+            events.append({
+                "type": "response.content_part.added",
+                "output_index": idx,
+                "item_id": item.get("id"),
+                "content_index": 0,
+                "part": {"type": "output_text", "text": ""},
+            })
+            if text:
+                events.append({
+                    "type": "response.output_text.delta",
+                    "output_index": idx,
+                    "item_id": item.get("id"),
+                    "content_index": 0,
+                    "delta": text,
+                })
+            events.append({
+                "type": "response.output_text.done",
+                "output_index": idx,
+                "item_id": item.get("id"),
+                "content_index": 0,
+                "text": text,
+            })
+            events.append({
+                "type": "response.content_part.done",
+                "output_index": idx,
+                "item_id": item.get("id"),
+                "content_index": 0,
+                "part": {"type": "output_text", "text": text},
+            })
+        events.append({
+            "type": "response.output_item.done",
+            "output_index": idx,
+            "item": item,
+        })
+    events.append({"type": "response.completed", "response": resp})
+    return "".join(
+        "event: %s\ndata: %s\n\n" % (e["type"], json_dumps(e)) for e in events
+    ).encode("utf-8")
+
+
+class ResponsesHandler(BaseHTTPRequestHandler):
+    def _path(self):
+        return urlparse(self.path).path.rstrip("/") or "/"
+
+    def do_GET(self):
+        path = self._path()
+        if path in ("/", "/health", "/v1"):
+            self._send_json({"ok": True, "route": RESPONSES_ROUTE})
+            return
+        if path == "/v1/models":
+            meta = getattr(self.server, "model_metadata", None) or {}
+            if openai_models_list_response:
+                self._send_json(openai_models_list_response(self.server.model_alias, meta))
+            else:
+                self._send_json({
+                    "object": "list",
+                    "data": [{"id": self.server.model_alias, "object": "model"}],
+                })
+            return
+        self.send_error(404)
+
+    def do_POST(self):
+        if self._path() != "/v1/responses":
+            self.send_error(404)
+            return
+        timer = RequestTimer()
+        client_model = ""
+        upstream_model = ""
+        stream = False
+        try:
+            length = int(self.headers.get("Content-Length") or "0")
+            req = json_loads(self.rfile.read(length))
+            client_model = str(req.get("model") or "")
+            upstream_model = resolve_upstream_model(req.get("model"), self.server.upstream_model)
+            stream = bool(req.get("stream"))
+            self.server.debug.log(
+                "request_start",
+                path=self.path,
+                client_model=client_model,
+                upstream_model=upstream_model,
+                stream=stream,
+                max_tokens=req.get("max_output_tokens") or req.get("max_tokens"),
+                input_items=len(req.get("input") or []) if isinstance(req.get("input"), list) else 1,
+                tool_count=len(req.get("tools") or []),
+                user_preview=last_user_preview_responses(req),
+            )
+            chat_payload, reverse = build_chat_payload(req, upstream_model)
+            raw = call_chat_completions(
+                chat_payload, self.server.api_key, self.server.timeout,
+                url=self.server.upstream_url,
+            )
+            resp = responses_payload(req, raw, reverse)
+            self.server.debug.log(
+                "request_done",
+                path=self.path,
+                client_model=client_model,
+                upstream_model=upstream_model,
+                stream=stream,
+                latency_ms=timer.elapsed_ms,
+                response_id=resp.get("id"),
+                output_items=len(resp.get("output") or []),
+                usage=resp.get("usage") or {},
+                **summarize_chat_response(raw)
+            )
+            if stream:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(responses_sse_events(resp))
+                self.wfile.flush()
+            else:
+                self._send_json(resp)
+        except urllib.error.HTTPError as exc:
+            detail = upstream_error_detail(exc)[:500]
+            self.server.debug.log(
+                "request_error",
+                path=self.path,
+                client_model=client_model,
+                upstream_model=upstream_model,
+                stream=stream,
+                latency_ms=timer.elapsed_ms,
+                status=exc.code,
+                error=detail,
+            )
+            self._send_json({"error": {"message": detail}}, status=exc.code)
+        except Exception as exc:
+            detail = str(exc)
+            self.server.debug.log(
+                "request_error",
+                path=self.path,
+                client_model=client_model,
+                upstream_model=upstream_model,
+                stream=stream,
+                latency_ms=timer.elapsed_ms,
+                status=500,
+                error=detail,
+            )
+            self._send_json({"error": {"message": detail}}, status=500)
+
+    def _send_json(self, obj, status=200):
+        self._send_bytes(json_dumps(obj).encode("utf-8"), "application/json", status)
+
+    def _send_bytes(self, body, content_type, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        sys.stdout.write("[%s] %s - %s\n" % (RESPONSES_ROUTE, self.address_string(), fmt % args))
+        sys.stdout.flush()
+
+
+class ResponsesServer(ThreadingHTTPServer):
+    def __init__(self, addr, handler, api_key, model_alias, upstream_model,
+                 upstream_url, timeout, debug, model_metadata=None):
+        ThreadingHTTPServer.__init__(self, addr, handler)
+        self.api_key = api_key
+        self.model_alias = model_alias
+        self.upstream_model = upstream_model
+        self.upstream_url = upstream_url
+        self.timeout = timeout
+        self.debug = debug
+        self.model_metadata = model_metadata or {}
+
+
+def run_responses_proxy(argv=None):
+    p = argparse.ArgumentParser(description="Route: chat/completions -> openai/responses")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=18325)
+    p.add_argument("--model-alias", default="glm-5.1")
+    p.add_argument("--upstream-model", default="")
+    p.add_argument("--upstream-url", required=True)
+    p.add_argument("--ready-file", default="")
+    p.add_argument("--timeout", type=float, default=600.0)
+    p.add_argument("--debug", action="store_true")
+    p.add_argument("--debug-log", default="")
+    p.add_argument("--api-name", default="", help="API profile for model metadata")
+    args = p.parse_args(argv)
+
+    api_key = os.environ.get("INFERENCE_HUB_API_KEY", "").strip()
+    if not api_key:
+        api_key = os.environ.get("INFERENCE_HUB_TOKEN", "").strip()
+    if not api_key:
+        raise SystemExit("INFERENCE_HUB_API_KEY is required for proxy")
+
+    upstream = resolve_upstream_model(args.upstream_model or args.model_alias, args.model_alias)
+    model_metadata = {}
+    if args.api_name and resolve_api_metadata:
+        try:
+            model_metadata = resolve_api_metadata(args.api_name)
+        except (ValueError, IOError, OSError):
+            model_metadata = {}
+    debug_log = args.debug_log or os.path.join(LOGS_DIR, "proxy-responses-llm.jsonl")
+    debug = ProxyLogger(RESPONSES_ROUTE, args.debug, debug_log)
+    httpd = ResponsesServer(
+        (args.host, args.port),
+        ResponsesHandler,
+        api_key=api_key,
+        model_alias=args.model_alias,
+        upstream_model=upstream,
+        upstream_url=args.upstream_url,
+        timeout=args.timeout,
+        debug=debug,
+        model_metadata=model_metadata,
+    )
+    host, port = httpd.server_address[:2]
+    if args.ready_file:
+        with open(args.ready_file, "w") as handle:
+            handle.write("%s:%s" % (host, port))
+    sys.stdout.write(
+        "[%s] http://%s:%s/v1/responses -> %s model=%s\n" % (
+            RESPONSES_ROUTE, host, port, args.upstream_url, upstream)
     )
     sys.stdout.flush()
     httpd.serve_forever()
@@ -8220,6 +10354,11 @@ ROUTE_DEFAULTS = {
     "completions_to_messages": {
         "port": 18324,
         "from_proto": "anthropic_messages",
+        "to_proto": "openai_chat_completions",
+    },
+    "completions_to_responses": {
+        "port": 18325,
+        "from_proto": "openai_responses",
         "to_proto": "openai_chat_completions",
     },
 }
@@ -8261,12 +10400,23 @@ def _pid_alive(pid):
 
 
 def _health_ok(port, timeout=1.0):
+    return _health_route(port, timeout) is not None
+
+
+def _health_route(port, timeout=1.0):
     url = "http://127.0.0.1:%d/health" % int(port)
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
-            return resp.status == 200
-    except (urllib.error.URLError, urllib.error.HTTPError, ValueError):
-        return False
+            if resp.status != 200:
+                return None
+            raw = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(raw) if raw else {}
+            if not isinstance(data, dict) or not data.get("ok"):
+                return None
+            route = data.get("route")
+            return route if route else None
+    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, TypeError):
+        return None
 
 
 def _camc_argv():
@@ -8277,7 +10427,7 @@ def _camc_argv():
 
 
 def _start_proxy(route, port, model_alias, upstream_model, upstream_url,
-                 proxy_debug=False, token=""):
+                 proxy_debug=False, token="", api_name=""):
     os.makedirs(LOGS_DIR, exist_ok=True)
     ready_file = os.path.join(CAM_DIR, "proxy-ready-%s.tmp" % route)
     log_path = os.path.join(LOGS_DIR, "proxy-%s.log" % route)
@@ -8289,6 +10439,8 @@ def _start_proxy(route, port, model_alias, upstream_model, upstream_url,
         "--upstream-url", upstream_url,
         "--ready-file", ready_file,
     ]
+    if api_name:
+        argv.extend(["--api-name", api_name])
     if proxy_debug:
         argv.append("--debug")
 
@@ -8353,6 +10505,31 @@ def ensure_proxy(plan, token):
         if not rec.get("pid") and _health_ok(rec.get("port") or port):
             return int(rec.get("port") or port), rec
 
+    # Reuse an already-listening proxy on this port when health reports the same
+    # route and no other upstream is registered for that port+route.
+    if _health_route(port) == route:
+        conflict = any(
+            r.get("port") == port
+            and r.get("route") == route
+            and r.get("upstream_url") not in ("", upstream_url)
+            for r in runs.values()
+        )
+        if not conflict:
+            rec = {
+                "route": route,
+                "port": port,
+                "pid": None,
+                "upstream_url": upstream_url,
+                "model": plan.get("model"),
+                "api": plan.get("name"),
+                "log": os.path.join(LOGS_DIR, "proxy-%s.log" % route),
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "reused": True,
+            }
+            runs[key] = rec
+            _save_runs(runs)
+            return port, rec
+
     pid, log_path = _start_proxy(
         route=route,
         port=port,
@@ -8361,6 +10538,7 @@ def ensure_proxy(plan, token):
         upstream_url=upstream_url,
         proxy_debug=bool(plan.get("proxy_debug")),
         token=token,
+        api_name=plan.get("name") or "",
     )
     rec = {
         "route": route,
@@ -8420,50 +10598,160 @@ def proxy_stop(route=None):
 # cli
 # ===========================================================================
 
-def _ensure_logs_on_scratch():
-    """Move ~/.cam/logs to scratch if available. Silent, idempotent."""
-    logs_dir = os.path.join(os.path.expanduser("~"), ".cam", "logs")
-    if os.path.islink(logs_dir):
-        return  # Already done
-    if not os.path.isdir(logs_dir):
-        return  # No logs dir yet
-    # Find scratch
+_PHASE1_STORAGE_RELPATHS = (
+    "logs",
+    "archives",
+    os.path.join("cron", "logs"),
+    os.path.join("cron", "archive"),
+)
+
+
+def _mkdir_p(path):
+    try:
+        os.makedirs(path)
+    except OSError:
+        if not os.path.isdir(path):
+            raise
+
+
+def _is_writable_dir(path):
+    try:
+        _mkdir_p(path)
+        probe = os.path.join(path, ".camc-write-test-%d" % os.getpid())
+        with open(probe, "w") as f:
+            f.write("ok")
+        try:
+            os.unlink(probe)
+        except OSError:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _find_phase1_storage_root():
+    """Return an external data root for Phase 1 storage, or None.
+
+    CAMC_DATA_DIR is the explicit override. If unset, detect common
+    scratch roots. All failures are non-fatal: this runs at camc
+    startup and must never block the user's command.
+    """
+    explicit = os.environ.get("CAMC_DATA_DIR")
+    if explicit:
+        root = os.path.expanduser(explicit)
+        return root if _is_writable_dir(root) else None
+
     user = os.environ.get("USER", "")
     if not user:
-        return
-    scratch = None
-    # Try ypcat (NIS)
+        return None
+
+    # Try NIS auto.home first. This is best-effort only.
     try:
         out = subprocess.check_output(
-            ["ypcat", "-k", "auto.home"], timeout=5, stderr=subprocess.DEVNULL
+            ["ypcat", "-k", "auto.home"], timeout=5,
+            stderr=subprocess.DEVNULL
         ).decode("utf-8", errors="replace")
         for line in out.splitlines():
             if line.startswith("scratch.%s" % user):
-                scratch = "/home/%s" % line.split()[0]
-                break
+                candidate = "/home/%s" % line.split()[0]
+                if _is_writable_dir(candidate):
+                    return candidate
     except Exception:
         pass
-    # Fallback: check common paths
-    if not scratch:
-        for suffix in ["_gpu", "", "_gpu_1", "_gpu_2"]:
-            candidate = "/home/scratch.%s%s" % (user, suffix)
-            if os.path.isdir(candidate):
-                scratch = candidate
-                break
-    if not scratch or not os.path.isdir(scratch):
-        return
-    dst = os.path.join(scratch, ".cam", "logs")
+
+    for suffix in ("_gpu", "", "_gpu_1", "_gpu_2"):
+        candidate = "/home/scratch.%s%s" % (user, suffix)
+        if os.path.isdir(candidate) and _is_writable_dir(candidate):
+            return candidate
+    return None
+
+
+def _copy_tree_contents(src, dst):
+    """Copy src directory contents into dst. Raise on any copy error."""
+    _mkdir_p(dst)
+    for root, dirs, files in os.walk(src):
+        rel = os.path.relpath(root, src)
+        target_root = dst if rel == "." else os.path.join(dst, rel)
+        _mkdir_p(target_root)
+        for d in dirs:
+            source_dir = os.path.join(root, d)
+            if os.path.islink(source_dir):
+                continue
+            _mkdir_p(os.path.join(target_root, d))
+        for name in files:
+            source_file = os.path.join(root, name)
+            target_file = os.path.join(target_root, name)
+            if os.path.isdir(source_file):
+                continue
+            shutil.copy2(source_file, target_file)
+
+
+def _relocate_camc_dir_best_effort(relpath, root):
+    """Best-effort symlink relocation for one ~/.cam subdirectory.
+
+    Safety rules:
+      * missing source: no-op
+      * existing symlink: no-op
+      * copy must succeed before source is renamed
+      * if symlink creation fails after rename, restore the original
+      * all exceptions are swallowed by caller
+    """
+    src = os.path.join(os.path.expanduser("~"), ".cam", relpath)
+    if os.path.islink(src) or not os.path.isdir(src):
+        return False
+    dst = os.path.join(root, ".cam", relpath)
     try:
-        os.makedirs(dst, exist_ok=True)
-        subprocess.run(["rsync", "-a", "--quiet", logs_dir + "/", dst + "/"],
-                       timeout=120, check=False)
-        tmp = "%s.old.%d" % (logs_dir, os.getpid())
-        os.rename(logs_dir, tmp)
-        os.symlink(dst, logs_dir)
-        subprocess.run(["rm", "-rf", tmp], timeout=30, check=False)
-        log.info("Moved logs to scratch: %s", dst)
+        if os.path.realpath(src) == os.path.realpath(dst):
+            return False
     except Exception:
-        pass  # Silent failure — don't break camc startup
+        pass
+
+    _copy_tree_contents(src, dst)
+
+    tmp = "%s.old.%d" % (src, os.getpid())
+    os.rename(src, tmp)
+    try:
+        os.symlink(dst, src)
+    except Exception:
+        try:
+            os.rename(tmp, src)
+        except Exception:
+            pass
+        return False
+    try:
+        shutil.rmtree(tmp)
+    except Exception:
+        pass
+    log.info("Moved camc %s to external storage: %s", relpath, dst)
+    return True
+
+
+def _ensure_phase1_storage():
+    """Phase 1 home-quota protection.
+
+    Move only heavy, non-critical runtime directories out of ~/.cam and
+    symlink them back. This is intentionally best-effort: if discovery,
+    copy, rename, symlink, or cleanup fails, camc continues exactly as
+    before. Small metadata/config stays in ~/.cam.
+    """
+    root = _find_phase1_storage_root()
+    if not root:
+        return
+    for relpath in _PHASE1_STORAGE_RELPATHS:
+        try:
+            _relocate_camc_dir_best_effort(relpath, root)
+        except Exception:
+            # Never let storage relocation break camc startup.
+            pass
+
+
+def _ensure_logs_on_scratch():
+    """Backward-compatible entry point for Phase 1 storage relocation."""
+    try:
+        _ensure_phase1_storage()
+    except Exception:
+        # Never let home-quota protection break camc startup.
+        pass
 
 
 def _gen_agent_id():
@@ -8528,8 +10816,11 @@ def cmd_env(args):
     tool = getattr(args, "tool", None) or "claude"
     config = _load_config(tool)
     tool_binary = config.command[0] if config.command else None
-    context = _load_default_context()
-    env_setup = (context.get("env_setup") or None) if isinstance(context, dict) else None
+    # context.json is metadata only; it must not implicitly alter
+    # standalone camc runtime env. Default runtime env comes from the
+    # user's login shell unless an explicit future runtime profile is
+    # requested.
+    env_setup = None
     runtime = build_runtime_env(env_setup=env_setup)
     adapter_readiness = getattr(config, "readiness", None)
     readiness = check_tool_readiness(runtime, tool, tool_binary,
@@ -8889,7 +11180,7 @@ _TOOL_HINTS = {
 
 
 def _preflight(tool, tool_binary, workdir, env_setup=None, runtime=None,
-               adapter_readiness=None):
+               adapter_readiness=None, use_env_tool=False):
     """Tool readiness (via runtime_env) + local writable-dir checks.
 
     Returns ``(issues, resolved)`` — a list of (level, message) tuples
@@ -8911,7 +11202,8 @@ def _preflight(tool, tool_binary, workdir, env_setup=None, runtime=None,
     if runtime is None:
         runtime = build_runtime_env(env_setup=env_setup)
     readiness = check_tool_readiness(runtime, tool, tool_binary,
-                                     readiness=adapter_readiness)
+                                     readiness=adapter_readiness,
+                                     use_env_tool=use_env_tool)
     issues = list(readiness["issues"])
 
     # workdir accessible
@@ -8946,16 +11238,30 @@ def cmd_run(args):
     workdir = os.path.abspath(args.path)
     os.makedirs(workdir, exist_ok=True)
     config = _load_config(tool)
-
+    # Load context for agent metadata only. context.env_setup must not
+    # implicitly change every standalone camc run. If runtime setup is
+    # needed, it must be explicit (future --env-profile / --env-setup).
     context = _load_default_context()
-    env_setup = context.get("env_setup") or None
+    env_setup = None
 
     # F-08: build the effective runtime env ONCE, share it across
     # preflight + tmux launch so PATH-related checks can't pass at
     # preflight and then fail in tmux (or vice versa).
     runtime = build_runtime_env(env_setup=env_setup)
     api_plan = None
-    api_name = getattr(args, "api", None)
+    cli_api = getattr(args, "api", None)
+    api_name = None
+    api_source = "login"
+    if cli_api or not getattr(args, "no_default_api", False):
+        try:
+            api_name, api_source = resolve_run_api_name(
+                tool,
+                cli_api=cli_api,
+                no_default_api=bool(getattr(args, "no_default_api", False)),
+            )
+        except ValueError as e:
+            print_error(str(e))
+            sys.exit(1)
     if api_name:
         try:
             api_plan = resolve_run_plan(
@@ -8992,30 +11298,43 @@ def cmd_run(args):
                 overrides = api_plan.get("env") or {}
                 if tool == "claude":
                     overrides["ANTHROPIC_BASE_URL"] = base
+                elif tool == "codex":
+                    overrides["CODEX_HOME"] = ensure_codex_api_config_dir(
+                        base + "/v1", api_plan.get("name") or "api")
                 api_plan["env"] = overrides
         elif api_plan.get("env", {}).get("_API_USE_RESOLVED_TOKEN") == "1":
             overrides = dict(api_plan.get("env") or {})
             overrides.pop("_API_USE_RESOLVED_TOKEN", None)
-            overrides["ANTHROPIC_API_KEY"] = token
+            if tool == "claude":
+                overrides["ANTHROPIC_API_KEY"] = token
+            elif tool == "codex":
+                overrides[CODEX_API_ENV_KEY] = token
             api_plan["env"] = overrides
         for key, val in (api_plan.get("env") or {}).items():
             if val == "":
                 runtime.env.pop(key, None)
             else:
                 runtime.env[key] = val
-        print_info("API %s via %s/%s (token: %s)" % (
+        src_bits = []
+        if api_source == "default":
+            src_bits.append("default")
+        if token:
+            src_bits.append("token: %s" % token_src)
+        print_info("API %s via %s/%s (%s)" % (
             api_plan.get("name"),
             api_plan.get("translator") or api_plan.get("mode"),
             api_plan.get("upstream_protocol"),
-            token_src if token else "none"))
+            ", ".join(src_bits) if src_bits else "none"))
     tool_binary = config.command[0] if config.command else None
     # F-08 (adapter-owned): prefer the adapter's [readiness] block
     # over runtime_env's hardcoded _TOOL_SPECS fallback. None when
     # the adapter doesn't declare [readiness] — fallback kicks in.
     adapter_readiness = getattr(config, "readiness", None)
+    use_env_tool = bool(getattr(args, "use_env_tool", False))
     issues, resolved = _preflight(tool, tool_binary, workdir,
                                   env_setup=env_setup, runtime=runtime,
-                                  adapter_readiness=adapter_readiness)
+                                  adapter_readiness=adapter_readiness,
+                                  use_env_tool=use_env_tool)
     has_error = False
     for level, msg in issues:
         if level == "error":
@@ -9087,6 +11406,58 @@ def cmd_run(args):
             launch_cmd += ["--session-id", session_uuid]
 
     inherit_env = not getattr(args, "no_inherit_env", False)
+
+    # 2026-06-23 PDX hotfix (NARROW): rewrite launch_cmd to use the
+    # ABSOLUTE executable path that readiness just resolved. This
+    # eliminates the "works in preflight, fails in launch" PATH
+    # discrepancy without changing the default startup mode.
+    #
+    # Shape of resolved (from runtime_env.check_tool_readiness):
+    #   resolved["tool"]  -> str | None   (absolute selected-tool path)
+    #
+    # Cases:
+    #   codex:  launch_cmd == ["codex", "-c", "features.goals=true"]
+    #     -> replace launch_cmd[0] with the resolved absolute path
+    #   claude: launch_cmd == ["env", "CLAUDE_CODE_DISABLE_MOUSE=1",
+    #                          "claude", "--allowed-tools", "..."]
+    #     -> walk past env-wrapper prefix tokens ('env' + KEY=VAL
+    #        assignments) and replace the first executable name.
+    #   cursor: launch_cmd[0] == "agent"   (cursor binary)
+    #     -> replace launch_cmd[0] if it matches the expected tool
+    #        binary name; otherwise leave alone.
+    #
+    # Preserves env prefixes (so CLAUDE_CODE_DISABLE_MOUSE still
+    # reaches the wrapped tool) and tool-flag tails verbatim.
+    resolved_bin = (resolved or {}).get("tool")
+    if resolved_bin and os.path.isabs(resolved_bin) and launch_cmd:
+        _expected_basename = os.path.basename(resolved_bin)
+        # Walk past `env` + `KEY=VAL` prefix tokens to find the tool
+        # invocation. The first token that is neither 'env' nor a
+        # KEY=VAL assignment is the executable slot.
+        _i = 0
+        if launch_cmd[0] == "env":
+            _i = 1
+            while _i < len(launch_cmd) and ("=" in launch_cmd[_i]
+                                            and not launch_cmd[_i].startswith("-")):
+                _i += 1
+        if _i < len(launch_cmd):
+            _tok = launch_cmd[_i]
+            # 2026-06-23 PDX hardening: also accept tool-alias names
+            # (cursor's CLI binary is named ``cursor-agent`` in newer
+            # packages and ``agent`` in older ones). Without the alias
+            # list, a cursor adapter using ``["agent", ...]`` would
+            # not get rewritten to the absolute ``cursor-agent`` path.
+            try:
+                _aliases = _alias_map.get(tool, (tool,))
+            except Exception:
+                _aliases = (tool,)
+            if _tok == _expected_basename or _tok == tool or _tok in _aliases:
+                launch_cmd = list(launch_cmd)  # don't mutate adapter's list
+                launch_cmd[_i] = resolved_bin
+                log.info(
+                    "Resolved %s binary: %s -> %s (slot %d in launch_cmd)",
+                    tool, _tok, resolved_bin, _i,
+                )
     # Ensure dirs exist
     for d in (LOGS_DIR, PIDS_DIR):
         try:
@@ -9099,9 +11470,19 @@ def cmd_run(args):
     # may be missing if preflight short-circuited (it doesn't — error
     # would have exited above), but fall back to TMUX_BIN defensively.
     resolved_tmux = resolved.get("tmux") or TMUX_BIN
+    # 2026-06-23 PDX hardening: ensure ~/.cam/configs/tmux.conf
+    # exists so the new tmux server starts with camc's config rather
+    # than the user's ~/.tmux.conf. Pass the resolved path through
+    # so the agent record's runtime manifest can capture it.
+    try:
+        camc_tmux_config = ensure_camc_tmux_config()
+    except Exception as e:
+        log.warning("ensure_camc_tmux_config failed: %s", e)
+        camc_tmux_config = ""
     if not create_tmux_session(session, launch_cmd, workdir,
                                env_setup=env_setup, inherit_env=inherit_env,
-                               env=runtime.env, tmux_bin=resolved_tmux):
+                               env=runtime.env, tmux_bin=resolved_tmux,
+                               tmux_config=camc_tmux_config):
         print_error("Failed to create tmux session for '%s'" % session)
         print_info("Debug: %s -u -S %s/%s.sock new-session -d -s %s -c %s" %
                    (resolved_tmux, SOCKETS_DIR, session, session, workdir))
@@ -9163,6 +11544,39 @@ def cmd_run(args):
             "route": api_plan.get("route"),
             "base_url": api_plan.get("local_base_url"),
         }
+
+    # 2026-06-23 PDX hardening: stash a structured runtime manifest
+    # alongside the legacy top-level fields so later send/capture/
+    # attach (and remote diagnostic tools) can read the resolved tmux
+    # + tool + python facts the launch actually used. Legacy
+    # tmux_bin / tmux_version / tmux_socket above are preserved for
+    # back-compat with existing readers.
+    _tool_resolution = (resolved or {}).get("tool_resolution") or {}
+    _python_version = "%d.%d.%d" % (
+        sys.version_info[0], sys.version_info[1], sys.version_info[2])
+    agent_rec["runtime"] = {
+        "schema": "camc-runtime/1",
+        "python": {"bin": sys.executable, "version": _python_version},
+        "tmux": {
+            "bin":         tmux_bin_used,
+            "version":     tmux_ver_used,
+            "socket":      "%s/%s.sock" % (SOCKETS_DIR, session),
+            "config":      camc_tmux_config,
+            "config_mode": "camc-default" if camc_tmux_config else "system-default",
+            "source":      (resolved or {}).get("tmux_source", "unknown"),
+        },
+        "tool": {
+            "name":     tool,
+            "bin":      _tool_resolution.get("bin") or (resolved or {}).get("tool", ""),
+            "version":  "",
+            "source":   _tool_resolution.get("source", "unknown"),
+            "warnings": list(_tool_resolution.get("warnings", []) or []),
+        },
+        "shell": {
+            "mode": "tmux-default-shell",
+            "note": "launch argv uses absolute tool path",
+        },
+    }
     store.save(agent_rec)
 
     # Spawn background monitor (boot + tool TOML during initializing).
@@ -13431,19 +15845,22 @@ def _cmd_cron_rm_loop(args):
 
 
 def cmd_api(args):
-    """API profile dispatch: list / check / proxy."""
+    """API profile dispatch: list / check / default / proxy."""
     sub = getattr(args, "api_cmd", None)
     if sub == "list":
         cmd_api_list(args)
     elif sub == "check":
         cmd_api_check(args)
+    elif sub == "default":
+        cmd_api_default(args)
     elif sub == "proxy":
         cmd_api_proxy(args)
     else:
         sys.stderr.write(
-            "usage: camc api {list,check,proxy} ...\n"
+            "usage: camc api {list,check,default,proxy} ...\n"
             "  list [--all]              list configured APIs\n"
             "  check                     ping provider and refresh enabled flags\n"
+            "  default {set,clear,show}  per-tool default API (empty = login)\n"
             "  proxy {start,status,logs,stop} ...   debug proxy controls\n"
         )
         sys.exit(1)
@@ -13477,11 +15894,76 @@ def cmd_api_check(args):
     if result.get("error") and not result.get("reachable"):
         print_error(result.get("error"))
         sys.exit(1)
-    print("Provider %s: reachable (%d models, token=%s)" % (
-        result.get("provider"), result.get("model_count"), result.get("token_source")))
+    print("Provider %s: reachable (%d models, token=%s, metadata=%d apis)" % (
+        result.get("provider"), result.get("model_count"), result.get("token_source"),
+        result.get("metadata_updated") or 0))
+    if result.get("metadata_error"):
+        print("  metadata sync: partial (%s)" % result.get("metadata_error"))
     for row in result.get("apis") or []:
         flag = "ok" if row.get("enabled") else "off"
         print("  %-18s %s (%s)" % (row.get("name"), flag, row.get("reason")))
+
+
+def cmd_api_default(args):
+    sub = getattr(args, "default_cmd", None)
+    if sub == "set":
+        cmd_api_default_set(args)
+    elif sub == "clear":
+        cmd_api_default_clear(args)
+    elif sub == "show":
+        cmd_api_default_show(args)
+    else:
+        sys.stderr.write(
+            "usage: camc api default {set,clear,show} ...\n"
+            "  set NAME --tool {claude,codex}\n"
+            "  clear --tool {claude,codex}\n"
+            "  show\n"
+        )
+        sys.exit(1)
+
+
+def cmd_api_default_set(args):
+    tool = getattr(args, "tool", None) or "claude"
+    name = getattr(args, "name", None)
+    if not name:
+        print_error("API name is required")
+        sys.exit(1)
+    data = ensure_ready()
+    try:
+        key = set_tool_default_api(data, tool, name)
+    except ValueError as e:
+        print_error(str(e))
+        sys.exit(1)
+    print("Default API for %s set to %s" % (tool, key))
+
+
+def cmd_api_default_clear(args):
+    tool = getattr(args, "tool", None)
+    if not tool:
+        print_error("--tool is required (claude or codex)")
+        sys.exit(1)
+    data = ensure_ready()
+    try:
+        clear_tool_default_api(data, tool)
+    except ValueError as e:
+        print_error(str(e))
+        sys.exit(1)
+    print("Default API cleared for %s (login path)" % tool)
+
+
+def cmd_api_default_show(args):
+    data = ensure_ready()
+    rows = list_tool_default_apis(data)
+    if _want_json(args):
+        print(json.dumps(rows, indent=2))
+        return
+    for row in rows:
+        if row.get("mode") == "login":
+            print("%-8s (login)" % row.get("tool"))
+            continue
+        flag = "enabled" if row.get("enabled") else "disabled"
+        print("%-8s %s (%s, %s)" % (
+            row.get("tool"), row.get("api"), flag, row.get("reason") or "unknown"))
 
 
 def cmd_api_proxy(args):
@@ -13520,10 +16002,15 @@ def cmd_api_proxy_start(args):
     model_alias = getattr(args, "model_alias", None)
 
     if api_name:
-        plan = resolve_run_plan("claude", api_name, proxy_debug=bool(args.debug))
+        tool = PROXY_ROUTE_TOOL.get(route)
+        if not tool:
+            print_error("no tool mapping for proxy route %r" % route)
+            sys.exit(1)
+        plan = resolve_run_plan(tool, api_name, proxy_debug=bool(args.debug))
         upstream_url = upstream_url or plan.get("upstream_url")
         upstream_model = upstream_model or plan.get("model") or api_name
         model_alias = model_alias or plan.get("name") or api_name
+        plan["route"] = route
         plan["proxy_port"] = port
         plan["proxy_debug"] = bool(args.debug)
     else:
@@ -13607,7 +16094,9 @@ def _run_proxy(argv):
     route = argv[1]
     rest = argv[2:]
     if route == "completions_to_messages":
-        run_proxy(rest)
+        run_messages_proxy(rest)
+    elif route == "completions_to_responses":
+        run_responses_proxy(rest)
         return
     sys.stderr.write("unknown proxy route: %s\n" % route)
     sys.exit(2)
@@ -14169,6 +16658,10 @@ def cmd_version(args):
 
 def cmd_capture(args):
     """Capture tmux screen output for an agent."""
+    if not args.id:
+        print("capture requires an agent id", file=sys.stderr)
+        sys.exit(2)
+
     store = AgentStore()
     a = store.get(args.id)
     if a:
@@ -14362,12 +16855,16 @@ examples:
                    metavar="SESSION_ID",
                    help="Resume an existing Claude session by ID (adds --resume to claude, skips prompt injection)")
     r.add_argument("--no-inherit-env", action="store_true", help="Legacy mode: wrap command with bash -c and env_setup")
+    r.add_argument("--use-env-tool", dest="use_env_tool", action="store_true",
+                   help="Advanced: skip golden tool paths (claude/codex/cursor stable+latest) and resolve from runtime PATH only. Useful for testing dev builds.")
     r.add_argument("--system-prompt", dest="system_prompt", default=None,
                    help="Inline system prompt; injected into CLAUDE.md/AGENTS.md in workdir before launch")
     r.add_argument("--system-file", dest="system_file", default=None,
                    help="Path to a file whose contents become the system prompt (overrides --system-prompt)")
     r.add_argument("--api", default=None, metavar="NAME",
                    help="API profile from ~/.cam/api-models.json (e.g. glm-5.1)")
+    r.add_argument("--no-default-api", dest="no_default_api", action="store_true",
+                   help="Skip per-tool default API; use normal OAuth/login")
     r.add_argument("--api-token", dest="api_token", default=None,
                    help="One-off bearer token (default: ~/.cam/token.env)")
     r.add_argument("--no-api-proxy", action="store_true",
@@ -14522,6 +17019,8 @@ examples:
     cap.add_argument("id", help="Agent ID (prefix match)")
     cap.add_argument("--lines", "-n", type=int, default=0,
                      help="Tail last N lines (default: 0 = full scrollback)")
+    cap.add_argument("--no-fast-path", action="store_true",
+                     help="Disable the shell fast path for this capture")
     cap.add_argument("--format", choices=("plain", "ansi"), default="plain",
                      help="plain (default, ANSI stripped) or ansi (preserve SGR style escapes)")
 
@@ -14532,6 +17031,8 @@ examples:
     snd.add_argument("--file", "-f", help="Read UTF-8 text to send from a file")
     snd.add_argument("--stdin", action="store_true", help="Read UTF-8 text to send from stdin")
     snd.add_argument("--no-enter", action="store_true", help="Don't send Enter after text")
+    snd.add_argument("--no-fast-path", action="store_true",
+                     help="Disable the shell fast path for this send")
 
     # key
     ky = sub.add_parser("key", help="Send a special key to agent tmux session")
@@ -14590,6 +17091,16 @@ examples:
     ap_ls = api_sub.add_parser("list", help="List configured APIs")
     ap_ls.add_argument("--all", action="store_true", help="Include disabled APIs")
     api_sub.add_parser("check", help="Ping provider and refresh enabled flags")
+    ap_def = api_sub.add_parser("default", help="Per-tool default API profile")
+    ap_def_sub = ap_def.add_subparsers(dest="default_cmd", parser_class=CamArgumentParser)
+    ap_def_set = ap_def_sub.add_parser("set", help="Set default API for a tool")
+    ap_def_set.add_argument("name", help="API profile name (e.g. glm-5.1)")
+    ap_def_set.add_argument("--tool", "-t", required=True, choices=["claude", "codex"],
+                            help="Tool to configure (codex empty = login)")
+    ap_def_clear = ap_def_sub.add_parser("clear", help="Clear default API (use login)")
+    ap_def_clear.add_argument("--tool", "-t", required=True, choices=["claude", "codex"])
+    ap_def_show = ap_def_sub.add_parser("show", help="Show per-tool default API settings")
+    ap_def_show.add_argument("--json", action="store_true", help="Output as JSON")
     ap_px = api_sub.add_parser("proxy", help=argparse.SUPPRESS)
     ap_px_sub = ap_px.add_subparsers(dest="proxy_cmd", parser_class=CamArgumentParser)
     ap_px_start = ap_px_sub.add_parser("start", help=argparse.SUPPRESS)
@@ -14757,8 +17268,11 @@ examples:
     if getattr(args, "verbose", False):
         logging.getLogger("camc").setLevel(logging.DEBUG)
 
-    # Auto-move logs to scratch if available (silent, one-time)
-    _ensure_logs_on_scratch()
+    # Phase 1 home-quota protection is best-effort only.
+    try:
+        _ensure_logs_on_scratch()
+    except Exception:
+        pass
 
     cmds = {
         "env": cmd_env,

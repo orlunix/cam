@@ -295,11 +295,14 @@ def test_check_tool_readiness_selected_tool_not_on_effective_path_is_error(tmp_p
     """Even if `claude` is on the test process's PATH (it is, on
     NVIDIA hosts), the readiness check looks at runtime.env['PATH']
     only. An empty runtime PATH must make `claude not found` an
-    error."""
+    error. 2026-06-23: golden paths neutralized for this test so PATH
+    fallback is exercised."""
     home = tmp_path / "home"
     home.mkdir()
     (home / ".claude.json").write_text("stub")
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(re_mod, "_GOLDEN_TMUX_PATHS", ())
+    monkeypatch.setattr(re_mod, "_GOLDEN_TOOL_PATHS", {})
     # Real claude IS on os.environ['PATH'] on the dev host. We
     # deliberately do NOT add it to the runtime env.
     empty = tmp_path / "empty"
@@ -307,8 +310,8 @@ def test_check_tool_readiness_selected_tool_not_on_effective_path_is_error(tmp_p
     rt = _rt_with_path(str(empty))
     r = re_mod.check_tool_readiness(rt, "claude")
     errors = [m for lvl, m in r["issues"] if lvl == "error"]
-    assert any("not found in effective PATH" in e and "claude" in e for e in errors), \
-        "Expected blocking 'claude not found in effective PATH' error: %r" % errors
+    assert any("not found" in e and "claude" in e for e in errors), \
+        "Expected blocking 'claude not found' error: %r" % errors
 
 
 # ---------------------------------------------------------------------------
@@ -376,11 +379,14 @@ def test_check_tool_readiness_version_probe_timeout_blocks(monkeypatch, tmp_path
 def test_check_tool_readiness_tmux_probe_failure_blocks(monkeypatch, tmp_path):
     """F2: when `tmux -V` exits non-zero, we cannot verify >= 2.4 →
     block. Previously this branch ran `if rc == 0 and out:` so a
-    failing probe was silently ignored."""
+    failing probe was silently ignored. 2026-06-23: neutralize
+    golden tmux path so PATH-resolved stub gets probed."""
     home = tmp_path / "home"
     home.mkdir()
     (home / ".claude.json").write_text("stub")
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(re_mod, "_GOLDEN_TMUX_PATHS", ())
+    monkeypatch.setattr(re_mod, "_GOLDEN_TOOL_PATHS", {})
     bindir = tmp_path / "bin"
     bindir.mkdir()
     # tmux stub that EXITS 1.
@@ -396,6 +402,13 @@ def test_check_tool_readiness_tmux_probe_failure_blocks(monkeypatch, tmp_path):
         "Expected blocking error when tmux -V exits non-zero: %r" % errors
 
 
+def _neutralize_golden(monkeypatch):
+    """2026-06-23 helper: zero out golden tmux + tool paths so tests
+    exercise the PATH fallback (which is what existing fixtures stub)."""
+    monkeypatch.setattr(re_mod, "_GOLDEN_TMUX_PATHS", ())
+    monkeypatch.setattr(re_mod, "_GOLDEN_TOOL_PATHS", {})
+
+
 def test_check_tool_readiness_tmux_version_unparseable_blocks(monkeypatch, tmp_path):
     """F2: when `tmux -V` exits 0 but the output has no parseable
     version string, we cannot verify >= 2.4 → block."""
@@ -403,6 +416,7 @@ def test_check_tool_readiness_tmux_version_unparseable_blocks(monkeypatch, tmp_p
     home.mkdir()
     (home / ".claude.json").write_text("stub")
     monkeypatch.setenv("HOME", str(home))
+    _neutralize_golden(monkeypatch)
     bindir = tmp_path / "bin"
     bindir.mkdir()
     # tmux stub that exits 0 with garbage output (no digits).
@@ -476,6 +490,47 @@ def test_create_tmux_session_uses_explicit_env_and_tmux_bin(monkeypatch):
     assert captured["env"]["PATH"] == "/custom/bin"
     # Nest markers stripped even when the caller forgets.
     assert "TMUX" not in captured["env"]
+
+
+def test_create_tmux_session_pastes_startup_command(monkeypatch):
+    """The default two-step launch must paste the startup command through
+    a tmux buffer. PDX tmux has been observed to drop the server on
+    send-keys -l before Enter, so startup injection should not use that
+    path when buffer paste succeeds.
+    """
+    run_calls = []
+
+    class _Proc(object):
+        returncode = 0
+        def communicate(self, timeout=None):
+            return (b"", b"")
+
+    monkeypatch.setattr(
+        transport.subprocess, "Popen",
+        lambda argv, **kwargs: _Proc())
+
+    def _fake_run(argv, **kwargs):
+        run_calls.append((list(argv), dict(kwargs)))
+        return (0, "")
+
+    monkeypatch.setattr(transport, "_run", _fake_run)
+
+    ok = transport.create_tmux_session(
+        "test-paste",
+        ["env", "CLAUDE_CODE_DISABLE_MOUSE=1", "claude", "--session-id",
+         "manualtest-0000-0000-0000-000000000000"],
+        "/tmp",
+        inherit_env=True,
+        tmux_bin="/opt/tmux/bin/tmux")
+
+    assert ok is True
+    argv_calls = [c[0] for c in run_calls]
+    assert any("set-buffer" in argv for argv in argv_calls)
+    assert any("paste-buffer" in argv for argv in argv_calls)
+    assert not any("send-keys" in argv and "-l" in argv
+                   for argv in argv_calls)
+    assert any(argv[-1] == "Enter" for argv in argv_calls
+               if "send-keys" in argv)
 
 
 # ---------------------------------------------------------------------------
@@ -581,6 +636,205 @@ def test_cmd_env_check_json_shape(tmp_path, monkeypatch, capsys):
         "cmd_env for claude must report readiness_source=adapter: %r" % body
 
 
+
+def test_cmd_env_check_ignores_context_env_setup(monkeypatch, capsys):
+    """context.json is metadata only; camc env check must not load or
+    apply context.env_setup to the runtime environment."""
+    captured = {}
+
+    def _bad_context():
+        raise AssertionError("cmd_env must not read context.json")
+
+    def _fake_build_runtime_env(**kwargs):
+        captured["env_setup"] = kwargs.get("env_setup")
+        return re_mod.RuntimeEnv(env={"PATH": "/usr/bin", "HOME": "/home/u"},
+                                 source="explicit", shell="/bin/csh",
+                                 path="/usr/bin")
+
+    def _fake_check(runtime, selected_tool, tool_binary=None, readiness=None,
+                    use_env_tool=False):
+        return {"issues": [],
+                "resolved": {"tmux": "/bin/tmux", "tool": "/bin/claude"},
+                "readiness_source": "adapter"}
+
+    monkeypatch.setattr(camc_cli, "_load_default_context", _bad_context)
+    monkeypatch.setattr(re_mod, "build_runtime_env", _fake_build_runtime_env)
+    monkeypatch.setattr(re_mod, "check_tool_readiness", _fake_check)
+
+    class _Args(object):
+        tool = "claude"
+        json = True
+        env_action = "check"
+
+    camc_cli.cmd_env(_Args())
+    body = json.loads(capsys.readouterr().out)
+    assert captured["env_setup"] is None
+    assert body["env_setup"] is None
+
+
+def test_cmd_run_ignores_context_env_setup(tmp_path, monkeypatch):
+    """camc run must not let ~/.cam/context.json env_setup alter
+    standalone agent runtime. Context is metadata only."""
+    captured = {}
+
+    def _fake_build_runtime_env(**kwargs):
+        captured["build_env_setup"] = kwargs.get("env_setup")
+        return re_mod.RuntimeEnv(env={"PATH": "/usr/bin", "HOME": "/home/u"},
+                                 source="explicit", shell="/bin/csh",
+                                 path="/usr/bin")
+
+    def _fake_preflight(tool, tool_binary, workdir, env_setup=None,
+                        runtime=None, adapter_readiness=None,
+                        use_env_tool=False):
+        captured["preflight_env_setup"] = env_setup
+        return [("error", "stop before launch")], {}
+
+    monkeypatch.setattr(re_mod, "build_runtime_env", _fake_build_runtime_env)
+    monkeypatch.setattr(camc_cli, "_load_default_context",
+                        lambda: {"env_setup": "source /home/hren/.bashrc"})
+    monkeypatch.setattr(camc_cli, "_preflight", _fake_preflight)
+
+    class _Args(object):
+        tool = "claude"
+        prompt = ""
+        path = str(tmp_path / "work")
+        no_inherit_env = False
+        use_env_tool = False
+        name = None
+        auto_exit = False
+        auto_exit_enable = False
+        tag = []
+        json = False
+        resume_session = None
+        system_prompt = None
+        system_file = None
+        api = None
+        no_default_api = True
+        api_token = None
+        no_api_proxy = False
+        proxy_debug = False
+
+    with pytest.raises(SystemExit):
+        camc_cli.cmd_run(_Args())
+    assert captured["build_env_setup"] is None
+    assert captured["preflight_env_setup"] is None
+
+
+def test_cmd_run_loads_context_for_metadata_only_after_launch(tmp_path, monkeypatch, capsys):
+    """Regression for PDX launch: cmd_run still needs context metadata
+    after tmux creation, but context.env_setup must not feed runtime env."""
+    captured = {}
+    logs = tmp_path / "logs"
+    pids = tmp_path / "pids"
+    monkeypatch.setattr(camc_cli, "LOGS_DIR", str(logs))
+    monkeypatch.setattr(camc_cli, "PIDS_DIR", str(pids))
+    monkeypatch.setattr(camc_cli, "_load_default_context",
+                        lambda: {"name": "ctx-pdx",
+                                 "host": "pdx.example",
+                                 "env_setup": "source /home/hren/.bashrc"})
+
+    def _fake_build_runtime_env(**kwargs):
+        captured["build_env_setup"] = kwargs.get("env_setup")
+        return re_mod.RuntimeEnv(env={"PATH": "/usr/bin", "HOME": "/home/u"},
+                                 source="explicit", shell="/bin/csh",
+                                 path="/usr/bin")
+
+    def _fake_preflight(tool, tool_binary, workdir, env_setup=None,
+                        runtime=None, adapter_readiness=None,
+                        use_env_tool=False):
+        captured["preflight_env_setup"] = env_setup
+        return [], {
+            "tmux": "/bin/tmux",
+            "tmux_source": "golden",
+            "tool": "/bin/claude",
+            "tool_resolution": {"bin": "/bin/claude",
+                                "source": "golden",
+                                "warnings": []},
+        }
+
+    def _fake_create(session, launch_cmd, workdir, **kwargs):
+        captured["create_env_setup"] = kwargs.get("env_setup")
+        captured["create_env"] = kwargs.get("env")
+        return True
+
+    class _Store(object):
+        def save(self, rec):
+            captured["agent_rec"] = rec
+        def update(self, agent_id, **kwargs):
+            captured["update"] = (agent_id, kwargs)
+
+    class _Proc(object):
+        pid = 12345
+
+    class _Args(object):
+        tool = "claude"
+        prompt = "hello"
+        path = str(tmp_path / "work")
+        no_inherit_env = False
+        use_env_tool = False
+        name = "pdx-test"
+        auto_exit = False
+        auto_exit_enable = False
+        tag = []
+        json = False
+        resume_session = None
+        system_prompt = None
+        system_file = None
+        api = None
+        no_default_api = True
+        api_token = None
+        no_api_proxy = False
+        proxy_debug = False
+
+    monkeypatch.setattr(re_mod, "build_runtime_env", _fake_build_runtime_env)
+    monkeypatch.setattr(camc_cli, "_preflight", _fake_preflight)
+    monkeypatch.setattr(camc_cli, "_gen_agent_id", lambda: "abc12345")
+    monkeypatch.setattr(camc_cli, "_build_command",
+                        lambda config, prompt, workdir: ["claude", prompt])
+    monkeypatch.setattr(camc_cli, "create_tmux_session", _fake_create)
+    monkeypatch.setattr(transport, "ensure_camc_tmux_config",
+                        lambda: str(tmp_path / "tmux.conf"))
+    monkeypatch.setattr(camc_cli.subprocess, "check_output",
+                        lambda *a, **kw: b"tmux 2.7")
+    monkeypatch.setattr(camc_cli.subprocess, "Popen",
+                        lambda *a, **kw: _Proc())
+    monkeypatch.setattr(camc_cli, "AgentStore", lambda: _Store())
+
+    camc_cli.cmd_run(_Args())
+    assert captured["build_env_setup"] is None
+    assert captured["preflight_env_setup"] is None
+    assert captured["create_env_setup"] is None
+    rec = captured["agent_rec"]
+    assert rec["context_name"] == "ctx-pdx"
+    assert rec["transport_type"] == "ssh"
+    assert rec["id"] == "abc12345"
+
+
+def test_scheduler_launch_ignores_context_env_setup(tmp_path, monkeypatch):
+    """Scheduler-launched agents follow the same rule: context.json is
+    metadata and must not inject env_setup into create_tmux_session."""
+    from camc_pkg import scheduler as camc_scheduler
+
+    captured = {}
+    monkeypatch.setattr(camc_scheduler, "_load_default_context",
+                        lambda: {"name": "ctx", "host": None,
+                                 "env_setup": "source /home/hren/.bashrc"})
+
+    def _fake_create(session, launch_cmd, workdir, env_setup=None,
+                     inherit_env=True, **kwargs):
+        captured["env_setup"] = env_setup
+        captured["inherit_env"] = inherit_env
+        return False
+
+    monkeypatch.setattr(camc_scheduler, "create_tmux_session", _fake_create)
+    out = camc_scheduler._launch_agent(
+        {"tool": "claude", "prompt": "", "name": "sched"},
+        str(tmp_path),
+    )
+    assert out is None
+    assert captured["env_setup"] is None
+    assert captured["inherit_env"] is True
+
 # ---------------------------------------------------------------------------
 # Adapter-owned readiness (preferred over hardcoded _TOOL_SPECS fallback)
 # ---------------------------------------------------------------------------
@@ -591,7 +845,7 @@ def test_adapter_config_parses_readiness_for_claude_codex_cursor():
     from camc_pkg.adapters import _load_config
     for tool, expected_binary in (("claude", "claude"),
                                   ("codex", "codex"),
-                                  ("cursor", "cursor")):
+                                  ("cursor", "cursor-agent")):
         cfg = _load_config(tool)
         rd = cfg.readiness
         assert rd is not None, "%s adapter must declare [readiness]" % tool
@@ -627,6 +881,7 @@ def test_check_tool_readiness_prefers_adapter_readiness_over_fallback(tmp_path, 
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    _neutralize_golden(monkeypatch)
     bindir = tmp_path / "bin"
     bindir.mkdir()
     # Provide tmux + widget_custom (the adapter-binary) + claude
@@ -761,9 +1016,11 @@ def test_cmd_run_passes_adapter_readiness_to_check(tmp_path, monkeypatch):
     Proved by monkeypatching check_tool_readiness and asserting the
     `readiness` kwarg arrived non-None for a tool that has [readiness]."""
     captured = {}
-    def _fake_check(runtime, selected_tool, tool_binary=None, readiness=None):
+    def _fake_check(runtime, selected_tool, tool_binary=None,
+                     readiness=None, use_env_tool=False):
         captured["readiness"] = readiness
         captured["tool"] = selected_tool
+        captured["use_env_tool"] = use_env_tool
         # Block on purpose so we don't proceed to tmux creation.
         return {"issues": [("error", "forced block for test")],
                 "resolved": {}, "readiness_source":

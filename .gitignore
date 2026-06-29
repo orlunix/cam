@@ -36,6 +36,7 @@ Thumbs.db
 # Build artifacts
 android/build/
 android/cam-release.keystore
+android/.upload-target
 
 # Log files
 scripts/*.log
