@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 
 from camc_pkg import CAM_DIR, LOGS_DIR
+from camc_pkg.api_metadata import sync_metadata_in_data
 
 API_MODELS_FILE = os.path.join(CAM_DIR, "api-models.json")
 PROXY_RUNS_FILE = os.path.join(CAM_DIR, "proxy-runs.json")
@@ -59,13 +60,22 @@ PROVIDER_TEMPLATES = {
 }
 
 CURATED_APIS = [
-    ("glm-5.1", "nvidia/zai-org/eccn-glm-5.1", ["glm", "glm51"]),
+    ("glm-5.2", "nvidia/zai-org/eccn-glm-5.2", ["glm", "glm52", "glm51", "glm-5.1"]),
     ("deepseek-v4-pro", "nvidia/deepseek-ai/eccn-deepseek-v4-pro", ["deepseek", "ds-v4"]),
     ("kimi-k2.6", "nvidia/moonshotai/eccn-kimi-k2.6", ["kimi", "k2.6"]),
-    ("minimax-m2.7", "nvidia/minimaxai/eccn-minimax-m2.7", ["minimax", "m2.7"]),
+    ("minimax-m3", "nvidia/minimaxai/eccn-minimax-m3", ["minimax", "m3", "m2.7", "minimax-m2.7"]),
     ("qwen3-5-397b", "nvidia/qwen/eccn-qwen3-5-397b-a17b", ["qwen397", "qwen3.5"]),
     ("nemotron-3-ultra", "nvidia/nvidia/eccn-nemotron-3-ultra", ["nemotron", "nemo-ultra"]),
 ]
+
+# Superseded curated profile keys → current key (defaults + api check merge).
+CURATED_LEGACY_MIGRATIONS = {
+    "glm-5.1": "glm-5.2",
+    "minimax-m2.7": "minimax-m3",
+}
+
+# Tools that may have a per-tool default API (empty = normal OAuth/login).
+DEFAULT_API_TOOLS = ("claude", "codex")
 
 
 def _default_seed():
@@ -79,7 +89,7 @@ def _default_seed():
         }
     return {
         "version": 1,
-        "default": "glm-5.1",
+        "default": "glm-5.2",
         "default_provider": DEFAULT_PROVIDER,
         "providers": {
             DEFAULT_PROVIDER: {
@@ -128,11 +138,40 @@ def save_api_models(data):
     os.replace(tmp, API_MODELS_FILE)
 
 
+def merge_curated_apis(data):
+    """Refresh curated IHUB profiles (model ids, aliases) and migrate legacy keys."""
+    apis = data.setdefault("apis", {})
+    curated_keys = set()
+    for key, model, aliases in CURATED_APIS:
+        curated_keys.add(key)
+        entry = apis.get(key)
+        if not isinstance(entry, dict):
+            entry = {}
+            apis[key] = entry
+        entry.setdefault("provider", DEFAULT_PROVIDER)
+        entry["model"] = model
+        entry["aliases"] = list(aliases)
+        entry.setdefault("enabled", False)
+    for old_key in list(apis.keys()):
+        if old_key in CURATED_LEGACY_MIGRATIONS and old_key not in curated_keys:
+            apis.pop(old_key, None)
+    legacy = data.get("default")
+    if legacy in CURATED_LEGACY_MIGRATIONS:
+        data["default"] = CURATED_LEGACY_MIGRATIONS[legacy]
+    defaults = data.get("defaults")
+    if isinstance(defaults, dict):
+        for tool, name in list(defaults.items()):
+            if name in CURATED_LEGACY_MIGRATIONS:
+                defaults[tool] = CURATED_LEGACY_MIGRATIONS[name]
+    rebuild_aliases(data)
+
+
 def ensure_ready():
     """Create seed file if missing; return data dict."""
     if os.path.isfile(API_MODELS_FILE):
         data = load_api_models()
-        rebuild_aliases(data)
+        merge_curated_apis(data)
+        save_api_models(data)
         return data
     data = _default_seed()
     save_api_models(data)
@@ -175,6 +214,97 @@ def resolve_api_name(data, name):
 def get_api_entry(data, name):
     key = resolve_api_name(data, name)
     return key, dict((data.get("apis") or {}).get(key) or {})
+
+
+def _normalize_default_name(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def resolve_tool_default_api(data, tool):
+    """Return opt-in run default from defaults.<tool>, or None for login path."""
+    if tool not in DEFAULT_API_TOOLS:
+        return None
+    defaults = data.get("defaults")
+    if not isinstance(defaults, dict) or tool not in defaults:
+        return None
+    return _normalize_default_name(defaults.get(tool))
+
+
+def list_tool_default_apis(data):
+    """Return per-tool default status rows for display/CLI."""
+    rows = []
+    for tool in DEFAULT_API_TOOLS:
+        name = resolve_tool_default_api(data, tool)
+        if not name:
+            rows.append({
+                "tool": tool,
+                "api": None,
+                "mode": "login",
+                "enabled": None,
+                "reason": None,
+            })
+            continue
+        key, entry = get_api_entry(data, name)
+        enabled = entry.get("enabled") is not False
+        rows.append({
+            "tool": tool,
+            "api": key,
+            "mode": "api",
+            "enabled": enabled,
+            "reason": entry.get("enabled_reason"),
+        })
+    return rows
+
+
+def set_tool_default_api(data, tool, api_name):
+    """Set defaults.<tool> to api_name; sync legacy top-level default for Claude."""
+    if tool not in DEFAULT_API_TOOLS:
+        raise ValueError("unsupported tool %r for default API (use: claude, codex)" % tool)
+    key = resolve_api_name(data, api_name)
+    defaults = data.get("defaults")
+    if not isinstance(defaults, dict):
+        defaults = {}
+        data["defaults"] = defaults
+    defaults[tool] = key
+    if tool == "claude":
+        data["default"] = key
+    save_api_models(data)
+    return key
+
+
+def clear_tool_default_api(data, tool):
+    """Clear defaults.<tool>; empty tool default means normal login."""
+    if tool not in DEFAULT_API_TOOLS:
+        raise ValueError("unsupported tool %r for default API (use: claude, codex)" % tool)
+    defaults = data.get("defaults")
+    if isinstance(defaults, dict) and tool in defaults:
+        defaults.pop(tool)
+    if tool == "claude":
+        data.pop("default", None)
+    save_api_models(data)
+
+
+def resolve_run_api_name(tool, cli_api=None, no_default_api=False, data=None):
+    """Pick API profile for camc run: explicit --api, tool default, or login."""
+    if cli_api:
+        return _normalize_default_name(cli_api), "cli"
+    if no_default_api:
+        return None, "login"
+    data = data or ensure_ready()
+    name = resolve_tool_default_api(data, tool)
+    if not name:
+        return None, "login"
+    key, entry = get_api_entry(data, name)
+    if entry.get("enabled") is False:
+        reason = entry.get("enabled_reason") or "disabled"
+        raise ValueError(
+            "Default API %r for tool %r is disabled (%s). Run: camc api check"
+            % (key, tool, reason)
+        )
+    return key, "default"
 
 
 def get_provider(data, provider_id):
@@ -291,6 +421,7 @@ def check_provider(data, token_resolver):
             result["error"] = str(exc)
             return result
 
+    merge_curated_apis(data)
     apis = data.get("apis") or {}
     for key, entry in apis.items():
         if not isinstance(entry, dict):
@@ -325,5 +456,19 @@ def check_provider(data, token_resolver):
             "provider": provider_id,
             "ids": sorted(ids),
         }
+
+    metadata_updated = 0
+    metadata_error = None
+    try:
+        metadata_updated = sync_metadata_in_data(data, provider)
+    except (urllib.error.URLError, urllib.error.HTTPError, socket.timeout, ValueError) as exc:
+        metadata_error = str(exc)
+        # Still apply fallbacks without cost map.
+        sync_metadata_in_data(data, provider, cost_map={})
+
+    result["metadata_updated"] = metadata_updated
+    if metadata_error:
+        result["metadata_error"] = metadata_error
+
     save_api_models(data)
     return result

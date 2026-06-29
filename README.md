@@ -89,8 +89,8 @@ cam run claude "Fix all lint errors" --auto-confirm --auto-exit
 ### Sync and Health Check
 
 ```bash
-cam sync                     # Deploy camc + configs to all remote machines
-cam sync my-context          # Deploy to a specific context
+cam sync                     # Sync after the camc release gate passes
+cam sync my-context          # Sync one context after the release gate passes
 cam heal                     # Check all agents, restart dead monitors (local + remote)
 ```
 
@@ -132,7 +132,7 @@ camc capture <id>                   # Capture terminal output
 camc send <id> --text "hello"       # Send text to agent
 ```
 
-Deploy via `cam sync` or manually: `scp dist/camc remote:~/.local/bin/camc`
+Deploy via `cam sync` or manually only after the release gate passes. Before publishing to any shared path such as `/home/prgn_share/bin/camc`, follow [docs/camc-release-checklist.md](docs/camc-release-checklist.md): the exact artifact must locally start Claude, Codex, and Cursor, complete a simple smoke prompt, and exit/cleanup successfully.
 
 Storage: `~/.cam/agents.json` (source of truth), `~/.cam/logs/monitor-<id>.log`, `~/.cam/events.jsonl`
 

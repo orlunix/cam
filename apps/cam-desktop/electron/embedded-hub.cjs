@@ -97,6 +97,8 @@ const state = {
   storePath:  null,
   outputCaptureCache: new Map(),
   remoteCamcReadyCache: new Map(),
+  agentSyncInFlight: false,
+  lastAgentSyncAt: 0,
 };
 
 function tokenFingerprint(tok) {
@@ -172,11 +174,14 @@ function _agentDedupeKey(a) {
   const type = a.machine_type || a.transport_type || 'local';
   const host = a.machine_host || '';
   const user = a.machine_user || '';
-  const port = a.machine_port == null ? '' : String(a.machine_port);
+  const isSsh = type === 'ssh';
+  const port = isSsh
+    ? String(a.machine_port == null || a.machine_port === '' ? 22 : a.machine_port)
+    : (a.machine_port == null ? '' : String(a.machine_port));
   // Local records do not carry a meaningful remote endpoint; keep their
   // context in the key. SSH imports are deduped by endpoint+agent id so
   // stale rows imported under old remote context names are collapsed.
-  const ctx = type === 'ssh' ? '' : (a.context_name || '');
+  const ctx = isSsh ? '' : (a.context_name || '');
   return `${type}|${user}|${host}|${port}|${ctx}|${a.id}`;
 }
 
@@ -187,10 +192,14 @@ function _contextForAgentRecord(a) {
   if (byName) return byName;
   return ctxs.find((ctx) => {
     const m = (ctx && ctx.machine) || {};
-    return (m.type || 'local') === (a.machine_type || a.transport_type || 'local')
+    const type = a.machine_type || a.transport_type || 'local';
+    const ctxType = m.type || 'local';
+    const ctxPort = ctxType === 'ssh' ? String(m.port == null || m.port === '' ? 22 : m.port) : String(m.port == null ? '' : m.port);
+    const agentPort = type === 'ssh' ? String(a.machine_port == null || a.machine_port === '' ? 22 : a.machine_port) : String(a.machine_port == null ? '' : a.machine_port);
+    return ctxType === type
       && (m.host || '') === (a.machine_host || '')
       && (m.user || '') === (a.machine_user || '')
-      && String(m.port == null ? '' : m.port) === String(a.machine_port == null ? '' : a.machine_port);
+      && ctxPort === agentPort;
   }) || null;
 }
 
@@ -236,6 +245,34 @@ function _repairStoreAgents() {
     pushLog('info', `agent registry repaired: ${before} -> ${out.length}`);
   }
   return changed;
+}
+
+function _pruneUnownedStoreAgents(reason = 'agent-refresh') {
+  if (!state.store || !Array.isArray(state.store.agents)) {
+    return { removed: 0, ids: [] };
+  }
+  const ctxs = Array.isArray(state.store.contexts) ? state.store.contexts : [];
+  if (!ctxs.length) return { removed: 0, ids: [] };
+
+  const removed = [];
+  const keep = [];
+  for (const a of state.store.agents) {
+    if (!a || typeof a !== 'object' || !a.id) {
+      keep.push(a);
+      continue;
+    }
+    if (_contextForAgentRecord(a)) {
+      keep.push(a);
+      continue;
+    }
+    removed.push(String(a.id).slice(0, 8));
+  }
+
+  if (!removed.length) return { removed: 0, ids: [] };
+  state.store.agents = keep;
+  saveStore();
+  pushLog('info', `agent prune ${reason}: removed ${removed.length} orphan local agent(s): ${removed.join(', ')}`);
+  return { removed: removed.length, ids: removed };
 }
 
 /* ─────────────── HTTP helpers ─────────────── */
@@ -296,17 +333,21 @@ const REQ_BODY_MAX = 25 * 1024 * 1024; // upload payloads are base64 JSON
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0;
+    let tooLarge = false;
     const chunks = [];
     req.on('data', (chunk) => {
       size += chunk.length;
       if (size > REQ_BODY_MAX) {
-        reject(new Error('body_too_large'));
-        try { req.destroy(); } catch {}
+        tooLarge = true;
+        // Keep draining the request instead of destroying the socket.
+        // Destroying makes Chromium surface a generic "Failed to fetch"
+        // and hides the useful body_too_large error from the renderer.
         return;
       }
-      chunks.push(chunk);
+      if (!tooLarge) chunks.push(chunk);
     });
     req.on('end', () => {
+      if (tooLarge) return reject(new Error('body_too_large'));
       const text = Buffer.concat(chunks).toString('utf8');
       if (!text) return resolve({});
       try { resolve(JSON.parse(text)); }
@@ -664,6 +705,7 @@ function _normalizeAgent(rec, ctx) {
     tmux_session:   rec.tmux_session || rec.session || '',
     session:        rec.tmux_session || rec.session || '',
     tmux_socket:    rec.tmux_socket || '',
+    tmux_bin:       rec.tmux_bin || (rec.runtime && rec.runtime.tmux && rec.runtime.tmux.bin) || '',
     pid:            rec.pid || null,
     hostname:       rec.hostname || '',
     created_at:      rec.created_at || t.created_at || null,
@@ -698,7 +740,41 @@ function _normalizeAgent(rec, ctx) {
  *  "ssh-test" that has since been renamed locally to "hren") — those
  *  rows would otherwise survive filter (1) and append duplicates.
  *  Agents in other contexts on other machines are untouched. */
-function _upsertAgentsForContext(ctxName, newAgents) {
+function _contextEndpointKey(ctx) {
+  const m = (ctx && ctx.machine) || {};
+  const type = m.type || 'local';
+  const port = type === 'ssh'
+    ? String(m.port == null || m.port === '' ? 22 : m.port)
+    : String(m.port == null ? '' : m.port);
+  return `${type}|${m.user || ''}|${m.host || ''}|${port}`;
+}
+
+function _agentEndpointKey(a) {
+  if (!a) return '';
+  const type = a.machine_type || a.transport_type || 'local';
+  const hasStampedEndpoint = !!(a.machine_host || a.machine_user || a.machine_port != null);
+  if (hasStampedEndpoint) {
+    const port = type === 'ssh'
+      ? String(a.machine_port == null || a.machine_port === '' ? 22 : a.machine_port)
+      : String(a.machine_port == null ? '' : a.machine_port);
+    return `${type}|${a.machine_user || ''}|${a.machine_host || ''}|${port}`;
+  }
+  // Legacy rows written before machine_* stamping can still be matched
+  // through their context_name. This lets a successful endpoint sync prune
+  // stale failed/completed rows from old local stores.
+  const resolvedCtx = _contextForAgentRecord(a);
+  return resolvedCtx ? _contextEndpointKey(resolvedCtx) : '';
+}
+
+function _agentMatchesContextEndpoint(a, ctx) {
+  if (!a || !ctx || !ctx.machine) return false;
+  const ctxKey = _contextEndpointKey(ctx);
+  const agentKey = _agentEndpointKey(a);
+  return !!ctxKey && !!agentKey && ctxKey === agentKey;
+}
+
+function _upsertAgentsForContext(ctx, newAgents) {
+  const ctxName = (ctx && ctx.name) || '';
   if (!state.store) state.store = _emptyStore();
   if (!Array.isArray(state.store.agents)) state.store.agents = [];
   const newKeys = new Set(newAgents.map(a => _agentDedupeKey(a)));
@@ -706,6 +782,11 @@ function _upsertAgentsForContext(ctxName, newAgents) {
     if ((a.context_name || '') === ctxName) return false;
     const k = _agentDedupeKey(a);
     if (k && newKeys.has(k)) return false;
+    // Remote `camc list` is authoritative for the whole SSH endpoint,
+    // not just one local context name. Remove same-host rows that vanished
+    // remotely, including stale failed/completed rows imported under older
+    // context names.
+    if (_agentMatchesContextEndpoint(a, ctx)) return false;
     return true;
   });
   state.store.agents = keep.concat(newAgents);
@@ -725,6 +806,10 @@ function _upsertAgentsForContext(ctxName, newAgents) {
  *  Returns one of:
  *    { ok: true,  imported, total, results: { camc: 'updated'|'unchanged' } }
  *    { ok: false, error, detail, results: { camc: 'failed' } }
+ *
+ *  Does not upload/deploy camc — only checks that `~/.cam/camc` exists on
+ *  the remote. One-time deploy is the operator's job (`cam sync` on a
+ *  workstation). Agent ops (send/key/stop) still use `_ensureRemoteCamc`.
  */
 async function _syncContextAgents(ctx, overrides = {}) {
   if (!ctx || !ctx.machine || ctx.machine.type !== 'ssh') {
@@ -776,13 +861,13 @@ async function _syncContextAgents(ctx, overrides = {}) {
     if (pp != null) baseOpts.passphrase = pp;
   }
 
-  const ready = await _ensureRemoteCamc(baseOpts);
+  const ready = await _checkRemoteCamc(baseOpts);
   if (!ready.ok) {
     pushLog('warn', `sync ${ctx.name} failed: ${ready.error}`);
     return {
       ok:      false,
-      error:   ready.error || 'remote_camc_unavailable',
-      detail:  ready.detail || 'failed to prepare ~/.cam/camc on remote host',
+      error:   ready.error || 'camc_missing',
+      detail:  ready.detail || 'remote ~/.cam/camc is not available',
       results: { camc: 'failed' },
     };
   }
@@ -832,7 +917,7 @@ async function _syncContextAgents(ctx, overrides = {}) {
   const prev = (state.store && state.store.agents)
     ? state.store.agents.filter(a => (a.context_name || '') === ctx.name)
     : [];
-  _upsertAgentsForContext(ctx.name, normalized);
+  _upsertAgentsForContext(ctx, normalized);
 
   // Mark context last_used_at so future sync deltas have a timestamp.
   if (state.store) {
@@ -861,6 +946,49 @@ async function _syncContextAgents(ctx, overrides = {}) {
     results:  { camc: status },
   };
 }
+
+function _syncableAgentContexts() {
+  const ctxs = (state.store && Array.isArray(state.store.contexts)) ? state.store.contexts : [];
+  const byEndpoint = new Map();
+  for (const ctx of ctxs) {
+    const m = (ctx && ctx.machine) || {};
+    if ((m.type || 'local') !== 'ssh') continue;
+    const key = `${m.user || ''}@${m.host || ''}:${m.port || 22}`;
+    if (!byEndpoint.has(key)) byEndpoint.set(key, ctx);
+  }
+  return [...byEndpoint.values()];
+}
+
+async function _syncAllAgentContexts(reason = 'manual') {
+  if (state.agentSyncInFlight) {
+    return { ok: false, error: 'sync_in_flight', detail: 'agent sync already running' };
+  }
+  const contexts = _syncableAgentContexts();
+  if (!contexts.length) return { ok: true, synced: 0, failed: 0, results: [] };
+  state.agentSyncInFlight = true;
+  const results = [];
+  let synced = 0;
+  let failed = 0;
+  try {
+    for (const ctx of contexts) {
+      // eslint-disable-next-line no-await-in-loop
+      const r = await _syncContextAgents(ctx);
+      results.push({ context: ctx.name, ok: !!(r && r.ok), imported: r && r.imported || 0, error: r && r.error || null });
+      if (r && r.ok) synced++;
+      else failed++;
+    }
+    state.lastAgentSyncAt = Date.now();
+    const prune = synced > 0
+      ? _pruneUnownedStoreAgents(reason)
+      : { removed: 0, ids: [] };
+    const pruneNote = prune.removed ? `, pruned ${prune.removed} orphan local agent(s)` : '';
+    pushLog(failed ? 'warn' : 'info', `agent sync ${reason}: ${synced} ok, ${failed} failed${pruneNote}`);
+    return { ok: failed === 0, synced, failed, results, pruned: prune.removed, pruned_ids: prune.ids };
+  } finally {
+    state.agentSyncInFlight = false;
+  }
+}
+
 
 /** Look up an agent and its owning context from the local store.
  *  Returns `{ agent, ctx }` or `{ error }` shape so callers can map
@@ -946,6 +1074,30 @@ function _markRemoteCamcReady(baseOpts, localHash) {
 function _clearRemoteCamcReady(baseOpts, localHash) {
   if (!state.remoteCamcReadyCache) return;
   state.remoteCamcReadyCache.delete(_remoteCamcReadyKey(baseOpts, localHash));
+}
+
+/** Sync-only probe: verify remote camc exists. No upload/deploy (run `cam sync` once on a workstation if missing). */
+async function _checkRemoteCamc(baseOpts) {
+  if (!_sshTransport || typeof _sshTransport.execRemote !== 'function') {
+    return {
+      ok:     false,
+      error:  'ssh_transport_unavailable',
+      detail: 'embedded Hub has no SSH transport configured',
+    };
+  }
+  const verify = await _sshTransport.execRemote({
+    ...baseOpts,
+    command: `test -x ${REMOTE_CAMC}`,
+  });
+  if (verify && verify.ok) {
+    return { ok: true, present: true };
+  }
+  const host = `${baseOpts.user}@${baseOpts.host}:${baseOpts.port || 22}`;
+  return {
+    ok:     false,
+    error:  'camc_missing',
+    detail: `~/.cam/camc is not installed or not executable on ${host}. Deploy once with cam sync from a workstation, then retry Sync Host.`,
+  };
 }
 
 async function _ensureRemoteCamc(baseOpts, { force = false } = {}) {
@@ -2921,6 +3073,16 @@ function healthBody() {
   return {
     status:         'ok',
     version:        HUB_PRODUCT_VERSION,
+    capabilities: {
+      runtime:            'embedded-full',
+      context_crud:       true,
+      context_sync:       true,
+      agent_list:         true,
+      agent_ops:          true,
+      agent_terminal:     true,
+      skillm:             true,
+      ssh_config_import:  true,
+    },
     adapters:       (state.store && state.store.adapters) || DEFAULT_ADAPTERS,
     agents_running: 0,
     agents_total:   (state.store && state.store.agents) ? state.store.agents.length : 0,
@@ -3173,8 +3335,16 @@ async function handle(req, res) {
   // Agents
   if (p === '/api/agents') {
     if (method === 'GET') {
+      const refresh = /^(1|true|yes|sync)$/i.test(url.searchParams.get('refresh') || '');
+      let sync = null;
+      if (refresh) sync = await _syncAllAgentContexts('api-refresh');
       _repairStoreAgents();
-      return sendJson(res, 200, { agents: state.store.agents });
+      return sendJson(res, 200, {
+        agents: state.store.agents,
+        sync_in_flight: !!state.agentSyncInFlight,
+        last_sync_at: state.lastAgentSyncAt || null,
+        sync,
+      });
     }
     if (method === 'POST') return send501(res, 'start agent');
     return send404(res);

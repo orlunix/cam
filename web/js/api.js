@@ -29,6 +29,26 @@ export class CamApi {
     if (relayToken !== undefined) this.relayToken = relayToken;
   }
 
+  async _probeDirectConnection() {
+    const hub = typeof window !== 'undefined' ? window.__camDirectHub : null;
+    const loopback = (() => {
+      try {
+        const h = new URL(this.serverUrl).hostname;
+        return h === '127.0.0.1' || h === 'localhost' || h === '::1';
+      } catch { return false; }
+    })();
+    if (loopback && hub && typeof hub.request === 'function') {
+      await hub.request('GET', '/api/contexts', null, this.token);
+      return 'direct';
+    }
+    const r = await fetch(`${this.serverUrl}/api/contexts`, {
+      headers: { 'Authorization': `Bearer ${this.token}` },
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!r.ok) throw new Error(`direct HTTP ${r.status}`);
+    return 'direct';
+  }
+
   // --- Connection ---
 
   async connect() {
@@ -59,13 +79,9 @@ export class CamApi {
 
     if (canDirect && !skipDirect) {
       attempts.push(
-        fetch(`${this.serverUrl}/api/contexts`, {
-          headers: { 'Authorization': `Bearer ${this.token}` },
-          signal: AbortSignal.timeout(4000),
-        }).then(r => {
-          this.lastConnectDiagnostics?.attempts.push({ kind: 'direct', url: `${this.serverUrl}/api/contexts`, status: r.status });
-          if (!r.ok) throw new Error(`direct HTTP ${r.status}`);
-          return 'direct';
+        this._probeDirectConnection().then(mode => {
+          this.lastConnectDiagnostics?.attempts.push({ kind: 'direct', url: `${this.serverUrl}/api/contexts`, status: 200 });
+          return mode;
         }).catch(e => {
           this.lastConnectDiagnostics?.attempts.push({ kind: 'direct', url: `${this.serverUrl}/api/contexts`, error: e?.message || String(e) });
           throw e;
@@ -149,7 +165,7 @@ export class CamApi {
 
   // Only cache lightweight list endpoints, not file content
   _isCacheable(path) {
-    return !path.includes('/skillm') && !path.includes('/files/read') && !path.includes('/workspace/files') && !path.includes('/upload') && !path.includes('/output') && !path.includes('/fulloutput') && !path.includes('/logs');
+    return !path.includes('refresh=1') && !path.includes('/skillm') && !path.includes('/files/read') && !path.includes('/workspace/files') && !path.includes('/upload') && !path.includes('/output') && !path.includes('/fulloutput') && !path.includes('/logs');
   }
 
   _pruneCache() {
@@ -245,15 +261,41 @@ export class CamApi {
   }
 
   async _directRequest(method, path, body) {
+    const loopback = (() => {
+      try {
+        const h = new URL(this.serverUrl).hostname;
+        return h === '127.0.0.1' || h === 'localhost' || h === '::1';
+      } catch { return false; }
+    })();
+    const hub = typeof window !== 'undefined' ? window.__camDirectHub : null;
+    if (loopback && hub && typeof hub.request === 'function') {
+      return hub.request(method, path, body, this.token);
+    }
+
     const url = `${this.serverUrl}${path}`;
     const headers = { 'Content-Type': 'application/json' };
     if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
 
-    const resp = await fetch(url, {
-      method,
-      headers,
-      body: body != null ? JSON.stringify(body) : undefined,
-    });
+    let resp;
+    try {
+      resp = await fetch(url, {
+        method,
+        headers,
+        body: body != null ? JSON.stringify(body) : undefined,
+      });
+    } catch (e) {
+      const raw = e?.message || String(e);
+      if (/failed to fetch|networkerror|network error|load failed/i.test(raw)) {
+        const err = new Error(
+          `Local Hub unreachable at ${this.serverUrl}. ` +
+          'Settings → Direct → Disable, then Enable again. ' +
+          `(This is not your SSH host — save only talks to the phone Hub.)`
+        );
+        err.cause = e;
+        throw err;
+      }
+      throw e;
+    }
 
     const text = await resp.text();
     let data;
@@ -509,10 +551,24 @@ export class CamApi {
     if (params.tool) qs.set('tool', params.tool);
     if (params.context) qs.set('context', params.context);
     if (params.limit) qs.set('limit', params.limit);
+    if (params.refresh) qs.set('refresh', '1');
     const q = qs.toString();
     return this.request('GET', `/api/agents${q ? '?' + q : ''}`);
   }
-  getAgent(id) { return this.request('GET', `/api/agents/${id}`); }
+  _agentEndpointQs(hints, prefix = '?') {
+    if (!hints || !hints.machine_host) return '';
+    const qs = new URLSearchParams();
+    qs.set('machine_host', hints.machine_host);
+    if (hints.machine_user) qs.set('machine_user', hints.machine_user);
+    if (hints.machine_port != null && hints.machine_port !== '') {
+      qs.set('machine_port', String(hints.machine_port));
+    }
+    const s = qs.toString();
+    return s ? `${prefix}${s}` : '';
+  }
+  getAgent(id, hints = null) {
+    return this.request('GET', `/api/agents/${encodeURIComponent(id)}${this._agentEndpointQs(hints)}`);
+  }
   startAgent(body) { return this.request('POST', '/api/agents', body); }
   stopAgent(id, force = false) { return this.request('DELETE', `/api/agents/${id}?force=${force}`); }
   updateAgent(id, body) { return this.request('PATCH', `/api/agents/${id}`, body); }
@@ -522,16 +578,42 @@ export class CamApi {
   restartAgent(id) { return this.request('POST', `/api/agents/${id}/restart`); }
   deleteAgentHistory(id) { return this.request('DELETE', `/api/agents/${id}/history`); }
   agentLogs(id, tail = 100) { return this.request('GET', `/api/agents/${id}/logs?tail=${tail}`); }
-  agentOutput(id, lines = 80, hash = null, format = null) {
-    const fmt = format ? `&format=${encodeURIComponent(format)}` : '';
-    return this.request('GET', `/api/agents/${id}/output?lines=${lines}${hash ? '&hash=' + hash : ''}${fmt}`);
+  agentOutput(id, lines = 80, hash = null, format = null, hints = null) {
+    const qs = new URLSearchParams();
+    qs.set('lines', String(lines));
+    if (hash) qs.set('hash', hash);
+    if (format) qs.set('format', format);
+    if (hints && hints.machine_host) {
+      qs.set('machine_host', hints.machine_host);
+      if (hints.machine_user) qs.set('machine_user', hints.machine_user);
+      if (hints.machine_port != null && hints.machine_port !== '') {
+        qs.set('machine_port', String(hints.machine_port));
+      }
+    }
+    return this.request('GET', `/api/agents/${encodeURIComponent(id)}/output?${qs.toString()}`);
   }
   agentFullOutput(id, offset = 0, format = null) {
     const fmt = format ? `&format=${encodeURIComponent(format)}` : '';
     return this.request('GET', `/api/agents/${id}/fulloutput?offset=${offset}${fmt}`);
   }
-  sendInput(id, text, sendEnter = true) { return this.request('POST', `/api/agents/${id}/input`, { text, send_enter: sendEnter }); }
-  sendKey(id, key) { return this.request('POST', `/api/agents/${id}/key`, { key }); }
+  sendInput(id, text, sendEnter = true, hints = null) {
+    const body = { text, send_enter: sendEnter };
+    if (hints && hints.machine_host) {
+      body.machine_host = hints.machine_host;
+      if (hints.machine_user) body.machine_user = hints.machine_user;
+      if (hints.machine_port != null && hints.machine_port !== '') body.machine_port = hints.machine_port;
+    }
+    return this.request('POST', `/api/agents/${encodeURIComponent(id)}/input`, body);
+  }
+  sendKey(id, key, hints = null) {
+    const body = { key };
+    if (hints && hints.machine_host) {
+      body.machine_host = hints.machine_host;
+      if (hints.machine_user) body.machine_user = hints.machine_user;
+      if (hints.machine_port != null && hints.machine_port !== '') body.machine_port = hints.machine_port;
+    }
+    return this.request('POST', `/api/agents/${encodeURIComponent(id)}/key`, body);
+  }
   uploadFile(id, filename, base64data) { return this.request('POST', `/api/agents/${id}/upload`, { filename, data: base64data }); }
   listContexts() { return this.request('GET', '/api/contexts'); }
   getContext(nameOrId) { return this.request('GET', `/api/contexts/${nameOrId}`); }
@@ -539,7 +621,15 @@ export class CamApi {
   updateContext(nameOrId, body) { return this.request('PUT', `/api/contexts/${nameOrId}`, body); }
   deleteContext(nameOrId) { return this.request('DELETE', `/api/contexts/${nameOrId}`); }
   copyContext(nameOrId, newName) { return this.request('POST', `/api/contexts/${nameOrId}/copy`, { name: newName }); }
-  syncContext(nameOrId) { return this.request('POST', `/api/contexts/${nameOrId}/sync`); }
+  syncContext(nameOrId, opts = {}) {
+    const m = (opts && opts.machine) || {};
+    const body = {};
+    if (opts.id) body.id = opts.id;
+    if (m.host) body.host = m.host;
+    if (m.user) body.user = m.user;
+    if (m.port != null && m.port !== '') body.port = m.port;
+    return this.request('POST', `/api/contexts/${encodeURIComponent(nameOrId)}/sync`, body);
+  }
   listFiles(contextId, path = '') { return this.request('GET', `/api/contexts/${contextId}/files?path=${encodeURIComponent(path)}`); }
   readFile(contextId, path) { return this.request('GET', `/api/contexts/${contextId}/files/read?path=${encodeURIComponent(path)}`); }
 
