@@ -211,3 +211,230 @@ def test_camc_cli_capture_rejects_unknown_format(monkeypatch):
     args = type("A", (), {"id": "abc12345", "lines": 0, "format": "bogus", "json_output": False})()
     with pytest.raises(SystemExit):
         cli.cmd_capture(args)
+
+
+# ---------------------------------------------------------------------------
+# camc internal exact-id capture fast path
+# ---------------------------------------------------------------------------
+
+
+def test_fast_capture_plain_strips_ansi_and_uses_explicit_metadata(monkeypatch):
+    import io
+    from camc_pkg import fast_capture
+
+    calls = []
+
+    class _Proc:
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            return (b"\x1b[31mhello fast capture world\x1b[0m\n", b"")
+
+    def fake_popen(args, stdout=None, stderr=None):
+        calls.append(list(args))
+        return _Proc()
+
+    monkeypatch.setattr(fast_capture.os.path, "exists", lambda _p: True)
+    monkeypatch.setattr(fast_capture.subprocess, "Popen", fake_popen)
+
+    out = io.StringIO()
+    err = io.StringIO()
+    rc = fast_capture.fast_capture_from_values(
+        "cam-fast", socket_path="/tmp/cam-fast.sock", tmux_bin="/bin/tmux",
+        lines=80, fmt="plain", stdout=out, stderr=err)
+
+    assert rc == 0
+    assert calls[0] == [
+        "/bin/tmux", "-u", "-S", "/tmp/cam-fast.sock",
+        "capture-pane", "-p", "-J", "-t", "cam-fast:0.0", "-S", "-80",
+    ]
+    assert "\x1b[" not in out.getvalue()
+    assert "hello fast capture world" in out.getvalue()
+    assert err.getvalue() == ""
+
+
+def test_fast_capture_ansi_preserves_sgr_and_adds_e(monkeypatch):
+    import io
+    from camc_pkg import fast_capture
+
+    calls = []
+
+    class _Proc:
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            return (b"\x1b[32mhello fast ansi capture world\x1b[0m\n", b"")
+
+    monkeypatch.setattr(fast_capture.os.path, "exists", lambda _p: True)
+    monkeypatch.setattr(fast_capture.subprocess, "Popen",
+                        lambda args, stdout=None, stderr=None: calls.append(list(args)) or _Proc())
+
+    out = io.StringIO()
+    rc = fast_capture.fast_capture_from_values(
+        "cam-fast", socket_path="/tmp/cam-fast.sock", tmux_bin="/bin/tmux",
+        lines=80, fmt="ansi", stdout=out, stderr=io.StringIO())
+
+    assert rc == 0
+    assert "-e" in calls[0]
+    assert calls[0].index("-e") < calls[0].index("-t")
+    assert "\x1b[32m" in out.getvalue()
+
+
+def test_early_capture_main_ignores_non_fast_capture():
+    from camc_pkg import fast_capture
+
+    assert fast_capture.early_capture_main(["capture", "abc123", "--lines", "80"]) is None
+
+
+def test_early_capture_main_uses_agents_json_for_exact_id(monkeypatch):
+    import io
+    from camc_pkg import fast_capture
+
+    monkeypatch.setattr(fast_capture, "lookup_agent_from_agents_json", lambda agent_id: {
+        "session": "cam-deadbeef",
+        "socket": "/tmp/cam-sockets/cam-deadbeef.sock",
+        "tmux_bin": "/bin/tmux",
+    } if agent_id == "deadbeef" else None)
+
+    seen = {}
+
+    def fake_fast(session, socket_path=None, tmux_bin=None, lines=0, fmt="plain",
+                  json_output=False, stdout=None, stderr=None):
+        seen.update({
+            "session": session,
+            "socket": socket_path,
+            "tmux_bin": tmux_bin,
+            "lines": lines,
+            "fmt": fmt,
+            "json_output": json_output,
+        })
+        stdout.write("indexed fast output")
+        return 0
+
+    monkeypatch.setattr(fast_capture, "fast_capture_from_values", fake_fast)
+
+    out = io.StringIO()
+    rc = fast_capture.early_capture_main(
+        ["capture", "deadbeef", "--lines", "40", "--format", "ansi"],
+        stdout=out,
+        stderr=io.StringIO(),
+    )
+    assert rc == 0
+    assert seen == {
+        "session": "cam-deadbeef",
+        "socket": "/tmp/cam-sockets/cam-deadbeef.sock",
+        "tmux_bin": "/bin/tmux",
+        "lines": 40,
+        "fmt": "ansi",
+        "json_output": False,
+    }
+    assert out.getvalue() == "indexed fast output"
+
+
+def test_early_capture_main_exact_id_without_index_falls_back(monkeypatch):
+    from camc_pkg import fast_capture
+
+    monkeypatch.setattr(fast_capture, "lookup_agent_from_agents_json", lambda _id: None)
+    assert fast_capture.early_capture_main(["capture", "deadbeef"]) is None
+
+
+def test_early_capture_main_json_capture_falls_back():
+    from camc_pkg import fast_capture
+
+    assert fast_capture.early_capture_main(["--json", "capture", "deadbeef"]) is None
+
+
+def test_early_capture_main_no_fast_path_capture_falls_back(monkeypatch):
+    from camc_pkg import fast_capture
+
+    monkeypatch.setattr(fast_capture, "lookup_agent_from_agents_json", lambda _id: {
+        "session": "cam-deadbeef",
+        "socket": "/tmp/cam-sockets/cam-deadbeef.sock",
+        "tmux_bin": "/bin/tmux",
+    })
+    assert fast_capture.early_capture_main(["capture", "deadbeef", "--no-fast-path"]) is None
+
+
+def test_agents_json_lookup_roundtrip(tmp_path):
+    import json
+    from camc_pkg import fast_capture
+
+    agents_file = tmp_path / "agents.json"
+    agents_file.write_text(json.dumps([
+        {
+            "id": "aabbccdd",
+            "hostname": "workstation",
+            "tmux_session": "cam-aabbccdd",
+            "tmux_socket": "/tmp/cam-sockets/cam-aabbccdd.sock",
+            "tmux_bin": "/usr/bin/tmux",
+        }
+    ], indent=2), encoding="utf-8")
+
+    meta = fast_capture.lookup_agent_from_agents_json(
+        "aabbccdd", path=str(agents_file), my_hostname="workstation")
+    assert meta == {
+        "session": "cam-aabbccdd",
+        "socket": "/tmp/cam-sockets/cam-aabbccdd.sock",
+        "tmux_bin": "/usr/bin/tmux",
+    }
+
+
+def test_agents_json_lookup_legacy_session_and_host_gate(tmp_path):
+    import json
+    from camc_pkg import fast_capture
+
+    agents_file = tmp_path / "agents.json"
+    agents_file.write_text(json.dumps([
+        {
+            "id": "11223344",
+            "hostname": "devbox.nvidia.com",
+            "session": "cam-11223344",
+            "tmux_bin": "/bin/tmux",
+        }
+    ], indent=2), encoding="utf-8")
+
+    same = fast_capture.lookup_agent_from_agents_json(
+        "11223344", path=str(agents_file), my_hostname="devbox")
+    assert same["session"] == "cam-11223344"
+    assert same["tmux_bin"] == "/bin/tmux"
+    assert fast_capture.lookup_agent_from_agents_json(
+        "11223344", path=str(agents_file), my_hostname="otherhost") is None
+
+
+def test_agents_json_lookup_rejects_bad_shapes(tmp_path):
+    import json
+    from camc_pkg import fast_capture
+
+    missing_session = tmp_path / "missing.json"
+    missing_session.write_text(json.dumps([
+        {"id": "55667788", "hostname": "devbox"}
+    ], indent=2), encoding="utf-8")
+    assert fast_capture.lookup_agent_from_agents_json(
+        "55667788", path=str(missing_session), my_hostname="devbox") is None
+
+    bad = tmp_path / "bad.json"
+    bad.write_text("not json", encoding="utf-8")
+    assert fast_capture.lookup_agent_from_agents_json(
+        "55667788", path=str(bad), my_hostname="devbox") is None
+
+def test_early_capture_main_explicit_fast_is_not_a_public_fast_path():
+    from camc_pkg import fast_capture
+
+    assert fast_capture.early_capture_main([
+        "capture", "--fast", "--tmux-session", "cam-fast"
+    ]) is None
+
+
+def test_camc_cli_capture_missing_id_exits(capsys):
+    from camc_pkg import cli
+
+    args = type("A", (), {
+        "id": None,
+        "lines": 0,
+        "format": "plain",
+        "json_output": False,
+    })()
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_capture(args)
+    assert exc.value.code == 2
+    assert "requires an agent id" in capsys.readouterr().err

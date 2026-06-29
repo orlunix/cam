@@ -36,7 +36,7 @@ VERSION=$(head -1 "$VERSION_FILE" | tr -d '[:space:]')
 IFS='.' read -r V_MAJOR V_MINOR V_PATCH <<< "$VERSION"
 VERSION_CODE=$(( V_MAJOR * 10000 + V_MINOR * 100 + V_PATCH ))
 
-echo "=== CAM APK Build v${VERSION} (code: ${VERSION_CODE}) ==="
+echo "=== CamUI Mobile V2 APK Build v${VERSION} (code: ${VERSION_CODE}) ==="
 
 # Verify tools
 for tool in "$BUILD_TOOLS/aapt2" "$BUILD_TOOLS/d8" "$BUILD_TOOLS/apksigner" "$BUILD_TOOLS/zipalign"; do
@@ -60,12 +60,12 @@ echo "[0/6] Stamping version v${VERSION}..."
 sed -i "s/android:versionCode=\"[^\"]*\"/android:versionCode=\"${VERSION_CODE}\"/" "$SRC_DIR/AndroidManifest.xml"
 sed -i "s/android:versionName=\"[^\"]*\"/android:versionName=\"${VERSION}\"/" "$SRC_DIR/AndroidManifest.xml"
 
-# Web assets: update cam-version meta tag and cache-busting ?v= query strings
-sed -i "s/content=\"v[^\"]*\"/content=\"v${VERSION}\"/" "$WEB_DIR/index.html"
-sed -i "s/?v=[^\"]*/?v=${VERSION}/g" "$WEB_DIR/index.html"
-sed -i "s/?v=[^']*'/?v=${VERSION}'/g" "$WEB_DIR/js/app.js"
-sed -i "s/cam-v[^']*/cam-v${VERSION}/" "$WEB_DIR/sw.js"
-sed -i "s/?v=[^']*'/?v=${VERSION}'/g" "$WEB_DIR/sw.js"
+# Web assets: stamp CamUI V2 entry
+sed -i "s/content=\"v[^\"]*\"/content=\"v${VERSION}\"/" "$WEB_DIR/mobile.html"
+sed -i "s/?v=[0-9][^\"']*/?v=${VERSION}/g" "$WEB_DIR/mobile.html"
+sed -i "s/?v=[0-9][^\"']*/?v=${VERSION}/g" "$WEB_DIR/js/mobile/app.js"
+sed -i "s/?v=[0-9][^\"']*/?v=${VERSION}/g" "$WEB_DIR/js/mobile/settings.js"
+sed -i "s/?v=[0-9][^\"']*/?v=${VERSION}/g" "$WEB_DIR/css/mobile.css" 2>/dev/null || true
 
 # Clean
 rm -rf "$BUILD_DIR"
@@ -85,19 +85,55 @@ echo "[2/6] Linking resources..."
     "$BUILD_DIR"/compiled/*.flat
 
 echo "[3/6] Compiling Java..."
+# mwiede JSch 0.2.x (com.github.mwiede:jsch) — required for OpenSSH 9.x KEX on corporate hosts.
+JSCH_JAR="$PROJ_DIR/libs/jsch.jar"
+CLASSPATH="$PLATFORM"
+if [ -f "$JSCH_JAR" ]; then
+    CLASSPATH="$CLASSPATH:$JSCH_JAR"
+else
+    echo "WARNING: $JSCH_JAR missing — Sync Host SSH will not build"
+fi
 javac \
     -source 17 -target 17 \
-    -classpath "$PLATFORM" \
+    -classpath "$CLASSPATH" \
     -sourcepath "$SRC_DIR/java:$BUILD_DIR/gen" \
     -d "$BUILD_DIR/classes" \
     "$SRC_DIR/java/com/cam/app/MainActivity.java" \
+    "$SRC_DIR/java/com/cam/app/CamAssetLoader.java" \
+    "$SRC_DIR/java/com/cam/app/CamJsBridge.java" \
+    "$SRC_DIR/java/com/cam/app/MobileEmbeddedHub.java" \
+    "$SRC_DIR/java/com/cam/app/MobileCredentialStore.java" \
+    "$SRC_DIR/java/com/cam/app/MobileHubLog.java" \
+    "$SRC_DIR/java/com/cam/app/MobileSshAuth.java" \
+    "$SRC_DIR/java/com/cam/app/MobileSshPool.java" \
+    "$SRC_DIR/java/com/cam/app/MobileSshExec.java" \
+    "$SRC_DIR/java/com/cam/app/MobileTerminalManager.java" \
     "$BUILD_DIR/gen/com/cam/app/R.java"
 
 echo "[4/6] Dexing..."
-"$BUILD_TOOLS/d8" \
-    --lib "$PLATFORM" \
-    --output "$BUILD_DIR/dex" \
-    $(find "$BUILD_DIR/classes" -name "*.class")
+D8_INPUT=$(find "$BUILD_DIR/classes" -name "*.class")
+JSCH_DEX="$JSCH_JAR"
+if [ -f "$JSCH_JAR" ]; then
+    # mwiede 0.2.16+ ships multi-release classes that d8 rejects — strip for dex.
+    STRIP_DIR="$BUILD_DIR/jsch-strip"
+    STRIPPED="$BUILD_DIR/jsch-android.jar"
+    rm -rf "$STRIP_DIR" "$STRIPPED"
+    mkdir -p "$STRIP_DIR"
+    (cd "$STRIP_DIR" && jar xf "$JSCH_JAR" && rm -rf META-INF/versions && jar cf "$STRIPPED" .)
+    JSCH_DEX="$STRIPPED"
+fi
+if [ -f "$JSCH_DEX" ]; then
+    "$BUILD_TOOLS/d8" \
+        --lib "$PLATFORM" \
+        --output "$BUILD_DIR/dex" \
+        $D8_INPUT \
+        "$JSCH_DEX"
+else
+    "$BUILD_TOOLS/d8" \
+        --lib "$PLATFORM" \
+        --output "$BUILD_DIR/dex" \
+        $D8_INPUT
+fi
 
 echo "[5/6] Packaging APK..."
 # Add dex to the APK
@@ -141,8 +177,8 @@ fi
     --out "$BUILD_DIR/cam.apk" \
     "$BUILD_DIR/app.aligned.apk"
 
-# Also create versioned copy
-cp "$BUILD_DIR/cam.apk" "$BUILD_DIR/cam-v${VERSION}.apk"
+# Also create versioned copy (CamUI V2)
+cp "$BUILD_DIR/cam.apk" "$BUILD_DIR/camui-v2-${VERSION}.apk"
 
 # Verify
 "$BUILD_TOOLS/apksigner" verify "$BUILD_DIR/cam.apk"
@@ -152,5 +188,10 @@ echo ""
 echo "=== BUILD SUCCESS ==="
 echo "Version: v${VERSION} (versionCode: ${VERSION_CODE})"
 echo "APK: $BUILD_DIR/cam.apk ($SIZE)"
-echo "APK: $BUILD_DIR/cam-v${VERSION}.apk"
+echo "APK: $BUILD_DIR/camui-v2-${VERSION}.apk"
 echo "Install: adb install $BUILD_DIR/cam.apk"
+
+# Auto-upload to Jianguoyun WebDev (see android/.upload-target)
+if [[ -x "$PROJ_DIR/upload-apk.sh" ]]; then
+  bash "$PROJ_DIR/upload-apk.sh" || echo "WARNING: APK upload failed (build still OK)"
+fi

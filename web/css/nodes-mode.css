@@ -1,0 +1,891 @@
+/* Mobile Nodes — shared layout with Desktop (#mode-nodes). */
+
+body.camui-v2 #mobile-nodes.mobile-nodes-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+  max-width: 100%;
+  overflow-x: hidden;
+  touch-action: pan-y;
+}
+
+body.camui-v2 #mobile-nodes .settings-header {
+  border-bottom: 1px solid var(--border);
+  padding: 14px 16px;
+  background: var(--bg);
+}
+body.camui-v2 #mobile-nodes .settings-header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+body.camui-v2 #mobile-nodes .settings-header .settings-help {
+  margin: 6px 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+}
+body.camui-v2 #mobile-nodes .settings-header .settings-help code {
+  background: var(--bg-input);
+  padding: 0 4px;
+  border-radius: 3px;
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+}
+
+body.camui-v2 #mobile-nodes .settings-form-pane {
+  box-sizing: border-box;
+  padding: 0 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+body.camui-v2 #mobile-nodes .settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+body.camui-v2 #mobile-nodes .settings-section h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+body.camui-v2 #mobile-nodes .settings-section label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+body.camui-v2 #mobile-nodes .settings-section input,
+body.camui-v2 #mobile-nodes .settings-section select {
+  background: var(--control-bg, var(--bg-input));
+  border: 1px solid var(--control-border, var(--border));
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+}
+body.camui-v2 #mobile-nodes .settings-section label.form-checkbox {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--text);
+}
+body.camui-v2 #mobile-nodes .settings-section label.form-checkbox input[type="checkbox"] {
+  width: auto;
+  margin-top: 2px;
+}
+body.camui-v2 #mobile-nodes .settings-section label.form-checkbox > .form-hint {
+  flex-basis: 100%;
+  margin-left: 26px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+body.camui-v2 #mobile-nodes .settings-actions {
+  display: flex;
+  gap: 8px;
+  padding: 0 16px 8px;
+}
+body.camui-v2 #mobile-nodes .settings-status {
+  padding: 4px 16px 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+body.camui-v2 #mobile-nodes .settings-status.is-error { color: var(--danger-text, #f85149); }
+body.camui-v2 #mobile-nodes .settings-status.is-ok { color: var(--green, #3dd68c); }
+
+body.camui-v2 #mobile-nodes .nodes-readonly-banner {
+  margin: 0 16px 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(210, 153, 34, 0.35);
+  border-radius: var(--radius);
+  background: rgba(210, 153, 34, 0.08);
+}
+body.camui-v2 #mobile-nodes .nodes-readonly-banner .settings-help {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.5;
+}
+body.camui-v2 #mobile-nodes.nodes-readonly .settings-header .settings-help strong:last-of-type {
+  font-weight: 600;
+}
+
+body.camui-v2 #mobile-nodes .nodes-list-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 16px 24px;
+}
+body.camui-v2 #mobile-nodes .context-card { margin-bottom: 8px; }
+body.camui-v2 #mobile-nodes .context-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+body.camui-v2 #mobile-nodes .btn-sm {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--text);
+  cursor: pointer;
+}
+body.camui-v2 #mobile-nodes .btn-sm:hover { background: var(--control-bg-hover); }
+body.camui-v2 #mobile-nodes .btn-sm[disabled] { opacity: 0.5; cursor: not-allowed; }
+body.camui-v2 #mobile-nodes .btn-danger {
+  border-color: var(--danger-border);
+  color: var(--danger-text);
+}
+body.camui-v2 #mobile-nodes .btn-danger:hover {
+  background: var(--danger-bg-hover);
+}
+body.camui-v2 #mobile-nodes .settings-status { padding: 8px 16px; }
+
+/* Top action bar + Add/Import forms */
+body.camui-v2 #mobile-nodes .nodes-actions {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  box-sizing: border-box;
+  padding: 0 16px 12px;
+  flex-wrap: wrap;
+}
+body.camui-v2 #mobile-nodes .nodes-add-form,
+body.camui-v2 #mobile-nodes .nodes-import-pane {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  min-height: 0;
+}
+body.camui-v2 #mobile-nodes .nodes-add-form:not(.nodes-add-form--sheet) {
+  overflow-y: auto;
+  padding: 0 16px 16px;
+}
+body.camui-v2 #mobile-nodes .nodes-add-form .settings-section,
+body.camui-v2 #mobile-nodes .nodes-import-pane .settings-section {
+  padding: 12px 14px;
+}
+body.camui-v2 #mobile-nodes .nodes-import-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+}
+body.camui-v2 #mobile-nodes .nodes-import-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 2px 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+}
+body.camui-v2 #mobile-nodes .nodes-import-name {
+  font-weight: 600;
+  font-size: 14px;
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body.camui-v2 #mobile-nodes .nodes-import-meta {
+  font-size: 12px;
+  color: var(--text-dim);
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body.camui-v2 #mobile-nodes .nodes-import-btn {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+/* Add Host manage panel: segment tabs + auth-method sections */
+body.camui-v2 #mobile-nodes .nodes-manage-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  min-height: 0;
+  max-height: min(72vh, calc(100vh - 190px));
+  overflow: hidden;
+  padding: 0 16px 16px;
+}
+body.camui-v2 #mobile-nodes.nodes-manage-open .nodes-manage-panel {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: 48px;
+  z-index: 200;
+  max-height: none;
+  flex: 1 1 auto;
+  background: var(--bg);
+  padding: 0;
+  border-top: 1px solid var(--border);
+}
+body.camui-v2 #mobile-nodes.nodes-manage-open .nodes-list-wrap,
+body.camui-v2 #mobile-nodes.nodes-manage-open .nodes-actions,
+body.camui-v2 #mobile-nodes.nodes-manage-open #nodes-status,
+body.camui-v2 #mobile-nodes.nodes-manage-open .settings-header .settings-help {
+  display: none !important;
+}
+body.camui-v2 #mobile-nodes.nodes-manage-open .settings-header {
+  padding: 10px 16px;
+  border-bottom: none;
+}
+body.camui-v2 #mobile-nodes .nodes-manage-panel .nodes-manage-tabs {
+  margin: 8px 16px 10px;
+}
+body.camui-v2 #mobile-nodes.nodes-manage-open .nodes-manage-panel .nodes-manage-tabs {
+  flex-shrink: 0;
+}
+body.camui-v2 #mobile-nodes .nodes-add-form {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+body.camui-v2 #mobile-nodes .nodes-add-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 0 16px 12px;
+  overscroll-behavior: contain;
+}
+body.camui-v2 #mobile-nodes .nodes-add-footer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+  padding: 10px 16px calc(10px + env(safe-area-inset-bottom, 0px));
+  box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.28);
+}
+body.camui-v2 #mobile-nodes .nodes-add-footer .settings-actions {
+  display: flex;
+  gap: 10px;
+  padding: 0;
+  margin: 0;
+}
+body.camui-v2 #mobile-nodes .nodes-add-footer .settings-actions button {
+  flex: 1 1 0;
+  min-height: 44px;
+  font-size: 15px;
+  font-weight: 600;
+}
+body.camui-v2 #mobile-nodes .nodes-add-status {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  line-height: 1.45;
+  word-break: break-word;
+}
+body.camui-v2 #mobile-nodes .nodes-add-status:empty {
+  display: none;
+}
+body.camui-v2 #mobile-nodes .nodes-add-status.is-error {
+  background: rgba(248, 81, 73, 0.1);
+  border-color: rgba(248, 81, 73, 0.35);
+}
+body.camui-v2 #mobile-nodes .nodes-add-status.is-ok {
+  background: rgba(61, 214, 140, 0.1);
+  border-color: rgba(61, 214, 140, 0.35);
+}
+body.camui-v2 #mobile-nodes .nodes-add-intro {
+  margin-bottom: 4px;
+}
+body.camui-v2 #mobile-nodes .nodes-auth-keyfile-row {
+  flex-wrap: wrap;
+}
+body.camui-v2 #mobile-nodes .nodes-auth-keyfile-row .btn-secondary {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+body.camui-v2 #mobile-nodes .nodes-manage-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 6px;
+  background: var(--surface-bg);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  margin-bottom: 10px;
+}
+body.camui-v2 #mobile-nodes .nodes-manage-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  padding: 6px 12px;
+  font-size: 13px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+body.camui-v2 #mobile-nodes .nodes-manage-tab[aria-pressed="true"] {
+  background: rgba(255,255,255,0.06);
+  border-color: var(--border);
+  color: var(--text);
+}
+body.camui-v2 #mobile-nodes .nodes-manage-tab:hover { color: var(--text); }
+body.camui-v2 #mobile-nodes .nodes-manage-close {
+  margin-left: auto;
+}
+body.camui-v2 #mobile-nodes .nodes-auth-section {
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+  margin-top: 4px;
+}
+body.camui-v2 #mobile-nodes .nodes-auth-keyfile-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+body.camui-v2 #mobile-nodes .nodes-auth-keyfile-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+body.camui-v2 #mobile-nodes [hidden] {
+  display: none !important;
+}
+body.camui-v2 #mobile-nodes label.is-context-locked {
+  color: var(--text-dim);
+  opacity: 0.72;
+}
+body.camui-v2 #mobile-nodes label.is-context-locked input,
+body.camui-v2 #mobile-nodes label.is-context-locked select,
+body.camui-v2 #mobile-nodes label.is-context-locked textarea {
+  color: var(--text-dim);
+  background: rgba(255,255,255,0.03);
+  border-color: var(--border);
+  cursor: not-allowed;
+}
+
+/* Per-context rows inside the expanded node card. Each row carries
+ * the context name + path on the left, a persistent last-sync
+ * diagnostic badge on the right. Context rows are read-only
+ * diagnostics; Edit/Delete/Sync are node-level (Edit Host, Delete
+ * Host, Sync Host) and live in `.context-actions` below this list.
+ * The diagnostic column survives toast disappearance so the user
+ * can read failure codes long after sync ran. */
+body.camui-v2 #mobile-nodes .nodes-ctx-list {
+  margin: 10px 0 4px;
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+}
+body.camui-v2 #mobile-nodes .nodes-ctx-list-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+body.camui-v2 #mobile-nodes .nodes-ctx-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) auto;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  margin-bottom: 6px;
+}
+body.camui-v2 #mobile-nodes .nodes-ctx-row-actions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+body.camui-v2 #mobile-nodes .btn-xs {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--control-border);
+  background: var(--control-bg);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+body.camui-v2 #mobile-nodes .btn-xs:hover  { background: var(--control-bg-hover); }
+body.camui-v2 #mobile-nodes .btn-xs[disabled] { opacity: 0.5; cursor: not-allowed; }
+body.camui-v2 #mobile-nodes .btn-xs.btn-xs-danger {
+  border-color: var(--danger-border);
+  color: var(--danger-text);
+}
+body.camui-v2 #mobile-nodes .btn-xs.btn-xs-danger:hover {
+  background: var(--danger-bg-hover);
+}
+body.camui-v2 #mobile-nodes .nodes-ctx-row-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+body.camui-v2 #mobile-nodes .nodes-ctx-env {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+body.camui-v2 #mobile-nodes .nodes-ctx-env-label {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 10px;
+  margin-right: 4px;
+  color: var(--text-dim);
+  opacity: 0.7;
+}
+body.camui-v2 #mobile-nodes .nodes-ctx-name {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+body.camui-v2 #mobile-nodes .nodes-ctx-path {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+body.camui-v2 #mobile-nodes .nodes-ctx-row-sync {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+body.camui-v2 #mobile-nodes .nodes-ctx-sync-state {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  align-self: flex-start;
+  text-transform: lowercase;
+  letter-spacing: 0.2px;
+}
+body.camui-v2 #mobile-nodes .nodes-ctx-sync-state.state-never {
+  background: rgba(255,255,255,0.04);
+  color: var(--text-dim);
+}
+body.camui-v2 #mobile-nodes .nodes-ctx-sync-detail {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+body.camui-v2 #mobile-nodes .nodes-ctx-sync-time {
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
+body.camui-v2 #mobile-nodes input[readonly] {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+/* Host-card list: each card folds/unfolds. Collapsed cards show
+ * just the header (host identity + counts); expanded cards reveal
+ * the host-action stack plus the contexts list. */
+body.camui-v2 #mobile-nodes .nodes-list-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 16px;
+}
+body.camui-v2 #mobile-nodes .nodes-list-wrap {
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+}
+body.camui-v2 #mobile-nodes .host-card-list {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+body.camui-v2 #mobile-nodes .host-card {
+  border: 1px solid var(--border, #3d444d);
+  border-radius: 10px;
+  background: var(--bg-card, var(--surface-bg));
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
+}
+body.camui-v2 #mobile-nodes .host-card.is-disabled {
+  opacity: 0.62;
+  border-color: var(--border-subtle, #30363d);
+  box-shadow: none;
+}
+body.camui-v2 #mobile-nodes .host-card.expanded {
+  border-color: var(--accent, #38bdf8);
+  box-shadow: 0 0 0 1px var(--control-focus-ring, rgba(56, 189, 248, 0.35));
+}
+body.camui-v2 #mobile-nodes .host-card-title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+body.camui-v2 #mobile-nodes .host-node-name {
+  font-weight: 600;
+  font-size: calc(var(--ui-font-size, 14px) * 1.05);
+  color: var(--text);
+  line-height: 1.2;
+}
+body.camui-v2 #mobile-nodes .host-state-chip {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+body.camui-v2 #mobile-nodes .host-state-chip.is-enabled {
+  color: var(--green, #3dd68c);
+  border-color: rgba(61, 214, 140, 0.35);
+}
+body.camui-v2 #mobile-nodes .host-state-chip.is-disabled {
+  color: var(--red, #f85149);
+  border-color: rgba(248, 81, 73, 0.35);
+}
+body.camui-v2 #mobile-nodes .host-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  cursor: pointer;
+  user-select: none;
+}
+body.camui-v2 #mobile-nodes .host-card-header:hover {
+  background: var(--control-bg-hover);
+}
+body.camui-v2 #mobile-nodes .host-chevron {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--text-dim);
+  transform: rotate(0deg);
+  transition: transform 120ms ease;
+  width: 12px;
+  text-align: center;
+}
+body.camui-v2 #mobile-nodes .host-card.expanded .host-chevron {
+  transform: rotate(90deg);
+  color: var(--accent, #38bdf8);
+}
+body.camui-v2 #mobile-nodes .host-short {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text);
+}
+body.camui-v2 #mobile-nodes .host-id {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-family: SFMono-Regular, Consolas, monospace;
+}
+body.camui-v2 #mobile-nodes .host-ctx-chip {
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  opacity: 0.85;
+}
+body.camui-v2 #mobile-nodes .host-card-body {
+  padding: 6px 12px 12px;
+  border-top: 1px dashed var(--border);
+}
+body.camui-v2 #mobile-nodes .host-card-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 10px 0 8px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-subtle, #30363d);
+}
+body.camui-v2 #mobile-nodes .host-card-actions .btn-sm {
+  flex: 1 1 calc(50% - 4px);
+  min-width: 0;
+  justify-content: center;
+}
+body.camui-v2 #mobile-nodes .host-card-agents {
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+body.camui-v2 #mobile-nodes .host-card-contexts {
+  margin-top: 8px;
+}
+body.camui-v2 #mobile-nodes .host-card-ctx-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+/* Context rows inside an expanded host card. Each row also folds
+ * — collapsed shows name/path + edit/delete, expanded reveals env
+ * and the full last-sync diagnostic. */
+body.camui-v2 #mobile-nodes .ctx-row {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--control-radius);
+  background: var(--bg);
+  margin-bottom: 6px;
+  overflow: hidden;
+}
+body.camui-v2 #mobile-nodes .ctx-row.expanded {
+  border-color: var(--control-border);
+  background: var(--surface-bg);
+}
+body.camui-v2 #mobile-nodes .ctx-row-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+body.camui-v2 #mobile-nodes .ctx-row-header:hover {
+  background: var(--control-bg-hover);
+}
+body.camui-v2 #mobile-nodes .ctx-row-chevron {
+  display: inline-block;
+  font-size: 10px;
+  color: var(--text-dim);
+  transform: rotate(0deg);
+  transition: transform 120ms ease;
+  width: 10px;
+}
+body.camui-v2 #mobile-nodes .ctx-row.expanded .ctx-row-chevron {
+  transform: rotate(90deg);
+  color: var(--accent, #38bdf8);
+}
+body.camui-v2 #mobile-nodes .ctx-row-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+body.camui-v2 #mobile-nodes .ctx-row-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+body.camui-v2 #mobile-nodes .ctx-name {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+body.camui-v2 #mobile-nodes .ctx-path {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: SFMono-Regular, Consolas, monospace;
+}
+body.camui-v2 #mobile-nodes .ctx-row-sub {
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+body.camui-v2 #mobile-nodes .ctx-row-body {
+  padding: 4px 8px 8px 26px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+body.camui-v2 #mobile-nodes .ctx-row-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text);
+}
+body.camui-v2 #mobile-nodes .ctx-meta-label {
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.7;
+  font-weight: 600;
+}
+body.camui-v2 #mobile-nodes .ctx-meta-val {
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text);
+}
+body.camui-v2 #mobile-nodes .dim { color: var(--text-dim); }
+
+/* Persistent last-sync diagnostic inside the expanded context body. */
+body.camui-v2 #mobile-nodes .ctx-last-sync {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  text-transform: lowercase;
+  letter-spacing: 0.2px;
+}
+body.camui-v2 #mobile-nodes .ctx-last-sync.state-never {
+  background: rgba(255,255,255,0.04);
+  color: var(--text-dim);
+}
+body.camui-v2 #mobile-nodes .ctx-last-sync-detail {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: normal;
+}
+body.camui-v2 #mobile-nodes .ctx-last-sync-time {
+  font-size: 10px;
+  color: var(--text-dim);
+  opacity: 0.8;
+}
+
+
+/* Adaptive host-card Nodes layout. Keep long host/context values from
+ * forcing the card wider than the viewport; stack action buttons on
+ * narrow windows. */
+body.camui-v2 #mobile-nodes .host-card,
+body.camui-v2 #mobile-nodes .ctx-row {
+  min-width: 0;
+  max-width: 100%;
+}
+body.camui-v2 #mobile-nodes .host-card-header > *,
+body.camui-v2 #mobile-nodes .ctx-row-header > * {
+  min-width: 0;
+}
+body.camui-v2 #mobile-nodes .host-id {
+  flex: 1 1 240px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+body.camui-v2 #mobile-nodes .host-card-actions {
+  max-width: 100%;
+}
+body.camui-v2 #mobile-nodes .host-card-actions .btn-sm,
+body.camui-v2 #mobile-nodes .ctx-row-actions .btn-xs {
+  white-space: nowrap;
+}
+body.camui-v2 #mobile-nodes .ctx-row-actions {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+}
+body.camui-v2 #mobile-nodes .ctx-row-title {
+  min-width: 0;
+}
+body.camui-v2 #mobile-nodes .ctx-path,
+body.camui-v2 #mobile-nodes .ctx-meta-val {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  body.camui-v2 #mobile-nodes .nodes-list-wrap {
+    padding: 10px 12px 20px;
+  }
+  body.camui-v2 #mobile-nodes .host-card {
+    border-radius: var(--radius);
+    margin-bottom: 2px;
+  }
+  body.camui-v2 #mobile-nodes .host-card-header {
+    gap: 8px;
+    padding: 12px 14px;
+  }
+  body.camui-v2 #mobile-nodes .host-id {
+    flex: 1 1 100%;
+    margin-left: 20px;
+    font-size: 11px;
+  }
+  body.camui-v2 #mobile-nodes .host-card-body {
+    padding: 8px 14px 14px;
+  }
+  body.camui-v2 #mobile-nodes .host-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 4px 0 10px;
+  }
+  body.camui-v2 #mobile-nodes .host-card-actions .btn-sm {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 0;
+    text-align: center;
+    padding: 8px 6px;
+  }
+  body.camui-v2 #mobile-nodes .host-card-contexts {
+    border-top: 1px solid var(--border-subtle);
+    padding-top: 8px;
+  }
+  body.camui-v2 #mobile-nodes .ctx-row {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.02);
+    margin-bottom: 8px;
+    padding: 2px 0;
+  }
+  body.camui-v2 #mobile-nodes .ctx-row-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 10px;
+  }
+  body.camui-v2 #mobile-nodes .ctx-row-actions {
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+  body.camui-v2 #mobile-nodes .ctx-row-actions .btn-xs {
+    padding: 4px 10px;
+  }
+  body.camui-v2 #mobile-nodes .ctx-row-body {
+    padding: 0 10px 10px 28px;
+  }
+}

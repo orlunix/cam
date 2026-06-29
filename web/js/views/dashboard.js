@@ -1,4 +1,12 @@
 import { api, state, navigate } from '../app.js';
+import { AGENT_SORT_OPTIONS, loadAgentFilters, saveAgentFilters, sortAgents } from '../shared/agent-filters.js';
+import { getAgentAccessMap } from '../shared/agent-access.js';
+import {
+  filterAgentsOnEnabledHosts,
+  hostKeyFromAgent,
+  getNodeDisplayName,
+  isAgentHostEnabled,
+} from '../shared/node-host-meta.js';
 
 const STATUS_ICONS = {
   running: '<span class="dot running"></span>',
@@ -52,18 +60,21 @@ export function renderDashboard(container) {
   container.innerHTML = `
     <div id="dash-stats"></div>
     <div class="filter-bar">
-      <select id="filter-machine" class="filter-select">
-        <option value="">All nodes</option>
+      <select id="filter-machine" class="filter-select" title="Node">
+        <option value="">Nodes</option>
       </select>
-      <select id="filter-status" class="filter-select">
-        <option value="">All status</option>
+      <select id="filter-tool" class="filter-select" title="Tool">
+        <option value="">Tools</option>
+      </select>
+      <select id="filter-status" class="filter-select" title="Status">
+        <option value="">Status</option>
         <option value="running">Running</option>
         <option value="completed">Completed</option>
         <option value="failed">Failed</option>
         <option value="killed">Killed</option>
       </select>
-      <select id="filter-tool" class="filter-select">
-        <option value="">All tools</option>
+      <select id="filter-sort" class="filter-select" title="Sort by">
+        ${AGENT_SORT_OPTIONS.map(o => `<option value="${o.value}">${o.label}</option>`).join('')}
       </select>
     </div>
     <div id="agent-list-container"></div>
@@ -94,23 +105,32 @@ export function renderDashboard(container) {
   const statusSel = container.querySelector('#filter-status');
   const toolSel = container.querySelector('#filter-tool');
   const machineSel = container.querySelector('#filter-machine');
-  const filters = state.get('filters');
+  const sortSel = container.querySelector('#filter-sort');
+  const filters = { ...loadAgentFilters(), ...state.get('filters') };
+  state.set('filters', filters);
   if (filters.status) statusSel.value = filters.status;
   if (filters.tool) toolSel.value = filters.tool;
   if (filters.machine) machineSel.value = filters.machine;
+  if (filters.sort) sortSel.value = filters.sort;
 
-  statusSel.addEventListener('change', () => {
-    state.set('filters', { ...state.get('filters'), status: statusSel.value });
-  });
-  toolSel.addEventListener('change', () => {
-    state.set('filters', { ...state.get('filters'), tool: toolSel.value });
-  });
-  machineSel.addEventListener('change', () => {
-    state.set('filters', { ...state.get('filters'), machine: machineSel.value });
-  });
+  const persistFilters = () => {
+    const next = {
+      status: statusSel.value,
+      tool: toolSel.value,
+      machine: machineSel.value,
+      sort: sortSel.value || 'accessed',
+    };
+    state.set('filters', next);
+    saveAgentFilters(next);
+  };
+
+  statusSel.addEventListener('change', persistFilters);
+  toolSel.addEventListener('change', persistFilters);
+  machineSel.addEventListener('change', persistFilters);
+  sortSel.addEventListener('change', persistFilters);
 
   function renderList() {
-    const agents = state.get('agents') || [];
+    const agents = filterAgentsOnEnabledHosts(state.get('agents') || []);
     const filters = state.get('filters');
 
     let filtered = agents;
@@ -118,12 +138,7 @@ export function renderDashboard(container) {
     if (filters.tool) filtered = filtered.filter(a => a.tool === filters.tool);
     if (filters.machine) filtered = filtered.filter(a => (a.machine_host || 'local') === filters.machine);
 
-    // Sort: running first, then by started_at desc
-    filtered.sort((a, b) => {
-      if (a.status === 'running' && b.status !== 'running') return -1;
-      if (b.status === 'running' && a.status !== 'running') return 1;
-      return new Date(b.started_at || 0) - new Date(a.started_at || 0);
-    });
+    filtered = sortAgents(filtered, filters.sort || 'accessed', getAgentAccessMap());
 
     // Stats
     container.querySelector('#dash-stats').innerHTML = renderStats(agents);
@@ -131,14 +146,16 @@ export function renderDashboard(container) {
     // Update tool/context filter options (preserve selection)
     const tools = [...new Set(agents.map(a => a.tool))];
     const curTool = toolSel.value;
-    toolSel.innerHTML = `<option value="">All tools</option>${tools.map(t => `<option value="${t}">${t}</option>`).join('')}`;
+    toolSel.innerHTML = `<option value="">Tools</option>${tools.map(t => `<option value="${t}">${t}</option>`).join('')}`;
     toolSel.value = curTool;
 
-    const machines = [...new Set(agents.map(a => a.machine_host || 'local'))].sort();
+    const machines = [...new Set(agents.filter(isAgentHostEnabled).map(a => a.machine_host || 'local'))].sort();
     const curMachine = machineSel.value;
-    machineSel.innerHTML = `<option value="">All nodes</option>${machines.map(m => {
-      // Show short hostname for readability
-      const label = m === 'local' ? 'local' : m.split('.')[0];
+    machineSel.innerHTML = `<option value="">Nodes</option>${machines.map(m => {
+      const sample = agents.find(a => (a.machine_host || 'local') === m);
+      const label = sample
+        ? getNodeDisplayName(hostKeyFromAgent(sample), m === 'local' ? 'local' : m.split('.')[0])
+        : (m === 'local' ? 'local' : m.split('.')[0]);
       return `<option value="${m}">${label}</option>`;
     }).join('')}`;
     machineSel.value = curMachine;
@@ -260,6 +277,9 @@ export function renderDashboard(container) {
   // Initial render
   renderList();
 
+  const onHostMeta = () => renderList();
+  window.addEventListener('cam-node-host-meta-changed', onHostMeta);
+
   // Only re-render list when agents/filters change (preserve form state)
   let prevAgents = state.get('agents');
   let prevFilters = state.get('filters');
@@ -292,5 +312,8 @@ export function renderDashboard(container) {
     } catch (err) { state.toast(err.message, 'error'); }
   });
 
-  return () => { unsub(); };
+  return () => {
+    unsub();
+    window.removeEventListener('cam-node-host-meta-changed', onHostMeta);
+  };
 }

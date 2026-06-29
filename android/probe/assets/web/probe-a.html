@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Probe A — bare HTML</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #111;
+      color: #e0e0e0;
+      min-height: 100vh;
+      padding: 16px;
+    }
+    h1 { color: #4a9eff; font-size: 18px; margin-bottom: 8px; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 16px;
+    }
+    .cell {
+      border: 2px solid #333;
+      padding: 12px;
+      text-align: center;
+      font-size: 14px;
+    }
+    .footer {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      padding: 12px;
+      background: #1a1a1a;
+      border-top: 1px solid #333;
+      font-size: 12px;
+      color: #888;
+    }
+    .badge {
+      display: inline-block;
+      margin-top: 12px;
+      padding: 4px 10px;
+      background: #3dd68c;
+      color: #111;
+      border-radius: 4px;
+      font-weight: 700;
+      font-size: 11px;
+    }
+  </style>
+</head>
+<body>
+  <h1>CamUI Probe A</h1>
+  <p>Minimal static HTML — no JS, no CamUI CSS.</p>
+  <span class="badge">PROBE A</span>
+  <div class="grid">
+    <div class="cell">TL</div><div class="cell">TR</div>
+    <div class="cell">BL</div><div class="cell">BR</div>
+  </div>
+  <p style="margin-top:16px;font-size:13px;color:#888">
+    Test: screenshot or switch app, return. If this page drifts, the bug is in the WebView shell — not CamUI JS.
+  </p>
+  <div class="footer">Bottom bar — should stay visible, not clipped</div>
+</body>
+</html>

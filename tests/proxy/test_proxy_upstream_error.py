@@ -4,7 +4,7 @@ import io
 import json
 import urllib.error
 
-from camc_pkg.proxy.messages import Handler, Server
+from camc_pkg.proxy.messages import MessagesHandler, MessagesServer
 
 
 class _Dbg(object):
@@ -12,7 +12,7 @@ class _Dbg(object):
         pass
 
 
-class _CaptureHandler(Handler):
+class _CaptureHandler(MessagesHandler):
     status = None
     content_type = None
     body = b""
@@ -53,7 +53,7 @@ def test_streaming_upstream_error_returns_http_status(monkeypatch):
         "messages": [{"role": "user", "content": "hi"}],
     }).encode("utf-8")
 
-    srv = Server(
+    srv = MessagesServer(
         ("127.0.0.1", 0),
         _CaptureHandler,
         api_key="test-key",

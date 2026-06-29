@@ -283,6 +283,150 @@ _TOOL_SPECS = {
 
 
 # ---------------------------------------------------------------------------
+# Golden paths (2026-06-23 PDX hardening). Independent of user PATH /
+# shell / tmux config drift so camc agents resolve stable executables
+# even when the caller's env is messy.
+# ---------------------------------------------------------------------------
+
+# /bin/tmux is the on-box system tmux on every NVIDIA container/VM we
+# care about. Prefer it over PATH (which can be poisoned by the user's
+# login shell) so camc-owned sessions are independent of user setup.
+_GOLDEN_TMUX_PATHS = (
+    "/bin/tmux",
+)
+
+# Per-tool ordered preference list. Absolute paths; first existing +
+# executable wins. PATH/env is the fallback after this list is
+# exhausted (unless --use-env-tool is set).
+_GOLDEN_TOOL_PATHS = {
+    "claude": (
+        "/home/tools_ai/anthropic-ai/claude/stable/claude",
+        "/home/tools_ai/anthropic-ai/claude/latest/claude",
+        "/home/prgn_share/tools/claude-code/bin/claude",
+    ),
+    "codex": (
+        "/home/tools_ai/openai/codex/stable/bin/codex",
+        "/home/tools_ai/openai/codex/latest/bin/codex",
+        "/home/prgn_share/tools/codex/bin/codex",
+        "~/.local/bin/codex",
+    ),
+    "cursor": (
+        "/home/prgn_share/tools/cursor/cursor-cli/latest/bin/cursor-agent",
+        "/home/tools_ai/cursor/cursor-cli/latest/bin/cursor-agent",
+    ),
+}
+
+# Alias set used for PATH/env fallback resolution. Some tools ship
+# under multiple binary names (cursor's CLI binary is `cursor-agent`
+# in some packages and `agent` in others) — the alias list lets us
+# locate any of them without forcing one specific install.
+_PATH_TOOL_ALIASES = {
+    "claude": ("claude",),
+    "codex": ("codex",),
+    "cursor": ("cursor-agent", "agent"),
+}
+
+
+def _is_executable_file(path):
+    try:
+        return os.path.isfile(path) and os.access(path, os.X_OK)
+    except OSError:
+        return False
+
+
+def resolve_tmux_bin(runtime=None):
+    """Resolve the tmux binary camc should drive new sessions with.
+
+    Order:
+      1) /bin/tmux (golden) — preferred so camc is independent of user
+         PATH drift and unusual login shells.
+      2) PATH lookup via runtime.env (fallback). When this fires the
+         caller SHOULD surface a warning so operators know camc is
+         depending on user PATH rather than the golden binary.
+
+    Returns (path_or_None, source_str). source_str is 'golden' or
+    'env' or 'missing'. Callers that just want the path can ignore
+    source_str.
+    """
+    for golden in _GOLDEN_TMUX_PATHS:
+        if _is_executable_file(golden):
+            return golden, "golden"
+    if runtime is not None:
+        env_path = resolve_tool(runtime, "tmux")
+        if env_path:
+            return env_path, "env"
+    return None, "missing"
+
+
+def resolve_tool_with_source(runtime, tool, use_env_tool=False):
+    """Resolve a tool's absolute binary path with source attribution.
+
+    ``tool`` is the user-facing name (claude / codex / cursor). The
+    return shape is a dict so callers (cli.cmd_run, the agent-record
+    manifest writer) can record the resolution provenance without a
+    second round of detection.
+
+    Returns:
+        {
+          "tool":     "claude" | "codex" | "cursor" | <unknown>,
+          "bin":      absolute path or None,
+          "source":   "golden" | "env" | "env-forced" | "missing",
+          "warnings": [<str>, ...],
+        }
+
+    Resolution order (default):
+      1) Golden absolute paths from ``_GOLDEN_TOOL_PATHS[tool]``.
+      2) PATH/env lookup using ``_PATH_TOOL_ALIASES[tool]``.
+
+    With ``use_env_tool=True``, the golden list is skipped entirely;
+    only the alias-based PATH lookup runs, and ``source`` is set to
+    ``env-forced`` on success so the agent record can mark the run.
+
+    Configured explicit paths (from adapter readiness.binary or the
+    user's external config) are handled in ``check_tool_readiness``
+    one level up — this helper is the golden-vs-PATH split only.
+    """
+    result = {
+        "tool":     tool,
+        "bin":      None,
+        "source":   "missing",
+        "warnings": [],
+    }
+    aliases = _PATH_TOOL_ALIASES.get(tool, (tool,))
+    if use_env_tool:
+        for alias in aliases:
+            p = resolve_tool(runtime, alias) if runtime is not None else None
+            if p and _is_executable_file(p):
+                result["bin"] = p
+                result["source"] = "env-forced"
+                result["warnings"].append(
+                    "tool resolved from PATH (--use-env-tool); golden "
+                    "paths skipped: %s" % p)
+                return result
+        result["warnings"].append(
+            "tool %r not found in PATH (--use-env-tool); aliases tried: %s"
+            % (tool, ", ".join(aliases)))
+        return result
+    # Default: golden first.
+    for golden in _GOLDEN_TOOL_PATHS.get(tool, ()):
+        candidate = _expand_runtime_path(runtime, golden)
+        if _is_executable_file(candidate):
+            result["bin"] = candidate
+            result["source"] = "golden"
+            return result
+    # Golden exhausted — fall through to PATH/env aliases.
+    for alias in aliases:
+        p = resolve_tool(runtime, alias) if runtime is not None else None
+        if p and _is_executable_file(p):
+            result["bin"] = p
+            result["source"] = "env"
+            result["warnings"].append(
+                "tool resolved from PATH (no golden path present): %s" % p)
+            return result
+    return result
+
+
+# ---------------------------------------------------------------------------
 # check_tool_readiness — the meat
 # ---------------------------------------------------------------------------
 
@@ -311,7 +455,8 @@ def _spec_from_readiness(readiness):
     return spec
 
 
-def check_tool_readiness(runtime, selected_tool, tool_binary=None, readiness=None):
+def check_tool_readiness(runtime, selected_tool, tool_binary=None,
+                          readiness=None, use_env_tool=False):
     """Return a dict shaped:
 
         {
@@ -347,13 +492,24 @@ def check_tool_readiness(runtime, selected_tool, tool_binary=None, readiness=Non
         spec = _TOOL_SPECS.get(selected_tool, {})
         readiness_source = "fallback"
 
-    # ---- tmux (required, always checked from runtime env) ----
-    tmux_path = resolve_tool(runtime, "tmux")
+    # ---- tmux (required) ----
+    # 2026-06-23 PDX hardening: prefer the golden /bin/tmux over PATH
+    # so camc isn't subject to user shell / PATH drift. Falls back to
+    # the runtime-env PATH lookup if golden is missing; that fallback
+    # produces a warning so operators can see camc is depending on
+    # user PATH rather than the on-box tmux.
+    tmux_path, tmux_source = resolve_tmux_bin(runtime)
     if not tmux_path:
         issues.append(("error",
-            "tmux not found in effective PATH. Install: apt install tmux"))
+            "tmux not found (golden /bin/tmux missing and no PATH match). "
+            "Install: apt install tmux"))
     else:
         resolved["tmux"] = tmux_path
+        resolved["tmux_source"] = tmux_source
+        if tmux_source == "env":
+            issues.append(("warn",
+                "tmux resolved from PATH (%s); golden /bin/tmux not present"
+                % tmux_path))
         rc, out = run_probe(runtime, [tmux_path, "-V"], timeout=3)
         if rc != 0:
             # F2: any non-zero rc (including -1 timeout/OSError) means
@@ -386,11 +542,84 @@ def check_tool_readiness(runtime, selected_tool, tool_binary=None, readiness=Non
     bin_name = tool_binary
     if bin_name in (None, "", "env", "/usr/bin/env"):
         bin_name = spec.get("binary") or selected_tool
-    tool_path = resolve_tool(runtime, bin_name)
+
+    # 2026-06-23 PDX hardening: prefer configured explicit absolute
+    # executables, then golden paths, then PATH. ``use_env_tool=True``
+    # is the explicit advanced opt-out: skip configured/golden paths
+    # and resolve from PATH aliases only.
+    tool_path = None
+    tool_resolution = {
+        "tool": selected_tool, "bin": None,
+        "source": "missing", "warnings": [],
+    }
+    configured_abs = bin_name if os.path.isabs(bin_name) else ""
+    if configured_abs and not use_env_tool:
+        if _is_executable_file(configured_abs):
+            tool_path = configured_abs
+            tool_resolution = {
+                "tool": selected_tool, "bin": tool_path,
+                "source": "configured", "warnings": [],
+            }
+        else:
+            issues.append(("warn",
+                "configured tool path is not executable; falling back "
+                "to golden/PATH: %s" % configured_abs))
+
+    # Spec-binary override: when the adapter readiness (or fallback
+    # spec) declares a custom binary that differs from the selected
+    # tool aliases (e.g. 'widget_custom'), that binary is the canonical
+    # PATH alias. This path deliberately does NOT override a configured
+    # absolute executable above.
+    spec_binary = spec.get("binary")
+    if not tool_path and spec_binary and spec_binary not in _PATH_TOOL_ALIASES.get(
+            selected_tool, (selected_tool,)):
+        if os.path.isabs(spec_binary) and not use_env_tool:
+            tool_path = spec_binary if _is_executable_file(spec_binary) else None
+            tool_resolution = {
+                "tool": selected_tool, "bin": tool_path,
+                "source": "configured" if tool_path else "missing",
+                "warnings": [],
+            }
+        elif not os.path.isabs(spec_binary):
+            tool_path = resolve_tool(runtime, spec_binary)
+            tool_resolution = {
+                "tool":     selected_tool,
+                "bin":      tool_path,
+                "source":   "env-forced" if use_env_tool else "env",
+                "warnings": (
+                    ["tool resolved from PATH using adapter-spec binary "
+                     "%r: %s" % (spec_binary, tool_path)] if tool_path else []),
+            }
+            for w in tool_resolution["warnings"]:
+                issues.append(("warn", w))
+
+    if not tool_path:
+        tool_resolution = resolve_tool_with_source(
+            runtime, selected_tool, use_env_tool=use_env_tool)
+        tool_path = tool_resolution.get("bin")
+        for w in tool_resolution.get("warnings", []) or []:
+            issues.append(("warn", w))
+        if not tool_path and not (use_env_tool and os.path.isabs(bin_name)):
+            # Last-resort: try the legacy bin_name (may be a custom
+            # alias the spec inherited from _TOOL_SPECS). Do not use
+            # an absolute configured path here when --use-env-tool was
+            # requested; that option means PATH/env only.
+            tool_path = resolve_tool(runtime, bin_name)
+            if tool_path:
+                tool_resolution = {
+                    "tool": selected_tool, "bin": tool_path,
+                    "source": "env-forced" if use_env_tool else "env",
+                    "warnings": [
+                        "tool resolved from PATH via legacy bin_name=%s: %s"
+                        % (bin_name, tool_path)],
+                }
+                issues.append(("warn", tool_resolution["warnings"][0]))
+    resolved["tool_resolution"] = tool_resolution
     if not tool_path:
         hint = spec.get("install_hint", "ensure '%s' is in effective PATH" % bin_name)
         issues.append(("error",
-            "'%s' not found in effective PATH. Install: %s" % (bin_name, hint)))
+            "'%s' not found (golden paths missing AND no PATH match). "
+            "Install: %s" % (bin_name, hint)))
     else:
         resolved["tool"] = tool_path
         version_args = spec.get("version_args", ["--version"])

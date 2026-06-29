@@ -1,179 +1,28 @@
 /**
- * Todos / Notes Worklog mode.
+ * Todos / Notes Worklog mode (Desktop).
  *
- * V0 is intentionally renderer-local: it establishes the structural
- * Markdown-backed UI and interaction model before the todocli / Hub API is
- * wired. Markdown files remain the planned source of truth; localStorage is
- * only a mock-safe cache for this UI slice.
+ * V0: local Markdown-backed worklog via shared worklog-core store.
+ * Next: Hub workspace-services proxy to todocli.
  */
 
-const STORAGE_KEY = 'cam_desktop_worklog_v0';
-const PROJECTS_KEY = 'cam_desktop_worklog_projects_v0';
-const TABS = ['inbox', 'projects', 'archive'];
-const DETAIL_TABS = ['preview', 'raw', 'notes', 'checklist', 'history'];
-
-const seedItems = [
-  {
-    id: 'todo-20260610-layout',
-    type: 'task',
-    title: 'Fix Nodes layout',
-    status: 'open',
-    project: 'camui',
-    priority: 'P1',
-    tags: ['ui', 'desktop'],
-    updatedAt: Date.now() - 5 * 60 * 1000,
-    due: 'Jun 14',
-    goal: 'Make Desktop management pages visually consistent and usable for daily work.',
-    body: 'Need align Nodes, Skills, and Todos pages on the same full-width rail. Keep the list structural and mobile-friendly.',
-    notes: [
-      { id: 'n-layout-1', text: 'User prefers structural rows over decorative cards.', updatedAt: Date.now() - 4 * 60 * 1000 },
-    ],
-    checklist: [
-      { id: 'api', text: 'Add API contract', done: false },
-      { id: 'ui', text: 'Add outline UI', done: true },
-      { id: 'win', text: 'Test Windows install', done: false },
-    ],
-    history: ['created from Inbox', 'moved to project camui', 'priority set to P1'],
-  },
-  {
-    id: 'todo-20260610-design',
-    type: 'task',
-    title: 'Todo UI design',
-    status: 'open',
-    project: 'camui',
-    tags: ['design'],
-    updatedAt: Date.now() - 60 * 60 * 1000,
-    goal: 'Keep todo and note interaction mobile-friendly.',
-    body: 'Use a Notion-like row equals page model, but keep the default view as a todo outline. Markdown remains the source of truth.',
-    notes: [
-      { id: 'n-design-1', text: 'Notes are task-scoped activity entries in the target model.', updatedAt: Date.now() - 55 * 60 * 1000 },
-    ],
-    checklist: [
-      { id: 'mobile', text: 'Avoid hover-only actions', done: true },
-      { id: 'sheet', text: 'Mobile detail can become a sheet', done: false },
-    ],
-    history: ['captured as note', 'linked to project camui'],
-  },
-  {
-    id: 'todo-20260610-wrapper',
-    type: 'task',
-    title: 'Add todocli API wrapper',
-    status: 'active',
-    project: 'camui',
-    priority: 'P2',
-    tags: ['backend'],
-    updatedAt: Date.now() - 2 * 60 * 60 * 1000,
-    goal: 'Wire todocli behind the same Markdown-backed task model.',
-    body: 'Bundle todo.py like camc and call it with --config <workspace>/.cam/worklog. Keep Markdown files as source of truth.',
-    notes: [],
-    checklist: [
-      { id: 'bundle', text: 'Bundle todo.py', done: false },
-      { id: 'routes', text: 'Expose context-scoped routes', done: false },
-    ],
-    history: ['created from implementation plan', 'status set to active'],
-  },
-  {
-    id: 'todo-20260610-personal',
-    type: 'task',
-    title: 'Capture mobile interaction notes',
-    status: 'open',
-    project: 'personal',
-    priority: 'P3',
-    tags: ['mobile'],
-    updatedAt: Date.now() - 24 * 60 * 60 * 1000,
-    goal: 'Capture mobile design constraints.',
-    body: 'Document bottom-sheet filters and full-screen item detail behavior for the mobile version.',
-    notes: [],
-    checklist: [],
-    history: ['created in Inbox'],
-  },
-];
-
-function escapeHtml(s) {
-  return String(s == null ? '' : s).replace(/[&<>"]/g, ch => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;',
-  }[ch]));
-}
-
-function escapeAttr(s) {
-  return escapeHtml(s).replace(/'/g, '&#39;');
-}
-
-function readItems() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return seedItems.map(normalizeItem);
-    const parsed = JSON.parse(raw);
-    return (Array.isArray(parsed) && parsed.length ? parsed : seedItems).map(normalizeItem);
-  } catch {
-    return seedItems.map(normalizeItem);
-  }
-}
-
-function saveItems(items) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(items)); } catch {}
-}
-
-function readStoredProjects() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(PROJECTS_KEY) || '[]');
-    return Array.isArray(parsed) ? parsed.map(x => String(x || '').trim()).filter(Boolean) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveStoredProjects(projects) {
-  try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projects)); } catch {}
-}
-
-function relativeTime(ms) {
-  const delta = Math.max(0, Date.now() - Number(ms || 0));
-  const mins = Math.floor(delta / 60000);
-  if (mins < 1) return 'now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
-
-function itemMatchesTab(item, tab) {
-  if (tab === 'archive') return item.status === 'archived';
-  return item.status !== 'archived';
-}
-
-function itemMarkdown(item) {
-  const tags = (item.tags || []).map(t => `"${String(t).replace(/"/g, '\\"')}"`).join(', ');
-  return `---\nid: ${item.id}\ntype: ${item.type}\ntitle: ${item.title}\ngoal: ${item.goal || ''}\nstatus: ${item.status}\nproject: ${item.project}\npriority: ${item.priority || ''}\ntags: [${tags}]\n---\n\n${item.body || ''}`;
-}
-
-function checkboxProgress(item) {
-  const list = item.checklist || [];
-  if (!list.length) return '';
-  const done = list.filter(x => x.done).length;
-  return `${done}/${list.length}`;
-}
-
-function normalizeItem(item) {
-  return {
-    ...item,
-    id: item.id || `todo-${Date.now()}`,
-    type: 'task',
-    status: item.status || 'open',
-    project: item.project || 'inbox',
-    priority: item.priority || '',
-    tags: Array.isArray(item.tags) ? item.tags : [],
-    notes: Array.isArray(item.notes) ? item.notes : [],
-    checklist: Array.isArray(item.checklist) ? item.checklist : [],
-    history: Array.isArray(item.history) ? item.history : [],
-    updatedAt: Number(item.updatedAt || Date.now()),
-  };
-}
-
-function splitListText(text) {
-  return String(text || '').split(/[,\n]/).map(x => x.trim()).filter(Boolean);
-}
+import {
+  WORKLOG_TABS,
+  DETAIL_TABS,
+  readItems,
+  saveItems,
+  readStoredProjects,
+  saveStoredProjects,
+  normalizeItem,
+  itemMatchesTab,
+  itemMarkdown,
+  checkboxProgress,
+  relativeTime,
+  escapeHtml,
+  escapeAttr,
+  projectsFromItems,
+  storePathForContexts,
+  contextLabelFromContexts,
+} from '../shared/worklog-core.js?v=0.65.0';
 
 export function mountTodosMode({ state, showToast }) {
   const root = document.getElementById('mode-todos');
@@ -194,6 +43,7 @@ export function mountTodosMode({ state, showToast }) {
   let activeTab = 'inbox';
   let detailTab = 'preview';
   let selectedId = items[0] && items[0].id;
+  let composerKind = null; // 'task' | 'note' | null
 
   function setStatus(msg, type = 'info') {
     if (!statusEl) return;
@@ -208,26 +58,16 @@ export function mountTodosMode({ state, showToast }) {
 
   function contextLabel() {
     const contexts = state && state.get ? (state.get('contexts') || []) : [];
-    const first = contexts.find(ctx => ctx && ctx.machine && ctx.machine.type === 'ssh') || contexts[0];
-    if (!first) return 'Current workspace context';
-    const machine = first.machine || {};
-    const host = machine.host || first.name || 'local';
-    const user = machine.user ? `${machine.user}@` : '';
-    return `${first.name || host} · ${user}${host}`;
+    return contextLabelFromContexts(contexts);
   }
 
   function storePath() {
     const contexts = state && state.get ? (state.get('contexts') || []) : [];
-    const first = contexts.find(ctx => ctx && ctx.path) || null;
-    return `${first && first.path ? first.path : '/workspace'}/.cam/worklog`;
+    return storePathForContexts(contexts);
   }
 
   function projects() {
-    return Array.from(new Set([
-      'inbox',
-      ...storedProjects,
-      ...items.map(item => item.project || 'inbox'),
-    ].map(p => String(p || '').trim()).filter(Boolean))).sort();
+    return projectsFromItems(items, storedProjects);
   }
 
   function filteredItems() {
@@ -306,6 +146,21 @@ export function mountTodosMode({ state, showToast }) {
     `;
   }
 
+  function renderInlineComposer() {
+    if (!composerKind || activeTab === 'projects') return '';
+    const isNote = composerKind === 'note';
+    return `
+      <article class="todos-composer">
+        <h4>${isNote ? 'New note' : 'New task'}</h4>
+        ${isNote ? '' : `<input id="todos-composer-title" placeholder="Task title" autocomplete="off">`}
+        <textarea id="todos-composer-body" rows="${isNote ? 4 : 3}" placeholder="${isNote ? 'Note body (Markdown)' : 'Task description'}"></textarea>
+        <div class="todos-composer-actions">
+          <button type="button" class="btn-primary" id="todos-composer-save">Save</button>
+          <button type="button" class="btn-secondary" id="todos-composer-cancel">Cancel</button>
+        </div>
+      </article>`;
+  }
+
   function renderOutline() {
     if (!outlineEl) return;
     if (activeTab === 'projects') {
@@ -313,7 +168,8 @@ export function mountTodosMode({ state, showToast }) {
       return;
     }
     const rows = filteredItems();
-    if (!rows.length) {
+    const composer = renderInlineComposer();
+    if (!rows.length && !composer) {
       outlineEl.innerHTML = '<div class="empty-state">No matching todos.</div>';
       return;
     }
@@ -322,7 +178,7 @@ export function mountTodosMode({ state, showToast }) {
       (acc[key] = acc[key] || []).push(item);
       return acc;
     }, {});
-    outlineEl.innerHTML = Object.entries(grouped).map(([project, list]) => `
+    outlineEl.innerHTML = composer + Object.entries(grouped).map(([project, list]) => `
       <article class="todos-project">
         <header class="todos-project-head">
           <span class="todos-project-toggle">v</span>
@@ -332,7 +188,7 @@ export function mountTodosMode({ state, showToast }) {
         <div class="todos-item-list">
           ${list.map(item => `
             <button type="button" class="todos-row ${item.id === selectedId ? 'active' : ''}" data-todo-id="${escapeAttr(item.id)}">
-              <span class="todos-row-kind">${item.status === 'done' ? '[x]' : '[ ]'}</span>
+              <span class="todos-row-kind">${item.kind === 'note' ? 'N' : item.status === 'done' ? '[x]' : '[ ]'}</span>
               <span class="todos-row-main">
                 <span class="todos-row-title">${item.priority ? `<strong>${escapeHtml(item.priority)}</strong>` : ''}${escapeHtml(item.title)}</span>
                 <span class="todos-row-meta">
@@ -401,7 +257,7 @@ export function mountTodosMode({ state, showToast }) {
       <header class="todos-detail-head">
         <div>
           <h3>${escapeHtml(item.title)}</h3>
-          <p class="muted">task · ${escapeHtml(item.project)} · ${escapeHtml(item.status)}</p>
+          <p class="muted">${escapeHtml(item.kind || item.type)} · ${escapeHtml(item.project)} · ${escapeHtml(item.status)}</p>
         </div>
         <div class="todos-detail-actions">
           <button type="button" class="btn-secondary" data-todo-action="active">Start</button>
@@ -430,29 +286,49 @@ export function mountTodosMode({ state, showToast }) {
     renderDetail();
   }
 
-  function addItem() {
-    const id = `task-${Date.now()}`;
-    const item = {
+  function addItem(kind = 'task', title = '', body = '') {
+    const isNote = kind === 'note';
+    const trimmedTitle = String(title || '').trim();
+    const trimmedBody = String(body || '').trim();
+    if (!isNote && !trimmedTitle) return setStatus('Task title is required.', 'error');
+    if (isNote && !trimmedBody) return setStatus('Note body is required.', 'error');
+    const id = `${isNote ? 'note' : 'task'}-${Date.now()}`;
+    const item = normalizeItem({
       id,
-      type: 'task',
-      title: 'New task',
+      kind,
+      type: kind,
+      title: trimmedTitle || (isNote ? trimmedBody.split('\n')[0].slice(0, 80) : 'New task'),
       status: 'open',
       project: projectEl && projectEl.value !== 'all' ? projectEl.value : 'inbox',
-      priority: 'P2',
+      priority: isNote ? '' : 'P2',
       tags: [],
       updatedAt: Date.now(),
       goal: '',
-      body: 'Describe the task in Markdown.',
+      body: trimmedBody || (isNote ? '' : 'Describe the task in Markdown.'),
       notes: [],
       checklist: [],
-      history: ['created locally in V0 UI'],
-    };
+      history: [`created locally as ${kind}`],
+    });
     items = [item, ...items];
     selectedId = id;
-    detailTab = 'raw';
+    detailTab = isNote ? 'preview' : 'raw';
+    composerKind = null;
     persist();
     render();
-    setStatus('Task created locally.');
+    setStatus(isNote ? 'Note created.' : 'Task created.');
+  }
+
+  function addTask() {
+    composerKind = 'task';
+    renderOutline();
+    document.getElementById('todos-composer-title')?.focus();
+  }
+
+  function addNote() {
+    composerKind = 'note';
+    activeTab = activeTab === 'archive' || activeTab === 'projects' ? 'notes' : activeTab;
+    render();
+    document.getElementById('todos-composer-body')?.focus();
   }
 
   function patchSelected(mutator, message) {
@@ -562,7 +438,8 @@ export function mountTodosMode({ state, showToast }) {
 
   root.querySelectorAll('.todos-tab').forEach(btn => {
     btn.addEventListener('click', () => {
-      activeTab = TABS.includes(btn.dataset.todosTab) ? btn.dataset.todosTab : 'inbox';
+      activeTab = WORKLOG_TABS.includes(btn.dataset.todosTab) ? btn.dataset.todosTab : 'inbox';
+      composerKind = null;
       root.querySelectorAll('.todos-tab').forEach(b => {
         const active = b === btn;
         b.classList.toggle('active', active);
@@ -573,6 +450,17 @@ export function mountTodosMode({ state, showToast }) {
   });
 
   outlineEl && outlineEl.addEventListener('click', event => {
+    if (event.target.closest('#todos-composer-save')) {
+      return addItem(
+        composerKind || 'task',
+        document.getElementById('todos-composer-title')?.value || '',
+        document.getElementById('todos-composer-body')?.value || '',
+      );
+    }
+    if (event.target.closest('#todos-composer-cancel')) {
+      composerKind = null;
+      return renderOutline();
+    }
     const projectBtn = event.target.closest('[data-project-action]');
     if (projectBtn) {
       const action = projectBtn.dataset.projectAction;
@@ -623,7 +511,8 @@ export function mountTodosMode({ state, showToast }) {
   projectEl && projectEl.addEventListener('change', render);
   statusFilterEl && statusFilterEl.addEventListener('change', render);
   sortEl && sortEl.addEventListener('change', render);
-  document.getElementById('todos-new-task')?.addEventListener('click', addItem);
+  document.getElementById('todos-new-task')?.addEventListener('click', addTask);
+  document.getElementById('todos-new-note')?.addEventListener('click', addNote);
   document.getElementById('todos-check')?.addEventListener('click', () => {
     setStatus('Store check is local-only in V0. Backend todocli wiring is next.');
   });

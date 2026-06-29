@@ -222,19 +222,21 @@ a { color: var(--accent); text-decoration: none; }
 /* === Filter Bar === */
 .filter-bar {
   display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
+  flex-wrap: nowrap;
+  gap: 4px;
+  margin-bottom: 8px;
 }
 .filter-select {
-  flex: 1;
+  flex: 1 1 0;
   min-width: 0;
+  width: 0;
   appearance: none;
   background: var(--bg-input);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 6px 10px;
-  font-size: 13px;
+  padding: 5px 4px;
+  font-size: 11px;
 }
 
 /* === Agent Cards === */

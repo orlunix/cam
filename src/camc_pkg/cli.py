@@ -16,50 +16,160 @@ from uuid import uuid4, uuid5, NAMESPACE_DNS as _UUID_NS
 from camc_pkg import __build__
 
 
-def _ensure_logs_on_scratch():
-    """Move ~/.cam/logs to scratch if available. Silent, idempotent."""
-    logs_dir = os.path.join(os.path.expanduser("~"), ".cam", "logs")
-    if os.path.islink(logs_dir):
-        return  # Already done
-    if not os.path.isdir(logs_dir):
-        return  # No logs dir yet
-    # Find scratch
+_PHASE1_STORAGE_RELPATHS = (
+    "logs",
+    "archives",
+    os.path.join("cron", "logs"),
+    os.path.join("cron", "archive"),
+)
+
+
+def _mkdir_p(path):
+    try:
+        os.makedirs(path)
+    except OSError:
+        if not os.path.isdir(path):
+            raise
+
+
+def _is_writable_dir(path):
+    try:
+        _mkdir_p(path)
+        probe = os.path.join(path, ".camc-write-test-%d" % os.getpid())
+        with open(probe, "w") as f:
+            f.write("ok")
+        try:
+            os.unlink(probe)
+        except OSError:
+            pass
+        return True
+    except Exception:
+        return False
+
+
+def _find_phase1_storage_root():
+    """Return an external data root for Phase 1 storage, or None.
+
+    CAMC_DATA_DIR is the explicit override. If unset, detect common
+    scratch roots. All failures are non-fatal: this runs at camc
+    startup and must never block the user's command.
+    """
+    explicit = os.environ.get("CAMC_DATA_DIR")
+    if explicit:
+        root = os.path.expanduser(explicit)
+        return root if _is_writable_dir(root) else None
+
     user = os.environ.get("USER", "")
     if not user:
-        return
-    scratch = None
-    # Try ypcat (NIS)
+        return None
+
+    # Try NIS auto.home first. This is best-effort only.
     try:
         out = subprocess.check_output(
-            ["ypcat", "-k", "auto.home"], timeout=5, stderr=subprocess.DEVNULL
+            ["ypcat", "-k", "auto.home"], timeout=5,
+            stderr=subprocess.DEVNULL
         ).decode("utf-8", errors="replace")
         for line in out.splitlines():
             if line.startswith("scratch.%s" % user):
-                scratch = "/home/%s" % line.split()[0]
-                break
+                candidate = "/home/%s" % line.split()[0]
+                if _is_writable_dir(candidate):
+                    return candidate
     except Exception:
         pass
-    # Fallback: check common paths
-    if not scratch:
-        for suffix in ["_gpu", "", "_gpu_1", "_gpu_2"]:
-            candidate = "/home/scratch.%s%s" % (user, suffix)
-            if os.path.isdir(candidate):
-                scratch = candidate
-                break
-    if not scratch or not os.path.isdir(scratch):
-        return
-    dst = os.path.join(scratch, ".cam", "logs")
+
+    for suffix in ("_gpu", "", "_gpu_1", "_gpu_2"):
+        candidate = "/home/scratch.%s%s" % (user, suffix)
+        if os.path.isdir(candidate) and _is_writable_dir(candidate):
+            return candidate
+    return None
+
+
+def _copy_tree_contents(src, dst):
+    """Copy src directory contents into dst. Raise on any copy error."""
+    _mkdir_p(dst)
+    for root, dirs, files in os.walk(src):
+        rel = os.path.relpath(root, src)
+        target_root = dst if rel == "." else os.path.join(dst, rel)
+        _mkdir_p(target_root)
+        for d in dirs:
+            source_dir = os.path.join(root, d)
+            if os.path.islink(source_dir):
+                continue
+            _mkdir_p(os.path.join(target_root, d))
+        for name in files:
+            source_file = os.path.join(root, name)
+            target_file = os.path.join(target_root, name)
+            if os.path.isdir(source_file):
+                continue
+            shutil.copy2(source_file, target_file)
+
+
+def _relocate_camc_dir_best_effort(relpath, root):
+    """Best-effort symlink relocation for one ~/.cam subdirectory.
+
+    Safety rules:
+      * missing source: no-op
+      * existing symlink: no-op
+      * copy must succeed before source is renamed
+      * if symlink creation fails after rename, restore the original
+      * all exceptions are swallowed by caller
+    """
+    src = os.path.join(os.path.expanduser("~"), ".cam", relpath)
+    if os.path.islink(src) or not os.path.isdir(src):
+        return False
+    dst = os.path.join(root, ".cam", relpath)
     try:
-        os.makedirs(dst, exist_ok=True)
-        subprocess.run(["rsync", "-a", "--quiet", logs_dir + "/", dst + "/"],
-                       timeout=120, check=False)
-        tmp = "%s.old.%d" % (logs_dir, os.getpid())
-        os.rename(logs_dir, tmp)
-        os.symlink(dst, logs_dir)
-        subprocess.run(["rm", "-rf", tmp], timeout=30, check=False)
-        log.info("Moved logs to scratch: %s", dst)
+        if os.path.realpath(src) == os.path.realpath(dst):
+            return False
     except Exception:
-        pass  # Silent failure — don't break camc startup
+        pass
+
+    _copy_tree_contents(src, dst)
+
+    tmp = "%s.old.%d" % (src, os.getpid())
+    os.rename(src, tmp)
+    try:
+        os.symlink(dst, src)
+    except Exception:
+        try:
+            os.rename(tmp, src)
+        except Exception:
+            pass
+        return False
+    try:
+        shutil.rmtree(tmp)
+    except Exception:
+        pass
+    log.info("Moved camc %s to external storage: %s", relpath, dst)
+    return True
+
+
+def _ensure_phase1_storage():
+    """Phase 1 home-quota protection.
+
+    Move only heavy, non-critical runtime directories out of ~/.cam and
+    symlink them back. This is intentionally best-effort: if discovery,
+    copy, rename, symlink, or cleanup fails, camc continues exactly as
+    before. Small metadata/config stays in ~/.cam.
+    """
+    root = _find_phase1_storage_root()
+    if not root:
+        return
+    for relpath in _PHASE1_STORAGE_RELPATHS:
+        try:
+            _relocate_camc_dir_best_effort(relpath, root)
+        except Exception:
+            # Never let storage relocation break camc startup.
+            pass
+
+
+def _ensure_logs_on_scratch():
+    """Backward-compatible entry point for Phase 1 storage relocation."""
+    try:
+        _ensure_phase1_storage()
+    except Exception:
+        # Never let home-quota protection break camc startup.
+        pass
 
 
 def _gen_agent_id():
@@ -150,8 +260,11 @@ def cmd_env(args):
     tool = getattr(args, "tool", None) or "claude"
     config = _load_config(tool)
     tool_binary = config.command[0] if config.command else None
-    context = _load_default_context()
-    env_setup = (context.get("env_setup") or None) if isinstance(context, dict) else None
+    # context.json is metadata only; it must not implicitly alter
+    # standalone camc runtime env. Default runtime env comes from the
+    # user's login shell unless an explicit future runtime profile is
+    # requested.
+    env_setup = None
     runtime = build_runtime_env(env_setup=env_setup)
     adapter_readiness = getattr(config, "readiness", None)
     readiness = check_tool_readiness(runtime, tool, tool_binary,
@@ -512,7 +625,7 @@ _TOOL_HINTS = {
 
 
 def _preflight(tool, tool_binary, workdir, env_setup=None, runtime=None,
-               adapter_readiness=None):
+               adapter_readiness=None, use_env_tool=False):
     """Tool readiness (via runtime_env) + local writable-dir checks.
 
     Returns ``(issues, resolved)`` — a list of (level, message) tuples
@@ -535,7 +648,8 @@ def _preflight(tool, tool_binary, workdir, env_setup=None, runtime=None,
     if runtime is None:
         runtime = build_runtime_env(env_setup=env_setup)
     readiness = check_tool_readiness(runtime, tool, tool_binary,
-                                     readiness=adapter_readiness)
+                                     readiness=adapter_readiness,
+                                     use_env_tool=use_env_tool)
     issues = list(readiness["issues"])
 
     # workdir accessible
@@ -570,9 +684,11 @@ def cmd_run(args):
     workdir = os.path.abspath(args.path)
     os.makedirs(workdir, exist_ok=True)
     config = _load_config(tool)
-
+    # Load context for agent metadata only. context.env_setup must not
+    # implicitly change every standalone camc run. If runtime setup is
+    # needed, it must be explicit (future --env-profile / --env-setup).
     context = _load_default_context()
-    env_setup = context.get("env_setup") or None
+    env_setup = None
 
     # F-08: build the effective runtime env ONCE, share it across
     # preflight + tmux launch so PATH-related checks can't pass at
@@ -580,7 +696,20 @@ def cmd_run(args):
     from camc_pkg.runtime_env import build_runtime_env
     runtime = build_runtime_env(env_setup=env_setup)
     api_plan = None
-    api_name = getattr(args, "api", None)
+    cli_api = getattr(args, "api", None)
+    api_name = None
+    api_source = "login"
+    if cli_api or not getattr(args, "no_default_api", False):
+        from camc_pkg.api_store import resolve_run_api_name
+        try:
+            api_name, api_source = resolve_run_api_name(
+                tool,
+                cli_api=cli_api,
+                no_default_api=bool(getattr(args, "no_default_api", False)),
+            )
+        except ValueError as e:
+            print_error(str(e))
+            sys.exit(1)
     if api_name:
         from camc_pkg.api_resolver import resolve_run_plan
         from camc_pkg.api_token import resolve_token
@@ -620,30 +749,45 @@ def cmd_run(args):
                 overrides = api_plan.get("env") or {}
                 if tool == "claude":
                     overrides["ANTHROPIC_BASE_URL"] = base
+                elif tool == "codex":
+                    from camc_pkg.api_resolver import ensure_codex_api_config_dir
+                    overrides["CODEX_HOME"] = ensure_codex_api_config_dir(
+                        base + "/v1", api_plan.get("name") or "api")
                 api_plan["env"] = overrides
         elif api_plan.get("env", {}).get("_API_USE_RESOLVED_TOKEN") == "1":
             overrides = dict(api_plan.get("env") or {})
             overrides.pop("_API_USE_RESOLVED_TOKEN", None)
-            overrides["ANTHROPIC_API_KEY"] = token
+            if tool == "claude":
+                overrides["ANTHROPIC_API_KEY"] = token
+            elif tool == "codex":
+                from camc_pkg.api_resolver import CODEX_API_ENV_KEY
+                overrides[CODEX_API_ENV_KEY] = token
             api_plan["env"] = overrides
         for key, val in (api_plan.get("env") or {}).items():
             if val == "":
                 runtime.env.pop(key, None)
             else:
                 runtime.env[key] = val
-        print_info("API %s via %s/%s (token: %s)" % (
+        src_bits = []
+        if api_source == "default":
+            src_bits.append("default")
+        if token:
+            src_bits.append("token: %s" % token_src)
+        print_info("API %s via %s/%s (%s)" % (
             api_plan.get("name"),
             api_plan.get("translator") or api_plan.get("mode"),
             api_plan.get("upstream_protocol"),
-            token_src if token else "none"))
+            ", ".join(src_bits) if src_bits else "none"))
     tool_binary = config.command[0] if config.command else None
     # F-08 (adapter-owned): prefer the adapter's [readiness] block
     # over runtime_env's hardcoded _TOOL_SPECS fallback. None when
     # the adapter doesn't declare [readiness] — fallback kicks in.
     adapter_readiness = getattr(config, "readiness", None)
+    use_env_tool = bool(getattr(args, "use_env_tool", False))
     issues, resolved = _preflight(tool, tool_binary, workdir,
                                   env_setup=env_setup, runtime=runtime,
-                                  adapter_readiness=adapter_readiness)
+                                  adapter_readiness=adapter_readiness,
+                                  use_env_tool=use_env_tool)
     has_error = False
     for level, msg in issues:
         if level == "error":
@@ -715,6 +859,59 @@ def cmd_run(args):
             launch_cmd += ["--session-id", session_uuid]
 
     inherit_env = not getattr(args, "no_inherit_env", False)
+
+    # 2026-06-23 PDX hotfix (NARROW): rewrite launch_cmd to use the
+    # ABSOLUTE executable path that readiness just resolved. This
+    # eliminates the "works in preflight, fails in launch" PATH
+    # discrepancy without changing the default startup mode.
+    #
+    # Shape of resolved (from runtime_env.check_tool_readiness):
+    #   resolved["tool"]  -> str | None   (absolute selected-tool path)
+    #
+    # Cases:
+    #   codex:  launch_cmd == ["codex", "-c", "features.goals=true"]
+    #     -> replace launch_cmd[0] with the resolved absolute path
+    #   claude: launch_cmd == ["env", "CLAUDE_CODE_DISABLE_MOUSE=1",
+    #                          "claude", "--allowed-tools", "..."]
+    #     -> walk past env-wrapper prefix tokens ('env' + KEY=VAL
+    #        assignments) and replace the first executable name.
+    #   cursor: launch_cmd[0] == "agent"   (cursor binary)
+    #     -> replace launch_cmd[0] if it matches the expected tool
+    #        binary name; otherwise leave alone.
+    #
+    # Preserves env prefixes (so CLAUDE_CODE_DISABLE_MOUSE still
+    # reaches the wrapped tool) and tool-flag tails verbatim.
+    resolved_bin = (resolved or {}).get("tool")
+    if resolved_bin and os.path.isabs(resolved_bin) and launch_cmd:
+        _expected_basename = os.path.basename(resolved_bin)
+        # Walk past `env` + `KEY=VAL` prefix tokens to find the tool
+        # invocation. The first token that is neither 'env' nor a
+        # KEY=VAL assignment is the executable slot.
+        _i = 0
+        if launch_cmd[0] == "env":
+            _i = 1
+            while _i < len(launch_cmd) and ("=" in launch_cmd[_i]
+                                            and not launch_cmd[_i].startswith("-")):
+                _i += 1
+        if _i < len(launch_cmd):
+            _tok = launch_cmd[_i]
+            # 2026-06-23 PDX hardening: also accept tool-alias names
+            # (cursor's CLI binary is named ``cursor-agent`` in newer
+            # packages and ``agent`` in older ones). Without the alias
+            # list, a cursor adapter using ``["agent", ...]`` would
+            # not get rewritten to the absolute ``cursor-agent`` path.
+            try:
+                from camc_pkg.runtime_env import _PATH_TOOL_ALIASES as _alias_map
+                _aliases = _alias_map.get(tool, (tool,))
+            except Exception:
+                _aliases = (tool,)
+            if _tok == _expected_basename or _tok == tool or _tok in _aliases:
+                launch_cmd = list(launch_cmd)  # don't mutate adapter's list
+                launch_cmd[_i] = resolved_bin
+                log.info(
+                    "Resolved %s binary: %s -> %s (slot %d in launch_cmd)",
+                    tool, _tok, resolved_bin, _i,
+                )
     # Ensure dirs exist
     for d in (LOGS_DIR, PIDS_DIR):
         try:
@@ -726,11 +923,21 @@ def cmd_run(args):
     # SAME tmux binary preflight just version-checked. resolved["tmux"]
     # may be missing if preflight short-circuited (it doesn't — error
     # would have exited above), but fall back to TMUX_BIN defensively.
-    from camc_pkg.transport import TMUX_BIN
+    from camc_pkg.transport import TMUX_BIN, ensure_camc_tmux_config
     resolved_tmux = resolved.get("tmux") or TMUX_BIN
+    # 2026-06-23 PDX hardening: ensure ~/.cam/configs/tmux.conf
+    # exists so the new tmux server starts with camc's config rather
+    # than the user's ~/.tmux.conf. Pass the resolved path through
+    # so the agent record's runtime manifest can capture it.
+    try:
+        camc_tmux_config = ensure_camc_tmux_config()
+    except Exception as e:
+        log.warning("ensure_camc_tmux_config failed: %s", e)
+        camc_tmux_config = ""
     if not create_tmux_session(session, launch_cmd, workdir,
                                env_setup=env_setup, inherit_env=inherit_env,
-                               env=runtime.env, tmux_bin=resolved_tmux):
+                               env=runtime.env, tmux_bin=resolved_tmux,
+                               tmux_config=camc_tmux_config):
         print_error("Failed to create tmux session for '%s'" % session)
         print_info("Debug: %s -u -S %s/%s.sock new-session -d -s %s -c %s" %
                    (resolved_tmux, SOCKETS_DIR, session, session, workdir))
@@ -792,6 +999,39 @@ def cmd_run(args):
             "route": api_plan.get("route"),
             "base_url": api_plan.get("local_base_url"),
         }
+
+    # 2026-06-23 PDX hardening: stash a structured runtime manifest
+    # alongside the legacy top-level fields so later send/capture/
+    # attach (and remote diagnostic tools) can read the resolved tmux
+    # + tool + python facts the launch actually used. Legacy
+    # tmux_bin / tmux_version / tmux_socket above are preserved for
+    # back-compat with existing readers.
+    _tool_resolution = (resolved or {}).get("tool_resolution") or {}
+    _python_version = "%d.%d.%d" % (
+        sys.version_info[0], sys.version_info[1], sys.version_info[2])
+    agent_rec["runtime"] = {
+        "schema": "camc-runtime/1",
+        "python": {"bin": sys.executable, "version": _python_version},
+        "tmux": {
+            "bin":         tmux_bin_used,
+            "version":     tmux_ver_used,
+            "socket":      "%s/%s.sock" % (SOCKETS_DIR, session),
+            "config":      camc_tmux_config,
+            "config_mode": "camc-default" if camc_tmux_config else "system-default",
+            "source":      (resolved or {}).get("tmux_source", "unknown"),
+        },
+        "tool": {
+            "name":     tool,
+            "bin":      _tool_resolution.get("bin") or (resolved or {}).get("tool", ""),
+            "version":  "",
+            "source":   _tool_resolution.get("source", "unknown"),
+            "warnings": list(_tool_resolution.get("warnings", []) or []),
+        },
+        "shell": {
+            "mode": "tmux-default-shell",
+            "note": "launch argv uses absolute tool path",
+        },
+    }
     store.save(agent_rec)
 
     # Spawn background monitor (boot + tool TOML during initializing).
@@ -5080,19 +5320,22 @@ def _cmd_cron_rm_loop(args):
 
 
 def cmd_api(args):
-    """API profile dispatch: list / check / proxy."""
+    """API profile dispatch: list / check / default / proxy."""
     sub = getattr(args, "api_cmd", None)
     if sub == "list":
         cmd_api_list(args)
     elif sub == "check":
         cmd_api_check(args)
+    elif sub == "default":
+        cmd_api_default(args)
     elif sub == "proxy":
         cmd_api_proxy(args)
     else:
         sys.stderr.write(
-            "usage: camc api {list,check,proxy} ...\n"
+            "usage: camc api {list,check,default,proxy} ...\n"
             "  list [--all]              list configured APIs\n"
             "  check                     ping provider and refresh enabled flags\n"
+            "  default {set,clear,show}  per-tool default API (empty = login)\n"
             "  proxy {start,status,logs,stop} ...   debug proxy controls\n"
         )
         sys.exit(1)
@@ -5128,11 +5371,79 @@ def cmd_api_check(args):
     if result.get("error") and not result.get("reachable"):
         print_error(result.get("error"))
         sys.exit(1)
-    print("Provider %s: reachable (%d models, token=%s)" % (
-        result.get("provider"), result.get("model_count"), result.get("token_source")))
+    print("Provider %s: reachable (%d models, token=%s, metadata=%d apis)" % (
+        result.get("provider"), result.get("model_count"), result.get("token_source"),
+        result.get("metadata_updated") or 0))
+    if result.get("metadata_error"):
+        print("  metadata sync: partial (%s)" % result.get("metadata_error"))
     for row in result.get("apis") or []:
         flag = "ok" if row.get("enabled") else "off"
         print("  %-18s %s (%s)" % (row.get("name"), flag, row.get("reason")))
+
+
+def cmd_api_default(args):
+    sub = getattr(args, "default_cmd", None)
+    if sub == "set":
+        cmd_api_default_set(args)
+    elif sub == "clear":
+        cmd_api_default_clear(args)
+    elif sub == "show":
+        cmd_api_default_show(args)
+    else:
+        sys.stderr.write(
+            "usage: camc api default {set,clear,show} ...\n"
+            "  set NAME --tool {claude,codex}\n"
+            "  clear --tool {claude,codex}\n"
+            "  show\n"
+        )
+        sys.exit(1)
+
+
+def cmd_api_default_set(args):
+    from camc_pkg.api_store import ensure_ready, set_tool_default_api
+    tool = getattr(args, "tool", None) or "claude"
+    name = getattr(args, "name", None)
+    if not name:
+        print_error("API name is required")
+        sys.exit(1)
+    data = ensure_ready()
+    try:
+        key = set_tool_default_api(data, tool, name)
+    except ValueError as e:
+        print_error(str(e))
+        sys.exit(1)
+    print("Default API for %s set to %s" % (tool, key))
+
+
+def cmd_api_default_clear(args):
+    from camc_pkg.api_store import ensure_ready, clear_tool_default_api
+    tool = getattr(args, "tool", None)
+    if not tool:
+        print_error("--tool is required (claude or codex)")
+        sys.exit(1)
+    data = ensure_ready()
+    try:
+        clear_tool_default_api(data, tool)
+    except ValueError as e:
+        print_error(str(e))
+        sys.exit(1)
+    print("Default API cleared for %s (login path)" % tool)
+
+
+def cmd_api_default_show(args):
+    from camc_pkg.api_store import ensure_ready, list_tool_default_apis
+    data = ensure_ready()
+    rows = list_tool_default_apis(data)
+    if _want_json(args):
+        print(json.dumps(rows, indent=2))
+        return
+    for row in rows:
+        if row.get("mode") == "login":
+            print("%-8s (login)" % row.get("tool"))
+            continue
+        flag = "enabled" if row.get("enabled") else "disabled"
+        print("%-8s %s (%s, %s)" % (
+            row.get("tool"), row.get("api"), flag, row.get("reason") or "unknown"))
 
 
 def cmd_api_proxy(args):
@@ -5174,10 +5485,16 @@ def cmd_api_proxy_start(args):
     model_alias = getattr(args, "model_alias", None)
 
     if api_name:
-        plan = resolve_run_plan("claude", api_name, proxy_debug=bool(args.debug))
+        from camc_pkg.api_routing import PROXY_ROUTE_TOOL
+        tool = PROXY_ROUTE_TOOL.get(route)
+        if not tool:
+            print_error("no tool mapping for proxy route %r" % route)
+            sys.exit(1)
+        plan = resolve_run_plan(tool, api_name, proxy_debug=bool(args.debug))
         upstream_url = upstream_url or plan.get("upstream_url")
         upstream_model = upstream_model or plan.get("model") or api_name
         model_alias = model_alias or plan.get("name") or api_name
+        plan["route"] = route
         plan["proxy_port"] = port
         plan["proxy_debug"] = bool(args.debug)
     else:
@@ -5264,8 +5581,11 @@ def _run_proxy(argv):
     route = argv[1]
     rest = argv[2:]
     if route == "completions_to_messages":
-        from camc_pkg.proxy.messages import run_proxy
-        run_proxy(rest)
+        from camc_pkg.proxy.messages import run_messages_proxy
+        run_messages_proxy(rest)
+    elif route == "completions_to_responses":
+        from camc_pkg.proxy.responses import run_responses_proxy
+        run_responses_proxy(rest)
         return
     sys.stderr.write("unknown proxy route: %s\n" % route)
     sys.exit(2)
@@ -5840,6 +6160,10 @@ def cmd_version(args):
 
 def cmd_capture(args):
     """Capture tmux screen output for an agent."""
+    if not args.id:
+        print("capture requires an agent id", file=sys.stderr)
+        sys.exit(2)
+
     store = AgentStore()
     a = store.get(args.id)
     if a:
@@ -6033,12 +6357,16 @@ examples:
                    metavar="SESSION_ID",
                    help="Resume an existing Claude session by ID (adds --resume to claude, skips prompt injection)")
     r.add_argument("--no-inherit-env", action="store_true", help="Legacy mode: wrap command with bash -c and env_setup")
+    r.add_argument("--use-env-tool", dest="use_env_tool", action="store_true",
+                   help="Advanced: skip golden tool paths (claude/codex/cursor stable+latest) and resolve from runtime PATH only. Useful for testing dev builds.")
     r.add_argument("--system-prompt", dest="system_prompt", default=None,
                    help="Inline system prompt; injected into CLAUDE.md/AGENTS.md in workdir before launch")
     r.add_argument("--system-file", dest="system_file", default=None,
                    help="Path to a file whose contents become the system prompt (overrides --system-prompt)")
     r.add_argument("--api", default=None, metavar="NAME",
                    help="API profile from ~/.cam/api-models.json (e.g. glm-5.1)")
+    r.add_argument("--no-default-api", dest="no_default_api", action="store_true",
+                   help="Skip per-tool default API; use normal OAuth/login")
     r.add_argument("--api-token", dest="api_token", default=None,
                    help="One-off bearer token (default: ~/.cam/token.env)")
     r.add_argument("--no-api-proxy", action="store_true",
@@ -6193,6 +6521,8 @@ examples:
     cap.add_argument("id", help="Agent ID (prefix match)")
     cap.add_argument("--lines", "-n", type=int, default=0,
                      help="Tail last N lines (default: 0 = full scrollback)")
+    cap.add_argument("--no-fast-path", action="store_true",
+                     help="Disable the shell fast path for this capture")
     cap.add_argument("--format", choices=("plain", "ansi"), default="plain",
                      help="plain (default, ANSI stripped) or ansi (preserve SGR style escapes)")
 
@@ -6203,6 +6533,8 @@ examples:
     snd.add_argument("--file", "-f", help="Read UTF-8 text to send from a file")
     snd.add_argument("--stdin", action="store_true", help="Read UTF-8 text to send from stdin")
     snd.add_argument("--no-enter", action="store_true", help="Don't send Enter after text")
+    snd.add_argument("--no-fast-path", action="store_true",
+                     help="Disable the shell fast path for this send")
 
     # key
     ky = sub.add_parser("key", help="Send a special key to agent tmux session")
@@ -6261,6 +6593,16 @@ examples:
     ap_ls = api_sub.add_parser("list", help="List configured APIs")
     ap_ls.add_argument("--all", action="store_true", help="Include disabled APIs")
     api_sub.add_parser("check", help="Ping provider and refresh enabled flags")
+    ap_def = api_sub.add_parser("default", help="Per-tool default API profile")
+    ap_def_sub = ap_def.add_subparsers(dest="default_cmd", parser_class=CamArgumentParser)
+    ap_def_set = ap_def_sub.add_parser("set", help="Set default API for a tool")
+    ap_def_set.add_argument("name", help="API profile name (e.g. glm-5.1)")
+    ap_def_set.add_argument("--tool", "-t", required=True, choices=["claude", "codex"],
+                            help="Tool to configure (codex empty = login)")
+    ap_def_clear = ap_def_sub.add_parser("clear", help="Clear default API (use login)")
+    ap_def_clear.add_argument("--tool", "-t", required=True, choices=["claude", "codex"])
+    ap_def_show = ap_def_sub.add_parser("show", help="Show per-tool default API settings")
+    ap_def_show.add_argument("--json", action="store_true", help="Output as JSON")
     ap_px = api_sub.add_parser("proxy", help=argparse.SUPPRESS)
     ap_px_sub = ap_px.add_subparsers(dest="proxy_cmd", parser_class=CamArgumentParser)
     ap_px_start = ap_px_sub.add_parser("start", help=argparse.SUPPRESS)
@@ -6428,8 +6770,11 @@ examples:
     if getattr(args, "verbose", False):
         logging.getLogger("camc").setLevel(logging.DEBUG)
 
-    # Auto-move logs to scratch if available (silent, one-time)
-    _ensure_logs_on_scratch()
+    # Phase 1 home-quota protection is best-effort only.
+    try:
+        _ensure_logs_on_scratch()
+    except Exception:
+        pass
 
     cmds = {
         "env": cmd_env,

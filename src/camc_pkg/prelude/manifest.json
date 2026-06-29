@@ -1,0 +1,8 @@
+[
+  {
+    "name": "capture",
+    "script": "capture.sh",
+    "function": "_camc_prelude_capture",
+    "description": "Fast tmux data-plane ops before Python startup: capture exact 8-hex id and send --text via agents.json"
+  }
+]
