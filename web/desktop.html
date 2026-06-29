@@ -16,11 +16,11 @@
        sees them at mount time. -->
   <script src="vendor/xterm/xterm.js?v=0.64.0"></script>
   <script src="vendor/xterm/addon-fit.js?v=0.64.0"></script>
-  <link rel="modulepreload" href="js/api.js?v=0.64.0">
+  <link rel="modulepreload" href="js/api.js?v=0.66.0">
   <link rel="modulepreload" href="js/state.js?v=0.64.0">
-  <link rel="modulepreload" href="js/desktop/app.js?v=0.64.1">
-  <link rel="modulepreload" href="js/desktop/shell.js?v=0.64.0">
-  <link rel="modulepreload" href="js/desktop/agent-console.js?v=0.64.1">
+  <link rel="modulepreload" href="js/desktop/app.js?v=0.66.0">
+  <link rel="modulepreload" href="js/desktop/shell.js?v=0.65.0">
+  <link rel="modulepreload" href="js/desktop/agent-console.js?v=0.66.0">
   <link rel="modulepreload" href="js/desktop/settings-mode.js?v=0.64.0">
   <link rel="modulepreload" href="js/desktop/start-agent-mode.js?v=0.64.0">
   <link rel="modulepreload" href="js/desktop/nodes-mode.js?v=0.64.0">
@@ -237,6 +237,21 @@
                     <h3>Workflow</h3>
                     <p class="form-hint" id="agent-workflow-target">Select an agent to load workflow.yaml from its workspace.</p>
                   </div>
+                  <div class="agent-workflow-template-row">
+                    <label>Workflow template
+                      <select id="agent-workflow-template"></select>
+                    </label>
+                    <button type="button" class="btn-secondary btn-sm" id="agent-workflow-apply-template">Apply template</button>
+                  </div>
+                  <details class="template-manage" id="agent-wf-tpl-manage">
+                    <summary>Manage workflow templates</summary>
+                    <ul id="agent-wf-tpl-list" class="template-list"></ul>
+                    <div class="template-add-form">
+                      <label>Label<input type="text" id="agent-wf-tpl-label" placeholder="My pipeline" autocomplete="off"></label>
+                      <label>Hint<textarea id="agent-wf-tpl-hint" rows="2"></textarea></label>
+                      <button type="button" class="btn-secondary btn-sm" id="agent-wf-tpl-save-current">Save current workflow as template</button>
+                    </div>
+                  </details>
                   <div class="agent-workflow-actions">
                     <div class="output-mode-toggle agent-workflow-view-toggle" role="group" aria-label="Workflow view">
                       <button type="button" class="output-mode-btn" data-agent-workflow-view="visual" aria-pressed="true">Visual</button>
@@ -288,6 +303,28 @@
                       </span>
                     </label>
                   </div>
+                  <label id="agent-cron-template-wrap">Loop template
+                    <select id="agent-cron-template"></select>
+                    <span class="form-hint" id="agent-cron-template-hint"></span>
+                  </label>
+                  <details class="template-manage" id="agent-loop-tpl-manage">
+                    <summary>Manage loop templates</summary>
+                    <p class="form-hint">Built-in templates cannot be deleted. ★ = custom (this device).</p>
+                    <ul id="agent-loop-tpl-list" class="template-list"></ul>
+                    <div class="template-add-form">
+                      <h5>Add custom template</h5>
+                      <label>Label<input type="text" id="agent-loop-tpl-label" placeholder="My review nudge" autocomplete="off"></label>
+                      <label>Hint<textarea id="agent-loop-tpl-hint" rows="2"></textarea></label>
+                      <label>Kind<select id="agent-loop-tpl-kind">
+                        <option value="static">Static prompt</option>
+                        <option value="progress-review">Progress review (dynamic)</option>
+                        <option value="continue-work">Continue work (dynamic)</option>
+                      </select></label>
+                      <label id="agent-loop-tpl-body-wrap">Prompt<textarea id="agent-loop-tpl-body" rows="4" placeholder="{{goal}} {{checklist}} {{verify}}"></textarea></label>
+                      <label>Default schedule<input type="text" id="agent-loop-tpl-sched" value="10m"></label>
+                      <button type="button" class="btn-secondary btn-sm" id="agent-loop-tpl-save">Save template</button>
+                    </div>
+                  </details>
                   <div class="agent-cron-grid">
                     <label>Name
                       <input type="text" id="agent-cron-name" placeholder="daily-review" autocomplete="off">
@@ -413,9 +450,9 @@
           </div>
           <div class="composer-row">
             <button class="btn-attach" id="composer-attach"
-              title="Attach an image to the selected agent" disabled
-              aria-label="Attach image">&#128206;</button>
-            <input type="file" id="composer-file-input" accept="image/*" hidden>
+              title="Attach a file or image to the selected agent" disabled
+              aria-label="Attach file or image">&#128206;</button>
+            <input type="file" id="composer-file-input" hidden>
             <textarea id="composer-input"
               class="composer-input"
               rows="2"
@@ -460,12 +497,12 @@
               <div class="direct-state-row">
                 <span class="direct-state-badge state-stopped" id="direct-state-badge">unknown</span>
                 <span class="direct-state-detail" id="direct-state-detail">
-                  Click <strong>Check</strong> to inspect the embedded Hub, or <strong>Start</strong> to launch it.
+                  Click <strong>Enable</strong> to turn on Direct, or <strong>Start</strong> to launch the embedded Hub.
                 </span>
               </div>
               <div class="direct-target" id="direct-target"></div>
               <div class="direct-actions">
-                <button type="button" id="direct-check"   class="btn-secondary">Check</button>
+                <button type="button" id="direct-check"   class="btn-secondary">Enable</button>
                 <button type="button" id="direct-start"   class="btn-primary"   disabled>Start</button>
                 <button type="button" id="direct-stop"    class="btn-secondary" disabled>Stop</button>
                 <button type="button" id="direct-restart" class="btn-secondary" disabled>Restart</button>
@@ -479,7 +516,7 @@
             <details class="settings-section settings-diag" id="direct-diag">
               <summary>Advanced / Diagnostics</summary>
               <div class="diag-grid" id="direct-diag-grid">
-                (no data yet — click Check)
+                (no data yet — click Enable)
               </div>
               <div class="diag-logs">
                 <h4>Recent Hub logs</h4>
@@ -523,6 +560,7 @@
             </div>
             <div class="settings-actions">
               <button type="submit" class="btn-primary">Save &amp; Connect</button>
+              <button type="button" class="btn-secondary" id="settings-relay-refresh" title="Refresh agent list from the relay source">Refresh agents</button>
             </div>
             <div class="settings-status" id="settings-status-relay" aria-live="polite"></div>
           </form>
@@ -666,8 +704,11 @@
                 is referenced by path only — its contents are never
                 read or copied (CAM-DESK-DIRECT-018).
               </p>
-              <label data-host-edit-hide="1">Name
-                <input type="text" id="nodes-add-name" required placeholder="my-node" autocomplete="off"
+              <label data-add-ctx-hide="1" data-ctx-edit-hide="1">Node name
+                <input type="text" id="nodes-add-nodename" placeholder="Build server" autocomplete="off">
+              </label>
+              <label data-host-edit-hide="1">Context name
+                <input type="text" id="nodes-add-name" required placeholder="my-workspace" autocomplete="off"
                   pattern="[A-Za-z0-9_-]{1,64}" title="Letters, digits, underscore, hyphen (1–64 chars)">
               </label>
               <label data-ctx-edit-readonly="1" data-add-ctx-hide="1">Host
@@ -975,11 +1016,14 @@
             <div class="todos-card-head">
               <div class="todos-tabs" role="tablist" aria-label="Todos workspace tabs">
                 <button type="button" class="todos-tab active" data-todos-tab="inbox" role="tab" aria-selected="true">Inbox</button>
+                <button type="button" class="todos-tab" data-todos-tab="tasks" role="tab" aria-selected="false">Tasks</button>
+                <button type="button" class="todos-tab" data-todos-tab="notes" role="tab" aria-selected="false">Notes</button>
                 <button type="button" class="todos-tab" data-todos-tab="projects" role="tab" aria-selected="false">Projects</button>
                 <button type="button" class="todos-tab" data-todos-tab="archive" role="tab" aria-selected="false">Archive</button>
               </div>
               <div class="todos-actions">
                 <button type="button" class="btn-primary" id="todos-new-task">New task</button>
+                <button type="button" class="btn-secondary" id="todos-new-note">New note</button>
               </div>
             </div>
 
@@ -1040,6 +1084,6 @@
     </main>
   </div>
 
-  <script type="module" src="js/desktop/app.js?v=0.64.1"></script>
+  <script type="module" src="js/desktop/app.js?v=0.66.0"></script>
 </body>
 </html>

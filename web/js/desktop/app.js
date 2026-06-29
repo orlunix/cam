@@ -8,19 +8,20 @@
  * no terminal, no server-lifecycle UI.
  */
 
-import { api } from '../api.js?v=0.64.0';
+import { api } from '../api.js?v=0.66.0';
 import { state } from '../state.js?v=0.64.0';
-import { mountShell } from './shell.js?v=0.64.0';
-import { mountAgentConsole } from './agent-console.js?v=0.64.1';
+import { mountShell } from './shell.js?v=0.65.0';
+import { mountAgentConsole } from './agent-console.js?v=0.66.0';
 import { mountSettingsMode } from './settings-mode.js?v=0.64.0';
 import { mountStartAgentMode } from './start-agent-mode.js?v=0.64.0';
 import { mountNodesMode } from './nodes-mode.js?v=0.64.0';
 import { mountSkillsMode } from './skills-mode.js?v=0.64.0';
 import { mountBotsMode } from './bots-mode.js?v=0.64.0';
-import { mountTodosMode } from './todos-mode.js?v=0.64.0';
+import { mountTodosMode } from './todos-mode.js?v=0.65.0';
 
 const POLL_INTERVAL_MS = 5000;
 const AGENT_SNAPSHOT_SYNC_EVERY_TICKS = 6; // ~30s at POLL_INTERVAL_MS.
+let agentListRefreshInFlight = false;
 const PROFILE_KIND_KEY = 'cam_profile_kind';
 // `start`/`nodes` are real left-nav workspace modes like
 // `agents`/`settings`. `nodes` shows hub-provided controllers/nodes
@@ -135,12 +136,28 @@ function showToast(message, type = 'info', duration = 3000) {
   state.toast(message, type, duration);
 }
 
-async function loadAgents() {
+async function loadAgents(opts = {}) {
   try {
-    const resp = await api.listAgents({ limit: 100 });
+    const refresh = opts.refresh === true;
+    const resp = await api.listAgents({ limit: 100, refresh });
     state.set('agents', resp.agents || []);
+    return resp;
   } catch (e) {
     if (api.mode !== 'disconnected') console.warn('listAgents failed:', e);
+    return null;
+  }
+}
+
+async function refreshAgentListQuietly(reason = 'poll') {
+  if (api.mode !== 'direct' && api.mode !== 'relay') return;
+  if (agentListRefreshInFlight) return;
+  agentListRefreshInFlight = true;
+  try {
+    await loadAgents({ refresh: false });
+  } catch (e) {
+    console.warn(`agent refresh ${reason} failed:`, e);
+  } finally {
+    agentListRefreshInFlight = false;
   }
 }
 
@@ -462,6 +479,7 @@ async function init() {
   });
   mountStartAgentMode({ api, state, showToast, setMode, loadAgents });
   mountNodesMode({
+    panel: document.getElementById('mode-nodes'),
     api, state, showToast, setMode,
     loadContextsAndAdapters, loadAgents,
     connect: autoStartConnection,
@@ -499,6 +517,7 @@ async function init() {
     pollTick = (pollTick + 1) % AGENT_SNAPSHOT_SYNC_EVERY_TICKS;
 
     if (shouldPrioritizeSelectedRelayAgent()) {
+      if (pollTick === 0) void refreshAgentListQuietly('selected-agent');
       await loadSelectedAgent(state.get('selectedAgentId'));
       return;
     }
@@ -508,7 +527,7 @@ async function init() {
       // representative SSH context per endpoint so agent updated_at
       // stays current without duplicating sibling contexts.
       await Promise.all([loadAgents(), loadContextsAndAdapters()]);
-      void syncAgentSnapshotsFromContexts('poll');
+      // Keep polling cheap: remote context sync is explicit, not part of the list refresh loop.
     } else {
       await loadAgents();
     }
