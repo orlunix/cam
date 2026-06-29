@@ -26,11 +26,16 @@ PROXY_ROUTES = {
         "route": "completions_to_messages",
         "port": 18324,
     },
-    # Future codex --api:
-    # (PROTO_OPENAI_RESPONSES, PROTO_OPENAI_CHAT): {
-    #     "route": "completions_to_responses",
-    #     "port": 18325,
-    # },
+    (PROTO_OPENAI_RESPONSES, PROTO_OPENAI_CHAT): {
+        "route": "completions_to_responses",
+        "port": 18325,
+    },
+}
+
+# Debug proxy CLI: requested embedded route -> tool for resolve_run_plan().
+PROXY_ROUTE_TOOL = {
+    "completions_to_messages": "claude",
+    "completions_to_responses": "codex",
 }
 
 

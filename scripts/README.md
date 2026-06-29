@@ -5,6 +5,7 @@ explicitly copied by an operator.
 
 | Path | Purpose |
 |------|---------|
+| `ihub_ping_curated.py` | Direct IHUB ping for enabled curated APIs |
 | `release.sh`, `cam-serve-daemon.sh`, … | Release / ops helpers |
 
 IHUB proxy dev scripts moved to **`dev/ihub_proxy/`**. Production proxy:

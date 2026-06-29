@@ -19,12 +19,16 @@ from camc_pkg.api_store import (
     resolve_api_name,
 )
 
-# Supported today: Claude + curated Inference Hub models only.
-API_SUPPORTED_TOOLS = frozenset(["claude"])
+# Supported today: Claude + Codex with curated Inference Hub models.
+API_SUPPORTED_TOOLS = frozenset(["claude", "codex"])
 CURATED_API_KEYS = frozenset(key for key, _model, _aliases in CURATED_APIS)
 
 # One shared Claude Code config for all --api runs (onboarding once).
 CLAUDE_API_CONFIG_DIR = os.path.join(CAM_DIR, "claude-api")
+# Isolated Codex home — does not touch ~/.codex/ OAuth login.
+CODEX_API_CONFIG_DIR = os.path.join(CAM_DIR, "codex-api")
+CODEX_API_PROVIDER = "camc-ihub"
+CODEX_API_ENV_KEY = "CAMC_CODEX_API_KEY"
 
 
 def supported_api_models_text():
@@ -44,9 +48,8 @@ def validate_api_run(tool, api_key, api_entry=None):
     if tool not in API_SUPPORTED_TOOLS:
         raise ValueError(
             "--api is not supported for tool %r. "
-            "Only Claude is supported today: camc run -t claude --api NAME. "
-            "Codex and Cursor: use normal login without --api "
-            "(future Codex will use CODEX_HOME isolation; not implemented). "
+            "Supported today: camc run -t claude|codex --api NAME. "
+            "Cursor: use normal login without --api (not implemented). "
             "Supported models: %s."
             % (tool, supported_api_models_text())
         )
@@ -118,6 +121,50 @@ def ensure_claude_api_config_dir():
     return CLAUDE_API_CONFIG_DIR
 
 
+def ensure_codex_api_config_dir(base_url, api_name):
+    """Seed ~/.cam/codex-api/ for Codex --api (isolated from ~/.codex/)."""
+    from camc_pkg.api_metadata import resolve_api_metadata, write_codex_model_catalog
+
+    os.makedirs(CODEX_API_CONFIG_DIR, exist_ok=True)
+    base_url = str(base_url or "").rstrip("/")
+    if base_url and not base_url.endswith("/v1"):
+        base_url = base_url + "/v1"
+    api_name = str(api_name or "api")
+    catalog_path = os.path.join(CODEX_API_CONFIG_DIR, "camc-model-catalog.json")
+    metadata = resolve_api_metadata(api_name)
+    write_codex_model_catalog(catalog_path, api_name, metadata)
+    config_path = os.path.join(CODEX_API_CONFIG_DIR, "config.toml")
+    content = (
+        'model = "%s"\n'
+        'model_provider = "%s"\n'
+        'model_catalog_json = "%s"\n'
+        '\n'
+        '[model_providers.%s]\n'
+        'name = "CAM Inference Hub Proxy"\n'
+        'base_url = "%s"\n'
+        'env_key = "%s"\n'
+        'wire_api = "responses"\n'
+    ) % (
+        api_name,
+        CODEX_API_PROVIDER,
+        catalog_path,
+        CODEX_API_PROVIDER,
+        base_url,
+        CODEX_API_ENV_KEY,
+    )
+    try:
+        prev = ""
+        if os.path.isfile(config_path):
+            with open(config_path, "r") as f:
+                prev = f.read()
+        if prev != content:
+            with open(config_path, "w") as f:
+                f.write(content)
+    except IOError:
+        pass
+    return CODEX_API_CONFIG_DIR
+
+
 def resolve_run_plan(tool, api_name, no_api_proxy=False, proxy_debug=False):
     """Return plan dict for camc run --api."""
     data = ensure_ready()
@@ -165,32 +212,45 @@ def resolve_run_plan(tool, api_name, no_api_proxy=False, proxy_debug=False):
 
 def _build_env_overrides(tool, plan, provider, api_entry, client_model):
     env = {}
-    if tool != "claude":
-        return env
-
     base = plan["local_base_url"].rstrip("/")
     translator = plan.get("translator") or plan.get("mode")
-    env["ANTHROPIC_BASE_URL"] = base
-    env["ANTHROPIC_MODEL"] = client_model
-    env["CLAUDE_CONFIG_DIR"] = ensure_claude_api_config_dir()
 
-    if translator == TRANSLATOR_EMBEDDED:
-        # Real token goes to embedded proxy; Claude uses local placeholder.
-        env["ANTHROPIC_API_KEY"] = str(
-            api_entry.get("client_api_key")
-            or provider.get("client_api_key")
-            or "sk-camc-local"
-        )
-        env["ANTHROPIC_AUTH_TOKEN"] = ""
-    elif translator == TRANSLATOR_EXTERNAL:
-        env["ANTHROPIC_API_KEY"] = str(
-            api_entry.get("client_api_key")
-            or provider.get("client_api_key")
-            or "sk-camc-local"
-        )
-        env["ANTHROPIC_AUTH_TOKEN"] = ""
-    elif translator == TRANSLATOR_DIRECT:
-        # Caller merges resolved bearer token into env after resolve_run_plan.
-        env["ANTHROPIC_AUTH_TOKEN"] = ""
-        env["_API_USE_RESOLVED_TOKEN"] = "1"
+    if tool == "claude":
+        env["ANTHROPIC_BASE_URL"] = base
+        env["ANTHROPIC_MODEL"] = client_model
+        env["CLAUDE_CONFIG_DIR"] = ensure_claude_api_config_dir()
+        if translator == TRANSLATOR_EMBEDDED:
+            env["ANTHROPIC_API_KEY"] = str(
+                api_entry.get("client_api_key")
+                or provider.get("client_api_key")
+                or "sk-camc-local"
+            )
+            env["ANTHROPIC_AUTH_TOKEN"] = ""
+        elif translator == TRANSLATOR_EXTERNAL:
+            env["ANTHROPIC_API_KEY"] = str(
+                api_entry.get("client_api_key")
+                or provider.get("client_api_key")
+                or "sk-camc-local"
+            )
+            env["ANTHROPIC_AUTH_TOKEN"] = ""
+        elif translator == TRANSLATOR_DIRECT:
+            env["ANTHROPIC_AUTH_TOKEN"] = ""
+            env["_API_USE_RESOLVED_TOKEN"] = "1"
+        from camc_pkg.api_metadata import claude_context_env_overrides
+        env.update(claude_context_env_overrides(client_model, api_entry.get("metadata")))
+        return env
+
+    if tool == "codex":
+        if translator == TRANSLATOR_EMBEDDED:
+            env[CODEX_API_ENV_KEY] = str(
+                api_entry.get("client_api_key")
+                or provider.get("client_api_key")
+                or "sk-camc-local"
+            )
+        elif translator == TRANSLATOR_DIRECT:
+            env["_API_USE_RESOLVED_TOKEN"] = "1"
+            env[CODEX_API_ENV_KEY] = ""
+        # CODEX_HOME + config.toml finalized after proxy port is known (cmd_run).
+        return env
+
     return env

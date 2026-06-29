@@ -55,6 +55,15 @@ class TestApiRouting:
         assert plan["upstream_url"].endswith("/chat/completions")
         assert plan["local_base_url"].startswith("http://127.0.0.1:")
 
+    def test_ihub_embedded_proxy_codex(self):
+        entry = {"provider": "inference-hub", "model": "nvidia/zai-org/eccn-glm-5.1"}
+        plan = build_routing_plan("codex", IHUB_PROVIDER, entry, "glm-5.1")
+        assert plan["translator"] == TRANSLATOR_EMBEDDED
+        assert plan["mode"] == "proxy"
+        assert plan["route"] == "completions_to_responses"
+        assert plan["proxy_port"] == 18325
+        assert plan["local_base_url"].startswith("http://127.0.0.1:")
+
     def test_anthropic_direct(self):
         entry = {"provider": "anthropic", "model": "claude-sonnet-4-20250514"}
         plan = build_routing_plan("claude", ANTHROPIC_PROVIDER, entry, "sonnet")

@@ -93,6 +93,15 @@ contextBridge.exposeInMainWorld('CamBridge', {
     pickPrivateKey() {
       return ipcRenderer.invoke('files:pickPrivateKey');
     },
+    pickAttachment() {
+      return ipcRenderer.invoke('files:pickAttachment');
+    },
+    readClipboardText() {
+      return ipcRenderer.invoke('files:readClipboardText');
+    },
+    readClipboardAttachments() {
+      return ipcRenderer.invoke('files:readClipboardAttachments');
+    },
   },
 
   net: {

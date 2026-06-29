@@ -545,4 +545,35 @@ def _load_config(tool):
         except Exception as e:
             log.warning("Failed to load external config %s: %s", toml_path, e)
 
+    # 2026-06-23 PDX hotfix: defensively normalize a stale external
+    # codex.toml ready_pattern that doesn't include U+203A '›' (the
+    # current Codex prompt). Older deployments still have
+    # ~/.cam/configs/codex.toml carrying patterns like '^\\s*[❯>]'
+    # which override the embedded `^[❯›>]` after merge. Without this
+    # scrub, codex panes stay in 'initializing' indefinitely because
+    # the launch ready check never sees its cursor. The scrub fires
+    # only when (a) the tool is codex, (b) launch.ready_pattern is
+    # set, and (c) the pattern as written does not contain '›' —
+    # so a user who deliberately authored a different pattern (e.g.
+    # one that already covers '›' via a different class or via the
+    # \\u203a escape) is not overridden.
+    if tool == "codex":
+        launch = config.get("launch") or {}
+        rp = launch.get("ready_pattern")
+        if isinstance(rp, str) and rp and "›" not in rp:
+            launch["ready_pattern"] = "^\\s*[❯›>]"
+            log.info(
+                "Codex external ready_pattern normalized (was %r) "
+                "to cover '❯'/'›'/'>'; see CAM-PDX hotfix 2026-06-23",
+                rp,
+            )
+            # Make sure flags include MULTILINE so ^ matches each line.
+            flags = launch.get("ready_flags")
+            if not isinstance(flags, list):
+                flags = []
+            if "MULTILINE" not in flags:
+                flags = list(flags) + ["MULTILINE"]
+            launch["ready_flags"] = flags
+            config["launch"] = launch
+
     return AdapterConfig(config)

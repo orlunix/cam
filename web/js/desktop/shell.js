@@ -4,6 +4,17 @@
  * agent console listens for changes.
  */
 
+import {
+  loopTemplateById, buildLoopPrompt, fillLoopTemplateSelect,
+  resolvePromptSectionsForAgent, applyLoopTemplateDefaults,
+  listLoopTemplates, saveCustomLoopTemplate, deleteCustomLoopTemplate,
+} from '../shared/loop-templates.js?v=2.3.2';
+import {
+  fillWorkflowTemplateSelect, applyWorkflowTemplate,
+  listCustomWorkflowTemplates, saveCustomWorkflowTemplate,
+  deleteCustomWorkflowTemplate,
+} from '../shared/workflow-templates.js?v=2.3.2';
+
 function escapeHtml(s) {
   const d = document.createElement('div');
   d.textContent = String(s == null ? '' : s);
@@ -545,6 +556,17 @@ export function mountShell({ api, state, connect }) {
   const agentCronCwdLabel = document.getElementById('agent-cron-cwd-label');
   const agentCronCwd = document.getElementById('agent-cron-cwd');
   const agentCronTypeInputs = Array.from(document.querySelectorAll('input[name="agent-cron-type"]'));
+  const agentCronTemplateWrap = document.getElementById('agent-cron-template-wrap');
+  const agentCronTemplate = document.getElementById('agent-cron-template');
+  const agentCronTemplateHint = document.getElementById('agent-cron-template-hint');
+  const agentLoopTplList = document.getElementById('agent-loop-tpl-list');
+  const agentLoopTplKind = document.getElementById('agent-loop-tpl-kind');
+  const agentLoopTplBodyWrap = document.getElementById('agent-loop-tpl-body-wrap');
+  const agentLoopTplSave = document.getElementById('agent-loop-tpl-save');
+  const agentWorkflowTemplate = document.getElementById('agent-workflow-template');
+  const agentWorkflowApplyTemplate = document.getElementById('agent-workflow-apply-template');
+  const agentWfTplList = document.getElementById('agent-wf-tpl-list');
+  const agentWfTplSaveCurrent = document.getElementById('agent-wf-tpl-save-current');
   const agentCronAdd = document.getElementById('agent-cron-add');
   const agentCronStatus = document.getElementById('agent-cron-status');
   const agentCronList = document.getElementById('agent-cron-list');
@@ -575,6 +597,135 @@ export function mountShell({ api, state, connect }) {
   let _agentCronCwdFor = null;
   let _agentCronPayload = null;
   let _agentCronLoading = false;
+  let _agentCronTemplateApplying = false;
+
+  function updateLoopTemplateHint() {
+    if (!agentCronTemplateHint || !agentCronTemplate) return;
+    const tpl = loopTemplateById(agentCronTemplate.value);
+    agentCronTemplateHint.textContent = tpl?.hint || '';
+  }
+
+  function renderDesktopLoopTemplateList() {
+    if (!agentLoopTplList) return;
+    agentLoopTplList.innerHTML = listLoopTemplates().filter(t => t.id !== 'custom').map(t => {
+      const del = t.builtin ? '' : `<button type="button" class="btn-danger btn-xs" data-loop-tpl-del="${escapeAttr(t.id)}">Delete</button>`;
+      const tag = t.builtin ? '<span class="template-tag">default</span>' : '<span class="template-tag">custom</span>';
+      return `<li class="template-list-item">${tag}<span>${escapeHtml(t.label)}</span>${del}</li>`;
+    }).join('');
+    agentLoopTplList.querySelectorAll('[data-loop-tpl-del]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        try {
+          deleteCustomLoopTemplate(btn.dataset.loopTplDel);
+          fillLoopTemplateSelect(agentCronTemplate, 'custom');
+          renderDesktopLoopTemplateList();
+          setAgentCronStatus('Template deleted.', 'is-ok');
+        } catch (err) {
+          setAgentCronStatus(err?.message || String(err), 'is-error');
+        }
+      });
+    });
+  }
+
+  function syncDesktopLoopTplKindUi() {
+    if (!agentLoopTplKind || !agentLoopTplBodyWrap) return;
+    agentLoopTplBodyWrap.hidden = agentLoopTplKind.value !== 'static';
+  }
+
+  function renderDesktopWorkflowTemplateList() {
+    if (!agentWfTplList) return;
+    agentWfTplList.innerHTML = listCustomWorkflowTemplates().map(t => `
+      <li class="template-list-item">
+        <span class="template-tag">custom</span>
+        <span>${escapeHtml(t.label)}</span>
+        <button type="button" class="btn-danger btn-xs" data-wf-tpl-del="${escapeAttr(t.id)}">Delete</button>
+      </li>`).join('') || '<li class="muted">No custom workflow templates yet.</li>';
+    agentWfTplList.querySelectorAll('[data-wf-tpl-del]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        try {
+          deleteCustomWorkflowTemplate(btn.dataset.wfTplDel);
+          fillWorkflowTemplateSelect(agentWorkflowTemplate);
+          renderDesktopWorkflowTemplateList();
+          setAgentWorkflowStatus('Workflow template deleted.', 'is-ok');
+        } catch (err) {
+          setAgentWorkflowStatus(err?.message || String(err), 'is-error');
+        }
+      });
+    });
+  }
+
+  async function applyAgentWorkflowTemplate() {
+    const agent = activeSettingsAgent();
+    const id = agentWorkflowTemplate?.value;
+    if (!id) {
+      setAgentWorkflowStatus('Pick a template first.', 'is-error');
+      return;
+    }
+    if (_agentWorkflowDirty && !confirm('Replace unsaved workflow with this template?')) return;
+    try {
+      let goal = _agentWorkflowPayload?.parsed?.goal || '';
+      if (!String(goal).trim()) {
+        const sections = await resolvePromptSectionsForAgent(api, agent, {
+          extractSystemPromptBlock: (text, agentId) => extractSystemPromptBlock(text, { id: agentId }),
+          systemPromptFileName,
+        });
+        goal = sections.goal || '';
+      }
+      const applied = applyWorkflowTemplate(id, { goal });
+      if (!applied) throw new Error('Template not found.');
+      _agentWorkflowPayload = {
+        text: applied.text,
+        parsed: applied.parsed,
+        path: workflowYamlPath(),
+      };
+      _agentWorkflowDirty = true;
+      _agentWorkflowExpanded = new Set(applied.parsed.nodes[0]?.id ? [applied.parsed.nodes[0].id] : []);
+      _agentWorkflowSelectedNodeId = applied.parsed.nodes[0]?.id || '';
+      if (agentWorkflowRaw) agentWorkflowRaw.value = applied.text;
+      setAgentWorkflowStatus(`Applied template "${applied.template.label}". Save to persist.`, 'is-ok');
+      renderAgentWorkflow(activeSettingsAgent());
+    } catch (err) {
+      setAgentWorkflowStatus(err?.message || String(err), 'is-error');
+    }
+  }
+
+  async function applyAgentLoopTemplate(templateId, { forcePrompt = false } = {}) {
+    const tpl = loopTemplateById(templateId);
+    if (!tpl || tpl.id === 'custom') {
+      updateLoopTemplateHint();
+      return;
+    }
+    const agent = activeSettingsAgent();
+    if (!agent) return;
+    _agentCronTemplateApplying = true;
+    applyLoopTemplateDefaults({
+      nameEl: agentCronName,
+      schedTypeEl: agentCronScheduleType,
+      schedValEl: agentCronScheduleValue,
+      noExpireEl: agentCronNoExpire,
+      onScheduleChange: updateCronSchedulePlaceholder,
+    }, templateId);
+    if (forcePrompt || !String(agentCronText?.value || '').trim() || agentCronText?.dataset.fromTemplate) {
+      setAgentCronStatus('Building prompt from system prompt…');
+      try {
+        const sections = await resolvePromptSectionsForAgent(api, agent, {
+          extractSystemPromptBlock: (text, agentId) => extractSystemPromptBlock(text, { id: agentId }),
+          systemPromptFileName,
+        });
+        const built = buildLoopPrompt(templateId, sections);
+        if (agentCronText && built) {
+          agentCronText.value = built;
+          agentCronText.dataset.fromTemplate = templateId;
+        }
+        setAgentCronStatus(built ? 'Template applied.' : 'Template applied (empty prompt).', 'is-ok');
+      } catch (err) {
+        setAgentCronStatus(`Template failed: ${err?.message || err}`, 'is-error');
+      }
+    } else {
+      setAgentCronStatus('Schedule defaults applied. Prompt kept (clear to regenerate).', 'is-ok');
+    }
+    _agentCronTemplateApplying = false;
+    updateLoopTemplateHint();
+  }
   let _agentWorkflowLoadedFor = null;
   let _agentWorkflowLoading = false;
   let _agentWorkflowPayload = null;
@@ -794,6 +945,7 @@ export function mountShell({ api, state, connect }) {
   function updateAutomationTypeUi() {
     const type = currentAutomationType();
     const isCron = type === 'cron';
+    if (agentCronTemplateWrap) agentCronTemplateWrap.hidden = isCron;
     if (agentCronTextLabel) {
       const child = agentCronTextLabel.querySelector('textarea');
       agentCronTextLabel.firstChild.textContent = isCron ? 'Command\n                    ' : 'Prompt\n                    ';
@@ -971,7 +1123,12 @@ export function mountShell({ api, state, connect }) {
       await api.createAgentCronJob(agent.id, checked.body);
       setAgentCronStatus(`${type === 'cron job' ? 'Cron job' : 'Loop'} added.`, 'is-ok');
       if (agentCronName) agentCronName.value = '';
-      if (agentCronText) agentCronText.value = '';
+      if (agentCronText) {
+        agentCronText.value = '';
+        delete agentCronText.dataset.fromTemplate;
+      }
+      if (agentCronTemplate) agentCronTemplate.value = 'custom';
+      updateLoopTemplateHint();
       await loadAgentCron({ force: true });
     } catch (err) {
       setAgentCronStatus(`Add failed: ${err?.message || err}`, 'is-error');
@@ -1683,6 +1840,62 @@ export function mountShell({ api, state, connect }) {
   });
   agentCronScheduleType?.addEventListener('change', updateCronSchedulePlaceholder);
   agentCronTypeInputs.forEach(input => input.addEventListener('change', updateAutomationTypeUi));
+  agentCronTemplate?.addEventListener('change', () => {
+    void applyAgentLoopTemplate(agentCronTemplate.value, { forcePrompt: true });
+  });
+  agentCronText?.addEventListener('input', () => {
+    if (!_agentCronTemplateApplying && agentCronText) delete agentCronText.dataset.fromTemplate;
+  });
+  agentLoopTplKind?.addEventListener('change', syncDesktopLoopTplKindUi);
+  agentLoopTplSave?.addEventListener('click', () => {
+    try {
+      const kind = agentLoopTplKind?.value || 'static';
+      const sched = document.getElementById('agent-loop-tpl-sched')?.value?.trim() || '10m';
+      const saved = saveCustomLoopTemplate({
+        label: document.getElementById('agent-loop-tpl-label')?.value,
+        hint: document.getElementById('agent-loop-tpl-hint')?.value,
+        kind,
+        promptBody: document.getElementById('agent-loop-tpl-body')?.value,
+        defaults: { schedule_type: 'every', schedule_value: sched, no_expire: true },
+      });
+      fillLoopTemplateSelect(agentCronTemplate, saved.id);
+      renderDesktopLoopTemplateList();
+      document.getElementById('agent-loop-tpl-label').value = '';
+      document.getElementById('agent-loop-tpl-hint').value = '';
+      if (document.getElementById('agent-loop-tpl-body')) document.getElementById('agent-loop-tpl-body').value = '';
+      setAgentCronStatus(`Saved template "${saved.label}".`, 'is-ok');
+      void applyAgentLoopTemplate(saved.id, { forcePrompt: true });
+    } catch (err) {
+      setAgentCronStatus(err?.message || String(err), 'is-error');
+    }
+  });
+  agentWorkflowApplyTemplate?.addEventListener('click', () => { void applyAgentWorkflowTemplate(); });
+  agentWfTplSaveCurrent?.addEventListener('click', () => {
+    try {
+      const text = _agentWorkflowView === 'raw' && agentWorkflowRaw
+        ? agentWorkflowRaw.value
+        : (_agentWorkflowPayload?.text || serializeWorkflowYaml(_agentWorkflowPayload?.parsed));
+      if (!String(text).trim()) throw new Error('Load or create a workflow first.');
+      const saved = saveCustomWorkflowTemplate({
+        label: document.getElementById('agent-wf-tpl-label')?.value,
+        hint: document.getElementById('agent-wf-tpl-hint')?.value,
+        yaml: text,
+      });
+      fillWorkflowTemplateSelect(agentWorkflowTemplate, saved.id);
+      renderDesktopWorkflowTemplateList();
+      document.getElementById('agent-wf-tpl-label').value = '';
+      document.getElementById('agent-wf-tpl-hint').value = '';
+      setAgentWorkflowStatus(`Saved workflow template "${saved.label}".`, 'is-ok');
+    } catch (err) {
+      setAgentWorkflowStatus(err?.message || String(err), 'is-error');
+    }
+  });
+  fillLoopTemplateSelect(agentCronTemplate, 'custom');
+  renderDesktopLoopTemplateList();
+  syncDesktopLoopTplKindUi();
+  fillWorkflowTemplateSelect(agentWorkflowTemplate);
+  renderDesktopWorkflowTemplateList();
+  updateLoopTemplateHint();
   agentCronRefresh?.addEventListener('click', () => { void loadAgentCron({ force: true }); });
   agentCronAdd?.addEventListener('click', () => { void addAgentCronJob(); });
   agentWorkflowRefresh?.addEventListener('click', () => { void loadAgentWorkflow({ force: true }); });

@@ -3252,3 +3252,1264 @@ fce5cc1 camc cron: add per-agent loop scheduling
 b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
 64d4a73 feat(camc): per-agent system prompt via CLAUDE.md / AGENTS.md
 ```
+## v1.2.0  6a85f45-dirty 2026-06-17 01:13
+
+- Lines: 15370
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 01:21
+
+- Lines: 15388
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 01:22
+
+- Lines: 15406
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 01:32
+
+- Lines: 15408
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 01:46
+
+- Lines: 15408
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 18:49
+
+- Lines: 15408
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 18:50
+
+- Lines: 15408
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 22:41
+
+- Lines: 15725
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 22:41
+
+- Lines: 15715
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 22:47
+
+- Lines: 15718
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 22:58
+
+- Lines: 15719
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 23:01
+
+- Lines: 15727
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 23:03
+
+- Lines: 15732
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-17 23:04
+
+- Lines: 15745
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-19 03:31
+
+- Lines: 15762
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-19 18:38
+
+- Lines: 15760
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  6a85f45-dirty 2026-06-19 20:18
+
+- Lines: 15760
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+b63e868 Merge gitlab/master into master (Desktop UI + camc auto-confirm + build)
+```
+
+## v1.2.0  55ac593-dirty 2026-06-19 21:30
+
+- Lines: 15771
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+```
+
+## v1.2.0  e31beae-dirty 2026-06-20 10:54
+
+- Lines: 15963
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+```
+
+## v1.2.0  e31beae-dirty 2026-06-20 11:01
+
+- Lines: 15959
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+```
+
+## v1.2.0  37f5313 2026-06-20 21:52
+
+- Lines: 15959
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  37f5313 2026-06-20 21:53
+
+- Lines: 15959
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37 2026-06-23 00:21
+
+- Lines: 15959
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37 2026-06-23 00:25
+
+- Lines: 15959
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-23 01:24
+
+- Lines: 15971
+- Output: /tmp/camc-sandbox
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-23 03:51
+
+- Lines: 15992
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-23 03:53
+
+- Lines: 16023
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-23 03:55
+
+- Lines: 16042
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-23 03:56
+
+- Lines: 16042
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-23 04:19
+
+- Lines: 16064
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-23 05:18
+
+- Lines: 16518
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-23 05:25
+
+- Lines: 16539
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-23 05:25
+
+- Lines: 16539
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-23 05:39
+
+- Lines: 16652
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-23 10:51
+
+- Lines: 16702
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-23 11:01
+
+- Lines: 16702
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-23 11:02
+
+- Lines: 16702
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-23 19:10
+
+- Lines: 16709
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-23 19:27
+
+- Lines: 16709
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-24 18:49
+
+- Lines: 16952
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-24 18:54
+
+- Lines: 17026
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-24 18:58
+
+- Lines: 17026
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-24 19:00
+
+- Lines: 17027
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-24 19:02
+
+- Lines: 17033
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 18:33
+
+- Lines: 17589
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 18:36
+
+- Lines: 17592
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 18:36
+
+- Lines: 17589
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 18:37
+
+- Lines: 17589
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 18:39
+
+- Lines: 17601
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 18:40
+
+- Lines: 17604
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 18:43
+
+- Lines: 17604
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 18:43
+
+- Lines: 17604
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 19:35
+
+- Lines: 17638
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 19:35
+
+- Lines: 17424
+- Output: /tmp/pytest-of-hren/pytest-1217/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 19:35
+
+- Lines: 17638
+- Output: /tmp/pytest-of-hren/pytest-1217/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 19:36
+
+- Lines: 17424
+- Output: /tmp/pytest-of-hren/pytest-1219/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 19:36
+
+- Lines: 17638
+- Output: /tmp/pytest-of-hren/pytest-1219/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 19:38
+
+- Lines: 17638
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 19:38
+
+- Lines: 17424
+- Output: /tmp/pytest-of-hren/pytest-1220/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 19:38
+
+- Lines: 17638
+- Output: /tmp/pytest-of-hren/pytest-1220/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 19:38
+
+- Lines: 17424
+- Output: /tmp/camc-nocapture
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 19:38
+
+- Lines: 17424
+- Output: /tmp/camc-nohooks
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 19:40
+
+- Lines: 17424
+- Output: /tmp/pytest-of-hren/pytest-1221/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 19:40
+
+- Lines: 17638
+- Output: /tmp/pytest-of-hren/pytest-1221/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 19:41
+
+- Lines: 17424
+- Output: /tmp/pytest-of-hren/pytest-1222/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 19:41
+
+- Lines: 17638
+- Output: /tmp/pytest-of-hren/pytest-1222/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 22:46
+
+- Lines: 17113
+- Output: /tmp/pytest-of-hren/pytest-1223/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 22:46
+
+- Lines: 17384
+- Output: /tmp/pytest-of-hren/pytest-1223/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 22:46
+
+- Lines: 17384
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 22:47
+
+- Lines: 17384
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 22:47
+
+- Lines: 17113
+- Output: /tmp/pytest-of-hren/pytest-1224/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 22:47
+
+- Lines: 17384
+- Output: /tmp/pytest-of-hren/pytest-1224/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 22:49
+
+- Lines: 17113
+- Output: /tmp/pytest-of-hren/pytest-1225/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 22:49
+
+- Lines: 17384
+- Output: /tmp/pytest-of-hren/pytest-1225/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 22:50
+
+- Lines: 17384
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 22:52
+
+- Lines: 17113
+- Output: /tmp/pytest-of-hren/pytest-1226/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 22:52
+
+- Lines: 17384
+- Output: /tmp/pytest-of-hren/pytest-1226/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 23:32
+
+- Lines: 17491
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 23:32
+
+- Lines: 17113
+- Output: /tmp/pytest-of-hren/pytest-1227/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 23:32
+
+- Lines: 17491
+- Output: /tmp/pytest-of-hren/pytest-1227/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 23:34
+
+- Lines: 17113
+- Output: /tmp/pytest-of-hren/pytest-1228/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-25 23:34
+
+- Lines: 17491
+- Output: /tmp/pytest-of-hren/pytest-1228/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-26 05:48
+
+- Lines: 17318
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-26 05:48
+
+- Lines: 17008
+- Output: /tmp/pytest-of-hren/pytest-1229/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-26 05:48
+
+- Lines: 17318
+- Output: /tmp/pytest-of-hren/pytest-1229/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-26 05:49
+
+- Lines: 17008
+- Output: /tmp/pytest-of-hren/pytest-1230/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-26 05:49
+
+- Lines: 17318
+- Output: /tmp/pytest-of-hren/pytest-1230/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-26 05:54
+
+- Lines: 17318
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-26 05:55
+
+- Lines: 17008
+- Output: /tmp/pytest-of-hren/pytest-1231/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-26 05:55
+
+- Lines: 17318
+- Output: /tmp/pytest-of-hren/pytest-1231/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-26 05:55
+
+- Lines: 17008
+- Output: /tmp/pytest-of-hren/pytest-1232/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-26 05:55
+
+- Lines: 17318
+- Output: /tmp/pytest-of-hren/pytest-1232/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-26 05:57
+
+- Lines: 17318
+- Output: /home/hren/.openclaw/workspace/cam/dist/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-26 05:58
+
+- Lines: 17008
+- Output: /tmp/pytest-of-hren/pytest-1233/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-26 05:58
+
+- Lines: 17318
+- Output: /tmp/pytest-of-hren/pytest-1233/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-26 05:58
+
+- Lines: 17008
+- Output: /tmp/pytest-of-hren/pytest-1234/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
+## v1.2.0  68d1d37-dirty 2026-06-26 05:58
+
+- Lines: 17318
+- Output: /tmp/pytest-of-hren/pytest-1234/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+37f5313 Add opt-in per-tool API defaults and refresh IHUB API docs.
+e31beae Fix API proxy start route selection
+55ac593 Add IHUB model metadata sync and Claude auto-compact env injection.
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+

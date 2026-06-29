@@ -1,12 +1,178 @@
 """Transport layer: tmux session management (create, capture, send, kill)."""
 
+import hashlib
 import os
 import shlex
 import shutil
 import subprocess
 
-from camc_pkg import SOCKETS_DIR, log
+from camc_pkg import CAM_DIR, SOCKETS_DIR, log
 from camc_pkg.utils import strip_ansi, _run
+
+
+# ---------------------------------------------------------------------------
+# camc-owned tmux config template (2026-06-23 PDX hardening)
+# ---------------------------------------------------------------------------
+#
+# camc launches every agent into its own tmux server (private socket via
+# -S). The new tmux server still reads ~/.tmux.conf by default; on PDX
+# a user .tmux.conf has been observed to crash the server during
+# startup-command injection. Pointing the new server at a small
+# camc-managed config with `-f <path>` makes camc tmux behavior
+# independent of user config.
+#
+# v1 template content kept tmux 2.7 compatible (no `set-option -ga`,
+# no `assume-paste-time`). The 'camc-template-version' header lets the
+# next slice auto-refresh the template when we bump the version; the
+# 'camc-template-sha256' header tracks the hash of the managed body
+# so a user-modified file is left alone.
+
+_CAMC_TMUX_CONFIG_VERSION = 1
+_CAMC_TMUX_CONFIG_BODY = (
+    "# camc-managed: true\n"
+    "# camc-template: tmux\n"
+    "# camc-template-version: {version}\n"
+    "# camc-template-sha256: {sha}\n"
+    "#\n"
+    "# Edit this file to override; the 'camc-managed' header is what\n"
+    "# camc uses to decide whether to refresh on version bumps. Once\n"
+    "# you modify the file, change or remove the sha line so camc\n"
+    "# leaves it alone.\n"
+    "\n"
+    "set-option -g history-limit 50000\n"
+    "set-option -g status off\n"
+    "set-option -g mouse off\n"
+    'set-option -g default-terminal "screen-256color"\n'
+)
+
+
+def _camc_tmux_config_path():
+    return os.path.join(CAM_DIR, "configs", "tmux.conf")
+
+
+def _camc_tmux_body_sha(text):
+    """Hash a tmux config body while ignoring its sha header line."""
+    canonical_for_hash = "\n".join(
+        l for l in text.splitlines()
+        if not l.startswith("# camc-template-sha256:")
+    )
+    return hashlib.sha256(
+        canonical_for_hash.encode("utf-8")).hexdigest()[:16]
+
+
+def _camc_tmux_managed_body(version=_CAMC_TMUX_CONFIG_VERSION):
+    """Return the canonical body for a given template version. The
+    sha line is computed over the *non-sha* lines so the hash is
+    deterministic and self-referential without recursion."""
+    no_sha = _CAMC_TMUX_CONFIG_BODY.format(version=version, sha="<pending>")
+    sha = _camc_tmux_body_sha(no_sha)
+    return _CAMC_TMUX_CONFIG_BODY.format(version=version, sha=sha)
+
+
+def _camc_tmux_existing_meta(path):
+    """Return (managed, version, sha) for an existing tmux config
+    file, or (False, 0, '') when the file isn't camc-managed."""
+    try:
+        with open(path, "r") as f:
+            head = f.read(2048)
+    except (OSError, IOError):
+        return False, 0, ""
+    managed = ("# camc-managed: true" in head)
+    if not managed:
+        return False, 0, ""
+    version = 0
+    sha = ""
+    for line in head.splitlines():
+        if line.startswith("# camc-template-version:"):
+            try:
+                version = int(line.split(":", 1)[1].strip())
+            except (ValueError, IndexError):
+                version = 0
+        elif line.startswith("# camc-template-sha256:"):
+            sha = line.split(":", 1)[1].strip()
+    return True, version, sha
+
+
+def ensure_camc_tmux_config(path=None):
+    """Make sure ``~/.cam/configs/tmux.conf`` exists with the current
+    v1 template body.
+
+    Behavior:
+      * Missing file -> created with the v1 body (mode 0600).
+      * File exists and is camc-managed AND matches the expected
+        sha of its declared version -> refresh to current version
+        if older (idempotent on the current version).
+      * File exists and is camc-managed but has been MODIFIED
+        (sha mismatch on its declared version) -> leave alone +
+        log a warning.
+      * File exists and is NOT camc-managed (user-authored) ->
+        leave alone, no log.
+
+    Returns the file path. Safe to call from many sites; the lock
+    cost is one fs stat + one read on the file.
+    """
+    path = path or _camc_tmux_config_path()
+    body = _camc_tmux_managed_body(_CAMC_TMUX_CONFIG_VERSION)
+    try:
+        os.makedirs(os.path.dirname(path))
+    except OSError:
+        pass
+    if not os.path.exists(path):
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(body)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+            os.replace(tmp, path)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+            log.info("camc tmux config created at %s (v%d)",
+                     path, _CAMC_TMUX_CONFIG_VERSION)
+        except OSError as e:
+            log.warning("failed to create camc tmux config %s: %s", path, e)
+        return path
+    # File exists — decide whether to refresh.
+    managed, existing_version, existing_sha = _camc_tmux_existing_meta(path)
+    if not managed:
+        # User-authored file; leave alone.
+        return path
+    try:
+        with open(path, "r") as f:
+            existing_text = f.read()
+    except (OSError, IOError) as e:
+        log.warning("failed to read camc tmux config %s: %s", path, e)
+        return path
+    actual_sha = _camc_tmux_body_sha(existing_text)
+    if existing_sha != actual_sha:
+        log.warning(
+            "camc tmux config at %s is camc-managed but has been "
+            "modified locally (sha mismatch); refusing to refresh",
+            path)
+        return path
+    if existing_version < _CAMC_TMUX_CONFIG_VERSION:
+        # Managed AND unmodified AND older — refresh.
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(body)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+            os.replace(tmp, path)
+            log.info("camc tmux config refreshed: %s (v%d -> v%d)",
+                     path, existing_version, _CAMC_TMUX_CONFIG_VERSION)
+        except OSError as e:
+            log.warning(
+                "failed to refresh camc tmux config %s: %s", path, e)
+    return path
 
 
 def _detect_tmux_bin():
@@ -296,8 +462,28 @@ def tmux_kill_session(session_id):
     return rc == 0
 
 
+def _tmux_paste_startup_command(tmux, socket, target, text):
+    """Paste a startup command into a freshly-created shell pane.
+
+    Some PDX tmux builds have been observed to drop the whole server on
+    ``send-keys -l -- <long command>`` before Enter is even sent. The
+    buffer/paste path avoids that literal-key injection code path while
+    preserving the conservative two-step launch model: create shell
+    first, paste command second.
+    """
+    try:
+        _run([tmux, "-u", "-S", socket, "set-buffer", text], check=True)
+        _run([tmux, "-u", "-S", socket, "paste-buffer", "-t", target],
+             check=True)
+        return True
+    except Exception as e:
+        log.debug("tmux startup paste-buffer failed, falling back: %s", e)
+        return False
+
+
 def create_tmux_session(session_id, command, workdir, env_setup=None,
-                        inherit_env=True, env=None, tmux_bin=None):
+                        inherit_env=True, env=None, tmux_bin=None,
+                        tmux_config=None):
     """Create a detached tmux session named `session_id`.
 
     F-08: `env` and `tmux_bin` are optional. When provided (the new
@@ -329,13 +515,40 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
     # Source tmux binary: explicit arg wins; else module-level default.
     tmux = tmux_bin or TMUX_BIN
 
+    # 2026-06-23 PDX hardening: ensure the new tmux server starts with
+    # camc's own config (`-f <path>`) instead of inheriting the user's
+    # ~/.tmux.conf, which on PDX has crashed servers mid-startup.
+    # ``tmux_config`` defaults to ``ensure_camc_tmux_config()``; pass
+    # an empty string to opt out (e.g. test fixtures that don't want
+    # to touch disk). For follow-up operations (capture/send/attach)
+    # the existing -S socket isolation is sufficient — tmux client
+    # commands don't need -f since the config was loaded at server
+    # start.
+    if tmux_config is None:
+        try:
+            tmux_config = ensure_camc_tmux_config()
+        except Exception as e:
+            log.warning("camc tmux config ensure failed; "
+                        "new-session will inherit user ~/.tmux.conf: %s", e)
+            tmux_config = ""
+
+    def _tmux_new_session_argv(extra_args):
+        """Build the tmux new-session argv with -f <config> injected
+        before -S so it applies to the newly created server."""
+        argv = [tmux, "-u"]
+        if tmux_config:
+            argv += ["-f", tmux_config]
+        argv += ["-S", socket, "new-session",
+                 "-d", "-x", "220", "-y", "50",
+                 "-s", session_id, "-c", workdir]
+        argv += extra_args
+        return argv
+
     if inherit_env:
         # Shell mode: start tmux with user's default shell, inherit all env.
         # Then send the command via send-keys.
         try:
-            tmux_cmd = [tmux, "-u", "-S", socket, "new-session",
-                 "-d", "-x", "220", "-y", "50",
-                 "-s", session_id, "-c", workdir]
+            tmux_cmd = _tmux_new_session_argv([])
             proc = subprocess.Popen(
                 tmux_cmd,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -348,12 +561,15 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
                 return False
             _run([tmux, "-u", "-S", socket, "set-option", "-t", session_id,
                   "history-limit", "50000"])
-            # Send the command via send-keys. Small pause before Enter
-            # so the literal text flushes before Enter races in.
+            # Paste the command through a tmux buffer instead of
+            # send-keys -l. On some PDX tmux builds, literal send-keys
+            # can drop the whole server before Enter is sent.
             inner_cmd = " ".join(shlex.quote(arg) for arg in command)
             target = "%s:0.0" % session_id
-            _run([tmux, "-u", "-S", socket, "send-keys", "-t", target,
-                  "-l", "--", inner_cmd])
+            if not _tmux_paste_startup_command(tmux, socket, target,
+                                               inner_cmd):
+                _run([tmux, "-u", "-S", socket, "send-keys", "-t", target,
+                      "-l", "--", inner_cmd])
             import time as _t
             _t.sleep(0.15)
             _run([tmux, "-u", "-S", socket, "send-keys", "-t", target, "Enter"])
@@ -379,9 +595,7 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
 
     try:
         proc = subprocess.Popen(
-            [tmux, "-u", "-S", socket, "new-session",
-             "-d", "-x", "220", "-y", "50",
-             "-s", session_id, "-c", workdir, command_str],
+            _tmux_new_session_argv([command_str]),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=env,
         )

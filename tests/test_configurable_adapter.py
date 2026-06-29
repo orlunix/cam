@@ -256,7 +256,7 @@ class TestCodexToml:
 class TestCursorAdapter:
     def test_launch_command(self, cursor_adapter, task, context):
         cmd = cursor_adapter.get_launch_command(task, context)
-        assert cmd == ["agent", "--workspace", "/tmp/test"]
+        assert cmd == ["cursor-agent", "--workspace", "/tmp/test"]
 
     def test_is_interactive(self, cursor_adapter):
         assert cursor_adapter.needs_prompt_after_launch() is True

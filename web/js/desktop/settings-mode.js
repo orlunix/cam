@@ -137,7 +137,7 @@ export function mountSettingsMode({ api, state, showToast, readConfig, saveConfi
    * proxies REST traffic to an existing CAM Hub. The Desktop UI only
    * asks for Relay URL + Relay token; the source-side CAM API token is
    * profile-managed and injected by relay/relay.py on /api/* forwarding. */
-  mountRelayTab({ panel, api, readConfig, saveConfig, connect, showToast });
+  mountRelayTab({ panel, api, state, readConfig, saveConfig, connect, showToast });
 
   /* ────────── Appearance tab (CAM-DESK-SET-002) ──────────
    * Theme (dark/light/system) + UI font size + agent-output font
@@ -271,6 +271,16 @@ function mountDirectTab({ panel, api, state, showToast, readConfig, saveConfig, 
     // previous loopback URL/token is stale, restart() is stop(no-op)+start
     // and then we persist the fresh URL/token before reconnecting.
     restartBt.disabled  = !supported;
+  }
+
+  async function doEnable() {
+    const mode = state.get('connectionMode');
+    if (mode === 'direct') {
+      await refreshCheck();
+      setStatus('Direct already enabled.', 'is-ok');
+      return;
+    }
+    await doStart();
   }
 
   async function refreshCheck() {
@@ -417,7 +427,8 @@ function mountDirectTab({ panel, api, state, showToast, readConfig, saveConfig, 
       lines.map((l) => `[${l.kind}] ${l.text}`).join('\n');
   }
 
-  checkBtn.addEventListener('click',  refreshCheck);
+  checkBtn.textContent = 'Enable';
+  checkBtn.addEventListener('click',  doEnable);
   startBtn.addEventListener('click',  doStart);
   stopBtn.addEventListener('click',   doStop);
   restartBt.addEventListener('click', doRestart);
@@ -432,13 +443,13 @@ function mountDirectTab({ panel, api, state, showToast, readConfig, saveConfig, 
     [checkBtn, startBtn, stopBtn, restartBt].forEach(b => { b.disabled = true; });
   } else {
     setBadge('stopped');
-    detailEl.textContent = 'Click Check to inspect the embedded Hub, or Start to launch it.';
+    detailEl.textContent = 'Click Enable to turn on Direct, or Start to launch the embedded Hub.';
   }
 }
 
 /* ───────── Relay tab controller (CAM-DESK-REMOTE-012) ───────── */
 
-function mountRelayTab({ panel, api, readConfig, saveConfig, connect, showToast }) {
+function mountRelayTab({ panel, api, state, readConfig, saveConfig, connect, showToast }) {
   const relayForm   = panel.querySelector('#settings-form-relay');
   const relayStatus = panel.querySelector('#settings-status-relay');
   if (!relayForm) return;
@@ -446,6 +457,7 @@ function mountRelayTab({ panel, api, readConfig, saveConfig, connect, showToast 
   const relayUrlEl   = panel.querySelector('#set-relay-url');
   const relayTokenEl = panel.querySelector('#set-relay-token');
   const camTokenEl   = panel.querySelector('#set-relay-cam-token');
+  const refreshBtn   = panel.querySelector('#settings-relay-refresh');
 
   // Initial fill from existing localStorage. The hidden CAM token input
   // is deliberately left empty so stale client-side bearer values do not
@@ -500,6 +512,34 @@ function mountRelayTab({ panel, api, readConfig, saveConfig, connect, showToast 
       relaySetStatus(`Connection failed — check Relay URL, Relay token, and source status.${detail}`, 'is-error');
     }
   });
+
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', async () => {
+      if (!api || api.mode !== 'relay') {
+        relaySetStatus('Connect Relay first, then refresh agents.', 'is-error');
+        return;
+      }
+      refreshBtn.disabled = true;
+      relaySetStatus('Refreshing agents from source…');
+      try {
+        const resp = await api.listAgents({ limit: 100, refresh: true });
+        const agents = Array.isArray(resp && resp.agents) ? resp.agents : [];
+        if (state && typeof state.set === 'function') state.set('agents', agents);
+        const sync = resp && resp.sync;
+        const suffix = sync && typeof sync.synced === 'number'
+          ? ` Source sync: ${sync.synced} ok, ${sync.failed || 0} failed.`
+          : '';
+        relaySetStatus(`Refreshed ${agents.length} agent${agents.length === 1 ? '' : 's'}.${suffix}`, 'is-ok');
+        if (showToast) showToast('Agent list refreshed', 'success');
+      } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        relaySetStatus(`Refresh failed: ${msg}`, 'is-error');
+        if (showToast) showToast(`Refresh failed: ${msg}`, 'error', 5000);
+      } finally {
+        refreshBtn.disabled = false;
+      }
+    });
+  }
 }
 
 /* ───────── Appearance tab (CAM-DESK-SET-002) ─────────

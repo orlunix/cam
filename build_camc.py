@@ -7,6 +7,12 @@ Usage:
     python build_camc.py --verify     # Build and compare with src/camc baseline
 
 The single file is stdlib-only, Python 3.6+, zero dependencies.
+
+Build-time prelude hooks (shell fast paths) live in src/camc_pkg/prelude/.
+Disable when building::
+
+    CAMC_PRELUDE_DISABLE=capture python3 build_camc.py
+    CAMC_PRELUDE_DISABLE=all python3 build_camc.py
 """
 
 import argparse
@@ -49,17 +55,20 @@ MODULE_ORDER = [
     # consumed by cli.py for the --loop CLI surface.
     "cron_loop",
     "api_store",
+    "api_metadata",
     "api_token",
     "api_routing",
     "api_resolver",
     "proxy.common",
     "proxy.textual_tools",
     "proxy.messages",
+    "proxy.responses",
     "proxy.manager",
     "cli",
 ]
 
 PKG_DIR = os.path.join(os.path.dirname(__file__), "src", "camc_pkg")
+SRC_DIR = os.path.join(os.path.dirname(__file__), "src")
 DIST_DIR = os.path.join(os.path.dirname(__file__), "dist")
 TOML_DIR = os.path.join(os.path.dirname(__file__), "src", "cam", "adapters", "configs")
 
@@ -102,6 +111,12 @@ def _inject_embedded_configs(src):
 
 def read_init():
     path = os.path.join(PKG_DIR, "__init__.py")
+    with open(path, "r") as f:
+        return f.read()
+
+
+def read_fast_capture():
+    path = os.path.join(PKG_DIR, "fast_capture.py")
     with open(path, "r") as f:
         return f.read()
 
@@ -219,6 +234,15 @@ def _build_stamp():
     return "%s %s" % (git, ts)
 
 
+
+def _render_shell_prelude():
+    """Load registered prelude hooks from camc_pkg.prelude.registry."""
+    if SRC_DIR not in sys.path:
+        sys.path.insert(0, SRC_DIR)
+    from camc_pkg.prelude.registry import render_prelude
+    return render_prelude()
+
+
 def build():
     # 1. Read __init__.py for version, constants, logging setup
     init_src = read_init()
@@ -243,13 +267,30 @@ def build():
     # 3. Build the single file
     parts = []
 
-    # Shebang and docstring
-    parts.append('#!/usr/bin/env python3')
+    # Shebang/polyglot preamble and docstring
+    parts.append('#!/bin/sh')
+    parts.extend(_render_shell_prelude())
     parts.append('"""camc — Standalone coding agent manager (single-file build).')
     parts.append('')
     parts.append('Auto-generated from camc_pkg/ package. Do not edit directly.')
     parts.append('Edit the source in src/camc_pkg/ and rebuild with build_camc.py.')
     parts.append('"""')
+    parts.append('')
+
+    # Early capture fast path. Keep this before consolidated imports and the
+    # inlined package body so `camc capture <exact-id>` avoids
+    # the normal camc startup/import cost.
+    fast_capture_src = strip_imports(
+        strip_docstring(read_fast_capture()), "fast_capture"
+    ).strip()
+    parts.append("# " + "=" * 75)
+    parts.append("# early fast capture bootstrap")
+    parts.append("# " + "=" * 75)
+    parts.append(fast_capture_src)
+    parts.append('')
+    parts.append('_fast_capture_exit = early_capture_main()')
+    parts.append('if _fast_capture_exit is not None:')
+    parts.append('    sys.exit(_fast_capture_exit)')
     parts.append('')
 
     # Consolidated imports

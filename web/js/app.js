@@ -1,5 +1,6 @@
 import { api } from './api.js?v=0.64.0';
 import { state } from './state.js?v=0.64.0';
+import { loadAgentFilters } from './shared/agent-filters.js?v=0.64.0';
 import { renderDashboard } from './views/dashboard.js?v=0.64.0';
 import { renderAgentDetail } from './views/agent-detail.js?v=0.64.0';
 import { renderStartAgent } from './views/start-agent.js?v=0.64.0';
@@ -83,6 +84,7 @@ async function init() {
   }
 
   // Wire state listener and router FIRST — UI must render immediately
+  state.set('filters', loadAgentFilters());
   api.onEvent(handleEvent);
   state.subscribe(() => {
     updateConnectionDot(state.get('connectionMode'));

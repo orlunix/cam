@@ -10,57 +10,67 @@ import android.os.StrictMode;
 import android.util.Base64;
 import android.util.Log;
 import android.view.View;
+import android.view.ViewTreeObserver;
 import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import android.content.ContentResolver;
+import android.database.Cursor;
+import android.provider.OpenableColumns;
+
+import org.json.JSONObject;
+
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 
 public class MainActivity extends Activity {
 
     private static final String TAG = "CAM";
     private static final int FILE_CHOOSER_REQUEST = 1001;
+    private static final int KEY_PICK_REQUEST = 1002;
+    private static final int KEY_PICK_MAX_BYTES = 256 * 1024;
+    private static final int CAM_BG = Color.parseColor("#111111");
+    private static final String RESET_LAYOUT_JS =
+        "if(window.__camScheduleLayoutResets){window.__camScheduleLayoutResets();}"
+        + "else if(window.__camResetLayout){window.__camResetLayout();}else{"
+        + "var m=document.querySelector('meta[name=viewport]');"
+        + "if(m){m.setAttribute('content','width=device-width,initial-scale=1.0,minimum-scale=1.0,maximum-scale=1.0,user-scalable=no,viewport-fit=cover');}"
+        + "var a=document.getElementById('app');"
+        + "if(a){a.style.height='';a.style.width='';a.style.transform='';a.style.marginTop='';}"
+        + "document.documentElement.style.height='';document.documentElement.style.width='';"
+        + "document.body.style.height='';document.body.style.width='';"
+        + "window.scrollTo(0,0);try{window.dispatchEvent(new Event('resize'));}catch(e){}}";
+
     private WebView webView;
+    private CamAssetLoader assetLoader;
+    private MobileEmbeddedHub embeddedHub;
     private ValueCallback<Uri[]> fileUploadCallback;
+    private int lastLayoutW = -1;
+    private int lastLayoutH = -1;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Allow file:// URIs for APK install intent
         StrictMode.VmPolicy.Builder builder = new StrictMode.VmPolicy.Builder();
         StrictMode.setVmPolicy(builder.build());
 
         Window window = getWindow();
-
-        // Draw behind system bars
         window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
-        window.setStatusBarColor(Color.TRANSPARENT);
-        window.setNavigationBarColor(Color.TRANSPARENT);
-
-        // Immersive sticky fullscreen
-        window.getDecorView().setSystemUiVisibility(
-            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-            | View.SYSTEM_UI_FLAG_FULLSCREEN
-        );
-
-        // Content extends behind system bars
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.setDecorFitsSystemWindows(false);
-        }
-
-        // Display cutout (notch) support
+        window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        window.setStatusBarColor(CAM_BG);
+        window.setNavigationBarColor(CAM_BG);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             WindowManager.LayoutParams lp = window.getAttributes();
             lp.layoutInDisplayCutoutMode =
@@ -68,18 +78,17 @@ public class MainActivity extends Activity {
             window.setAttributes(lp);
         }
 
-        // Use XML layout with match_parent WebView
         setContentView(R.layout.activity_main);
-
         WebView.setWebContentsDebuggingEnabled(true);
 
+        assetLoader = new CamAssetLoader(this, "web");
+        embeddedHub = new MobileEmbeddedHub(this);
+
         webView = findViewById(R.id.webview);
-        webView.setBackgroundColor(Color.parseColor("#111111"));
+        webView.setBackgroundColor(CAM_BG);
         webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
         webView.setVerticalScrollBarEnabled(false);
-
-        // Clear stale cache from previous APK versions
-        webView.clearCache(true);
+        webView.setHorizontalScrollBarEnabled(false);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -87,27 +96,48 @@ public class MainActivity extends Activity {
         settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
-        settings.setUseWideViewPort(true);
-        settings.setLoadWithOverviewMode(true);
         settings.setDatabaseEnabled(true);
-        settings.setAllowFileAccessFromFileURLs(true);
-        settings.setAllowUniversalAccessFromFileURLs(true);
+        settings.setSupportZoom(false);
+        settings.setBuiltInZoomControls(false);
+        settings.setDisplayZoomControls(false);
+        settings.setUseWideViewPort(true);
+        settings.setLoadWithOverviewMode(false);
+        settings.setTextZoom(100);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
-            public boolean shouldOverrideUrlLoading(WebView view, android.webkit.WebResourceRequest request) {
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                WebResourceResponse local = assetLoader.shouldInterceptRequest(request);
+                return local != null ? local : super.shouldInterceptRequest(view, request);
+            }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view,
+                    android.webkit.WebResourceRequest request) {
                 Uri uri = request.getUrl();
                 String scheme = uri.getScheme();
-                // Open http/https URLs in external browser (e.g. APK download)
                 if ("http".equals(scheme) || "https".equals(scheme)) {
-                    Intent intent = new Intent(Intent.ACTION_VIEW, uri);
-                    startActivity(intent);
+                    if (CamAssetLoader.DOMAIN.equals(uri.getHost())) {
+                        return false;
+                    }
+                    startActivity(new Intent(Intent.ACTION_VIEW, uri));
                     return true;
                 }
                 return false;
             }
 
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                view.requestFocus(View.FOCUS_DOWN);
+                resetWebLayout();
+                view.evaluateJavascript(
+                    "(function(){try{if(window.__camInstallBridge)window.__camInstallBridge();}catch(e){}})();",
+                    null);
+            }
         });
+
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public boolean onConsoleMessage(ConsoleMessage cm) {
@@ -123,9 +153,8 @@ public class MainActivity extends Activity {
                     fileUploadCallback.onReceiveValue(null);
                 }
                 fileUploadCallback = callback;
-                Intent intent = params.createIntent();
                 try {
-                    startActivityForResult(intent, FILE_CHOOSER_REQUEST);
+                    startActivityForResult(params.createIntent(), FILE_CHOOSER_REQUEST);
                 } catch (Exception e) {
                     fileUploadCallback = null;
                     return false;
@@ -134,88 +163,151 @@ public class MainActivity extends Activity {
             }
         });
 
-        // Expose native bridge to JavaScript
-        webView.addJavascriptInterface(new Object() {
-            @JavascriptInterface
-            public void restartApp(String route) {
-                runOnUiThread(() -> {
-                    Log.d(TAG, "restartApp() route=" + route);
-                    Intent intent = getPackageManager().getLaunchIntentForPackage(getPackageName());
-                    if (intent != null) {
-                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
-                        intent.putExtra("route", route != null ? route : "#/");
-                        startActivity(intent);
-                        finish();
-                        android.os.Process.killProcess(android.os.Process.myPid());
-                    }
-                });
+        webView.getViewTreeObserver().addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
+            @Override
+            public void onGlobalLayout() {
+                if (webView == null) return;
+                int w = webView.getWidth();
+                int h = webView.getHeight();
+                if (w <= 0 || h <= 0) return;
+                if (w == lastLayoutW && h == lastLayoutH) return;
+                lastLayoutW = w;
+                lastLayoutH = h;
+                resetWebLayoutOnce();
             }
+        });
 
-            @JavascriptInterface
-            public boolean installApk(String base64Data) {
-                try {
-                    byte[] apkBytes = Base64.decode(base64Data, Base64.DEFAULT);
-                    File apkFile = new File(getCacheDir(), "cam-update.apk");
-                    FileOutputStream fos = new FileOutputStream(apkFile);
-                    fos.write(apkBytes);
-                    fos.close();
-                    apkFile.setReadable(true, false);
-                    Log.d(TAG, "APK saved: " + apkFile.length() + " bytes");
+        webView.addJavascriptInterface(
+            new CamJsBridge(this, webView, embeddedHub), "CamBridge");
 
-                    Intent intent = new Intent(Intent.ACTION_VIEW);
-                    intent.setDataAndType(Uri.fromFile(apkFile),
-                            "application/vnd.android.package-archive");
-                    intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    startActivity(intent);
-                    return true;
-                } catch (Exception e) {
-                    Log.e(TAG, "installApk failed", e);
-                    return false;
-                }
-            }
-
-            @JavascriptInterface
-            public String getAppVersion() {
-                try {
-                    return getPackageManager()
-                        .getPackageInfo(getPackageName(), 0).versionName;
-                } catch (Exception e) {
-                    Log.e(TAG, "getAppVersion failed", e);
-                }
-                return "unknown";
-            }
-
-            @JavascriptInterface
-            public int getAppVersionCode() {
-                try {
-                    return getPackageManager()
-                        .getPackageInfo(getPackageName(), 0).versionCode;
-                } catch (Exception e) {
-                    Log.e(TAG, "getAppVersionCode failed", e);
-                }
-                return 0;
-            }
-        }, "CamBridge");
-
-        // Load page with route from Intent (set by restartApp) or default
         String route = getIntent().getStringExtra("route");
-        String url = "file:///android_asset/web/index.html" + (route != null ? route : "");
+        String url = CamAssetLoader.entryUrl("mobile.html");
+        if (route != null && !route.isEmpty()) {
+            url = url + (route.startsWith("#") ? route : "#" + route);
+        }
         webView.loadUrl(url);
+    }
+
+    private void notifyKeyPickError(String message) {
+        if (webView == null) return;
+        webView.evaluateJavascript(
+            "window.__camOnKeyPickError(" + JSONObject.quote(message) + ")", null);
+    }
+
+    private void notifyKeyPicked(JSONObject payload) {
+        if (webView == null) return;
+        webView.evaluateJavascript(
+            "window.__camOnKeyPicked(" + JSONObject.quote(payload.toString()) + ")", null);
+    }
+
+    private String queryDisplayName(Uri uri) {
+        String name = "private-key";
+        ContentResolver resolver = getContentResolver();
+        try (Cursor cursor = resolver.query(uri, null, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) {
+                int idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                if (idx >= 0) name = cursor.getString(idx);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "queryDisplayName failed", e);
+        }
+        return name;
+    }
+
+    private void handlePrivateKeyPick(Intent data) {
+        if (data == null || data.getData() == null) {
+            notifyKeyPickError("Import cancelled");
+            return;
+        }
+        Uri uri = data.getData();
+        try {
+            final int takeFlags = data.getFlags()
+                & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            getContentResolver().takePersistableUriPermission(uri, takeFlags);
+        } catch (Exception e) {
+            Log.w(TAG, "takePersistableUriPermission failed", e);
+        }
+
+        String label = queryDisplayName(uri);
+        File keysDir = new File(getFilesDir(), "ssh-keys");
+        if (!keysDir.exists() && !keysDir.mkdirs()) {
+            notifyKeyPickError("Could not create key storage");
+            return;
+        }
+        String safeName = label.replaceAll("[^a-zA-Z0-9._-]", "_");
+        if (safeName.isEmpty()) safeName = "private-key";
+        File dest = new File(keysDir, safeName);
+
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            if (in == null) {
+                notifyKeyPickError("Could not read selected file");
+                return;
+            }
+            byte[] buf = new byte[8192];
+            int total = 0;
+            try (OutputStream out = new FileOutputStream(dest)) {
+                int n;
+                while ((n = in.read(buf)) >= 0) {
+                    total += n;
+                    if (total > KEY_PICK_MAX_BYTES) {
+                        dest.delete();
+                        notifyKeyPickError("Key file too large");
+                        return;
+                    }
+                    if (n > 0) out.write(buf, 0, n);
+                }
+            }
+            dest.setReadable(true, true);
+            JSONObject obj = new JSONObject();
+            obj.put("path", dest.getAbsolutePath());
+            obj.put("label", label);
+            notifyKeyPicked(obj);
+        } catch (Exception e) {
+            Log.e(TAG, "handlePrivateKeyPick failed", e);
+            notifyKeyPickError(e.getMessage() != null ? e.getMessage() : "Import failed");
+        }
+    }
+
+    void resetWebLayoutPublic() {
+        resetWebLayout();
+    }
+
+    void openPrivateKeyPicker() {
+        try {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("*/*");
+            startActivityForResult(intent, CamJsBridge.keyPickRequestCode());
+        } catch (Exception e) {
+            Log.e(TAG, "pickPrivateKey failed", e);
+            notifyKeyPickError("Could not open file picker");
+        }
+    }
+
+    private void resetWebLayout() {
+        if (webView == null) return;
+        webView.evaluateJavascript(RESET_LAYOUT_JS, null);
+        webView.getSettings().setTextZoom(100);
+        webView.post(() -> {
+            webView.requestLayout();
+            webView.invalidate();
+        });
+        webView.postDelayed(this::resetWebLayoutOnce, 50);
+        webView.postDelayed(this::resetWebLayoutOnce, 200);
+        webView.postDelayed(this::resetWebLayoutOnce, 500);
+        webView.postDelayed(this::resetWebLayoutOnce, 1000);
+    }
+
+    private void resetWebLayoutOnce() {
+        if (webView == null) return;
+        webView.evaluateJavascript(RESET_LAYOUT_JS, null);
+        webView.requestLayout();
     }
 
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
-        if (hasFocus) {
-            getWindow().getDecorView().setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                | View.SYSTEM_UI_FLAG_FULLSCREEN
-            );
-        }
+        if (hasFocus) resetWebLayout();
     }
 
     @Override
@@ -238,20 +330,32 @@ public class MainActivity extends Activity {
                 fileUploadCallback.onReceiveValue(results);
                 fileUploadCallback = null;
             }
-        } else {
-            super.onActivityResult(requestCode, resultCode, data);
+            return;
         }
+        if (requestCode == KEY_PICK_REQUEST || requestCode == CamJsBridge.keyPickRequestCode()) {
+            if (resultCode == RESULT_OK) {
+                handlePrivateKeyPick(data);
+            } else {
+                notifyKeyPickError("Import cancelled");
+            }
+            return;
+        }
+        super.onActivityResult(requestCode, resultCode, data);
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         webView.onResume();
+        webView.resumeTimers();
+        webView.requestFocus(View.FOCUS_DOWN);
+        resetWebLayout();
     }
 
     @Override
     protected void onPause() {
         webView.onPause();
+        webView.pauseTimers();
         super.onPause();
     }
 

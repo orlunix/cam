@@ -906,10 +906,13 @@ export function renderRichOutput(input) {
 /* ────────────────────────────────────────────────────────────────── */
 
 const OUTPUT_MODE_KEY = 'cam_desktop_output_mode'; // 'plain' | 'rich' | 'terminal' | 'browse'
-const OUTPUT_MODE_DEFAULT = 'rich';
+const OUTPUT_MODE_DEFAULT_KEY = 'cam_desktop_output_mode_default_v2';
+const OUTPUT_MODE_DEFAULT = 'terminal';
 export const OUTPUT_HISTORY_INITIAL_LINES = 200;
 export const OUTPUT_HISTORY_STEPS = [200, 1000, 2000, 4000, 8000];
 const TERMINAL_AGENT_STATUSES = new Set(['completed', 'failed', 'timeout', 'killed']);
+const TERMINAL_MIN_NOTIFY_COLS = 40;
+const TERMINAL_MIN_NOTIFY_WIDTH = 320;
 
 /* ─────────── Browse v1: language detection + highlighter ───────────
  *
@@ -1325,6 +1328,8 @@ export function mountAgentConsole({ api, state, showToast }) {
   let historyStatusText = '';
   let historyStatusKind = 'info';
   let historyStatusTimer = null;
+  const TERMINAL_CACHE_LIMIT = 6;
+  const terminalSessions = new Map(); // agentId -> { term, fit, container, sessionId, opening, lastUsed, hasConnected }
   let term = null;
   let termFit = null;
   let termSessionId = null;
@@ -1334,6 +1339,11 @@ export function mountAgentConsole({ api, state, showToast }) {
   let termUnsubStatus = null;
   let termResizeObserver = null;
   let termThemeObserver = null;
+  let terminalAttachBtn = null;
+  let terminalAttachHint = null;
+  let terminalAttachStatus = null;
+  let terminalAttachStatusTimer = null;
+  let filePickMode = 'composer';
   // Workspace Browser (CAM-DESK-FILE-010..017) state. browseAgentId
   // tracks which agent we last loaded; switching agents resets the
   // path back to root. browseInflight is a guard against double
@@ -1362,6 +1372,14 @@ export function mountAgentConsole({ api, state, showToast }) {
 
   function readOutputMode() {
     try {
+      // One-time migration: existing installs often persisted Rich as the
+      // prior default. Move them to Terminal once; after that, preserve
+      // whatever mode the user explicitly chooses.
+      if (localStorage.getItem(OUTPUT_MODE_DEFAULT_KEY) !== 'terminal') {
+        localStorage.setItem(OUTPUT_MODE_DEFAULT_KEY, 'terminal');
+        localStorage.setItem(OUTPUT_MODE_KEY, OUTPUT_MODE_DEFAULT);
+        return OUTPUT_MODE_DEFAULT;
+      }
       const v = localStorage.getItem(OUTPUT_MODE_KEY);
       return (v === 'plain' || v === 'rich' || v === 'terminal' || v === 'browse') ? v : OUTPUT_MODE_DEFAULT;
     } catch { return OUTPUT_MODE_DEFAULT; }
@@ -1540,9 +1558,9 @@ export function mountAgentConsole({ api, state, showToast }) {
   function syncModeToggle() {
     const terminalAllowed = canUseTerminalMode();
     if (outputMode === 'terminal' && !terminalAllowed) {
-      outputMode = OUTPUT_MODE_DEFAULT;
+      outputMode = 'rich';
       try { localStorage.setItem(OUTPUT_MODE_KEY, outputMode); } catch {}
-      void closeTerminalSession();
+      void closeAllTerminalSessions();
     }
     modeBtns.forEach(b => {
       const active = b.dataset.mode === outputMode;
@@ -1583,10 +1601,57 @@ export function mountAgentConsole({ api, state, showToast }) {
       outputEl.removeAttribute('hidden');
       if (composer) composer.hidden = false;
     }
+    updateTerminalAttachControls();
   }
 
   function termBridge() {
     return window.CamBridge && window.CamBridge.term ? window.CamBridge.term : null;
+  }
+
+  function attachmentBridge() {
+    return window.CamBridge && window.CamBridge.files
+      ? window.CamBridge.files
+      : null;
+  }
+
+  async function pasteTerminalClipboardText(entry) {
+    const bridge = attachmentBridge();
+    if (!bridge || typeof bridge.readClipboardText !== 'function') {
+      setTerminalAttachStatus('Clipboard paste is unavailable in this build.', 'error');
+      return;
+    }
+    try {
+      const r = await bridge.readClipboardText();
+      if (r && r.ok) {
+        const text = typeof r.text === 'string' ? r.text : '';
+        if (text) {
+          if (entry && entry.term && typeof entry.term.paste === 'function') entry.term.paste(text);
+          return;
+        }
+      }
+      if (!bridge.readClipboardAttachments) {
+        setTerminalAttachStatus('Clipboard has no text. Use Attach for files/images.', 'info');
+        return;
+      }
+      setTerminalAttachStatus('Reading clipboard attachment...', 'info');
+      const picked = await bridge.readClipboardAttachments();
+      if (!picked || !picked.ok || !picked.files || !picked.files.length) {
+        const msg = picked && (picked.detail || picked.error) || 'clipboard has no text/file/image';
+        setTerminalAttachStatus(`Paste ignored: ${msg}`, 'info');
+        return;
+      }
+      for (let i = 0; i < picked.files.length; i++) {
+        const f = picked.files[i];
+        const progressText = picked.files.length > 1
+          ? `Uploading clipboard file ${i + 1}/${picked.files.length}: ${f.filename}...`
+          : `Uploading clipboard file: ${f.filename}...`;
+        // eslint-disable-next-line no-await-in-loop
+        await uploadBase64AndSend(f.filename, f.data, { progressText, delivery: 'terminal' });
+      }
+    } catch (e) {
+      const msg = e && e.message || String(e);
+      setTerminalAttachStatus(`Paste failed: ${msg}`, 'error');
+    }
   }
 
   function writeTerminalStatus(text) {
@@ -1599,6 +1664,13 @@ export function mountAgentConsole({ api, state, showToast }) {
       const v = getComputedStyle(document.body).getPropertyValue(name).trim();
       return v || fallback;
     } catch { return fallback; }
+  }
+
+  function terminalFontSizeFromCss() {
+    const raw = cssVar('--output-font-size', '13px');
+    const n = Number.parseFloat(String(raw).replace('px', ''));
+    if (!Number.isFinite(n)) return 13;
+    return Math.max(10, Math.min(22, n));
   }
 
   function terminalThemeFromCss() {
@@ -1627,16 +1699,39 @@ export function mountAgentConsole({ api, state, showToast }) {
     };
   }
 
-  function applyTerminalTheme() {
+  function syncActiveTerminalEntry(agentId) {
+    const ent = agentId ? terminalSessions.get(agentId) : null;
+    term = ent ? ent.term : null;
+    termFit = ent ? ent.fit : null;
+    termSessionId = ent ? ent.sessionId : null;
+    termAgentId = ent ? ent.agentId : null;
+    termOpening = ent ? !!ent.opening : false;
+    updateTerminalAttachControls();
+    return ent || null;
+  }
+
+  function terminalEntryBySession(sessionId) {
+    for (const ent of terminalSessions.values()) {
+      if (ent && ent.sessionId === sessionId) return ent;
+    }
+    return null;
+  }
+
+  function applyTerminalAppearance() {
     const theme = terminalThemeFromCss();
+    const fontSize = terminalFontSizeFromCss();
     if (terminalEl) terminalEl.style.background = theme.background;
-    if (term) term.options.theme = theme;
+    for (const ent of terminalSessions.values()) {
+      if (!ent.term) continue;
+      ent.term.options.theme = theme;
+      ent.term.options.fontSize = fontSize;
+    }
   }
 
   function ensureTerminalThemeObserver() {
     if (termThemeObserver || !window.MutationObserver || !document.body) return;
     termThemeObserver = new MutationObserver(() => {
-      applyTerminalTheme();
+      applyTerminalAppearance();
       scheduleTerminalFit();
     });
     termThemeObserver.observe(document.body, {
@@ -1645,92 +1740,306 @@ export function mountAgentConsole({ api, state, showToast }) {
     });
   }
 
-  function fitTerminalAndNotify() {
-    if (!term || !termFit) return;
-    try { termFit.fit(); } catch (_) {}
-    if (termSessionId) {
-      const bridge = termBridge();
-      if (bridge) bridge.resize({ sessionId: termSessionId, cols: term.cols, rows: term.rows });
-    }
+  function terminalMeasuredCellSize(ent) {
+    const fontSize = terminalFontSizeFromCss();
+    try {
+      const cell = ent && ent.term && ent.term._core
+        && ent.term._core._renderService
+        && ent.term._core._renderService.dimensions
+        && ent.term._core._renderService.dimensions.css
+        && ent.term._core._renderService.dimensions.css.cell;
+      if (cell && cell.width > 0 && cell.height > 0) {
+        return { width: cell.width, height: cell.height };
+      }
+    } catch (_) {}
+    return { width: Math.max(6, fontSize * 0.62), height: Math.max(12, fontSize * 1.35) };
   }
 
-  function scheduleTerminalFit() {
-    if (!term || outputMode !== 'terminal') return;
+  function recoverTinyTerminalSize(ent, rect) {
+    if (!ent || !ent.term || !rect || rect.width < TERMINAL_MIN_NOTIFY_WIDTH) return;
+    const currentCols = Number(ent.term.cols) || 0;
+    const currentRows = Number(ent.term.rows) || 0;
+    const cell = terminalMeasuredCellSize(ent);
+    const desiredCols = Math.max(80, Math.floor(rect.width / cell.width));
+    const desiredRows = Math.max(20, Math.floor(Math.max(rect.height, 240) / cell.height));
+    if (currentCols >= TERMINAL_MIN_NOTIFY_COLS && currentCols >= desiredCols - 4 && currentRows >= 4) return;
+    try { ent.term.resize(desiredCols, desiredRows); } catch (_) {}
+    try { ent.term.refresh && ent.term.refresh(0, Math.max(0, desiredRows - 1)); } catch (_) {}
+  }
+  function fitTerminalAndNotify(ent = syncActiveTerminalEntry(termAgentId)) {
+    if (!ent || !ent.term) return false;
+    try { ent.fit && ent.fit.fit(); } catch (_) {}
+    const rect = ent.container && ent.container.getBoundingClientRect
+      ? ent.container.getBoundingClientRect()
+      : { width: 0, height: 0 };
+    recoverTinyTerminalSize(ent, rect);
+    const cols = Number(ent.term.cols) || 0;
+    const rows = Number(ent.term.rows) || 0;
+    // Guard against hidden/half-laid-out panes reporting tiny dimensions
+    // during agent switches. Propagating that to ssh2 setWindow shrinks
+    // the remote tmux client to ~10 columns. Wait for the delayed fit pass
+    // instead of poisoning the server-side PTY size.
+    if (rect.width < TERMINAL_MIN_NOTIFY_WIDTH || cols < TERMINAL_MIN_NOTIFY_COLS || rows < 4) {
+      return false;
+    }
+    ent.lastCols = cols;
+    ent.lastRows = rows;
+    if (ent.sessionId) {
+      const bridge = termBridge();
+      if (bridge) bridge.resize({ sessionId: ent.sessionId, cols, rows });
+    }
+    return true;
+  }
+
+  function terminalScrollToBottom(ent) {
+    if (!ent || !ent.term) return;
+    try { ent.term.scrollToBottom(); } catch (_) {}
+    ent.needsBottom = false;
+  }
+
+  function terminalShouldForceBottom(ent) {
+    if (!ent) return false;
+    return ent.needsBottom || (ent.forceBottomUntil && Date.now() < ent.forceBottomUntil);
+  }
+
+  function terminalEntryCanAutoResize(ent) {
+    if (!ent || !ent.container) return false;
+    if (outputMode !== 'terminal') return false;
+    if (ent.agentId !== termAgentId) return false;
+    if (ent.container.hidden) return false;
+    if (ent.container.style.visibility === 'hidden') return false;
+    return true;
+  }
+
+  function scheduleTerminalFit(opts = {}) {
+    if (outputMode !== 'terminal') return;
+    const ent = syncActiveTerminalEntry(termAgentId || selectedAgent()?.id);
+    if (!ent || !ent.term) return;
+    const keepBottom = !!(opts && opts.keepBottom);
     const raf = window.requestAnimationFrame || ((fn) => window.setTimeout(fn, 0));
+    const pass = () => {
+      fitTerminalAndNotify(ent);
+      if (keepBottom) terminalScrollToBottom(ent);
+    };
     raf(() => {
-      fitTerminalAndNotify();
-      raf(fitTerminalAndNotify);
+      pass();
+      raf(pass);
+      window.setTimeout(pass, 80);
+      window.setTimeout(pass, 220);
     });
   }
 
-  function ensureTerminal() {
-    if (!terminalEl) return false;
-    if (term) return true;
+  function hideTerminalEntries() {
+    for (const ent of terminalSessions.values()) {
+      if (ent.container) ent.container.hidden = true;
+    }
+  }
+
+  function showTerminalEntry(agentId, opts = {}) {
+    const ent = syncActiveTerminalEntry(agentId);
+    hideTerminalEntries();
+    if (ent) {
+      ent.lastUsed = Date.now();
+      if (opts.keepBottom !== false) {
+        ent.needsBottom = true;
+        ent.forceBottomUntil = Date.now() + 1200;
+        terminalScrollToBottom(ent);
+      }
+      scheduleTerminalFit({ keepBottom: opts.keepBottom !== false });
+      if (ent.container) {
+        ent.container.hidden = false;
+        ent.container.style.visibility = '';
+      }
+      try { ent.term && ent.term.focus(); } catch (_) {}
+    }
+    return ent;
+  }
+
+  function prepareThenShowTerminalEntry(agentId, delay = 80) {
+    const ent = syncActiveTerminalEntry(agentId);
+    hideTerminalEntries();
+    if (!ent || !ent.container) return ent || null;
+    // xterm-fit needs a laid-out element. Use visibility:hidden instead of
+    // hidden/display:none so the browser computes the real width but the user
+    // does not see the stale narrow buffer before resize completes.
+    ent.container.hidden = false;
+    ent.container.style.visibility = 'hidden';
+    fitTerminalAndNotify(ent);
+    scheduleTerminalFit({ keepBottom: true });
+    window.setTimeout(() => {
+      if (outputMode === 'terminal' && selectedAgent()?.id === agentId) {
+        showTerminalEntry(agentId, { keepBottom: true });
+      }
+    }, delay);
+    return ent;
+  }
+
+  function createTerminalEntry(agent) {
+    if (!terminalEl || !agent) return null;
+    const existing = terminalSessions.get(agent.id);
+    if (existing) return existing;
     const TermCtor = window.Terminal;
     if (!TermCtor) {
       terminalEl.textContent = 'Terminal renderer is unavailable: xterm.js was not loaded.';
-      return false;
+      return null;
     }
-    term = new TermCtor({
-      cursorBlink: true,
-      convertEol: false,
-      scrollback: 5000,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-      fontSize: 12,
-      theme: terminalThemeFromCss(),
-    });
+    const container = document.createElement('div');
+    container.className = 'agent-terminal-pane';
+    container.dataset.agentId = agent.id;
+    terminalEl.appendChild(container);
+    const entry = {
+      agentId: agent.id,
+      container,
+      term: new TermCtor({
+        cursorBlink: true,
+        convertEol: false,
+        scrollback: 5000,
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+        fontSize: terminalFontSizeFromCss(),
+        theme: terminalThemeFromCss(),
+      }),
+      fit: null,
+      sessionId: null,
+      opening: false,
+      lastUsed: Date.now(),
+      hasConnected: false,
+      needsBottom: true,
+      forceBottomUntil: 0,
+    };
     const FitCtor = window.FitAddon && window.FitAddon.FitAddon;
     if (FitCtor) {
-      termFit = new FitCtor();
-      term.loadAddon(termFit);
+      entry.fit = new FitCtor();
+      entry.term.loadAddon(entry.fit);
     }
-    term.open(terminalEl);
-    applyTerminalTheme();
+    entry.term.open(container);
+    entry.term.attachCustomKeyEventHandler((ev) => {
+      if (!ev || ev.type !== 'keydown') return true;
+      if (!ev.ctrlKey || ev.shiftKey || ev.altKey || ev.metaKey) return true;
+      if (String(ev.key || '').toLowerCase() !== 'v') return true;
+      ev.preventDefault();
+      ev.stopPropagation();
+      void pasteTerminalClipboardText(entry);
+      return false;
+    });
+    entry.term.onData((data) => {
+      const bridge = termBridge();
+      if (!bridge || !entry.sessionId) return;
+      bridge.input({ sessionId: entry.sessionId, data });
+    });
+    entry.term.onResize(({ cols, rows }) => {
+      const bridge = termBridge();
+      if (!bridge || !entry.sessionId) return;
+      if (!terminalEntryCanAutoResize(entry)) return;
+      if ((Number(cols) || 0) < TERMINAL_MIN_NOTIFY_COLS || (Number(rows) || 0) < 4) return;
+      bridge.resize({ sessionId: entry.sessionId, cols, rows });
+    });
+    terminalSessions.set(agent.id, entry);
+    applyTerminalAppearance();
     ensureTerminalThemeObserver();
-    term.onData((data) => {
-      const bridge = termBridge();
-      if (!bridge || !termSessionId) return;
-      bridge.input({ sessionId: termSessionId, data });
-    });
-    term.onResize(({ cols, rows }) => {
-      const bridge = termBridge();
-      if (!bridge || !termSessionId) return;
-      bridge.resize({ sessionId: termSessionId, cols, rows });
-    });
-    if (window.ResizeObserver && terminalEl) {
-      termResizeObserver = new ResizeObserver(() => scheduleTerminalFit());
-      termResizeObserver.observe(terminalEl);
-    } else {
-      window.addEventListener('resize', scheduleTerminalFit);
+    return entry;
+  }
+
+  function ensureTerminal(agent = selectedAgent()) {
+    if (!terminalEl || !agent) return false;
+    if (!window.Terminal) {
+      terminalEl.textContent = 'Terminal renderer is unavailable: xterm.js was not loaded.';
+      return false;
     }
-    return true;
+    const ent = createTerminalEntry(agent);
+    if (!termResizeObserver) {
+      if (window.ResizeObserver) {
+        termResizeObserver = new ResizeObserver(() => scheduleTerminalFit());
+        termResizeObserver.observe(terminalEl);
+      } else {
+        window.addEventListener('resize', scheduleTerminalFit);
+        termResizeObserver = { disconnect() { window.removeEventListener('resize', scheduleTerminalFit); } };
+      }
+    }
+    return !!ent;
   }
 
   function setupTerminalEvents() {
     const bridge = termBridge();
     if (!bridge || termUnsubData || termUnsubStatus) return;
     termUnsubData = bridge.onData((msg) => {
-      if (!msg || msg.sessionId !== termSessionId || !term) return;
-      term.write(String(msg.data || ''));
+      if (!msg) return;
+      const ent = terminalEntryBySession(msg.sessionId);
+      if (!ent || !ent.term) return;
+      const shouldFollow = ent.agentId === termAgentId || terminalShouldForceBottom(ent);
+      ent.term.write(String(msg.data || ''), () => {
+        if (shouldFollow || terminalShouldForceBottom(ent)) terminalScrollToBottom(ent);
+      });
     });
     termUnsubStatus = bridge.onStatus((msg) => {
-      if (!msg || msg.sessionId !== termSessionId) return;
+      if (!msg) return;
+      const ent = terminalEntryBySession(msg.sessionId);
+      if (!ent) return;
       if (msg.kind === 'closed') {
         const suffix = msg.error ? `: ${msg.error}` : (msg.code != null ? ` (exit ${msg.code})` : '');
-        writeTerminalStatus(`terminal detached${suffix}`);
-        termSessionId = null;
+        try { ent.term.write(`\r\n\x1b[2mterminal detached${suffix}\x1b[0m\r\n`); } catch (_) {}
+        ent.sessionId = null;
+        ent.opening = false;
+        if (termAgentId === ent.agentId) syncActiveTerminalEntry(ent.agentId);
       }
     });
   }
 
-  async function closeTerminalSession() {
+  async function closeTerminalSession(agentId = termAgentId) {
+    const ent = agentId ? terminalSessions.get(agentId) : null;
+    if (!ent) return;
     const bridge = termBridge();
-    const sid = termSessionId;
-    termSessionId = null;
-    termAgentId = null;
-    termOpening = false;
+    const sid = ent.sessionId;
+    terminalSessions.delete(agentId);
+    if (ent.container) {
+      try { ent.container.remove(); } catch (_) {}
+    }
+    try { ent.term && ent.term.dispose(); } catch (_) {}
+    ent.sessionId = null;
+    ent.opening = false;
     if (bridge && sid) {
       try { await bridge.close({ sessionId: sid }); } catch (_) {}
+    }
+    if (termAgentId === agentId) syncActiveTerminalEntry(null);
+    updateTerminalAttachControls();
+  }
+
+  async function detachTerminalSession(agentId) {
+    const ent = agentId ? terminalSessions.get(agentId) : null;
+    if (!ent || !ent.sessionId) return;
+    const bridge = termBridge();
+    const sid = ent.sessionId;
+    ent.sessionId = null;
+    ent.opening = false;
+    if (bridge && sid) {
+      try { await bridge.close({ sessionId: sid }); } catch (_) {}
+    }
+    if (termAgentId === agentId) syncActiveTerminalEntry(agentId);
+    updateTerminalAttachControls();
+  }
+
+  async function detachInactiveTerminalSessions(activeAgentId) {
+    const ids = [...terminalSessions.keys()].filter(id => id !== activeAgentId);
+    for (const id of ids) {
+      // eslint-disable-next-line no-await-in-loop
+      await detachTerminalSession(id);
+    }
+  }
+
+  async function closeAllTerminalSessions() {
+    const ids = [...terminalSessions.keys()];
+    for (const id of ids) {
+      // eslint-disable-next-line no-await-in-loop
+      await closeTerminalSession(id);
+    }
+  }
+
+  async function evictTerminalCacheIfNeeded(activeAgentId) {
+    const live = [...terminalSessions.values()].filter(ent => ent.agentId !== activeAgentId);
+    live.sort((a, b) => (a.lastUsed || 0) - (b.lastUsed || 0));
+    while (terminalSessions.size > TERMINAL_CACHE_LIMIT && live.length) {
+      const ent = live.shift();
+      // eslint-disable-next-line no-await-in-loop
+      await closeTerminalSession(ent.agentId);
     }
   }
 
@@ -1738,7 +2047,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     const force = !!(opts && opts.force);
     const agent = selectedAgent();
     if (!agent) {
-      if (term) term.clear();
+      syncActiveTerminalEntry(null);
       return;
     }
     const bridge = termBridge();
@@ -1746,39 +2055,56 @@ export function mountAgentConsole({ api, state, showToast }) {
       if (terminalEl) terminalEl.textContent = 'Terminal bridge is unavailable.';
       return;
     }
-    if (!ensureTerminal()) return;
+    if (!ensureTerminal(agent)) return;
     setupTerminalEvents();
-    scheduleTerminalFit();
-    if (!force && (termOpening || (termSessionId && termAgentId === agent.id))) {
-      term.focus();
+    let ent = terminalSessions.get(agent.id);
+    if (!ent) return;
+    // Keep recently used terminal channels live for near-instant switching.
+    // Each agent owns a separate tmux session, so hidden attached clients do
+    // not constrain the visible agent's pane size. Cache eviction below closes
+    // the least recently used sessions once the live limit is exceeded.
+    if (force && ent.sessionId) {
+      await closeTerminalSession(agent.id);
+      if (!ensureTerminal(agent)) return;
+      ent = terminalSessions.get(agent.id);
+    }
+    if (!force && (ent.opening || ent.sessionId)) {
+      prepareThenShowTerminalEntry(agent.id);
       return;
     }
-    await closeTerminalSession();
-    termAgentId = agent.id;
-    termOpening = true;
-    term.clear();
-    term.write(`\x1b[2mConnecting terminal to ${agent.task_name || agent.id}...\x1b[0m\r\n`);
+    prepareThenShowTerminalEntry(agent.id, 120);
+    ent.opening = true;
+    syncActiveTerminalEntry(agent.id);
+    if (!ent.hasConnected) ent.term.clear();
+    setTerminalAttachStatus(`Connecting terminal to ${agent.task_name || agent.id}...`, 'info', 0);
     try {
-      const res = await bridge.open({ agentId: agent.id, cols: term.cols || 100, rows: term.rows || 30 });
-      if (outputMode !== 'terminal' || selectedAgent()?.id !== agent.id) {
-        if (res && res.ok && res.sessionId) await bridge.close({ sessionId: res.sessionId });
-        return;
-      }
+      fitTerminalAndNotify(ent);
+      const openCols = Math.max(80, Number(ent.lastCols || ent.term.cols) || 100);
+      const openRows = Math.max(20, Number(ent.lastRows || ent.term.rows) || 30);
+      const res = await bridge.open({ agentId: agent.id, cols: openCols, rows: openRows });
       if (!res || !res.ok) {
-        term.write(`\r\n\x1b[31mTerminal attach failed: ${res && (res.detail || res.error) || 'unknown'}\x1b[0m\r\n`);
-        termSessionId = null;
+        ent.term.write(`\r\n\x1b[31mTerminal attach failed: ${res && (res.detail || res.error) || 'unknown'}\x1b[0m\r\n`);
+        ent.sessionId = null;
         return;
       }
-      termSessionId = res.sessionId;
-      termOpening = false;
-      term.write('\x1b[2mAttached. Type directly in this terminal.\x1b[0m\r\n');
-      scheduleTerminalFit();
-      term.focus();
+      ent.sessionId = res.sessionId;
+      ent.opening = false;
+      ent.lastUsed = Date.now();
+      ent.hasConnected = true;
+      setTerminalAttachStatus(res.reused ? 'Terminal session ready.' : 'Terminal attached.', 'ok');
+      if (outputMode === 'terminal' && selectedAgent()?.id === agent.id) {
+        showTerminalEntry(agent.id, { keepBottom: true });
+        scheduleTerminalFit({ keepBottom: true });
+        ent.term.focus();
+      }
+      await evictTerminalCacheIfNeeded(agent.id);
     } catch (e) {
-      term.write(`\r\n\x1b[31mTerminal attach failed: ${e && e.message || e}\x1b[0m\r\n`);
-      termSessionId = null;
+      ent.term.write(`\r\n\x1b[31mTerminal attach failed: ${e && e.message || e}\x1b[0m\r\n`);
+      ent.sessionId = null;
     } finally {
-      termOpening = false;
+      ent.opening = false;
+      if (termAgentId === ent.agentId || selectedAgent()?.id === ent.agentId) syncActiveTerminalEntry(ent.agentId);
+      updateTerminalAttachControls();
     }
   }
 
@@ -1807,7 +2133,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       if (next === 'terminal') {
         stopPolling();
         setEnabled(false);
-        void openTerminalForSelected({ force: true });
+        void openTerminalForSelected();
       }
       if (next === 'browse') {
         // Re-clicking Browse refreshes the current directory.
@@ -1819,9 +2145,6 @@ export function mountAgentConsole({ api, state, showToast }) {
     outputMode = next;
     try { localStorage.setItem(OUTPUT_MODE_KEY, outputMode); } catch {}
     syncModeToggle();
-    if (prevMode === 'terminal' && outputMode !== 'terminal') {
-      void closeTerminalSession();
-    }
     if (outputMode === 'terminal') {
       stopPolling();
       setEnabled(false);
@@ -1853,6 +2176,9 @@ export function mountAgentConsole({ api, state, showToast }) {
         startOutputLoadingTimer('Loading');
         void loadOutput({ viaPoll: false });
       }
+      const agent = selectedAgent();
+      setEnabled(!!agent && isActiveStatus(agent.status) && isAgentsMode());
+      startPolling(agent);
       updateHistoryControls();
     }
   }
@@ -1879,6 +2205,17 @@ export function mountAgentConsole({ api, state, showToast }) {
     renderHeader(agent);
 
     if (!agent) {
+      if (outputMode === 'terminal') {
+        syncModeToggle();
+        for (const ent of terminalSessions.values()) {
+          if (ent.container) ent.container.hidden = true;
+        }
+        syncActiveTerminalEntry(null);
+        setEnabled(false);
+        stopPolling();
+        updateHistoryControls();
+        return;
+      }
       // Browse owns its own pane DOM. The shared `renderPlaceholder`
       // path would call `activePane().textContent = …` which, when
       // `outputMode === 'browse'`, points at `#agent-browse` and
@@ -1913,7 +2250,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       syncModeToggle();
       setEnabled(false);
       stopPolling();
-      void openTerminalForSelected({ force: true });
+      void openTerminalForSelected();
       updateHistoryControls();
       return;
     }
@@ -1997,11 +2334,13 @@ export function mountAgentConsole({ api, state, showToast }) {
     } catch (e) {
       if (api.mode !== 'disconnected') console.warn('agentOutput failed:', e);
       const relayTimeout = isRelayRequestTimeout(e);
+      const fetchFailed = String(e?.message || e || '').toLowerCase().includes('failed to fetch');
       if (activePane().textContent.startsWith('Loading') ||
           activePane().textContent.startsWith('Waiting for output') ||
           activePane().textContent.startsWith('Waiting for relay output')) {
-        if (relayTimeout) {
-          startOutputLoadingTimer('Waiting for relay output');
+        if (relayTimeout || fetchFailed) {
+          startOutputLoadingTimer(api.mode === 'relay' ? 'Waiting for relay output' : 'Waiting for output');
+          setUploadStatus(fetchFailed ? 'Output refresh failed; retrying...' : '');
         } else {
           clearOutputLoadingTimer();
           clearFetchStatusTimer();
@@ -2200,6 +2539,10 @@ export function mountAgentConsole({ api, state, showToast }) {
       + '<button type="button" class="output-more-history" hidden '
       +   'aria-live="polite" '
       +   'title="Fetch more content from the tmux buffer">More +</button>'
+      + '<button type="button" class="terminal-attach-btn" hidden '
+      +   'title="Attach a file/image to this terminal session">Attach</button>'
+      + '<div class="terminal-attach-hint" hidden>Attach files/images here. Ctrl+V stays native text paste.</div>'
+      + '<div class="terminal-attach-status" hidden aria-live="polite"></div>'
       + '<button type="button" class="output-jump-bottom" hidden '
       +   'title="Jump to bottom and resume auto-follow">'
       +   '<span aria-hidden="true">&#x2913;</span>'
@@ -2208,8 +2551,18 @@ export function mountAgentConsole({ api, state, showToast }) {
       + '<div class="output-send-status" hidden aria-live="polite"></div>';
     outputWrap.appendChild(controls);
     moreHistoryBtn = controls.querySelector('.output-more-history');
+    terminalAttachBtn = controls.querySelector('.terminal-attach-btn');
+    terminalAttachHint = controls.querySelector('.terminal-attach-hint');
+    terminalAttachStatus = controls.querySelector('.terminal-attach-status');
     jumpBottomBtn = controls.querySelector('.output-jump-bottom');
     sendStatusPill = controls.querySelector('.output-send-status');
+
+    if (terminalAttachBtn) {
+      terminalAttachBtn.addEventListener('click', () => {
+        if (terminalAttachBtn.disabled) return;
+        void pickAndUploadTerminalAttachment();
+      });
+    }
 
     if (moreHistoryBtn) {
       moreHistoryBtn.addEventListener('click', () => {
@@ -2240,6 +2593,48 @@ export function mountAgentConsole({ api, state, showToast }) {
     return pane.scrollTop <= 30;
   }
 
+  function setTerminalAttachStatus(text, kind = 'info', ttl = 4000) {
+    if (terminalAttachStatusTimer) {
+      clearTimeout(terminalAttachStatusTimer);
+      terminalAttachStatusTimer = null;
+    }
+    if (!terminalAttachStatus) return;
+    terminalAttachStatus.textContent = text || '';
+    terminalAttachStatus.classList.remove('is-error', 'is-ok', 'is-info');
+    if (text) {
+      terminalAttachStatus.classList.add(kind === 'error' ? 'is-error' : (kind === 'ok' ? 'is-ok' : 'is-info'));
+      terminalAttachStatus.hidden = false;
+      if (terminalAttachHint) terminalAttachHint.hidden = true;
+      if (ttl > 0) {
+        terminalAttachStatusTimer = setTimeout(() => {
+          terminalAttachStatus.textContent = '';
+          terminalAttachStatus.hidden = true;
+          terminalAttachStatusTimer = null;
+          updateTerminalAttachControls();
+        }, ttl);
+      }
+    } else {
+      terminalAttachStatus.hidden = true;
+      updateTerminalAttachControls();
+    }
+  }
+
+  function updateTerminalAttachControls() {
+    const show = outputMode === 'terminal' && isAgentsMode() && !!selectedAgent() && canUseTerminalMode();
+    if (terminalAttachBtn) {
+      terminalAttachBtn.hidden = !show;
+      terminalAttachBtn.disabled = !show || !isConnected() || termOpening || !termSessionId;
+    }
+    if (terminalAttachHint) {
+      const statusVisible = terminalAttachStatus && !terminalAttachStatus.hidden;
+      terminalAttachHint.hidden = !show || statusVisible;
+    }
+    if (!show && terminalAttachStatus) {
+      terminalAttachStatus.hidden = true;
+      terminalAttachStatus.textContent = '';
+    }
+  }
+
   function updateHistoryControls() {
     // Browse is a workspace file pane, not a tmux capture stream —
     // the history affordances (More+, Loading…, No more, Jump to
@@ -2248,8 +2643,10 @@ export function mountAgentConsole({ api, state, showToast }) {
     if (outputMode === 'terminal' || outputMode === 'browse') {
       if (moreHistoryBtn) moreHistoryBtn.hidden = true;
       if (jumpBottomBtn) jumpBottomBtn.hidden = true;
+      updateTerminalAttachControls();
       return;
     }
+    updateTerminalAttachControls();
     const agent = selectedAgent();
     const pane = activePane();
     const atTop = paneIsAtTop(pane);
@@ -2388,53 +2785,89 @@ export function mountAgentConsole({ api, state, showToast }) {
     return `pasted-image-${ts}${suffix}.${ext}`;
   }
 
-  // Single-file upload helper used by both the paperclip click path and
-  // the paste-to-attach path. Returns a promise that resolves whether
-  // the upload succeeded or failed — the caller (sequential loop for
-  // paste) does not need to branch. Status text and toasts are updated
-  // here; typed composer text is never touched (CAM-DESK-INP-013).
-  async function uploadFileAndSend(file, { displayName, progressText } = {}) {
+  function attachmentReference(path) {
+    return ` [attached: ${String(path || '').trim()}] `;
+  }
+
+  const UPLOAD_RAW_MAX_BYTES = 18 * 1024 * 1024;
+
+  function uploadFormatBytes(bytes) {
+    const n = Number(bytes) || 0;
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function base64RawBytes(b64) {
+    const s = String(b64 || '');
+    if (!s) return 0;
+    const pad = s.endsWith('==') ? 2 : (s.endsWith('=') ? 1 : 0);
+    return Math.max(0, Math.floor((s.length * 3) / 4) - pad);
+  }
+
+  async function uploadBase64AndSend(filename, b64, { progressText, delivery = 'composer' } = {}) {
     const agent = selectedAgent();
-    if (!agent || !file) return { ok: false, error: 'no_agent_or_file' };
+    const terminalDelivery = delivery === 'terminal';
+    const setStatus = terminalDelivery ? setTerminalAttachStatus : setUploadStatus;
+    if (!agent || !filename || !b64) return { ok: false, error: 'missing_attachment' };
     if (!isAgentsMode() || !isConnected()) {
-      setUploadStatus('Cannot upload: agent not active or disconnected.', 'is-error');
+      setStatus('Cannot upload: agent not active or disconnected.', terminalDelivery ? 'error' : 'is-error');
       return { ok: false, error: 'not_active' };
     }
-    const filename = displayName || file.name || generatePastedFilename(file.type);
+    if (terminalDelivery && (!termBridge() || !termSessionId)) {
+      setStatus('Cannot attach: terminal is not connected yet.', 'error');
+      return { ok: false, error: 'terminal_not_connected' };
+    }
+    const rawBytes = base64RawBytes(b64);
+    if (rawBytes > UPLOAD_RAW_MAX_BYTES) {
+      const msg = `Upload skipped: ${filename} is ${uploadFormatBytes(rawBytes)}; max ${uploadFormatBytes(UPLOAD_RAW_MAX_BYTES)}.`;
+      setStatus(msg, terminalDelivery ? 'error' : 'is-error');
+      return { ok: false, error: 'too_large', detail: msg };
+    }
     if (attachBtn) attachBtn.disabled = true;
-    setUploadStatus(progressText || `Uploading ${filename}…`);
+    if (terminalAttachBtn) terminalAttachBtn.disabled = true;
+    setStatus(progressText || `Uploading ${filename}...`);
     try {
       // CAM-DESK-INP-015: only the user-chosen filename + base64 bytes
       // leave the browser. We never serialize a local filesystem path.
-      const b64 = await fileToBase64(file);
       const resp = await api.uploadFile(agent.id, filename, b64);
       bumpAndRefreshUserActivity(agent.id);
-      // CAM-DESK-INP-012: send the returned workspace path (matching
-      // mobile behavior: send without Enter so the agent sees just the
-      // path string and the user can wrap it with prose if they want).
-      if (resp && resp.path) {
+      const path = resp && resp.path;
+      const ref = path ? attachmentReference(path) : '';
+      if (path && terminalDelivery) {
+        const bridge = termBridge();
+        await bridge.input({ sessionId: termSessionId, data: ref });
+        setStatus(`Attached ${filename} -> ${path}`, 'ok');
+        if (term) term.focus();
+      } else if (path) {
+        // CAM-DESK-INP-012: send the returned workspace path wrapped in
+        // a lightweight attachment marker. The spaces prevent it from
+        // sticking to adjacent user text, and send_enter=false lets the
+        // agent/user decide how to use it.
         startFetchStatusTimer('Sending');
         try {
-          await api.sendInput(agent.id, resp.path, false);
-          setUploadStatus(`Sent ${filename} -> ${resp.path}`, 'is-ok');
+          await api.sendInput(agent.id, ref, false);
+          setStatus(`Sent ${filename} -> ${path}`, 'is-ok');
         } catch (err) {
           if (!isRelayRequestTimeout(err)) throw err;
           bumpAndRefreshUserActivity(agent.id);
-          setUploadStatus(`Uploaded ${filename}; send acknowledgement timed out, checking output.`, 'is-ok');
+          setStatus(`Uploaded ${filename}; send acknowledgement timed out, checking output.`, 'is-ok');
         }
         refreshOutputAfterSend();
       } else {
-        setUploadStatus(`Uploaded ${filename} (no path returned)`, 'is-ok');
+        setStatus(`Uploaded ${filename} (no path returned)`, terminalDelivery ? 'ok' : 'is-ok');
       }
-      setTimeout(() => {
-        if (uploadStatusEl && uploadStatusEl.classList.contains('is-ok')) {
-          setUploadStatus('');
-        }
-      }, 4000);
-      return { ok: true, path: resp && resp.path };
+      if (!terminalDelivery) {
+        setTimeout(() => {
+          if (uploadStatusEl && uploadStatusEl.classList.contains('is-ok')) {
+            setUploadStatus('');
+          }
+        }, 4000);
+      }
+      return { ok: true, path };
     } catch (err) {
       const msg = err?.message || String(err);
-      setUploadStatus(`Upload failed: ${msg}`, 'is-error');
+      setStatus(`Upload failed: ${msg}`, terminalDelivery ? 'error' : 'is-error');
       showToast(`Upload failed: ${msg}`, 'error', 5000);
       return { ok: false, error: msg };
     } finally {
@@ -2443,6 +2876,61 @@ export function mountAgentConsole({ api, state, showToast }) {
         attachBtn.disabled = !(agentNow && isActiveStatus(agentNow.status)
           && isAgentsMode() && isConnected());
       }
+      updateTerminalAttachControls();
+    }
+  }
+
+  // Single-file upload helper used by both the paperclip click path and
+  // the paste-to-attach path. Returns a promise that resolves whether
+  // the upload succeeded or failed — the caller (sequential loop for
+  // paste) does not need to branch. Status text and toasts are updated
+  // here; typed composer text is never touched (CAM-DESK-INP-013).
+  async function uploadFileAndSend(file, { displayName, progressText, delivery = 'composer' } = {}) {
+    if (!file) return { ok: false, error: 'no_file' };
+    const filename = displayName || file.name || generatePastedFilename(file.type);
+    const b64 = await fileToBase64(file);
+    return uploadBase64AndSend(filename, b64, { progressText, delivery });
+  }
+
+  async function pickAndUploadNativeAttachment(delivery = 'composer') {
+    const terminalDelivery = delivery === 'terminal';
+    const bridge = attachmentBridge();
+    if (!bridge) return { ok: false, error: 'bridge_unavailable' };
+    if (terminalDelivery && (!termBridge() || !termSessionId)) {
+      setTerminalAttachStatus('Cannot attach: terminal is not connected yet.', 'error');
+      return { ok: false, error: 'terminal_not_connected' };
+    }
+    if (attachBtn) attachBtn.disabled = true;
+    if (terminalAttachBtn) terminalAttachBtn.disabled = true;
+    const setStatus = terminalDelivery ? setTerminalAttachStatus : setUploadStatus;
+    setStatus('Choosing file...', terminalDelivery ? 'info' : '');
+    try {
+      const picked = await bridge.pickAttachment();
+      if (!picked || picked.canceled) {
+        setStatus('');
+        return { ok: false, canceled: true };
+      }
+      if (!picked.ok) {
+        const msg = picked.error === 'too_large'
+          ? `File too large: ${Math.ceil((picked.size || 0) / 1024 / 1024)} MB`
+          : (picked.detail || picked.error || 'pick failed');
+        setStatus(`Attach failed: ${msg}`, terminalDelivery ? 'error' : 'is-error');
+        return { ok: false, error: msg };
+      }
+      return uploadBase64AndSend(picked.filename, picked.data, { delivery });
+    } catch (err) {
+      const msg = err && err.message || String(err);
+      setStatus(`Attach failed: ${msg}`, terminalDelivery ? 'error' : 'is-error');
+      return { ok: false, error: msg };
+    } finally {
+      updateTerminalAttachControls();
+    }
+  }
+
+  async function pickAndUploadTerminalAttachment() {
+    const r = await pickAndUploadNativeAttachment('terminal');
+    if (r && r.error === 'bridge_unavailable') {
+      setTerminalAttachStatus('Attach is unavailable in this build.', 'error');
     }
   }
 
@@ -2450,14 +2938,63 @@ export function mountAgentConsole({ api, state, showToast }) {
     attachBtn.addEventListener('click', () => {
       const agent = selectedAgent();
       if (!agent || attachBtn.disabled) return;
+      const bridge = attachmentBridge();
+      if (bridge) {
+        void pickAndUploadNativeAttachment('composer');
+        return;
+      }
+      filePickMode = 'composer';
       fileInput.click();
     });
     fileInput.addEventListener('change', async () => {
       const file = fileInput.files && fileInput.files[0];
+      const mode = filePickMode;
+      filePickMode = 'composer';
       fileInput.value = '';   // allow re-picking the same file
       if (!file) return;
-      await uploadFileAndSend(file);
+      await uploadFileAndSend(file, { delivery: mode === 'terminal' ? 'terminal' : 'composer' });
     });
+  }
+
+
+  function clipboardTextFromEvent(e) {
+    const cd = e && (e.clipboardData || window.clipboardData);
+    if (!cd || !cd.getData) return '';
+    try { return cd.getData('text/plain') || ''; }
+    catch (_) { return ''; }
+  }
+
+  function clipboardFilesFromEvent(e) {
+    const cd = e.clipboardData || window.clipboardData;
+    if (!cd) return [];
+    const files = [];
+    if (cd.items && cd.items.length) {
+      for (let i = 0; i < cd.items.length; i++) {
+        const item = cd.items[i];
+        if (item && item.kind === 'file') {
+          const f = item.getAsFile && item.getAsFile();
+          if (f) files.push(f);
+        }
+      }
+    }
+    if (!files.length && cd.files && cd.files.length) {
+      for (let i = 0; i < cd.files.length; i++) {
+        if (cd.files[i]) files.push(cd.files[i]);
+      }
+    }
+    return files;
+  }
+
+  async function uploadClipboardFiles(files, delivery) {
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const name = file.name || generatePastedFilename(file.type, i);
+      const progressText = files.length > 1
+        ? `Uploading pasted file ${i + 1}/${files.length}: ${name}...`
+        : '';
+      // eslint-disable-next-line no-await-in-loop
+      await uploadFileAndSend(file, { displayName: name, progressText, delivery });
+    }
   }
 
   // CAM-DESK-INP-016: paste-to-attach. When the user pastes content
@@ -2470,17 +3007,9 @@ export function mountAgentConsole({ api, state, showToast }) {
   // inputEl.value here).
   if (inputEl) {
     inputEl.addEventListener('paste', async (e) => {
-      const cd = e.clipboardData || window.clipboardData;
-      if (!cd || !cd.items || !cd.items.length) return;
-      const files = [];
-      for (let i = 0; i < cd.items.length; i++) {
-        const item = cd.items[i];
-        if (item && item.kind === 'file') {
-          const f = item.getAsFile && item.getAsFile();
-          if (f) files.push(f);
-        }
-      }
-      if (!files.length) return;   // plain-text paste → default behavior
+      if (clipboardTextFromEvent(e)) return; // text paste always wins
+      const files = clipboardFilesFromEvent(e);
+      if (!files.length) return;   // no file/image → default behavior
       // Suppress default paste so the browser does not try to insert a
       // blob URL string into the textarea.
       e.preventDefault();
@@ -2492,17 +3021,10 @@ export function mountAgentConsole({ api, state, showToast }) {
       // Sequential to keep status text legible and avoid hammering the
       // upload endpoint. Each call independently updates status; the
       // last successful one stays on screen until the auto-clear.
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const name = file.name || generatePastedFilename(file.type, i);
-        const progressText = files.length > 1
-          ? `Uploading pasted file ${i + 1}/${files.length}: ${name}…`
-          : '';
-        // eslint-disable-next-line no-await-in-loop
-        await uploadFileAndSend(file, { displayName: name, progressText });
-      }
+      await uploadClipboardFiles(files, 'composer');
     });
   }
+
 
   /* ── Quick keys ── */
   if (expandKeysBtn && extraKeysEl) {
@@ -2575,7 +3097,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     if (termUnsubStatus) { try { termUnsubStatus(); } catch (_) {} termUnsubStatus = null; }
     if (termResizeObserver) { try { termResizeObserver.disconnect(); } catch (_) {} termResizeObserver = null; }
     if (termThemeObserver) { try { termThemeObserver.disconnect(); } catch (_) {} termThemeObserver = null; }
-    void closeTerminalSession();
+    void closeAllTerminalSessions();
   });
 
   /* ── Reactivity ── */
@@ -2594,7 +3116,11 @@ export function mountAgentConsole({ api, state, showToast }) {
       if (mode !== 'agents') {
         stopPolling();
         setEnabled(false);
-        if (outputMode === 'terminal') void closeTerminalSession();
+        if (outputMode === 'terminal') {
+          // Keep recent terminal sessions live while the user visits other
+          // Desktop pages; switching back should behave like tab restore.
+          syncActiveTerminalEntry(null);
+        }
       } else {
         const agent = selectedAgent();
         if (agent) {

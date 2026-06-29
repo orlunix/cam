@@ -9,7 +9,7 @@ class AppState {
       contexts: [],
       selectedAgentId: null,
       connectionMode: 'disconnected', // 'direct' | 'relay' | 'disconnected'
-      filters: { status: '', tool: '' },
+      filters: { status: '', tool: '', machine: '', sort: 'accessed' },
       toast: null,
     };
     this._listeners = [];

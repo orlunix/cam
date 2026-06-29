@@ -24,8 +24,9 @@ from camc_pkg.proxy.common import (
     text_from_content,
 )
 from camc_pkg.proxy.textual_tools import rewrite_anthropic_response
+from camc_pkg.api_metadata import openai_models_list_response, resolve_api_metadata
 
-ROUTE = "completions_to_messages"
+MESSAGES_ROUTE = "completions_to_messages"
 
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -218,7 +219,7 @@ def chat_to_anthropic_message(req, chat_raw):
     }
 
 
-def sse_events(message):
+def messages_sse_events(message):
     start = dict(message)
     start["content"] = []
     start["stop_reason"] = None
@@ -286,20 +287,24 @@ def sse_events(message):
     return "".join(chunks).encode("utf-8")
 
 
-class Handler(BaseHTTPRequestHandler):
+class MessagesHandler(BaseHTTPRequestHandler):
     def _path(self):
         return urlparse(self.path).path.rstrip("/") or "/"
 
     def do_GET(self):
         path = self._path()
         if path in ("/", "/health", "/v1"):
-            self._send_json({"ok": True, "route": ROUTE})
+            self._send_json({"ok": True, "route": MESSAGES_ROUTE})
             return
         if path == "/v1/models":
-            self._send_json({
-                "object": "list",
-                "data": [{"id": self.server.model_alias, "object": "model"}],
-            })
+            meta = getattr(self.server, "model_metadata", None) or {}
+            if openai_models_list_response:
+                self._send_json(openai_models_list_response(self.server.model_alias, meta))
+            else:
+                self._send_json({
+                    "object": "list",
+                    "data": [{"id": self.server.model_alias, "object": "model"}],
+                })
             return
         self.send_error(404)
 
@@ -314,9 +319,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length") or "0")
             req = json_loads(self.rfile.read(length))
-            for key in list(req.keys()):
-                if key in DROP_ANTHROPIC_KEYS:
-                    req.pop(key, None)
+            dropped_keys = [k for k in list(req.keys()) if k in DROP_ANTHROPIC_KEYS]
+            for key in dropped_keys:
+                req.pop(key, None)
             stream = bool(req.get("stream"))
             client_model = str(req.get("model") or "")
             upstream_model = resolve_upstream_model(req.get("model"), self.server.upstream_model)
@@ -330,6 +335,7 @@ class Handler(BaseHTTPRequestHandler):
                 message_count=len(req.get("messages") or []),
                 tool_count=len(req.get("tools") or []),
                 user_preview=last_user_preview_messages(req),
+                dropped_keys=dropped_keys or None,
             )
             chat_payload = anthropic_messages_to_chat(req, upstream_model)
             raw = call_chat_completions(
@@ -353,7 +359,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
-                self.wfile.write(sse_events(msg))
+                self.wfile.write(messages_sse_events(msg))
                 self.wfile.flush()
             else:
                 self._send_json(msg)
@@ -403,13 +409,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def log_message(self, fmt, *args):
-        sys.stdout.write("[%s] %s - %s\n" % (ROUTE, self.address_string(), fmt % args))
+        sys.stdout.write("[%s] %s - %s\n" % (MESSAGES_ROUTE, self.address_string(), fmt % args))
         sys.stdout.flush()
 
 
-class Server(ThreadingHTTPServer):
+class MessagesServer(ThreadingHTTPServer):
     def __init__(self, addr, handler, api_key, model_alias, upstream_model,
-                 upstream_url, timeout, debug):
+                 upstream_url, timeout, debug, model_metadata=None):
         ThreadingHTTPServer.__init__(self, addr, handler)
         self.api_key = api_key
         self.model_alias = model_alias
@@ -417,9 +423,10 @@ class Server(ThreadingHTTPServer):
         self.upstream_url = upstream_url
         self.timeout = timeout
         self.debug = debug
+        self.model_metadata = model_metadata or {}
 
 
-def run_proxy(argv=None):
+def run_messages_proxy(argv=None):
     p = argparse.ArgumentParser(description="Route: chat/completions -> anthropic/messages")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=18324)
@@ -430,6 +437,7 @@ def run_proxy(argv=None):
     p.add_argument("--timeout", type=float, default=600.0)
     p.add_argument("--debug", action="store_true")
     p.add_argument("--debug-log", default="")
+    p.add_argument("--api-name", default="", help="API profile for model metadata")
     args = p.parse_args(argv)
 
     api_key = os.environ.get("INFERENCE_HUB_API_KEY", "").strip()
@@ -439,17 +447,24 @@ def run_proxy(argv=None):
         raise SystemExit("INFERENCE_HUB_API_KEY is required for proxy")
 
     upstream = resolve_upstream_model(args.upstream_model or args.model_alias, args.model_alias)
+    model_metadata = {}
+    if args.api_name and resolve_api_metadata:
+        try:
+            model_metadata = resolve_api_metadata(args.api_name)
+        except (ValueError, IOError, OSError):
+            model_metadata = {}
     debug_log = args.debug_log or os.path.join(LOGS_DIR, "proxy-messages-llm.jsonl")
-    debug = ProxyLogger(ROUTE, args.debug, debug_log)
-    httpd = Server(
+    debug = ProxyLogger(MESSAGES_ROUTE, args.debug, debug_log)
+    httpd = MessagesServer(
         (args.host, args.port),
-        Handler,
+        MessagesHandler,
         api_key=api_key,
         model_alias=args.model_alias,
         upstream_model=upstream,
         upstream_url=args.upstream_url,
         timeout=args.timeout,
         debug=debug,
+        model_metadata=model_metadata,
     )
     host, port = httpd.server_address[:2]
     if args.ready_file:
@@ -457,7 +472,7 @@ def run_proxy(argv=None):
             handle.write("%s:%s" % (host, port))
     sys.stdout.write(
         "[%s] http://%s:%s/v1/messages -> %s model=%s\n" % (
-            ROUTE, host, port, args.upstream_url, upstream)
+            MESSAGES_ROUTE, host, port, args.upstream_url, upstream)
     )
     sys.stdout.flush()
     httpd.serve_forever()

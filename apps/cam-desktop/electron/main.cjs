@@ -19,6 +19,7 @@
 'use strict';
 
 const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, Menu, clipboard } = require('electron');
+const fs   = require('node:fs');
 const path = require('node:path');
 const url  = require('node:url');
 const http = require('node:http');
@@ -232,9 +233,10 @@ function localGetProfile() {
  *     pool (sshTransport.openTerminalChannel). The same pool serves
  *     execRemote / writeRemoteFile so a sync-warm endpoint costs zero
  *     extra handshakes.
- *   - mints an opaque session id, keeps the channel handle in a
- *     per-window Map, and pipes data events to the originating
- *     WebContents as 'term:data' / 'term:status'.
+ *   - mints an opaque session id, keeps channel handles in a per-window
+ *     Map, and pipes data events to the originating WebContents as
+ *     'term:data' / 'term:status'. Multiple agent sessions may stay
+ *     open for fast renderer-side switching.
  *   - accepts input/resize/close via 'term:input' / 'term:resize' /
  *     'term:close'. Closing the channel does NOT kill the underlying
  *     agent — `camc attach` is a tmux attach to the agent session.
@@ -242,10 +244,138 @@ function localGetProfile() {
  * Secrets stay in main only. The renderer sees session id + bytes. */
 const _terminals = new Map();   // sessionId → { dispose, contentsId, agentId }
 let _termSeq = 0;
+const TERM_MIN_COLS = 40;
+const TERM_MIN_ROWS = 4;
 
-function _sessionFor(contentsId) {
+function _terminalOpenSize(payload = {}) {
+  const rawCols = Number(payload.cols);
+  const rawRows = Number(payload.rows);
+  return {
+    cols: Math.max(TERM_MIN_COLS, Math.min(500, Number.isFinite(rawCols) && rawCols >= TERM_MIN_COLS ? rawCols : 80)),
+    rows: Math.max(TERM_MIN_ROWS, Math.min(500, Number.isFinite(rawRows) && rawRows >= TERM_MIN_ROWS ? rawRows : 24)),
+  };
+}
+
+function _terminalResizeSize(payload = {}) {
+  const rawCols = Number(payload.cols);
+  const rawRows = Number(payload.rows);
+  if (!Number.isFinite(rawCols) || !Number.isFinite(rawRows)) return null;
+  if (rawCols < TERM_MIN_COLS || rawRows < TERM_MIN_ROWS) return null;
+  return {
+    cols: Math.max(TERM_MIN_COLS, Math.min(500, rawCols)),
+    rows: Math.max(TERM_MIN_ROWS, Math.min(500, rawRows)),
+  };
+}
+
+function _shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function _terminalRepairCommand(agentId, cols, rows) {
+  const safeCols = Math.max(TERM_MIN_COLS, Math.min(500, Math.floor(Number(cols) || 80)));
+  const safeRows = Math.max(TERM_MIN_ROWS, Math.min(500, Math.floor(Number(rows) || 24)));
+  const py = String.raw`import json
+import os
+import subprocess
+import sys
+
+agent_id = sys.argv[1]
+cols = max(40, min(500, int(sys.argv[2])))
+rows = max(4, min(500, int(sys.argv[3])))
+camc = os.path.expanduser("~/.cam/camc")
+
+try:
+    raw = subprocess.check_output(
+        [camc, "--json", "status", agent_id],
+        stderr=subprocess.DEVNULL,
+        text=True,
+        timeout=5,
+    )
+    data = json.loads(raw or "{}")
+except Exception:
+    sys.exit(0)
+
+if isinstance(data, list):
+    data = data[0] if data else {}
+if not isinstance(data, dict):
+    sys.exit(0)
+
+socket = data.get("tmux_socket") or data.get("socket")
+session = data.get("tmux_session") or data.get("session") or data.get("tmux_name")
+if not socket or not session:
+    sys.exit(0)
+
+try:
+    out = subprocess.check_output(
+        ["tmux", "-S", str(socket), "list-clients", "-F", "#{client_name}\t#{client_width}\t#{client_height}"],
+        stderr=subprocess.DEVNULL,
+        text=True,
+        timeout=3,
+    )
+except Exception:
+    out = ""
+
+for line in out.splitlines():
+    parts = line.split("\t")
+    if len(parts) != 3:
+        continue
+    name, width, height = parts
+    try:
+        if int(width) < 40 or int(height) < 4:
+            subprocess.run(
+                ["tmux", "-S", str(socket), "detach-client", "-t", name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+            )
+    except Exception:
+        pass
+
+# tmux 2.7 (main PDX environment) has no resize-window command. Use a
+# short-lived control-mode client and set its size; tmux then propagates that
+# size to the session/window. This also works on newer tmux versions.
+try:
+    proc = subprocess.Popen(
+        ["tmux", "-S", str(socket), "-C", "attach-session", "-t", str(session)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    try:
+        proc.communicate(f"refresh-client -C {cols},{rows}\n", timeout=1)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.stdin.write("detach-client\n")
+            proc.stdin.flush()
+        except Exception:
+            pass
+        try:
+            proc.communicate(timeout=2)
+        except Exception:
+            proc.kill()
+except Exception:
+    pass
+`;
+  return `python3 - ${_shellQuote(agentId)} ${_shellQuote(String(safeCols))} ${_shellQuote(String(safeRows))} <<'PY'\n${py}\nPY`;
+}
+
+async function _repairRemoteTerminalSize(opts, agentId, cols, rows) {
+  if (!opts || !agentId) return;
+  try {
+    await sshTransport.execRemote({
+      ...opts,
+      command: _terminalRepairCommand(agentId, cols, rows),
+      timeout_ms: 8000,
+    });
+  } catch (_) {
+    // Best-effort guard: attach must still proceed if old camc/tmux cannot report metadata.
+  }
+}
+
+function _sessionForAgent(contentsId, agentId) {
   for (const [sid, ent] of _terminals) {
-    if (ent && ent.contentsId === contentsId) return [sid, ent];
+    if (ent && ent.contentsId === contentsId && ent.agentId === agentId) return [sid, ent];
   }
   return [null, null];
 }
@@ -260,15 +390,20 @@ function _dropSession(sessionId) {
 async function termOpen(event, payload = {}) {
   _ensureBackendsConfigured();
   const agentId = String(payload && payload.agentId || '');
-  const cols = Math.max(2, Math.min(500, Number(payload.cols) || 80));
-  const rows = Math.max(2, Math.min(500, Number(payload.rows) || 24));
+  const { cols, rows } = _terminalOpenSize(payload);
   if (!agentId) return { ok: false, error: 'invalid_args', detail: 'agentId is required' };
 
-  // Single attach per renderer at a time: opening a new one closes the
-  // previous (the user is switching agents). Renderer can still
-  // explicitly term:close before opening.
-  const [prevSid] = _sessionFor(event.sender.id);
-  if (prevSid) _dropSession(prevSid);
+  // Multiple terminal sessions may stay warm per renderer. Reopening the
+  // same agent returns the existing channel so renderer-side fast switch can
+  // show the cached xterm buffer without reconnecting.
+  const [existingSid, existingEnt] = _sessionForAgent(event.sender.id, agentId);
+  if (existingSid) {
+    try { existingEnt && existingEnt.resize && existingEnt.resize(cols, rows); } catch (_) {}
+    if (existingEnt && existingEnt.opts) {
+      void _repairRemoteTerminalSize(existingEnt.opts, agentId, cols, rows);
+    }
+    return { ok: true, sessionId: existingSid, reused: true };
+  }
 
   const resolved = await embeddedHub.getAttachConnectOpts(agentId);
   if (!resolved.ok) {
@@ -280,6 +415,8 @@ async function termOpen(event, payload = {}) {
   const command = resolved.command || `~/.cam/camc attach ${agentId}`;
   const sender = event.sender;
   const sessionId = `t${++_termSeq}-${Date.now().toString(36)}`;
+
+  await _repairRemoteTerminalSize(resolved.opts, agentId, cols, rows);
 
   const ch = await sshTransport.openTerminalChannel(
     { ...resolved.opts, command },
@@ -309,6 +446,7 @@ async function termOpen(event, payload = {}) {
     resize:  ch.resize,
     contentsId: sender.id,
     agentId,
+    opts: resolved.opts,
   });
   return { ok: true, sessionId };
 }
@@ -326,9 +464,9 @@ function termResize(event, payload = {}) {
   const sid = String(payload && payload.sessionId || '');
   const ent = _terminals.get(sid);
   if (!ent || ent.contentsId !== event.sender.id) return { ok: false, error: 'not_found' };
-  const cols = Math.max(2, Math.min(500, Number(payload.cols) || 80));
-  const rows = Math.max(2, Math.min(500, Number(payload.rows) || 24));
-  ent.resize(cols, rows);
+  const size = _terminalResizeSize(payload);
+  if (!size) return { ok: true, ignored: true, reason: 'invalid_terminal_size' };
+  ent.resize(size.cols, size.rows);
   return { ok: true };
 }
 
@@ -346,9 +484,6 @@ async function filesPickPrivateKey() {
   const r = await dialog.showOpenDialog(owner || undefined, {
     title: 'Select SSH private key file',
     properties: ['openFile', 'showHiddenFiles'],
-    filters: [
-      { name: 'All files', extensions: ['*'] },
-    ],
   });
   if (r.canceled || !r.filePaths || r.filePaths.length === 0) {
     return { path: null };
@@ -356,6 +491,109 @@ async function filesPickPrivateKey() {
   return { path: r.filePaths[0] };
 }
 
+function filesReadClipboardText() {
+  try {
+    return { ok: true, text: clipboard.readText() || '' };
+  } catch (e) {
+    return { ok: false, error: 'clipboard_text_failed', detail: e && e.message || String(e) };
+  }
+}
+
+async function filesPickAttachment() {
+  const wins = BrowserWindow.getAllWindows();
+  const owner = wins.length > 0 ? wins[0] : null;
+  const r = await dialog.showOpenDialog(owner || undefined, {
+    title: 'Attach file',
+    properties: ['openFile'],
+  });
+  if (r.canceled || !r.filePaths || r.filePaths.length === 0) {
+    return { ok: false, canceled: true };
+  }
+  const selected = r.filePaths[0];
+  try {
+    const st = fs.statSync(selected);
+    if (!st.isFile()) return { ok: false, error: 'not_file' };
+    const maxBytes = 50 * 1024 * 1024;
+    if (st.size > maxBytes) return { ok: false, error: 'too_large', size: st.size, maxBytes };
+    const buf = fs.readFileSync(selected);
+    return {
+      ok: true,
+      filename: path.basename(selected),
+      size: buf.length,
+      data: buf.toString('base64'),
+    };
+  } catch (e) {
+    return { ok: false, error: 'read_failed', detail: e && e.message || String(e) };
+  }
+}
+
+function _attachmentFromPath(selected) {
+  try {
+    const st = fs.statSync(selected);
+    if (!st.isFile()) return { ok: false, error: 'not_file', path: selected };
+    const maxBytes = 50 * 1024 * 1024;
+    if (st.size > maxBytes) return { ok: false, error: 'too_large', size: st.size, maxBytes, path: selected };
+    const buf = fs.readFileSync(selected);
+    return {
+      ok: true,
+      filename: path.basename(selected),
+      size: buf.length,
+      data: buf.toString('base64'),
+    };
+  } catch (e) {
+    return { ok: false, error: 'read_failed', detail: e && e.message || String(e), path: selected };
+  }
+}
+
+function _clipboardFilePaths() {
+  const formats = process.platform === 'win32' ? ['FileNameW', 'FileName'] : ['text/uri-list'];
+  for (const fmt of formats) {
+    try {
+      const b = clipboard.readBuffer(fmt);
+      if (!b || !b.length) continue;
+      if (fmt === 'FileNameW') {
+        return b.toString('utf16le').split('\u0000').map(v => v.trim()).filter(Boolean);
+      }
+      if (fmt === 'FileName') {
+        return b.toString('utf8').split('\u0000').map(v => v.trim()).filter(Boolean);
+      }
+      const txt = b.toString('utf8');
+      return txt.split(/\r?\n/).map(v => v.trim()).filter(v => v && !v.startsWith('#'))
+        .map(v => v.startsWith('file://') ? decodeURIComponent(v.replace(/^file:\/\//, '')) : v);
+    } catch (_) {}
+  }
+  return [];
+}
+
+async function filesReadClipboardAttachments() {
+  const paths = _clipboardFilePaths();
+  if (paths.length) {
+    const files = [];
+    for (const p of paths.slice(0, 8)) {
+      const r = _attachmentFromPath(p);
+      if (!r.ok) return r;
+      files.push(r);
+    }
+    return { ok: true, files, source: 'files' };
+  }
+
+  try {
+    const img = clipboard.readImage();
+    if (img && !img.isEmpty()) {
+      const buf = img.toPNG();
+      const ts = new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '').replace('T', '-');
+      return {
+        ok: true,
+        source: 'image',
+        files: [{ filename: `clipboard-image-${ts}.png`, size: buf.length, data: buf.toString('base64') }],
+      };
+    }
+  } catch (e) {
+    return { ok: false, error: 'clipboard_image_failed', detail: e && e.message || String(e) };
+  }
+
+  return { ok: false, error: 'empty_clipboard', detail: 'Clipboard does not contain a file or image.' };
+}
 /* ─────────────── App lifecycle ─────────────── */
 
 app.whenReady().then(() => {
@@ -378,6 +616,9 @@ app.whenReady().then(() => {
   // Narrow file picker for the Nodes "Add Host" key-file field.
   // Argument-free; main owns the dialog config.
   ipcMain.handle('files:pickPrivateKey', () => filesPickPrivateKey());
+  ipcMain.handle('files:pickAttachment',  () => filesPickAttachment());
+  ipcMain.handle('files:readClipboardText', () => filesReadClipboardText());
+  ipcMain.handle('files:readClipboardAttachments', () => filesReadClipboardAttachments());
   ipcMain.handle('net:probe', (_event, payload) => netProbe(payload && payload.url || '', payload && payload.timeoutMs || 8000));
 
   // Terminal mode (CAM-DESK-TERM-001..005). Secrets stay in main.

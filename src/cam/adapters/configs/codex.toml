@@ -14,7 +14,12 @@ display_name = "OpenAI Codex"
 command = ["codex", "-c", "features.goals=true"]
 prompt_after_launch = true
 startup_wait = 20.0
-ready_pattern = "^[›>]"
+# 2026-06-23 PDX hotfix: include U+276F ❯ in addition to U+203A ›
+# and ASCII '>'. Some Codex builds render the input prompt with ❯,
+# others with ›. Accept all three so the launch loop sees readiness
+# regardless of the build variant. The character class is anchored
+# at line start so unrelated prose can't false-trigger.
+ready_pattern = "^[❯›>]"
 ready_flags = ["MULTILINE"]
 prompt_submit_delay = 0.5
 
