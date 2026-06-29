@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en" class="camui-v2">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#111111">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>CamUI V2</title>
+  <meta name="cam-version" content="v2.3.84">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="assets/icon-192.png">
+  <link rel="apple-touch-icon" href="assets/icon-192.png">
+  <link rel="stylesheet" href="css/style.css?v=2.3.84">
+  <link rel="stylesheet" href="css/mobile.css?v=2.3.84">
+  <link rel="stylesheet" href="css/nodes-mode.css?v=2.3.84">
+  <link rel="stylesheet" href="vendor/xterm/xterm.css?v=2.3.84">
+  <link rel="modulepreload" href="js/api.js?v=2.3.84">
+  <link rel="modulepreload" href="js/state.js?v=2.3.84">
+  <link rel="modulepreload" href="js/mobile/app.js?v=2.3.84">
+</head>
+<body class="camui-v2">
+  <div id="app">
+    <header id="header">
+      <div class="header-left">
+        <button class="header-menu-btn" id="header-menu-btn"
+          onclick="document.getElementById('header-menu').classList.toggle('hidden')">&#9776;</button>
+        <nav class="header-menu hidden" id="header-menu">
+          <a href="#/" class="header-menu-item nav-item" data-route="/">
+            <span class="hm-icon">&#9632;</span> Agents
+          </a>
+          <a href="#/start" class="header-menu-item nav-item" data-route="/start">
+            <span class="hm-icon">+</span> New Agent
+          </a>
+          <a href="#/machines" class="header-menu-item nav-item" data-route="/machines">
+            <span class="hm-icon">&#9635;</span> Nodes
+          </a>
+          <a href="#/skills" class="header-menu-item nav-item" data-route="/skills">
+            <span class="hm-icon">&#9733;</span> Skills
+          </a>
+          <a href="#/todos" class="header-menu-item nav-item" data-route="/todos">
+            <span class="hm-icon">&#9745;</span> Todos
+          </a>
+          <a href="#/settings" class="header-menu-item nav-item" data-route="/settings">
+            <span class="hm-icon">&#9881;</span> Settings
+          </a>
+          <hr style="border:0;border-top:1px solid #333;margin:4px 0;">
+          <a href="javascript:void(0)" class="header-menu-item" id="reload-app">
+            <span class="hm-icon">&#8635;</span> Reload
+          </a>
+        </nav>
+        <span class="logo">CamUI <span class="v2-badge">V2</span></span>
+      </div>
+      <div class="header-right">
+        <span id="conn-label"></span>
+        <span id="conn-status" class="conn-dot disconnected"></span>
+      </div>
+    </header>
+    <main id="content">
+      <div id="loading-indicator" class="cam-loading-indicator">
+        <span>Connecting...</span>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    /* Early resume reset — runs before app.js; fixes tablet drift after Home/recents. */
+    (function() {
+      var VP = 'width=device-width,initial-scale=1.0,minimum-scale=1.0,maximum-scale=1.0,user-scalable=no,viewport-fit=cover';
+      function forceViewportReflow() {
+        var m = document.querySelector('meta[name=viewport]');
+        if (!m) return;
+        m.setAttribute('content', VP + ',maximum-scale=1.01');
+        void document.documentElement.offsetWidth;
+        m.setAttribute('content', VP);
+      }
+      function reset() {
+        var m = document.querySelector('meta[name=viewport]');
+        if (m) { m.setAttribute('content', VP); }
+        var app = document.getElementById('app');
+        if (app) { app.style.height = app.style.width = app.style.transform = app.style.marginTop = ''; }
+        document.documentElement.style.height = document.documentElement.style.width = '';
+        document.body.style.height = document.body.style.width = document.body.style.marginBottom = '';
+        window.scrollTo(0, 0);
+        forceViewportReflow();
+        try { window.dispatchEvent(new Event('resize')); } catch (e) {}
+      }
+      function schedule() {
+        reset();
+        requestAnimationFrame(function() {
+          reset();
+          requestAnimationFrame(reset);
+        });
+        [50, 150, 350, 800].forEach(function(ms) { setTimeout(reset, ms); });
+      }
+      window.__camResetLayout = reset;
+      window.__camScheduleLayoutResets = schedule;
+      document.addEventListener('DOMContentLoaded', schedule);
+      window.addEventListener('load', schedule);
+      document.addEventListener('visibilitychange', function() {
+        if (document.visibilityState === 'visible') schedule();
+      });
+      window.addEventListener('pageshow', function(e) { if (e.persisted) schedule(); });
+    })();
+    document.addEventListener('click', function(e) {
+      var menu = document.getElementById('header-menu');
+      var btn = document.getElementById('header-menu-btn');
+      if (menu && btn && !menu.contains(e.target) && !btn.contains(e.target)) {
+        menu.classList.add('hidden');
+      }
+    });
+    document.getElementById('reload-app').addEventListener('click', function() {
+      try { localStorage.setItem('cam_reload_route', location.hash || '#/'); } catch {}
+      if (window.CamBridge && window.CamBridge.restartApp) {
+        window.CamBridge.restartApp(location.hash || '#/');
+      } else {
+        location.reload();
+      }
+    });
+  </script>
+  <script src="vendor/xterm/xterm.js?v=2.3.84"></script>
+  <script src="vendor/xterm/addon-fit.js?v=2.3.84"></script>
+  <script type="module" src="js/mobile/app.js?v=2.3.84"></script>
+</body>
+</html>

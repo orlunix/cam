@@ -188,7 +188,9 @@ def _launch_agent(task, workdir):
     launch_cmd = _build_command(config, prompt, workdir)
 
     context = _load_default_context()
-    env_setup = context.get("env_setup") or None
+    # context.json is scheduler metadata only; it must not inject
+    # runtime env setup into agent launches.
+    env_setup = None
 
     if not create_tmux_session(session, launch_cmd, workdir, env_setup=env_setup, inherit_env=True):
         return None

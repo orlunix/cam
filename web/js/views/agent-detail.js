@@ -1,6 +1,8 @@
 import { api, state, navigate } from '../app.js';
+import { recordAgentAccess } from '../shared/agent-access.js';
 
 export function renderAgentDetail(container, agentId) {
+  recordAgentAccess(agentId);
   let outputTimer = null;
   let elapsedTimer = null;
   let outputOffset = 0;

@@ -1,7 +1,7 @@
 # camc API Proxy & Inference Hub Integration — Plan
 
 Date: 2026-06-16
-Status: **partial — Claude `--api` shipped** (see below). Remaining items are P1/P2.
+Status: **Claude + Codex `--api` shipped** (6 curated IHUB models). **Cursor `--api` not supported.** Per-tool API defaults are **opt-in** via `camc api default set`. See *Supported today* and *API defaults*.
 Extends: `docs/camc-custom-api-profiles.md`, `docs/inference-hub.md`
 
 ## Summary
@@ -23,25 +23,19 @@ Prototype originally lived in `dev/ihub_proxy/` (Python 3.10+, external process,
 
 | | |
 |---|---|
-| **Tool** | **Claude only** — `camc run -t claude --api NAME` |
-| **Models** | 6 curated ACME IHUB profiles: `glm-5.1`, `deepseek-v4-pro`, `kimi-k2.6`, `minimax-m2.7`, `qwen3-5-397b`, `nemotron-3-ultra` |
-| **Login** | Isolated `CLAUDE_CONFIG_DIR=~/.cam/claude-api/`; subscription login in `~/.claude/` unchanged when `--api` is omitted |
-| **Not supported** | `camc run -t codex --api …` and `camc run -t cursor --api …` — resolver prints an error and exits |
+| **Tools** | **`camc run -t claude\|codex --api NAME`** — 6 curated ACME IHUB profiles. **Cursor:** normal login only (`--api` not supported). |
+| **Models** | `glm-5.1`, `deepseek-v4-pro`, `kimi-k2.6`, `minimax-m2.7`, `qwen3-5-397b`, `nemotron-3-ultra` |
+| **Login isolation** | Claude: `CLAUDE_CONFIG_DIR=~/.cam/claude-api/` when `--api` or enabled default. Codex: `CODEX_HOME=~/.cam/codex-api/` on `--api`/default. Subscription/OAuth in `~/.claude/` and `~/.codex/` unchanged when API mode is off. |
 | **Custom APIs** | Set `"allow_run": true` in `api-models.json` (see `docs/api-routing.md`) |
+| **Metadata** | `camc api check` syncs context window + Codex catalog (`docs/api-model-metadata.md`) |
 
-### Codex / Cursor (documented, not implemented)
-
-Future Codex support will use the same **login isolation** pattern as Claude:
-
-- Normal run: `camc run -t codex` → `~/.codex/` OAuth/login unchanged
-- API run (future): `CODEX_HOME=~/.cam/codex-api/` + `openai_base_url` → local proxy (`completions_to_responses` on :18325)
-- **Do not** mutate `~/.codex/auth.json` for `--api` switching
-
-Until implemented, attempting `--api` with codex/cursor prints:
+### Cursor (not supported for `--api`)
 
 ```text
---api is not supported for tool 'codex'. Only Claude is supported today ...
+--api is not supported for tool 'cursor'. Supported today: camc run -t claude|codex --api NAME ...
 ```
+
+Use normal Cursor login without `--api`.
 
 **Debug history (2026-06-16 benchmark):** see `docs/debug-notes/api-bench-ihub-proxy.md`.
 
@@ -61,7 +55,7 @@ Claude, Codex, or Cursor. **`camc run -t TOOL --api NAME`** decides:
 2. API upstream endpoint (from `providers` + `apis.model`)
 3. Whether a protocol translator proxy is needed, and which route
 
-**Only `-t claude` is supported today** (6 curated models). Codex/Cursor `--api` prints an error.
+**`-t claude` and `-t codex` are supported** (6 curated models). **Cursor `--api`** prints an error. Resolver picks direct vs embedded proxy from tool + provider protocols.
 
 No separate `providers.json`. No `--api-provider`, `--api-url`, or `--api-model` on `camc run`.
 
@@ -83,15 +77,42 @@ Token secrets stay in `~/.cam/token.env` (never in api-models.json).
 
 | Use | Command |
 |-----|---------|
-| Run (proxy auto) | `camc run -t claude --api glm-5.1 "task"` |
+| Run with API (explicit) | `camc run -t claude --api glm-5.1 "task"` · `camc run -t codex --api glm-5.1 "task"` |
+| Run with login (no API) | `camc run -t claude "task"` · `camc run -t codex "task"` |
+| Skip per-tool default | `camc run --no-default-api …` |
 | List APIs | `camc api list` |
-| IHUB health + enable refresh | `camc api check` |
+| IHUB health + enable + metadata | `camc api check` |
+| Show per-tool defaults | `camc api default show` · `camc api default show --json` |
+| Opt in default API | `camc api default set glm-5.1 --tool claude` · `… --tool codex` |
+| Clear default (back to login) | `camc api default clear --tool claude` |
 | **Edit config** | `$EDITOR ~/.cam/api-models.json` |
 | **Edit token** | `$EDITOR ~/.cam/token.env` |
 
 **Debug only** (not in default help): `camc api proxy start|status|logs|stop` — see §6 route table.
 
-**Only `--api NAME`** on `camc run`. No manual proxy step (replaces `start-ihub-proxy.sh`).
+**Normal workflow:** users pick **`--api NAME`** or an **opt-in default**; resolver starts embedded proxy when needed. No manual `proxy start`.
+
+### API defaults (opt-in)
+
+Per-tool defaults live in `api-models.json` under **`defaults.claude`** / **`defaults.codex`**. They are **not** seeded on fresh install.
+
+| Rule | Behavior |
+|------|----------|
+| No `defaults.<tool>` / empty | Normal login (`~/.claude/` or `~/.codex/`) |
+| `camc api default set NAME --tool TOOL` | Opt in; writes `defaults.<tool>` |
+| `camc api check` + `enabled: true` | Required before default applies on run |
+| `enabled: false` default | `camc run` **fails closed** with “Run: camc api check” |
+| Explicit `--api NAME` | Wins over default |
+| `--no-default-api` | Skips default for this run |
+| Top-level `"default"` | Legacy metadata only — **not** auto-applied |
+
+```bash
+camc api default set glm-5.1 --tool claude
+camc api default clear --tool codex          # codex back to login
+camc api default show --json
+camc run -t claude "task"                   # uses default when enabled
+camc run -t claude --no-default-api "task" # subscription login
+```
 
 **No `camc api add/rm/promote/show/sync/validate/auth/alias/init`** — edit JSON directly.
 
@@ -230,7 +251,7 @@ camc run -t claude --api glm-5.1
 |-------|---------------|--------|
 | `-t claude` + IHUB chat endpoint | tool=`anthropic_messages`, upstream=`openai_chat_completions` | **proxy** → `completions_to_messages` |
 | `-t claude` + endpoint `/messages` | both `anthropic_messages` | **direct** |
-| `-t codex` + chat upstream | tool=`openai_responses`, upstream=`openai_chat_completions` | **proxy** → `completions_to_responses` (P1) |
+| `-t codex` + chat upstream | tool=`openai_responses`, upstream=`openai_chat_completions` | **proxy** → `completions_to_responses` (:18325) |
 
 Route table lives in **adapter TOML** (`[[api.proxy_routes]]`) + embedded defaults — not in `apis.*`.
 
@@ -402,6 +423,7 @@ All backend config comes from **`~/.cam/api-models.json`**.
 | Flag | Purpose |
 |------|---------|
 | `--api NAME` | Key in `apis` (or `_aliases`) |
+| `--no-default-api` | Skip per-tool default; use normal OAuth/login |
 | `--api-token TOKEN` | One-off bearer (optional) |
 | `--no-api-proxy` | Fail if resolver would use a proxy (force direct-only) |
 | `--proxy-debug` | JSONL debug logs |
@@ -590,7 +612,7 @@ providers.inference-hub.endpoints:
 |----------|-------------------|
 | `models/qwen/dep-qwen3-5-397-a17b` | `models/qwen/dep-qwen3-5-397b-a17b` |
 
-Default API when user runs without `--api` (future): top-level `"default": "glm-5.1"`.
+**Per-tool run defaults (opt-in):** set with `camc api default set NAME --tool claude|codex` → writes `defaults.<tool>` in JSON. Empty/missing → normal login. **`camc run --no-default-api`** skips defaults for one run. Explicit **`--api NAME`** always wins. Top-level `"default"` is legacy metadata only (synced when setting Claude default) — **not** an automatic run default. Fresh seed does **not** pre-enable API for bare `camc run`.
 All curated ACME models use `"provider": "inference-hub"` internally.
 
 #### Final curated roster (locked)
@@ -945,8 +967,9 @@ normalisation. `camc api alias add` and load-time validation fail with:
 alias "glm" already maps to glm-5.1; cannot assign to glm-5.2
 ```
 
-**`default`** (top-level string) is the fallback when `--api` is omitted in future;
-today `--api` is required for API-backed runs.
+**`default`** (top-level string) is legacy metadata / Claude-default sync target when using `camc api default set … --tool claude`. It is **not** applied automatically on `camc run`.
+
+**`defaults`** (object) holds opt-in run defaults: `defaults.claude`, `defaults.codex`. Each must be set explicitly; value must pass `camc api check` (`enabled: true`) or `camc run` fails closed with guidance.
 
 ### Resolver lookup
 
@@ -1068,7 +1091,7 @@ camc api proxy start completions_to_messages \
 # Shorthand route name + port
 camc api proxy start messages --port 18324 --api glm-5.1
 
-# Codex → IHUB chat (P1)
+# Codex → IHUB chat (production)
 camc api proxy start completions_to_responses --port 18325 --api deepseek-v4-pro
 
 # Then point Claude at the proxy manually:
@@ -1097,8 +1120,7 @@ When `-t claude` + `--api` (API-key path, not `/login`), `RunResolver` sets:
 
 **Why:** Claude Code stores OAuth under `~/.claude/`. API-key agents need a separate config dir so GLM/IHUB does not pick up subscription login. This is a **Claude + `--api` run concern** — same reason `glm-5.1` should not carry `claude_config_dir` in `api-models.json`.
 
-Codex/Cursor would get their own tool-specific isolation (`CODEX_HOME`, etc.)
-when implemented — **not supported yet**; use normal login without `--api`.
+Codex `--api` uses **`CODEX_HOME=~/.cam/codex-api/`** + local proxy base URL. Cursor `--api` is **not supported** — use normal login without `--api`.
 
 ---
 
@@ -1148,7 +1170,7 @@ when implemented — **not supported yet**; use normal login without `--api`.
 ### Phase 4 — Polish (ongoing)
 
 - `cam heal` proxy restart
-- Codex path (`completions_to_responses`) — **deferred**; design in *Supported today*
+- Codex path (`completions_to_responses`) — **shipped**
 - Probe command for unknown models
 - Deprecate manual `dev/ihub_proxy/` deploy and `start-ihub-proxy.sh` (thin wrapper only)
 
@@ -1196,7 +1218,7 @@ Backward compat: `camc-glm-run` → `camc run --api glm-5.1 …`; read `inferenc
 
 ## Appendix A — Complete API Reference (options, CLI, storage)
 
-Status: plan summary — **not implemented yet**.
+Status: reference appendix — core `--api` + defaults + proxy shipped; some appendix items (e.g. `camc api add`) remain design-only.
 
 ### A.1 Architecture flow
 
@@ -1214,7 +1236,8 @@ camc run [API flags] -t TOOL
 
 | Flag | Purpose |
 |------|---------|
-| `--api NAME` | Named API in `api-models.json` → `apis` (required for API-backed run) |
+| `--api NAME` | Named API in `api-models.json` → `apis` (explicit API-backed run) |
+| `--no-default-api` | Skip `defaults.<tool>`; use normal OAuth/login |
 | `--api-token TOKEN` | One-off bearer (optional) |
 | `--no-api-proxy` | Fail if resolver would use a proxy (force direct-only) |
 | `--proxy-debug` | JSONL debug logs |
@@ -1241,7 +1264,10 @@ camc env --tool claude --api glm-5.1
 |---------|---------|
 | `camc api list` | Enabled APIs |
 | `camc api list --all` | Include disabled curated |
-| `camc api check` | Ping `default_provider`; refresh `enabled` + `_catalog` |
+| `camc api check` | Ping provider; refresh `enabled`, `_catalog`, metadata |
+| `camc api default show [--json]` | Per-tool default API (empty = login) |
+| `camc api default set NAME --tool claude\|codex` | Opt in run default |
+| `camc api default clear --tool claude\|codex` | Remove default (login path) |
 
 Edit `~/.cam/api-models.json` and `~/.cam/token.env` directly for all other changes.
 

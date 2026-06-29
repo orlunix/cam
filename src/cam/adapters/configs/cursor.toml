@@ -16,7 +16,7 @@ name = "cursor"
 display_name = "Cursor Agent"
 
 [launch]
-command = ["agent", "--workspace", "{path}"]
+command = ["cursor-agent", "--workspace", "{path}"]
 prompt_after_launch = true
 startup_wait = 15.0
 strip_ansi = true
@@ -85,7 +85,7 @@ exit_command = "/exit"        # command to send if exit_action = "send_exit"
 # Adapter-owned readiness (F-08). Cursor: binary + version only —
 # no required auth files in current code.
 [readiness]
-binary = "cursor"
+binary = "cursor-agent"
 version_args = ["--version"]
 version_required = true
-install_hint = "ensure 'cursor' is in PATH"
+install_hint = "ensure 'cursor-agent' is in PATH"
