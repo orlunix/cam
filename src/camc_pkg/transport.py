@@ -511,6 +511,11 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
     env.pop("TMUX", None)
     env.pop("TMUX_PANE", None)
     env.pop("CLAUDECODE", None)
+    # Strip color-suppression vars that may leak from Claude's parent env
+    # (NO_COLOR=1 kills all ANSI in tmux sessions).
+    env.pop("NO_COLOR", None)
+    env.pop("FORCE_COLOR", None)
+    env.pop("NODE_DISABLE_COLORS", None)
 
     # Source tmux binary: explicit arg wins; else module-level default.
     tmux = tmux_bin or TMUX_BIN
