@@ -4513,3 +4513,81 @@ e31beae Fix API proxy start route selection
 7e72491 Stabilize desktop direct send and workflow UI
 ```
 
+## v1.2.0  82e48da 2026-06-30 23:33
+
+- Lines: 17318
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+82e48da Checkpoint desktop development state
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+```
+
+## v1.2.0  82e48da 2026-07-01 00:19
+
+- Lines: 17318
+- Output: /home/hren/.cam/camc
+- Recent changes:
+```
+82e48da Checkpoint desktop development state
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+```
+
+## v1.2.0  82e48da-dirty 2026-07-01 01:03
+
+- Lines: 17332
+- Output: /home/hren/.cam/camc
+- Recent changes:
+```
+82e48da Checkpoint desktop development state
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+```
+
+## v1.2.0  82e48da-dirty 2026-07-01 02:20
+
+- Lines: 17323
+- Output: /home/hren/.cam/camc
+- Recent changes:
+```
+82e48da Checkpoint desktop development state
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+```
+
+## v1.2.0  f768d51-dirty 2026-07-01 03:53
+
+- Lines: 17329
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
+82e48da Checkpoint desktop development state
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+```
+
+## v1.2.0  f768d51-dirty 2026-07-01 03:58
+
+- Lines: 17335
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
+82e48da Checkpoint desktop development state
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+```
+

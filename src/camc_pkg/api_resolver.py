@@ -13,6 +13,7 @@ from camc_pkg.api_routing import (
 )
 from camc_pkg.api_store import (
     CURATED_APIS,
+    check_provider,
     ensure_ready,
     get_api_entry,
     get_provider,
@@ -172,8 +173,14 @@ def resolve_run_plan(tool, api_name, no_api_proxy=False, proxy_debug=False):
     api_entry = dict((data.get("apis") or {}).get(key) or {})
     validate_api_run(tool, key, api_entry)
     if api_entry.get("enabled") is False:
-        reason = api_entry.get("enabled_reason") or "disabled"
-        raise ValueError("API %r is disabled (%s)" % (key, reason))
+        try:
+            check_provider(data, token_resolver=None)
+        except Exception:
+            pass
+        api_entry = dict((data.get("apis") or {}).get(key) or {})
+        if api_entry.get("enabled") is False:
+            reason = api_entry.get("enabled_reason") or "disabled"
+            raise ValueError("API %r is disabled (%s)" % (key, reason))
 
     provider_id = api_entry.get("provider") or data.get("default_provider")
     provider = get_provider(data, provider_id)

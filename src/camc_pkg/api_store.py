@@ -299,11 +299,17 @@ def resolve_run_api_name(tool, cli_api=None, no_default_api=False, data=None):
         return None, "login"
     key, entry = get_api_entry(data, name)
     if entry.get("enabled") is False:
-        reason = entry.get("enabled_reason") or "disabled"
-        raise ValueError(
-            "Default API %r for tool %r is disabled (%s). Run: camc api check"
-            % (key, tool, reason)
-        )
+        try:
+            check_provider(data, token_resolver=None)
+        except Exception:
+            pass
+        key, entry = get_api_entry(data, name)
+        if entry.get("enabled") is False:
+            reason = entry.get("enabled_reason") or "disabled"
+            raise ValueError(
+                "Default API %r for tool %r is disabled (%s). Run: camc api check"
+                % (key, tool, reason)
+            )
     return key, "default"
 
 
