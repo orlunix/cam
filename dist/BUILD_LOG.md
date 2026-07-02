@@ -4591,3 +4591,16 @@ f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux sess
 c61c56c Update desktop agent settings and bots workflows
 ```
 
+## v1.2.0  ebd9afa 2026-07-01 20:40
+
+- Lines: 17335
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+ebd9afa fix(camc): auto-enable API on first run when token is available
+f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
+82e48da Checkpoint desktop development state
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+```
+
