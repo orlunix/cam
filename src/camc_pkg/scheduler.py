@@ -8,6 +8,7 @@ import time
 from camc_pkg import log
 from camc_pkg.utils import _now_iso, _load_default_context, _build_command
 from camc_pkg.adapters import _load_config
+from camc_pkg.skills import install_manifest_skills
 from camc_pkg.storage import AgentStore, EventStore
 from camc_pkg.transport import (
     capture_tmux, tmux_session_exists, tmux_send_input,
@@ -191,6 +192,9 @@ def _launch_agent(task, workdir):
     # context.json is scheduler metadata only; it must not inject
     # runtime env setup into agent launches.
     env_setup = None
+
+    # Auto-install manifest skills to project .claude/skills/
+    install_manifest_skills(workdir)
 
     if not create_tmux_session(session, launch_cmd, workdir, env_setup=env_setup, inherit_env=True):
         return None

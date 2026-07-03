@@ -58,3 +58,4 @@ demos/*/.claude/scheduled_tasks.lock
 
 # APK release artifacts
 web/assets/*.apk
+a.out
