@@ -14,6 +14,7 @@ import socket as _sock
 from uuid import uuid4, uuid5, NAMESPACE_DNS as _UUID_NS
 
 from camc_pkg import __build__
+from camc_pkg.skills import list_skills, add_skill_to_manifest, remove_skill_from_manifest, install_manifest_skills
 
 
 _PHASE1_STORAGE_RELPATHS = (
@@ -918,6 +919,8 @@ def cmd_run(args):
             os.makedirs(d, exist_ok=True)
         except OSError:
             pass
+    # Auto-install manifest skills to project .claude/skills/
+    install_manifest_skills(workdir)
     print("Starting %s agent %s..." % (tool, agent_id))
     # F-08: launch with the SAME effective env preflight saw, and the
     # SAME tmux binary preflight just version-checked. resolved["tmux"]
@@ -3276,60 +3279,12 @@ def _kill_all_monitors():
     return killed
 
 
-def cmd_heal(args):
-    """Check running agents and restart dead monitor daemons."""
-    upgrade = getattr(args, "upgrade", False)
-
-    if upgrade:
-        killed = _kill_all_monitors()
-        print("Upgrade: killed %d old monitor process(es)" % killed)
-        time.sleep(0.5)  # let processes die
-
-        # Ensure each supported tool has a customization template at
-        # ~/.cam/configs/<tool>.toml. Missing-file only — never
-        # overwrites a user-edited file on the upgrade path (init's
-        # --force is the only way to do that, by design). Lets users
-        # land custom [[confirm]] rules after a binary upgrade without
-        # re-running `camc init`.
-        try:
-            cfg_results = install_default_configs(force=False)
-            created = [f for f, s in cfg_results.items() if s == "created"]
-            if created:
-                print("Upgrade: created adapter config template(s): %s"
-                      % ", ".join(sorted(created)))
-        except Exception as e:
-            log.warning("upgrade: install_default_configs failed: %s", e)
-
+def _do_heal():
+    """Shared heal body: resume, restart monitors, orphan adopt, maintenance."""
     my_hostname = _sock.gethostname()
     store = AgentStore()
     agents = store.list()
 
-    if upgrade:
-        # Fix unnamed agents: use basename of context_path
-        # Detect duplicates and append ID prefix to disambiguate
-        unnamed = []
-        for a in agents:
-            t = a.get("task")
-            name = t.get("name", "") if isinstance(t, dict) else a.get("name", "")
-            if not name:
-                unnamed.append(a)
-        if unnamed:
-            name_counts = {}
-            for a in unnamed:
-                base = os.path.basename((a.get("context_path") or "").rstrip("/")) or "agent"
-                name_counts.setdefault(base, []).append(a["id"])
-            fixed = 0
-            for a in unnamed:
-                base = os.path.basename((a.get("context_path") or "").rstrip("/")) or "agent"
-                new_name = "%s-%s" % (base, a["id"][:4]) if len(name_counts[base]) > 1 else base
-                t = a.get("task")
-                if isinstance(t, dict):
-                    t["name"] = new_name
-                else:
-                    a["name"] = new_name
-                store.save(a)
-                fixed += 1
-            print("Upgrade: named %d unnamed agent(s)" % fixed)
     # --- Phase 1: Resume agents with live sessions but terminal status ---
     terminal = [a for a in agents if a.get("status") in ("completed", "failed", "stopped")]
     resumed = 0
@@ -3805,6 +3760,85 @@ def cmd_heal(args):
         # "ok" / "noop" → quiet
     except Exception as e:
         log.warning("cron: heal hook failed: %s", e)
+
+
+def cmd_upgrade(args):
+    """Upgrade camc: kill old monitors, refresh configs, re-install skills, heal."""
+    killed = _kill_all_monitors()
+    print("Upgrade: killed %d old monitor process(es)" % killed)
+    if killed:
+        time.sleep(0.5)  # let processes die
+
+    # Ensure each supported tool has a customization template at
+    # ~/.cam/configs/<tool>.toml. Missing-file only — never
+    # overwrites a user-edited file on the upgrade path (init's
+    # --force is the only way to do that, by design). Lets users
+    # land custom [[confirm]] rules after a binary upgrade without
+    # re-running `camc init`.
+    try:
+        cfg_results = install_default_configs(force=False)
+        created = [f for f, s in cfg_results.items() if s == "created"]
+        if created:
+            print("Upgrade: created adapter config template(s): %s"
+                  % ", ".join(sorted(created)))
+    except Exception as e:
+        log.warning("upgrade: install_default_configs failed: %s", e)
+
+    # Re-install manifest skills to running agent workdirs
+    from camc_pkg.skills import install_manifest_skills
+    store = AgentStore()
+    agents = store.list()
+    my_hostname = _sock.gethostname()
+    reinstalled = 0
+    for a in agents:
+        if a.get("status") != "running":
+            continue
+        agent_host = a.get("hostname")
+        if agent_host and not _is_same_host(agent_host, my_hostname):
+            continue
+        workdir = a.get("context_path") or ""
+        if workdir and os.path.isdir(workdir):
+            results = install_manifest_skills(workdir, force=True)
+            if results:
+                reinstalled += 1
+    if reinstalled:
+        print("Upgrade: re-installed manifest skills to %d running agent(s)" % reinstalled)
+
+    # Fix unnamed agents: use basename of context_path
+    # Detect duplicates and append ID prefix to disambiguate
+    unnamed = []
+    for a in agents:
+        t = a.get("task")
+        name = t.get("name", "") if isinstance(t, dict) else a.get("name", "")
+        if not name:
+            unnamed.append(a)
+    if unnamed:
+        name_counts = {}
+        for a in unnamed:
+            base = os.path.basename((a.get("context_path") or "").rstrip("/")) or "agent"
+            name_counts.setdefault(base, []).append(a["id"])
+        fixed = 0
+        for a in unnamed:
+            base = os.path.basename((a.get("context_path") or "").rstrip("/")) or "agent"
+            new_name = "%s-%s" % (base, a["id"][:4]) if len(name_counts[base]) > 1 else base
+            t = a.get("task")
+            if isinstance(t, dict):
+                t["name"] = new_name
+            else:
+                a["name"] = new_name
+            store.save(a)
+            fixed += 1
+        print("Upgrade: named %d unnamed agent(s)" % fixed)
+
+    _do_heal()
+
+
+def cmd_heal(args):
+    """Check running agents and restart dead monitor daemons."""
+    if getattr(args, "upgrade", False):
+        print("Note: 'heal --upgrade' is deprecated, use 'camc upgrade'")
+        return cmd_upgrade(args)
+    _do_heal()
 
 
 def cmd_apply(args):
@@ -6157,6 +6191,80 @@ def cmd_version(args):
         print("  %s%s" % (name, exists))
 
 
+def cmd_skills(args):
+    """Skills dispatch: list / add / rm."""
+    sub = getattr(args, "skills_cmd", None)
+    if sub == "list":
+        cmd_skills_list(args)
+    elif sub == "add":
+        cmd_skills_add(args)
+    elif sub == "rm":
+        cmd_skills_rm(args)
+    else:
+        sys.stderr.write("usage: camc skills {list,add,rm} ...\n")
+        sys.exit(1)
+
+
+def cmd_skills_list(args):
+    rows = list_skills()
+    if _want_json(args):
+        print(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        print("No embedded skills.")
+        return
+    for row in rows:
+        manifest = "✓" if row["in_manifest"] else "-"
+        desc = row["description"]
+        if len(desc) > 72:
+            desc = desc[:69] + "..."
+        print("%-20s  %-8s  %s" % (row["name"], manifest, desc))
+
+
+def cmd_skills_add(args):
+    name = getattr(args, "name", None)
+    if not name:
+        print_error("Skill name (or 'all') is required")
+        sys.exit(1)
+
+    if name == "all":
+        embedded = [s["name"] for s in list_skills()]
+        added = []
+        for skill_name in embedded:
+            _, was_added = add_skill_to_manifest(skill_name)
+            if was_added:
+                added.append(skill_name)
+        if added:
+            print_success("Added %d skills to manifest" % len(added))
+        else:
+            print("All skills already in manifest.")
+    else:
+        embedded_names = {s["name"] for s in list_skills()}
+        if name not in embedded_names:
+            print_error("Unknown skill '%s'" % name)
+            sys.exit(1)
+        manifest, added = add_skill_to_manifest(name)
+        if added:
+            print_success("Added %s to manifest" % name)
+        else:
+            print("Already in manifest: %s" % name)
+
+
+def cmd_skills_rm(args):
+    name = getattr(args, "name", None)
+    if not name:
+        print_error("Skill name is required")
+        sys.exit(1)
+    embedded_names = {s["name"] for s in list_skills()}
+    if name not in embedded_names:
+        print_error("Unknown skill '%s'" % name)
+        sys.exit(1)
+    manifest, removed = remove_skill_from_manifest(name)
+    if removed:
+        print_success("Removed '%s' from manifest" % name)
+    else:
+        print("Not in manifest: %s" % name)
+
 
 def cmd_capture(args):
     """Capture tmux screen output for an agent."""
@@ -6587,6 +6695,9 @@ examples:
     heal_p = sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
     heal_p.add_argument("--upgrade", action="store_true", help="Kill ALL monitors and restart with current camc binary")
 
+    # upgrade — full camc upgrade
+    sub.add_parser("upgrade", help="Upgrade camc: restart monitors, refresh configs/skills, heal")
+
     # api — Inference Hub / custom API profiles
     api_p = sub.add_parser("api", help="API profiles (list/check)")
     api_sub = api_p.add_subparsers(dest="api_cmd", parser_class=CamArgumentParser)
@@ -6737,6 +6848,17 @@ examples:
     # version
     sub.add_parser("version", help="Show version")
 
+    # skills — official embedded skill management
+    sk = sub.add_parser("skills", help="Manage official embedded skills")
+    sk_sub = sk.add_subparsers(
+        dest="skills_cmd", parser_class=CamArgumentParser,
+        metavar="{list,add,rm}")
+    sk_sub.add_parser("list", help="List available official skills")
+    sk_add = sk_sub.add_parser("add", help="Add skill to manifest (auto-installed on run)")
+    sk_add.add_argument("name", help="Skill name or 'all'")
+    sk_rm = sk_sub.add_parser("rm", help="Remove skill from manifest")
+    sk_rm.add_argument("name", help="Skill name")
+
     # Hidden _monitor subcommand
     if len(sys.argv) >= 3 and sys.argv[1] == "_monitor":
         _run_monitor(sys.argv[2])
@@ -6801,12 +6923,14 @@ examples:
         "key": cmd_key,
         "msg": cmd_msg,
         "heal": cmd_heal,
+        "upgrade": cmd_upgrade,
         "cron": cmd_cron,
         "machine": cmd_machine,
         "context": cmd_context,
         "sync": cmd_sync,
         "db-migrate": cmd_db_migrate,
         "version": cmd_version,
+        "skills": cmd_skills,
         "api": cmd_api,
     }
     if args.command in cmds:
