@@ -27,7 +27,7 @@ from camc_pkg.utils import strip_ansi, _run
 # 'camc-template-sha256' header tracks the hash of the managed body
 # so a user-modified file is left alone.
 
-_CAMC_TMUX_CONFIG_VERSION = 1
+_CAMC_TMUX_CONFIG_VERSION = 2
 _CAMC_TMUX_CONFIG_BODY = (
     "# camc-managed: true\n"
     "# camc-template: tmux\n"
@@ -40,7 +40,7 @@ _CAMC_TMUX_CONFIG_BODY = (
     "# leaves it alone.\n"
     "\n"
     "set-option -g history-limit 50000\n"
-    "set-option -g status off\n"
+    "set-option -g status on\n"
     "set-option -g mouse off\n"
     'set-option -g default-terminal "screen-256color"\n'
 )
