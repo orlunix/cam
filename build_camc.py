@@ -64,6 +64,7 @@ MODULE_ORDER = [
     "proxy.messages",
     "proxy.responses",
     "proxy.manager",
+    "skills",
     "cli",
 ]
 
@@ -71,6 +72,7 @@ PKG_DIR = os.path.join(os.path.dirname(__file__), "src", "camc_pkg")
 SRC_DIR = os.path.join(os.path.dirname(__file__), "src")
 DIST_DIR = os.path.join(os.path.dirname(__file__), "dist")
 TOML_DIR = os.path.join(os.path.dirname(__file__), "src", "cam", "adapters", "configs")
+SKILLS_DIR = os.path.join(os.path.dirname(__file__), "src", "camc_pkg", "skills")
 
 
 def read_module(name):
@@ -82,6 +84,8 @@ def read_module(name):
         src = f.read()
     if name == "adapters":
         src = _inject_embedded_configs(src)
+    elif name == "skills":
+        src = _inject_embedded_skills(src)
     return src
 
 
@@ -105,6 +109,49 @@ def _inject_embedded_configs(src):
     src = src.replace(
         "_EMBEDDED_BOOT_CONFIGS = {}  # populated by build_camc.py",
         "_EMBEDDED_BOOT_CONFIGS = {\n%s,\n}" % ",\n".join(boot_entries),
+    )
+    return src
+
+
+def _inject_embedded_skills(src):
+    """Inject skill file trees from src/camc_pkg/skills/ as a nested dict.
+
+    _EMBEDDED_SKILLS = {
+        "managing-cam": {
+            "SKILL.md": r'''...''',
+            "reference/contexts-and-machines.md": r'''...''',
+        },
+        ...
+    }
+    """
+    skills = {}
+    for skill_name in sorted(os.listdir(SKILLS_DIR)):
+        skill_dir = os.path.join(SKILLS_DIR, skill_name)
+        if not os.path.isdir(skill_dir):
+            continue
+        files = {}
+        for root, _dirs, filenames in os.walk(skill_dir):
+            for fn in filenames:
+                full = os.path.join(root, fn)
+                rel = os.path.relpath(full, skill_dir)
+                with open(full, "r") as f:
+                    files[rel] = f.read()
+        if files:
+            skills[skill_name] = files
+
+    skill_entries = []
+    for skill_name in sorted(skills):
+        file_entries = []
+        for fname in sorted(skills[skill_name]):
+            content = skills[skill_name][fname]
+            file_entries.append(
+                '        "%s": r"""%s"""' % (fname, content))
+        skill_entries.append(
+            '    "%s": {\n%s\n    }' % (skill_name, ",\n".join(file_entries)))
+
+    src = src.replace(
+        "_EMBEDDED_SKILLS = {}  # populated by build_camc.py",
+        "_EMBEDDED_SKILLS = {\n%s,\n}" % ",\n".join(skill_entries),
     )
     return src
 
