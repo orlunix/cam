@@ -67,6 +67,12 @@ const crypto = require('node:crypto');
 const fs     = require('node:fs');
 const os     = require('node:os');
 const path   = require('node:path');
+// Local camc discovery (Bug 1: ingest local agents in Direct mode).
+// The hub process runs on the same host as `~/.cam/camc`, so a local
+// child_process spawn is the Direct-mode mirror of the SSH
+// `_sshTransport.execRemote` path used for remote nodes. Keep using
+// stdlib only — no shell, just execFile on the resolved camc binary.
+const { execFile } = require('node:child_process');
 
 const DEFAULT_PORT       = 8420;
 const PORT_SCAN_RANGE    = 50;
@@ -76,6 +82,16 @@ const SYSTEM_PROMPT_MAX_BYTES = 128 * 1024;
 const SYSTEM_PROMPT_FILES = { claude: 'CLAUDE.md', codex: 'AGENTS.md', cursor: 'AGENTS.md' };
 const STORE_VERSION      = 1;
 const HUB_PRODUCT_VERSION = 'cam-desktop-embedded-1';
+// Bug 1 (CAM-DESK-DIRECT-019): in Direct mode the hub process runs on
+// the same host as `~/.cam/camc`, so local `camc run` agents must be
+// discoverable without a manual Sync. We auto-create a local-type
+// context that anchors those agents so `_contextForAgentRecord`
+// resolves them (otherwise `_pruneUnownedStoreAgents` would drop them
+// as orphans on the next SSH sync) and so Nodes mode shows a "local"
+// host card. The name is fixed; the id is generated once and
+// persisted in the store.
+const LOCAL_CONTEXT_NAME  = 'local';
+const LOCAL_SYNC_TIMEOUT_MS = 8000;
 // Direct Plain/Rich output polls can arrive every second while the same SSH
 // endpoint is also syncing agents. Keep a very short cache and coalesce
 // duplicate in-flight captures so polls do not stack `camc capture` calls.
@@ -99,6 +115,7 @@ const state = {
   remoteCamcReadyCache: new Map(),
   agentSyncInFlight: false,
   lastAgentSyncAt: 0,
+  localSyncInFlight: false,
 };
 
 function tokenFingerprint(tok) {
@@ -551,6 +568,24 @@ function findContextByName(name) {
   return state.store.contexts.find(c => c.name === name) || null;
 }
 
+/** Resolve a context by name OR id. The renderer's Nodes mode and the
+ *  machines view sometimes pass the context `id` (e.g. when
+ *  `contextSyncHints(ctx).id` is preferred over `ctx.name` in
+ *  `syncContext`, or `persistDelete(ctx.id || ctx.name)` on the
+ *  delete-host path). The bare `/api/contexts/:name_or_id` route must
+ *  therefore accept either key — matching by name alone 404s for any
+ *  caller that leads with the id (CAM-DESK-NODEUI-014/-015,
+ *  CAM-DESK-DIRECT-014). Same id-or-name resolution the browse helpers
+ *  already inline at _browseContextList/_browseContextRead. */
+function findContextByNameOrId(nameOrId) {
+  const key = String(nameOrId || '');
+  if (!key) return null;
+  if (!state.store || !Array.isArray(state.store.contexts)) return null;
+  return state.store.contexts.find(c => c.name === key)
+    || state.store.contexts.find(c => String(c.id || '') === key)
+    || null;
+}
+
 function applyContextUpdate(existing, body) {
   // Apply only known scalar fields; refuse to rewrite id/created_at.
   const next = { ...existing };
@@ -964,7 +999,14 @@ async function _syncAllAgentContexts(reason = 'manual') {
     return { ok: false, error: 'sync_in_flight', detail: 'agent sync already running' };
   }
   const contexts = _syncableAgentContexts();
-  if (!contexts.length) return { ok: true, synced: 0, failed: 0, results: [] };
+  // No SSH contexts does NOT mean "nothing to do" — Bug 1: there may
+  // still be local camc agents on the hub's own host to ingest. Run
+  // the local pass first so a Direct-mode install with zero remote
+  // nodes still reflects its local agents.
+  if (!contexts.length) {
+    const local = await _syncLocalAgents();
+    return { ok: true, synced: local && local.ok ? 1 : 0, failed: 0, results: local && local.ok ? [{ context: LOCAL_CONTEXT_NAME, ok: true, imported: local.imported || 0, error: null }] : [] };
+  }
   state.agentSyncInFlight = true;
   const results = [];
   let synced = 0;
@@ -976,6 +1018,17 @@ async function _syncAllAgentContexts(reason = 'manual') {
       results.push({ context: ctx.name, ok: !!(r && r.ok), imported: r && r.imported || 0, error: r && r.error || null });
       if (r && r.ok) synced++;
       else failed++;
+    }
+    // Bug 1: ingest local camc agents on the hub's own host as part of
+    // a full sync too, so "Sync All" covers both transports. Run BEFORE
+    // prune so `_pruneUnownedStoreAgents` sees the local anchor context
+    // and does not drop the freshly-imported local rows as orphans.
+    const local = await _syncLocalAgents();
+    if (local && local.ok) {
+      synced++;
+      results.push({ context: LOCAL_CONTEXT_NAME, ok: true, imported: local.imported || 0, error: null });
+    } else if (local && local.error !== 'sync_in_flight' && local.error !== 'camc_missing') {
+      results.push({ context: LOCAL_CONTEXT_NAME, ok: false, imported: 0, error: local.error || 'failed' });
     }
     state.lastAgentSyncAt = Date.now();
     const prune = synced > 0
@@ -990,9 +1043,142 @@ async function _syncAllAgentContexts(reason = 'manual') {
 }
 
 
-/** Look up an agent and its owning context from the local store.
- *  Returns `{ agent, ctx }` or `{ error }` shape so callers can map
- *  the failure to a useful UI message instead of an empty body. */
+/* ─────────────── Local agent ingestion (Bug 1, CAM-DESK-DIRECT-019) ───────────────
+ *
+ * In Direct mode the hub process runs on the same host as `~/.cam/camc`,
+ * so `camc run` agents launched on the hub's own machine (e.g. prgn)
+ * must show up in the agent list without a manual Sync Host. The SSH
+ * sync path (`_syncableAgentContexts`) deliberately skips every
+ * non-ssh context, so local agents never enter `state.store.agents`
+ * unless the operator happens to trigger a self-SSH sync. This block
+ * adds the local mirror: run `camc --json list` on the hub process's
+ * own host, normalize the records exactly like the remote path, and
+ * upsert them under an auto-created local context so the renderer's
+ * per-host tally and the prune logic both see them.
+ */
+
+/** Resolve the camc binary to run for local discovery. Prefer the
+ *  bundled camc (works on a fresh install with nothing on PATH), then
+ *  fall back to `camc` on PATH (the dev/prgn case where the CLI is
+ *  installed under ~/.local/bin). `execFile` searches PATH for a bare
+ *  name; an ENOENT is mapped to a 'camc_missing' result upstream. */
+function _localCamcPath() {
+  return _bundledCamcPath() || 'camc';
+}
+
+/** Auto-create the local anchor context if no local-type context
+ *  exists yet. Idempotent: returns the existing record on subsequent
+ *  calls. The context has `machine.type === 'local'` so it is skipped
+ *  by the SSH sync path and never double-counted. Its `name` is the
+ *  fixed `LOCAL_CONTEXT_NAME` so `_contextForAgentRecord` and the
+ *  renderer both key on it. */
+function _ensureLocalContext() {
+  if (!state.store) state.store = _emptyStore();
+  if (!Array.isArray(state.store.contexts)) state.store.contexts = [];
+  const existing = state.store.contexts.find(c => c && c.machine && (c.machine.type || 'local') === 'local');
+  if (existing) return existing;
+  const rec = {
+    id:           crypto.randomUUID(),
+    name:         LOCAL_CONTEXT_NAME,
+    path:         '',
+    machine:      { type: 'local', host: '', user: '', port: null },
+    tags:         [],
+    created_at:   nowIso(),
+    last_used_at: null,
+  };
+  state.store.contexts.push(rec);
+  saveStore();
+  pushLog('info', `local context auto-created: ${rec.name}`);
+  return rec;
+}
+
+/** Run `camc --json list` on the hub's own host and merge the result
+ *  into `state.store.agents` under the local context. Mirrors the
+ *  remote `_syncContextAgents` shape so the renderer's tally and
+ *  `_repairStoreAgents` see identical fields. Does NOT duplicate
+ *  SSH-synced rows: `_upsertAgentsForContext` only replaces rows
+ *  whose `context_name === LOCAL_CONTEXT_NAME` (or whose
+ *  `_agentDedupeKey` collides, which can't happen here because SSH
+ *  rows carry a non-empty `machine_host` and a different ctx name).
+ *
+ *  Returns `{ ok, imported, total, results: { camc } }` (same shape
+ *  as `_syncContextAgents`) so callers can mix it into the existing
+ *  sync results array. Failures are non-fatal: a missing/broken local
+ *  camc just yields an empty import, it never breaks the agent list.
+ *  Throttled by `state.localSyncInFlight` so concurrent GET /api/agents
+ *  polls do not stack local camc spawns. */
+function _runLocalCamcList() {
+  return new Promise((resolve) => {
+    const bin = _localCamcPath();
+    const child = execFile(bin, ['--json', 'list'], {
+      timeout: LOCAL_SYNC_TIMEOUT_MS,
+      maxBuffer: 4 * 1024 * 1024,
+      windowsHide: true,
+    }, (err, stdout, stderr) => {
+      if (err) {
+        // ENOENT = camc not on PATH and not bundled; treat as "no local
+        // agents", not a hard failure (a fresh install may have no
+        // local camc until the first `cam sync`).
+        const code = (err.code === 'ENOENT') ? 'camc_missing'
+          : (err.killed && /TIMEDOUT/i.test(String(err.message || '')) ? 'timeout' : 'exec_failed');
+        return resolve({ ok: false, error: code, detail: err.message || 'local camc list failed', stdout: '', stderr: stderr || '' });
+      }
+      resolve({ ok: true, stdout: String(stdout || ''), stderr: String(stderr || '') });
+    });
+    void child;
+  });
+}
+
+async function _syncLocalAgents() {
+  if (state.localSyncInFlight) {
+    return { ok: false, error: 'sync_in_flight', imported: 0, total: 0, results: { camc: 'unchanged' } };
+  }
+  state.localSyncInFlight = true;
+  try {
+    const ctx = _ensureLocalContext();
+    const res = await _runLocalCamcList();
+    if (!res.ok) {
+      // Missing local camc on a fresh install is expected — log at
+      // debug-ish level and move on. Surface real exec errors once.
+      if (res.error !== 'camc_missing') {
+        pushLog('warn', `local sync failed: ${res.error}`);
+      }
+      return { ok: false, error: res.error, imported: 0, total: 0, results: { camc: 'failed' } };
+    }
+    let parsed;
+    try { parsed = JSON.parse(res.stdout || '[]'); }
+    catch (e) {
+      pushLog('warn', `local sync: invalid JSON from local camc: ${e && e.message}`);
+      return { ok: false, error: 'invalid_json', imported: 0, total: 0, results: { camc: 'failed' } };
+    }
+    if (!Array.isArray(parsed)) {
+      return { ok: false, error: 'invalid_json', imported: 0, total: 0, results: { camc: 'failed' } };
+    }
+    const normalized = parsed
+      .map(r => _normalizeAgent(r, ctx))
+      .filter(r => r && r.id);
+
+    // Change-detection keyed on id+status+state+updated_at, same as the
+    // remote path, so we can report 'updated'/'unchanged' to the caller.
+    const prev = (state.store && state.store.agents)
+      ? state.store.agents.filter(a => (a.context_name || '') === ctx.name)
+      : [];
+    _upsertAgentsForContext(ctx, normalized);
+    function fp(a) { return `${a.id}|${a.status}|${a.state}|${a.task_name}|${a.updated_at || ''}`; }
+    const prevSig = new Set(prev.map(fp));
+    const newSig  = new Set(normalized.map(fp));
+    const same = (prevSig.size === newSig.size)
+      && [...prevSig].every(k => newSig.has(k));
+    const status = same ? 'unchanged' : 'updated';
+    pushLog('info', `sync ${ctx.name}: ${status} (${normalized.length} agent(s))`);
+    return { ok: true, imported: normalized.length, total: parsed.length, results: { camc: status } };
+  } finally {
+    state.localSyncInFlight = false;
+  }
+}
+
+
+
 function _contextForAgent(agentId) {
   if (!state.store) return { error: 'store_unavailable' };
   const id = decodeURIComponent(String(agentId || ''));
@@ -3264,7 +3450,7 @@ async function handle(req, res) {
   if (ctxMatch) {
     const ctxName = decodeURIComponent(ctxMatch[1]);
     const sub = ctxMatch[2] || '';
-    const existing = findContextByName(ctxName);
+    const existing = findContextByNameOrId(ctxName);
 
     if (method === 'GET' && !sub) {
       if (!existing) return send404(res);
@@ -3277,7 +3463,7 @@ async function handle(req, res) {
       catch (e) { return send400(res, e.message); }
       const upd = applyContextUpdate(existing, body || {});
       if (upd.error) return send400(res, upd.detail || upd.error, upd.error);
-      const idx = state.store.contexts.findIndex(c => c.name === ctxName);
+      const idx = state.store.contexts.findIndex(c => c === existing);
       state.store.contexts[idx] = upd.record;
       saveStore();
       pushLog('info', `context updated: ${ctxName}`);
@@ -3285,7 +3471,7 @@ async function handle(req, res) {
     }
     if (method === 'DELETE' && !sub) {
       if (!existing) return send404(res);
-      const idx = state.store.contexts.findIndex(c => c.name === ctxName);
+      const idx = state.store.contexts.findIndex(c => c === existing);
       state.store.contexts.splice(idx, 1);
       saveStore();
       // Cascade: drop any remembered password/passphrase tied to
@@ -3338,6 +3524,10 @@ async function handle(req, res) {
       const refresh = /^(1|true|yes|sync)$/i.test(url.searchParams.get('refresh') || '');
       let sync = null;
       if (refresh) sync = await _syncAllAgentContexts('api-refresh');
+      // Bug 1: also ingest local camc agents on the hub's own host so
+      // they appear in Direct mode without a manual Sync Host. Cheap
+      // local subprocess; throttled by `state.localSyncInFlight`.
+      await _syncLocalAgents();
       _repairStoreAgents();
       return sendJson(res, 200, {
         agents: state.store.agents,
