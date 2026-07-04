@@ -4513,3 +4513,29 @@ e31beae Fix API proxy start route selection
 7e72491 Stabilize desktop direct send and workflow UI
 ```
 
+## v1.2.0  82e48da-dirty 2026-07-04 05:43
+
+- Lines: 17351
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+82e48da Checkpoint desktop development state
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+```
+
+## v1.2.0  82e48da-dirty 2026-07-04 06:05
+
+- Lines: 17382
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+82e48da Checkpoint desktop development state
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+fce5cc1 camc cron: add per-agent loop scheduling
+```
+
