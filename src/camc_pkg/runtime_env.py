@@ -10,9 +10,10 @@ reasons.
 
 The effective environment is:
 
-    1. The user's login shell env (zsh / bash / sh — whatever ``$SHELL``
-       points at, falling back to ``/bin/sh``). We invoke the login
-       shell once with ``-l -c`` and dump ``os.environ`` from a
+    1. The user's login shell env (zsh / bash / csh / sh — whatever the
+       passwd entry names, falling back to ``$SHELL`` then ``/bin/sh``).
+       We invoke the login shell once with ``-l -c`` and dump
+       ``os.environ`` from a
        ``sys.executable`` subprocess. ``sys.executable`` is the same
        python that is already running camc, so the dump does NOT
        depend on a ``python3`` being on ``$PATH``.
@@ -39,6 +40,7 @@ Python 3.6+, stdlib only. No dataclasses, no f-strings.
 """
 
 import os
+import pwd
 import re
 import shlex
 import shutil
@@ -93,6 +95,30 @@ _DUMP_CODE = (
 )
 
 
+def _default_login_shell():
+    """Best guess at the user's login shell.
+
+    Prefer the passwd entry (``getpwuid``) over ``$SHELL``: ``$SHELL``
+    reflects whoever launched the current process (e.g. an IDE or a
+    tool wrapper like Claude Code's Bash shell may set ``SHELL=zsh``
+    even when the account's login shell is csh/bash). The passwd entry
+    is what a real login session would use, so it matches the env the
+    user actually configures. Fall back to ``$SHELL`` then ``/bin/sh``
+    for environments without a passwd entry (containers, nologin
+    accounts).
+    """
+    try:
+        pw_shell = pwd.getpwuid(os.getuid()).pw_shell
+        if pw_shell and os.path.exists(pw_shell):
+            return pw_shell
+    except (KeyError, OSError):
+        pass
+    env_shell = os.environ.get("SHELL")
+    if env_shell and os.path.exists(env_shell):
+        return env_shell
+    return "/bin/sh"
+
+
 def load_login_shell_env(shell=None, env_setup=None, timeout=5):
     """Run the user's login shell to capture its env, optionally after
     applying an env_setup string. Returns (env_dict, warnings).
@@ -104,8 +130,8 @@ def load_login_shell_env(shell=None, env_setup=None, timeout=5):
     block: a host whose login shell can't be captured is still
     runnable, just less verifiable.
 
-    `shell`: path to the shell binary. Defaults to ``$SHELL`` then
-    ``/bin/sh``.
+    `shell`: path to the shell binary. Defaults to the passwd entry
+    (``getpwuid``), then ``$SHELL``, then ``/bin/sh``.
     `env_setup`: optional string of shell commands to source/exec
     before the dump (e.g. ``"source /etc/profile.d/foo.sh"``). Joined
     with ``&&`` before the dump command.
@@ -114,13 +140,21 @@ def load_login_shell_env(shell=None, env_setup=None, timeout=5):
     NFS-heavy hosts.
     """
     warnings = []
-    shell = shell or os.environ.get("SHELL") or "/bin/sh"
+    shell = shell or _default_login_shell()
     capture_shell = shell
-    if env_setup and os.path.exists("/bin/bash"):
-        # Machine env_setup strings are authored as POSIX/bash snippets
-        # (`export ...`, `source ~/.bashrc`, `unset ...`). Some PDX/DC
-        # accounts use csh/tcsh as $SHELL, where `-l -c` and bash rc
-        # snippets are not portable, so run explicit setup through bash.
+    base = os.path.basename(capture_shell) if capture_shell else ""
+    # csh/tcsh can't parse the bash-style `exec <py> -c '...'` dump
+    # command we inject below (the quoting trips `Unmatched '''` /
+    # `Badly placed ()'s`), and machine env_setup strings are authored
+    # as POSIX/bash snippets (`export ...`, `source ~/.bashrc`,
+    # `unset ...`). Capture through bash when the login shell is csh
+    # family and bash exists; the passwd entry is still what we report
+    # as the login shell (see _default_login_shell).
+    if base in ("csh", "tcsh") and os.path.exists("/bin/bash"):
+        capture_shell = "/bin/bash"
+    elif env_setup and os.path.exists("/bin/bash"):
+        # Same reasoning for other non-bash shells when an env_setup
+        # snippet is present.
         capture_shell = "/bin/bash"
     if not capture_shell or not os.path.exists(capture_shell):
         warnings.append("login shell %r not found; using current env" % capture_shell)
@@ -196,9 +230,22 @@ def build_runtime_env(shell=None, env_setup=None):
     )
     for k in _NEST_CLEAR_KEYS:
         env.pop(k, None)
+    # Force SHELL to the resolved login shell. The captured env's SHELL
+    # is whatever the parent process exported — e.g. Claude Code's
+    # Bash tool sets SHELL=/usr/bin/zsh even when the account's passwd
+    # entry is /bin/csh. tmux new-session with no command runs $SHELL
+    # from this env, so a stale SHELL launches the wrong shell (on a
+    # box with no ~/.zshrc that fires zsh-newuser-install, which aborts
+    # and garbles camc's injected launch line -> wedge). Reading
+    # /etc/passwd via getpwuid keeps the effective env aligned with the
+    # account. Applied to both the captured path and the current-env
+    # fallback so the fallback can't reintroduce the wrong SHELL.
+    resolved_shell = shell or _default_login_shell()
+    if env.get("SHELL") != resolved_shell:
+        env["SHELL"] = resolved_shell
     return RuntimeEnv(
         env=env, source=source,
-        shell=(shell or os.environ.get("SHELL") or "/bin/sh"),
+        shell=resolved_shell,
         path=env.get("PATH", ""),
         warnings=warnings,
     )
