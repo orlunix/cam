@@ -511,6 +511,24 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
     env.pop("TMUX", None)
     env.pop("TMUX_PANE", None)
     env.pop("CLAUDECODE", None)
+    # Force SHELL to the account's login shell from /etc/passwd. The
+    # parent process's SHELL may be wrong — Claude Code's Bash tool
+    # exports SHELL=/usr/bin/zsh even on a /bin/csh account. tmux
+    # new-session with no command runs $SHELL from this env, so a stale
+    # SHELL launches zsh on a box with no ~/.zshrc -> zsh-newuser-install
+    # fires, aborts, and garbles camc's injected launch line. Reading
+    # /etc/passwd (getpwuid) instead of $SHELL keeps tmux's default shell
+    # aligned with the account. (build_runtime_env already does this
+    # for the cmd_run path; this covers callers that pass no env= and
+    # fall through to os.environ.copy() — e.g. scheduler.py.)
+    try:
+        import pwd as _pwd
+        _pw = _pwd.getpwuid(os.getuid())
+        if _pw.pw_shell and os.path.exists(_pw.pw_shell):
+            if env.get("SHELL") != _pw.pw_shell:
+                env["SHELL"] = _pw.pw_shell
+    except (KeyError, OSError):
+        pass
 
     # Source tmux binary: explicit arg wins; else module-level default.
     tmux = tmux_bin or TMUX_BIN
