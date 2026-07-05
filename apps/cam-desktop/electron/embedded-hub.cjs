@@ -1194,7 +1194,10 @@ const RUN_LOCAL_TIMEOUT_MS  = 30000;
 const RUN_REMOTE_TIMEOUT_MS = 45000;
 
 /** Build the `camc run` argv from a start request body. Tool/path/name
- *  are required-ish; api + auto_exit are optional. */
+ *  are required-ish; api + auto_exit + no_default_api + api_token optional.
+ *  --no-default-api and --api-token are passed straight through to camc
+ *  (see src/camc_pkg/cli.py:6368/6370). --no-default-api is a no-op when
+ *  an explicit --api is also set, but camc handles the precedence. */
 function _buildRunArgv(body) {
   const tool  = String((body && body.tool) || 'claude');
   const path  = String((body && body.path) || '');
@@ -1202,9 +1205,13 @@ function _buildRunArgv(body) {
   const prompt = String((body && body.prompt) || '');
   const api   = body && body.api ? String(body.api) : '';
   const autoExit = !!(body && body.auto_exit);
+  const noDefaultApi = !!(body && body.no_default_api);
+  const apiToken = body && body.api_token ? String(body.api_token) : '';
   const argv = ['--json', 'run', '-t', tool, '-p', path];
   if (name) argv.push('-n', name);
   if (api)  argv.push('--api', api);
+  if (noDefaultApi) argv.push('--no-default-api');
+  if (apiToken) argv.push('--api-token', apiToken);
   if (autoExit) argv.push('--auto-exit');
   argv.push(prompt);
   return argv;
@@ -1400,10 +1407,13 @@ function _resolveStartTarget(body) {
 }
 
 // ── API models (GET /api/api-models) ──────────────────────────────
-// Wraps `camc --json api list` + `camc --json api default show` and
-// merges them with a static toolSupport map (claude/codex support
-// --api; cursor/aider do not). Runs locally via execFile (the hub's
-// own host); this route is for the Start form's model picker.
+// Wraps `camc --json api list --all` + `camc api default show --json`
+// and merges them with a static toolSupport map (claude/codex support
+// --api; cursor/aider do not). When the request targets a remote
+// context/node, runs both commands on that node over SSH (same
+// execRemote path as _syncContextAgents); otherwise runs locally via
+// execFile. `source` describes the endpoint + enabled count for the
+// renderer's status line.
 
 const API_TOOL_SUPPORT = { claude: true, codex: true, cursor: false, aider: false };
 
@@ -1426,32 +1436,115 @@ function _localCamcJson(args, timeoutMs) {
   });
 }
 
-async function _getApiModels() {
-  const [listRes, defRes] = await Promise.all([
-    _localCamcJson(['--json', 'api', 'list'], 8000),
-    // `api default show` has its OWN --json flag (the global --json is
-    // not inherited by this subparser), so it must come AFTER `show`.
-    _localCamcJson(['api', 'default', 'show', '--json'], 8000),
-  ]);
+/** Run `camc` JSON commands on a remote SSH node. `baseOpts` carries
+ *  host/user/port/auth (same shape as _startRemoteAgent). Returns
+ *  { ok, stdout, stderr, error, detail }. */
+async function _remoteCamcJson(baseOpts, argv, timeoutMs) {
+  if (!_sshTransport || typeof _sshTransport.execRemote !== 'function') {
+    return { ok: false, error: 'ssh_transport_unavailable', detail: 'embedded Hub has no SSH transport configured', stdout: '', stderr: '' };
+  }
+  const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+  const cmd = `${REMOTE_CAMC} ${argv.map(q).join(' ')}`;
+  const res = await _sshTransport.execRemote({ ...baseOpts, command: cmd, timeout_ms: timeoutMs || 10000 });
+  if (!res || !res.ok) {
+    const err = (res || {});
+    return { ok: false, error: err.error || 'exec_failed', detail: err.detail || err.stderr || 'remote camc exec failed', stdout: (res && res.stdout) || '', stderr: (res && res.stderr) || '' };
+  }
+  return { ok: true, stdout: String(res.stdout || ''), stderr: String(res.stderr || '') };
+}
+
+/** Merge raw list/default JSON outputs into {models, defaults}.
+ *  Logs warnings on parse failures. */
+function _mergeApiModels(listRes, defRes, logTag) {
   let models = [];
-  if (listRes.ok) {
+  if (listRes && listRes.ok) {
     try {
       const parsed = JSON.parse(listRes.stdout || '[]');
       if (Array.isArray(parsed)) models = parsed;
-    } catch (e) { pushLog('warn', `api-models: invalid list JSON: ${e && e.message}`); }
-  } else if (listRes.error !== 'camc_missing') {
-    pushLog('warn', `api-models list failed: ${listRes.error}`);
+    } catch (e) { pushLog('warn', `api-models ${logTag}: invalid list JSON: ${e && e.message}`); }
+  } else if (listRes && listRes.error !== 'camc_missing' && listRes.error !== 'ssh_transport_unavailable') {
+    pushLog('warn', `api-models ${logTag} list failed: ${listRes.error}`);
   }
   let defaults = [];
-  if (defRes.ok) {
+  if (defRes && defRes.ok) {
     try {
       const parsed = JSON.parse(defRes.stdout || '[]');
       if (Array.isArray(parsed)) defaults = parsed;
-    } catch (e) { pushLog('warn', `api-models: invalid default JSON: ${e && e.message}`); }
-  } else if (defRes.error !== 'camc_missing') {
-    pushLog('warn', `api-models default failed: ${defRes.error}`);
+    } catch (e) { pushLog('warn', `api-models ${logTag}: invalid default JSON: ${e && e.message}`); }
+  } else if (defRes && defRes.error !== 'camc_missing' && defRes.error !== 'ssh_transport_unavailable') {
+    pushLog('warn', `api-models ${logTag} default failed: ${defRes.error}`);
   }
-  return { models, defaults, toolSupport: API_TOOL_SUPPORT };
+  return { models, defaults };
+}
+
+/** `camc api default show` has its OWN --json flag (the global --json
+ *  is not inherited by this subparser), so it must come AFTER `show`.
+ *  `api list` DOES inherit the global --json. Both take `--all` to
+ *  include disabled APIs (cli.py:6594). */
+const API_LIST_ARGS  = ['--json', 'api', 'list', '--all'];
+const API_DEFAULT_ARGS = ['api', 'default', 'show', '--json'];
+
+/** Resolve a start-style target (context name OR node key OR empty
+ *  for local) for the model-picker. Returns { ok, baseOpts, ctx, label }
+ *  where label names the endpoint for the status line. Reuses
+ *  _resolveStartTarget so creds resolution is identical to start. The
+ *  renderer only ever sends a real `context` (for a selected context)
+ *  or `node:"local"` (for the "(none)" case); a remote node key without
+ *  a context is not produced by the picker, but we synthesize a dummy
+ *  path so _resolveStartTarget's inline-node guard doesn't 400. */
+function _resolveApiModelsTarget(query) {
+  const ctxName = query && query.context ? String(query.context) : '';
+  const nodeKey = query && query.node ? String(query.node) : '';
+  if (ctxName) {
+    const t = _resolveStartTarget({ context: ctxName });
+    if (!t.ok) return t;
+    const m = (t.ctx && t.ctx.machine) || {};
+    const label = (m.type || 'local') === 'ssh'
+      ? `${m.user || ''}@${m.host}${m.port && m.port !== 22 ? ':' + m.port : ''}`
+      : LOCAL_CONTEXT_NAME;
+    return { ok: true, baseOpts: t.baseOpts, ctx: t.ctx, label };
+  }
+  if (nodeKey && nodeKey !== 'local') {
+    // Remote node without a context — dummy path (picker doesn't send
+    // this today, but keep _resolveStartTarget happy if it ever does).
+    const t = _resolveStartTarget({ node: nodeKey, path: '/tmp' });
+    if (!t.ok) return t;
+    const m = (t.ctx && t.ctx.machine) || {};
+    const label = (m.type || 'local') === 'ssh'
+      ? `${m.user || ''}@${m.host}${m.port && m.port !== 22 ? ':' + m.port : ''}`
+      : LOCAL_CONTEXT_NAME;
+    return { ok: true, baseOpts: t.baseOpts, ctx: t.ctx, label };
+  }
+  // local / none
+  return { ok: true, baseOpts: null, ctx: _ensureLocalContext(), label: LOCAL_CONTEXT_NAME };
+}
+
+async function _getApiModels(query) {
+  const target = _resolveApiModelsTarget(query || {});
+  if (!target.ok) {
+    return { models: [], defaults: [], toolSupport: API_TOOL_SUPPORT, source: { label: '', enabled_count: 0, error: target.error, detail: target.detail } };
+  }
+  const tag = target.label || LOCAL_CONTEXT_NAME;
+  let listRes, defRes;
+  if (target.baseOpts) {
+    [listRes, defRes] = await Promise.all([
+      _remoteCamcJson(target.baseOpts, API_LIST_ARGS, 12000),
+      _remoteCamcJson(target.baseOpts, API_DEFAULT_ARGS, 12000),
+    ]);
+  } else {
+    [listRes, defRes] = await Promise.all([
+      _localCamcJson(API_LIST_ARGS, 10000),
+      _localCamcJson(API_DEFAULT_ARGS, 10000),
+    ]);
+  }
+  const { models, defaults } = _mergeApiModels(listRes, defRes, tag);
+  const enabledCount = Array.isArray(models) ? models.filter(m => m && m.enabled !== false).length : 0;
+  return {
+    models,
+    defaults,
+    toolSupport: API_TOOL_SUPPORT,
+    source: { label: tag, enabled_count: enabledCount, error: null, detail: null },
+  };
 }
 
 function _contextForAgent(agentId) {
@@ -3796,7 +3889,11 @@ async function handle(req, res) {
   // API models (Start form model picker). Wraps camc api list + default
   // show, merged with a static toolSupport map. Local execFile only.
   if (p === '/api/api-models' && method === 'GET') {
-    const out = await _getApiModels();
+    const query = {
+      context: url.searchParams.get('context') || '',
+      node:    url.searchParams.get('node') || '',
+    };
+    const out = await _getApiModels(query);
     return sendJson(res, 200, out);
   }
 
