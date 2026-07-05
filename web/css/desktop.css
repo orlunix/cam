@@ -1231,6 +1231,14 @@ body.desktop[data-theme="light"] .composer-input:focus {
   line-height: 1.4;
 }
 
+/* Start form: API model picker row + disabled (no --api support) state. */
+.start-api-row { display: flex; gap: 8px; align-items: center; }
+.start-api-row select { flex: 1 1 auto; }
+.start-api-row .btn-xs { flex: 0 0 auto; }
+#start-api-section.is-disabled { opacity: 0.5; }
+#start-api-section.is-disabled .btn-xs,
+#start-api-section.is-disabled #start-api { cursor: not-allowed; }
+
 .settings-section input[type="range"] {
   padding: 0;
   accent-color: var(--accent);
