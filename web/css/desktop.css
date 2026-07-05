@@ -1233,11 +1233,35 @@ body.desktop[data-theme="light"] .composer-input:focus {
 
 /* Start form: API model picker row + disabled (no --api support) state. */
 .start-api-row { display: flex; gap: 8px; align-items: center; }
-.start-api-row select { flex: 1 1 auto; }
+.start-api-row input[type="text"], .start-api-row input[type="password"] { flex: 1 1 auto; }
 .start-api-row .btn-xs { flex: 0 0 auto; }
 #start-api-section.is-disabled { opacity: 0.5; }
 #start-api-section.is-disabled .btn-xs,
 #start-api-section.is-disabled #start-api { cursor: not-allowed; }
+
+/* Start form: collapsible Advanced block (contains name/timeout/retries
+ *   + the API section). Matches the Settings <details> styling. */
+.start-advanced { margin: 8px 0; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-pane); }
+.start-advanced > summary { cursor: pointer; padding: 8px 12px; font-weight: 600; list-style: none; }
+.start-advanced > summary::-webkit-details-marker { display: none; }
+.start-advanced > summary::before { content: "▸"; margin-right: 6px; transition: transform .15s; display: inline-block; }
+.start-advanced[open] > summary::before { transform: rotate(90deg); }
+.start-advanced > .settings-section { padding: 4px 12px 12px; }
+.start-api-heading { margin: 4px 0; }
+
+/* Start form: clickable API profile list (replaces a <select> so we can
+ *   show name + model + provider·status per row). */
+.api-row-list { list-style: none; margin: 6px 0; padding: 0; border: 1px solid var(--border); border-radius: var(--radius-sm); max-height: 220px; overflow-y: auto; }
+.api-row { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(160px, 1.4fr) minmax(140px, 1fr); gap: 8px; align-items: center; padding: 6px 10px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.api-row:last-child { border-bottom: none; }
+.api-row:hover { background: var(--bg-hover, rgba(0,0,0,0.04)); }
+.api-row.is-selected { background: var(--accent-bg, rgba(0,120,210,0.12)); }
+.api-row.is-disabled { opacity: 0.45; cursor: not-allowed; }
+.api-row-name { font-weight: 600; }
+.api-row-model { font-family: var(--mono, monospace); font-size: 11px; color: var(--text-muted, #888); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.api-row-meta { font-size: 11px; color: var(--text-muted, #888); text-align: right; white-space: nowrap; }
+.api-default-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: var(--radius-sm); background: var(--accent, #2864c8); color: #fff; font-size: 10px; font-weight: 700; }
+.api-status-line { font-size: 12px; color: var(--text-muted, #888); margin: 4px 0; }
 
 .settings-section input[type="range"] {
   padding: 0;
