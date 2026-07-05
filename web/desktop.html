@@ -11,11 +11,14 @@
   <link rel="stylesheet" href="css/style.css?v=0.64.0">
   <link rel="stylesheet" href="css/desktop.css?v=0.64.0">
   <link rel="stylesheet" href="vendor/xterm/xterm.css?v=0.64.0">
-  <!-- CAM-DESK-TERM-002: xterm UMD bundles expose window.Terminal and
-       window.FitAddon. Loaded before any module so agent-console.js
-       sees them at mount time. -->
+  <!-- CAM-DESK-TERM-002: xterm UMD bundles expose window.Terminal,
+       window.FitAddon, and window.SerializeAddon. Loaded before any
+       module so agent-console.js / terminal-mount.js see them at mount
+       time. SerializeAddon (CAM-DESK-TERM-FS) snapshots scrollback on
+       LRU eviction and restores it on reopen. -->
   <script src="vendor/xterm/xterm.js?v=0.64.0"></script>
   <script src="vendor/xterm/addon-fit.js?v=0.64.0"></script>
+  <script src="vendor/xterm/addon-serialize.js?v=0.64.0"></script>
   <link rel="modulepreload" href="js/api.js?v=0.66.0">
   <link rel="modulepreload" href="js/state.js?v=0.64.0">
   <link rel="modulepreload" href="js/desktop/app.js?v=0.66.0">
