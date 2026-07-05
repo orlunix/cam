@@ -514,7 +514,7 @@ export function mountNodesMode({
             <div class="ctx-row-sub dim">last sync: ${esc(lastOneLine)}</div>
           </div>
           <div class="ctx-row-actions">
-            ${mobileForm ? '' : `<button type="button" class="btn-xs ctx-copy-context-btn"   data-name="${esc(ctx.name)}">copy</button>`}
+            ${mobileForm ? '' : `<button type="button" class="btn-xs ctx-duplicate-context-btn" data-name="${esc(ctx.name)}">duplicate</button>`}
             ${readOnly() ? '' : `<button type="button" class="btn-xs ctx-edit-context-btn"   data-name="${esc(ctx.name)}">edit</button>
             <button type="button" class="btn-xs btn-xs-danger ctx-delete-context-btn" data-name="${esc(ctx.name)}">delete</button>`}
           </div>
@@ -794,24 +794,13 @@ export function mountNodesMode({
 
     // ─ Context-level actions ─────────────────────────────────────
 
-    listEl.querySelectorAll('.ctx-copy-context-btn').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
+    listEl.querySelectorAll('.ctx-duplicate-context-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
         e.stopPropagation();
         const name = btn.dataset.name;
         const ctx = (state.get('contexts') || []).find(c => c.name === name);
         if (!ctx) return;
-        const oldText = btn.textContent;
-        btn.disabled = true;
-        try {
-          await copyText(contextClipboardText(ctx));
-          btn.textContent = 'copied';
-          showToast(`Copied context "${name}"`, 'success');
-          setTimeout(() => { btn.textContent = oldText; btn.disabled = false; }, 1000);
-        } catch (err) {
-          btn.textContent = oldText;
-          btn.disabled = false;
-          showToast(`Copy ${name} failed: ${err?.message || err}`, 'error', 5000);
-        }
+        if (typeof panel._openDuplicateContext === 'function') panel._openDuplicateContext(ctx);
       });
     });
 
@@ -1374,6 +1363,68 @@ function mountNodesActions({
     if (fAuth) fAuth.value = m.auth_method || (m.key_file ? 'key' : 'agent');
     if (fKey)  fKey.value  = fAuth && fAuth.value === 'key' ? (m.key_file || '') : '';
     if (fEnv)  fEnv.value  = '';
+    if (fPassphrase) fPassphrase.value = '';
+    if (fPassword)   fPassword.value   = '';
+    if (fRemPassph)  fRemPassph.checked = false;
+    if (fRemPasswd)  fRemPasswd.checked = false;
+    applyAuthSection();
+    setAddStatus('');
+  };
+
+  /** Open the manage panel to DUPLICATE a context: reuses the
+   *  add-context submit path (so a NEW context is created, not an
+   *  update), with the name field editable and prefilled
+   *  "<orig>-copy", and path/env prefilled from the source context.
+   *  Host fields are inherited from the source context's machine. */
+  panel._openDuplicateContext = function openDuplicateContext(ctx) {
+    if (readOnly()) return;
+    if (!ctx) return;
+    const all = state.get('contexts') || [];
+    const m = (ctx && ctx.machine) || {};
+    // Locate the owning host node so addContextNode is set and the
+    // add-context submit path (which inherits host fields from the
+    // node's primary context) handles persistence.
+    const hosts = buildHosts();
+    const node = hosts.find(n => n.contexts.some(c => c.name === ctx.name));
+    if (!node) {
+      showToast(`Cannot duplicate "${ctx.name}": host not found.`, 'error', 4000);
+      return;
+    }
+    openManage('manual');
+    addContextNode = node;
+    editHostNode = null;
+    editContextTarget = null; // null → submit creates a NEW context
+    setHostEditMode(false);
+    setContextEditMode(false);
+    setAddContextMode(true);
+
+    const primary = node.contexts[0];
+    const nodeM = (primary && primary.machine) || {};
+    const epLabel = `${nodeM.user || ''}@${nodeM.host || ''}:${nodeM.port || 22}`;
+    if (addHeadingEl) addHeadingEl.textContent = `Duplicate context: ${ctx.name}`;
+    if (addSubmitBtn) addSubmitBtn.textContent = labelSaveContext;
+    if (addCtxScopeEl) addCtxScopeEl.textContent = epLabel;
+
+    if (fName) {
+      // Name is editable (unlike edit) and prefilled "<orig>-copy".
+      const used = new Set(all.map(c => c.name));
+      let candidate = `${ctx.name}-copy`;
+      let i = 2;
+      while (used.has(candidate)) candidate = `${ctx.name}-copy-${i++}`;
+      fName.value = candidate;
+      fName.readOnly = false;
+      fName.removeAttribute('aria-readonly');
+    }
+    if (fPath) {
+      fPath.value = ctx.path || (m.user ? `/home/${m.user}` : '');
+      fPath.dataset.autofill = '';
+    }
+    if (fEnv) fEnv.value = m.env_setup || '';
+    if (fHost) fHost.value = nodeM.host || '';
+    if (fUser) fUser.value = nodeM.user || '';
+    if (fPort) fPort.value = String(nodeM.port || 22);
+    if (fAuth) fAuth.value = nodeM.auth_method || (nodeM.key_file ? 'key' : 'agent');
+    if (fKey)  fKey.value  = fAuth && fAuth.value === 'key' ? (nodeM.key_file || '') : '';
     if (fPassphrase) fPassphrase.value = '';
     if (fPassword)   fPassword.value   = '';
     if (fRemPassph)  fRemPassph.checked = false;

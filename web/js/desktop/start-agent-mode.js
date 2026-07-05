@@ -23,6 +23,13 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   const form = panel.querySelector('#start-form');
   const toolSel = panel.querySelector('#start-tool');
   const ctxSel = panel.querySelector('#start-context');
+  const nodeFieldsEl = panel.querySelector('#start-node-fields');
+  const nodeSel = panel.querySelector('#start-node');
+  const pathEl = panel.querySelector('#start-path');
+  const apiSectionEl = panel.querySelector('#start-api-section');
+  const apiSel = panel.querySelector('#start-api');
+  const apiListBtn = panel.querySelector('#start-api-list-btn');
+  const apiHintEl = panel.querySelector('#start-api-hint');
   const promptEl = panel.querySelector('#start-prompt');
   const autoconfirmEl = panel.querySelector('#start-autoconfirm');
   const autoexitEl = panel.querySelector('#start-autoexit');
@@ -32,6 +39,9 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   const submitBtn = panel.querySelector('#start-submit');
   const statusEl = panel.querySelector('#start-status');
   const disconnectedEl = panel.querySelector('#start-disconnected');
+
+  // Cached api-models response (models + defaults + toolSupport).
+  let apiModelsCache = null;
 
   function setStatus(text, cls = '') {
     statusEl.textContent = text || '';
@@ -76,15 +86,126 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
     }
   }
 
+  /** Build the node list from the unique machines backing contexts.
+   *  Keys: "local" or "user@host:port" (matches hostKeyForMachine +
+   *  the hub's _resolveStartTarget). The local anchor context (if any)
+   *  contributes a "local" option. */
+  function refreshNodeOptions() {
+    const contexts = state.get('contexts') || [];
+    const seen = new Map(); // key -> label
+    for (const c of contexts) {
+      const m = (c && c.machine) || {};
+      const host = m.host || 'local';
+      const isSSH = !!(m.type === 'ssh' || (host && host !== 'local'));
+      if (!isSSH) { seen.set('local', 'local'); continue; }
+      const port = m.port || 22;
+      const key = `${m.user || ''}@${host}:${port}`;
+      seen.set(key, key);
+    }
+    const cur = nodeSel.value;
+    nodeSel.innerHTML = [...seen.entries()].map(
+      ([key, label]) => `<option value="${escapeHtml(key)}">${escapeHtml(label)}</option>`,
+    ).join('');
+    if (cur && seen.has(cur)) nodeSel.value = cur;
+    else if (seen.size === 1) nodeSel.value = seen.keys().next().value;
+    // Default path to /home/<user> for the selected node.
+    syncDefaultPath();
+  }
+
+  /** Pre-fill #start-path with /home/<user> when empty (matches the
+   *  Add Context default). Local → /home/$USER or cwd fallback. */
+  function syncDefaultPath() {
+    const key = nodeSel.value;
+    if (!key || key === 'local') {
+      if (!pathEl.value) pathEl.value = '';
+      return;
+    }
+    const m = /^([^@]+)@/.exec(key);
+    const user = m ? m[1] : '';
+    if (!pathEl.value && user) pathEl.value = `/home/${user}`;
+  }
+
+  /** Show node+path fields when no context is selected. */
+  function toggleNodeFields() {
+    const hasCtx = !!ctxSel.value;
+    if (nodeFieldsEl) nodeFieldsEl.hidden = hasCtx;
+    if (!hasCtx) syncDefaultPath();
+  }
+
+  /** Grey the API section for tools without --api support (3.3). The
+   *  select stays disabled until models are loaded (List models). */
+  function applyApiSupport() {
+    const tool = toolSel.value;
+    const support = apiModelsCache && apiModelsCache.toolSupport || {};
+    const supported = support[tool] !== false;
+    const hasModels = !!(apiModelsCache && Array.isArray(apiModelsCache.models) && apiModelsCache.models.length);
+    if (apiSectionEl) apiSectionEl.classList.toggle('is-disabled', !supported);
+    if (apiListBtn) apiListBtn.disabled = !supported;
+    if (apiSel) apiSel.disabled = !supported || !hasModels;
+    if (apiHintEl) {
+      apiHintEl.textContent = supported
+        ? 'Click "List models" to populate; the per-tool default is marked.'
+        : `Tool "${tool}" does not support --api selection (uses login/OAuth).`;
+    }
+  }
+
+  /** Populate #start-api from cached models + mark the per-tool default. */
+  function renderApiOptions(tool) {
+    const models = (apiModelsCache && apiModelsCache.models) || [];
+    const defaults = (apiModelsCache && apiModelsCache.defaults) || [];
+    const enabled = models.filter(r => r && r.enabled !== false);
+    const def = defaults.find(d => d && d.tool === tool && d.api && d.mode === 'api');
+    const defName = def ? def.api : '';
+    apiSel.innerHTML =
+      '<option value="">(use login default)</option>' +
+      enabled.map(r => {
+        const isDef = defName && r.name === defName;
+        const label = isDef ? `${r.name} (default)` : r.name;
+        return `<option value="${escapeHtml(r.name)}">${escapeHtml(label)}</option>`;
+      }).join('');
+    if (defName) apiSel.value = defName;
+  }
+
+  async function listApiModels() {
+    if (!apiListBtn) return;
+    const orig = apiListBtn.textContent;
+    apiListBtn.disabled = true;
+    apiListBtn.textContent = 'Listing…';
+    try {
+      apiModelsCache = await api.getApiModels();
+      renderApiOptions(toolSel.value);
+      applyApiSupport();
+      setStatus('API models loaded.', 'is-ok');
+    } catch (err) {
+      const msg = err?.message || String(err);
+      setStatus(`List models failed: ${msg}`, 'is-error');
+      showToast(`List models failed: ${msg}`, 'error', 5000);
+    } finally {
+      apiListBtn.textContent = orig;
+      // Re-apply support state (may have been overridden by disabled tool).
+      applyApiSupport();
+    }
+  }
+
   function readForm() {
     const body = {
       tool: toolSel.value,
-      context: ctxSel.value,
       prompt: (promptEl.value || ' '),
       auto_confirm: autoconfirmEl.checked,
       auto_exit: autoexitEl.checked,
       retry: parseInt(retryEl.value, 10) || 0,
     };
+    if (ctxSel.value) {
+      body.context = ctxSel.value;
+    } else {
+      body.node = nodeSel.value;
+      body.path = pathEl.value.trim();
+    }
+    // API model: only when the tool supports it and a model is picked.
+    const support = apiModelsCache && apiModelsCache.toolSupport || {};
+    if (apiSel && apiSel.value && support[body.tool] !== false) {
+      body.api = apiSel.value;
+    }
     const t = (timeoutEl.value || '').trim();
     if (t) body.timeout = t;
     const n = (nameEl.value || '').trim();
@@ -98,9 +219,12 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
       setStatus('Connect to a CAM endpoint in Settings first.', 'is-error');
       return;
     }
+    // Require EITHER a context OR (node + path).
     if (!ctxSel.value) {
-      setStatus('Pick a context.', 'is-error');
-      return;
+      const node = nodeSel.value;
+      const path = pathEl.value.trim();
+      if (!node) { setStatus('Pick a context, or choose a node.', 'is-error'); return; }
+      if (!path) { setStatus('Pick a context, or provide a path.', 'is-error'); return; }
     }
     const body = readForm();
     submitBtn.disabled = true;
@@ -109,7 +233,9 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
     setStatus('Starting…');
     let agent = null;
     try {
-      agent = await api.startAgent(body);
+      const res = await api.startAgent(body);
+      // Hub returns { agent, agentId }; older Relay may return the agent directly.
+      agent = res && res.agent ? res.agent : res;
     } catch (err) {
       // CAM-DESK-RUN-014: keep form contents intact; only re-enable.
       submitBtn.disabled = false;
@@ -122,14 +248,19 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
     setStatus('Agent started.', 'is-ok');
     showToast('Agent started', 'success');
     try { await loadAgents(); } catch {}
-    if (agent && agent.id) {
-      state.set('selectedAgentId', agent.id);
-    }
+    const newId = agent && (agent.id || agent.agentId);
+    if (newId) state.set('selectedAgentId', newId);
     submitBtn.disabled = false;
     submitBtn.textContent = origLabel;
     // CAM-DESK-RUN-013: jump back to Agents so user sees output immediately.
     setMode('agents');
   });
+
+  // Wire context/tool/api interactions.
+  ctxSel.addEventListener('change', toggleNodeFields);
+  nodeSel.addEventListener('change', syncDefaultPath);
+  toolSel.addEventListener('change', applyApiSupport);
+  if (apiListBtn) apiListBtn.addEventListener('click', listApiModels);
 
   // Refresh option lists whenever Start becomes the active mode (so
   // newly-added contexts or detected adapters show up without a full
@@ -140,6 +271,9 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   let prevAdapters = state.get('adapters');
   refreshToolOptions();
   refreshContextOptions();
+  refreshNodeOptions();
+  toggleNodeFields();
+  applyApiSupport();
   applyConnectionState();
   state.subscribe(() => {
     const m = state.get('mode');
@@ -151,12 +285,15 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
       if (m === 'start') {
         refreshToolOptions();
         refreshContextOptions();
+        refreshNodeOptions();
+        toggleNodeFields();
+        applyApiSupport();
         applyConnectionState();
         setStatus('');
       }
     }
     if (c !== prevConn) { prevConn = c; applyConnectionState(); }
-    if (ctxs !== prevCtxs) { prevCtxs = ctxs; refreshContextOptions(); }
-    if (adapters !== prevAdapters) { prevAdapters = adapters; refreshToolOptions(); }
+    if (ctxs !== prevCtxs) { prevCtxs = ctxs; refreshContextOptions(); refreshNodeOptions(); toggleNodeFields(); }
+    if (adapters !== prevAdapters) { prevAdapters = adapters; refreshToolOptions(); applyApiSupport(); }
   });
 }

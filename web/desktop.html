@@ -622,10 +622,32 @@
               <select id="start-tool" required></select>
             </label>
             <label>Context
-              <select id="start-context" required>
+              <select id="start-context">
                 <option value="">Select context…</option>
               </select>
             </label>
+            <div id="start-node-fields" hidden>
+              <label>Node
+                <select id="start-node"></select>
+              </label>
+              <label>Path
+                <input type="text" id="start-path" placeholder="/home/user/project" autocomplete="off">
+              </label>
+              <p class="form-hint">No context selected — provide a node and
+                path. The agent runs directly; no context record is created.</p>
+            </div>
+            <div id="start-api-section">
+              <label>API model
+                <div class="start-api-row">
+                  <select id="start-api" disabled>
+                    <option value="">(use login default)</option>
+                  </select>
+                  <button type="button" id="start-api-list-btn" class="btn-xs">List models</button>
+                </div>
+              </label>
+              <p class="form-hint" id="start-api-hint">Click "List models" to
+                populate; greyed for tools without <code>--api</code> support.</p>
+            </div>
             <label>Prompt (optional)
               <textarea id="start-prompt" rows="6"
                 placeholder="Describe the task…"
