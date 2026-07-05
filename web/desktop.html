@@ -627,26 +627,12 @@
               </select>
             </label>
             <div id="start-node-fields" hidden>
-              <label>Node
-                <select id="start-node"></select>
-              </label>
               <label>Path
                 <input type="text" id="start-path" placeholder="/home/user/project" autocomplete="off">
               </label>
-              <p class="form-hint">No context selected — provide a node and
-                path. The agent runs directly; no context record is created.</p>
-            </div>
-            <div id="start-api-section">
-              <label>API model
-                <div class="start-api-row">
-                  <select id="start-api" disabled>
-                    <option value="">(use login default)</option>
-                  </select>
-                  <button type="button" id="start-api-list-btn" class="btn-xs">List models</button>
-                </div>
-              </label>
-              <p class="form-hint" id="start-api-hint">Click "List models" to
-                populate; greyed for tools without <code>--api</code> support.</p>
+              <p class="form-hint">No context selected — provide a path on the
+                local node. The agent runs directly; no context record is
+                created.</p>
             </div>
             <label>Prompt (optional)
               <textarea id="start-prompt" rows="6"
@@ -668,18 +654,45 @@
               <span class="form-hint">Finalize agent when task completes.</span>
             </label>
           </div>
-          <div class="settings-section">
-            <h3>Advanced</h3>
-            <label>Task name (optional)
-              <input type="text" id="start-name" placeholder="auto-generated" autocomplete="off">
-            </label>
-            <label>Timeout (optional)
-              <input type="text" id="start-timeout" placeholder="e.g. 30m, 1h" autocomplete="off">
-            </label>
-            <label>Retries
-              <input type="number" id="start-retry" value="0" min="0" max="5">
-            </label>
-          </div>
+          <details class="start-advanced" id="start-advanced">
+            <summary>Advanced</summary>
+            <div class="settings-section">
+              <label>Task name (optional)
+                <input type="text" id="start-name" placeholder="auto-generated" autocomplete="off">
+              </label>
+              <label>Timeout (optional)
+                <input type="text" id="start-timeout" placeholder="e.g. 30m, 1h" autocomplete="off">
+              </label>
+              <label>Retries
+                <input type="number" id="start-retry" value="0" min="0" max="5">
+              </label>
+            </div>
+            <div class="settings-section" id="start-api-section">
+              <h3 class="start-api-heading">Advanced (API)</h3>
+              <label>Custom LLM API profile (optional)</label>
+              <div class="start-api-row">
+                <input type="text" id="start-api" placeholder="(use login default)" autocomplete="off" disabled>
+                <button type="button" id="start-api-list-btn" class="btn-xs">List custom LLM APIs</button>
+              </div>
+              <p class="form-hint" id="start-api-hint">Lists profiles on the
+                selected context/node via <code>camc --json api list --all</code>.
+                Click a result to fill <code>--api</code>. Hidden for tools
+                without <code>--api</code> support.</p>
+              <ul class="api-row-list" id="start-api-list" hidden></ul>
+              <p class="form-hint api-status-line" id="start-api-status" hidden></p>
+              <label class="form-checkbox">
+                <input type="checkbox" id="start-no-default-api">
+                <span>Use official/login API</span>
+                <span class="form-hint">Skip custom/default API mapping
+                  (<code>--no-default-api</code>).</span>
+              </label>
+              <label>API token (optional)
+                <input type="password" id="start-api-token" placeholder="override token for this run" autocomplete="off">
+                <span class="form-hint">Passed as <code>--api-token</code>;
+                  not persisted.</span>
+              </label>
+            </div>
+          </details>
           <div class="settings-actions">
             <button type="submit" id="start-submit" class="btn-primary">Start agent</button>
           </div>
