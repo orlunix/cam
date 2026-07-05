@@ -570,6 +570,7 @@ export class CamApi {
     return this.request('GET', `/api/agents/${encodeURIComponent(id)}${this._agentEndpointQs(hints)}`);
   }
   startAgent(body) { return this.request('POST', '/api/agents', body); }
+  getApiModels() { return this.request('GET', '/api/api-models'); }
   stopAgent(id, force = false) { return this.request('DELETE', `/api/agents/${id}?force=${force}`); }
   updateAgent(id, body) { return this.request('PATCH', `/api/agents/${id}`, body); }
   agentCronJobs(id) { return this.request('GET', `/api/agents/${id}/cron`); }

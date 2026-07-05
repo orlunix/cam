@@ -1179,6 +1179,281 @@ async function _syncLocalAgents() {
 
 
 
+// ── Start-agent (POST /api/agents) ────────────────────────────────
+// `camc run` always prints human text (the global --json flag is a
+// no-op for `run`), so we parse the `ID: <id>` line from stdout, then
+// `camc --json status <id>` for the full record. Local uses execFile;
+// remote uses the injected ssh-transport's execRemote (same path as
+// _syncContextAgents). For inline node+path with no context, we
+// resolve the node to its machine and run directly — NO context
+// record is created (A2). The returned agent is upserted into the
+// store under the matching context (or the local anchor context for
+// inline local runs) so the next GET /api/agents sees it.
+
+const RUN_LOCAL_TIMEOUT_MS  = 30000;
+const RUN_REMOTE_TIMEOUT_MS = 45000;
+
+/** Build the `camc run` argv from a start request body. Tool/path/name
+ *  are required-ish; api + auto_exit are optional. */
+function _buildRunArgv(body) {
+  const tool  = String((body && body.tool) || 'claude');
+  const path  = String((body && body.path) || '');
+  const name  = body && body.name ? String(body.name) : '';
+  const prompt = String((body && body.prompt) || '');
+  const api   = body && body.api ? String(body.api) : '';
+  const autoExit = !!(body && body.auto_exit);
+  const argv = ['--json', 'run', '-t', tool, '-p', path];
+  if (name) argv.push('-n', name);
+  if (api)  argv.push('--api', api);
+  if (autoExit) argv.push('--auto-exit');
+  argv.push(prompt);
+  return argv;
+}
+
+/** Parse the agent id from `camc run` stdout. The run command prints a
+ *  line like `  ID: <8hex>  Tool: ...  Session: ...`. Returns '' if no
+ *  id could be extracted. */
+function _parseRunAgentId(stdout) {
+  if (!stdout) return '';
+  const m = /^\s*ID:\s+([0-9a-fA-F]{6,})\b/m.exec(String(stdout));
+  return m ? m[1] : '';
+}
+
+/** Run `camc --json status <id>` locally and return the parsed agent
+ *  record (or null). */
+function _localCamcStatus(agentId) {
+  return new Promise((resolve) => {
+    const bin = _localCamcPath();
+    const child = execFile(bin, ['--json', 'status', agentId], {
+      timeout: 8000,
+      maxBuffer: 2 * 1024 * 1024,
+      windowsHide: true,
+    }, (err, stdout, stderr) => {
+      if (err) return resolve(null);
+      try { resolve(JSON.parse(String(stdout || '') || 'null')); }
+      catch (_) { resolve(null); }
+    });
+    void child;
+  });
+}
+
+/** Run `camc run` locally (hub's own host). Returns { ok, agentId, record }.
+ *  On success, upserts the agent into the store under the given ctx. */
+async function _startLocalAgent(body, ctx) {
+  const argv = _buildRunArgv(body);
+  const res = await new Promise((resolve) => {
+    const bin = _localCamcPath();
+    const child = execFile(bin, argv, {
+      timeout: RUN_LOCAL_TIMEOUT_MS,
+      maxBuffer: 4 * 1024 * 1024,
+      windowsHide: true,
+    }, (err, stdout, stderr) => {
+      if (err) {
+        const code = (err.code === 'ENOENT') ? 'camc_missing'
+          : (err.killed && /TIMEDOUT/i.test(String(err.message || '')) ? 'timeout' : 'exec_failed');
+        return resolve({ ok: false, error: code, detail: err.message || 'local camc run failed', stdout: String(stdout || ''), stderr: String(stderr || '') });
+      }
+      resolve({ ok: true, stdout: String(stdout || ''), stderr: String(stderr || '') });
+    });
+    void child;
+  });
+  if (!res.ok) return res;
+  const agentId = _parseRunAgentId(res.stdout);
+  if (!agentId) {
+    return { ok: false, error: 'no_agent_id', detail: 'camc run did not print an agent ID', stdout: res.stdout, stderr: res.stderr };
+  }
+  let record = await _localCamcStatus(agentId);
+  if (!record) {
+    // Fall back to a minimal record so the renderer still gets a row.
+    record = { id: agentId, status: 'running', state: 'initializing', task: { tool: String((body && body.tool) || 'claude'), name: String((body && body.name) || ''), prompt: String((body && body.prompt) || '') }, context_path: String((body && body.path) || ''), transport_type: 'local', hostname: '' };
+  }
+  const normalized = _normalizeAgent(record, ctx);
+  if (normalized && normalized.id) {
+    _upsertAgentsForContext(ctx, [normalized]);
+    pushLog('info', `start local agent: ${normalized.id} (${normalized.tool})`);
+  }
+  return { ok: true, agentId, record: normalized };
+}
+
+/** Run `camc run` on a remote SSH node. Uses the same execRemote path
+ *  as _syncContextAgents. `baseOpts` carries host/user/port/auth. */
+async function _startRemoteAgent(body, baseOpts, ctx) {
+  if (!_sshTransport || typeof _sshTransport.execRemote !== 'function') {
+    return { ok: false, error: 'ssh_transport_unavailable', detail: 'embedded Hub has no SSH transport configured' };
+  }
+  const argv = _buildRunArgv(body);
+  // The remote camc binary is at REMOTE_CAMC (~/.cam/camc). execRemote
+  // runs the command through a login shell, so shell-quote each token.
+  const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+  const cmd = `${REMOTE_CAMC} ${argv.map(q).join(' ')}`;
+  const res = await _sshTransport.execRemote({ ...baseOpts, command: cmd, timeout_ms: RUN_REMOTE_TIMEOUT_MS });
+  if (!res || !res.ok) {
+    const err = (res || {});
+    return { ok: false, error: err.error || 'exec_failed', detail: err.detail || err.stderr || 'remote camc run failed' };
+  }
+  const agentId = _parseRunAgentId(res.stdout);
+  if (!agentId) {
+    return { ok: false, error: 'no_agent_id', detail: 'remote camc run did not print an agent ID', stdout: res.stdout, stderr: res.stderr };
+  }
+  // Fetch the new record via `camc --json status <id>` on the remote.
+  const stRes = await _sshTransport.execRemote({ ...baseOpts, command: `${REMOTE_CAMC} --json status ${q(agentId)}`, timeout_ms: 8000 });
+  let record = null;
+  if (stRes && stRes.ok) {
+    try { record = JSON.parse(stRes.stdout || 'null'); } catch (_) { record = null; }
+  }
+  if (!record) {
+    record = { id: agentId, status: 'running', state: 'initializing', task: { tool: String((body && body.tool) || 'claude'), name: String((body && body.name) || ''), prompt: String((body && body.prompt) || '') }, context_path: String((body && body.path) || ''), transport_type: 'ssh', hostname: '' };
+  }
+  const normalized = _normalizeAgent(record, ctx);
+  if (normalized && normalized.id) {
+    _upsertAgentsForContext(ctx, [normalized]);
+    pushLog('info', `start remote agent: ${normalized.id} (${normalized.tool}) on ${baseOpts.user}@${baseOpts.host}`);
+  }
+  return { ok: true, agentId, record: normalized };
+}
+
+/** Resolve a start request body to the target context + SSH baseOpts.
+ *  - body.context set → use that context (local or ssh).
+ *  - body.node + body.path (A2, inline) → resolve the node's machine
+ *    to a context WITHOUT creating a context record. For a local node
+ *    we reuse the local anchor context; for an SSH node we synthesize
+ *    a throwaway context shell (machine only) so _normalizeAgent +
+ *    _upsertAgentsForContext have something to key on. The throwaway
+ *    is NEVER pushed into state.store.contexts.
+ *  Returns { ok, ctx, baseOpts } or { ok:false, error, detail }. */
+function _resolveStartTarget(body) {
+  if (!state.store) state.store = _emptyStore();
+  const contexts = Array.isArray(state.store.contexts) ? state.store.contexts : [];
+  const ctxName = body && body.context ? String(body.context) : '';
+  if (ctxName) {
+    const ctx = findContextByNameOrId(ctxName);
+    if (!ctx) return { ok: false, error: 'context_not_found', detail: `context "${ctxName}" not found` };
+    const m = ctx.machine || {};
+    if ((m.type || 'local') === 'ssh') {
+      const baseOpts = {
+        host: m.host, user: m.user, port: m.port || 22,
+        auth_method: m.auth_method || (m.key_file ? 'key' : 'agent'),
+        key_file: m.key_file || '',
+        timeout_ms: RUN_REMOTE_TIMEOUT_MS,
+      };
+      const cred = _credentialFor(ctx);
+      if (baseOpts.auth_method === 'password') {
+        if (cred == null || cred === '') return { ok: false, error: 'credential_missing', detail: 'password auth is configured but no remembered password is available' };
+        baseOpts.password = cred;
+      } else if (baseOpts.auth_method === 'key' && cred != null) {
+        baseOpts.passphrase = cred;
+      }
+      return { ok: true, ctx, baseOpts };
+    }
+    // local context
+    return { ok: true, ctx, baseOpts: null };
+  }
+  // Inline node+path (A2): no context record. Resolve the node.
+  const nodeKey = body && body.node ? String(body.node) : '';
+  const path    = body && body.path ? String(body.path) : '';
+  if (!nodeKey || !path) {
+    return { ok: false, error: 'missing_target', detail: 'provide either a context or a node + path' };
+  }
+  // node is a host key: "local" or "user@host:port" (matches the
+  // renderer's hostKeyForMachine). Find any existing context on that
+  // endpoint to reuse its creds.
+  if (nodeKey === 'local') {
+    const localCtx = _ensureLocalContext();
+    return { ok: true, ctx: localCtx, baseOpts: null };
+  }
+  const m = /^([^@]+)@([^:]+):(\d+)$/.exec(nodeKey);
+  if (!m) {
+    return { ok: false, error: 'bad_node', detail: `unrecognized node key "${nodeKey}"` };
+  }
+  const user = m[1];
+  const host = m[2];
+  const port = Number(m[3]) || 22;
+  // Reuse creds from an existing context on the same endpoint.
+  const donor = contexts.find(c => {
+    const mm = c && c.machine || {};
+    return (mm.type || 'local') === 'ssh' && mm.host === host && mm.user === user && (mm.port || 22) === port;
+  });
+  const baseOpts = {
+    host, user, port,
+    auth_method: donor && (donor.machine.auth_method || (donor.machine.key_file ? 'key' : 'agent')) || 'agent',
+    key_file: donor && (donor.machine.key_file || '') || '',
+    timeout_ms: RUN_REMOTE_TIMEOUT_MS,
+  };
+  if (donor) {
+    const cred = _credentialFor(donor);
+    if (baseOpts.auth_method === 'password') {
+      if (cred == null || cred === '') return { ok: false, error: 'credential_missing', detail: `no remembered password for ${user}@${host}:${port}` };
+      baseOpts.password = cred;
+    } else if (baseOpts.auth_method === 'key' && cred != null) {
+      baseOpts.passphrase = cred;
+    }
+  }
+  // Throwaway context shell — machine only, never stored.
+  const throwaway = {
+    id: crypto.randomUUID(),
+    name: `${user}@${host}:${port}`,
+    path,
+    machine: { type: 'ssh', host, user, port, auth_method: baseOpts.auth_method, key_file: baseOpts.key_file || '' },
+    tags: [], created_at: nowIso(), last_used_at: null,
+  };
+  return { ok: true, ctx: throwaway, baseOpts };
+}
+
+// ── API models (GET /api/api-models) ──────────────────────────────
+// Wraps `camc --json api list` + `camc --json api default show` and
+// merges them with a static toolSupport map (claude/codex support
+// --api; cursor/aider do not). Runs locally via execFile (the hub's
+// own host); this route is for the Start form's model picker.
+
+const API_TOOL_SUPPORT = { claude: true, codex: true, cursor: false, aider: false };
+
+function _localCamcJson(args, timeoutMs) {
+  return new Promise((resolve) => {
+    const bin = _localCamcPath();
+    const child = execFile(bin, args, {
+      timeout: timeoutMs || 8000,
+      maxBuffer: 2 * 1024 * 1024,
+      windowsHide: true,
+    }, (err, stdout, stderr) => {
+      if (err) {
+        const code = (err.code === 'ENOENT') ? 'camc_missing'
+          : (err.killed && /TIMEDOUT/i.test(String(err.message || '')) ? 'timeout' : 'exec_failed');
+        return resolve({ ok: false, error: code, detail: err.message || 'local camc exec failed', stdout: '', stderr: stderr || '' });
+      }
+      resolve({ ok: true, stdout: String(stdout || ''), stderr: String(stderr || '') });
+    });
+    void child;
+  });
+}
+
+async function _getApiModels() {
+  const [listRes, defRes] = await Promise.all([
+    _localCamcJson(['--json', 'api', 'list'], 8000),
+    // `api default show` has its OWN --json flag (the global --json is
+    // not inherited by this subparser), so it must come AFTER `show`.
+    _localCamcJson(['api', 'default', 'show', '--json'], 8000),
+  ]);
+  let models = [];
+  if (listRes.ok) {
+    try {
+      const parsed = JSON.parse(listRes.stdout || '[]');
+      if (Array.isArray(parsed)) models = parsed;
+    } catch (e) { pushLog('warn', `api-models: invalid list JSON: ${e && e.message}`); }
+  } else if (listRes.error !== 'camc_missing') {
+    pushLog('warn', `api-models list failed: ${listRes.error}`);
+  }
+  let defaults = [];
+  if (defRes.ok) {
+    try {
+      const parsed = JSON.parse(defRes.stdout || '[]');
+      if (Array.isArray(parsed)) defaults = parsed;
+    } catch (e) { pushLog('warn', `api-models: invalid default JSON: ${e && e.message}`); }
+  } else if (defRes.error !== 'camc_missing') {
+    pushLog('warn', `api-models default failed: ${defRes.error}`);
+  }
+  return { models, defaults, toolSupport: API_TOOL_SUPPORT };
+}
+
 function _contextForAgent(agentId) {
   if (!state.store) return { error: 'store_unavailable' };
   const id = decodeURIComponent(String(agentId || ''));
@@ -3518,6 +3793,13 @@ async function handle(req, res) {
     return send404(res);
   }
 
+  // API models (Start form model picker). Wraps camc api list + default
+  // show, merged with a static toolSupport map. Local execFile only.
+  if (p === '/api/api-models' && method === 'GET') {
+    const out = await _getApiModels();
+    return sendJson(res, 200, out);
+  }
+
   // Agents
   if (p === '/api/agents') {
     if (method === 'GET') {
@@ -3536,7 +3818,22 @@ async function handle(req, res) {
         sync,
       });
     }
-    if (method === 'POST') return send501(res, 'start agent');
+    if (method === 'POST') {
+      let body;
+      try { body = await readJsonBody(req); }
+      catch (e) { return send400(res, e.message); }
+      if (!body || typeof body !== 'object') return send400(res, 'request body must be a JSON object');
+      const prompt = String(body.prompt || '').trim();
+      if (!prompt) return send400(res, 'prompt is required', 'missing_prompt');
+      const target = _resolveStartTarget(body);
+      if (!target.ok) return sendJson(res, 400, { error: target.error, detail: target.detail });
+      const runBody = { ...body, path: body.path || (target.ctx && target.ctx.path) || '' };
+      const result = target.baseOpts
+        ? await _startRemoteAgent(runBody, target.baseOpts, target.ctx)
+        : await _startLocalAgent(runBody, target.ctx);
+      if (!result.ok) return sendJson(res, 400, { error: result.error, detail: result.detail });
+      return sendJson(res, 201, { agent: result.record, agentId: result.agentId });
+    }
     return send404(res);
   }
   const agentMatch = /^\/api\/agents\/([^/]+)(\/.*)?$/.exec(p);
