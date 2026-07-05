@@ -570,7 +570,13 @@ export class CamApi {
     return this.request('GET', `/api/agents/${encodeURIComponent(id)}${this._agentEndpointQs(hints)}`);
   }
   startAgent(body) { return this.request('POST', '/api/agents', body); }
-  getApiModels() { return this.request('GET', '/api/api-models'); }
+  getApiModels(hints = {}) {
+    const qs = new URLSearchParams();
+    if (hints.context) qs.set('context', hints.context);
+    else if (hints.node) qs.set('node', hints.node);
+    const q = qs.toString();
+    return this.request('GET', `/api/api-models${q ? '?' + q : ''}`);
+  }
   stopAgent(id, force = false) { return this.request('DELETE', `/api/agents/${id}?force=${force}`); }
   updateAgent(id, body) { return this.request('PATCH', `/api/agents/${id}`, body); }
   agentCronJobs(id) { return this.request('GET', `/api/agents/${id}/cron`); }
