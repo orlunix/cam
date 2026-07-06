@@ -3,6 +3,7 @@
 set -euo pipefail
 
 PROJ_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_NAME="$(basename "$(dirname "$PROJ_DIR")")"
 TARGET_FILE="$PROJ_DIR/.upload-target"
 VERSION="$(head -1 "$PROJ_DIR/VERSION" | tr -d '[:space:]')"
 APK="$PROJ_DIR/build/cam.apk"
@@ -16,7 +17,9 @@ fi
 WEBDAV_BASE="${WEBDAV_BASE:-https://dav.jianguoyun.com/dav}"
 WEBDAV_USER="${WEBDAV_USER:-}"
 WEBDAV_PASS="${WEBDAV_PASS:-${JIANGUOYUN_PASS:-}}"
-WEBDAV_DIR="${WEBDAV_DIR:-WebDev}"
+# Keep artifacts from separate local workspaces isolated by default. Callers
+# can still set WEBDAV_DIR explicitly for a release channel.
+WEBDAV_DIR="${WEBDAV_DIR:-WebDev/${PROJECT_NAME}}"
 
 if [[ -z "$WEBDAV_USER" || -z "$WEBDAV_PASS" ]]; then
   echo "SKIP upload: set WEBDAV_USER/WEBDAV_PASS in android/.upload-target or env"
