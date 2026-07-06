@@ -6,6 +6,8 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.StrictMode;
 import android.util.Base64;
 import android.util.Log;
@@ -41,6 +43,7 @@ public class MainActivity extends Activity {
     private static final int KEY_PICK_REQUEST = 1002;
     private static final int KEY_PICK_MAX_BYTES = 256 * 1024;
     private static final int CAM_BG = Color.parseColor("#111111");
+    private static final long TERMINAL_BACKGROUND_GRACE_MS = 10 * 60 * 1000L;
     private static final String RESET_LAYOUT_JS =
         "if(window.__camScheduleLayoutResets){window.__camScheduleLayoutResets();}"
         + "else if(window.__camResetLayout){window.__camResetLayout();}else{"
@@ -55,9 +58,18 @@ public class MainActivity extends Activity {
     private WebView webView;
     private CamAssetLoader assetLoader;
     private MobileEmbeddedHub embeddedHub;
+    private CamJsBridge camJsBridge;
     private ValueCallback<Uri[]> fileUploadCallback;
     private int lastLayoutW = -1;
     private int lastLayoutH = -1;
+    private boolean activityPaused;
+    private final Handler lifecycleHandler = new Handler(Looper.getMainLooper());
+    private final Runnable pauseTerminalTimersAfterGrace = () -> {
+        if (!activityPaused || webView == null) return;
+        if (camJsBridge != null) camJsBridge.stopTerminalForBackgroundTimeout();
+        webView.onPause();
+        webView.pauseTimers();
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -177,8 +189,8 @@ public class MainActivity extends Activity {
             }
         });
 
-        webView.addJavascriptInterface(
-            new CamJsBridge(this, webView, embeddedHub), "CamBridge");
+        camJsBridge = new CamJsBridge(this, webView, embeddedHub);
+        webView.addJavascriptInterface(camJsBridge, "CamBridge");
 
         String route = getIntent().getStringExtra("route");
         String url = CamAssetLoader.entryUrl("mobile.html");
@@ -346,6 +358,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        activityPaused = false;
+        lifecycleHandler.removeCallbacks(pauseTerminalTimersAfterGrace);
         webView.onResume();
         webView.resumeTimers();
         webView.requestFocus(View.FOCUS_DOWN);
@@ -354,13 +368,25 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
-        webView.onPause();
-        webView.pauseTimers();
+        activityPaused = true;
+        lifecycleHandler.removeCallbacks(pauseTerminalTimersAfterGrace);
+        if (camJsBridge != null && camJsBridge.shouldKeepTerminalAliveInBackground()) {
+            // Do not pause the WebView while terminal transport is active:
+            // WebView.onPause can suspend bridge delivery and cause a fresh
+            // camc attach on return. The 10-minute timeout below performs the
+            // full pause and closes the native session instead.
+            lifecycleHandler.postDelayed(
+                pauseTerminalTimersAfterGrace, TERMINAL_BACKGROUND_GRACE_MS);
+        } else {
+            webView.onPause();
+            webView.pauseTimers();
+        }
         super.onPause();
     }
 
     @Override
     protected void onDestroy() {
+        lifecycleHandler.removeCallbacks(pauseTerminalTimersAfterGrace);
         webView.destroy();
         super.onDestroy();
     }
