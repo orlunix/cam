@@ -642,7 +642,7 @@ import uuid
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "adb449e-dirty 2026-07-05 20:26"
+__build__ = "21d33db-dirty 2026-07-05 23:14"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -2256,13 +2256,13 @@ _GOLDEN_TMUX_PATHS = (
 # exhausted (unless --use-env-tool is set).
 _GOLDEN_TOOL_PATHS = {
     "claude": (
-        "/home/tools_ai/anthropic-ai/claude/stable/claude",
         "/home/tools_ai/anthropic-ai/claude/latest/claude",
+        "/home/tools_ai/anthropic-ai/claude/stable/claude",
         "/home/prgn_share/tools/claude-code/bin/claude",
     ),
     "codex": (
-        "/home/tools_ai/openai/codex/stable/bin/codex",
         "/home/tools_ai/openai/codex/latest/bin/codex",
+        "/home/tools_ai/openai/codex/stable/bin/codex",
         "/home/prgn_share/tools/codex/bin/codex",
         "~/.local/bin/codex",
     ),
