@@ -32,6 +32,18 @@ function isAndroidWebView() {
     && typeof window.CamBridge.term_open === 'function');
 }
 
+/** Keep Android's WebView timers running only while a terminal is attached. */
+function syncMobileTerminalBackgroundKeepAlive() {
+  if (!isAndroidWebView()) return;
+  const keepAlive = [...terminalSessions.values()].some((ent) =>
+    !!(ent?.sessionId || ent?.opening || ent?.attachState === 'connecting'));
+  try {
+    if (typeof window.CamBridge.setTerminalBackgroundKeepAlive === 'function') {
+      window.CamBridge.setTerminalBackgroundKeepAlive(keepAlive);
+    }
+  } catch { /* native bridge may be unavailable during teardown */ }
+}
+
 function cssVar(name, fallback) {
   try {
     const v = getComputedStyle(document.body).getPropertyValue(name).trim();
@@ -645,6 +657,7 @@ export async function closeTerminalSession(agentId, opts = {}) {
     ent.opening = false;
     ent.attachState = 'idle';
   }
+  syncMobileTerminalBackgroundKeepAlive();
 }
 
 export async function detachTerminalSession(agentId) {
@@ -660,6 +673,7 @@ export async function detachTerminalSession(agentId) {
   if (ent.hostEl) {
     setTerminalStatus(ent.hostEl, 'Session detached — scrollback kept locally', 'info', 4000);
   }
+  syncMobileTerminalBackgroundKeepAlive();
   return true;
 }
 
@@ -739,6 +753,7 @@ export async function disposeTerminalForAgent(agentId, opts = {}) {
   }
   terminalSessions.delete(agentId);
   if (termAgentId === agentId) termAgentId = null;
+  syncMobileTerminalBackgroundKeepAlive();
 }
 
 export async function closeAllTerminalSessions() {
@@ -891,6 +906,7 @@ export async function openTerminalForAgent(api, agent, hostEl, opts = {}) {
 
   ent.opening = true;
   ent.attachState = 'connecting';
+  syncMobileTerminalBackgroundKeepAlive();
   ent.suppressDisplay = true;
   ent.bytesReceived = 0;
   ent.liveText = '';
@@ -934,6 +950,7 @@ export async function openTerminalForAgent(api, agent, hostEl, opts = {}) {
       return { ok: false, error: res && res.error };
     }
     ent.sessionId = res.sessionId;
+    syncMobileTerminalBackgroundKeepAlive();
     for (const msg of earlyData) {
       if (msg && msg.sessionId === ent.sessionId && msg.data) {
         const chunk = String(msg.data);
@@ -961,6 +978,7 @@ export async function openTerminalForAgent(api, agent, hostEl, opts = {}) {
     return { ok: false, error: String(e) };
   } finally {
     ent.opening = false;
+    syncMobileTerminalBackgroundKeepAlive();
   }
   };
 
