@@ -9,7 +9,7 @@
   <meta name="cam-version" content="v0.64.0">
   <link rel="icon" href="assets/icon-192.png">
   <link rel="stylesheet" href="css/style.css?v=0.64.0">
-  <link rel="stylesheet" href="css/desktop.css?v=0.64.0">
+  <link rel="stylesheet" href="css/desktop.css?v=0.64.2-scroll-owner">
   <link rel="stylesheet" href="vendor/xterm/xterm.css?v=0.64.0">
   <!-- CAM-DESK-TERM-002: xterm UMD bundles expose window.Terminal,
        window.FitAddon, and window.SerializeAddon. Loaded before any
@@ -627,12 +627,15 @@
               </select>
             </label>
             <div id="start-node-fields" hidden>
+              <label>Node
+                <select id="start-node"></select>
+              </label>
               <label>Path
                 <input type="text" id="start-path" placeholder="/home/user/project" autocomplete="off">
               </label>
-              <p class="form-hint">No context selected — provide a path on the
-                local node. The agent runs directly; no context record is
-                created.</p>
+              <p class="form-hint">No context selected — pick a node and
+                path. The agent runs directly on that node; no context
+                record is created.</p>
             </div>
             <label>Prompt (optional)
               <textarea id="start-prompt" rows="6"
@@ -641,35 +644,51 @@
                 autocapitalize="off" spellcheck="false"></textarea>
             </label>
           </div>
-          <div class="settings-section">
-            <h3>Behavior</h3>
-            <label class="form-checkbox">
-              <input type="checkbox" id="start-autoconfirm" checked>
-              <span>Auto-confirm</span>
-              <span class="form-hint">Automatically respond to permission prompts.</span>
-            </label>
-            <label class="form-checkbox">
-              <input type="checkbox" id="start-autoexit">
-              <span>Auto-exit</span>
-              <span class="form-hint">Finalize agent when task completes.</span>
-            </label>
-          </div>
           <details class="start-advanced" id="start-advanced">
             <summary>Advanced</summary>
             <div class="settings-section">
+              <h3>Options</h3>
               <label>Task name (optional)
                 <input type="text" id="start-name" placeholder="auto-generated" autocomplete="off">
               </label>
+              <label class="form-checkbox">
+                <input type="checkbox" id="start-autoexit">
+                <span>Auto-exit on completion</span>
+                <span class="form-hint">Finalize the agent when the task
+                  completes (<code>--auto-exit</code>).</span>
+              </label>
+              <label class="form-checkbox">
+                <input type="checkbox" id="start-autoconfirm" checked>
+                <span>Auto-confirm</span>
+                <span class="form-hint">Auto-respond to permission prompts.
+                  In Relay mode this maps to <code>cam run
+                  --auto-confirm</code>; in Direct mode <code>camc
+                  run</code> forces this on regardless (the toggle is
+                  accepted for parity but has no effect there).</span>
+              </label>
               <label>Timeout (optional)
-                <input type="text" id="start-timeout" placeholder="e.g. 30m, 1h" autocomplete="off">
+                <input type="text" id="start-timeout"
+                  placeholder="e.g. 30m, 1h, 2h"
+                  autocomplete="off">
+                <span class="form-hint">Max wall-clock time before the
+                  agent is stopped. Honored in Relay mode (<code>cam run
+                  --timeout</code>); Direct mode (<code>camc run</code>)
+                  has no <code>--timeout</code> flag, so the value is
+                  recorded but not enforced by camc.</span>
               </label>
               <label>Retries
-                <input type="number" id="start-retry" value="0" min="0" max="5">
+                <input type="number" id="start-retry" value="0"
+                  min="0" max="5">
+                <span class="form-hint">Auto-retry count on failure.
+                  Honored in Relay mode (<code>cam run --retry</code>);
+                  Direct mode (<code>camc run</code>) has no
+                  <code>--retry</code> flag, so the value is recorded
+                  but not enforced by camc.</span>
               </label>
             </div>
             <div class="settings-section" id="start-api-section">
-              <h3 class="start-api-heading">Advanced (API)</h3>
-              <label>Custom LLM API profile (optional)</label>
+              <h3 class="start-api-heading">Custom LLM API</h3>
+              <label>API profile (optional)</label>
               <div class="start-api-row">
                 <input type="text" id="start-api" placeholder="(use login default)" autocomplete="off" disabled>
                 <button type="button" id="start-api-list-btn" class="btn-xs">List custom LLM APIs</button>
@@ -1125,3 +1144,12 @@
   <script type="module" src="js/desktop/app.js?v=0.66.0"></script>
 </body>
 </html>
+
+/* A scrolling flex column must not shrink its content cards to avoid
+ * overflow. Otherwise Advanced is visually clipped while the outer form
+ * never gains scrollable height. Keep direct page blocks at natural size;
+ * the page body owns the overflow. */
+#mode-start > #start-form > *,
+#mode-settings .settings-tab-panel > .settings-form-pane > * {
+  flex: 0 0 auto;
+}

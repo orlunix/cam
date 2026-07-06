@@ -297,18 +297,9 @@ export function mountNodesMode({
       map.get(key).contexts.push(c);
     }
 
-    // Orphan agents (no matching context machine) still contribute
-    // a host card with zero contexts.
-    for (const a of agents) {
-      const host = a.machine_host || 'local';
-      const isSSH = !!(a.machine_type === 'ssh' || (host && host !== 'local'));
-      const user = a.machine_user || '';
-      const port = normalizePort(a.machine_port, isSSH);
-      const key = hostKeyForMachineLocal({ type: a.machine_type, host, user, port });
-      if (!map.has(key)) {
-        map.set(key, { key, host, user, port, isSSH, contexts: [] });
-      }
-    }
+    // Nodes is a registry view: only registered contexts create cards.
+    // Agents whose host was deleted remain visible in Agents (history is
+    // retained), but must not resurrect a zero-context Node card.
 
     const hosts = [...map.values()].map(n => {
       const nodeAgents = agents.filter(a => agentMatchesHost(a, n));
@@ -1383,10 +1374,33 @@ function mountNodesActions({
     const m = (ctx && ctx.machine) || {};
     // Locate the owning host node so addContextNode is set and the
     // add-context submit path (which inherits host fields from the
-    // node's primary context) handles persistence.
-    const hosts = buildHosts();
-    const node = hosts.find(n => n.contexts.some(c => c.name === ctx.name));
-    if (!node) {
+    // node's primary context) handles persistence. `buildHosts` lives
+    // in mountNodesMode's closure (not visible here), so reconstruct
+    // the owning node directly from contexts via the shared hostKey
+    // helper — same grouping buildHosts uses.
+    const key = hostKeyForMachine({
+      type: m.type,
+      host: m.host || 'local',
+      user: m.user || '',
+      port: m.port,
+    });
+    const node = {
+      key,
+      host: m.host || 'local',
+      user: m.user || '',
+      port: m.port || null,
+      isSSH: !!(m.type === 'ssh' || (m.host && m.host !== 'local')),
+      contexts: all.filter(c => {
+        const cm = (c && c.machine) || {};
+        return hostKeyForMachine({
+          type: cm.type,
+          host: cm.host || 'local',
+          user: cm.user || '',
+          port: cm.port,
+        }) === key;
+      }),
+    };
+    if (!node.contexts.length) {
       showToast(`Cannot duplicate "${ctx.name}": host not found.`, 'error', 4000);
       return;
     }
@@ -1412,8 +1426,21 @@ function mountNodesActions({
       let i = 2;
       while (used.has(candidate)) candidate = `${ctx.name}-copy-${i++}`;
       fName.value = candidate;
+      // Explicitly editable — duplicate must allow renaming, unlike
+      // Edit Context (which is name-read-only). Clear every attribute
+      // that could make the field non-editable: readOnly, disabled,
+      // and both aria attrs. (Defensive: a prior _openEditContext may
+      // have set these on the same element instance.)
       fName.readOnly = false;
+      fName.disabled = false;
       fName.removeAttribute('aria-readonly');
+      fName.removeAttribute('aria-disabled');
+      // Defensive: make sure the field is focusable/visible even when
+      // the manage panel is scrolled or clipped. openManage already
+      // focuses fName, but if the panel was scrolled to a different
+      // field (e.g. from a prior edit), bring the name into view.
+      try { fName.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (_) {}
+      setTimeout(() => { try { fName.focus(); fName.select(); } catch (_) {} }, 0);
     }
     if (fPath) {
       fPath.value = ctx.path || (m.user ? `/home/${m.user}` : '');
