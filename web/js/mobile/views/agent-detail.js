@@ -438,8 +438,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
               <button class="overflow-menu-item" id="term-scroll-bottom">Scroll to bottom</button>
               <button class="overflow-menu-item" id="term-reattach">Reattach terminal</button>
               <button class="overflow-menu-item" id="term-detach">Detach session</button>
-              <button class="overflow-menu-item" id="term-clear-scroll">Clear scrollback</button>
-              <button class="overflow-menu-item" id="term-reset-size">Reset terminal size</button>`;
+`;
   }
 
   function updateFontSizeLabel() {
@@ -925,9 +924,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
             <div class="overflow-menu hidden" id="overflow-menu">
               ${canUseTerminalMode(api) ? `<button class="overflow-menu-item ${outputMode === 'terminal' ? 'active' : ''}" id="toggle-terminal">Terminal</button>` : ''}
               ${outputCaptureSupported() ? `<button class="overflow-menu-item ${outputMode === 'live' ? 'active' : ''}" id="toggle-live">Live output</button>` : ''}
-              ${outputCaptureSupported() ? `<button class="overflow-menu-item ${outputMode === 'full' ? 'active' : ''}" id="toggle-full">Full output</button>` : ''}
+              <button class="overflow-menu-item" id="toggle-browse">Browse</button>
               <button class="overflow-menu-item" id="refresh-output">Refresh</button>
-              <button class="overflow-menu-item" id="toggle-fullscreen">Fullscreen</button>
               <button class="overflow-menu-item" id="toggle-wrap">Scroll mode</button>
               ${fontMenuItemsHTML()}
               ${terminalMenuHTML()}
@@ -973,9 +971,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
             <div class="overflow-menu hidden" id="overflow-menu">
               ${canUseTerminalMode(api) ? `<button class="overflow-menu-item ${outputMode === 'terminal' ? 'active' : ''}" id="toggle-terminal">Terminal</button>` : ''}
               ${outputCaptureSupported() ? `<button class="overflow-menu-item ${outputMode === 'live' ? 'active' : ''}" id="toggle-live">Live output</button>` : ''}
-              ${outputCaptureSupported() ? `<button class="overflow-menu-item ${outputMode === 'full' ? 'active' : ''}" id="toggle-full">Full output</button>` : ''}
+              <button class="overflow-menu-item" id="toggle-browse">Browse</button>
               <button class="overflow-menu-item" id="refresh-output">Refresh</button>
-              <button class="overflow-menu-item" id="toggle-fullscreen">Fullscreen</button>
               <button class="overflow-menu-item" id="toggle-wrap">Scroll mode</button>
               ${fontMenuItemsHTML()}
               ${terminalMenuHTML()}
@@ -1316,10 +1313,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       loadOutput();
     });
 
-    container.querySelector('#toggle-full').addEventListener('click', () => {
-      closeMenu();
-      switchOutputMode('full');
-    });
+
 
     const toggleTerminal = container.querySelector('#toggle-terminal');
     if (toggleTerminal) {
@@ -1334,11 +1328,12 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       switchOutputMode('live');
     });
 
-    container.querySelector('#toggle-fullscreen').addEventListener('click', () => {
+    container.querySelector('#toggle-browse')?.addEventListener('click', () => {
       closeMenu();
-      isFullscreen = true;
-      openFullscreen(isActive);
+      navigate(`/agent/${encodeURIComponent(agentId)}/files`);
     });
+
+
 
     // Scroll mode: toggle between pre-wrap (wraps lines) and pre (horizontal scroll)
     let _wrapMode = localStorage.getItem('cam_output_wrap') !== 'scroll';
@@ -1399,14 +1394,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       if (!await detachTerminalSession(agentId)) throw new Error('No active session');
       state.toast('Session detached', 'success', 2000);
     });
-    wireTermBtn('#term-clear-scroll', async () => {
-      if (!clearTerminalScrollback(agentId)) throw new Error('Terminal not open');
-    });
-    wireTermBtn('#term-reset-size', async () => {
-      if (!resetTerminalSize(agentId)) throw new Error('Terminal not open');
-      const stats = getTerminalSessionStats(agentId);
-      if (stats?.cols) state.toast(`Terminal ${stats.cols}×${stats.rows}`, 'success', 2000);
-    });
+
+
 
     const settingsBtn = container.querySelector('#agent-settings-btn');
     if (settingsBtn) settingsBtn.addEventListener('click', () => {
