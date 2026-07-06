@@ -1244,6 +1244,23 @@ function _localCamcStatus(agentId) {
   });
 }
 
+/** Stamp the start-request fields that camc does NOT echo back onto
+ *  the normalized agent record. `camc --json status` carries auto_confirm
+ *  (it forces it on) and retry_count (always 0), but neither the
+ *  user's requested timeout nor the requested retry count survive the
+ *  camc run round-trip — camc has no --timeout/--retry flag. We record
+ *  them here so the agent row reflects what the user submitted, and
+ *  the renderer can show the Direct-mode limitation honestly.
+ *  CAM-DESK-RUN-011 / RUN-015. */
+function _stampStartRequestFields(normalized, body) {
+  if (!normalized || !body) return normalized;
+  if (body.timeout != null) normalized.requested_timeout = String(body.timeout);
+  if (body.retry != null) normalized.requested_retry = Number(body.retry) || 0;
+  // auto_confirm: camc forces true; honor the user's intent for display.
+  if (body.auto_confirm === false) normalized.auto_confirm_requested = false;
+  return normalized;
+}
+
 /** Run `camc run` locally (hub's own host). Returns { ok, agentId, record }.
  *  On success, upserts the agent into the store under the given ctx. */
 async function _startLocalAgent(body, ctx) {
@@ -1275,6 +1292,7 @@ async function _startLocalAgent(body, ctx) {
     record = { id: agentId, status: 'running', state: 'initializing', task: { tool: String((body && body.tool) || 'claude'), name: String((body && body.name) || ''), prompt: String((body && body.prompt) || '') }, context_path: String((body && body.path) || ''), transport_type: 'local', hostname: '' };
   }
   const normalized = _normalizeAgent(record, ctx);
+  _stampStartRequestFields(normalized, body);
   if (normalized && normalized.id) {
     _upsertAgentsForContext(ctx, [normalized]);
     pushLog('info', `start local agent: ${normalized.id} (${normalized.tool})`);
@@ -1312,6 +1330,7 @@ async function _startRemoteAgent(body, baseOpts, ctx) {
     record = { id: agentId, status: 'running', state: 'initializing', task: { tool: String((body && body.tool) || 'claude'), name: String((body && body.name) || ''), prompt: String((body && body.prompt) || '') }, context_path: String((body && body.path) || ''), transport_type: 'ssh', hostname: '' };
   }
   const normalized = _normalizeAgent(record, ctx);
+  _stampStartRequestFields(normalized, body);
   if (normalized && normalized.id) {
     _upsertAgentsForContext(ctx, [normalized]);
     pushLog('info', `start remote agent: ${normalized.id} (${normalized.tool}) on ${baseOpts.user}@${baseOpts.host}`);
@@ -1368,32 +1387,48 @@ function _resolveStartTarget(body) {
     const localCtx = _ensureLocalContext();
     return { ok: true, ctx: localCtx, baseOpts: null };
   }
-  const m = /^([^@]+)@([^:]+):(\d+)$/.exec(nodeKey);
+  // Accept bracketed IPv6 hosts: "user@[2001:db8::1]:22". The host group
+  // matches either "[...]" (bracketed IPv6) or a non-colon host (IPv4 /
+  // hostname). Brackets are stripped before the host is used so the
+  // stored machine.host and the SSH target stay bare.
+  const m = /^([^@]+)@(\[[^\]]+\]|[^:]+):(\d+)$/.exec(nodeKey);
   if (!m) {
     return { ok: false, error: 'bad_node', detail: `unrecognized node key "${nodeKey}"` };
   }
   const user = m[1];
-  const host = m[2];
+  const rawHost = m[2];
+  const host = rawHost.startsWith('[') && rawHost.endsWith(']') ? rawHost.slice(1, -1) : rawHost;
   const port = Number(m[3]) || 22;
-  // Reuse creds from an existing context on the same endpoint.
+  // Reuse creds from an existing context on the same endpoint. Compare
+  // the bare host so a context stored with host="2001:db8::1" matches a
+  // node key that arrived bracketed.
   const donor = contexts.find(c => {
     const mm = c && c.machine || {};
-    return (mm.type || 'local') === 'ssh' && mm.host === host && mm.user === user && (mm.port || 22) === port;
+    if ((mm.type || 'local') !== 'ssh') return false;
+    const mmHost = mm.host || '';
+    const mmHostBare = mmHost.startsWith('[') && mmHost.endsWith(']') ? mmHost.slice(1, -1) : mmHost;
+    return mmHostBare === host && (mm.user || '') === user && (mm.port || 22) === port;
   });
+  // CAM-DESK-DIRECT-014: the Hub owns the node/remote registry. An
+  // inline node+path start must target a REGISTERED endpoint — refuse
+  // to fabricate creds/auth for a node the user has not added. Falling
+  // through to agent auth here would let the form start agents on
+  // arbitrary hosts, which is not the designed surface.
+  if (!donor) {
+    return { ok: false, error: 'node_not_registered', detail: `no registered context for ${user}@${host}:${port}. Add the host on the Nodes page first.` };
+  }
   const baseOpts = {
     host, user, port,
-    auth_method: donor && (donor.machine.auth_method || (donor.machine.key_file ? 'key' : 'agent')) || 'agent',
-    key_file: donor && (donor.machine.key_file || '') || '',
+    auth_method: donor.machine.auth_method || (donor.machine.key_file ? 'key' : 'agent'),
+    key_file: donor.machine.key_file || '',
     timeout_ms: RUN_REMOTE_TIMEOUT_MS,
   };
-  if (donor) {
-    const cred = _credentialFor(donor);
-    if (baseOpts.auth_method === 'password') {
-      if (cred == null || cred === '') return { ok: false, error: 'credential_missing', detail: `no remembered password for ${user}@${host}:${port}` };
-      baseOpts.password = cred;
-    } else if (baseOpts.auth_method === 'key' && cred != null) {
-      baseOpts.passphrase = cred;
-    }
+  const cred = _credentialFor(donor);
+  if (baseOpts.auth_method === 'password') {
+    if (cred == null || cred === '') return { ok: false, error: 'credential_missing', detail: `no remembered password for ${user}@${host}:${port}` };
+    baseOpts.password = cred;
+  } else if (baseOpts.auth_method === 'key' && cred != null) {
+    baseOpts.passphrase = cred;
   }
   // Throwaway context shell — machine only, never stored.
   const throwaway = {
@@ -1417,6 +1452,26 @@ function _resolveStartTarget(body) {
 
 const API_TOOL_SUPPORT = { claude: true, codex: true, cursor: false, aider: false };
 
+/** Defensive secret redaction for error details surfaced to the
+ *  renderer. ssh2 auth errors say "All configured authentication methods
+ *  failed" (no secret echoed) and the api list/default commands send no
+ *  token, so a leak is unlikely — but a remote camc stderr or a
+ *  user-configured api-models.json could echo a token/password in a
+ *  python traceback. Scrub the common patterns before returning. */
+const SECRET_PATTERNS = [
+  /gh[pousr]_[A-Za-z0-9]{20,}/g,           // GitHub PATs
+  /glpat-[A-Za-z0-9_-]{10,}/g,             // GitLab PATs
+  /sk-[A-Za-z0-9]{16,}/g,                  // OpenAI-style keys
+  /(?:bearer|token|password|passwd|passphrase|api[_-]?key|api[_-]?token)["' :=]+[A-Za-z0-9._~+/=-]{8,}/gi,
+  /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g,
+];
+function _redactSecrets(s) {
+  if (!s) return s;
+  let out = String(s);
+  for (const re of SECRET_PATTERNS) out = out.replace(re, '[REDACTED]');
+  return out;
+}
+
 function _localCamcJson(args, timeoutMs) {
   return new Promise((resolve) => {
     const bin = _localCamcPath();
@@ -1428,7 +1483,7 @@ function _localCamcJson(args, timeoutMs) {
       if (err) {
         const code = (err.code === 'ENOENT') ? 'camc_missing'
           : (err.killed && /TIMEDOUT/i.test(String(err.message || '')) ? 'timeout' : 'exec_failed');
-        return resolve({ ok: false, error: code, detail: err.message || 'local camc exec failed', stdout: '', stderr: stderr || '' });
+        return resolve({ ok: false, error: code, detail: _redactSecrets(err.message || 'local camc exec failed'), stdout: '', stderr: stderr || '' });
       }
       resolve({ ok: true, stdout: String(stdout || ''), stderr: String(stderr || '') });
     });
@@ -1448,20 +1503,26 @@ async function _remoteCamcJson(baseOpts, argv, timeoutMs) {
   const res = await _sshTransport.execRemote({ ...baseOpts, command: cmd, timeout_ms: timeoutMs || 10000 });
   if (!res || !res.ok) {
     const err = (res || {});
-    return { ok: false, error: err.error || 'exec_failed', detail: err.detail || err.stderr || 'remote camc exec failed', stdout: (res && res.stdout) || '', stderr: (res && res.stderr) || '' };
+    return { ok: false, error: err.error || 'exec_failed', detail: _redactSecrets(err.detail || err.stderr || 'remote camc exec failed'), stdout: (res && res.stdout) || '', stderr: (res && res.stderr) || '' };
   }
   return { ok: true, stdout: String(res.stdout || ''), stderr: String(res.stderr || '') };
 }
 
 /** Merge raw list/default JSON outputs into {models, defaults}.
- *  Logs warnings on parse failures. */
+ *  Logs warnings on parse failures. Returns `parseError` so the caller
+ *  can surface a non-silent empty-list reason to the renderer when
+ *  camc ran (ok) but emitted non-JSON output. */
 function _mergeApiModels(listRes, defRes, logTag) {
   let models = [];
+  let parseError = null;
   if (listRes && listRes.ok) {
     try {
       const parsed = JSON.parse(listRes.stdout || '[]');
       if (Array.isArray(parsed)) models = parsed;
-    } catch (e) { pushLog('warn', `api-models ${logTag}: invalid list JSON: ${e && e.message}`); }
+    } catch (e) {
+      pushLog('warn', `api-models ${logTag}: invalid list JSON: ${e && e.message}`);
+      parseError = `camc ran but emitted non-JSON output: ${(listRes.stdout || '').slice(0, 200)}`;
+    }
   } else if (listRes && listRes.error !== 'camc_missing' && listRes.error !== 'ssh_transport_unavailable') {
     pushLog('warn', `api-models ${logTag} list failed: ${listRes.error}`);
   }
@@ -1474,7 +1535,7 @@ function _mergeApiModels(listRes, defRes, logTag) {
   } else if (defRes && defRes.error !== 'camc_missing' && defRes.error !== 'ssh_transport_unavailable') {
     pushLog('warn', `api-models ${logTag} default failed: ${defRes.error}`);
   }
-  return { models, defaults };
+  return { models, defaults, parseError };
 }
 
 /** `camc api default show` has its OWN --json flag (the global --json
@@ -1537,13 +1598,50 @@ async function _getApiModels(query) {
       _localCamcJson(API_DEFAULT_ARGS, 10000),
     ]);
   }
-  const { models, defaults } = _mergeApiModels(listRes, defRes, tag);
+  const { models, defaults, parseError } = _mergeApiModels(listRes, defRes, tag);
   const enabledCount = Array.isArray(models) ? models.filter(m => m && m.enabled !== false).length : 0;
+  // Surface a local/remote camc failure to the renderer so the user
+  // sees WHY the list is empty instead of a silent blank. The bundled
+  // `camc` is a POSIX shell-polyglot (`#!/bin/sh` + python heredoc)
+  // that runs on Linux (shebang) but CANNOT be execFile'd on Windows
+  // (no /bin/sh, not a .exe). So on a Windows hub with the local node
+  // selected, the local camc call fails with exec_failed/camc_missing
+  // and the user must pick a remote context (where ~/.cam/camc and the
+  // api-models.json live) to list profiles. The remote path (camc over
+  // SSH on a selected context/node) can ALSO fail — camc missing on
+  // the remote host, ~/.cam/api-models.json absent, a python error, a
+  // nonzero exit, or an SSH connection/cred failure — each previously
+  // returned models:[] with error:null (silent blank). Now we report
+  // the underlying error so the renderer can show it. (CAM-DESK-RUN-013)
+  let err = null, detail = null;
+  if (!models.length && !defaults.length) {
+    const fail = (listRes && !listRes.ok) ? listRes : (defRes && !defRes.ok ? defRes : null);
+    if (parseError) {
+      err = 'camc_parse_failed';
+      detail = _redactSecrets(parseError);
+    } else if (fail) {
+      if (fail.error === 'timeout') {
+        err = 'camc_timeout';
+        detail = `\`camc api list\` on ${tag} timed out.`;
+      } else if (target.baseOpts) {
+        // Remote (SSH) camc failure — include the remote stderr/exit
+        // so the user sees the actual reason (camc missing, python
+        // error, api-models.json absent, ssh cred failure, etc.).
+        err = (fail.error === 'exec_failed' || fail.error === 'remote_nonzero')
+          ? 'remote_camc_failed' : (fail.error || 'remote_camc_failed');
+        detail = _redactSecrets(`camc on ${tag} failed (${err}): ${fail.detail || fail.stderr || 'no detail'}`.slice(0, 400));
+      } else {
+        // Local camc not runnable (Windows: POSIX shell-polyglot, no /bin/sh).
+        err = fail.error === 'ENOENT' ? 'camc_missing' : (fail.error || 'local_camc_unavailable');
+        detail = _redactSecrets(`Local \`camc\` could not run on this host (${err}: ${(fail.detail || 'no detail').slice(0,200)}). The bundled camc is a POSIX shell script; on Windows there is no /bin/sh to exec it. Select a remote context to list profiles from that machine's ~/.cam/api-models.json.`);
+      }
+    }
+  }
   return {
     models,
     defaults,
     toolSupport: API_TOOL_SUPPORT,
-    source: { label: tag, enabled_count: enabledCount, error: null, detail: null },
+    source: { label: tag, enabled_count: enabledCount, error: err, detail },
   };
 }
 
@@ -3929,7 +4027,21 @@ async function handle(req, res) {
         ? await _startRemoteAgent(runBody, target.baseOpts, target.ctx)
         : await _startLocalAgent(runBody, target.ctx);
       if (!result.ok) return sendJson(res, 400, { error: result.error, detail: result.detail });
-      return sendJson(res, 201, { agent: result.record, agentId: result.agentId });
+      // CAM-DESK-RUN-011 / RUN-015: auto_confirm + timeout + retry are part
+      // of the required form surface and are always sent by the renderer.
+      // The embedded Hub (Direct mode) starts agents via `camc run`, which
+      // has NO --auto-confirm/--timeout/--retry flag (camc forces
+      // auto_confirm=true on its own). So the values are recorded on the
+      // agent record but NOT enforced by camc. Relay mode (cam serve)
+      // enforces all three natively. Surface a direct_limitations note so
+      // the renderer can show the user which knobs are no-ops here.
+      const directLimitations = {
+        mode: 'direct',
+        auto_confirm: { sent: body && ('auto_confirm' in body), enforced: false, note: 'camc run forces auto-confirm on; the toggle is accepted for parity but has no effect in Direct mode.' },
+        timeout:      { sent: body && ('timeout' in body) && body.timeout !== '' && body.timeout != null, enforced: false, note: 'camc run has no --timeout flag; the value is recorded on the agent but not enforced by camc.' },
+        retry:        { sent: body && ('retry' in body) && Number(body.retry) > 0, enforced: false, note: 'camc run has no --retry flag; the value is recorded on the agent but not enforced by camc.' },
+      };
+      return sendJson(res, 201, { agent: result.record, agentId: result.agentId, direct_limitations: directLimitations });
     }
     return send404(res);
   }

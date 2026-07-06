@@ -224,6 +224,7 @@ body.desktop textarea:focus-visible {
 .desktop-layout {
   display: grid;
   grid-template-columns: 280px 1fr;
+  grid-template-rows: 1fr;
   height: 100vh;
   min-height: 0;
 }
@@ -1167,6 +1168,18 @@ body.desktop[data-theme="light"] .composer-input:focus {
   margin-right: auto;
 }
 
+/* Start/Settings panels must constrain their form pane so the pane
+ * scrolls instead of the panel growing past the viewport. Without
+ * explicit min-height:0 + overflow:hidden on the panel, a flex:1
+ * child can grow with content and clip the bottom (no scrollbar).
+ * (CAM-DESK-RUN-015: Advanced section was unreachable on short
+ * windows.) */
+#mode-start,
+#mode-settings {
+  min-height: 0;
+  overflow: hidden;
+}
+
 .settings-form-pane {
   width: min(var(--desktop-rail-form), 100%);
   max-width: none;
@@ -1175,9 +1188,41 @@ body.desktop[data-theme="light"] .composer-input:focus {
   padding: 16px 20px 20px;
   overflow-y: auto;
   flex: 1;
+  /* min-height:0 is required for a flex item to shrink below its
+   * content's intrinsic size inside a flex-column parent. Without it
+   * the pane grows to fit content, overflow-y:auto never triggers,
+   * and #mode-start{overflow:hidden} clips the bottom (no scrollbar,
+   * Advanced/actions unreachable on short windows). The panel-level
+   * min-height:0 above is necessary but not sufficient — the pane
+   * itself must also opt out of min-height:auto. (CAM-DESK-RUN-015.) */
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+/* #start-form is the Start page's scrolling container (it carries the
+ * .settings-form-pane class but the user still saw no scrollbar on
+ * short windows even with min-height:0 on the class rule — the class
+ * rule can be overridden by descendant rules / agent-pane variants,
+ * and overflow-y:auto only shows a scrollbar WHEN overflowing, which
+ * on some platforms leaves the form looking clipped with no gutter).
+ * Scope an unambiguous, higher-specificity rule to #start-form so the
+ * Start page ALWAYS reserves a visible scrollbar:
+ *   - overflow-y:scroll  → scrollbar present whether or not content
+ *     overflows (no "clip with no gutter" state).
+ *   - scrollbar-gutter:stable → reserve the gutter width even when
+ *     not scrolling, so opening Advanced doesn't shift the form width.
+ *   - min-height:0 → re-affirm the flex item may shrink below content
+ *     inside #mode-start (flex column), so the scroll area gets a
+ *     definite height instead of growing to fit content.
+ * #mode-start keeps overflow:hidden as the outer clip; the form's own
+ * scroll engages first, so the form never overflows the panel. (User
+ * report: no Start scrollbar; CAM-DESK-RUN-015.) */
+#start-form {
+  min-height: 0;
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
 }
 .settings-section {
   display: flex;
@@ -1241,26 +1286,48 @@ body.desktop[data-theme="light"] .composer-input:focus {
 
 /* Start form: collapsible Advanced block (contains name/timeout/retries
  *   + the API section). Matches the Settings <details> styling. */
-.start-advanced { margin: 8px 0; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-pane); }
-.start-advanced > summary { cursor: pointer; padding: 8px 12px; font-weight: 600; list-style: none; }
+.start-advanced { margin: 10px 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-pane); overflow: hidden; }
+.start-advanced > summary { cursor: pointer; padding: 10px 14px; font-weight: 600; list-style: none; user-select: none; display: flex; align-items: center; gap: 6px; }
 .start-advanced > summary::-webkit-details-marker { display: none; }
-.start-advanced > summary::before { content: "▸"; margin-right: 6px; transition: transform .15s; display: inline-block; }
+.start-advanced > summary::before { content: "▸"; margin-right: 2px; transition: transform .15s; display: inline-block; color: var(--text-muted, #888); }
 .start-advanced[open] > summary::before { transform: rotate(90deg); }
-.start-advanced > .settings-section { padding: 4px 12px 12px; }
-.start-api-heading { margin: 4px 0; }
+.start-advanced[open] > summary { border-bottom: 1px solid var(--border); }
+.start-advanced > .settings-section { padding: 10px 14px; }
+.start-advanced > .settings-section + .settings-section { border-top: 1px solid var(--border); }
+.start-api-heading { margin: 2px 0 6px; font-size: 13px; }
 
 /* Start form: clickable API profile list (replaces a <select> so we can
  *   show name + model + provider·status per row). */
-.api-row-list { list-style: none; margin: 6px 0; padding: 0; border: 1px solid var(--border); border-radius: var(--radius-sm); max-height: 220px; overflow-y: auto; }
+.api-row-list { list-style: none; margin: 8px 0 6px; padding: 0; border: 1px solid var(--border); border-radius: var(--radius-sm); max-height: 220px; overflow-y: auto; }
+/* On the Start page the API list must NOT own its own scrollbar — the
+ * outer #start-form is the only vertical scroll container for the whole
+ * page (see the #start-form rule above). The generic .api-row-list caps
+ * height at 220px with overflow-y:auto, which (a) clips a long model
+ * list behind a tiny nested scroller the user reported as "only List API
+ * scrolls", and (b) on short windows competes with the page scrollbar.
+ * Scope a higher-specificity override to #start-form so the list expands
+ * to its full content and the page scrolls as one. (User report: only
+ * List API scrolls; CAM-DESK-RUN-015.) Specificity: #start-form
+ * .api-row-list (1,1,0) beats .api-row-list (0,1,0). */
+#start-form .api-row-list { max-height: none; overflow-y: visible; }
+.api-row-list-header { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(160px, 1.4fr) minmax(140px, 1fr); gap: 8px; align-items: center; padding: 5px 10px; background: var(--bg-hover, rgba(0,0,0,0.04)); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-muted, #888); border-bottom: 1px solid var(--border); }
 .api-row { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(160px, 1.4fr) minmax(140px, 1fr); gap: 8px; align-items: center; padding: 6px 10px; cursor: pointer; border-bottom: 1px solid var(--border); }
 .api-row:last-child { border-bottom: none; }
 .api-row:hover { background: var(--bg-hover, rgba(0,0,0,0.04)); }
-.api-row.is-selected { background: var(--accent-bg, rgba(0,120,210,0.12)); }
+.api-row.is-selected { background: var(--accent-bg, rgba(0,120,210,0.12)); box-shadow: inset 3px 0 0 var(--accent, #2864c8); }
 .api-row.is-disabled { opacity: 0.45; cursor: not-allowed; }
+.api-row.is-disabled:hover { background: transparent; }
 .api-row-name { font-weight: 600; }
 .api-row-model { font-family: var(--mono, monospace); font-size: 11px; color: var(--text-muted, #888); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .api-row-meta { font-size: 11px; color: var(--text-muted, #888); text-align: right; white-space: nowrap; }
 .api-default-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: var(--radius-sm); background: var(--accent, #2864c8); color: #fff; font-size: 10px; font-weight: 700; }
+.api-mark { display: inline-block; width: 14px; margin-left: 3px; font-size: 12px; text-align: center; }
+.api-mark-default { color: var(--accent, #2864c8); }
+.api-mark-selected { color: #1a8a3a; font-weight: 700; }
+.api-mark-none { visibility: hidden; }
+.api-dot { display: inline-block; margin-right: 3px; font-size: 10px; }
+.api-dot.is-on { color: #1a8a3a; }
+.api-dot.is-off { color: var(--text-muted, #888); }
 .api-status-line { font-size: 12px; color: var(--text-muted, #888); margin: 4px 0; }
 
 .settings-section input[type="range"] {
@@ -1785,7 +1852,8 @@ body.desktop[data-theme="light"] .composer-input:focus {
   margin: 0 auto;
   min-height: 0;
   max-height: min(72vh, calc(100vh - 190px));
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 0 16px 16px;
 }
 #mode-nodes .nodes-manage-tabs {
@@ -5178,4 +5246,56 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
     flex-direction: column;
     align-items: stretch;
   }
+}
+
+/* Start page: one deliberate scroll owner. The form is a flex child below
+ * the header; flex-basis:0 plus height:0 gives it a definite remaining
+ * viewport height, so overflow can never escape to an inner API list or
+ * get clipped by the mode panel. */
+#mode-start > #start-form {
+  flex: 1 1 0;
+  height: 0;
+  max-height: 100%;
+  overflow-x: hidden;
+  overflow-y: scroll;
+}
+#mode-start > #start-form::-webkit-scrollbar { width: 12px; }
+#mode-start > #start-form::-webkit-scrollbar-thumb {
+  background: var(--border, #7a7a7a);
+  border: 3px solid var(--bg, #fff);
+  border-radius: 8px;
+}
+
+/* Every long configuration page follows the same scroll contract: its
+ * page body, not an inner control, owns the vertical scrollbar. */
+#mode-settings .settings-tab-panel > .settings-form-pane,
+#mode-start > .settings-form-pane {
+  flex: 1 1 0;
+  height: 0;
+  min-height: 0;
+  max-height: 100%;
+  overflow-x: hidden;
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
+}
+#mode-settings .settings-tab-panel > .settings-form-pane::-webkit-scrollbar,
+#mode-start > .settings-form-pane::-webkit-scrollbar,
+#mode-nodes .nodes-list-wrap::-webkit-scrollbar,
+#mode-nodes .nodes-manage-panel::-webkit-scrollbar { width: 12px; }
+#mode-settings .settings-tab-panel > .settings-form-pane::-webkit-scrollbar-thumb,
+#mode-start > .settings-form-pane::-webkit-scrollbar-thumb,
+#mode-nodes .nodes-list-wrap::-webkit-scrollbar-thumb,
+#mode-nodes .nodes-manage-panel::-webkit-scrollbar-thumb {
+  background: var(--border, #7a7a7a);
+  border: 3px solid var(--bg, #fff);
+  border-radius: 8px;
+}
+
+/* A scrolling flex column must not shrink its content cards to avoid
+ * overflow. Otherwise Advanced is visually clipped while the outer form
+ * never gains scrollable height. Keep direct page blocks at natural size;
+ * the page body owns the overflow. */
+#mode-start > #start-form > *,
+#mode-settings .settings-tab-panel > .settings-form-pane > * {
+  flex: 0 0 auto;
 }
