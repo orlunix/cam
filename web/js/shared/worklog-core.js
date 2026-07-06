@@ -5,7 +5,7 @@
 
 export const STORAGE_KEY = 'cam_desktop_worklog_v0';
 export const PROJECTS_KEY = 'cam_desktop_worklog_projects_v0';
-export const WORKLOG_TABS = ['inbox', 'tasks', 'notes', 'projects', 'archive'];
+export const WORKLOG_TABS = ['tasks', 'projects', 'archive'];
 export const DETAIL_TABS = ['preview', 'raw', 'notes', 'checklist', 'history'];
 
 export const seedItems = [
@@ -175,19 +175,13 @@ export function relativeTime(ms) {
 /** CAM-DESK-TODOS-011 tab membership from kind + status. */
 export function itemMatchesTab(item, tab) {
   if (tab === 'projects') return false;
-  if (tab === 'archive') return item.status === 'archived';
+  if (tab === 'archive') return false; // Archive is project-level in the shared controller.
   if (item.status === 'archived') return false;
   const kind = item.kind || item.type || 'task';
-  if (tab === 'inbox') {
-    return item.project === 'inbox' && (item.status === 'open' || item.status === 'captured');
-  }
   if (tab === 'tasks') {
-    return kind === 'task' && (item.checklist || []).length > 0;
+    return kind === 'task';
   }
-  if (tab === 'notes') {
-    return kind === 'note';
-  }
-  return true;
+  return false;
 }
 
 export function itemMarkdown(item) {
