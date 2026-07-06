@@ -217,6 +217,13 @@ def load_login_shell_env(shell=None, env_setup=None, timeout=5):
 # clears today; centralized here so they are checked the same way.
 _NEST_CLEAR_KEYS = ("TMUX", "TMUX_PANE", "CLAUDECODE")
 
+# A camc agent always has an interactive tmux terminal.  The parent process
+# can nevertheless carry NO_COLOR=1 (for example from an automation host or
+# an IDE non-interactive shell).  Passing that through suppresses ANSI in
+# Codex/Claude/Cursor despite the interactive PTY and makes Desktop appear
+# monochrome.  Do not inherit that non-interactive presentation preference.
+_INTERACTIVE_CLEAR_KEYS = ("NO_COLOR",)
+
 
 def build_runtime_env(shell=None, env_setup=None):
     """Returns a RuntimeEnv: login shell env + env_setup applied +
@@ -229,6 +236,8 @@ def build_runtime_env(shell=None, env_setup=None):
         else "login_shell"
     )
     for k in _NEST_CLEAR_KEYS:
+        env.pop(k, None)
+    for k in _INTERACTIVE_CLEAR_KEYS:
         env.pop(k, None)
     # Force SHELL to the resolved login shell. The captured env's SHELL
     # is whatever the parent process exported — e.g. Claude Code's

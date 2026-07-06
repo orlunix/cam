@@ -496,7 +496,8 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
     ``TMUX_BIN`` resolved at import time.
 
     Regardless of how `env` arrives, ``TMUX`` / ``TMUX_PANE`` /
-    ``CLAUDECODE`` are stripped here so a nested-launch fails-safe."""
+    ``CLAUDECODE`` and parent-process ``NO_COLOR`` are stripped here so a
+    nested launch fails safe and interactive agents retain ANSI output."""
     try:
         os.makedirs(SOCKETS_DIR)
     except OSError:
@@ -511,6 +512,10 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
     env.pop("TMUX", None)
     env.pop("TMUX_PANE", None)
     env.pop("CLAUDECODE", None)
+    # A camc agent always runs in tmux with an interactive PTY.  NO_COLOR is
+    # commonly injected by non-interactive launch wrappers and would make
+    # Codex/Claude/Cursor deliberately emit monochrome output in Desktop.
+    env.pop("NO_COLOR", None)
     # Force SHELL to the account's login shell from /etc/passwd. The
     # parent process's SHELL may be wrong — Claude Code's Bash tool
     # exports SHELL=/usr/bin/zsh even on a /bin/csh account. tmux
