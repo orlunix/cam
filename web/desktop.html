@@ -10,6 +10,7 @@
   <link rel="icon" href="assets/icon-192.png">
   <link rel="stylesheet" href="css/style.css?v=0.64.0">
   <link rel="stylesheet" href="css/desktop.css?v=0.64.2-scroll-owner">
+  <link rel="stylesheet" href="css/todos.css?v=2.4.1">
   <link rel="stylesheet" href="vendor/xterm/xterm.css?v=0.64.0">
   <!-- CAM-DESK-TERM-002: xterm UMD bundles expose window.Terminal,
        window.FitAddon, and window.SerializeAddon. Loaded before any
@@ -1058,84 +1059,13 @@
         <div class="settings-status bots-status" id="bots-status" aria-live="polite"></div>
       </section>
 
-      <!-- Todos / Notes worklog (CAM-DESK-TODOS-010..017) -->
+      <!-- Shared Todos workspace. JavaScript replaces the loading placeholder. -->
       <section class="mode-panel" id="mode-todos" data-mode="todos" hidden>
         <div class="settings-header todos-header">
           <h2>Todos</h2>
-          <p class="settings-help">
-            Structured Markdown worklog for tasks, task notes, checklists, and project history.
-            V0 is local and mock-safe while the todocli backend contract is wired.
-          </p>
+          <p class="settings-help">Tasks, projects, and archived projects share one responsive workspace.</p>
         </div>
-
-        <div class="todos-workbench">
-          <section class="todos-card todos-card-main">
-            <div class="todos-card-head">
-              <div class="todos-tabs" role="tablist" aria-label="Todos workspace tabs">
-                <button type="button" class="todos-tab active" data-todos-tab="inbox" role="tab" aria-selected="true">Inbox</button>
-                <button type="button" class="todos-tab" data-todos-tab="tasks" role="tab" aria-selected="false">Tasks</button>
-                <button type="button" class="todos-tab" data-todos-tab="notes" role="tab" aria-selected="false">Notes</button>
-                <button type="button" class="todos-tab" data-todos-tab="projects" role="tab" aria-selected="false">Projects</button>
-                <button type="button" class="todos-tab" data-todos-tab="archive" role="tab" aria-selected="false">Archive</button>
-              </div>
-              <div class="todos-actions">
-                <button type="button" class="btn-primary" id="todos-new-task">New task</button>
-                <button type="button" class="btn-secondary" id="todos-new-note">New note</button>
-              </div>
-            </div>
-
-            <section class="todos-store-card" aria-label="Todo store">
-              <div>
-                <span class="todos-label">Context</span>
-                <strong id="todos-context-label">Current workspace context</strong>
-              </div>
-              <div>
-                <span class="todos-label">Store</span>
-                <code id="todos-store-path">/workspace/.cam/worklog</code>
-              </div>
-              <div class="todos-store-actions">
-                <button type="button" class="btn-secondary" id="todos-check">Check</button>
-                <button type="button" class="btn-secondary" id="todos-init">Initialize</button>
-                <button type="button" class="btn-secondary" id="todos-refresh">Refresh</button>
-              </div>
-            </section>
-
-            <section class="todos-controls" aria-label="Todo filters">
-              <label>Search
-                <input type="search" id="todos-search" placeholder="Search tasks, notes, tags..." autocomplete="off">
-              </label>
-              <label>Project
-                <select id="todos-project-filter"><option value="all">All</option></select>
-              </label>
-              <label>Status
-                <select id="todos-status-filter">
-                  <option value="open">Open</option>
-                  <option value="active">Active</option>
-                  <option value="done">Done</option>
-                  <option value="archived">Archived</option>
-                  <option value="all">All</option>
-                </select>
-              </label>
-              <label>Sort
-                <select id="todos-sort">
-                  <option value="updated">Updated</option>
-                  <option value="priority">Priority</option>
-                  <option value="title">Title</option>
-                </select>
-              </label>
-            </section>
-
-            <section class="todos-outline" id="todos-outline" aria-label="Structured todos and notes">
-              <div class="empty-state">Loading todos&hellip;</div>
-            </section>
-
-            <section class="todos-detail" id="todos-detail" aria-label="Selected todo detail">
-              <div class="empty-state">Select an item to view details.</div>
-            </section>
-          </section>
-        </div>
-
-        <div class="settings-status todos-status" id="todos-status" aria-live="polite"></div>
+        <div class="todos-workbench"><div class="empty-state">Loading Todos&hellip;</div></div>
       </section>
 
     </main>
