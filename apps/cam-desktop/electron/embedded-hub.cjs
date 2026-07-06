@@ -2942,24 +2942,45 @@ async function _uploadAgentFile(agentId, body) {
   const ctx = resolved.ctx;
   const terminal = ['completed', 'failed', 'timeout', 'killed'].includes(String(agent.status || '').toLowerCase());
   if (terminal) return { ok: false, error: 'agent_not_running', detail: 'Agent is not running' };
-  if (!_sshTransport || typeof _sshTransport.writeRemoteFile !== 'function') {
-    return { ok: false, error: 'ssh_upload_unavailable', detail: 'embedded Hub SSH transport cannot upload files' };
-  }
-
   const filename = body && body.filename != null ? String(body.filename) : '';
   if (!filename.trim()) return { ok: false, error: 'missing_filename', detail: 'filename is required' };
   const decoded = _decodeUploadData(body && body.data);
   if (decoded.error) return { ok: false, error: decoded.error, detail: decoded.detail };
 
-  const contextPath = String(agent.context_path || agent.path || (ctx && ctx.path) || '').replace(/\/+$/, '');
-  if (!contextPath) return { ok: false, error: 'working_dir_missing', detail: 'Agent has no working directory' };
+  // An attachment must live under the selected agent workspace. A
+  // process-global temp/upload directory is often outside tool sandbox roots,
+  // causing the agent to receive an unusable attachment path.
+  const root = _resolveBrowseRoot(agent, ctx);
+  if (!root) return { ok: false, error: 'working_dir_missing', detail: 'Agent has no working directory' };
+  const dir = _joinBrowsePath(root, '.cam-images');
+  const destPath = _joinBrowsePath(dir, `${_timestampCompact()}-${_safeUploadFilename(filename)}`);
+  const isLocal = !ctx || !ctx.machine || ctx.machine.type !== 'ssh';
 
+  if (isLocal) {
+    const rootAbs = _localPath(root);
+    const destAbs = _localPath(destPath);
+    try {
+      const realRoot = fs.realpathSync.native(rootAbs);
+      const resolvedDest = path.resolve(destAbs);
+      const relative = path.relative(realRoot, resolvedDest);
+      if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+        return { ok: false, error: 'path_traversal', detail: 'upload destination is outside the agent workspace' };
+      }
+      fs.mkdirSync(path.dirname(resolvedDest), { recursive: true });
+      fs.writeFileSync(resolvedDest, decoded.content);
+      pushLog('info', `upload ${agentId}: ${destPath} (${decoded.content.length} bytes)`);
+      return { ok: true, path: destPath, size: decoded.content.length };
+    } catch (e) {
+      return { ok: false, error: 'local_upload_failed', detail: e && e.message || 'failed to write workspace attachment' };
+    }
+  }
+
+  if (!_sshTransport || typeof _sshTransport.writeRemoteFile !== 'function') {
+    return { ok: false, error: 'ssh_upload_unavailable', detail: 'embedded Hub SSH transport cannot upload files' };
+  }
   const baseBuilt = _sshBaseOptsForContext(ctx, Math.max(SYNC_DEFAULT_TIMEOUT_MS, 60000));
   if (baseBuilt.error) return { ok: false, error: baseBuilt.error, detail: baseBuilt.detail };
   const baseOpts = baseBuilt.opts;
-  const dir = `${contextPath}/.cam-images`;
-  const destPath = `${dir}/${_timestampCompact()}-${_safeUploadFilename(filename)}`;
-
   const mkdir = await _sshTransport.execRemote({ ...baseOpts, command: `mkdir -p ${_shellQuote(dir)}` });
   if (!mkdir || !mkdir.ok) {
     return { ok: false, error: mkdir && mkdir.error || 'remote_mkdir_failed', detail: mkdir && (mkdir.detail || mkdir.stderr) || 'failed to create remote upload directory' };
