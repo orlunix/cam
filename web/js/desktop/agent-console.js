@@ -1801,6 +1801,17 @@ export function mountAgentConsole({ api, state, showToast }) {
     return ent.needsBottom || (ent.forceBottomUntil && Date.now() < ent.forceBottomUntil);
   }
 
+  // Preserve scrollback position: follow new output only when this terminal
+  // was already at the bottom before the write.
+  function terminalIsAtBottom(ent) {
+    if (!ent || !ent.term) return false;
+    try {
+      const buf = ent.term.buffer && ent.term.buffer.active;
+      if (!buf || buf.viewportY == null || buf.baseY == null) return true;
+      return buf.viewportY >= buf.baseY;
+    } catch (_) { return true; }
+  }
+
   function terminalEntryCanAutoResize(ent) {
     if (!ent || !ent.container) return false;
     if (outputMode !== 'terminal') return false;
@@ -1817,8 +1828,12 @@ export function mountAgentConsole({ api, state, showToast }) {
     const keepBottom = !!(opts && opts.keepBottom);
     const raf = window.requestAnimationFrame || ((fn) => window.setTimeout(fn, 0));
     const pass = () => {
-      fitTerminalAndNotify(ent);
-      if (keepBottom) terminalScrollToBottom(ent);
+      // A delayed fit belongs only to the visible selected pane. Once the
+      // user switches again, do not let an old hidden pane mutate its local
+      // xterm geometry or send a stale SSH resize.
+      if (!terminalEntryCanAutoResize(ent)) return;
+      const fitted = fitTerminalAndNotify(ent);
+      if (keepBottom && fitted) terminalScrollToBottom(ent);
     };
     raf(() => {
       pass();
@@ -1849,11 +1864,11 @@ export function mountAgentConsole({ api, state, showToast }) {
         ent.forceBottomUntil = Date.now() + 1200;
         terminalScrollToBottom(ent);
       }
-      scheduleTerminalFit({ keepBottom: opts.keepBottom !== false });
       if (ent.container) {
         ent.container.hidden = false;
         ent.container.style.visibility = '';
       }
+      scheduleTerminalFit({ keepBottom: opts.keepBottom !== false });
       try { ent.term && ent.term.focus(); } catch (_) {}
     }
     return ent;
@@ -1969,9 +1984,9 @@ export function mountAgentConsole({ api, state, showToast }) {
       if (!msg) return;
       const ent = terminalEntryBySession(msg.sessionId);
       if (!ent || !ent.term) return;
-      const shouldFollow = ent.agentId === termAgentId || terminalShouldForceBottom(ent);
+      const shouldFollow = terminalShouldForceBottom(ent) || terminalIsAtBottom(ent);
       ent.term.write(String(msg.data || ''), () => {
-        if (shouldFollow || terminalShouldForceBottom(ent)) terminalScrollToBottom(ent);
+        if (shouldFollow) terminalScrollToBottom(ent);
       });
     });
     termUnsubStatus = bridge.onStatus((msg) => {
@@ -2073,7 +2088,9 @@ export function mountAgentConsole({ api, state, showToast }) {
       ent = terminalSessions.get(agent.id);
     }
     if (!force && (ent.opening || ent.sessionId)) {
-      prepareThenShowTerminalEntry(agent.id);
+      /* Cached session: switch visibility immediately but retain the proven
+       * multi-pass fit protection. No reconnect, clear, or hidden delay. */
+      showTerminalEntry(agent.id, { keepBottom: false });
       return;
     }
     prepareThenShowTerminalEntry(agent.id, 120);
