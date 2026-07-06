@@ -1681,3 +1681,73 @@ body.camui-v2 .wf-raw {
     grid-template-columns: 1fr;
   }
 }
+
+/*
+ * Phone interaction baseline
+ *
+ * The shared stylesheet is also used by the desktop shell, where compact
+ * controls are appropriate. Keep these overrides in the mobile entrypoint so
+ * normal navigation, forms, and the agent composer remain usable one-handed
+ * without changing desktop density. Terminal key rows deliberately remain
+ * compact: they are horizontally scrollable command keys, not primary taps.
+ */
+body.camui-v2 #header {
+  height: calc(var(--header-h) + env(safe-area-inset-top, 0px));
+  padding: env(safe-area-inset-top, 0px) max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(safe-area-inset-left, 0px));
+}
+
+body.camui-v2 .header-menu {
+  top: calc(var(--header-h) + env(safe-area-inset-top, 0px));
+  left: max(8px, env(safe-area-inset-left, 0px));
+  max-width: calc(100vw - max(16px, env(safe-area-inset-left, 0px)) - max(16px, env(safe-area-inset-right, 0px)));
+}
+
+body.camui-v2 #content:not(.agent-detail-active) {
+  overflow-x: hidden;
+  overscroll-behavior-y: contain;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)) !important;
+}
+
+body.camui-v2 .header-menu-btn,
+body.camui-v2 .header-menu-item,
+body.camui-v2 .overflow-menu-item,
+body.camui-v2 .fb-row {
+  min-height: 44px;
+}
+
+body.camui-v2 .agent-card-header {
+  min-width: 0;
+}
+
+body.camui-v2 .agent-card-header .btn-sm,
+body.camui-v2 .btn-delete-card,
+body.camui-v2 .profile-item-right .btn-sm,
+body.camui-v2 .fb-viewer-header .btn-sm {
+  min-width: 36px;
+  min-height: 36px;
+}
+
+body.camui-v2 .agent-card-meta,
+body.camui-v2 .profile-item,
+body.camui-v2 .fb-viewer-header {
+  min-width: 0;
+}
+
+body.camui-v2 .input-bar-sticky {
+  align-items: stretch;
+}
+
+body.camui-v2 .input-bar-sticky .input-field,
+body.camui-v2 .input-bar-sticky .btn-primary,
+body.camui-v2 .input-bar-sticky .btn-direct,
+body.camui-v2 .input-bar-sticky .btn-upload {
+  min-height: 44px;
+}
+
+body.camui-v2 .input-bar-sticky .btn-primary,
+body.camui-v2 .input-bar-sticky .btn-direct,
+body.camui-v2 .input-bar-sticky .btn-upload {
+  min-width: 44px;
+}
