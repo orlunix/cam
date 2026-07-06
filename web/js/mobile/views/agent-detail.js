@@ -158,6 +158,10 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   }
   let fsOverlay = null;
   let _attachAttempt = 0;
+  // Keep this per-detail-view so opening the native keyboard never collapses keys.
+  let keybarExpanded = false;
+  let bottomStatusTimer = null;
+  const UPLOAD_RAW_MAX_BYTES = 18 * 1024 * 1024;
 
   // Output font size — pinch-to-zoom; mobile terminal default 12px (readable, more cols).
   const FONT_MIN = 8, FONT_MAX = 24;
@@ -218,30 +222,79 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     return ag.context_name || ag.task_name || ag.id.slice(0, 8);
   }
 
+  function bottomStatusHTML() {
+    return `
+      <div class="output-status-row" id="output-status-row">
+        <span class="output-status-spacer" aria-hidden="true"></span>
+        <span class="output-status-text" id="output-status-text" aria-live="polite"></span>
+        <button type="button" class="jump-bottom-btn hidden" id="jump-bottom" title="Jump to bottom and resume auto-follow" aria-label="Jump to bottom"><span aria-hidden="true">&#x2913;</span></button>
+      </div>`;
+  }
+
+  function setBottomStatus(text = '', tone = '', clearAfter = 0) {
+    const status = container.querySelector('#output-status-text');
+    if (!status) return;
+    if (bottomStatusTimer) clearTimeout(bottomStatusTimer);
+    status.textContent = text;
+    status.dataset.tone = tone || '';
+    if (clearAfter > 0 && text) {
+      bottomStatusTimer = setTimeout(() => {
+        if (status.textContent === text) {
+          status.textContent = '';
+          status.dataset.tone = '';
+        }
+      }, clearAfter);
+    }
+  }
+
   function terminalKeyBarHTML(visible = false) {
     return `
-      <div class="terminal-keybar${visible ? '' : ' hidden'}" id="terminal-keybar">
-        <button type="button" class="term-key" data-term-action="fit" title="Fit & scroll bottom">\u21bb</button>
-        <button type="button" class="term-key" data-term-key="BTab">Shift tab</button>
-        <button type="button" class="term-key term-key-mod" data-term-mod="ctrl">Ctrl</button>
-        <button type="button" class="term-key" data-term-key="Escape">Esc</button>
-        <button type="button" class="term-key" data-term-char="/">/</button>
-        <button type="button" class="term-key term-key-mod" data-term-mod="alt">Alt</button>
-        <button type="button" class="term-key" data-term-action="keyboard" title="Keyboard input">\u2328</button>
+      <div class="terminal-keybar${visible ? '' : ' hidden'}${keybarExpanded ? ' is-expanded' : ''}" id="terminal-keybar">
+        <div class="terminal-keybar-row terminal-keybar-primary">
+          <label class="term-key term-key-attach" title="Attach image" aria-label="Attach image"><input type="file" id="file-input" accept="image/*" class="terminal-file-input">\u{1F4CE}</label>
+          <button type="button" class="term-key" data-term-char="y">y</button>
+          <button type="button" class="term-key" data-term-char="1">1</button>
+          <button type="button" class="term-key" data-term-key="Enter" title="Enter">\u21b5</button>
+          <button type="button" class="term-key" data-term-key="Escape">Esc</button>
+          <button type="button" class="term-key" data-term-key="C-c" title="Ctrl-C">^C</button>
+          <button type="button" class="term-key" data-term-key="Down" title="Down">\u2193</button>
+          <button type="button" class="term-key" data-term-key="BSpace" title="Backspace">⌫</button>
+          <button type="button" class="term-key term-key-more" data-term-action="more" aria-expanded="${keybarExpanded}" title="${keybarExpanded ? 'Hide extra keys' : 'Show more keys'}">${keybarExpanded ? 'Less' : 'More'}</button>
+        </div>
+        <div class="terminal-keybar-row terminal-keybar-secondary">
+          <button type="button" class="term-key" data-term-char="2">2</button>
+          <button type="button" class="term-key" data-term-char="3">3</button>
+          <button type="button" class="term-key" data-term-char="4">4</button>
+          <button type="button" class="term-key" data-term-key="Tab">Tab</button>
+          <button type="button" class="term-key" data-term-key="BTab">S-Tab</button>
+          <button type="button" class="term-key term-key-mod" data-term-mod="ctrl">Ctrl</button>
+          <button type="button" class="term-key term-key-mod" data-term-mod="alt">Alt</button>
+        </div>
+        <div class="terminal-keybar-row terminal-keybar-secondary">
+          <button type="button" class="term-key" data-term-key="Up" title="Up">\u2191</button>
+          <button type="button" class="term-key" data-term-key="Left" title="Left">\u2190</button>
+          <button type="button" class="term-key" data-term-key="Right" title="Right">\u2192</button>
+          <button type="button" class="term-key" data-term-key="Home">Home</button>
+          <button type="button" class="term-key" data-term-key="End">End</button>
+          <button type="button" class="term-key" data-term-key="PPage">PgUp</button>
+          <button type="button" class="term-key" data-term-key="NPage">PgDn</button>
+        </div>
       </div>`;
   }
 
   function updateTerminalChrome(termOn) {
     const useTermUi = termOn && mobileTerminalInput();
-    document.body.classList.toggle('terminal-fullscreen', useTermUi);
-    contentEl.classList.toggle('terminal-ui-active', useTermUi);
+    // Live Output shares Terminal's compact chrome; only its composer remains visible.
+    const useOutputUi = agentIsRunnable() && mobileTerminalInput();
+    document.body.classList.toggle('terminal-fullscreen', useOutputUi);
+    contentEl.classList.toggle('terminal-ui-active', useOutputUi);
     const title = container.querySelector('.detail-title h2');
     const badge = container.querySelector('.detail-title .badge');
     const meta = container.querySelector('#meta-line');
     const metaBar = container.querySelector('#terminal-meta-bar');
     const keybar = container.querySelector('#terminal-keybar');
     const inputSection = container.querySelector('#input-section');
-    if (useTermUi) {
+    if (useOutputUi) {
       if (title) title.textContent = agentDisplayName(agent);
       if (badge) badge.classList.add('hidden');
       clearTerminalChromeInlineFont();
@@ -251,9 +304,19 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         updateTerminalMetaBar();
       }
       if (keybar) keybar.classList.remove('hidden');
+      const jumpBottom = container.querySelector('#jump-bottom');
+      if (jumpBottom) {
+        if (useTermUi) {
+          jumpBottom.classList.add('hidden');
+        } else {
+          const pane = container.querySelector('#output-pane');
+          const atBottom = !pane || pane.scrollHeight - pane.scrollTop - pane.clientHeight < 30;
+          jumpBottom.classList.toggle('hidden', atBottom);
+        }
+      }
       if (inputSection) {
-        inputSection.classList.add('is-terminal-hidden');
-        inputSection.style.display = 'none';
+        inputSection.classList.toggle('is-terminal-hidden', useTermUi);
+        inputSection.style.display = useTermUi ? 'none' : '';
       }
     } else {
       document.body.classList.remove('terminal-fullscreen');
@@ -269,7 +332,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           delete connEl.dataset.holdMessage;
         }
       }
-      if (keybar) keybar.classList.add('hidden');
+      if (keybar) keybar.classList.toggle('hidden', !agentIsRunnable());
       if (inputSection) {
         inputSection.classList.remove('is-terminal-hidden');
         inputSection.style.display = '';
@@ -293,12 +356,16 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     };
 
     const sendRaw = async (data) => {
-      if (!terminalSessionReady(agentId)) {
-        state.toast('Terminal not connected', 'error');
+      if (isTerminalMode() && mobileTerminalInput()) {
+        if (!terminalSessionReady(agentId)) {
+          state.toast('Terminal not connected', 'error');
+          return;
+        }
+        await sendTerminalRaw(agentId, data);
+        focusTerminalForAgent(agentId);
         return;
       }
-      await sendTerminalRaw(agentId, data);
-      focusTerminalForAgent(agentId);
+      await sendAgentInput(data, false);
     };
 
     keybar.querySelectorAll('[data-term-mod]').forEach(btn => {
@@ -346,8 +413,14 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         if (action === 'fit') {
           resetTerminalSize(agentId);
           scrollTerminalToBottom(agentId);
-        } else if (action === 'keyboard') {
-          focusTerminalForAgent(agentId);
+        } else if (action === 'more') {
+          keybarExpanded = !keybarExpanded;
+          keybar.classList.toggle('is-expanded', keybarExpanded);
+          btn.textContent = keybarExpanded ? 'Less' : 'More';
+          btn.title = keybarExpanded ? 'Hide extra keys' : 'Show more keys';
+          btn.setAttribute('aria-expanded', String(keybarExpanded));
+          if (_syncVisualViewport) _syncVisualViewport();
+          if (isTerminalMode()) requestAnimationFrame(() => scheduleTerminalFit(agentId));
         }
       });
     });
@@ -507,6 +580,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
 
   // ======= visualViewport: keyboard padding only (never pin #app height — resume drift) =======
   let _vvCleanup = null;
+  let _syncVisualViewport = null;
+  let _lastVisualKeyboardGap = -1;
   function setupVisualViewport() {
     const vv = window.visualViewport;
     if (!vv) return;
@@ -516,7 +591,20 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       const gap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
       const keyboardOpen = gap > 40;
       const inp = getInput();
-      if (inp) inp.style.marginBottom = keyboardOpen ? `${gap}px` : '';
+      const bottomControls = container.querySelector('#output-bottom-controls');
+      // Active output views keep the composer inside the shared bottom
+      // accessory, so only that wrapper receives the keyboard offset.
+      if (inp) inp.style.marginBottom = bottomControls ? '' : (keyboardOpen ? `${gap}px` : '');
+      if (bottomControls) {
+        // Status, keys, and the Live composer move as one accessory above the
+        // native keyboard. This preserves More/Less state without overlap.
+        bottomControls.style.marginBottom = keyboardOpen ? `${gap}px` : '';
+        bottomControls.classList.toggle('keyboard-open', keyboardOpen);
+      }
+      if (Math.abs(gap - _lastVisualKeyboardGap) > 1) {
+        _lastVisualKeyboardGap = gap;
+        if (bottomControls && isTerminalMode()) requestAnimationFrame(() => scheduleTerminalFit(agentId));
+      }
       if (keyboardOpen && autoScroll) {
         const pane = container.querySelector('#output-pane');
         if (pane) requestAnimationFrame(() => { pane.scrollTop = pane.scrollHeight; });
@@ -527,11 +615,18 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     vv.addEventListener('resize', sync);
     vv.addEventListener('scroll', sync);
     sync();
+    _syncVisualViewport = sync;
     _vvCleanup = () => {
       vv.removeEventListener('resize', sync);
       vv.removeEventListener('scroll', sync);
       const inp = getInput();
       if (inp) inp.style.marginBottom = '';
+      const bottomControls = container.querySelector('#output-bottom-controls');
+      if (bottomControls) {
+        bottomControls.style.marginBottom = '';
+        bottomControls.classList.remove('keyboard-open');
+      }
+      _syncVisualViewport = null;
     };
   }
   setupVisualViewport();
@@ -777,59 +872,10 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
 
   function inputHTML() {
     return `
-      <div class="quick-actions">
-        <button class="btn-quick" data-input="y">y</button>
-        <button class="btn-quick" data-input="n">n</button>
-        <button class="btn-quick" data-input="1">1</button>
-        <button class="btn-quick" data-key="Enter">\u21b5</button>
-        <button class="btn-quick" data-key="Escape">Esc</button>
-        <button class="btn-quick" data-key="C-c">^C</button>
-        <button class="btn-quick" data-key="BSpace">\u232b</button>
-        <button class="btn-quick btn-quick-expand" id="expand-keys">\u00b7\u00b7\u00b7</button>
-      </div>
-      <div class="quick-actions-extra hidden" id="extra-keys">
-        <div class="quick-row">
-          <button class="btn-quick" data-input="2">2</button>
-          <button class="btn-quick" data-input="3">3</button>
-          <button class="btn-quick" data-key="Tab">Tab</button>
-          <button class="btn-quick" data-key="BTab">S-Tab</button>
-          <button class="btn-quick" data-key="DC">Del</button>
-        </div>
-        <div class="quick-row">
-          <button class="btn-quick" data-key="Left">\u2190</button>
-          <button class="btn-quick" data-key="Up">\u2191</button>
-          <button class="btn-quick" data-key="Down">\u2193</button>
-          <button class="btn-quick" data-key="Right">\u2192</button>
-          <button class="btn-quick" data-key="Home">Home</button>
-          <button class="btn-quick" data-key="End">End</button>
-        </div>
-        <div class="quick-row">
-          <button class="btn-quick" data-key="PPage">PgUp</button>
-          <button class="btn-quick" data-key="NPage">PgDn</button>
-          <button class="btn-quick" data-input="/">/</button>
-          <button class="btn-quick" data-input="~">~</button>
-          <button class="btn-quick" data-input="@">@</button>
-          <button class="btn-quick" data-input="*">*</button>
-        </div>
-        <div class="quick-row">
-          <button class="btn-quick" data-input="$">$</button>
-          <button class="btn-quick" data-input="{">{</button>
-          <button class="btn-quick" data-input="}">}</button>
-          <button class="btn-quick" data-input="[">[</button>
-          <button class="btn-quick" data-input="]">]</button>
-          <button class="btn-quick" data-input="|">|</button>
-        </div>
-      </div>
-      <div class="upload-progress hidden" id="upload-progress">
-        <div class="upload-progress-bar"></div>
-        <span class="upload-progress-text" id="upload-text">Uploading...</span>
-      </div>
-      <div class="input-bar-sticky">
-        <input type="text" id="input-text" class="input-field" placeholder="Send input..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send">
+      <div class="input-bar-sticky live-composer-row">
         <button class="btn-direct btn-sm${_directInput ? ' active' : ''}" id="direct-btn" title="Direct input mode">Aa</button>
-        <button class="btn-upload btn-sm" id="upload-btn" title="Send image">\u{1F4CE}</button>
+        <input type="text" id="input-text" class="input-field" placeholder="Send input..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send">
         <button class="btn-primary btn-sm" id="send-btn">Send</button>
-        <input type="file" id="file-input" accept="image/*" style="display:none">
       </div>`;
   }
 
@@ -862,6 +908,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     const isActive = ['running', 'starting', 'pending'].includes(agent.status);
     const prompt = agent.prompt || '';
     const showTerminalOnRender = isActive && outputMode === 'terminal' && canUseTerminalMode(api);
+    const showOutputChromeOnRender = isActive && mobileTerminalInput();
 
     // Active: chat-style layout — output fills space, input anchored at bottom
     // Completed: normal scrolling layout with prompt/logs/delete
@@ -891,23 +938,25 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           </div>
         </div>
 
-        <div class="detail-meta-compact${showTerminalOnRender ? ' hidden' : ''}" id="meta-line">${renderMeta()}</div>
-        <div class="terminal-meta-bar${showTerminalOnRender ? '' : ' hidden'}" id="terminal-meta-bar"><span class="terminal-meta-left"></span><span class="terminal-meta-conn"></span></div>
+        <div class="detail-meta-compact${showOutputChromeOnRender ? ' hidden' : ''}" id="meta-line">${renderMeta()}</div>
+        <div class="terminal-meta-bar${showOutputChromeOnRender ? '' : ' hidden'}" id="terminal-meta-bar"><span class="terminal-meta-left"></span><span class="terminal-meta-conn"></span></div>
 
         <div class="output-section" id="output-section">
           <div class="output-wrap">
             <div id="terminal-host" class="terminal-host${showTerminalOnRender ? ' is-active is-connecting' : ''}"></div>
             <pre class="output-pane${showTerminalOnRender ? ' is-hidden' : ''}" id="output-pane"></pre>
-            <button class="jump-bottom-btn hidden" id="jump-bottom">\u2193 Bottom</button>
+            ${bottomStatusHTML()}
           </div>
-          <div class="input-section${showTerminalOnRender ? ' is-terminal-hidden' : ''}" id="input-section"${showTerminalOnRender ? ' style="display:none"' : ''}>
-            ${inputHTML()}
+          <div class="output-bottom-controls" id="output-bottom-controls">
+            ${terminalKeyBarHTML(isActive)}
+            <div class="input-section${showTerminalOnRender ? ' is-terminal-hidden' : ''}" id="input-section"${showTerminalOnRender ? ' style="display:none"' : ''}>
+              ${inputHTML()}
+            </div>
           </div>
-          ${terminalKeyBarHTML(showTerminalOnRender)}
         </div>
       `;
       contentEl.classList.add('agent-detail-active');
-      if (showTerminalOnRender) {
+      if (showOutputChromeOnRender) {
         contentEl.classList.add('terminal-ui-active');
         document.body.classList.add('terminal-fullscreen');
       }
@@ -973,6 +1022,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
 
     wireEvents(isActive);
     if (isActive) wireTerminalKeyBar();
+    if (_syncVisualViewport) _syncVisualViewport();
     applyFontSize();
     applyOutputMode();
     if (!isTerminalMode()) {
@@ -1185,45 +1235,47 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       quickSend(btn, label, () => sendAgentKey(key));
     });
 
-    // File upload
+    // File upload. The server accepts Base64, not a phone-local URI.
     const uploadBtn = root.querySelector('#upload-btn');
     const fileInput = root.querySelector('#file-input');
-    const progressEl = root.querySelector('#upload-progress');
-    const progressText = root.querySelector('#upload-text');
-    if (uploadBtn && fileInput) {
-      uploadBtn.addEventListener('click', () => fileInput.click());
+    if (fileInput) {
+      if (uploadBtn) uploadBtn.addEventListener('click', () => fileInput.click());
       fileInput.addEventListener('change', async () => {
         const file = fileInput.files[0];
         if (!file) return;
         fileInput.value = '';
-
-        // Show progress
-        if (progressEl) { progressEl.classList.remove('hidden'); }
-        if (progressText) { progressText.textContent = `Uploading ${file.name}...`; }
-
+        if (file.size > UPLOAD_RAW_MAX_BYTES) {
+          setBottomStatus(`Attachment blocked: ${file.name} is ${(file.size / 1024 / 1024).toFixed(1)} MB; max 18 MB`, 'warning', 1200);
+          return;
+        }
+        if (isTerminalMode() && mobileTerminalInput() && !terminalSessionReady(agentId)) {
+          setBottomStatus('Attachment blocked: terminal is not connected', 'warning', 1200);
+          return;
+        }
+        setBottomStatus(`Uploading ${file.name}…`, 'info', 0);
         try {
-          // Read as base64
           const b64 = await new Promise((resolve, reject) => {
             const reader = new FileReader();
-            reader.onload = () => resolve(reader.result.split(',')[1]);
-            reader.onerror = () => reject(new Error('Failed to read file'));
+            reader.onload = () => {
+              const result = String(reader.result || '');
+              const comma = result.indexOf(',');
+              if (comma < 0) reject(new Error('Could not encode image'));
+              else resolve(result.slice(comma + 1));
+            };
+            reader.onerror = () => reject(new Error('Failed to read image'));
             reader.readAsDataURL(file);
           });
-
-          // Upload
           const resp = await api.uploadFile(agentId, file.name, b64);
-
-          // Send path to agent
-          if (resp.path) {
-            await sendAgentInput(resp.path, false);
+          const path = resp && String(resp.path || '').trim();
+          if (!path) {
+            setBottomStatus(`Upload warning: ${file.name}; server returned no path`, 'warning', 1200);
+            return;
           }
-
-          if (progressText) { progressText.textContent = `Sent \u2713`; }
-          setTimeout(() => { if (progressEl) progressEl.classList.add('hidden'); }, 1500);
+          await sendAgentInput(path, false);
+          setBottomStatus(`Attached ${file.name}`, 'ok', 1200);
         } catch (e) {
           const msg = e?.message || (typeof e === 'string' ? e : JSON.stringify(e));
-          if (progressText) { progressText.textContent = `Failed: ${msg}`; }
-          setTimeout(() => { if (progressEl) progressEl.classList.add('hidden'); }, 3000);
+          setBottomStatus(`Upload failed: ${msg}`, 'error', 1200);
         }
       });
     }
@@ -1388,6 +1440,10 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     if (jumpBtn) {
       jumpBtn.addEventListener('click', () => {
         autoScroll = true;
+        if (isTerminalMode()) {
+          scrollTerminalToBottom(agentId);
+          return;
+        }
         jumpBtn.classList.add('hidden');
         if (pane) {
           _scrollByCode = true;
@@ -1792,6 +1848,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     window.removeEventListener('cam-terminal-fit', _onTerminalFit);
     window.removeEventListener('cam-terminal-status', _onTerminalStatus);
     window.removeEventListener('cam-mobile-appearance', onMobileAppearance);
+    if (bottomStatusTimer) clearTimeout(bottomStatusTimer);
     if (_vvCleanup) _vvCleanup();
     unsub();
   };
