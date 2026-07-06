@@ -82,6 +82,8 @@ export function mountNodesMode({
   formDraftKey = '',
   /** false on phone Hub — Sync Host needs Desktop SSH/camc. Boolean or () => boolean. */
   syncHostSupported = true,
+  /** Optional callback for a context-scoped read-only Browser. */
+  onBrowseContext = null,
 }) {
   if (!panel) return;
   const canSyncHost = () => (typeof syncHostSupported === 'function'
@@ -505,6 +507,7 @@ export function mountNodesMode({
             <div class="ctx-row-sub dim">last sync: ${esc(lastOneLine)}</div>
           </div>
           <div class="ctx-row-actions">
+            ${typeof onBrowseContext === 'function' ? `<button type="button" class="btn-xs ctx-browse-context-btn" data-context-id="${esc(ctx.id || ctx.name)}">browse</button>` : ''}
             ${mobileForm ? '' : `<button type="button" class="btn-xs ctx-duplicate-context-btn" data-name="${esc(ctx.name)}">duplicate</button>`}
             ${readOnly() ? '' : `<button type="button" class="btn-xs ctx-edit-context-btn"   data-name="${esc(ctx.name)}">edit</button>
             <button type="button" class="btn-xs btn-xs-danger ctx-delete-context-btn" data-name="${esc(ctx.name)}">delete</button>`}
@@ -592,6 +595,15 @@ export function mountNodesMode({
         if (expandedCtxNames.has(name)) expandedCtxNames.delete(name);
         else expandedCtxNames.add(name);
         render();
+      });
+    });
+
+    listEl.querySelectorAll('.ctx-browse-context-btn').forEach(btn => {
+      btn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const id = btn.dataset.contextId;
+        const context = (state.get('contexts') || []).find(item => String(item.id || item.name) === String(id));
+        if (context && typeof onBrowseContext === 'function') onBrowseContext(context);
       });
     });
 

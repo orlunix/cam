@@ -576,6 +576,32 @@ public final class MobileEmbeddedHub {
             return jsonResponse(200, agent);
         }
 
+        if (("/workspace/files".equals(sub) || "/workspace/files/read".equals(sub)) && "GET".equals(method)) {
+            JSONObject agent = findAgentById(agentId, parseAgentEndpointHints(query, null));
+            if (agent == null) return jsonResponse(404, new JSONObject().put("error", "agent_not_found").put("detail", "agent not found"));
+            String relative = workspaceRelativePath(query);
+            if (relative == null) return jsonResponse(400, new JSONObject().put("error", "invalid_path").put("detail", "path must remain inside workspace"));
+            String root = agent.optString("context_path", agent.optString("path", "")).trim();
+            if (root.isEmpty()) {
+                JSONObject context = findContextForAgent(agent);
+                if (context != null) root = context.optString("path", "").trim();
+            }
+            if (root.isEmpty() || !root.startsWith("/")) return jsonResponse(400, new JSONObject().put("error", "working_dir_missing").put("detail", "agent has no absolute workspace path"));
+            MobileSshAuth.Options auth = sshAuthForAgent(agent);
+            if (auth == null) return jsonResponse(400, new JSONObject().put("error", "not_ssh").put("detail", "workspace files require SSH node"));
+            String target = root + (relative.isEmpty() ? "" : "/" + relative);
+            if ("/workspace/files".equals(sub)) {
+                MobileSshExec.DirectoryResult listed = MobileSshExec.listDirectory(auth, target, SYNC_TIMEOUT_MS);
+                if (!listed.ok) return jsonResponse(502, new JSONObject().put("error", listed.error).put("detail", listed.detail));
+                JSONArray entries = new JSONArray();
+                for (MobileSshExec.RemoteEntry entry : listed.entries) entries.put(new JSONObject().put("name", entry.name).put("type", entry.directory ? "dir" : "file").put("size", entry.size).put("modified", entry.modified));
+                return jsonResponse(200, new JSONObject().put("entries", entries));
+            }
+            MobileSshExec.FileResult file = MobileSshExec.readFile(auth, target, SYNC_TIMEOUT_MS, 2 * 1024 * 1024);
+            if (!file.ok) return jsonResponse(502, new JSONObject().put("error", file.error).put("detail", file.detail));
+            return jsonResponse(200, new JSONObject().put("content", new String(file.content, StandardCharsets.UTF_8)));
+        }
+
         if ("GET".equals(method) && "/output".equals(sub)) {
             int lines = 200;
             String clientHash = "";
