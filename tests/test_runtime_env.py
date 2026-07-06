@@ -3,7 +3,7 @@ threads it (F-08).
 
 Scope:
   * load_login_shell_env fallback when the shell is missing.
-  * build_runtime_env cleanup (TMUX / TMUX_PANE / CLAUDECODE).
+  * build_runtime_env cleanup (TMUX / TMUX_PANE / CLAUDECODE / NO_COLOR).
   * resolve_tool uses runtime PATH, NOT os.environ['PATH'].
   * Claude auth file existence: present → no auth issue; missing →
     error (and we never read its contents).
@@ -88,12 +88,13 @@ def test_build_runtime_env_strips_nest_markers(monkeypatch):
     # os.environ, then assert the strip happened.
     def _bad(shell=None, env_setup=None, timeout=5):
         return {"PATH": "/usr/bin", "TMUX": "/tmp/tmux", "TMUX_PANE": "%0",
-                "CLAUDECODE": "1", "HOME": "/home/x"}, ["forced for test"]
+                "CLAUDECODE": "1", "NO_COLOR": "1", "HOME": "/home/x"}, ["forced for test"]
     monkeypatch.setattr(re_mod, "load_login_shell_env", _bad)
     rt = re_mod.build_runtime_env()
     assert "TMUX" not in rt.env
     assert "TMUX_PANE" not in rt.env
     assert "CLAUDECODE" not in rt.env
+    assert "NO_COLOR" not in rt.env
     assert rt.env.get("PATH") == "/usr/bin"
     # Capture warnings flow through to the RuntimeEnv.
     assert rt.warnings == ["forced for test"]

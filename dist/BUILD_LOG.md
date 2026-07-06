@@ -4539,3 +4539,16 @@ c61c56c Update desktop agent settings and bots workflows
 fce5cc1 camc cron: add per-agent loop scheduling
 ```
 
+## v1.2.0  adb449e-dirty 2026-07-05 20:26
+
+- Lines: 17396
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+676e9c5 camc: read login shell from /etc/passwd, override SHELL for tmux
+82e48da Checkpoint desktop development state
+6a85f45 camc api proxy: stabilize routing and tests
+7e72491 Stabilize desktop direct send and workflow UI
+c61c56c Update desktop agent settings and bots workflows
+```
+
