@@ -8,10 +8,10 @@
  * an actionable error inline + via toast (CAM-DESK-RUN-014).
  *
  * Context is OPTIONAL: a "(none — start without context)" entry is
- * the first option in the Context dropdown. When selected, a Path
- * field appears (no Node select — the agent runs on the local node)
- * and the request sends node="local" + path inline (no context record
- * is created, per A2).
+ * the first option in the Context dropdown. When selected, a Node
+ * <select> + Path field appears so the user picks WHICH node (local
+ * or any registered host) plus a path. The request sends node=<key> +
+ * path inline (no context record is created, per A2).
  *
  * The API picker (Advanced (API) section) lists custom LLM API profiles
  * from the SELECTED context/node via GET /api/api-models?context=… or
@@ -20,6 +20,8 @@
  * official/login API" sends --no-default-api; "API token" sends
  * --api-token.
  */
+
+import { hostKeyForMachine } from '../shared/node-host-meta.js';
 
 const DEFAULT_TOOLS = ['claude', 'codex', 'cursor', 'aider'];
 
@@ -39,6 +41,7 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   const toolSel = panel.querySelector('#start-tool');
   const ctxSel = panel.querySelector('#start-context');
   const nodeFieldsEl = panel.querySelector('#start-node-fields');
+  const nodeSel = panel.querySelector('#start-node');
   const pathEl = panel.querySelector('#start-path');
   const apiSectionEl = panel.querySelector('#start-api-section');
   const apiInputEl = panel.querySelector('#start-api');
@@ -49,11 +52,11 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   const noDefaultApiEl = panel.querySelector('#start-no-default-api');
   const apiTokenEl = panel.querySelector('#start-api-token');
   const promptEl = panel.querySelector('#start-prompt');
-  const autoconfirmEl = panel.querySelector('#start-autoconfirm');
   const autoexitEl = panel.querySelector('#start-autoexit');
-  const nameEl = panel.querySelector('#start-name');
+  const autoconfirmEl = panel.querySelector('#start-autoconfirm');
   const timeoutEl = panel.querySelector('#start-timeout');
   const retryEl = panel.querySelector('#start-retry');
+  const nameEl = panel.querySelector('#start-name');
   const submitBtn = panel.querySelector('#start-submit');
   const statusEl = panel.querySelector('#start-status');
   const disconnectedEl = panel.querySelector('#start-disconnected');
@@ -114,9 +117,51 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
     }
   }
 
-  /** Default Path to /home/<user> for the selected context's machine,
-   *  or /home/$USER (best-effort) for the local/none case. Only
-   *  pre-fills when the field is empty. */
+  /** Populate the Node <select> from the unique host machines known
+   *  to the hub (local + every context's machine), keyed by the shared
+   *  hostKeyForMachine so the value matches what the hub /api/agents
+   *  and /api/api-models routes resolve. Preserves the current selection
+   *  when the underlying contexts list changes. */
+  function refreshNodeOptions() {
+    if (!nodeSel) return;
+    const contexts = state.get('contexts') || [];
+    const seen = new Map(); // key → label
+    seen.set('local', 'local');
+    for (const c of contexts) {
+      const m = (c && c.machine) || {};
+      const key = hostKeyForMachine({
+        type: m.type,
+        host: m.host || 'local',
+        user: m.user || '',
+        port: m.port,
+      });
+      if (!seen.has(key)) {
+        const label = key === 'local'
+          ? 'local'
+          : `${m.user || ''}@${m.host || ''}${m.port ? ':' + m.port : ''}`.replace(/^@/, '');
+        seen.set(key, label);
+      }
+    }
+    const cur = nodeSel.value;
+    nodeSel.innerHTML = Array.from(seen.entries()).map(
+      ([k, label]) => `<option value="${escapeHtml(k)}">${escapeHtml(label)}</option>`,
+    ).join('');
+    // Preserve selection if still present; otherwise default to local.
+    if (cur && seen.has(cur)) {
+      nodeSel.value = cur;
+    } else {
+      nodeSel.value = 'local';
+    }
+  }
+
+  /** Default Path to /home/<user> for the selected node's machine, or
+   *  /home/$USER (best-effort) for the local node. Only pre-fills when
+   *  the field is empty OR the current value was auto-filled by us
+   *  (dataset.autofill === '1'); a user-typed path is preserved across
+   *  node changes so switching nodes does not clobber an explicit
+   *  path. We tag the field with dataset.autofill='1' whenever WE set
+   *  it, and clear that flag on any user input so we know to stop
+   *  touching it. */
   function syncDefaultPath() {
     const val = ctxSel.value;
     if (val && val !== NONE_CONTEXT_VALUE) {
@@ -124,16 +169,27 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
       if (!pathEl.value) pathEl.value = '';
       return;
     }
-    // none / local: default to /home/<user> if we can infer one.
-    if (pathEl.value) return;
+    // none / inline: infer the user from the selected node, else $USER.
+    // Re-default ONLY when the field is empty or the current value was
+    // auto-filled by us. A user-typed path (dataset.autofill cleared)
+    // is left alone.
+    const autofilled = pathEl.dataset.autofill === '1';
+    if (pathEl.value && !autofilled) return;
+    const key = (nodeSel && nodeSel.value) || 'local';
     const ctxs = state.get('contexts') || [];
-    const localCtx = ctxs.find(c => {
+    const matched = ctxs.find(c => {
       const m = (c && c.machine) || {};
-      return (m.type || 'local') !== 'ssh';
+      return hostKeyForMachine({
+        type: m.type,
+        host: m.host || 'local',
+        user: m.user || '',
+        port: m.port,
+      }) === key;
     });
-    const user = (localCtx && localCtx.machine && localCtx.machine.user) ||
-      (typeof window !== 'undefined' && window.camLocalUser) || '';
+    const user = (matched && matched.machine && matched.machine.user) ||
+      (key === 'local' && typeof window !== 'undefined' && window.camLocalUser) || '';
     pathEl.value = user ? `/home/${user}` : '/home/hren';
+    pathEl.dataset.autofill = '1';
   }
 
   /** Show the Path field when no real context is selected (none or
@@ -148,11 +204,12 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
 
   /** The node key to pass to the hub for the API picker / start. For a
    *  real context, we pass nothing (the hub resolves the context). For
-   *  none/empty, we pass "local". */
+   *  none/empty, we pass the selected Node <select> value (defaults to
+   *  "local" when no node is picked). */
   function currentNodeKey() {
     const val = ctxSel.value;
     if (val && val !== NONE_CONTEXT_VALUE) return '';
-    return 'local';
+    return (nodeSel && nodeSel.value) || 'local';
   }
 
   /** Hide the API section for tools without --api support (3.3). The
@@ -175,38 +232,72 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   function apiModelsHints() {
     const ctx = ctxSel.value;
     if (ctx && ctx !== NONE_CONTEXT_VALUE) return { context: ctx };
-    return { node: 'local' };
+    return { node: (nodeSel && nodeSel.value) || 'local' };
+  }
+
+  function selectToolDefaultApi(tool) {
+    if (noDefaultApiEl && noDefaultApiEl.checked) return;
+    const defaults = (apiModelsCache && apiModelsCache.defaults) || [];
+    const def = defaults.find(d => d && d.tool === tool && d.api && d.mode === 'api');
+    selectedApi = def ? def.api : '';
+    if (apiInputEl) apiInputEl.value = selectedApi;
   }
 
   /** Render the cached models as a clickable list of rows. Each row:
-   *    name (left) · model path (middle, muted) · provider·status (right)
-   *  The per-tool default row gets a `default` badge. Clicking a row
-   *  sets selectedApi and fills the input. */
+   *    name (left, with default★ + selected✓ marks)
+   *    model path (middle, muted)
+   *    provider · ●enabled/○disabled (right)
+   *  The per-tool default row gets a ★default badge; the row the user
+   *  clicked gets a ✓selected mark + highlight. Disabled profiles are
+   *  dimmed so it's clear which are usable. */
   function renderApiList(tool) {
     const models = (apiModelsCache && apiModelsCache.models) || [];
     const defaults = (apiModelsCache && apiModelsCache.defaults) || [];
     const def = defaults.find(d => d && d.tool === tool && d.api && d.mode === 'api');
     const defName = def ? def.api : '';
     if (!models.length) {
-      if (apiListEl) apiListEl.hidden = true;
+      // Show WHY the list is empty when the hub reported an error,
+      // instead of a silent blank. The hub sets source.error when
+      // the local camc can't run (Windows: bundled camc is a POSIX
+      // shell-polyglot with no /bin/sh) or a remote camc call failed.
+      const src = apiModelsCache && apiModelsCache.source;
+      if (apiListEl) {
+        if (src && src.error && src.detail) {
+          apiListEl.hidden = false;
+          apiListEl.innerHTML = `<li class="api-row api-row-empty" style="padding:10px 12px;color:var(--text-muted,#888);cursor:default">No profiles loaded: ${escapeHtml(src.detail)}</li>`;
+        } else {
+          apiListEl.hidden = true;
+        }
+      }
       return;
     }
     if (!apiListEl) return;
     apiListEl.hidden = false;
-    apiListEl.innerHTML = models.map(r => {
+    const header = `<li class="api-row-list-header" aria-hidden="true">
+      <span>Profile · marks</span>
+      <span>Model</span>
+      <span>Provider · status</span>
+    </li>`;
+    apiListEl.innerHTML = header + models.map(r => {
       const isDef = defName && r.name === defName;
       const sel = selectedApi && r.name === selectedApi;
-      const status = r.enabled === false ? 'disabled' : 'enabled';
-      const cls = `api-row${sel ? ' is-selected' : ''}${r.enabled === false ? ' is-disabled' : ''}`;
+      const disabled = r.enabled === false;
+      const dot = disabled ? '○' : '●';
+      const status = disabled ? 'disabled' : 'enabled';
+      const cls = `api-row${sel ? ' is-selected' : ''}${disabled ? ' is-disabled' : ''}`;
+      const marks =
+        (isDef ? '<span class="api-mark api-mark-default" title="hub default for this tool">★</span>' : '<span class="api-mark api-mark-none"></span>') +
+        (sel ? '<span class="api-mark api-mark-selected" title="currently selected">✓</span>' : '<span class="api-mark api-mark-none"></span>');
       const badge = isDef ? '<span class="api-default-badge">default</span>' : '';
       return `<li class="${cls}" data-name="${escapeHtml(r.name)}" role="button" tabindex="0">
-        <span class="api-row-name">${escapeHtml(r.name)}${badge}</span>
+        <span class="api-row-name">${escapeHtml(r.name)}${badge}${marks}</span>
         <span class="api-row-model">${escapeHtml(r.model || '')}</span>
-        <span class="api-row-meta">${escapeHtml(r.provider || '')} · ${status}</span>
+        <span class="api-row-meta"><span class="api-dot ${disabled ? 'is-off' : 'is-on'}">${dot}</span> ${escapeHtml(r.provider || '')} · ${status}</span>
       </li>`;
     }).join('');
-    // Wire clicks.
+    // Wire clicks. Disabled rows are not clickable.
     apiListEl.querySelectorAll('.api-row').forEach(row => {
+      if (row.classList.contains('is-disabled')) return;
       const handler = () => {
         const name = row.getAttribute('data-name');
         if (!name) return;
@@ -214,6 +305,9 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
         if (apiInputEl) apiInputEl.value = name;
         apiListEl.querySelectorAll('.api-row').forEach(r => r.classList.remove('is-selected'));
         row.classList.add('is-selected');
+        // Re-render so the ✓selected mark moves to the new row.
+        renderApiList(tool);
+        renderApiStatus(tool);
         // Clear --no-default-api: an explicit --api overrides it.
         if (noDefaultApiEl && noDefaultApiEl.checked) noDefaultApiEl.checked = false;
       };
@@ -226,7 +320,9 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
 
   /** Render the status line under the list:
    *    Loaded N custom LLM API profile(s) from <ctx> on <endpoint> (M enabled).
-   *    Current default for <tool>: <model>. */
+   *    Default for <tool>: <model>. Selected: <model>.
+   *  When --no-default-api is checked, show "Selected: official/login API"
+   *  instead of a profile name. */
   function renderApiStatus(tool) {
     if (!apiStatusEl) return;
     const src = apiModelsCache && apiModelsCache.source;
@@ -238,7 +334,13 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
     const enabled = models.filter(m => m && m.enabled !== false).length;
     const where = src.label === 'local' ? 'the local node' : src.label;
     let line = `Loaded ${total} custom LLM API profile(s) from ${escapeHtml(where)} (${enabled} enabled).`;
-    if (def && def.api) line += ` Current default for ${escapeHtml(tool)}: ${escapeHtml(def.api)}.`;
+    if (def && def.api) line += ` Default for ${escapeHtml(tool)}: ${escapeHtml(def.api)}.`;
+    const noDefault = noDefaultApiEl && noDefaultApiEl.checked;
+    if (noDefault) {
+      line += ` Selected: official/login API (--no-default-api).`;
+    } else if (selectedApi) {
+      line += ` Selected: ${escapeHtml(selectedApi)}.`;
+    }
     if (src.error) line += ` Error: ${escapeHtml(src.detail || src.error)}`;
     apiStatusEl.innerHTML = line;
     apiStatusEl.hidden = false;
@@ -254,6 +356,7 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
     try {
       const hints = apiModelsHints();
       apiModelsCache = await api.getApiModels(hints);
+      selectToolDefaultApi(toolSel.value);
       renderApiList(toolSel.value);
       renderApiStatus(toolSel.value);
       applyApiSupport();
@@ -272,15 +375,27 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
     const body = {
       tool: toolSel.value,
       prompt: (promptEl.value || ' '),
-      auto_confirm: autoconfirmEl.checked,
       auto_exit: autoexitEl.checked,
-      retry: parseInt(retryEl.value, 10) || 0,
+      // CAM-DESK-RUN-011: auto_confirm + timeout + retry are part of the
+      // required form surface. They are always sent so the hub can record
+      // them on the agent record. In Relay mode (cam serve) they are
+      // enforced server-side; in Direct mode (camc run) camc has no
+      // --auto-confirm/--timeout/--retry flag, so the hub accepts them,
+      // records them, and surfaces a direct_limitations note (see
+      // _resolveStartTarget / POST /api/agents). camc forces
+      // auto_confirm=true on its own, so the toggle is a no-op there.
+      auto_confirm: autoconfirmEl ? autoconfirmEl.checked : true,
+      retry: retryEl ? (parseInt(retryEl.value, 10) || 0) : 0,
     };
+    if (timeoutEl) {
+      const t = (timeoutEl.value || '').trim();
+      if (t) body.timeout = t;
+    }
     const ctxVal = ctxSel.value;
     if (ctxVal && ctxVal !== NONE_CONTEXT_VALUE) {
       body.context = ctxVal;
     } else {
-      body.node = 'local';
+      body.node = (nodeSel && nodeSel.value) || 'local';
       body.path = pathEl.value.trim();
     }
     // API model: only when the tool supports it and a model is picked.
@@ -292,8 +407,6 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
       const tok = (apiTokenEl && apiTokenEl.value.trim()) || '';
       if (tok) body.api_token = tok;
     }
-    const t = (timeoutEl.value || '').trim();
-    if (t) body.timeout = t;
     const n = (nameEl.value || '').trim();
     if (n) body.name = n;
     return body;
@@ -353,15 +466,51 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
     if (apiStatusEl) apiStatusEl.hidden = true;
     applyApiSupport();
   });
-  toolSel.addEventListener('change', applyApiSupport);
+  // Node select → re-default the Path for the newly-selected node and
+  // clear the API cache (different node = different profiles).
+  if (nodeSel) {
+    nodeSel.addEventListener('change', () => {
+      syncDefaultPath();
+      apiModelsCache = null;
+      selectedApi = '';
+      if (apiInputEl) apiInputEl.value = '';
+      if (apiListEl) { apiListEl.hidden = true; apiListEl.innerHTML = ''; }
+      if (apiStatusEl) apiStatusEl.hidden = true;
+      applyApiSupport();
+    });
+  }
+  // Path input: clear the auto-fill flag as soon as the user edits the
+  // field by hand, so a later node change does NOT overwrite their
+  // explicit path (syncDefaultPath only re-defaults when autofill='1').
+  if (pathEl) {
+    pathEl.addEventListener('input', () => {
+      if (pathEl.dataset.autofill === '1') pathEl.dataset.autofill = '0';
+    });
+  }
+  toolSel.addEventListener('change', () => {
+    applyApiSupport();
+    // Different tool → different default + selected marks. Re-render
+    // the list (if cached) so the ★default moves to the new tool's row.
+    if (apiModelsCache) {
+      selectToolDefaultApi(toolSel.value);
+      renderApiList(toolSel.value);
+      renderApiStatus(toolSel.value);
+    }
+  });
   if (apiListBtn) apiListBtn.addEventListener('click', listApiModels);
-  // --no-default-api clears an explicit --api selection.
+  // --no-default-api clears an explicit --api selection + re-renders
+  // status so "Selected: official/login API" reflects the toggle.
   if (noDefaultApiEl) {
     noDefaultApiEl.addEventListener('change', () => {
       if (noDefaultApiEl.checked) {
         selectedApi = '';
         if (apiInputEl) apiInputEl.value = '';
         if (apiListEl) apiListEl.querySelectorAll('.api-row').forEach(r => r.classList.remove('is-selected'));
+      }
+      if (apiModelsCache) {
+        if (!noDefaultApiEl.checked) selectToolDefaultApi(toolSel.value);
+        renderApiList(toolSel.value);
+        renderApiStatus(toolSel.value);
       }
     });
   }
@@ -375,6 +524,7 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   let prevAdapters = state.get('adapters');
   refreshToolOptions();
   refreshContextOptions();
+  refreshNodeOptions();
   toggleNodeFields();
   applyApiSupport();
   applyConnectionState();
@@ -388,6 +538,7 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
       if (m === 'start') {
         refreshToolOptions();
         refreshContextOptions();
+        refreshNodeOptions();
         toggleNodeFields();
         applyApiSupport();
         applyConnectionState();
@@ -395,7 +546,7 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
       }
     }
     if (c !== prevConn) { prevConn = c; applyConnectionState(); }
-    if (ctxs !== prevCtxs) { prevCtxs = ctxs; refreshContextOptions(); toggleNodeFields(); }
+    if (ctxs !== prevCtxs) { prevCtxs = ctxs; refreshContextOptions(); refreshNodeOptions(); toggleNodeFields(); }
     if (adapters !== prevAdapters) { prevAdapters = adapters; refreshToolOptions(); applyApiSupport(); }
   });
 }
