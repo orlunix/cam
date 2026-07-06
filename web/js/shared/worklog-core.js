@@ -206,7 +206,7 @@ export function projectsFromItems(items, storedProjects) {
 
 export function storePathForContexts(contexts) {
   const first = (contexts || []).find(ctx => ctx && ctx.path) || null;
-  return `${first && first.path ? first.path : '/workspace'}/.cam/worklog`;
+  return `${first && first.path ? first.path : '/workspace'}/.cam/todos`;
 }
 
 export function contextLabelFromContexts(contexts) {
@@ -216,4 +216,43 @@ export function contextLabelFromContexts(contexts) {
   const host = machine.host || first.name || 'local';
   const user = machine.user ? `${machine.user}@` : '';
   return `${first.name || host} · ${user}${host}`;
+}
+
+/** Read every Markdown worklog file below a context-relative directory. */
+export async function readWorklogMarkdown(api, contextId, root = '.cam/todos') {
+  if (!api || !contextId) throw new Error('Workspace file API unavailable');
+  const files = [];
+  async function walk(path) {
+    const listing = await api.listFiles(contextId, path);
+    for (const entry of listing.entries || []) {
+      const child = `${path}/${entry.name}`.replace(/^\//, '');
+      if (entry.type === 'dir' || entry.type === 'directory') await walk(child);
+      else if (entry.type === 'file' && /\.md$/i.test(entry.name || '')) files.push({ path: child, entry });
+    }
+  }
+  await walk(root);
+  const loaded = await Promise.all(files.map(async ({ path, entry }) => {
+    const file = await api.readFile(contextId, path);
+    return parseWorklogMarkdown(path, file.content || '', entry);
+  }));
+  return loaded.filter(Boolean);
+}
+
+export function parseWorklogMarkdown(path, content, entry = {}) {
+  const match = String(content || '').match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
+  if (!match) return null;
+  const meta = {};
+  for (const line of match[1].split(/\r?\n/)) {
+    const found = line.match(/^([\w-]+):\s*(.*)$/);
+    if (found) meta[found[1]] = found[2].replace(/^['"]|['"]$/g, '').trim();
+  }
+  const tags = (meta.tags || '').replace(/^\[|\]$/g, '').split(',').map(x => x.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
+  return normalizeItem({
+    id: meta.id || `md-${path.replace(/[^\w]+/g, '-')}`,
+    kind: meta.kind || meta.type || 'task', type: meta.kind || meta.type || 'task',
+    title: meta.title || path.split('/').pop().replace(/\.md$/i, ''), goal: meta.goal || '',
+    status: meta.status || 'open', project: meta.project || 'inbox', priority: meta.priority || '', tags,
+    body: match[2].trim(), notes: [], checklist: [], history: [`loaded from ${path}`],
+    updatedAt: Number(entry.mtime || entry.modified || entry.updated_at || Date.now()),
+  });
 }
