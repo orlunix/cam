@@ -61,9 +61,10 @@ function projectCard(project, tasks, archived, open, allProjects) {
   </header>${open ? `<div class="tw-project-body">${archived ? tasks.map(task => `<div class="tw-archived-task">${esc(task.title)}</div>`).join('') || '<p class="tw-empty-inline">No tasks.</p>' : `<div class="tw-project-actions"><input data-project-name value="${escapeAttr(project.name)}"><button class="btn-secondary" data-action="rename-project">Rename</button><button class="btn-secondary" data-action="delete-project">Delete empty</button></div>${tasks.map(task => `<div class="tw-project-task"><span>${esc(task.title)}</span><select data-action="move-task" data-task-id="${escapeAttr(task.id)}">${allProjects.map(candidate => `<option value="${escapeAttr(candidate.id)}" ${candidate.id === task.project ? 'selected' : ''}>${esc(candidate.name)}</option>`).join('')}</select></div>`).join('') || '<p class="tw-empty-inline">No tasks.</p>'}`}</div>` : ''}</article>`;
 }
 
-export function mountTodosWorkspace(root, { platform = 'desktop', contextLabel = () => 'Current workspace context', storePath = () => '/workspace/.cam/worklog' } = {}) {
+export function mountTodosWorkspace(root, { platform = 'desktop', contextLabel = () => 'Current workspace context', storePath = () => '/workspace/.cam/worklog', reloadMarkdown = null, workspaceSettings = null } = {}) {
   const controller = createTodosController();
-  const state = { tab: 'tasks', query: '', project: 'all', status: 'all', sort: 'updated', openTasks: new Set(), openProjects: new Set(), detailTabs: new Map(), compose: false, filtersOpen: false };
+  const state = { tab: 'tasks', query: '', project: 'all', status: 'all', sort: 'updated', openTasks: new Set(), openProjects: new Set(), detailTabs: new Map(), compose: false, filtersOpen: false, refreshing: false, refreshStatus: '', refreshTone: '' };
+  let refreshStatusTimer = null;
   root.classList.add("todos-workspace", `todos-${platform}`);
 
   function sorted(tasks) {
@@ -78,12 +79,14 @@ export function mountTodosWorkspace(root, { platform = 'desktop', contextLabel =
       content = `${state.compose ? `<form class="tw-composer"><input name="title" placeholder="Task title" required><input name="goal" placeholder="Goal (optional)"><textarea name="body" placeholder="Description" rows="3"></textarea><select name="project">${activeProjects.map(project => `<option value="${escapeAttr(project.id)}">${esc(project.name)}</option>`).join('')}</select><div><button class="btn-primary">Create task</button><button type="button" class="btn-secondary" data-action="cancel-compose">Cancel</button></div></form>` : ''}<div class="tw-task-list">${tasks.map(task => taskCard(task, state.openTasks.has(task.id), state.detailTabs.get(task.id) || 'preview')).join('') || '<div class="empty-state">No active tasks.</div>'}</div>`;
     } else if (state.tab === 'projects') {
       content = `<form class="tw-project-create"><input name="project" placeholder="New project name" required><button class="btn-primary">Add project</button></form><div class="tw-project-list">${activeProjects.map(project => projectCard(project, controller.projectTasks(project.id), false, state.openProjects.has(project.id), activeProjects)).join('')}</div>`;
+    } else if (state.tab === 'settings' && workspaceSettings) {
+      content = workspaceSettings.render();
     } else {
       const archived = controller.archivedProjects();
       content = `<div class="tw-project-list">${archived.map(project => projectCard(project, controller.archivedProjectTasks(project.id), true, state.openProjects.has(project.id), activeProjects)).join('') || '<div class="empty-state">No archived projects.</div>'}</div>`;
     }
-    root.innerHTML = `<header class="tw-header"><div><h2>Todos</h2><p>Structured work items, project mapping, and archived project history.</p></div><div class="tw-store-actions"><button type="button" class="tw-icon-button" data-action="refresh" aria-label="Refresh" title="Refresh">${todoIcon('refresh')}</button></div></header>
-      <nav class="tw-tabs" aria-label="Todos tabs">${['tasks', 'projects', 'archive'].map(tab => `<button data-action="tab" data-tab="${tab}" class="${state.tab === tab ? 'active' : ''}">${tab[0].toUpperCase() + tab.slice(1)}</button>`).join('')}</nav>
+    root.innerHTML = `<header class="tw-header"><div class="tw-header-copy"><h2>Todos</h2><p>Structured work items, project mapping, and archived project history.</p>${state.refreshStatus ? `<div class="tw-refresh-status" data-tone="${escapeAttr(state.refreshTone)}" role="status">${esc(state.refreshStatus)}</div>` : ''}</div><div class="tw-store-actions">${reloadMarkdown ? `<button type="button" class="tw-icon-button${state.refreshing ? ' is-loading' : ''}" data-action="refresh" aria-label="Refresh Markdown" title="Reload Markdown" ${state.refreshing ? 'disabled' : ''}>${todoIcon('refresh')}</button>` : ''}</div></header>
+      <nav class="tw-tabs" aria-label="Todos tabs">${['tasks', 'projects', 'archive', ...(workspaceSettings ? ['settings'] : [])].map(tab => `<button data-action="tab" data-tab="${tab}" class="${state.tab === tab ? 'active' : ''}">${tab[0].toUpperCase() + tab.slice(1)}</button>`).join('')}</nav>
       ${state.tab === 'tasks' ? `<section class="tw-toolbar"><div class="tw-panel-heading"><h3>Tasks</h3></div><div class="tw-toolbar-actions"><button class="btn-primary" data-action="new-task">New task</button><button class="btn-secondary tw-filter-trigger" data-action="toggle-filters" aria-expanded="${state.filtersOpen}">Filters</button></div><div class="tw-filter-controls${state.filtersOpen ? ' is-open' : ''}"><input data-filter="query" value="${escapeAttr(state.query)}" placeholder="Search tasks"><select data-filter="project"><option value="all">All projects</option>${selectedProjectOptions}</select><select data-filter="status">${['all','open','active','done'].map(value => `<option value="${value}" ${state.status === value ? 'selected' : ''}>${value[0].toUpperCase() + value.slice(1)}</option>`).join('')}</select><select data-filter="sort">${['updated','priority','title'].map(value => `<option value="${value}" ${state.sort === value ? 'selected' : ''}>${value[0].toUpperCase() + value.slice(1)}</option>`).join('')}</select></div></section>` : ''}
       <main class="tw-content">${content}</main>`;
   }
@@ -93,10 +96,11 @@ export function mountTodosWorkspace(root, { platform = 'desktop', contextLabel =
     const action = event.target.dataset.action; const card = closest(event.target, '[data-task-id]');
     if (action === 'toggle-task' && card) { controller.toggleTask(card.dataset.taskId, event.target.checked); render(); }
     if (action === 'toggle-check' && card) { controller.toggleChecklistItem(card.dataset.taskId, event.target.dataset.entryId, event.target.checked); render(); }
-    if (action === 'move-task') { controller.moveTask(event.target.dataset.taskId, event.target.value); render(); }
+    if (action === 'move-task') { controller.moveTask(event.target.dataset.taskId, event.target.value); render(); return; }
+    if (action === 'workspace-node' && workspaceSettings) { workspaceSettings.onChange(event.target.value); render(); }
   });
   root.addEventListener('submit', event => { event.preventDefault(); const form = event.target; if (form.classList.contains('tw-composer')) { const data = new FormData(form); controller.createTask({ title: data.get('title'), goal: data.get('goal'), body: data.get('body'), project: data.get('project') }); state.compose = false; render(); } else if (form.classList.contains('tw-project-create')) { const data = new FormData(form); controller.addProject(data.get('project')); render(); } });
-  root.addEventListener('click', event => {
+  root.addEventListener('click', async event => {
     const button = closest(event.target, '[data-action]'); if (!button) return; const action = button.dataset.action; const card = closest(button, '[data-task-id]'); const project = closest(button, '[data-project-id]');
     if (action === 'tab') { state.tab = button.dataset.tab; state.compose = false; render(); return; }
     if (action === 'new-task') { state.compose = true; render(); return; }
@@ -113,8 +117,28 @@ export function mountTodosWorkspace(root, { platform = 'desktop', contextLabel =
     if (action === 'add-check' && card) { controller.addChecklistItem(card.dataset.taskId, card.querySelector('[data-check-input]').value); render(); return; }
     if (action === 'delete-note' && card) { controller.deleteNote(card.dataset.taskId, button.dataset.entryId); render(); return; }
     if (action === 'delete-check' && card) { controller.deleteChecklistItem(card.dataset.taskId, button.dataset.entryId); render(); return; }
-    if (action === 'refresh') { render(); }
+    if (action === 'refresh' && reloadMarkdown && !state.refreshing) {
+      if (refreshStatusTimer) clearTimeout(refreshStatusTimer);
+      state.refreshing = true;
+      state.refreshStatus = '';
+      state.refreshTone = '';
+      render();
+      try {
+        const result = await reloadMarkdown();
+        const count = controller.replaceItems(result);
+        state.refreshStatus = `Reloaded ${count} Markdown file${count === 1 ? '' : 's'}`;
+        state.refreshTone = 'ok';
+        refreshStatusTimer = setTimeout(() => { state.refreshStatus = ''; state.refreshTone = ''; render(); }, 2000);
+      } catch (error) {
+        state.refreshStatus = `Refresh failed: ${error.message || error}`;
+        state.refreshTone = 'error';
+        refreshStatusTimer = setTimeout(() => { state.refreshStatus = ''; state.refreshTone = ''; render(); }, 4000);
+      } finally {
+        state.refreshing = false;
+        render();
+      }
+    }
   });
   render();
-  return () => { root.innerHTML = ''; };
+  return () => { if (refreshStatusTimer) clearTimeout(refreshStatusTimer); root.innerHTML = ''; };
 }

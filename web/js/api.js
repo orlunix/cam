@@ -621,7 +621,49 @@ export class CamApi {
     }
     return this.request('POST', `/api/agents/${encodeURIComponent(id)}/key`, body);
   }
-  uploadFile(id, filename, base64data) { return this.request('POST', `/api/agents/${id}/upload`, { filename, data: base64data }); }
+  async uploadFile(id, filename, base64data) {
+    const path = `/api/agents/${encodeURIComponent(id)}/upload`;
+    // Current Hub contract is JSON filename + base64 data. Aliases are ignored
+    // by current servers and let compatible older JSON controllers accept it.
+    try {
+      return await this.request('POST', path, {
+        filename,
+        data: base64data,
+        upload: base64data,
+        file: base64data,
+      });
+    } catch (firstError) {
+      // Some older direct controllers only accept a multipart field. Relay
+      // transports carry JSON frames, so do not bypass the relay protocol.
+      const needsMultipart = /upload field not found|missing (?:upload|file) field/i.test(firstError?.message || '');
+      const canUseHttp = !!this.serverUrl && !(this.mode === 'relay' && !this._relayHttp);
+      if (!needsMultipart || !canUseHttp || typeof FormData === 'undefined') throw firstError;
+      const raw = atob(String(base64data || ''));
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+      const postMultipart = async (field) => {
+        const form = new FormData();
+        form.append(field, new Blob([bytes]), filename);
+        form.append('filename', filename);
+        const headers = this.token ? { Authorization: `Bearer ${this.token}` } : {};
+        const resp = await fetch(`${this.serverUrl}${path}`, { method: 'POST', headers, body: form });
+        const text = await resp.text();
+        let data;
+        try { data = JSON.parse(text); } catch { data = text; }
+        if (!resp.ok) {
+          const err = new Error(data?.detail || data?.error || `HTTP ${resp.status}`);
+          err.status = resp.status;
+          throw err;
+        }
+        return data;
+      };
+      try { return await postMultipart('upload'); }
+      catch (uploadError) {
+        if (!/upload field not found|missing (?:upload|file) field/i.test(uploadError?.message || '')) throw uploadError;
+        return postMultipart('file');
+      }
+    }
+  }
   listContexts() { return this.request('GET', '/api/contexts'); }
   getContext(nameOrId) { return this.request('GET', `/api/contexts/${nameOrId}`); }
   createContext(body) { return this.request('POST', '/api/contexts', body); }

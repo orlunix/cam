@@ -91,6 +91,7 @@ export function createTodosController() {
     activeProjects: () => projects('active'),
     archivedProjects: () => projects('archived'),
     allItems: () => [...items],
+    replaceItems(nextItems) { items = (nextItems || []).map(normalizeItem); storedProjects = [...new Set([...storedProjects, ...items.map(item => idFor(item.project))])]; save(); return items.length; },
     task(id) { return items.find(item => item.id === id) || null; },
     tasks(filters = {}) {
       const query = String(filters.query || '').trim().toLowerCase();
