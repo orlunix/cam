@@ -3211,7 +3211,7 @@ const SKILLM_DEFAULT_TIMEOUT_MS = 120000;
 const SKILLM_INSTALL_TIMEOUT_MS = 300000;
 const SKILLM_REPO_NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 const SKILLM_ARG_RE = /^[A-Za-z0-9_./:-]{1,180}$/;
-const SKILLM_AGENT_TOOLS = new Set(['claude', 'codex', 'openclaw', 'cursor']);
+const SKILLM_AGENT_TOOLS = new Set(['claude', 'codex', 'agents', 'cursor']);
 
 function _skillmRedact(text, token) {
   let out = String(text == null ? '' : text);
@@ -3590,7 +3590,7 @@ async function _skillmInstall(body) {
     }
     for (const skill of skills) {
       for (const agent of agents) {
-        const args = ['install', skill, '-a', agent];
+        const args = ['install', skill, '-t', agent];
         if (repoName && repoName !== 'all') args.push('--repo', repoName);
         if (scope === 'global') args.push('--global');
         else args.push('--project-root', projectRoot);
