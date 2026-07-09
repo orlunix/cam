@@ -6,7 +6,7 @@
  * no separate Sync tab/action in the UI.
  */
 
-const AGENT_TOOLS = ['claude', 'codex', 'openclaw', 'cursor'];
+const AGENT_TOOLS = ['claude', 'codex', 'agents', 'cursor'];
 const REPO_NAME_KEY = 'cam_desktop_skillm_repo_name';
 const REPO_URL_KEY  = 'cam_desktop_skillm_repo_url';
 
