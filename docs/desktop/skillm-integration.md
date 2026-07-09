@@ -66,7 +66,7 @@ The embedded Hub exposes a small `/api/skillm/...` surface:
 - `POST   /api/skillm/sync`        — compatibility alias for
   `POST /api/skillm/repos/refresh` (kept for the same reason).
 - `POST   /api/skillm/install`     — pulls the selected repo/all repos on each
-  target node, then runs `skillm install <skill> -a <agent>` with either
+  target node, then runs `skillm install <skill> -t <target>` with either
   `--global` or `--project-root <workspace>`.
 
 All routes accept context names, not host passwords. SSH credentials stay inside
