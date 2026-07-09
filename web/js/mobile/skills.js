@@ -3,6 +3,7 @@
  */
 import { api, state } from './app.js';
 import { escHtml as esc } from '../shared/agent-helpers.js';
+import { isWorkspaceNode, saveWorkspaceContext, selectedWorkspaceContext, workspaceContextId, workspaceNodeLabel } from './workspace-context.js';
 
 const AGENT_TOOLS = ['claude', 'codex', 'openclaw', 'cursor'];
 
@@ -40,27 +41,22 @@ export function renderSkills(container) {
 
   container.innerHTML = `
     <div class="page-header"><h2>Skills</h2></div>
-    <div class="form-group">
-      <label>Setup node</label>
-      <select id="skillm-setup" class="form-input"></select>
-    </div>
-    <div style="display:flex;gap:8px;margin-bottom:12px">
-      <button type="button" class="btn-secondary btn-sm" id="skillm-check">Check</button>
-      <button type="button" class="btn-secondary btn-sm" id="skillm-refresh">Refresh</button>
-    </div>
     <div class="mobile-tab-bar">
       <button type="button" class="mobile-tab active" data-tab="repos">Repositories</button>
       <button type="button" class="mobile-tab" data-tab="install">Install</button>
+      <button type="button" class="mobile-tab" data-tab="settings">Settings</button>
     </div>
     <div id="skillm-status" class="settings-status"></div>
     <div id="panel-repos"></div>
     <div id="panel-install" hidden></div>
+    <div id="panel-settings" hidden></div>
   `;
 
-  const setupSel = container.querySelector('#skillm-setup');
+  let setupSel = null;
   const statusEl = container.querySelector('#skillm-status');
   const panelRepos = container.querySelector('#panel-repos');
   const panelInstall = container.querySelector('#panel-install');
+  const panelSettings = container.querySelector('#panel-settings');
 
   function setStatus(text, ok) {
     statusEl.textContent = text || '';
@@ -69,21 +65,40 @@ export function renderSkills(container) {
 
   function setLoading(on) { loading = !!on; syncButtons(); }
   function syncButtons() {
-    const ok = ['direct', 'relay'].includes(state.get('connectionMode')) && setupSel.value && !loading;
+    const ok = ['direct', 'relay'].includes(state.get('connectionMode')) && setupSel && setupSel.value && !loading;
     container.querySelectorAll('#skillm-check,#skillm-refresh,.skillm-action').forEach(b => { if (b) b.disabled = !ok; });
   }
 
   function renderSetupOptions() {
     const ctxs = state.get('contexts') || [];
-    const prev = setupSel.value;
-    setupSel.innerHTML = '<option value="">Select SSH node...</option>' +
-      ctxs.map(c => `<option value="${esc(c.name)}"${isSshContext(c) ? '' : ' disabled'}>${esc(machineLabel(c))}</option>`).join('');
-    if (prev && ctxs.some(c => c.name === prev && isSshContext(c))) setupSel.value = prev;
-    else {
-      const first = ctxs.find(isSshContext);
-      if (first) setupSel.value = first.name;
-    }
+    const nodes = ctxs.filter(isWorkspaceNode);
+    const selected = selectedWorkspaceContext(ctxs, 'skills');
+    setupSel.innerHTML = nodes.length
+      ? nodes.map(node => `<option value="${esc(node.name)}" ${selected && workspaceContextId(node) === workspaceContextId(selected) ? 'selected' : ''}>${esc(workspaceNodeLabel(node))}</option>`).join('')
+      : '<option value="">No SSH nodes available</option>';
+    setupSel.disabled = !nodes.length;
     syncButtons();
+  }
+
+  function renderSettingsPanel() {
+    panelSettings.innerHTML = `<section class="tw-endpoint-settings skillm-endpoint-settings"><h3>Skills node</h3><p>Choose the node whose workspace and Skillm installation this page manages.</p><label for="skillm-setup">Workspace node</label><select id="skillm-setup" class="form-input"></select><div style="display:flex;gap:8px;margin-top:12px"><button type="button" class="btn-secondary btn-sm" id="skillm-check">Check</button><button type="button" class="btn-secondary btn-sm" id="skillm-refresh">Refresh</button></div><small>This choice applies only to Skills.</small></section>`;
+    const nextSetupSel = panelSettings.querySelector('#skillm-setup');
+    setupSel = nextSetupSel;
+    renderSetupOptions();
+    setupSel.addEventListener('change', () => {
+      const node = (state.get('contexts') || []).find(item => item.name === setupSel.value);
+      saveWorkspaceContext(node, 'skills');
+      state.set('skillsWorkspaceContextId', workspaceContextId(node));
+      repos = [];
+      skills = [];
+      selectedSkills.clear();
+      renderReposPanel();
+      if (activeTab === 'install') renderInstallPanel();
+      setStatus(node ? `Skills node: ${workspaceNodeLabel(node)}` : 'Select a Skills node.', !!node);
+      if (node) void loadRepos();
+    });
+    panelSettings.querySelector('#skillm-check').addEventListener('click', checkSkillm);
+    panelSettings.querySelector('#skillm-refresh').addEventListener('click', refreshCurrent);
   }
 
   function renderReposPanel() {
@@ -280,27 +295,28 @@ export function renderSkills(container) {
     container.querySelectorAll('.mobile-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
     panelRepos.hidden = tab !== 'repos';
     panelInstall.hidden = tab !== 'install';
+    panelSettings.hidden = tab !== 'settings';
     if (tab === 'install') {
       renderInstallPanel();
       void loadSkills(true);
     }
+    if (tab === 'settings') renderSettingsPanel();
   }
 
   container.querySelectorAll('.mobile-tab').forEach(b => b.addEventListener('click', () => setTab(b.dataset.tab)));
-  container.querySelector('#skillm-check').addEventListener('click', async () => {
+  async function checkSkillm() {
     if (!setupSel.value) return;
     try {
       const res = await api.skillmStatus(setupSel.value);
       setStatus(res.installed ? `Skillm OK${res.version ? ': ' + res.version : ''}` : (res.detail || 'Not installed'), !!res.installed);
     } catch (e) { setStatus(e.message, false); }
-  });
-  container.querySelector('#skillm-refresh').addEventListener('click', () => {
-    if (activeTab === 'repos') void loadRepos();
-    else void loadSkills(true);
-  });
-  setupSel.addEventListener('change', () => { void loadRepos(); });
+  }
+  function refreshCurrent() {
+    if (activeTab === 'install') void loadSkills(true);
+    else void loadRepos();
+  }
 
-  renderSetupOptions();
+  renderSettingsPanel();
   renderReposPanel();
   syncButtons();
 
