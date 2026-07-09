@@ -295,6 +295,22 @@ class TestGoldenToolResolution:
         assert out["bin"] == golden
         assert out["source"] == "golden"
 
+    def test_latest_beats_stable_when_both_exist(self, tmp_path, monkeypatch):
+        stable = str(tmp_path / "stable_claude")
+        latest = str(tmp_path / "latest_claude")
+        for candidate in (stable, latest):
+            with open(candidate, "w") as f:
+                f.write("#!/bin/sh\nexit 0\n")
+            os.chmod(candidate, 0o755)
+        monkeypatch.setattr(_rt, "_GOLDEN_TOOL_PATHS", {
+            "claude": (latest, stable),
+        })
+        rt = _rt.RuntimeEnv(env={"PATH": str(tmp_path), "HOME": "/h"},
+                             source="explicit", shell="", path=str(tmp_path))
+        out = _rt.resolve_tool_with_source(rt, "claude")
+        assert out["bin"] == latest
+        assert out["source"] == "golden"
+
     def test_claude_falls_through_to_path_when_no_golden(self, tmp_path, monkeypatch):
         path_claude = str(tmp_path / "claude")
         with open(path_claude, "w") as f:

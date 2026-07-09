@@ -28,7 +28,12 @@ export function hostKeyForMachine({ type, host, user, port }) {
   const h = host || 'local';
   const isSSH = !!(type === 'ssh' || (h && h !== 'local'));
   if (!isSSH) return 'local';
-  return `${user || ''}@${h}:${normalizePort(port, true)}`;
+  // Bracket raw IPv6 hosts (contain ':') so the host key stays
+  // unambiguous: "user@[2001:db8::1]:22" rather than the colon-clashed
+  // "user@2001:db8::1:22", which the hub's node-key regex can't parse.
+  // Already-bracketed hosts (e.g. "[::1]") are left as-is.
+  const hostPart = h.includes(':') && !h.startsWith('[') ? `[${h}]` : h;
+  return `${user || ''}@${hostPart}:${normalizePort(port, true)}`;
 }
 
 export function hostKeyFromAgent(agent) {

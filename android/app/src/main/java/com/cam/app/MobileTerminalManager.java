@@ -166,6 +166,19 @@ public final class MobileTerminalManager {
         }
     }
 
+    public boolean hasActiveSessions() {
+        for (Entry ent : sessions.values()) {
+            if (ent != null && ent.active && channelAlive(ent)) return true;
+        }
+        return false;
+    }
+
+    public void closeAllSessions() {
+        for (String sessionId : sessions.keySet()) {
+            drop(sessionId);
+        }
+    }
+
     private static boolean channelAlive(Entry ent) {
         try {
             return ent != null && ent.channel != null && ent.channel.isConnected();

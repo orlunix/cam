@@ -1,12 +1,16 @@
 import { api, state, navigate } from '../app.js';
 
-export function renderFileBrowser(container, contextId, subpath) {
+export function renderFileBrowser(container, contextId, subpath, source = null) {
   // Clean subpath: remove leading slash, default to empty
   let currentPath = (subpath || '').replace(/^\//, '');
   let loading = false;
   let lastFileContent = null; // cached for raw/rendered toggle
   let lastFileName = null;
   let showingRaw = false;
+  const sourceLabel = source?.label || null;
+  const listWorkspaceFiles = source?.list || ((path) => api.listFiles(contextId, path));
+  const readWorkspaceFile = source?.read || ((path) => api.readFile(contextId, path));
+  const exitBrowser = source?.exit || (() => navigate('#/contexts'));
 
   container.innerHTML = `
     <div class="page-header" style="display:flex;align-items:center;gap:8px">
@@ -46,7 +50,7 @@ export function renderFileBrowser(container, contextId, subpath) {
       parts.pop();
       navigateTo(parts.join('/'));
     } else {
-      navigate('#/contexts');
+      exitBrowser();
     }
   });
 
@@ -83,7 +87,7 @@ export function renderFileBrowser(container, contextId, subpath) {
   function renderBreadcrumb() {
     const contexts = state.get('contexts') || [];
     const ctx = contexts.find(c => c.id === contextId || c.name === contextId);
-    const contextName = ctx ? ctx.name : contextId;
+    const contextName = sourceLabel || (ctx ? ctx.name : contextId);
 
     const parts = currentPath ? currentPath.split('/').filter(Boolean) : [];
     let html = `<span class="fb-crumb" data-path="">${contextName}</span>`;
@@ -108,7 +112,7 @@ export function renderFileBrowser(container, contextId, subpath) {
 
     try {
       const pathToLoad = currentPath;
-      const data = await api.listFiles(contextId, pathToLoad);
+      const data = await listWorkspaceFiles(pathToLoad);
 
       // If path changed while loading, discard stale result
       if (currentPath !== pathToLoad) return;
@@ -171,7 +175,7 @@ export function renderFileBrowser(container, contextId, subpath) {
     toggleBtn.textContent = 'Raw';
 
     try {
-      const data = await api.readFile(contextId, path);
+      const data = await readWorkspaceFile(path);
       if (data.binary) {
         viewerContent.textContent = `[Binary file, ${formatSize(data.size)}]`;
       } else if (isRichFile(name)) {
@@ -260,4 +264,14 @@ const raw = ${JSON.stringify(md)};
 document.getElementById('md-content').innerHTML = marked.parse(raw);
 <\/script>
 </body></html>`;
+}
+
+/** Agent workspace adapter: same Browser interaction, agent-scoped source. */
+export function renderAgentFileBrowser(container, agentId, subpath) {
+  return renderFileBrowser(container, agentId, subpath, {
+    label: 'Workspace',
+    list: (path) => api.agentListWorkspaceFiles(agentId, path),
+    read: (path) => api.agentReadWorkspaceFile(agentId, path),
+    exit: () => navigate(`/agent/${encodeURIComponent(agentId)}`),
+  });
 }

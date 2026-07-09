@@ -115,6 +115,7 @@ export function renderDirectNodes(container) {
     hubUpdateContext,
     hubDeleteContext,
     formLabels: { addHost: 'Save Node', saveHost: 'Save Host', saveContext: 'Save Context' },
+    onBrowseContext: (context) => navigate(`/context/${encodeURIComponent(context.id || context.name)}/files`),
   });
 
   return () => { if (cleanup) cleanup(); };

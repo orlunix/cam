@@ -22,6 +22,7 @@ public class CamJsBridge {
     private final WebView webView;
     private final MobileEmbeddedHub embeddedHub;
     private final MobileTerminalManager terminalManager;
+    private volatile boolean webTerminalKeepAlive;
 
     public CamJsBridge(MainActivity activity, WebView webView, MobileEmbeddedHub embeddedHub) {
         this.activity = activity;
@@ -113,6 +114,21 @@ public class CamJsBridge {
                 } catch (Exception ignored) {}
             }
         }).start();
+    }
+
+    /** Relay terminals are JavaScript-backed, so expose their attached state to Activity. */
+    @JavascriptInterface
+    public void setTerminalBackgroundKeepAlive(boolean keepAlive) {
+        webTerminalKeepAlive = keepAlive;
+    }
+
+    boolean shouldKeepTerminalAliveInBackground() {
+        return webTerminalKeepAlive || terminalManager.hasActiveSessions();
+    }
+
+    void stopTerminalForBackgroundTimeout() {
+        webTerminalKeepAlive = false;
+        new Thread(terminalManager::closeAllSessions, "cam-term-background-timeout").start();
     }
 
     private void directHubCallback(String cbId, boolean ok, JSONObject payload) {

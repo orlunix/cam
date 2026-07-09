@@ -82,6 +82,8 @@ export function mountNodesMode({
   formDraftKey = '',
   /** false on phone Hub — Sync Host needs Desktop SSH/camc. Boolean or () => boolean. */
   syncHostSupported = true,
+  /** Optional callback for a context-scoped read-only Browser. */
+  onBrowseContext = null,
 }) {
   if (!panel) return;
   const canSyncHost = () => (typeof syncHostSupported === 'function'
@@ -297,18 +299,9 @@ export function mountNodesMode({
       map.get(key).contexts.push(c);
     }
 
-    // Orphan agents (no matching context machine) still contribute
-    // a host card with zero contexts.
-    for (const a of agents) {
-      const host = a.machine_host || 'local';
-      const isSSH = !!(a.machine_type === 'ssh' || (host && host !== 'local'));
-      const user = a.machine_user || '';
-      const port = normalizePort(a.machine_port, isSSH);
-      const key = hostKeyForMachineLocal({ type: a.machine_type, host, user, port });
-      if (!map.has(key)) {
-        map.set(key, { key, host, user, port, isSSH, contexts: [] });
-      }
-    }
+    // Nodes is a registry view: only registered contexts create cards.
+    // Agents whose host was deleted remain visible in Agents (history is
+    // retained), but must not resurrect a zero-context Node card.
 
     const hosts = [...map.values()].map(n => {
       const nodeAgents = agents.filter(a => agentMatchesHost(a, n));
@@ -514,7 +507,8 @@ export function mountNodesMode({
             <div class="ctx-row-sub dim">last sync: ${esc(lastOneLine)}</div>
           </div>
           <div class="ctx-row-actions">
-            ${mobileForm ? '' : `<button type="button" class="btn-xs ctx-copy-context-btn"   data-name="${esc(ctx.name)}">copy</button>`}
+            ${typeof onBrowseContext === 'function' ? `<button type="button" class="btn-xs ctx-browse-context-btn" data-context-id="${esc(ctx.id || ctx.name)}">browse</button>` : ''}
+            ${mobileForm ? '' : `<button type="button" class="btn-xs ctx-duplicate-context-btn" data-name="${esc(ctx.name)}">duplicate</button>`}
             ${readOnly() ? '' : `<button type="button" class="btn-xs ctx-edit-context-btn"   data-name="${esc(ctx.name)}">edit</button>
             <button type="button" class="btn-xs btn-xs-danger ctx-delete-context-btn" data-name="${esc(ctx.name)}">delete</button>`}
           </div>
@@ -601,6 +595,15 @@ export function mountNodesMode({
         if (expandedCtxNames.has(name)) expandedCtxNames.delete(name);
         else expandedCtxNames.add(name);
         render();
+      });
+    });
+
+    listEl.querySelectorAll('.ctx-browse-context-btn').forEach(btn => {
+      btn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const id = btn.dataset.contextId;
+        const context = (state.get('contexts') || []).find(item => String(item.id || item.name) === String(id));
+        if (context && typeof onBrowseContext === 'function') onBrowseContext(context);
       });
     });
 
@@ -794,24 +797,13 @@ export function mountNodesMode({
 
     // ─ Context-level actions ─────────────────────────────────────
 
-    listEl.querySelectorAll('.ctx-copy-context-btn').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
+    listEl.querySelectorAll('.ctx-duplicate-context-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
         e.stopPropagation();
         const name = btn.dataset.name;
         const ctx = (state.get('contexts') || []).find(c => c.name === name);
         if (!ctx) return;
-        const oldText = btn.textContent;
-        btn.disabled = true;
-        try {
-          await copyText(contextClipboardText(ctx));
-          btn.textContent = 'copied';
-          showToast(`Copied context "${name}"`, 'success');
-          setTimeout(() => { btn.textContent = oldText; btn.disabled = false; }, 1000);
-        } catch (err) {
-          btn.textContent = oldText;
-          btn.disabled = false;
-          showToast(`Copy ${name} failed: ${err?.message || err}`, 'error', 5000);
-        }
+        if (typeof panel._openDuplicateContext === 'function') panel._openDuplicateContext(ctx);
       });
     });
 
@@ -1374,6 +1366,104 @@ function mountNodesActions({
     if (fAuth) fAuth.value = m.auth_method || (m.key_file ? 'key' : 'agent');
     if (fKey)  fKey.value  = fAuth && fAuth.value === 'key' ? (m.key_file || '') : '';
     if (fEnv)  fEnv.value  = '';
+    if (fPassphrase) fPassphrase.value = '';
+    if (fPassword)   fPassword.value   = '';
+    if (fRemPassph)  fRemPassph.checked = false;
+    if (fRemPasswd)  fRemPasswd.checked = false;
+    applyAuthSection();
+    setAddStatus('');
+  };
+
+  /** Open the manage panel to DUPLICATE a context: reuses the
+   *  add-context submit path (so a NEW context is created, not an
+   *  update), with the name field editable and prefilled
+   *  "<orig>-copy", and path/env prefilled from the source context.
+   *  Host fields are inherited from the source context's machine. */
+  panel._openDuplicateContext = function openDuplicateContext(ctx) {
+    if (readOnly()) return;
+    if (!ctx) return;
+    const all = state.get('contexts') || [];
+    const m = (ctx && ctx.machine) || {};
+    // Locate the owning host node so addContextNode is set and the
+    // add-context submit path (which inherits host fields from the
+    // node's primary context) handles persistence. `buildHosts` lives
+    // in mountNodesMode's closure (not visible here), so reconstruct
+    // the owning node directly from contexts via the shared hostKey
+    // helper — same grouping buildHosts uses.
+    const key = hostKeyForMachine({
+      type: m.type,
+      host: m.host || 'local',
+      user: m.user || '',
+      port: m.port,
+    });
+    const node = {
+      key,
+      host: m.host || 'local',
+      user: m.user || '',
+      port: m.port || null,
+      isSSH: !!(m.type === 'ssh' || (m.host && m.host !== 'local')),
+      contexts: all.filter(c => {
+        const cm = (c && c.machine) || {};
+        return hostKeyForMachine({
+          type: cm.type,
+          host: cm.host || 'local',
+          user: cm.user || '',
+          port: cm.port,
+        }) === key;
+      }),
+    };
+    if (!node.contexts.length) {
+      showToast(`Cannot duplicate "${ctx.name}": host not found.`, 'error', 4000);
+      return;
+    }
+    openManage('manual');
+    addContextNode = node;
+    editHostNode = null;
+    editContextTarget = null; // null → submit creates a NEW context
+    setHostEditMode(false);
+    setContextEditMode(false);
+    setAddContextMode(true);
+
+    const primary = node.contexts[0];
+    const nodeM = (primary && primary.machine) || {};
+    const epLabel = `${nodeM.user || ''}@${nodeM.host || ''}:${nodeM.port || 22}`;
+    if (addHeadingEl) addHeadingEl.textContent = `Duplicate context: ${ctx.name}`;
+    if (addSubmitBtn) addSubmitBtn.textContent = labelSaveContext;
+    if (addCtxScopeEl) addCtxScopeEl.textContent = epLabel;
+
+    if (fName) {
+      // Name is editable (unlike edit) and prefilled "<orig>-copy".
+      const used = new Set(all.map(c => c.name));
+      let candidate = `${ctx.name}-copy`;
+      let i = 2;
+      while (used.has(candidate)) candidate = `${ctx.name}-copy-${i++}`;
+      fName.value = candidate;
+      // Explicitly editable — duplicate must allow renaming, unlike
+      // Edit Context (which is name-read-only). Clear every attribute
+      // that could make the field non-editable: readOnly, disabled,
+      // and both aria attrs. (Defensive: a prior _openEditContext may
+      // have set these on the same element instance.)
+      fName.readOnly = false;
+      fName.disabled = false;
+      fName.removeAttribute('aria-readonly');
+      fName.removeAttribute('aria-disabled');
+      // Defensive: make sure the field is focusable/visible even when
+      // the manage panel is scrolled or clipped. openManage already
+      // focuses fName, but if the panel was scrolled to a different
+      // field (e.g. from a prior edit), bring the name into view.
+      try { fName.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (_) {}
+      setTimeout(() => { try { fName.focus(); fName.select(); } catch (_) {} }, 0);
+    }
+    if (fPath) {
+      fPath.value = ctx.path || (m.user ? `/home/${m.user}` : '');
+      fPath.dataset.autofill = '';
+    }
+    if (fEnv) fEnv.value = m.env_setup || '';
+    if (fHost) fHost.value = nodeM.host || '';
+    if (fUser) fUser.value = nodeM.user || '';
+    if (fPort) fPort.value = String(nodeM.port || 22);
+    if (fAuth) fAuth.value = nodeM.auth_method || (nodeM.key_file ? 'key' : 'agent');
+    if (fKey)  fKey.value  = fAuth && fAuth.value === 'key' ? (nodeM.key_file || '') : '';
     if (fPassphrase) fPassphrase.value = '';
     if (fPassword)   fPassword.value   = '';
     if (fRemPassph)  fRemPassph.checked = false;
