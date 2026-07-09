@@ -67,6 +67,12 @@ const crypto = require('node:crypto');
 const fs     = require('node:fs');
 const os     = require('node:os');
 const path   = require('node:path');
+// Local camc discovery (Bug 1: ingest local agents in Direct mode).
+// The hub process runs on the same host as `~/.cam/camc`, so a local
+// child_process spawn is the Direct-mode mirror of the SSH
+// `_sshTransport.execRemote` path used for remote nodes. Keep using
+// stdlib only — no shell, just execFile on the resolved camc binary.
+const { execFile } = require('node:child_process');
 
 const DEFAULT_PORT       = 8420;
 const PORT_SCAN_RANGE    = 50;
@@ -76,6 +82,16 @@ const SYSTEM_PROMPT_MAX_BYTES = 128 * 1024;
 const SYSTEM_PROMPT_FILES = { claude: 'CLAUDE.md', codex: 'AGENTS.md', cursor: 'AGENTS.md' };
 const STORE_VERSION      = 1;
 const HUB_PRODUCT_VERSION = 'cam-desktop-embedded-1';
+// Bug 1 (CAM-DESK-DIRECT-019): in Direct mode the hub process runs on
+// the same host as `~/.cam/camc`, so local `camc run` agents must be
+// discoverable without a manual Sync. We auto-create a local-type
+// context that anchors those agents so `_contextForAgentRecord`
+// resolves them (otherwise `_pruneUnownedStoreAgents` would drop them
+// as orphans on the next SSH sync) and so Nodes mode shows a "local"
+// host card. The name is fixed; the id is generated once and
+// persisted in the store.
+const LOCAL_CONTEXT_NAME  = 'local';
+const LOCAL_SYNC_TIMEOUT_MS = 8000;
 // Direct Plain/Rich output polls can arrive every second while the same SSH
 // endpoint is also syncing agents. Keep a very short cache and coalesce
 // duplicate in-flight captures so polls do not stack `camc capture` calls.
@@ -99,6 +115,7 @@ const state = {
   remoteCamcReadyCache: new Map(),
   agentSyncInFlight: false,
   lastAgentSyncAt: 0,
+  localSyncInFlight: false,
 };
 
 function tokenFingerprint(tok) {
@@ -551,6 +568,24 @@ function findContextByName(name) {
   return state.store.contexts.find(c => c.name === name) || null;
 }
 
+/** Resolve a context by name OR id. The renderer's Nodes mode and the
+ *  machines view sometimes pass the context `id` (e.g. when
+ *  `contextSyncHints(ctx).id` is preferred over `ctx.name` in
+ *  `syncContext`, or `persistDelete(ctx.id || ctx.name)` on the
+ *  delete-host path). The bare `/api/contexts/:name_or_id` route must
+ *  therefore accept either key — matching by name alone 404s for any
+ *  caller that leads with the id (CAM-DESK-NODEUI-014/-015,
+ *  CAM-DESK-DIRECT-014). Same id-or-name resolution the browse helpers
+ *  already inline at _browseContextList/_browseContextRead. */
+function findContextByNameOrId(nameOrId) {
+  const key = String(nameOrId || '');
+  if (!key) return null;
+  if (!state.store || !Array.isArray(state.store.contexts)) return null;
+  return state.store.contexts.find(c => c.name === key)
+    || state.store.contexts.find(c => String(c.id || '') === key)
+    || null;
+}
+
 function applyContextUpdate(existing, body) {
   // Apply only known scalar fields; refuse to rewrite id/created_at.
   const next = { ...existing };
@@ -964,7 +999,14 @@ async function _syncAllAgentContexts(reason = 'manual') {
     return { ok: false, error: 'sync_in_flight', detail: 'agent sync already running' };
   }
   const contexts = _syncableAgentContexts();
-  if (!contexts.length) return { ok: true, synced: 0, failed: 0, results: [] };
+  // No SSH contexts does NOT mean "nothing to do" — Bug 1: there may
+  // still be local camc agents on the hub's own host to ingest. Run
+  // the local pass first so a Direct-mode install with zero remote
+  // nodes still reflects its local agents.
+  if (!contexts.length) {
+    const local = await _syncLocalAgents();
+    return { ok: true, synced: local && local.ok ? 1 : 0, failed: 0, results: local && local.ok ? [{ context: LOCAL_CONTEXT_NAME, ok: true, imported: local.imported || 0, error: null }] : [] };
+  }
   state.agentSyncInFlight = true;
   const results = [];
   let synced = 0;
@@ -976,6 +1018,17 @@ async function _syncAllAgentContexts(reason = 'manual') {
       results.push({ context: ctx.name, ok: !!(r && r.ok), imported: r && r.imported || 0, error: r && r.error || null });
       if (r && r.ok) synced++;
       else failed++;
+    }
+    // Bug 1: ingest local camc agents on the hub's own host as part of
+    // a full sync too, so "Sync All" covers both transports. Run BEFORE
+    // prune so `_pruneUnownedStoreAgents` sees the local anchor context
+    // and does not drop the freshly-imported local rows as orphans.
+    const local = await _syncLocalAgents();
+    if (local && local.ok) {
+      synced++;
+      results.push({ context: LOCAL_CONTEXT_NAME, ok: true, imported: local.imported || 0, error: null });
+    } else if (local && local.error !== 'sync_in_flight' && local.error !== 'camc_missing') {
+      results.push({ context: LOCAL_CONTEXT_NAME, ok: false, imported: 0, error: local.error || 'failed' });
     }
     state.lastAgentSyncAt = Date.now();
     const prune = synced > 0
@@ -990,9 +1043,608 @@ async function _syncAllAgentContexts(reason = 'manual') {
 }
 
 
-/** Look up an agent and its owning context from the local store.
- *  Returns `{ agent, ctx }` or `{ error }` shape so callers can map
- *  the failure to a useful UI message instead of an empty body. */
+/* ─────────────── Local agent ingestion (Bug 1, CAM-DESK-DIRECT-019) ───────────────
+ *
+ * In Direct mode the hub process runs on the same host as `~/.cam/camc`,
+ * so `camc run` agents launched on the hub's own machine (e.g. prgn)
+ * must show up in the agent list without a manual Sync Host. The SSH
+ * sync path (`_syncableAgentContexts`) deliberately skips every
+ * non-ssh context, so local agents never enter `state.store.agents`
+ * unless the operator happens to trigger a self-SSH sync. This block
+ * adds the local mirror: run `camc --json list` on the hub process's
+ * own host, normalize the records exactly like the remote path, and
+ * upsert them under an auto-created local context so the renderer's
+ * per-host tally and the prune logic both see them.
+ */
+
+/** Resolve the camc binary to run for local discovery. Prefer the
+ *  bundled camc (works on a fresh install with nothing on PATH), then
+ *  fall back to `camc` on PATH (the dev/prgn case where the CLI is
+ *  installed under ~/.local/bin). `execFile` searches PATH for a bare
+ *  name; an ENOENT is mapped to a 'camc_missing' result upstream. */
+function _localCamcPath() {
+  return _bundledCamcPath() || 'camc';
+}
+
+/** Auto-create the local anchor context if no local-type context
+ *  exists yet. Idempotent: returns the existing record on subsequent
+ *  calls. The context has `machine.type === 'local'` so it is skipped
+ *  by the SSH sync path and never double-counted. Its `name` is the
+ *  fixed `LOCAL_CONTEXT_NAME` so `_contextForAgentRecord` and the
+ *  renderer both key on it. */
+function _ensureLocalContext() {
+  if (!state.store) state.store = _emptyStore();
+  if (!Array.isArray(state.store.contexts)) state.store.contexts = [];
+  const existing = state.store.contexts.find(c => c && c.machine && (c.machine.type || 'local') === 'local');
+  if (existing) return existing;
+  const rec = {
+    id:           crypto.randomUUID(),
+    name:         LOCAL_CONTEXT_NAME,
+    path:         '',
+    machine:      { type: 'local', host: '', user: '', port: null },
+    tags:         [],
+    created_at:   nowIso(),
+    last_used_at: null,
+  };
+  state.store.contexts.push(rec);
+  saveStore();
+  pushLog('info', `local context auto-created: ${rec.name}`);
+  return rec;
+}
+
+/** Run `camc --json list` on the hub's own host and merge the result
+ *  into `state.store.agents` under the local context. Mirrors the
+ *  remote `_syncContextAgents` shape so the renderer's tally and
+ *  `_repairStoreAgents` see identical fields. Does NOT duplicate
+ *  SSH-synced rows: `_upsertAgentsForContext` only replaces rows
+ *  whose `context_name === LOCAL_CONTEXT_NAME` (or whose
+ *  `_agentDedupeKey` collides, which can't happen here because SSH
+ *  rows carry a non-empty `machine_host` and a different ctx name).
+ *
+ *  Returns `{ ok, imported, total, results: { camc } }` (same shape
+ *  as `_syncContextAgents`) so callers can mix it into the existing
+ *  sync results array. Failures are non-fatal: a missing/broken local
+ *  camc just yields an empty import, it never breaks the agent list.
+ *  Throttled by `state.localSyncInFlight` so concurrent GET /api/agents
+ *  polls do not stack local camc spawns. */
+function _runLocalCamcList() {
+  return new Promise((resolve) => {
+    const bin = _localCamcPath();
+    const child = execFile(bin, ['--json', 'list'], {
+      timeout: LOCAL_SYNC_TIMEOUT_MS,
+      maxBuffer: 4 * 1024 * 1024,
+      windowsHide: true,
+    }, (err, stdout, stderr) => {
+      if (err) {
+        // ENOENT = camc not on PATH and not bundled; treat as "no local
+        // agents", not a hard failure (a fresh install may have no
+        // local camc until the first `cam sync`).
+        const code = (err.code === 'ENOENT') ? 'camc_missing'
+          : (err.killed && /TIMEDOUT/i.test(String(err.message || '')) ? 'timeout' : 'exec_failed');
+        return resolve({ ok: false, error: code, detail: err.message || 'local camc list failed', stdout: '', stderr: stderr || '' });
+      }
+      resolve({ ok: true, stdout: String(stdout || ''), stderr: String(stderr || '') });
+    });
+    void child;
+  });
+}
+
+async function _syncLocalAgents() {
+  if (state.localSyncInFlight) {
+    return { ok: false, error: 'sync_in_flight', imported: 0, total: 0, results: { camc: 'unchanged' } };
+  }
+  state.localSyncInFlight = true;
+  try {
+    const ctx = _ensureLocalContext();
+    const res = await _runLocalCamcList();
+    if (!res.ok) {
+      // Missing local camc on a fresh install is expected — log at
+      // debug-ish level and move on. Surface real exec errors once.
+      if (res.error !== 'camc_missing') {
+        pushLog('warn', `local sync failed: ${res.error}`);
+      }
+      return { ok: false, error: res.error, imported: 0, total: 0, results: { camc: 'failed' } };
+    }
+    let parsed;
+    try { parsed = JSON.parse(res.stdout || '[]'); }
+    catch (e) {
+      pushLog('warn', `local sync: invalid JSON from local camc: ${e && e.message}`);
+      return { ok: false, error: 'invalid_json', imported: 0, total: 0, results: { camc: 'failed' } };
+    }
+    if (!Array.isArray(parsed)) {
+      return { ok: false, error: 'invalid_json', imported: 0, total: 0, results: { camc: 'failed' } };
+    }
+    const normalized = parsed
+      .map(r => _normalizeAgent(r, ctx))
+      .filter(r => r && r.id);
+
+    // Change-detection keyed on id+status+state+updated_at, same as the
+    // remote path, so we can report 'updated'/'unchanged' to the caller.
+    const prev = (state.store && state.store.agents)
+      ? state.store.agents.filter(a => (a.context_name || '') === ctx.name)
+      : [];
+    _upsertAgentsForContext(ctx, normalized);
+    function fp(a) { return `${a.id}|${a.status}|${a.state}|${a.task_name}|${a.updated_at || ''}`; }
+    const prevSig = new Set(prev.map(fp));
+    const newSig  = new Set(normalized.map(fp));
+    const same = (prevSig.size === newSig.size)
+      && [...prevSig].every(k => newSig.has(k));
+    const status = same ? 'unchanged' : 'updated';
+    pushLog('info', `sync ${ctx.name}: ${status} (${normalized.length} agent(s))`);
+    return { ok: true, imported: normalized.length, total: parsed.length, results: { camc: status } };
+  } finally {
+    state.localSyncInFlight = false;
+  }
+}
+
+
+
+// ── Start-agent (POST /api/agents) ────────────────────────────────
+// `camc run` always prints human text (the global --json flag is a
+// no-op for `run`), so we parse the `ID: <id>` line from stdout, then
+// `camc --json status <id>` for the full record. Local uses execFile;
+// remote uses the injected ssh-transport's execRemote (same path as
+// _syncContextAgents). For inline node+path with no context, we
+// resolve the node to its machine and run directly — NO context
+// record is created (A2). The returned agent is upserted into the
+// store under the matching context (or the local anchor context for
+// inline local runs) so the next GET /api/agents sees it.
+
+const RUN_LOCAL_TIMEOUT_MS  = 30000;
+const RUN_REMOTE_TIMEOUT_MS = 45000;
+
+/** Build the `camc run` argv from a start request body. Tool/path/name
+ *  are required-ish; api + auto_exit + no_default_api + api_token optional.
+ *  --no-default-api and --api-token are passed straight through to camc
+ *  (see src/camc_pkg/cli.py:6368/6370). --no-default-api is a no-op when
+ *  an explicit --api is also set, but camc handles the precedence. */
+function _buildRunArgv(body) {
+  const tool  = String((body && body.tool) || 'claude');
+  const path  = String((body && body.path) || '');
+  const name  = body && body.name ? String(body.name) : '';
+  const prompt = String((body && body.prompt) || '');
+  const api   = body && body.api ? String(body.api) : '';
+  const autoExit = !!(body && body.auto_exit);
+  const noDefaultApi = !!(body && body.no_default_api);
+  const apiToken = body && body.api_token ? String(body.api_token) : '';
+  const argv = ['--json', 'run', '-t', tool, '-p', path];
+  if (name) argv.push('-n', name);
+  if (api)  argv.push('--api', api);
+  if (noDefaultApi) argv.push('--no-default-api');
+  if (apiToken) argv.push('--api-token', apiToken);
+  if (autoExit) argv.push('--auto-exit');
+  argv.push(prompt);
+  return argv;
+}
+
+/** Parse the agent id from `camc run` stdout. The run command prints a
+ *  line like `  ID: <8hex>  Tool: ...  Session: ...`. Returns '' if no
+ *  id could be extracted. */
+function _parseRunAgentId(stdout) {
+  if (!stdout) return '';
+  const m = /^\s*ID:\s+([0-9a-fA-F]{6,})\b/m.exec(String(stdout));
+  return m ? m[1] : '';
+}
+
+/** Run `camc --json status <id>` locally and return the parsed agent
+ *  record (or null). */
+function _localCamcStatus(agentId) {
+  return new Promise((resolve) => {
+    const bin = _localCamcPath();
+    const child = execFile(bin, ['--json', 'status', agentId], {
+      timeout: 8000,
+      maxBuffer: 2 * 1024 * 1024,
+      windowsHide: true,
+    }, (err, stdout, stderr) => {
+      if (err) return resolve(null);
+      try { resolve(JSON.parse(String(stdout || '') || 'null')); }
+      catch (_) { resolve(null); }
+    });
+    void child;
+  });
+}
+
+/** Stamp the start-request fields that camc does NOT echo back onto
+ *  the normalized agent record. `camc --json status` carries auto_confirm
+ *  (it forces it on) and retry_count (always 0), but neither the
+ *  user's requested timeout nor the requested retry count survive the
+ *  camc run round-trip — camc has no --timeout/--retry flag. We record
+ *  them here so the agent row reflects what the user submitted, and
+ *  the renderer can show the Direct-mode limitation honestly.
+ *  CAM-DESK-RUN-011 / RUN-015. */
+function _stampStartRequestFields(normalized, body) {
+  if (!normalized || !body) return normalized;
+  if (body.timeout != null) normalized.requested_timeout = String(body.timeout);
+  if (body.retry != null) normalized.requested_retry = Number(body.retry) || 0;
+  // auto_confirm: camc forces true; honor the user's intent for display.
+  if (body.auto_confirm === false) normalized.auto_confirm_requested = false;
+  return normalized;
+}
+
+/** Run `camc run` locally (hub's own host). Returns { ok, agentId, record }.
+ *  On success, upserts the agent into the store under the given ctx. */
+async function _startLocalAgent(body, ctx) {
+  const argv = _buildRunArgv(body);
+  const res = await new Promise((resolve) => {
+    const bin = _localCamcPath();
+    const child = execFile(bin, argv, {
+      timeout: RUN_LOCAL_TIMEOUT_MS,
+      maxBuffer: 4 * 1024 * 1024,
+      windowsHide: true,
+    }, (err, stdout, stderr) => {
+      if (err) {
+        const code = (err.code === 'ENOENT') ? 'camc_missing'
+          : (err.killed && /TIMEDOUT/i.test(String(err.message || '')) ? 'timeout' : 'exec_failed');
+        return resolve({ ok: false, error: code, detail: err.message || 'local camc run failed', stdout: String(stdout || ''), stderr: String(stderr || '') });
+      }
+      resolve({ ok: true, stdout: String(stdout || ''), stderr: String(stderr || '') });
+    });
+    void child;
+  });
+  if (!res.ok) return res;
+  const agentId = _parseRunAgentId(res.stdout);
+  if (!agentId) {
+    return { ok: false, error: 'no_agent_id', detail: 'camc run did not print an agent ID', stdout: res.stdout, stderr: res.stderr };
+  }
+  let record = await _localCamcStatus(agentId);
+  if (!record) {
+    // Fall back to a minimal record so the renderer still gets a row.
+    record = { id: agentId, status: 'running', state: 'initializing', task: { tool: String((body && body.tool) || 'claude'), name: String((body && body.name) || ''), prompt: String((body && body.prompt) || '') }, context_path: String((body && body.path) || ''), transport_type: 'local', hostname: '' };
+  }
+  const normalized = _normalizeAgent(record, ctx);
+  _stampStartRequestFields(normalized, body);
+  if (normalized && normalized.id) {
+    _upsertAgentsForContext(ctx, [normalized]);
+    pushLog('info', `start local agent: ${normalized.id} (${normalized.tool})`);
+  }
+  return { ok: true, agentId, record: normalized };
+}
+
+/** Run `camc run` on a remote SSH node. Uses the same execRemote path
+ *  as _syncContextAgents. `baseOpts` carries host/user/port/auth. */
+async function _startRemoteAgent(body, baseOpts, ctx) {
+  if (!_sshTransport || typeof _sshTransport.execRemote !== 'function') {
+    return { ok: false, error: 'ssh_transport_unavailable', detail: 'embedded Hub has no SSH transport configured' };
+  }
+  const argv = _buildRunArgv(body);
+  // The remote camc binary is at REMOTE_CAMC (~/.cam/camc). execRemote
+  // runs the command through a login shell, so shell-quote each token.
+  const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+  const cmd = `${REMOTE_CAMC} ${argv.map(q).join(' ')}`;
+  const res = await _sshTransport.execRemote({ ...baseOpts, command: cmd, timeout_ms: RUN_REMOTE_TIMEOUT_MS });
+  if (!res || !res.ok) {
+    const err = (res || {});
+    return { ok: false, error: err.error || 'exec_failed', detail: err.detail || err.stderr || 'remote camc run failed' };
+  }
+  const agentId = _parseRunAgentId(res.stdout);
+  if (!agentId) {
+    return { ok: false, error: 'no_agent_id', detail: 'remote camc run did not print an agent ID', stdout: res.stdout, stderr: res.stderr };
+  }
+  // Fetch the new record via `camc --json status <id>` on the remote.
+  const stRes = await _sshTransport.execRemote({ ...baseOpts, command: `${REMOTE_CAMC} --json status ${q(agentId)}`, timeout_ms: 8000 });
+  let record = null;
+  if (stRes && stRes.ok) {
+    try { record = JSON.parse(stRes.stdout || 'null'); } catch (_) { record = null; }
+  }
+  if (!record) {
+    record = { id: agentId, status: 'running', state: 'initializing', task: { tool: String((body && body.tool) || 'claude'), name: String((body && body.name) || ''), prompt: String((body && body.prompt) || '') }, context_path: String((body && body.path) || ''), transport_type: 'ssh', hostname: '' };
+  }
+  const normalized = _normalizeAgent(record, ctx);
+  _stampStartRequestFields(normalized, body);
+  if (normalized && normalized.id) {
+    _upsertAgentsForContext(ctx, [normalized]);
+    pushLog('info', `start remote agent: ${normalized.id} (${normalized.tool}) on ${baseOpts.user}@${baseOpts.host}`);
+  }
+  return { ok: true, agentId, record: normalized };
+}
+
+/** Resolve a start request body to the target context + SSH baseOpts.
+ *  - body.context set → use that context (local or ssh).
+ *  - body.node + body.path (A2, inline) → resolve the node's machine
+ *    to a context WITHOUT creating a context record. For a local node
+ *    we reuse the local anchor context; for an SSH node we synthesize
+ *    a throwaway context shell (machine only) so _normalizeAgent +
+ *    _upsertAgentsForContext have something to key on. The throwaway
+ *    is NEVER pushed into state.store.contexts.
+ *  Returns { ok, ctx, baseOpts } or { ok:false, error, detail }. */
+function _resolveStartTarget(body) {
+  if (!state.store) state.store = _emptyStore();
+  const contexts = Array.isArray(state.store.contexts) ? state.store.contexts : [];
+  const ctxName = body && body.context ? String(body.context) : '';
+  if (ctxName) {
+    const ctx = findContextByNameOrId(ctxName);
+    if (!ctx) return { ok: false, error: 'context_not_found', detail: `context "${ctxName}" not found` };
+    const m = ctx.machine || {};
+    if ((m.type || 'local') === 'ssh') {
+      const baseOpts = {
+        host: m.host, user: m.user, port: m.port || 22,
+        auth_method: m.auth_method || (m.key_file ? 'key' : 'agent'),
+        key_file: m.key_file || '',
+        timeout_ms: RUN_REMOTE_TIMEOUT_MS,
+      };
+      const cred = _credentialFor(ctx);
+      if (baseOpts.auth_method === 'password') {
+        if (cred == null || cred === '') return { ok: false, error: 'credential_missing', detail: 'password auth is configured but no remembered password is available' };
+        baseOpts.password = cred;
+      } else if (baseOpts.auth_method === 'key' && cred != null) {
+        baseOpts.passphrase = cred;
+      }
+      return { ok: true, ctx, baseOpts };
+    }
+    // local context
+    return { ok: true, ctx, baseOpts: null };
+  }
+  // Inline node+path (A2): no context record. Resolve the node.
+  const nodeKey = body && body.node ? String(body.node) : '';
+  const path    = body && body.path ? String(body.path) : '';
+  if (!nodeKey || !path) {
+    return { ok: false, error: 'missing_target', detail: 'provide either a context or a node + path' };
+  }
+  // node is a host key: "local" or "user@host:port" (matches the
+  // renderer's hostKeyForMachine). Find any existing context on that
+  // endpoint to reuse its creds.
+  if (nodeKey === 'local') {
+    const localCtx = _ensureLocalContext();
+    return { ok: true, ctx: localCtx, baseOpts: null };
+  }
+  // Accept bracketed IPv6 hosts: "user@[2001:db8::1]:22". The host group
+  // matches either "[...]" (bracketed IPv6) or a non-colon host (IPv4 /
+  // hostname). Brackets are stripped before the host is used so the
+  // stored machine.host and the SSH target stay bare.
+  const m = /^([^@]+)@(\[[^\]]+\]|[^:]+):(\d+)$/.exec(nodeKey);
+  if (!m) {
+    return { ok: false, error: 'bad_node', detail: `unrecognized node key "${nodeKey}"` };
+  }
+  const user = m[1];
+  const rawHost = m[2];
+  const host = rawHost.startsWith('[') && rawHost.endsWith(']') ? rawHost.slice(1, -1) : rawHost;
+  const port = Number(m[3]) || 22;
+  // Reuse creds from an existing context on the same endpoint. Compare
+  // the bare host so a context stored with host="2001:db8::1" matches a
+  // node key that arrived bracketed.
+  const donor = contexts.find(c => {
+    const mm = c && c.machine || {};
+    if ((mm.type || 'local') !== 'ssh') return false;
+    const mmHost = mm.host || '';
+    const mmHostBare = mmHost.startsWith('[') && mmHost.endsWith(']') ? mmHost.slice(1, -1) : mmHost;
+    return mmHostBare === host && (mm.user || '') === user && (mm.port || 22) === port;
+  });
+  // CAM-DESK-DIRECT-014: the Hub owns the node/remote registry. An
+  // inline node+path start must target a REGISTERED endpoint — refuse
+  // to fabricate creds/auth for a node the user has not added. Falling
+  // through to agent auth here would let the form start agents on
+  // arbitrary hosts, which is not the designed surface.
+  if (!donor) {
+    return { ok: false, error: 'node_not_registered', detail: `no registered context for ${user}@${host}:${port}. Add the host on the Nodes page first.` };
+  }
+  const baseOpts = {
+    host, user, port,
+    auth_method: donor.machine.auth_method || (donor.machine.key_file ? 'key' : 'agent'),
+    key_file: donor.machine.key_file || '',
+    timeout_ms: RUN_REMOTE_TIMEOUT_MS,
+  };
+  const cred = _credentialFor(donor);
+  if (baseOpts.auth_method === 'password') {
+    if (cred == null || cred === '') return { ok: false, error: 'credential_missing', detail: `no remembered password for ${user}@${host}:${port}` };
+    baseOpts.password = cred;
+  } else if (baseOpts.auth_method === 'key' && cred != null) {
+    baseOpts.passphrase = cred;
+  }
+  // Throwaway context shell — machine only, never stored.
+  const throwaway = {
+    id: crypto.randomUUID(),
+    name: `${user}@${host}:${port}`,
+    path,
+    machine: { type: 'ssh', host, user, port, auth_method: baseOpts.auth_method, key_file: baseOpts.key_file || '' },
+    tags: [], created_at: nowIso(), last_used_at: null,
+  };
+  return { ok: true, ctx: throwaway, baseOpts };
+}
+
+// ── API models (GET /api/api-models) ──────────────────────────────
+// Wraps `camc --json api list --all` + `camc api default show --json`
+// and merges them with a static toolSupport map (claude/codex support
+// --api; cursor/aider do not). When the request targets a remote
+// context/node, runs both commands on that node over SSH (same
+// execRemote path as _syncContextAgents); otherwise runs locally via
+// execFile. `source` describes the endpoint + enabled count for the
+// renderer's status line.
+
+const API_TOOL_SUPPORT = { claude: true, codex: true, cursor: false, aider: false };
+
+/** Defensive secret redaction for error details surfaced to the
+ *  renderer. ssh2 auth errors say "All configured authentication methods
+ *  failed" (no secret echoed) and the api list/default commands send no
+ *  token, so a leak is unlikely — but a remote camc stderr or a
+ *  user-configured api-models.json could echo a token/password in a
+ *  python traceback. Scrub the common patterns before returning. */
+const SECRET_PATTERNS = [
+  /gh[pousr]_[A-Za-z0-9]{20,}/g,           // GitHub PATs
+  /glpat-[A-Za-z0-9_-]{10,}/g,             // GitLab PATs
+  /sk-[A-Za-z0-9]{16,}/g,                  // OpenAI-style keys
+  /(?:bearer|token|password|passwd|passphrase|api[_-]?key|api[_-]?token)["' :=]+[A-Za-z0-9._~+/=-]{8,}/gi,
+  /-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/g,
+];
+function _redactSecrets(s) {
+  if (!s) return s;
+  let out = String(s);
+  for (const re of SECRET_PATTERNS) out = out.replace(re, '[REDACTED]');
+  return out;
+}
+
+function _localCamcJson(args, timeoutMs) {
+  return new Promise((resolve) => {
+    const bin = _localCamcPath();
+    const child = execFile(bin, args, {
+      timeout: timeoutMs || 8000,
+      maxBuffer: 2 * 1024 * 1024,
+      windowsHide: true,
+    }, (err, stdout, stderr) => {
+      if (err) {
+        const code = (err.code === 'ENOENT') ? 'camc_missing'
+          : (err.killed && /TIMEDOUT/i.test(String(err.message || '')) ? 'timeout' : 'exec_failed');
+        return resolve({ ok: false, error: code, detail: _redactSecrets(err.message || 'local camc exec failed'), stdout: '', stderr: stderr || '' });
+      }
+      resolve({ ok: true, stdout: String(stdout || ''), stderr: String(stderr || '') });
+    });
+    void child;
+  });
+}
+
+/** Run `camc` JSON commands on a remote SSH node. `baseOpts` carries
+ *  host/user/port/auth (same shape as _startRemoteAgent). Returns
+ *  { ok, stdout, stderr, error, detail }. */
+async function _remoteCamcJson(baseOpts, argv, timeoutMs) {
+  if (!_sshTransport || typeof _sshTransport.execRemote !== 'function') {
+    return { ok: false, error: 'ssh_transport_unavailable', detail: 'embedded Hub has no SSH transport configured', stdout: '', stderr: '' };
+  }
+  const q = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+  const cmd = `${REMOTE_CAMC} ${argv.map(q).join(' ')}`;
+  const res = await _sshTransport.execRemote({ ...baseOpts, command: cmd, timeout_ms: timeoutMs || 10000 });
+  if (!res || !res.ok) {
+    const err = (res || {});
+    return { ok: false, error: err.error || 'exec_failed', detail: _redactSecrets(err.detail || err.stderr || 'remote camc exec failed'), stdout: (res && res.stdout) || '', stderr: (res && res.stderr) || '' };
+  }
+  return { ok: true, stdout: String(res.stdout || ''), stderr: String(res.stderr || '') };
+}
+
+/** Merge raw list/default JSON outputs into {models, defaults}.
+ *  Logs warnings on parse failures. Returns `parseError` so the caller
+ *  can surface a non-silent empty-list reason to the renderer when
+ *  camc ran (ok) but emitted non-JSON output. */
+function _mergeApiModels(listRes, defRes, logTag) {
+  let models = [];
+  let parseError = null;
+  if (listRes && listRes.ok) {
+    try {
+      const parsed = JSON.parse(listRes.stdout || '[]');
+      if (Array.isArray(parsed)) models = parsed;
+    } catch (e) {
+      pushLog('warn', `api-models ${logTag}: invalid list JSON: ${e && e.message}`);
+      parseError = `camc ran but emitted non-JSON output: ${(listRes.stdout || '').slice(0, 200)}`;
+    }
+  } else if (listRes && listRes.error !== 'camc_missing' && listRes.error !== 'ssh_transport_unavailable') {
+    pushLog('warn', `api-models ${logTag} list failed: ${listRes.error}`);
+  }
+  let defaults = [];
+  if (defRes && defRes.ok) {
+    try {
+      const parsed = JSON.parse(defRes.stdout || '[]');
+      if (Array.isArray(parsed)) defaults = parsed;
+    } catch (e) { pushLog('warn', `api-models ${logTag}: invalid default JSON: ${e && e.message}`); }
+  } else if (defRes && defRes.error !== 'camc_missing' && defRes.error !== 'ssh_transport_unavailable') {
+    pushLog('warn', `api-models ${logTag} default failed: ${defRes.error}`);
+  }
+  return { models, defaults, parseError };
+}
+
+/** `camc api default show` has its OWN --json flag (the global --json
+ *  is not inherited by this subparser), so it must come AFTER `show`.
+ *  `api list` DOES inherit the global --json. Both take `--all` to
+ *  include disabled APIs (cli.py:6594). */
+const API_LIST_ARGS  = ['--json', 'api', 'list', '--all'];
+const API_DEFAULT_ARGS = ['api', 'default', 'show', '--json'];
+
+/** Resolve a start-style target (context name OR node key OR empty
+ *  for local) for the model-picker. Returns { ok, baseOpts, ctx, label }
+ *  where label names the endpoint for the status line. Reuses
+ *  _resolveStartTarget so creds resolution is identical to start. The
+ *  renderer only ever sends a real `context` (for a selected context)
+ *  or `node:"local"` (for the "(none)" case); a remote node key without
+ *  a context is not produced by the picker, but we synthesize a dummy
+ *  path so _resolveStartTarget's inline-node guard doesn't 400. */
+function _resolveApiModelsTarget(query) {
+  const ctxName = query && query.context ? String(query.context) : '';
+  const nodeKey = query && query.node ? String(query.node) : '';
+  if (ctxName) {
+    const t = _resolveStartTarget({ context: ctxName });
+    if (!t.ok) return t;
+    const m = (t.ctx && t.ctx.machine) || {};
+    const label = (m.type || 'local') === 'ssh'
+      ? `${m.user || ''}@${m.host}${m.port && m.port !== 22 ? ':' + m.port : ''}`
+      : LOCAL_CONTEXT_NAME;
+    return { ok: true, baseOpts: t.baseOpts, ctx: t.ctx, label };
+  }
+  if (nodeKey && nodeKey !== 'local') {
+    // Remote node without a context — dummy path (picker doesn't send
+    // this today, but keep _resolveStartTarget happy if it ever does).
+    const t = _resolveStartTarget({ node: nodeKey, path: '/tmp' });
+    if (!t.ok) return t;
+    const m = (t.ctx && t.ctx.machine) || {};
+    const label = (m.type || 'local') === 'ssh'
+      ? `${m.user || ''}@${m.host}${m.port && m.port !== 22 ? ':' + m.port : ''}`
+      : LOCAL_CONTEXT_NAME;
+    return { ok: true, baseOpts: t.baseOpts, ctx: t.ctx, label };
+  }
+  // local / none
+  return { ok: true, baseOpts: null, ctx: _ensureLocalContext(), label: LOCAL_CONTEXT_NAME };
+}
+
+async function _getApiModels(query) {
+  const target = _resolveApiModelsTarget(query || {});
+  if (!target.ok) {
+    return { models: [], defaults: [], toolSupport: API_TOOL_SUPPORT, source: { label: '', enabled_count: 0, error: target.error, detail: target.detail } };
+  }
+  const tag = target.label || LOCAL_CONTEXT_NAME;
+  let listRes, defRes;
+  if (target.baseOpts) {
+    [listRes, defRes] = await Promise.all([
+      _remoteCamcJson(target.baseOpts, API_LIST_ARGS, 12000),
+      _remoteCamcJson(target.baseOpts, API_DEFAULT_ARGS, 12000),
+    ]);
+  } else {
+    [listRes, defRes] = await Promise.all([
+      _localCamcJson(API_LIST_ARGS, 10000),
+      _localCamcJson(API_DEFAULT_ARGS, 10000),
+    ]);
+  }
+  const { models, defaults, parseError } = _mergeApiModels(listRes, defRes, tag);
+  const enabledCount = Array.isArray(models) ? models.filter(m => m && m.enabled !== false).length : 0;
+  // Surface a local/remote camc failure to the renderer so the user
+  // sees WHY the list is empty instead of a silent blank. The bundled
+  // `camc` is a POSIX shell-polyglot (`#!/bin/sh` + python heredoc)
+  // that runs on Linux (shebang) but CANNOT be execFile'd on Windows
+  // (no /bin/sh, not a .exe). So on a Windows hub with the local node
+  // selected, the local camc call fails with exec_failed/camc_missing
+  // and the user must pick a remote context (where ~/.cam/camc and the
+  // api-models.json live) to list profiles. The remote path (camc over
+  // SSH on a selected context/node) can ALSO fail — camc missing on
+  // the remote host, ~/.cam/api-models.json absent, a python error, a
+  // nonzero exit, or an SSH connection/cred failure — each previously
+  // returned models:[] with error:null (silent blank). Now we report
+  // the underlying error so the renderer can show it. (CAM-DESK-RUN-013)
+  let err = null, detail = null;
+  if (!models.length && !defaults.length) {
+    const fail = (listRes && !listRes.ok) ? listRes : (defRes && !defRes.ok ? defRes : null);
+    if (parseError) {
+      err = 'camc_parse_failed';
+      detail = _redactSecrets(parseError);
+    } else if (fail) {
+      if (fail.error === 'timeout') {
+        err = 'camc_timeout';
+        detail = `\`camc api list\` on ${tag} timed out.`;
+      } else if (target.baseOpts) {
+        // Remote (SSH) camc failure — include the remote stderr/exit
+        // so the user sees the actual reason (camc missing, python
+        // error, api-models.json absent, ssh cred failure, etc.).
+        err = (fail.error === 'exec_failed' || fail.error === 'remote_nonzero')
+          ? 'remote_camc_failed' : (fail.error || 'remote_camc_failed');
+        detail = _redactSecrets(`camc on ${tag} failed (${err}): ${fail.detail || fail.stderr || 'no detail'}`.slice(0, 400));
+      } else {
+        // Local camc not runnable (Windows: POSIX shell-polyglot, no /bin/sh).
+        err = fail.error === 'ENOENT' ? 'camc_missing' : (fail.error || 'local_camc_unavailable');
+        detail = _redactSecrets(`Local \`camc\` could not run on this host (${err}: ${(fail.detail || 'no detail').slice(0,200)}). The bundled camc is a POSIX shell script; on Windows there is no /bin/sh to exec it. Select a remote context to list profiles from that machine's ~/.cam/api-models.json.`);
+      }
+    }
+  }
+  return {
+    models,
+    defaults,
+    toolSupport: API_TOOL_SUPPORT,
+    source: { label: tag, enabled_count: enabledCount, error: err, detail },
+  };
+}
+
 function _contextForAgent(agentId) {
   if (!state.store) return { error: 'store_unavailable' };
   const id = decodeURIComponent(String(agentId || ''));
@@ -2290,24 +2942,45 @@ async function _uploadAgentFile(agentId, body) {
   const ctx = resolved.ctx;
   const terminal = ['completed', 'failed', 'timeout', 'killed'].includes(String(agent.status || '').toLowerCase());
   if (terminal) return { ok: false, error: 'agent_not_running', detail: 'Agent is not running' };
-  if (!_sshTransport || typeof _sshTransport.writeRemoteFile !== 'function') {
-    return { ok: false, error: 'ssh_upload_unavailable', detail: 'embedded Hub SSH transport cannot upload files' };
-  }
-
   const filename = body && body.filename != null ? String(body.filename) : '';
   if (!filename.trim()) return { ok: false, error: 'missing_filename', detail: 'filename is required' };
   const decoded = _decodeUploadData(body && body.data);
   if (decoded.error) return { ok: false, error: decoded.error, detail: decoded.detail };
 
-  const contextPath = String(agent.context_path || agent.path || (ctx && ctx.path) || '').replace(/\/+$/, '');
-  if (!contextPath) return { ok: false, error: 'working_dir_missing', detail: 'Agent has no working directory' };
+  // An attachment must live under the selected agent workspace. A
+  // process-global temp/upload directory is often outside tool sandbox roots,
+  // causing the agent to receive an unusable attachment path.
+  const root = _resolveBrowseRoot(agent, ctx);
+  if (!root) return { ok: false, error: 'working_dir_missing', detail: 'Agent has no working directory' };
+  const dir = _joinBrowsePath(root, '.cam-images');
+  const destPath = _joinBrowsePath(dir, `${_timestampCompact()}-${_safeUploadFilename(filename)}`);
+  const isLocal = !ctx || !ctx.machine || ctx.machine.type !== 'ssh';
 
+  if (isLocal) {
+    const rootAbs = _localPath(root);
+    const destAbs = _localPath(destPath);
+    try {
+      const realRoot = fs.realpathSync.native(rootAbs);
+      const resolvedDest = path.resolve(destAbs);
+      const relative = path.relative(realRoot, resolvedDest);
+      if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+        return { ok: false, error: 'path_traversal', detail: 'upload destination is outside the agent workspace' };
+      }
+      fs.mkdirSync(path.dirname(resolvedDest), { recursive: true });
+      fs.writeFileSync(resolvedDest, decoded.content);
+      pushLog('info', `upload ${agentId}: ${destPath} (${decoded.content.length} bytes)`);
+      return { ok: true, path: destPath, size: decoded.content.length };
+    } catch (e) {
+      return { ok: false, error: 'local_upload_failed', detail: e && e.message || 'failed to write workspace attachment' };
+    }
+  }
+
+  if (!_sshTransport || typeof _sshTransport.writeRemoteFile !== 'function') {
+    return { ok: false, error: 'ssh_upload_unavailable', detail: 'embedded Hub SSH transport cannot upload files' };
+  }
   const baseBuilt = _sshBaseOptsForContext(ctx, Math.max(SYNC_DEFAULT_TIMEOUT_MS, 60000));
   if (baseBuilt.error) return { ok: false, error: baseBuilt.error, detail: baseBuilt.detail };
   const baseOpts = baseBuilt.opts;
-  const dir = `${contextPath}/.cam-images`;
-  const destPath = `${dir}/${_timestampCompact()}-${_safeUploadFilename(filename)}`;
-
   const mkdir = await _sshTransport.execRemote({ ...baseOpts, command: `mkdir -p ${_shellQuote(dir)}` });
   if (!mkdir || !mkdir.ok) {
     return { ok: false, error: mkdir && mkdir.error || 'remote_mkdir_failed', detail: mkdir && (mkdir.detail || mkdir.stderr) || 'failed to create remote upload directory' };
@@ -2538,7 +3211,7 @@ const SKILLM_DEFAULT_TIMEOUT_MS = 120000;
 const SKILLM_INSTALL_TIMEOUT_MS = 300000;
 const SKILLM_REPO_NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 const SKILLM_ARG_RE = /^[A-Za-z0-9_./:-]{1,180}$/;
-const SKILLM_AGENT_TOOLS = new Set(['claude', 'codex', 'openclaw', 'cursor']);
+const SKILLM_AGENT_TOOLS = new Set(['claude', 'codex', 'agents', 'cursor']);
 
 function _skillmRedact(text, token) {
   let out = String(text == null ? '' : text);
@@ -2917,7 +3590,7 @@ async function _skillmInstall(body) {
     }
     for (const skill of skills) {
       for (const agent of agents) {
-        const args = ['install', skill, '-a', agent];
+        const args = ['install', skill, '-t', agent];
         if (repoName && repoName !== 'all') args.push('--repo', repoName);
         if (scope === 'global') args.push('--global');
         else args.push('--project-root', projectRoot);
@@ -3264,7 +3937,7 @@ async function handle(req, res) {
   if (ctxMatch) {
     const ctxName = decodeURIComponent(ctxMatch[1]);
     const sub = ctxMatch[2] || '';
-    const existing = findContextByName(ctxName);
+    const existing = findContextByNameOrId(ctxName);
 
     if (method === 'GET' && !sub) {
       if (!existing) return send404(res);
@@ -3277,7 +3950,7 @@ async function handle(req, res) {
       catch (e) { return send400(res, e.message); }
       const upd = applyContextUpdate(existing, body || {});
       if (upd.error) return send400(res, upd.detail || upd.error, upd.error);
-      const idx = state.store.contexts.findIndex(c => c.name === ctxName);
+      const idx = state.store.contexts.findIndex(c => c === existing);
       state.store.contexts[idx] = upd.record;
       saveStore();
       pushLog('info', `context updated: ${ctxName}`);
@@ -3285,7 +3958,7 @@ async function handle(req, res) {
     }
     if (method === 'DELETE' && !sub) {
       if (!existing) return send404(res);
-      const idx = state.store.contexts.findIndex(c => c.name === ctxName);
+      const idx = state.store.contexts.findIndex(c => c === existing);
       state.store.contexts.splice(idx, 1);
       saveStore();
       // Cascade: drop any remembered password/passphrase tied to
@@ -3332,12 +4005,27 @@ async function handle(req, res) {
     return send404(res);
   }
 
+  // API models (Start form model picker). Wraps camc api list + default
+  // show, merged with a static toolSupport map. Local execFile only.
+  if (p === '/api/api-models' && method === 'GET') {
+    const query = {
+      context: url.searchParams.get('context') || '',
+      node:    url.searchParams.get('node') || '',
+    };
+    const out = await _getApiModels(query);
+    return sendJson(res, 200, out);
+  }
+
   // Agents
   if (p === '/api/agents') {
     if (method === 'GET') {
       const refresh = /^(1|true|yes|sync)$/i.test(url.searchParams.get('refresh') || '');
       let sync = null;
       if (refresh) sync = await _syncAllAgentContexts('api-refresh');
+      // Bug 1: also ingest local camc agents on the hub's own host so
+      // they appear in Direct mode without a manual Sync Host. Cheap
+      // local subprocess; throttled by `state.localSyncInFlight`.
+      await _syncLocalAgents();
       _repairStoreAgents();
       return sendJson(res, 200, {
         agents: state.store.agents,
@@ -3346,7 +4034,36 @@ async function handle(req, res) {
         sync,
       });
     }
-    if (method === 'POST') return send501(res, 'start agent');
+    if (method === 'POST') {
+      let body;
+      try { body = await readJsonBody(req); }
+      catch (e) { return send400(res, e.message); }
+      if (!body || typeof body !== 'object') return send400(res, 'request body must be a JSON object');
+      const prompt = String(body.prompt || '').trim();
+      if (!prompt) return send400(res, 'prompt is required', 'missing_prompt');
+      const target = _resolveStartTarget(body);
+      if (!target.ok) return sendJson(res, 400, { error: target.error, detail: target.detail });
+      const runBody = { ...body, path: body.path || (target.ctx && target.ctx.path) || '' };
+      const result = target.baseOpts
+        ? await _startRemoteAgent(runBody, target.baseOpts, target.ctx)
+        : await _startLocalAgent(runBody, target.ctx);
+      if (!result.ok) return sendJson(res, 400, { error: result.error, detail: result.detail });
+      // CAM-DESK-RUN-011 / RUN-015: auto_confirm + timeout + retry are part
+      // of the required form surface and are always sent by the renderer.
+      // The embedded Hub (Direct mode) starts agents via `camc run`, which
+      // has NO --auto-confirm/--timeout/--retry flag (camc forces
+      // auto_confirm=true on its own). So the values are recorded on the
+      // agent record but NOT enforced by camc. Relay mode (cam serve)
+      // enforces all three natively. Surface a direct_limitations note so
+      // the renderer can show the user which knobs are no-ops here.
+      const directLimitations = {
+        mode: 'direct',
+        auto_confirm: { sent: body && ('auto_confirm' in body), enforced: false, note: 'camc run forces auto-confirm on; the toggle is accepted for parity but has no effect in Direct mode.' },
+        timeout:      { sent: body && ('timeout' in body) && body.timeout !== '' && body.timeout != null, enforced: false, note: 'camc run has no --timeout flag; the value is recorded on the agent but not enforced by camc.' },
+        retry:        { sent: body && ('retry' in body) && Number(body.retry) > 0, enforced: false, note: 'camc run has no --retry flag; the value is recorded on the agent but not enforced by camc.' },
+      };
+      return sendJson(res, 201, { agent: result.record, agentId: result.agentId, direct_limitations: directLimitations });
+    }
     return send404(res);
   }
   const agentMatch = /^\/api\/agents\/([^/]+)(\/.*)?$/.exec(p);

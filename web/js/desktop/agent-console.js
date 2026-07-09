@@ -1557,11 +1557,10 @@ export function mountAgentConsole({ api, state, showToast }) {
 
   function syncModeToggle() {
     const terminalAllowed = canUseTerminalMode();
-    if (outputMode === 'terminal' && !terminalAllowed) {
-      outputMode = 'rich';
-      try { localStorage.setItem(OUTPUT_MODE_KEY, outputMode); } catch {}
-      void closeAllTerminalSessions();
-    }
+    // CAM-DESK-TERM-DEFAULT: terminal is ALWAYS the default mode. Never
+    // auto-flip to rich when terminal isn't allowed — the terminal pane
+    // shows in every connection state (empty/hint when not attachable).
+    // Rich/plain/browse are manual "assistant" modes the user must pick.
     modeBtns.forEach(b => {
       const active = b.dataset.mode === outputMode;
       b.setAttribute('aria-pressed', active ? 'true' : 'false');
@@ -1569,7 +1568,7 @@ export function mountAgentConsole({ api, state, showToast }) {
         b.disabled = !terminalAllowed;
         b.title = terminalAllowed
           ? 'Attach to the selected agent over Direct SSH'
-          : 'Terminal mode is available only with Direct connection';
+          : 'Terminal mode is the default — connect a Direct endpoint to attach';
       }
     });
     if (outputMode === 'terminal') {
@@ -1802,6 +1801,17 @@ export function mountAgentConsole({ api, state, showToast }) {
     return ent.needsBottom || (ent.forceBottomUntil && Date.now() < ent.forceBottomUntil);
   }
 
+  // Preserve scrollback position: follow new output only when this terminal
+  // was already at the bottom before the write.
+  function terminalIsAtBottom(ent) {
+    if (!ent || !ent.term) return false;
+    try {
+      const buf = ent.term.buffer && ent.term.buffer.active;
+      if (!buf || buf.viewportY == null || buf.baseY == null) return true;
+      return buf.viewportY >= buf.baseY;
+    } catch (_) { return true; }
+  }
+
   function terminalEntryCanAutoResize(ent) {
     if (!ent || !ent.container) return false;
     if (outputMode !== 'terminal') return false;
@@ -1818,8 +1828,12 @@ export function mountAgentConsole({ api, state, showToast }) {
     const keepBottom = !!(opts && opts.keepBottom);
     const raf = window.requestAnimationFrame || ((fn) => window.setTimeout(fn, 0));
     const pass = () => {
-      fitTerminalAndNotify(ent);
-      if (keepBottom) terminalScrollToBottom(ent);
+      // A delayed fit belongs only to the visible selected pane. Once the
+      // user switches again, do not let an old hidden pane mutate its local
+      // xterm geometry or send a stale SSH resize.
+      if (!terminalEntryCanAutoResize(ent)) return;
+      const fitted = fitTerminalAndNotify(ent);
+      if (keepBottom && fitted) terminalScrollToBottom(ent);
     };
     raf(() => {
       pass();
@@ -1838,6 +1852,11 @@ export function mountAgentConsole({ api, state, showToast }) {
   function showTerminalEntry(agentId, opts = {}) {
     const ent = syncActiveTerminalEntry(agentId);
     hideTerminalEntries();
+    // A real agent pane is showing — clear the not-attachable hint.
+    if (terminalEl) {
+      const hint = terminalEl.querySelector('.terminal-hint');
+      if (hint) hint.remove();
+    }
     if (ent) {
       ent.lastUsed = Date.now();
       if (opts.keepBottom !== false) {
@@ -1845,11 +1864,11 @@ export function mountAgentConsole({ api, state, showToast }) {
         ent.forceBottomUntil = Date.now() + 1200;
         terminalScrollToBottom(ent);
       }
-      scheduleTerminalFit({ keepBottom: opts.keepBottom !== false });
       if (ent.container) {
         ent.container.hidden = false;
         ent.container.style.visibility = '';
       }
+      scheduleTerminalFit({ keepBottom: opts.keepBottom !== false });
       try { ent.term && ent.term.focus(); } catch (_) {}
     }
     return ent;
@@ -1965,9 +1984,9 @@ export function mountAgentConsole({ api, state, showToast }) {
       if (!msg) return;
       const ent = terminalEntryBySession(msg.sessionId);
       if (!ent || !ent.term) return;
-      const shouldFollow = ent.agentId === termAgentId || terminalShouldForceBottom(ent);
+      const shouldFollow = terminalShouldForceBottom(ent) || terminalIsAtBottom(ent);
       ent.term.write(String(msg.data || ''), () => {
-        if (shouldFollow || terminalShouldForceBottom(ent)) terminalScrollToBottom(ent);
+        if (shouldFollow) terminalScrollToBottom(ent);
       });
     });
     termUnsubStatus = bridge.onStatus((msg) => {
@@ -2069,7 +2088,9 @@ export function mountAgentConsole({ api, state, showToast }) {
       ent = terminalSessions.get(agent.id);
     }
     if (!force && (ent.opening || ent.sessionId)) {
-      prepareThenShowTerminalEntry(agent.id);
+      /* Cached session: switch visibility immediately but retain the proven
+       * multi-pass fit protection. No reconnect, clear, or hidden delay. */
+      showTerminalEntry(agent.id, { keepBottom: false });
       return;
     }
     prepareThenShowTerminalEntry(agent.id, 120);
@@ -2124,9 +2145,35 @@ export function mountAgentConsole({ api, state, showToast }) {
 
   function setMode(next) {
     if (next !== 'plain' && next !== 'rich' && next !== 'terminal' && next !== 'browse') next = OUTPUT_MODE_DEFAULT;
-    if (next === 'terminal' && !canUseTerminalMode()) {
-      syncModeToggle();
-      showToast('Terminal mode is available only with Direct connection.', 'warning', 3500);
+    // CAM-DESK-TERM-DEFAULT: terminal is always selectable. When not
+    // attachable (no Direct bridge), we still switch to the terminal
+    // pane and show a "connect to attach" hint instead of bailing.
+    const terminalAllowed = canUseTerminalMode();
+    if (next === 'terminal' && !terminalAllowed) {
+      if (next === outputMode) {
+        syncModeToggle();
+        return;
+      }
+      outputMode = 'terminal';
+      try { localStorage.setItem(OUTPUT_MODE_KEY, outputMode); } catch {}
+      syncModeToggle(); // hides plain/rich/browse, shows terminalEl
+      stopPolling();
+      setEnabled(false);
+      hideTerminalEntries(); // hide stale agent panes; show the hint below
+      if (terminalEl) {
+        // Keep any existing agent xterm containers (hidden above) but
+        // surface a one-line hint directly in the terminal host element.
+        const existingHint = terminalEl.querySelector('.terminal-hint');
+        if (!existingHint) {
+          const hint = document.createElement('div');
+          hint.className = 'terminal-hint';
+          hint.style.padding = '12px 16px';
+          hint.style.color = 'var(--muted, #888)';
+          hint.textContent = 'Terminal mode is the default — connect a Direct endpoint to attach.';
+          terminalEl.appendChild(hint);
+        }
+      }
+      showToast('Terminal mode is the default. Connect a Direct endpoint to attach.', 'info', 3500);
       return;
     }
     if (next === outputMode) {
@@ -3173,9 +3220,9 @@ export function mountAgentConsole({ api, state, showToast }) {
     if (conn !== prevConn) {
       prevConn = conn;
       syncModeToggle();
-      if (outputMode === 'terminal' && !canUseTerminalMode()) {
-        setMode('plain');
-      }
+      // CAM-DESK-TERM-DEFAULT: terminal stays the default across
+      // connection flips; do NOT auto-fall-back to plain when not
+      // attachable. The terminal pane shows (empty/hint) regardless.
       // Connection flip can re-enable/disable the attach button and
       // the Direct-only Terminal tab. Browse is read-only and stays
       // composer-disabled regardless of connection state.

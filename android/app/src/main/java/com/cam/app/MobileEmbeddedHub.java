@@ -416,7 +416,7 @@ public final class MobileEmbeddedHub {
             }
 
             if (path.startsWith("/api/contexts/")) {
-                return routeContextByName(method, path, bodyBytes);
+                return routeContextByName(method, path, query, bodyBytes);
             }
 
             if (path.startsWith("/api/agents/")) {
@@ -434,12 +434,36 @@ public final class MobileEmbeddedHub {
         }
     }
 
-    private byte[] routeContextByName(String method, String path, byte[] bodyBytes) throws Exception {
+    private byte[] routeContextByName(String method, String path, String query, byte[] bodyBytes) throws Exception {
         String rest = path.substring("/api/contexts/".length());
         int slash = rest.indexOf('/');
         String namePart = slash >= 0 ? rest.substring(0, slash) : rest;
         String sub = slash >= 0 ? rest.substring(slash) : "";
         String ctxName = URLDecoder.decode(namePart, "UTF-8");
+
+        if ("/files".equals(sub) || "/files/read".equals(sub)) {
+            if (!"GET".equals(method)) return jsonResponse(404, new JSONObject().put("error", "not_found"));
+            JSONObject context = resolveContext(ctxName, null);
+            if (context == null) return jsonResponse(404, new JSONObject().put("error", "not_found").put("detail", "context not found"));
+            String relative = workspaceRelativePath(query);
+            if (relative == null) return jsonResponse(400, new JSONObject().put("error", "invalid_path").put("detail", "path must remain inside workspace"));
+            JSONObject machine = context.optJSONObject("machine");
+            if (machine == null || !"ssh".equals(machine.optString("type", ""))) return jsonResponse(400, new JSONObject().put("error", "not_ssh").put("detail", "workspace files require SSH node"));
+            MobileSshAuth.Options auth = MobileSshAuth.fromMachine(machine, credentialStore);
+            String root = context.optString("path", "").trim();
+            if (root.isEmpty() || !root.startsWith("/")) return jsonResponse(400, new JSONObject().put("error", "working_dir_missing").put("detail", "context has no absolute workspace path"));
+            String target = root + (relative.isEmpty() ? "" : "/" + relative);
+            if ("/files".equals(sub)) {
+                MobileSshExec.DirectoryResult listed = MobileSshExec.listDirectory(auth, target, SYNC_TIMEOUT_MS);
+                if (!listed.ok) return jsonResponse(502, new JSONObject().put("error", listed.error).put("detail", listed.detail));
+                JSONArray entries = new JSONArray();
+                for (MobileSshExec.RemoteEntry entry : listed.entries) entries.put(new JSONObject().put("name", entry.name).put("type", entry.directory ? "dir" : "file").put("size", entry.size).put("modified", entry.modified));
+                return jsonResponse(200, new JSONObject().put("entries", entries));
+            }
+            MobileSshExec.FileResult file = MobileSshExec.readFile(auth, target, SYNC_TIMEOUT_MS, 2 * 1024 * 1024);
+            if (!file.ok) return jsonResponse(502, new JSONObject().put("error", file.error).put("detail", file.detail));
+            return jsonResponse(200, new JSONObject().put("content", new String(file.content, StandardCharsets.UTF_8)));
+        }
 
         if ("/sync".equals(sub)) {
             if ("POST".equals(method)) {
@@ -520,6 +544,20 @@ public final class MobileEmbeddedHub {
         return jsonResponse(404, new JSONObject().put("error", "not_found"));
     }
 
+    private String workspaceRelativePath(String query) throws Exception {
+        String value = "";
+        if (query != null && !query.isEmpty()) {
+            for (String pair : query.split("&")) {
+                int eq = pair.indexOf('=');
+                String key = URLDecoder.decode(eq >= 0 ? pair.substring(0, eq) : pair, "UTF-8");
+                if ("path".equals(key)) { value = URLDecoder.decode(eq >= 0 ? pair.substring(eq + 1) : "", "UTF-8"); break; }
+            }
+        }
+        value = value.replace('\\', '/').replaceAll("^/+", "");
+        if (value.equals("..") || value.startsWith("../") || value.contains("/../")) return null;
+        return value;
+    }
+
     private byte[] routeAgentById(String method, String path, String query, byte[] bodyBytes) throws Exception {
         String rest = path.substring("/api/agents/".length());
         int slash = rest.indexOf('/');
@@ -536,6 +574,32 @@ public final class MobileEmbeddedHub {
                     .put("detail", "agent \"" + agentId + "\" not found"));
             }
             return jsonResponse(200, agent);
+        }
+
+        if (("/workspace/files".equals(sub) || "/workspace/files/read".equals(sub)) && "GET".equals(method)) {
+            JSONObject agent = findAgentById(agentId, parseAgentEndpointHints(query, null));
+            if (agent == null) return jsonResponse(404, new JSONObject().put("error", "agent_not_found").put("detail", "agent not found"));
+            String relative = workspaceRelativePath(query);
+            if (relative == null) return jsonResponse(400, new JSONObject().put("error", "invalid_path").put("detail", "path must remain inside workspace"));
+            String root = agent.optString("context_path", agent.optString("path", "")).trim();
+            if (root.isEmpty()) {
+                JSONObject context = findContextForAgent(agent);
+                if (context != null) root = context.optString("path", "").trim();
+            }
+            if (root.isEmpty() || !root.startsWith("/")) return jsonResponse(400, new JSONObject().put("error", "working_dir_missing").put("detail", "agent has no absolute workspace path"));
+            MobileSshAuth.Options auth = sshAuthForAgent(agent);
+            if (auth == null) return jsonResponse(400, new JSONObject().put("error", "not_ssh").put("detail", "workspace files require SSH node"));
+            String target = root + (relative.isEmpty() ? "" : "/" + relative);
+            if ("/workspace/files".equals(sub)) {
+                MobileSshExec.DirectoryResult listed = MobileSshExec.listDirectory(auth, target, SYNC_TIMEOUT_MS);
+                if (!listed.ok) return jsonResponse(502, new JSONObject().put("error", listed.error).put("detail", listed.detail));
+                JSONArray entries = new JSONArray();
+                for (MobileSshExec.RemoteEntry entry : listed.entries) entries.put(new JSONObject().put("name", entry.name).put("type", entry.directory ? "dir" : "file").put("size", entry.size).put("modified", entry.modified));
+                return jsonResponse(200, new JSONObject().put("entries", entries));
+            }
+            MobileSshExec.FileResult file = MobileSshExec.readFile(auth, target, SYNC_TIMEOUT_MS, 2 * 1024 * 1024);
+            if (!file.ok) return jsonResponse(502, new JSONObject().put("error", file.error).put("detail", file.detail));
+            return jsonResponse(200, new JSONObject().put("content", new String(file.content, StandardCharsets.UTF_8)));
         }
 
         if ("GET".equals(method) && "/output".equals(sub)) {
@@ -583,6 +647,21 @@ public final class MobileEmbeddedHub {
                 return jsonResponse(status, sent);
             }
             return jsonResponse(200, sent);
+        }
+
+        if ("POST".equals(method) && "/upload".equals(sub)) {
+            JSONObject body = bodyBytes.length > 0
+                ? new JSONObject(new String(bodyBytes, StandardCharsets.UTF_8))
+                : new JSONObject();
+            JSONObject uploaded = uploadAgentFile(agentId, body);
+            if (!uploaded.optBoolean("ok", false)) {
+                String err = uploaded.optString("error", "upload_failed");
+                int status = "agent_not_found".equals(err) ? 404
+                    : ("missing_filename".equals(err) || "missing_data".equals(err)
+                        || "invalid_base64".equals(err) || "file_too_large".equals(err) ? 400 : 502);
+                return jsonResponse(status, uploaded);
+            }
+            return jsonResponse(200, uploaded);
         }
 
         if ("POST".equals(method) && "/key".equals(sub)) {
@@ -719,6 +798,49 @@ public final class MobileEmbeddedHub {
                 .put("detail", res.detail != null ? res.detail : "remote key send failed");
         }
         return new JSONObject().put("ok", true);
+    }
+
+    private JSONObject uploadAgentFile(String agentId, JSONObject body) throws Exception {
+        JSONObject agent = findAgentById(agentId, body);
+        if (agent == null) {
+            return new JSONObject().put("error", "agent_not_found")
+                .put("detail", "agent \"" + agentId + "\" not found");
+        }
+        if (isAgentFinished(agent.optString("status", ""))) {
+            return new JSONObject().put("error", "agent_not_running").put("detail", "Agent is not running");
+        }
+        String filename = body.optString("filename", "").trim();
+        String encoded = body.optString("data", "").trim();
+        if (filename.isEmpty()) return new JSONObject().put("error", "missing_filename").put("detail", "filename is required");
+        if (encoded.isEmpty()) return new JSONObject().put("error", "missing_data").put("detail", "data is required");
+        byte[] content;
+        try { content = Base64.decode(encoded, Base64.DEFAULT); }
+        catch (Exception e) { return new JSONObject().put("error", "invalid_base64").put("detail", "invalid base64 data"); }
+        if (content.length > 18 * 1024 * 1024) {
+            return new JSONObject().put("error", "file_too_large").put("detail", "max upload size is 18 MB");
+        }
+        MobileSshAuth.Options auth = sshAuthForAgent(agent);
+        if (auth == null) return new JSONObject().put("error", "not_ssh").put("detail", "upload requires an SSH-backed agent");
+        String root = agent.optString("context_path", agent.optString("path", "")).trim();
+        if (root.isEmpty()) {
+            JSONObject ctx = findContextForAgent(agent);
+            if (ctx != null) root = ctx.optString("path", "").trim();
+        }
+        if (root.isEmpty() || !root.startsWith("/")) {
+            return new JSONObject().put("error", "working_dir_missing").put("detail", "Agent has no absolute working directory");
+        }
+        String safe = filename.replaceAll("[^A-Za-z0-9._-]", "_");
+        if (safe.isEmpty()) safe = "image.png";
+        String timestamp = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
+        String path = (root.endsWith("/") ? root.substring(0, root.length() - 1) : root)
+            + "/.cam-images/" + timestamp + "-" + safe;
+        MobileSshExec.Result written = MobileSshExec.uploadFile(auth, path, content, SYNC_TIMEOUT_MS);
+        if (!written.ok) {
+            return new JSONObject().put("error", written.error != null ? written.error : "upload_failed")
+                .put("detail", written.detail != null ? written.detail : "remote upload failed");
+        }
+        log("info", "upload " + agentId + ": " + path + " (" + content.length + " bytes)");
+        return new JSONObject().put("ok", true).put("path", path).put("size", content.length);
     }
 
     private JSONObject captureAgentOutput(String agentId, int lines, String clientHash, JSONObject hints) throws Exception {
