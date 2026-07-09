@@ -4578,3 +4578,16 @@ c61c56c Update desktop agent settings and bots workflows
 7e72491 Stabilize desktop direct send and workflow UI
 ```
 
+## v1.2.0  e9025b4 2026-07-09 00:46
+
+- Lines: 20767
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+e9025b4 Merge remote camui-desktop-v2 (15 commits) with local skills/env fixes
+e41f075 camc: prefer latest tool releases
+1cc5eef camc: preserve ANSI colors for interactive agents
+676e9c5 camc: read login shell from /etc/passwd, override SHELL for tmux
+4daaf26 skills: reorganize managing-camc, add auto-install, new camc-goal-loop
+```
+
