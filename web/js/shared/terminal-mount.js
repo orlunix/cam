@@ -12,6 +12,11 @@ const TERMINAL_MIN_NOTIFY_WIDTH = 120;
 const TERMINAL_PREPARE_SHOW_MS = 80;
 
 const terminalSessions = new Map();
+// CAM-DESK-TERM-FS: scrollback snapshots parked on LRU eviction, keyed by
+// agentId. Consumed on reopen to restore the buffer without a camc attach
+// round-trip for the scrollback. One string per evicted agent, deleted on
+// restore — bounded by TERMINAL_CACHE_LIMIT.
+const _parkedSnapshots = new Map();
 const reconnectTimers = new Map();
 const openInflight = new Map();
 let termUnsubData = null;
@@ -25,6 +30,18 @@ function isAndroidWebView() {
   return !!(typeof window !== 'undefined'
     && window.CamBridge
     && typeof window.CamBridge.term_open === 'function');
+}
+
+/** Keep Android's WebView timers running only while a terminal is attached. */
+function syncMobileTerminalBackgroundKeepAlive() {
+  if (!isAndroidWebView()) return;
+  const keepAlive = [...terminalSessions.values()].some((ent) =>
+    !!(ent?.sessionId || ent?.opening || ent?.attachState === 'connecting'));
+  try {
+    if (typeof window.CamBridge.setTerminalBackgroundKeepAlive === 'function') {
+      window.CamBridge.setTerminalBackgroundKeepAlive(keepAlive);
+    }
+  } catch { /* native bridge may be unavailable during teardown */ }
 }
 
 function cssVar(name, fallback) {
@@ -378,9 +395,6 @@ function hideTerminalEntries() {
 
 function remountTerminalContainer(ent, hostEl) {
   if (!ent?.container || !hostEl) return;
-  for (const orphan of hostEl.querySelectorAll('.agent-terminal-pane')) {
-    if (orphan !== ent.container) orphan.remove();
-  }
   if (!hostEl.contains(ent.container)) {
     hostEl.appendChild(ent.container);
   }
@@ -397,7 +411,9 @@ function showTerminalEntry(agentId, hostEl, opts = {}) {
   const ent = terminalSessions.get(agentId);
   if (!ent) return ent;
   hideTerminalEntries();
-  if (hostEl) remountTerminalContainer(ent, hostEl);
+  if (hostEl && !hostEl.contains(ent.container)) {
+    remountTerminalContainer(ent, hostEl);
+  }
   termAgentId = agentId;
   ent.lastUsed = Date.now();
   if (opts.keepBottom !== false) {
@@ -541,6 +557,19 @@ function createTerminalEntry(agent, hostEl) {
     entry.term.loadAddon(entry.fit);
   }
   entry.term.open(container);
+  const SerializeCtor = window.SerializeAddon;
+  if (SerializeCtor) {
+    try {
+      entry.serialize = new SerializeCtor();
+      entry.term.loadAddon(entry.serialize);
+    } catch { /* serialize unavailable — evict will be destructive, see spec Risks */ }
+  }
+  if (_parkedSnapshots.has(agent.id)) {
+    try {
+      entry.term.write(_parkedSnapshots.get(agent.id));
+    } catch { /* restore failed — fresh terminal proceeds blank */ }
+    _parkedSnapshots.delete(agent.id);
+  }
   entry.term.onData((data) => {
     if (!globalBridge || !entry.sessionId) return;
     globalBridge.input({ sessionId: entry.sessionId, data });
@@ -628,6 +657,7 @@ export async function closeTerminalSession(agentId, opts = {}) {
     ent.opening = false;
     ent.attachState = 'idle';
   }
+  syncMobileTerminalBackgroundKeepAlive();
 }
 
 export async function detachTerminalSession(agentId) {
@@ -643,6 +673,7 @@ export async function detachTerminalSession(agentId) {
   if (ent.hostEl) {
     setTerminalStatus(ent.hostEl, 'Session detached — scrollback kept locally', 'info', 4000);
   }
+  syncMobileTerminalBackgroundKeepAlive();
   return true;
 }
 
@@ -652,7 +683,7 @@ async function evictTerminalCacheIfNeeded(activeAgentId) {
   while (terminalSessions.size > TERMINAL_CACHE_LIMIT && live.length) {
     const ent = live.shift();
     // eslint-disable-next-line no-await-in-loop
-    await disposeTerminalForAgent(ent.agentId);
+    await disposeTerminalForAgent(ent.agentId, { evict: true });
   }
 }
 
@@ -698,10 +729,17 @@ export function terminalPoolSize() {
   return terminalSessions.size;
 }
 
-export async function disposeTerminalForAgent(agentId) {
+export async function disposeTerminalForAgent(agentId, opts = {}) {
   cancelAutoReconnect(agentId);
   const ent = terminalSessions.get(agentId);
   if (!ent) return;
+  if (opts.evict && ent.serialize && ent.term) {
+    try {
+      const snapshot = ent.serialize.serialize(
+        { excludeAltBuffer: true, excludeModes: true, scrollback: 5000 });
+      if (snapshot) _parkedSnapshots.set(agentId, snapshot);
+    } catch { /* snapshot failed — evict proceeds without restore */ }
+  }
   await closeTerminalSession(agentId, { stopKeepAlive: true });
   if (ent._resizeObs) {
     try { ent._resizeObs.disconnect(); } catch { /* noop */ }
@@ -715,6 +753,7 @@ export async function disposeTerminalForAgent(agentId) {
   }
   terminalSessions.delete(agentId);
   if (termAgentId === agentId) termAgentId = null;
+  syncMobileTerminalBackgroundKeepAlive();
 }
 
 export async function closeAllTerminalSessions() {
@@ -867,6 +906,7 @@ export async function openTerminalForAgent(api, agent, hostEl, opts = {}) {
 
   ent.opening = true;
   ent.attachState = 'connecting';
+  syncMobileTerminalBackgroundKeepAlive();
   ent.suppressDisplay = true;
   ent.bytesReceived = 0;
   ent.liveText = '';
@@ -910,6 +950,7 @@ export async function openTerminalForAgent(api, agent, hostEl, opts = {}) {
       return { ok: false, error: res && res.error };
     }
     ent.sessionId = res.sessionId;
+    syncMobileTerminalBackgroundKeepAlive();
     for (const msg of earlyData) {
       if (msg && msg.sessionId === ent.sessionId && msg.data) {
         const chunk = String(msg.data);
@@ -937,6 +978,7 @@ export async function openTerminalForAgent(api, agent, hostEl, opts = {}) {
     return { ok: false, error: String(e) };
   } finally {
     ent.opening = false;
+    syncMobileTerminalBackgroundKeepAlive();
   }
   };
 
