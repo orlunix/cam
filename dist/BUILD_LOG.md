@@ -4513,10 +4513,10 @@ e31beae Fix API proxy start route selection
 7e72491 Stabilize desktop direct send and workflow UI
 ```
 
-## v1.2.0  82e48da 2026-06-30 23:33
+## v1.2.0  82e48da-dirty 2026-07-04 05:43
 
-- Lines: 17318
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Lines: 17351
+- Output: /home/hren/gitlab/cam/dist/camc
 - Recent changes:
 ```
 82e48da Checkpoint desktop development state
@@ -4526,10 +4526,10 @@ c61c56c Update desktop agent settings and bots workflows
 fce5cc1 camc cron: add per-agent loop scheduling
 ```
 
-## v1.2.0  82e48da 2026-07-01 00:19
+## v1.2.0  82e48da-dirty 2026-07-04 06:05
 
-- Lines: 17318
-- Output: /home/hren/.cam/camc
+- Lines: 17382
+- Output: /home/hren/gitlab/cam/dist/camc
 - Recent changes:
 ```
 82e48da Checkpoint desktop development state
@@ -4539,313 +4539,40 @@ c61c56c Update desktop agent settings and bots workflows
 fce5cc1 camc cron: add per-agent loop scheduling
 ```
 
-## v1.2.0  82e48da-dirty 2026-07-01 01:03
+## v1.2.0  adb449e-dirty 2026-07-05 20:26
 
-- Lines: 17332
-- Output: /home/hren/.cam/camc
+- Lines: 17396
+- Output: /home/hren/gitlab/cam/dist/camc
 - Recent changes:
 ```
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-c61c56c Update desktop agent settings and bots workflows
-fce5cc1 camc cron: add per-agent loop scheduling
-```
-
-## v1.2.0  82e48da-dirty 2026-07-01 02:20
-
-- Lines: 17323
-- Output: /home/hren/.cam/camc
-- Recent changes:
-```
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-c61c56c Update desktop agent settings and bots workflows
-fce5cc1 camc cron: add per-agent loop scheduling
-```
-
-## v1.2.0  f768d51-dirty 2026-07-01 03:53
-
-- Lines: 17329
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
+676e9c5 camc: read login shell from /etc/passwd, override SHELL for tmux
 82e48da Checkpoint desktop development state
 6a85f45 camc api proxy: stabilize routing and tests
 7e72491 Stabilize desktop direct send and workflow UI
 c61c56c Update desktop agent settings and bots workflows
 ```
 
-## v1.2.0  f768d51-dirty 2026-07-01 03:58
+## v1.2.0  1cc5eef 2026-07-05 20:53
 
-- Lines: 17335
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Lines: 17396
+- Output: /home/hren/gitlab/cam/dist/camc
 - Recent changes:
 ```
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-c61c56c Update desktop agent settings and bots workflows
-```
-
-## v1.2.0  ebd9afa 2026-07-01 20:40
-
-- Lines: 17335
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
+1cc5eef camc: preserve ANSI colors for interactive agents
+676e9c5 camc: read login shell from /etc/passwd, override SHELL for tmux
 82e48da Checkpoint desktop development state
 6a85f45 camc api proxy: stabilize routing and tests
 7e72491 Stabilize desktop direct send and workflow UI
 ```
 
-## v1.2.0  0fb12e5-dirty 2026-07-01 22:59
+## v1.2.0  21d33db-dirty 2026-07-05 23:14
 
-- Lines: 19676
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Lines: 17396
+- Output: /home/hren/gitlab/cam/dist/camc
 - Recent changes:
 ```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-```
-
-## v1.2.0  0fb12e5-dirty 2026-07-01 23:07
-
-- Lines: 19676
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-```
-
-## v1.2.0  0fb12e5-dirty 2026-07-01 23:26
-
-- Lines: 19724
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-```
-
-## v1.2.0  0fb12e5-dirty 2026-07-01 23:28
-
-- Lines: 19736
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-```
-
-## v1.2.0  0fb12e5-dirty 2026-07-01 23:31
-
-- Lines: 19738
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-```
-
-## v1.2.0  0fb12e5-dirty 2026-07-02 00:09
-
-- Lines: 19772
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-```
-
-## v1.2.0  0fb12e5-dirty 2026-07-02 00:15
-
-- Lines: 19772
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-```
-
-## v1.2.0  0fb12e5-dirty 2026-07-02 01:37
-
-- Lines: 20041
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-```
-
-## v1.2.0  0fb12e5-dirty 2026-07-02 02:32
-
-- Lines: 20541
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-```
-
-## v1.2.0  0fb12e5-dirty 2026-07-02 02:40
-
-- Lines: 20578
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-```
-
-## v1.2.0  0fb12e5-dirty 2026-07-02 02:48
-
-- Lines: 20619
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-```
-
-## v1.2.0  0fb12e5-dirty 2026-07-02 02:51
-
-- Lines: 20692
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-```
-
-## v1.2.0  0fb12e5-dirty 2026-07-02 02:58
-
-- Lines: 20645
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-```
-
-## v1.2.0  0fb12e5-dirty 2026-07-02 20:25
-
-- Lines: 20690
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-```
-
-## v1.2.0  0fb12e5-dirty 2026-07-02 22:19
-
-- Lines: 20690
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-```
-
-## v1.2.0  0fb12e5-dirty 2026-07-02 22:26
-
-- Lines: 20690
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-```
-
-## v1.2.0  0fb12e5-dirty 2026-07-02 22:57
-
-- Lines: 20690
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-```
-
-## v1.2.0  0fb12e5-dirty 2026-07-02 23:19
-
-- Lines: 20692
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
-82e48da Checkpoint desktop development state
-6a85f45 camc api proxy: stabilize routing and tests
-7e72491 Stabilize desktop direct send and workflow UI
-```
-
-## v1.2.0  0fb12e5-dirty 2026-07-02 23:27
-
-- Lines: 20692
-- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
-- Recent changes:
-```
-ebd9afa fix(camc): auto-enable API on first run when token is available
-f768d51 fix(camc): strip NO_COLOR/FORCE_COLOR/NODE_DISABLE_COLORS from tmux session env
+1cc5eef camc: preserve ANSI colors for interactive agents
+676e9c5 camc: read login shell from /etc/passwd, override SHELL for tmux
 82e48da Checkpoint desktop development state
 6a85f45 camc api proxy: stabilize routing and tests
 7e72491 Stabilize desktop direct send and workflow UI

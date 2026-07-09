@@ -617,9 +617,9 @@ from uuid import uuid4, uuid5, NAMESPACE_DNS as _UUID_NS
 import argparse
 import hashlib
 import json
-import json, sys, os
 import logging
 import os
+import pwd
 import re
 import re as _re
 import shlex
@@ -642,7 +642,7 @@ import uuid
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "0fb12e5-dirty 2026-07-02 00:15"
+__build__ = "21d33db-dirty 2026-07-05 23:14"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1995,6 +1995,30 @@ _DUMP_CODE = (
 )
 
 
+def _default_login_shell():
+    """Best guess at the user's login shell.
+
+    Prefer the passwd entry (``getpwuid``) over ``$SHELL``: ``$SHELL``
+    reflects whoever launched the current process (e.g. an IDE or a
+    tool wrapper like Claude Code's Bash shell may set ``SHELL=zsh``
+    even when the account's login shell is csh/bash). The passwd entry
+    is what a real login session would use, so it matches the env the
+    user actually configures. Fall back to ``$SHELL`` then ``/bin/sh``
+    for environments without a passwd entry (containers, nologin
+    accounts).
+    """
+    try:
+        pw_shell = pwd.getpwuid(os.getuid()).pw_shell
+        if pw_shell and os.path.exists(pw_shell):
+            return pw_shell
+    except (KeyError, OSError):
+        pass
+    env_shell = os.environ.get("SHELL")
+    if env_shell and os.path.exists(env_shell):
+        return env_shell
+    return "/bin/sh"
+
+
 def load_login_shell_env(shell=None, env_setup=None, timeout=5):
     """Run the user's login shell to capture its env, optionally after
     applying an env_setup string. Returns (env_dict, warnings).
@@ -2006,8 +2030,8 @@ def load_login_shell_env(shell=None, env_setup=None, timeout=5):
     block: a host whose login shell can't be captured is still
     runnable, just less verifiable.
 
-    `shell`: path to the shell binary. Defaults to ``$SHELL`` then
-    ``/bin/sh``.
+    `shell`: path to the shell binary. Defaults to the passwd entry
+    (``getpwuid``), then ``$SHELL``, then ``/bin/sh``.
     `env_setup`: optional string of shell commands to source/exec
     before the dump (e.g. ``"source /etc/profile.d/foo.sh"``). Joined
     with ``&&`` before the dump command.
@@ -2016,13 +2040,21 @@ def load_login_shell_env(shell=None, env_setup=None, timeout=5):
     NFS-heavy hosts.
     """
     warnings = []
-    shell = shell or os.environ.get("SHELL") or "/bin/sh"
+    shell = shell or _default_login_shell()
     capture_shell = shell
-    if env_setup and os.path.exists("/bin/bash"):
-        # Machine env_setup strings are authored as POSIX/bash snippets
-        # (`export ...`, `source ~/.bashrc`, `unset ...`). Some PDX/DC
-        # accounts use csh/tcsh as $SHELL, where `-l -c` and bash rc
-        # snippets are not portable, so run explicit setup through bash.
+    base = os.path.basename(capture_shell) if capture_shell else ""
+    # csh/tcsh can't parse the bash-style `exec <py> -c '...'` dump
+    # command we inject below (the quoting trips `Unmatched '''` /
+    # `Badly placed ()'s`), and machine env_setup strings are authored
+    # as POSIX/bash snippets (`export ...`, `source ~/.bashrc`,
+    # `unset ...`). Capture through bash when the login shell is csh
+    # family and bash exists; the passwd entry is still what we report
+    # as the login shell (see _default_login_shell).
+    if base in ("csh", "tcsh") and os.path.exists("/bin/bash"):
+        capture_shell = "/bin/bash"
+    elif env_setup and os.path.exists("/bin/bash"):
+        # Same reasoning for other non-bash shells when an env_setup
+        # snippet is present.
         capture_shell = "/bin/bash"
     if not capture_shell or not os.path.exists(capture_shell):
         warnings.append("login shell %r not found; using current env" % capture_shell)
@@ -2085,6 +2117,13 @@ def load_login_shell_env(shell=None, env_setup=None, timeout=5):
 # clears today; centralized here so they are checked the same way.
 _NEST_CLEAR_KEYS = ("TMUX", "TMUX_PANE", "CLAUDECODE")
 
+# A camc agent always has an interactive tmux terminal.  The parent process
+# can nevertheless carry NO_COLOR=1 (for example from an automation host or
+# an IDE non-interactive shell).  Passing that through suppresses ANSI in
+# Codex/Claude/Cursor despite the interactive PTY and makes Desktop appear
+# monochrome.  Do not inherit that non-interactive presentation preference.
+_INTERACTIVE_CLEAR_KEYS = ("NO_COLOR",)
+
 
 def build_runtime_env(shell=None, env_setup=None):
     """Returns a RuntimeEnv: login shell env + env_setup applied +
@@ -2098,9 +2137,24 @@ def build_runtime_env(shell=None, env_setup=None):
     )
     for k in _NEST_CLEAR_KEYS:
         env.pop(k, None)
+    for k in _INTERACTIVE_CLEAR_KEYS:
+        env.pop(k, None)
+    # Force SHELL to the resolved login shell. The captured env's SHELL
+    # is whatever the parent process exported — e.g. Claude Code's
+    # Bash tool sets SHELL=/usr/bin/zsh even when the account's passwd
+    # entry is /bin/csh. tmux new-session with no command runs $SHELL
+    # from this env, so a stale SHELL launches the wrong shell (on a
+    # box with no ~/.zshrc that fires zsh-newuser-install, which aborts
+    # and garbles camc's injected launch line -> wedge). Reading
+    # /etc/passwd via getpwuid keeps the effective env aligned with the
+    # account. Applied to both the captured path and the current-env
+    # fallback so the fallback can't reintroduce the wrong SHELL.
+    resolved_shell = shell or _default_login_shell()
+    if env.get("SHELL") != resolved_shell:
+        env["SHELL"] = resolved_shell
     return RuntimeEnv(
         env=env, source=source,
-        shell=(shell or os.environ.get("SHELL") or "/bin/sh"),
+        shell=resolved_shell,
         path=env.get("PATH", ""),
         warnings=warnings,
     )
@@ -2202,13 +2256,13 @@ _GOLDEN_TMUX_PATHS = (
 # exhausted (unless --use-env-tool is set).
 _GOLDEN_TOOL_PATHS = {
     "claude": (
-        "/home/tools_ai/anthropic-ai/claude/stable/claude",
         "/home/tools_ai/anthropic-ai/claude/latest/claude",
+        "/home/tools_ai/anthropic-ai/claude/stable/claude",
         "/home/prgn_share/tools/claude-code/bin/claude",
     ),
     "codex": (
-        "/home/tools_ai/openai/codex/stable/bin/codex",
         "/home/tools_ai/openai/codex/latest/bin/codex",
+        "/home/tools_ai/openai/codex/stable/bin/codex",
         "/home/prgn_share/tools/codex/bin/codex",
         "~/.local/bin/codex",
     ),
@@ -2603,7 +2657,7 @@ def check_tool_readiness(runtime, selected_tool, tool_binary=None,
 # 'camc-template-sha256' header tracks the hash of the managed body
 # so a user-modified file is left alone.
 
-_CAMC_TMUX_CONFIG_VERSION = 2
+_CAMC_TMUX_CONFIG_VERSION = 1
 _CAMC_TMUX_CONFIG_BODY = (
     "# camc-managed: true\n"
     "# camc-template: tmux\n"
@@ -2616,7 +2670,7 @@ _CAMC_TMUX_CONFIG_BODY = (
     "# leaves it alone.\n"
     "\n"
     "set-option -g history-limit 50000\n"
-    "set-option -g status on\n"
+    "set-option -g status off\n"
     "set-option -g mouse off\n"
     'set-option -g default-terminal "screen-256color"\n'
 )
@@ -3071,7 +3125,8 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
     ``TMUX_BIN`` resolved at import time.
 
     Regardless of how `env` arrives, ``TMUX`` / ``TMUX_PANE`` /
-    ``CLAUDECODE`` are stripped here so a nested-launch fails-safe."""
+    ``CLAUDECODE`` and parent-process ``NO_COLOR`` are stripped here so a
+    nested launch fails safe and interactive agents retain ANSI output."""
     try:
         os.makedirs(SOCKETS_DIR)
     except OSError:
@@ -3086,11 +3141,28 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
     env.pop("TMUX", None)
     env.pop("TMUX_PANE", None)
     env.pop("CLAUDECODE", None)
-    # Strip color-suppression vars that may leak from Claude's parent env
-    # (NO_COLOR=1 kills all ANSI in tmux sessions).
+    # A camc agent always runs in tmux with an interactive PTY.  NO_COLOR is
+    # commonly injected by non-interactive launch wrappers and would make
+    # Codex/Claude/Cursor deliberately emit monochrome output in Desktop.
     env.pop("NO_COLOR", None)
-    env.pop("FORCE_COLOR", None)
-    env.pop("NODE_DISABLE_COLORS", None)
+    # Force SHELL to the account's login shell from /etc/passwd. The
+    # parent process's SHELL may be wrong — Claude Code's Bash tool
+    # exports SHELL=/usr/bin/zsh even on a /bin/csh account. tmux
+    # new-session with no command runs $SHELL from this env, so a stale
+    # SHELL launches zsh on a box with no ~/.zshrc -> zsh-newuser-install
+    # fires, aborts, and garbles camc's injected launch line. Reading
+    # /etc/passwd (getpwuid) instead of $SHELL keeps tmux's default shell
+    # aligned with the account. (build_runtime_env already does this
+    # for the cmd_run path; this covers callers that pass no env= and
+    # fall through to os.environ.copy() — e.g. scheduler.py.)
+    try:
+        import pwd as _pwd
+        _pw = _pwd.getpwuid(os.getuid())
+        if _pw.pw_shell and os.path.exists(_pw.pw_shell):
+            if env.get("SHELL") != _pw.pw_shell:
+                env["SHELL"] = _pw.pw_shell
+    except (KeyError, OSError):
+        pass
 
     # Source tmux binary: explicit arg wins; else module-level default.
     tmux = tmux_bin or TMUX_BIN
@@ -5636,9 +5708,6 @@ def _launch_agent(task, workdir):
     # runtime env setup into agent launches.
     env_setup = None
 
-    # Auto-install manifest skills to project .claude/skills/
-    install_manifest_skills(workdir)
-
     if not create_tmux_session(session, launch_cmd, workdir, env_setup=env_setup, inherit_env=True):
         return None
 
@@ -8008,17 +8077,11 @@ def resolve_run_api_name(tool, cli_api=None, no_default_api=False, data=None):
         return None, "login"
     key, entry = get_api_entry(data, name)
     if entry.get("enabled") is False:
-        try:
-            check_provider(data, token_resolver=None)
-        except Exception:
-            pass
-        key, entry = get_api_entry(data, name)
-        if entry.get("enabled") is False:
-            reason = entry.get("enabled_reason") or "disabled"
-            raise ValueError(
-                "Default API %r for tool %r is disabled (%s). Run: camc api check"
-                % (key, tool, reason)
-            )
+        reason = entry.get("enabled_reason") or "disabled"
+        raise ValueError(
+            "Default API %r for tool %r is disabled (%s). Run: camc api check"
+            % (key, tool, reason)
+        )
     return key, "default"
 
 
@@ -8934,14 +8997,8 @@ def resolve_run_plan(tool, api_name, no_api_proxy=False, proxy_debug=False):
     api_entry = dict((data.get("apis") or {}).get(key) or {})
     validate_api_run(tool, key, api_entry)
     if api_entry.get("enabled") is False:
-        try:
-            check_provider(data, token_resolver=None)
-        except Exception:
-            pass
-        api_entry = dict((data.get("apis") or {}).get(key) or {})
-        if api_entry.get("enabled") is False:
-            reason = api_entry.get("enabled_reason") or "disabled"
-            raise ValueError("API %r is disabled (%s)" % (key, reason))
+        reason = api_entry.get("enabled_reason") or "disabled"
+        raise ValueError("API %r is disabled (%s)" % (key, reason))
 
     provider_id = api_entry.get("provider") or data.get("default_provider")
     provider = get_provider(data, provider_id)
@@ -10616,2317 +10673,6 @@ def proxy_stop(route=None):
 
 
 # ===========================================================================
-# skills
-# ===========================================================================
-
-SKILLS_MANIFEST = os.path.join(CAM_DIR, "skills.json")
-
-# ---------------------------------------------------------------------------
-# Embedded skills — injected by build_camc.py at build time.
-# DO NOT edit here. Edit the source files in src/camc_pkg/skills/.
-# Shape: {skill_name: {"relative/path": "file content", ...}}
-# ---------------------------------------------------------------------------
-
-_EMBEDDED_SKILLS = {
-    "managing-cam": {
-        "SKILL.md": r"""---
-name: managing-cam
-description: >
-  Manage AI coding agents (Claude Code, Codex, Cursor) with CAM
-  (Coding Agent Manager). Use when the user asks to list agents,
-  start/stop agents, check agent status, capture output, send input,
-  manage contexts and nodes, run batch tasks, or **delegate from one
-  agent to another via a mailbox/thread protocol** (`camc msg send <to>
-  -t "..."`, `camc msg send <to> -t "..." --no-wait`, `camc msg reply
-  <msg_id> -t "..."`, `camc msg read [<msg_id>] [--next] [--mark]` from
-  inside an agent's session). msg_id is the thread id; the ledger
-  mailbox is source of truth, pane injection is best-effort wake-up only.
-compatibility: Requires cam CLI.
-metadata:
-  author: hren
-  tags: cam, camc, agent, management, claude, coding, codex, cursor,
-    msg, message, messaging, delegate, delegation, dispatch, peer,
-    second-opinion, ask-agent
-  category: infra
-  requires-tools: cam, camc
-disable-model-invocation: false
-argument-hint: "[list | status <agent> | run <prompt> | capture <agent> | (inside an agent) camc msg send <to> -t '...' [--no-wait] [--expect-reply] | camc msg reply <msg_id> -t '...' | camc msg read [<msg_id>] [--next] [--mark]]"
-allowed-tools: Bash Read Glob Grep
----
-
-# CAM — Coding Agent Manager
-
-CAM manages AI coding agents (Claude Code, Codex, Cursor) across local and
-remote machines. It's like PM2 for AI agents — start, stop, monitor, interact,
-orchestrate, and deploy. Every agent op is delegated to `camc` on the right
-machine over SSH; per-machine `camc agents.json` is the source of truth.
-
-> **When in doubt, run `--help` first — never guess.** Flags drift between
-> releases. Run `cam --help` for subcommands and `cam <subcommand> --help`
-> for flags before using them.
-
-## Quick Reference
-
-| Task | Command |
-|---|---|
-| List all agents | `cam list` |
-| Agent details | `cam status <id-or-name>` |
-| Start agent | `cam run "task" --ctx <context>` |
-| Stop agent | `cam stop <id-or-name>` |
-| Kill agent | `cam kill <id-or-name>` |
-| Retry failed | `cam retry <id-or-name>` |
-| Capture screen | `cam capture <id-or-name> -n 200` |
-| Send text | `cam send <id-or-name> -t "message"` |
-| Send key | `cam key <id-or-name> -k Escape` |
-| Ask another agent (block + reply) | `camc msg send <to> -t "..."` (run from inside an agent's session) |
-| Ask another agent (return now, read later) | `camc msg send <to> -t "..." --no-wait`; then `camc msg read <msg_id>` |
-| Read inbox / next unread | `camc msg read [--next] [--mark]` |
-| Reply to a thread | `camc msg reply <msg_id> -t "..."` (appends next seq) |
-| Replay a thread | `camc msg read <msg_id>` |
-| Attach tmux | `cam attach <id-or-name>` |
-| View logs | `cam logs <id-or-name> -n 50` |
-| List contexts | `cam context list` |
-| List nodes | `cam node list` |
-
-**Remote camc API mode:** agents run on each machine via `camc`. On the host, use `camc run -t claude|codex --api NAME`, opt-in `camc api default set`, and `camc api check` — same as `managing-camc`. `cam run` does not expose `--api`; SSH to the machine or use `cam sync` + local `camc` there. Cursor `--api` is not supported.
-
-Agent IDs can be short prefixes (e.g. `dfac` matches `dfac113f`), full IDs, or names.
-
-## Agent Lifecycle
-
-### Start a new agent
-
-```bash
-cam run "investigate bug 5893270" --ctx l1tcm --name bug-5893270
-cam run "build fn100 variant" --ctx fn211-man --name fn100-build --timeout 2h
-cam run "research peregrine ECC issues" --ctx pdxbbs --name ecc-research
-```
-
-Options:
-- `--ctx <name>` — work context (required for remote, optional for local)
-- `--name <name>` — human-readable name
-- `--tool <tool>` — agent tool, default: `claude`
-- `--timeout <duration>` — e.g. `30m`, `2h`, `1d`
-- `--retry <n>` — auto-retry on failure
-- `--follow` — follow output instead of detaching
-- `--no-auto-confirm` — require manual confirmation for tool use
-- `--dry-run` — show plan without executing
-
-### Monitor agents
-
-```bash
-cam list                          # all agents, all nodes
-cam list --json                   # JSON output for scripting
-cam status <agent>                # detailed status
-cam logs <agent> -n 100           # last 100 lines of log
-cam logs <agent> -f               # follow log output
-```
-
-### Stop / kill / remove
-
-```bash
-cam stop <agent>                  # graceful stop (sends /exit)
-cam kill <agent>                  # force kill
-cam rm <agent>                    # remove record (delegates to camc rm)
-cam rm <agent> --kill -f          # also kill the session, no confirmation
-```
-
-### Retry failed agents
-
-```bash
-cam retry <agent>                 # re-run with same config
-cam retry <agent> --follow        # re-run and follow output
-```
-
-## Agent Interaction
-
-### Capture screen output
-
-```bash
-cam capture <agent>               # default 100 lines
-cam capture <agent> -n 500        # 500 lines
-cam capture <agent> -n 2000       # full scrollback
-cam capture <agent> --json        # with content hash
-```
-
-### Send text input
-
-```bash
-cam send <agent> -t "hello"                    # send + Enter
-cam send <agent> -t "partial text" --no-enter   # send without Enter
-```
-
-### Send special keys
-
-```bash
-cam key <agent> -k Escape         # Escape key
-cam key <agent> -k Enter          # Enter key
-cam key <agent> -k C-c            # Ctrl+C
-cam key <agent> -k C-d            # Ctrl+D (EOF)
-```
-
-### Interactive attach
-
-```bash
-cam attach <agent>                # attach to tmux session
-# Detach with: Ctrl+B, D
-```
-
-### Ask another agent (delegation)
-
-**msg_id is the THREAD id.** Sends, replies, and follow-ups under the same
-logical thread share one msg_id; they're distinguished by `seq` (send=1,
-reply=2, follow-up=3, …). The append-only ledger at `~/.cam/messages.jsonl`
-is the source of truth — `camc msg read` replays threads from there; the
-tmux-pane injection is best-effort wake-up only.
-
-From **inside** an agent's tmux session (i.e. the Bash tool of a running
-Claude/Codex), `camc msg send <to> --text "..."` blocks until the
-target's reply is stable, then prints reply on stdout. Use as any
-shell command — `reply=$(camc msg send peer -t "review src/foo.py")`.
-For fan-out or non-blocking workflows, use `camc msg send <to> -t "..."
---no-wait`; it prints `MSG_ID=<8hex>` and `STATUS=sent`. A later
-`camc msg read <msg_id>` replays the full thread (or `camc msg wait
-<msg_id>` if you only need the FIRST reply, legacy).
-
-For deterministic async, add `--expect-reply` — the wire payload appends
-a `[Reply via: camc msg reply <msg_id> -t "..."]` instruction telling
-the receiver to commit the reply explicitly. The receiver runs
-`camc msg reply <msg_id> -t "<final answer>"`, which appends a turn
-under the SAME msg_id and (best-effort) injects the same `[camc msg#<id>]`
-marker on the original sender's pane. Reply does NOT mint a new msg_id.
-
-- Wire format: normal requests are `[camc msg#<8hex>]: [from:<name>#<id>][to:<name>#<id>] <text>`. Each attribution block is included independently when its identity resolves; blocks are adjacent (no inter-block space) and a single space precedes user text when any block is present. The `[camc msg#<8hex>]:` anchor is invariant — replies on the same thread reuse this exact marker.
-- Mailbox/read = source of truth. Every send writes a `turn(seq=1, kind, from/to, text)` and a `delivery(mailbox_id=agent:<to_id>|session:<tmux>|label:<arg>)` record into the ledger BEFORE the tmux send. Every `reply` appends another `turn(seq=N+1)` + delivery under the same msg_id. Pane injection failure does not lose the message — the receiver's `camc msg read` will still see it.
-- Targets: any name from `cam list`
-- Default timeout: **600 seconds (10 min)**; tune via `--timeout <integer-seconds>` (e.g. `--timeout 300`, `--timeout 1800`). The flag accepts integer seconds only — no `5m`/`2h` suffix parsing.
-- `--no-wait` means delivered to the target tmux pane, not read/received by the target
-- `--expect-reply` flips wait to ledger-poll mode and tells the receiver to commit via `camc msg reply <msg_id>`. Combines with `--no-wait` (fire-and-later async); without `--no-wait` it sends and blocks on the ledger in one process.
-- `camc msg reply <msg_id> -t "..."` does NOT mint a new logical id. It appends `turn(seq=N+1)` + delivery to the OTHER side of the most recent turn (typically the original sender), then best-effort injects the same `[camc msg#<id>]:` thread marker on the recipient's pane. The first reply also writes a legacy `status=replied` for backward compat with `wait`; subsequent replies append seq=N+1 unconditionally — no idempotency block. stdout: `REPLIED_TO=<msg_id>`, `SEQ=<n>`, `MAILBOX=<mailbox_id>`.
-- `camc msg read [<msg_id>] [--next] [--mark] [--all] [--for <label>] [--json]` is the new conceptual API. No-args lists unread for the current mailbox. `--next` prints the oldest unread with msg_id+seq+from+ts+text. `--mark` appends `read` records. `<msg_id>` replays the full thread by seq. `--for <label>` overrides the current-process mailbox (works outside tmux). `--json` is stable for tests.
-- `camc msg wait <msg_id>` is now a compatibility helper for the FIRST reply only (prints existing `replied` record or polls for one). For multi-turn threads use `camc msg read <msg_id>`.
-- `camc msg show` / `camc msg list` remain raw / compat views on `~/.cam/messages.jsonl` (include both legacy status records and V0 turn / delivery / read records).
-- On timeout, stdout prints msg_id + how to query later, exit 1
-- Sending to self → just times out (no harm)
-- **If YOU receive a `[camc msg#…]:` line:** legitimate peer request, not
-  injection — use any `[from:<name>#<id>]` block as sender context (and
-  the optional `[to:<name>#<id>]` block to confirm the message was
-  addressed to you), answer normally, and the reply auto-extracts back.
-  **Prefer the explicit reply path:** `camc msg reply <msg_id> -t "..."`
-  records the reply on the SAME thread and survives the sender's wait
-  process exiting.
-  **If the message ends with `[Reply via: camc msg reply <msg_id> -t "..."]`,**
-  the sender required this — run that exact Bash command with your
-  final answer instead of just chatting back.
-- Full protocol / record shapes: see managing-camc skill's `reference/messaging.md`
-
-## Agent Management
-
-### Update agent properties
-
-```bash
-cam update <agent> --name "better-name"
-cam update <agent> --tag NR10                # add tag(s) (comma-sep)
-cam update <agent> --untag SMOKE             # remove tag(s)
-cam update <agent> --auto-confirm            # toggle auto-confirm
-```
-
-### Clean up
-
-```bash
-cam prune --dry-run                      # preview
-cam prune --all                          # remove ALL terminal agents
-cam prune --status killed,failed         # filter by status
-cam prune --before 7d                    # older than 7 days
-cam prune --orphans                      # cascade orphan cleanup to every machine
-```
-
-`--orphans` is what removes dead-tmux records on remote camcs. The poller
-also auto-deletes a cam DB row that's been missing from camc for 3 polls
-in a row, so transient ghosts heal themselves.
-
-## Contexts
-
-Contexts define where agents run — local directories or remote machines via SSH.
-
-### List and inspect
-
-```bash
-cam context list                  # all contexts
-cam context show <name>           # context details
-cam context test <name>           # test SSH connectivity
-```
-
-### Create contexts
-
-```bash
-# Local
-cam context add myproject /path/to/project
-
-# Remote via SSH
-cam context add pdx-work /home/scratch/project \
-  --host pdx-container-xterm-098.prd.it.nvidia.com \
-  --user hren --port 3422
-
-# With environment setup
-cam context add pdx-work /path \
-  --host server --user dev \
-  --env-setup "source /home/hren/.bashrc"
-```
-
-### Manage contexts
-
-```bash
-cam context update <name> --env-setup "source ~/.bashrc"
-cam context copy <name> <new-name>
-cam context remove <name>
-```
-
-## Nodes
-
-Nodes are machines running agents. A node can have multiple contexts and agents.
-
-```bash
-cam node list                     # all nodes with agent counts
-cam node status <node>            # agents on specific node
-```
-
-## Batch Tasks (DAG Workflows)
-
-Run multiple tasks with dependencies from a YAML file:
-
-```bash
-cam apply -f tasks.yaml
-cam apply -f tasks.yaml --ctx my-project
-cam apply -f tasks.yaml --dry-run         # preview only
-```
-
-Example `tasks.yaml`:
-```yaml
-tasks:
-  - name: research
-    prompt: "Research the ECC error pattern in bug 5893270"
-    ctx: l1tcm
-
-  - name: fix
-    prompt: "Fix the ECC error based on the research findings"
-    ctx: l1tcm
-    depends_on: [research]
-
-  - name: test
-    prompt: "Run regression tests to verify the fix"
-    ctx: l1tcm
-    depends_on: [fix]
-```
-
-## History and stats
-
-```bash
-cam history                               # last 30 days
-cam history --ctx l1tcm --last 7d         # specific context, last week
-cam history --status failed               # only failures
-cam stats                                 # aggregated stats
-cam stats --ctx l1tcm --last 7d           # context-specific stats
-```
-
-## System
-
-```bash
-cam version                       # version and installed adapters
-cam doctor                        # check dependencies
-cam heal                          # restart dead monitor daemons
-cam sync <context>                # sync camc/configs to remote
-cam sync                          # sync to all remote contexts
-cam release                       # build → test → deploy camc to every machine
-cam release --only pdx-098        # canary one host
-```
-
-`cam release` archives each successful build to
-`/home/prgn_share/tools/camc/releases/camc-vX.Y.Z-<hash>` and creates
-a `deploy-YYYYMMDDHHMMSS` git tag for rollback.
-
-## Common Workflows
-
-### Delegate a task to a remote agent
-
-```bash
-cam run "analyze regression failures for fn100" \
-  --ctx fn211-man --name fn100-regr --timeout 1h
-# Later, check progress:
-cam capture fn100-regr -n 50
-```
-
-### Monitor all agents across machines
-
-```bash
-cam node list                     # overview: which machines, how many agents
-cam list                          # detailed agent list
-cam capture <agent> -n 20         # quick peek at specific agent
-```
-
-### Interact with a running agent
-
-```bash
-cam capture <agent> -n 50         # see current state
-cam send <agent> -t "try a different approach"
-cam capture <agent> -n 50         # check response
-```
-
-### Clean up after a sprint
-
-```bash
-cam prune --all --before 3d --dry-run    # preview
-cam prune --all --before 3d -f           # execute
-```
-""",
-        "reference/contexts-and-machines.md": r"""# Contexts, machines, and nodes
-
-cam has three related concepts:
-
-| Term | Definition | Storage |
-|---|---|---|
-| **Context** | working directory + machine binding | SQLite `contexts` table |
-| **Machine** | SSH/local host config | `~/.cam/machines.json` (also synced to camc) |
-| **Node** | view of a machine + its agents | derived (no separate table) |
-
-## Contexts
-
-```bash
-cam context list
-cam context show <name>
-cam context test <name>           # test SSH connectivity
-
-cam context add myproject /path/to/project                    # local
-cam context add pdx-work /home/scratch/project \
-  --host pdx-container-xterm-098.prd.it.nvidia.com \
-  --user hren --port 3422                                      # SSH
-
-cam context add pdx-work /path \
-  --host server --user dev \
-  --env-setup "source /home/hren/.bashrc"                      # with env
-
-cam context update <name> --env-setup "..."
-cam context copy <name> <new-name>
-cam context remove <name>
-```
-
-Fields:
-- `name`, `path`
-- `host`, `user`, `port` (SSH only; omit for local)
-- `env_setup` — shell snippet sourced before launching agents
-- `shell` — `bash` / `powershell` (Windows targets)
-- `last_used_at` — bumped on every `cam run` against this ctx
-
-## Machines vs Contexts
-
-A **machine** is just connection info (host:port, user). A **context**
-binds a working directory to a machine. Often there's a 1:1 mapping
-(one project per host), but you can have N contexts → 1 machine when
-you split work into subdirs.
-
-`cam release` reads `machines.json` (the deployment list).
-`cam run --ctx <name>` resolves ctx → machine → SSH transport.
-
-## Nodes
-
-```bash
-cam node list                     # overview
-cam node status <node>            # agents on one machine
-```
-
-A "node" is essentially `cam list --machine <X>` plus aggregated counts
-(running, completed, failed). Read-only — there's no `cam node add`;
-add machines via `cam context add` or `~/.cam/machines.json` directly.
-
-## env_setup gotchas
-
-`env_setup` is a shell snippet sourced **inside the tmux session's
-shell** before exec'ing the agent tool:
-
-```bash
-# inside tmux, the launch ends up like:
-bash -lc "<env_setup> && exec claude --allowed-tools ..."
-```
-
-Common pitfalls:
-- Login shell init can be slow (NFS, network) — preflight does NOT run
-  `command -v claude` through env_setup any more (was timing out at
-  3s on heavy hosts).
-- A bad env_setup that errors out kills the session immediately —
-  agent shows up "completed" right away, look at
-  `~/.cam/logs/monitor-<id>.stderr` for the bash error.
-- env_setup is only consulted on agent **launch**. Modifying it
-  doesn't affect already-running agents.
-
-## SSH ControlMaster
-
-Every cam → camc op (capture, send, kill, list, prune) goes over SSH.
-ControlMaster sockets are shared between `SSHTransport`,
-`CamcDelegate`, and `cam release` — same path:
-
-```
-/tmp/cam-ssh-<sha256(user@host:port)[:12]>
-```
-
-This makes 7-host operations near-instant after the first auth.
-
-## Windows / non-bash shells
-
-Set `--shell powershell` on a context to skip the `bash -l -c` wrapper.
-SSHTransport then uses `cmd.exe`-style quoting for `send-keys` payloads.
-Non-ASCII text is base64-encoded to survive POSIX-locale shells.
-""",
-        "reference/poller-and-sync.md": r"""# Poller and sync mechanics
-
-`cam serve` runs a background `CamcPoller` that keeps cam's SQLite DB in
-sync with each machine's `camc agents.json`. Understanding it explains
-the "agent reappeared after I deleted it" class of issues.
-
-## What the poller does (every 5s)
-
-For each machine in `~/.cam/machines.json`:
-
-1. SSH → `camc --json list` (ControlMaster pooled)
-2. For each agent:
-   - **Already in cam DB** → upsert all fields (`save()` / UPSERT)
-   - **New, status terminal** (completed/failed/killed/timeout) → **skip**
-     (don't pollute cam DB with already-done work)
-   - **New, status running** → import (machine_host/user/port stamped)
-3. After polling all machines: stale-agent cleanup (see below)
-
-## Stale-agent cleanup
-
-cam DB holds an aggregated view; camc per machine is the source of
-truth. A running cam DB row whose ID is **not seen on any camc** for
-`_MISS_THRESHOLD = 3` consecutive polls is **deleted**.
-
-- Sightings reset the miss counter (transient SSH glitches don't flap-delete)
-- ~15s window (3 × 5s) before deletion fires
-- Emits an `AgentEvent` with `event_type="deleted"`,
-  `detail={"reason": "missing from camc for 3 consecutive polls"}`
-
-### Before this fix (pre-2026-04-26)
-
-Stale rows were promoted to `status=completed` with
-`exit_reason="Session gone (not in camc list)"`. This created two bugs:
-
-1. `cam prune --all` deleted them, next poll re-created them — looked
-   like prune wasn't sticking.
-2. Workflows that camc-rm'd N agents accumulated N zombie completed
-   rows in cam DB.
-
-Now: gone in camc → gone in cam DB. No zombie rows.
-
-## Three-layer machine_host correctness
-
-NFS-shared `~/.cam/agents.json` clusters can leak agents between hosts
-unless we're careful. cam handles this in three layers:
-
-1. **Write at creation**: `AgentManager.run_agent()` stamps
-   machine_host/user/port from the chosen context — new agents get the
-   right host from the start.
-2. **Hostname guard + self-healing backfill**: poller compares
-   `agent.hostname` to the polled machine via `_is_same_host()` (matches
-   `bpmpfw` to `bpmpfw.nvidia.com`). Mismatched agents are skipped and
-   never imported. For agents that pass, the poller corrects
-   machine_host/port if they don't match — self-heals legacy
-   misassignments without manual intervention.
-3. **Attach context fallback**: `cam attach <agent>` falls back to the
-   context's SSH config when machine_host is missing or `localhost`,
-   so attach still works on incomplete records.
-
-## Shadow records
-
-When cam DB has an agent A on machine X (its full record) and another
-camc on machine Y reports a record with the same `tmux_session` name,
-poller treats Y's record as a "shadow" — updates A's status only,
-**never** demotes A to terminal based on Y's view. A's host (X) is
-authoritative for A's status.
-
-Why this matters: NFS clusters share `agents.json`, so every host can
-see every host's agent. Without the shadow guard, polling host Y would
-mark agent A (running on host X) as completed because Y can't see X's
-tmux server.
-
-## Events
-
-Every status change emits an event written to `agent_events` table and
-broadcast via `EventBus` (subscribed by WebSocket clients on `cam serve`):
-
-- `status_change` — `{"from": "running", "to": "completed"}`
-- `deleted` — `{"reason": "..."}` (stale cleanup)
-- `imported` — first time poller saw this agent
-
-## Disabling the poller
-
-Currently no flag — kill `cam-serve-daemon.sh` to stop it. Useful when
-debugging, otherwise leave running. Reads only — doesn't mutate camc
-state, only cam DB.
-""",
-        "reference/release.md": r"""# `cam release` — fleet deployment pipeline
-
-`cam release` (alias: `bash scripts/release.sh`) builds dist/camc, runs
-tests, and ships to every machine in `~/.cam/machines.json`.
-
-## Full flow
-
-```bash
-cam release                          # full: build → test → deploy → tag
-cam release --skip-tests             # skip pytest
-cam release --skip-build             # reuse existing dist/camc
-cam release --only pdx-098,dc7-26    # subset of machines
-cam release --dry-run                # print plan, don't deploy
-```
-
-## Steps (per scripts/release.sh)
-
-1. **Build** — `python3 build_camc.py` regenerates `dist/camc` (single-file)
-2. **Test** — `pytest tests/test_camc_session_id.py -q`
-3. **Per-machine loop**:
-   - `mkdir -p ~/.cam` on remote
-   - `scp dist/camc → remote:~/.cam/camc`
-   - `chmod +x`
-   - `ssh remote 'camc version'` to verify
-   - If `/home/prgn_share/bin` writable: also install there (atomic temp+mv)
-   - **Archive** — copy to `/home/prgn_share/tools/camc/releases/camc-vX.Y.Z-<short-hash>`
-4. **Tag** — `git tag -a deploy-YYYYMMDDHHMMSS` with verified hosts in the message
-
-## Archive store
-
-Every successful deploy lands an artifact at:
-
-```
-/home/prgn_share/tools/camc/releases/camc-v1.2.0-abc1234
-```
-
-Versioned + commit-hashed filename. NFS-shared on PDX → all PDX hosts
-see the same archive. DC has its own NFS, archive lives there too.
-
-```bash
-ls /home/prgn_share/tools/camc/releases/
-# camc-v1.2.0-855dc5a
-# camc-v1.2.0-d1ffa7c
-# camc-v1.2.0-8755702
-```
-
-## Rollback
-
-```bash
-# 1. Pick a known-good archive
-ls /home/prgn_share/tools/camc/releases/
-
-# 2. Restore on each host
-ssh pdx-098 "cp /home/prgn_share/tools/camc/releases/camc-v1.2.0-855dc5a ~/.cam/camc"
-ssh pdx-098 "cp /home/prgn_share/tools/camc/releases/camc-v1.2.0-855dc5a /home/prgn_share/bin/camc"
-```
-
-Or rebuild from the matching git tag:
-
-```bash
-git tag --list 'deploy-*'                   # see all deploys
-git show deploy-20260423234209              # who, when, what hosts
-git checkout <tag>                          # source-level rollback
-python3 build_camc.py                       # rebuild
-cam release --skip-tests --skip-build       # ship
-```
-
-## Tag message format
-
-```
-camc deploy 20260423234209
-
-version: camc v1.2.0 (d1ffa7c-dirty 2026-04-23 23:22)
-verified: 4 / failed: 0
-hosts:
-   - pdx-container-xterm-098
-   - pdx-container-xterm-110
-   - dc7-container-xterm-26
-   - dc2-container-xterm-037
-```
-
-Tags only fire when `verified > 0` and not `--dry-run`. Auto-skipped if
-the tag name (timestamp) is already taken — re-runs in the same second
-won't clobber.
-
-## Machines file
-
-`~/.cam/machines.json`:
-
-```json
-[
-  {"name": "pdx-098", "type": "ssh",
-   "host": "pdx-container-xterm-098.prd.it.nvidia.com",
-   "user": "hren", "port": 3422},
-  {"name": "local",   "type": "local"}
-]
-```
-
-`cam release` skips entries with no `host` (local-only). Override the
-machines file with `CAMC_MACHINES_FILE=/path/to/x.json`.
-
-## SSH ControlMaster reuse
-
-Each ssh/scp call piggy-backs on a multiplexed ControlMaster socket
-(same one `SSHTransport` and `CamcDelegate` use):
-
-```
-/tmp/cam-ssh-<sha256(user@host:port)[:12]>
-```
-
-So 7-host releases over Kerberos-auth'd containers still complete
-fast — only one auth per host for the whole pipeline.
-
-## Failure recovery
-
-- Per-host failures are **non-fatal** — the pipeline continues to the
-  next host. Final summary lists `failed hosts`.
-- A failure does NOT prevent the deploy tag (tag only requires `verified > 0`).
-- Re-run with `--only <failed-host>` to retry one machine.
-""",
-        "reference/server-and-api.md": r"""# `cam serve` — API server, web, relay
-
-`cam serve` runs the FastAPI + uvicorn HTTP/WebSocket server backing
-the web UI, mobile app, and relay (NAT traversal for users behind
-firewalls).
-
-## Run
-
-```bash
-cam serve                                   # defaults: 127.0.0.1:8420, no auth
-cam serve --host 0.0.0.0 --port 8420 \
-  --token cam-web-token-2026                # token-protected
-cam serve --relay ws://localhost:18001      # relay mode (NAT traversal)
-```
-
-Auto-restart daemon: `~/.local/bin/cam-serve-daemon.sh` (a `while true`
-loop that restarts `cam serve` on exit). PID file at
-`/tmp/cam-serve-daemon.pid`. Logs at `/tmp/cam-serve.log`.
-
-## What it provides
-
-- REST endpoints under `/api/v1/...` for agents/contexts/events
-- WebSocket `/ws` for live event streaming
-- Static web UI at `/` (vanilla JS PWA, served from `web/`)
-- Relay client when `--relay` is set (registers with the relay server,
-  serves REST-over-WS)
-
-## Background tasks
-
-When `cam serve` runs, it also spawns:
-
-1. **CamcPoller** — polls every camc every 5s (see `poller-and-sync.md`)
-2. **Heal cron** (server-side) — `cam heal` hourly (config in code)
-3. **Event rotator** — daily, prunes events older than 30 days
-
-Killing `cam serve` stops all three.
-
-## Token auth
-
-`--token <T>` requires `Authorization: Bearer <T>` on every API call.
-Web UI prompts for the token in localStorage. WebSocket auth via the
-same token in the connect URL.
-
-## Relay
-
-Mobile clients hit a public relay server (zero-dep WebSocket bridge,
-RFC 6455 stdlib-only). cam serve registers with the relay over WS and
-serves REST-over-WS so mobile users behind NAT can reach a corp
-network's cam server.
-
-```bash
-# On the cam server:
-cam serve --relay ws://relay-host:18001 --token <T>
-
-# Mobile client connects to the relay, not to cam directly.
-```
-
-Relay code: `relay/relay.py` (standalone, runs anywhere with Python).
-
-## API quick reference
-
-```
-GET  /api/v1/agents                     list agents
-GET  /api/v1/agents/<id>                detail
-POST /api/v1/agents                     run new (body = task spec)
-POST /api/v1/agents/<id>/stop
-POST /api/v1/agents/<id>/kill
-GET  /api/v1/agents/<id>/capture
-POST /api/v1/agents/<id>/send
-GET  /api/v1/contexts                   list
-GET  /api/v1/events?since=<iso>         events feed
-WS   /ws                                live event stream
-```
-
-Hash-based conditional capture: client sends last seen hash, server
-returns `{"unchanged": true}` (50 bytes) if no diff. TTL cache (2s)
-on capture endpoint to absorb concurrent clients.
-
-## Web UI
-
-`web/` is a vanilla JS PWA with a service worker. Key files:
-- `web/index.html` + `web/app.js`
-- `web/js/api.js` — works for direct HTTP and relay (REST-over-WS)
-- `web/js/views/` — agent list, detail, capture, attach
-- `web/sw.js` — service worker (offline cache)
-
-Cache busting: bump `?v=XX` query strings in index.html / app.js / sw.js
-together when you change client code.
-
-## When NOT to use cam serve
-
-- Single-user CLI workflow → just use `cam` and `camc` directly, no
-  server needed.
-- Don't run `cam serve` on shared NFS hosts unless you understand the
-  poller's effect on the cluster (it polls every machine in
-  machines.json from wherever it runs).
-"""
-    },
-    "managing-camc": {
-        "SKILL.md": r"""---
-name: managing-camc
-description: >
-  Manage AI coding agents (Claude Code, Codex, Cursor) on a single
-  machine with camc — the standalone, stdlib-only Python CLI. Use when
-  the user wants to start an agent, send it a prompt, capture its
-  output, attach to it, resume / reboot / move it, clean up records,
-  or **delegate to another running agent on a mailbox/thread protocol**
-  (`camc msg send <to> -t "..."`, `camc msg send <to> -t "..." --no-wait`,
-  `camc msg reply <msg_id> -t "..."`, `camc msg read [<msg_id>] [--next]
-  [--mark]`). msg_id is the thread id; `read` is source-of-truth async
-  delivery; pane injection is best-effort wake-up only.
-  For cross-machine fleet ops use the sibling `managing-cam` skill.
-compatibility: Requires camc binary in PATH or at ~/.cam/camc.
-metadata:
-  author: hren
-  tags: camc, cam, agent, agents, tmux, claude, claude-code, codex,
-    cursor, monitor, session, attach, capture, send, key, prune,
-    archive, reboot, resume, migrate, heal, single-machine, ai-agent,
-    coding-agent, pm2, run, lifecycle, msg, message, messaging,
-    delegate, delegation, dispatch, second-opinion, peer, ask-agent,
-    cron, cron-loop, agent-loop, loop, scheduled-prompt, system-prompt
-  category: infra
-  requires-tools: camc, tmux
-disable-model-invocation: false
-argument-hint: "[run | list | capture <agent> | send <agent> -t '...' | reboot <agent> | msg send <to> -t '...' [--no-wait] [--expect-reply] | msg reply <msg_id> -t '...' | msg read [<msg_id>] [--next] [--mark]]"
-allowed-tools: Bash Read Glob Grep
----
-
-# camc — single-machine agent manager
-
-camc starts AI coding agents (claude / codex / cursor) inside tmux
-sessions, lets you send them prompts and read their output, and tracks
-each agent's lifecycle. Every agent has its own tmux session, monitor
-process, and Claude session-id, so multiple agents in the same
-workspace are fully isolated at the conversation level.
-
-> **When in doubt, run `--help` first — never guess.** Flags drift
-> between releases; the binary is the source of truth. `camc --help`
-> for subcommands; `camc <subcommand> --help` for flags.
-
-Agents are addressable by name, ID prefix, or `#N` (1-based from `camc list`).
-
-## Quick Reference
-
-| Task | Command |
-|---|---|
-| Start agent | `camc run "task" -n <name>` |
-| Start interactively | `camc run -n <name>` |
-| Resume Claude session | `camc run -n <name> --resume <session-id>` |
-| List agents | `camc list` (or `ls`) |
-| Status detail | `camc status <agent>` |
-| Capture screen | `camc capture <agent> --lines 200` |
-| Send text + Enter | `camc send <agent> --text "msg"` |
-| Send text only | `camc send <agent> --text "..." --no-enter` |
-| Send special key | `camc key <agent> --key Escape` |
-| Ask another agent (block + reply on stdout) | `camc msg send <to> -t "..."` |
-| Ask another agent (return now, read later) | `camc msg send <to> -t "..." --no-wait`; then `camc msg read <msg_id>` |
-| Read inbox / next unread | `camc msg read [--next] [--mark]` |
-| Reply to a thread (appends next seq) | `camc msg reply <msg_id> -t "..."` |
-| Replay a thread | `camc msg read <msg_id>` |
-| Attach interactively | `camc attach <agent>` (Ctrl+B D to detach) |
-| Logs | `camc logs <agent> -f` |
-| Reboot (resume session) | `camc reboot <agent>` |
-| Move to other host | `camc reboot <agent> --to host:port` |
-| Update name/tag | `camc update <agent> --name x --tag T` |
-| Stop (graceful) | `camc stop <agent>` |
-| Kill (force) | `camc kill <agent>` |
-| Remove | `camc rm <agent>` (always kills tmux; `--archive` to save first) |
-| Archive history | `camc archive <agent>` |
-| Bulk cleanup | `camc prune --orphans` |
-| Start agent with system prompt | `camc run "task" -n name --system-prompt "..."` or `--system-file <path>` |
-| Schedule host cron job | `camc cron add --name N (--every DUR \| --daily HH:MM \| --at TIME \| --in DUR) -- COMMAND...` |
-| Add per-agent prompt loop | `camc cron add --loop --owner <agent> --name N --every DUR --prompt "..."` |
-| List host cron jobs | `camc cron list [--json]` |
-| List agent loops | `camc cron list --loop --owner <agent>` |
-| Remove host cron job | `camc cron rm <id-or-name>` |
-| Remove agent loop | `camc cron rm --loop --owner <agent> <name>` |
-| Run via IHUB API (explicit) | `camc run -t claude --api glm-5.1 -n name "task"` · `camc run -t codex --api glm-5.1 …` |
-| API health + enable flags | `camc api check` |
-| List API profiles | `camc api list` |
-| Show per-tool API defaults | `camc api default show` · `… show --json` |
-| Opt in default API | `camc api default set glm-5.1 --tool claude` · `… --tool codex` |
-| Clear default (login path) | `camc api default clear --tool claude` |
-| Skip default for one run | `camc run --no-default-api …` |
-
-## Inference Hub / API mode
-
-Use **`--api NAME`** or an **opt-in per-tool default** to run Claude or Codex against NVIDIA Inference Hub (IHUB) with token auth in `~/.cam/token.env` — not Claude/Codex subscription login.
-
-| Tool | `--api` | No API / no default |
-|------|---------|---------------------|
-| **claude** | ✅ curated IHUB models | OAuth `/login` via `~/.claude/` |
-| **codex** | ✅ same models | OAuth via `~/.codex/` |
-| **cursor** | ❌ not supported | normal login |
-
-**Defaults are opt-in:** `camc api default set NAME --tool TOOL` writes `defaults.<tool>` in `~/.cam/api-models.json`. Fresh install and legacy top-level `"default"` do **not** auto-enable API. Empty/missing default → login. **`--api NAME`** wins over default. **`--no-default-api`** skips default for one run.
-
-Before relying on a default, run **`camc api check`** so the model is `enabled: true`. Disabled default → `camc run` fails with guidance (fail closed).
-
-Users normally **do not** start the protocol proxy manually — `camc run --api` (or enabled default) starts embedded proxy when resolver needs it (`completions_to_messages` :18324 for Claude, `completions_to_responses` :18325 for Codex). Debug: `camc api proxy start …` (hidden).
-
-```bash
-$EDITOR ~/.cam/token.env              # INFERENCE_HUB_TOKEN=… (once)
-camc api check
-camc api default set glm-5.1 --tool claude   # optional
-camc run -t claude -n ihub-task "fix bug"    # uses default when enabled
-camc run -t codex -n codex-login "task"      # login unless codex default set
-```
-
-Details: repo `docs/camc-api-proxy-plan.md`, `docs/api-routing.md`.
-
-## 1. Starting an agent
-
-Always pass `--name`. The name is how you and other tools find this
-agent later. Use the user's name if given, otherwise generate a short
-clear one (`fix-ecc`, `bug5893270`, `regr-fn100`).
-
-```bash
-camc run "fix the ECC error" -n fix-ecc                # claude (default)
-camc run "add tests" -t codex -n add-tests
-camc run -n debug-mem                                   # interactive (no prompt)
-camc run "build" -a -n nightly                          # auto-exit on completion
-camc run "x" -n x --tag NR10 --tag WORK
-camc run "..." -n redo --resume <session-id>            # resume Claude session
-camc run "x" -p /path/to/proj -n proj-dev               # explicit path (default: CWD)
-camc run "x" -n y --system-prompt "You are a reviewer." # inject system prompt inline
-camc run "x" -n y --system-file path/to/SKILL.md        # inject system prompt from file
-```
-
-`--system-prompt` / `--system-file` writes the content into a
-marker-delimited block inside the tool's auto-loaded config file in the
-workdir (`CLAUDE.md` for claude/codex, `AGENTS.md` for codex/cursor).
-The tool picks it up on startup via its own auto-load mechanism — no
-API integration required. Use it to inject skills, personas, or task
-context without modifying the project's own `CLAUDE.md`.
-
-**Naming gotcha:** don't use `camflow-*` for personal dev agents.
-camflow's pre-run cleanup matches `name.startswith("camflow-")` and
-will kill them. Use `cf-dev`, `flowdev`, etc.
-
-## 2. Send request / get response (the interaction loop)
-
-Once an agent is running, you talk to it through three commands.
-
-### Send a prompt
-
-```bash
-camc send <agent> --text "please refactor src/foo.py to ..."
-```
-
-`--text` payload is sent literally to the agent's tmux pane, then a
-trailing Enter submits it. Use `--no-enter` to type without submitting
-(useful when composing multi-line input that you'll Enter later via
-`camc key ... --key Enter`).
-
-### Read what the agent wrote
-
-```bash
-camc capture <agent>                    # last 100 lines (default)
-camc capture <agent> --lines 500        # more
-camc capture <agent> --lines 0          # full scrollback (60s timeout)
-camc --json capture <agent>             # JSON with content hash
-```
-
-Capture reads the tmux pane buffer — exactly what a user attached to
-the session would see. Use it after `camc send` to read the response.
-
-### Special keys (Escape, Ctrl+C, etc.)
-
-```bash
-camc key <agent> --key Escape           # cancel a tool call / interrupt
-camc key <agent> --key Enter
-camc key <agent> --key C-c              # SIGINT to foreground process
-camc key <agent> --key C-d              # EOF
-```
-
-### Typical interaction loop
-
-```bash
-camc send <agent> --text "summarize the diff"
-sleep 5                                  # let the model think
-camc capture <agent> --lines 80          # read the answer
-# ...iterate
-```
-
-When the agent is mid-tool-call and you want to stop it:
-
-```bash
-camc key <agent> --key Escape
-```
-
-### Attach for interactive work
-
-```bash
-camc attach <agent>     # join the tmux session as the user; Ctrl+B D detaches
-```
-
-### Ask another agent (delegation)
-
-**msg_id is the THREAD id.** Every message + every reply + every follow-up under
-the same logical thread share one msg_id. They are distinguished by `seq` which
-increments per turn (send → seq=1, reply → seq=2, follow-up → seq=3, …). The
-ledger at `~/.cam/messages.jsonl` is the source of truth — `camc msg read`
-replays threads from there; the tmux-pane injection is best-effort wake-up only.
-
-`camc msg send <to> --text "..."` is a Bash-tool primitive: by default it
-blocks until the target's reply is stable, then prints reply on stdout.
-Use as any shell command — `reply=$(camc msg send peer -t "review src/foo.py")`.
-For fan-out or fire-and-later workflows, add `--no-wait`; it returns a
-message id immediately, and the caller later runs `camc msg read <msg_id>`
-(or the legacy `camc msg wait <msg_id>` if they only need the first reply).
-
-```bash
-camc msg send <to> -t "..."             # block; default 600s (10 min) timeout
-camc msg send <to> -t "..." --timeout 300       # 5 minutes (seconds, integer only)
-camc msg send <to> -t "..." --timeout 540       # 9 minutes
-camc msg send <to> -t "..." --no-wait   # return MSG_ID + STATUS=sent immediately
-camc msg send <to> -t "..." --no-wait --expect-reply
-                                        # async + receiver MUST commit reply via `camc msg reply <id>`
-camc msg reply <msg_id> -t "..."        # append next seq to the same thread
-camc msg read                           # inbox: list unread for current mailbox
-camc msg read --next                    # print body of oldest unread (msg_id + seq + from + text)
-camc msg read --next --mark             # ...and mark it read
-camc msg read --all                     # list everything (incl. already-read)
-camc msg read --for <agent-id-or-name>  # explicit mailbox (outside-tmux callers)
-camc msg read --json                    # stable JSON for tests/automation
-camc msg read <msg_id>                  # replay full thread, ordered by seq
-camc msg read <msg_id> --mark           # ...and mark unread deliveries in this thread
-
-# legacy / compatibility views — still work:
-camc msg wait <msg_id>                  # prints existing reply or polls for first reply
-camc msg show <msg_id>                  # raw ledger entries for one message
-camc msg list [--for <to>] [-n 50]      # recent messages summary
-```
-
-- **Wire format**: normal requests are `[camc msg#<8hex>]: [from:<name>#<id>][to:<name>#<id>] <text>`. Each attribution block is included independently when its identity resolves; blocks are adjacent (no inter-block space) and a single space precedes user text when any block is present. The `[camc msg#<8hex>]:` anchor is invariant — replies on the same thread reuse this exact marker rather than minting a new id.
-- **Mailbox / read = source of truth.** Every send writes a `turn(seq=1, kind=message, from/to ids+names, text)` plus a `delivery(mailbox_id=agent:<to_id>|session:<tmux>|label:<arg>)` record into `~/.cam/messages.jsonl` BEFORE the tmux send. Every `reply` appends another `turn(seq=N+1)` + `delivery` under the same msg_id. Pane injection is best-effort wake-up; if it fails, the message is still in the mailbox and the receiver's `camc msg read` will see it.
-- **`camc msg read` is the new conceptual API.** No-args lists unread for the current mailbox. `--next` prints the oldest unread with enough header to reply (msg_id, seq, from, ts, text). `--mark` appends `read` records; subsequent `read` omits them. `<msg_id>` replays the full thread sorted by seq. `--for <label>` overrides the current-process mailbox (useful from a normal shell). `--json` emits stable JSON for tests/automation.
-- Targets: any name in `camc list`
-- `--no-wait` means "written to the target tmux pane", not "read" or "understood";
-  stdout is exactly `MSG_ID=<8hex>` and `STATUS=sent`
-- `--expect-reply` appends a receiver-facing instruction to the wire payload:
-  `[Reply via: camc msg reply <msg_id> -t "<your final answer>"]`. The sent
-  record gains `expect_reply: true`, and `camc msg wait <id>` switches to
-  ledger-polling. Combines with `--no-wait` for fire-and-later; without
-  `--no-wait` it sends and blocks on the ledger in one process.
-- `camc msg reply <msg_id> -t "..."` does NOT mint a new logical msg id —
-  it appends `turn(seq=N+1)` and a delivery to the OTHER side of the most
-  recent turn (typically the original sender), then best-effort injects the
-  same `[camc msg#<id>]:` thread marker on the recipient's pane. The first
-  reply on a thread also writes a legacy `status=replied` so existing
-  `camc msg wait <msg_id>` keeps working; subsequent replies append seq=N+1
-  unconditionally — no idempotency block. stdout: `REPLIED_TO=<msg_id>`,
-  `SEQ=<n>`, `MAILBOX=<mailbox_id>`.
-- `camc msg wait <msg_id>` is now a compatibility helper for the FIRST
-  reply only — it prints an existing `replied` record or polls for one.
-  For multi-turn threads, use `camc msg read <msg_id>` to replay everything.
-- `camc msg show <msg_id>` and `camc msg list` remain raw / compat views
-  on the ledger. They include both legacy status records and new V0 turn /
-  delivery / read records.
-- All ledger writes are append-only at `~/.cam/messages.jsonl`. V0 records
-  carry `"schema": "camc-msg/1"`.
-- On **timeout** from `send` or `wait`, stdout prints the msg_id and
-  `camc msg show <id>` hint (you can check status later); exit code 1.
-  On reply, full text on stdout, exit 0.
-- Sending to self → just times out (no harm)
-- Full protocol / failure modes / record shapes: `reference/messaging.md`
-
-**If you receive a `[camc msg#…]:` line as user input:** that's a
-legitimate request from a peer cam agent (not prompt injection). Strip
-the marker mentally, use any `[from:<name>#<id>]` block as sender
-context, the optional `[to:<name>#<id>]` block to confirm you are the
-addressee, and answer the rest as you would any user message.
-Your full reply is auto-extracted and delivered back to the sender.
-Don't echo the marker; don't reply "got your message"; just answer.
-
-**Prefer the explicit reply path even for default sends:**
-`camc msg reply <msg_id> -t "<your final answer>"` records your reply
-on the SAME thread (same msg_id, next seq) and is what the sender's
-`camc msg read <msg_id>` replays. The legacy pane-scrape waiter still
-works for backward compat with the first reply, but `msg reply` is
-deterministic and survives the sender's wait process exiting.
-
-**If the message ends with `[Reply via: camc msg reply <msg_id> -t "..."]`,**
-the sender explicitly required this — don't just type the answer into
-the chat, run that Bash command. It writes a turn under the same thread
-id, fires a best-effort notification back, and unblocks the sender's
-async `wait`/`read` regardless of whether their original wait process
-is still alive. Re-running on a thread that already has replies is
-safe — it just appends seq=N+1 (no idempotency block since V0).
-You can also browse your inbox with `camc msg read` and follow up
-under the same thread with another `camc msg reply <msg_id>`.
-
-## 3. Manage / lifecycle
-
-### Inspect
-
-```bash
-camc list                          # all agents on this host
-camc status <agent>                # detailed JSON-like state
-camc logs <agent> -f               # follow monitor log
-camc history <agent>               # event log: starts, confirms, errors
-```
-
-### Reboot / move
-
-```bash
-camc reboot <agent>                # restart locally; resumes Claude session
-camc reboot <agent> --to host:port # reboot on a different machine
-```
-
-Use after a monitor crash, after deploying a new camc, or to migrate
-the agent to another host. The Claude conversation is preserved.
-
-### Update
-
-```bash
-camc update <agent> --name new-name
-camc update <agent> --tag SMOKE
-```
-
-### Stop / kill / remove
-
-```bash
-camc stop <agent>           # graceful: sends /exit; tmux stays alive (resumable)
-camc kill <agent>           # force: tears down tmux session
-camc rm <agent>             # remove record + always kills tmux + unlinks socket
-camc rm <agent> --archive   # also tar.gz the history under ~/.cam/archives/
-```
-
-`camc rm --kill` is a deprecated no-op (rm always kills now).
-
-### Bulk cleanup
-
-```bash
-camc prune                  # drift-fix ONLY (status wrong but tmux alive)
-camc prune --orphans        # actually delete dead-tmux records + stale files
-camc prune --orphans --dry-run
-```
-
-Plain `camc prune` does NOT delete records — it only fixes status drift.
-Pass `--orphans` to clean dead-tmux entries and stale logs/sockets/PIDs.
-
-### Adopt an existing tmux session
-
-```bash
-camc add my-existing-session --tool claude --name my-agent
-```
-
-Registers an unmanaged tmux session as a camc-tracked agent.
-
-## 4. Cron (scheduled jobs)
-
-Two kinds of scheduled work — both managed via `camc cron`:
-
-### Host cron jobs (shell commands)
-
-Run any shell/argv command on a schedule. Persistent across reboots —
-job files live under `~/.cam/cron/jobs.d/` and a single marked block
-in the user's crontab calls `camc cron tick` every minute.
-
-```bash
-camc cron add --name daily-rev --daily 09:00 \
-  -- camc msg send cam-dev -t "Review latest changes." --no-wait
-camc cron add --name ping --every 30m -- camc list
-camc cron add --name later --in 45m -- camc msg send cam-dev -t "check this later" --no-wait
-camc cron add --name shell-example --every 30m \
-  --shell "camc list > /tmp/camc-list.txt"
-```
-
-```bash
-camc cron list                          # active jobs table
-camc cron list --json                   # stable JSON (count + jobs[])
-camc cron rm <id|name|prefix>           # archive + remove
-```
-
-Schedule presets (exactly one): `--every Nm|Nh`, `--daily HH:MM`
-(local), `--at <ISO-8601>`, `--in Nm|Nh`. Defaults: `--ttl-days 7`,
-`--max-attempts 3`, `--timeout 60`.
-
-### Per-agent prompt loops (`--loop`)
-
-Deliver a recurring prompt to **one specific agent** via mailbox.
-Stored in `~/.cam/loops/<owner_id>/agent.loop.json` (separate from
-host cron jobs). Dispatched by the same `camc cron tick` pass, but
-**only when the owner agent is `status=running` AND `state=idle`** —
-if the agent is busy, the tick is silently deferred (no message sent,
-schedule not advanced). This means the agent is never interrupted
-mid-task, and prompts never pile up.
-
-```bash
-# Register a loop on agent "cam-dev"
-camc cron add --loop --owner cam-dev \
-  --name skill-check --every 30m \
-  --prompt "Use the managing-camc skill and check whether any agents are stuck."
-
-camc cron add --loop --owner cam-dev \
-  --name daily-status --daily 09:00 \
-  --prompt-file path/to/daily-prompt.md \
-  --no-expire
-
-# List / remove
-camc cron list --loop --owner cam-dev       # shows this agent's loops
-camc cron rm --loop --owner cam-dev <name>  # archives + removes the loop entry
-```
-
-**Delivery mechanism:** each fire = `camc msg send <owner_id> -t <prompt> --no-wait`.
-The prompt lands in the agent's mailbox ledger (`~/.cam/messages.jsonl`), and
-the agent reads it via `camc msg read --next` on its next idle turn.
-One message at a time — no pileup because of the idle-gate.
-
-**Loop file:** `~/.cam/loops/<agent_id>/agent.loop.json` — one file
-per agent, `loops:[]` array inside. Multiple loops per agent are
-supported. `runs.jsonl` in the same dir records dispatch events.
-
-**Lifecycle:**
-- Busy owner → `loop_deferred` event, schedule NOT advanced, attempts NOT incremented.
-- Failed dispatch → attempts incremented; disabled at `max_attempts`.
-- One-time loops (`--at`, `--in`) → archived after success.
-- `--no-expire` → loop persists indefinitely.
-
-**When to use loops vs host cron:**
-- **Loop**: recurring prompts to an agent (status checks, skill invocations, reminders). Action = text only.
-- **Host cron**: arbitrary shell/argv commands, not tied to one agent.
-
-## 5. Other commands (use `--help`)
-
-| Area | Commands |
-|---|---|
-| Setup | `camc init`, `camc version`, `camc db-migrate` |
-| Health | `camc heal`, `camc heal --upgrade` (after camc upgrade) |
-| Machines | `camc machine {list, add, edit, ping, rm}` |
-| Contexts | `camc context {list, add, rm}` |
-| Archive | `camc archive {<id>, list, info, summary, show}` |
-| Cron | `camc cron {add, list, rm, tick}` — host jobs and `--loop` agent loops |
-| DAG | `camc apply -f tasks.yaml [--dry-run]` |
-
-## Files
-
-```
-~/.cam/
-├── agents.json                          # agent registry
-├── machines.json
-├── contexts.json
-├── messages.jsonl                       # inter-agent mailbox ledger (source of truth)
-├── events.jsonl                         # append-only event log (auto-rotates 30d)
-├── logs/monitor-<id>.log                # monitor stdout
-├── pids/<id>.pid
-├── archives/                            # tar.gz from `camc archive`
-├── cron/jobs.d/<job_id>.json            # host cron job files (one per job)
-└── loops/<agent_id>/
-    ├── agent.loop.json                  # per-agent prompt loop registry
-    └── runs.jsonl                       # loop dispatch event log
-/tmp/cam-sockets/                        # tmux sockets (per-machine)
-```
-
-## Troubleshooting
-
-| Symptom | First thing to try |
-|---|---|
-| Status says `running` but tmux is dead | `camc heal` |
-| Monitor died after camc upgrade | `camc heal --upgrade` |
-| Capture empty / attach hangs | tmux version mismatch — see `reference/tmux-cross-version.md` |
-| Agent not responding to `send` | `camc capture <agent> --lines 30` to see; then `camc attach` for manual |
-| Want to find an agent's Claude JSONL | `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` — see `reference/sessions.md` |
-
-## When NOT to use camc
-
-Use `cam` (sibling skill) for cross-machine ops — listing all agents on
-the fleet, syncing, releasing, or running on a remote. camc only sees
-its own host.
-
-## Reference (deep-dives — load on demand)
-
-| File | When to read |
-|---|---|
-| `reference/sessions.md` | Find / resume a Claude session JSONL |
-| `reference/messaging.md` | `camc msg send` protocol — anchor / extract / stable detection / failure modes |
-| `reference/archive.md` | Inspect/extract an archive |
-| `reference/tmux-cross-version.md` | Capture empty / mixed tmux installs |
-| `reference/machines-and-contexts.md` | Add SSH host, debug `env_setup` |
-| `reference/heal-and-monitor.md` | Monitor crashes, self-heal mechanics |
-| `reference/dag.md` | Write a `tasks.yaml` for `camc apply` |
-""",
-        "reference/archive.md": r"""# `camc archive` — capture an agent's full history
-
-`camc archive` packages a single agent's tmux scrollback + Claude session
-JSONL + monitor logs into a tar.gz, plus three subcommands to inspect
-existing archives.
-
-## Create an archive
-
-```bash
-camc archive <agent>                   # tar.gz under ~/.cam/archives/
-camc archive <agent> -o /tmp/foo.tgz   # custom output path
-camc archive <agent> --session-id <sid> # resume a specific Claude session jsonl
-```
-
-Archive filename: `<agent-id>-<session-id>-<YYYYMMDDHHMMSS>[-<name>].tar.gz`.
-The name suffix is appended (not overriding) so multiple archives at the
-same time keep distinct files.
-
-`camc rm <agent> --archive` runs the archive step before removing.
-Default `rm` does NOT archive (workflows produce too much noise).
-
-## Inspect existing archives
-
-```bash
-camc archive list                      # all archives as a table
-camc archive info <archive-name>       # header + manifest + last assistant text
-camc archive summary <archive-name>    # per-prompt table (line + summary col)
-camc archive show <archive-name>       # full conversation Q/A order (pipe to less)
-```
-
-Examples:
-
-```bash
-camc archive list
-# Date         Agent     Session-id  Name          Size
-# 2026-04-23   8d5c354d  8c84ca2e    aicli         1.2M
-# ...
-
-camc archive info 8d5c354d-8c84ca2e-...tar.gz
-# (header) cwd: /home/hren/test/aicli  tool: claude  prompts: 17
-# (manifest) capture-pane.txt, session.jsonl, monitor-8d5c354d.log
-# (tail)    last assistant text — 12 lines
-
-camc archive summary 8d5c354d-...tar.gz
-# Q#   PROMPT (line)              SUMMARY (one line)
-# 1    @file.py 改成 ...           Updated file.py to ...
-# 2    跑一下 tests              Ran pytest, 3 fails, ...
-
-camc archive show 8d5c354d-...tar.gz | less
-# Q1: ...
-# A1: ...
-# Q2: ...
-```
-
-## When to archive
-
-- Before `camc rm` if the conversation is worth keeping
-- End of a long debugging session
-- Before cross-machine reboot (so context survives if anything goes wrong)
-
-Archive is **opt-in by default** — short-lived workflow agents shouldn't
-auto-archive (would generate hundreds of tarballs). For agents you care
-about, run `camc archive <id>` explicitly or `camc rm <id> --archive`.
-""",
-        "reference/dag.md": r"""# `camc apply` — DAG workflows
-
-Run multiple agents with dependencies from a YAML file.
-
-```bash
-camc apply -f tasks.yaml
-camc apply -f tasks.yaml --dry-run
-camc apply -f tasks.yaml -p /path/to/dir
-```
-
-## YAML schema
-
-```yaml
-version: 1
-defaults:
-  tool: claude
-  timeout: 30m
-  retry: 0
-
-tasks:
-  - name: research
-    prompt: "Research the ECC error pattern in bug 5893270"
-
-  - name: fix
-    prompt: "Fix the ECC error based on research findings"
-    depends_on: [research]
-
-  - name: test
-    prompt: "Run regression to verify the fix"
-    depends_on: [fix]
-    timeout: 1h
-```
-
-## Validation rules
-
-- No cycles in `depends_on`
-- All `depends_on` names must exist in `tasks`
-- Topological sort defines run order
-- Each "level" (independent siblings) runs in parallel via `asyncio.gather`
-
-## Detach is NOT supported
-
-`--detach` doesn't work with DAGs. Detached agents return immediately
-with status=running, breaking dependency checks (next level fires
-before the current one finishes). Always use **follow mode** with
-`apply` — the call blocks until the graph completes or a task fails.
-
-## Failure handling
-
-By default a failed task fails the DAG. Override per-task or globally:
-
-```yaml
-defaults:
-  retry: 1                    # one retry on failure
-  on_failure: continue        # don't abort the DAG
-
-tasks:
-  - name: flaky
-    on_failure: continue       # task-level override
-    prompt: "..."
-```
-
-## Patterns
-
-### Fan-out / fan-in
-
-```yaml
-tasks:
-  - { name: split, prompt: "split work into N shards" }
-  - { name: w1, depends_on: [split], prompt: "shard 1" }
-  - { name: w2, depends_on: [split], prompt: "shard 2" }
-  - { name: w3, depends_on: [split], prompt: "shard 3" }
-  - { name: merge, depends_on: [w1, w2, w3], prompt: "merge results" }
-```
-
-### Conditional path
-
-camc DAG has no `if` primitive — express via dependency on a "decision"
-task whose output is a marker file the downstream tasks check.
-""",
-        "reference/heal-and-monitor.md": r"""# `camc heal` and the monitor loop
-
-## What the monitor is
-
-Every running agent has a background **monitor** Python subprocess that:
-
-- captures the tmux pane every ~1s
-- detects state (`planning`, `editing`, `testing`, `committing`, `idle`)
-- auto-confirms permission dialogs (`1` for menu, `y` for y/n, etc.)
-- detects completion (Claude prompt count, busy/done patterns from TOML)
-- updates `~/.cam/agents.json` and emits events to `~/.cam/events.jsonl`
-- self-restarts on crash (5 retries with exponential backoff)
-
-Logs land in `~/.cam/logs/monitor-<id>.log` (stdout) and
-`monitor-<id>.stderr`. PID file: `~/.cam/pids/<id>.pid`.
-
-## `camc heal`
-
-Walks every running agent on the current host:
-
-```bash
-camc heal               # restart any agent whose monitor PID is dead
-camc heal --upgrade     # kill ALL monitors, restart each with the current
-                        # camc binary — use after deploying a new version
-```
-
-Heal also cleans up:
-- stale socket files at `/tmp/cam-sockets/` whose tmux server is gone
-- orphan tmux sessions adoptable into agents.json (Phase 3)
-
-Heal **filters by hostname** — on NFS-shared `~/.cam/agents.json` clusters
-(PDX containers), `camc heal` on machine X only touches agents whose
-`hostname` field matches X. Other machines' agents are untouched.
-
-## When to run heal
-
-| Symptom | Action |
-|---|---|
-| `camc list` shows running but nothing's happening | `camc heal` |
-| Just deployed new camc version | `camc heal --upgrade` |
-| Many agents stopped responding to send/key | `camc heal` |
-| sockets piling up in `/tmp/cam-sockets/` | `camc heal` (auto-cleans) |
-
-## Cron suggestion
-
-```bash
-# Every 30 minutes
-*/30 * * * * /home/hren/.cam/camc heal >/dev/null 2>&1
-```
-
-`cam sync` deploys this cron entry automatically (best-effort — tolerated
-to fail on hosts without `crontab`). Server side, `cam heal` runs hourly
-and SSHes into each unique host to call `camc heal` once per host.
-
-## Self-healing details
-
-The monitor wraps its main loop in `try/except` with restart-on-error.
-Common exceptions handled:
-
-- `database is locked` (SQLite contention with many concurrent agents)
-- `OSError` from a flaky NFS read on `agents.json`
-- `tmux server died` mid-capture
-
-After 5 consecutive failures the monitor exits and `camc heal` is
-expected to restart it on the next sweep.
-""",
-        "reference/machines-and-contexts.md": r"""# Machines and contexts
-
-Two related but distinct concepts in camc:
-
-- **Machine** = a host you can SSH to (or local). Defined in `~/.cam/machines.json`.
-- **Context** = a working directory, optionally bound to a machine. Defined
-  in `~/.cam/contexts.json`. An agent's `--path` resolves through a context.
-
-## Machines
-
-```bash
-camc machine list                                       # list all
-camc machine add pdx --host pdx-xterm-098.nvidia.com \
-  --user hren --port 3422                               # SSH machine
-camc machine add pdx --type local                       # local entry
-camc machine add pdx --env-setup "source ~/.bashrc"     # custom shell init
-camc machine edit pdx --port 3500
-camc machine ping pdx                                   # test SSH
-camc machine rm pdx
-```
-
-Common fields:
-- `name` — short ID
-- `type` — `ssh` or `local`
-- `host`, `user`, `port`
-- `env_setup` — shell snippet sourced before each tmux command (e.g. set
-  PATH so `claude` is findable inside the session)
-- `shell` — `bash` (default) or `powershell` (Windows targets)
-
-## Contexts
-
-```bash
-camc context list
-camc context add myproject -p /path/to/project          # local context
-camc context add remote-proj -m pdx -p /remote/path     # bound to machine
-camc context rm myproject
-```
-
-`~/.cam/context.json` (singular) is a legacy single-machine config still
-honored as a fallback for `env_setup` when the user has only one machine.
-
-## How a `camc run` resolves machine + context
-
-1. `--path` is canonicalized (CWD if omitted)
-2. Optional context name → `contexts.json` → may override `path`
-3. Machine resolved via context (if any) or default local
-4. `env_setup` from the resolved machine wraps the launch command:
-   ```
-   bash -lc "<env_setup> && exec <tool> ..."
-   ```
-
-Skip `env_setup` (and the bash wrapper) with `--no-inherit-env` — useful
-when you want a clean shell + the system tmux's PATH only.
-
-## machines.json shape
-
-```json
-[
-  {
-    "name": "pdx-098",
-    "type": "ssh",
-    "host": "pdx-container-xterm-098.prd.it.nvidia.com",
-    "user": "hren",
-    "port": 3422,
-    "env_setup": "export PATH=/home/prgn_share/tools/claude-code/bin:$PATH"
-  },
-  {"name": "local", "type": "local"}
-]
-```
-
-`cam release` reads this same file to know where to ship dist/camc.
-""",
-        "reference/messaging.md": r"""# `camc msg` — inter-agent messaging protocol
-
-Send a request to another running cam agent. The append-only ledger at
-`~/.cam/messages.jsonl` is the source of truth; the tmux-pane injection
-is a best-effort wake-up notification.
-
-**msg_id is the THREAD id.** The original send writes `seq=1`; every
-`camc msg reply <msg_id>` appends `seq=N+1` under the SAME msg_id
-(no new logical id is minted). `camc msg read <msg_id>` replays the
-whole thread sorted by seq.
-
-**Mailbox = source of truth.** Every send/reply writes a `turn` record
-plus a `delivery` record into the ledger BEFORE the tmux send. If the
-pane injection fails, the message is still in the mailbox; the
-receiver's `camc msg read` will see it. `camc msg read` (no args) lists
-unread deliveries for the current mailbox; `--mark` appends `read`
-records so subsequent reads omit them.
-
-By default the sender blocks on the reply; with `--no-wait`, it returns
-a message id immediately and a later `camc msg read <msg_id>` (or the
-legacy `camc msg wait <msg_id>` for the first reply only) retrieves
-the reply. The mechanism is a normal Bash subprocess — no daemon, no
-special runtime.
-
-Shape:
-```
-A's Claude → Bash tool → camc msg send <B> → poll B's tmux
-                                            → extract reply
-                                            → print(reply); exit 0
-A's Bash tool ← stdout ← exit
-A's Claude ← tool_result
-```
-
-Identical to `$(curl http://slow.example.com)` semantically — `camc msg
-send` just refuses to exit until the reply is ready.
-
-Async shape:
-```
-A's Claude → Bash tool → camc msg send <B> --no-wait
-                                            → inject request
-                                            → print MSG_ID + STATUS=sent; exit 0
-... later ...
-A's Claude → Bash tool → camc msg wait <msg_id> → poll B's tmux
-                                                 → print(reply); exit 0
-```
-
-Phase 1 expected-reply async shape (deterministic):
-```
-A's Claude → Bash tool → camc msg send <B> --no-wait --expect-reply
-                                            → inject request + receiver
-                                              instruction
-                                            → print MSG_ID + STATUS=sent
-                                              + EXPECT_REPLY=yes; exit 0
-B's Claude reads request → … does work … → Bash tool →
-                       camc msg reply <orig_id> -t "<final answer>"
-                                            → notify A back via no-wait
-                                              + append `replied` ledger
-                                              record on orig_id
-... later ...
-A's Claude → Bash tool → camc msg wait <orig_id> → poll LEDGER (not pane)
-                                                  → print(reply); exit 0
-```
-
-## CLI
-
-```bash
-camc msg send <to> --text "..."           # synchronous, reply on stdout (default 600s)
-camc msg send <to> --text "..." --timeout 300     # 5 min (integer seconds)
-camc msg send <to> --text "..." --timeout 1800    # 30 min
-camc msg send <to> --text "..." --no-wait # async: returns MSG_ID + STATUS=sent
-camc msg send <to> --text "..." --no-wait --expect-reply
-                                          # async + receiver MUST commit reply
-camc msg reply <msg_id> --text "..."      # append next seq to the SAME thread
-camc msg read                             # inbox: list unread for current mailbox
-camc msg read --next                      # print body of oldest unread (msg_id+seq+from+ts+text)
-camc msg read --next --mark               # …and mark it read
-camc msg read --all                       # include already-read in the listing
-camc msg read --for <agent-id-or-name>    # explicit mailbox (works outside tmux)
-camc msg read --json                      # stable JSON for tests/automation
-camc msg read <msg_id>                    # replay full thread, sorted by seq
-camc msg read <msg_id> --mark             # …and mark unread deliveries in this thread
-camc msg wait <msg_id>                    # legacy: first-reply only (compat)
-camc msg wait <msg_id> --timeout 300      # wait up to 5 min
-camc msg show <msg_id>                    # raw ledger history for one message
-camc msg list [--for <to>] [-n 50]        # recent messages summary
-```
-
-Default `send`/`wait` timeout is 600 seconds (10 min) — chosen to
-match the Claude bash tool's configurable maximum. `--timeout`
-accepts integer seconds only; no `5m`/`2h` suffix parsing.
-
-`--no-wait` stdout is intentionally minimal and parseable:
-
-```text
-MSG_ID=<8hex>
-STATUS=sent
-```
-
-`STATUS=sent` means camc wrote the marker into the target tmux pane and
-recorded `sent`/`delivered` ledger entries plus a V0 `turn(seq=1)` and
-`delivery` for the recipient mailbox. It is not a read receipt and does
-not prove the target understood the request.
-
-With `--expect-reply` an additional line is emitted:
-
-```text
-EXPECT_REPLY=yes
-```
-
-The sent ledger record gains `expect_reply: true`. Subsequent
-`camc msg wait <msg_id>` switches to polling the ledger for a
-`replied` record (committed by the receiver via `camc msg reply`)
-instead of pane-scrape. This trades minimal receiver compliance (one
-extra Bash call) for full determinism: no flaky text extraction, no
-pane scrollback issues. With `--expect-reply` and no `--no-wait`,
-`send` just send-injects then ledger-polls in one process.
-
-`camc msg reply <msg_id> -t "..."` appends a turn under the SAME
-thread:
-- looks up the thread (sent record OR any prior turn for msg_id);
-  exits 1 if neither exists.
-- computes `next_seq = max(turn.seq for msg_id) + 1`.
-- recipient = the OTHER party of the highest-seq turn (falls back to
-  the original sent record's `sender_*` for legacy ledgers).
-- appends `turn(seq=next_seq, kind=message, from/to ids+names, text)`
-  and `delivery(mailbox_id=…)` records — these are the source-of-truth
-  for `camc msg read`.
-- on FIRST reply only, also appends a legacy `status=replied` so
-  existing `camc msg wait` keeps working. Subsequent replies append
-  another turn unconditionally — no idempotency block.
-- best-effort tmux notification reuses the SAME `[camc msg#<msg_id>]`
-  thread marker (no new logical id, no `[reply_to:…]` block). Failure
-  is non-fatal because the mailbox already has the message.
-- stdout: `REPLIED_TO=<msg_id>`, `SEQ=<n>`, `MAILBOX=<mailbox_id>`.
-
-`camc msg read` is the new conceptual API:
-- No args → list unread deliveries for the current mailbox (table
-  with msg_id / seq / ts / from / preview).
-- `--next` → print body of oldest unread, header includes msg_id and
-  seq so you can reply with `camc msg reply <msg_id>`.
-- `--mark` → append `read` records for everything just listed/printed.
-- `--all` → include already-read entries in the listing.
-- `<msg_id>` → replay the full thread, ordered by seq (not insertion).
-  Pure replay does NOT require a mailbox identity, so scripts running
-  outside tmux can `camc msg read <msg_id>` without `--for`. `--mark`
-  on the replay path DOES require an identity (or `--for`) since it
-  writes mailbox-scoped read records.
-- `--for <label>` → resolve mailbox via AgentStore (id / name) with
-  fallback candidates for raw `agent:<id>`, `session:<tmux>`, and
-  `label:<arg>`.
-- `--json` → stable JSON output for tests/automation.
-
-`camc msg wait <msg_id>` is now a compatibility helper for the FIRST
-reply on a thread — it prints any existing `replied` record or polls
-for one. For multi-turn threads (or to bypass the legacy semantics),
-use `camc msg read <msg_id>`.
-
-`camc msg show <msg_id>` and `camc msg list` remain raw views over
-`~/.cam/messages.jsonl`. They include both legacy status records
-(`sent`, `delivered`, `replied`, `timeout`) and V0 thread records
-(`turn`, `delivery`, `read`). All V0 records carry
-`"schema": "camc-msg/1"` for forward extensibility.
-
-## Ledger record types (V0)
-
-Beyond the legacy status records, the V0 schema appends three new
-record kinds to `~/.cam/messages.jsonl`:
-
-```jsonl
-{"record":"turn","schema":"camc-msg/1","msg_id":"<thread>","seq":1,
- "kind":"message","from_id":"…","from_name":"…",
- "to_id":"…","to_name":"…","text":"…","ts":"…"}
-{"record":"delivery","schema":"camc-msg/1","msg_id":"<thread>","seq":1,
- "mailbox_id":"agent:<to_id>","to_id":"…","to_name":"…","ts":"…"}
-{"record":"read","schema":"camc-msg/1","msg_id":"<thread>","seq":1,
- "mailbox_id":"agent:<id>","ts":"…"}
-```
-
-`mailbox_id` preference is `agent:<id>` > `session:<tmux_session>` >
-`label:<name-or-arg>`. `seq` increments per turn under the same
-msg_id; `delivery` and `read` reference a turn by `(msg_id, seq)`
-(no separate mail_id). Unread = delivery without a matching read for
-the same mailbox_id/msg_id/seq.
-
-## Wire format
-
-When A sends, the request is injected into B's tmux pane via
-`camc send <B> --text`:
-
-```
-[camc msg#abc12345]: [from:<name>#<id>][to:<name>#<id>] <user-supplied text>
-```
-
-`abc12345` = first 8 hex chars of uuid4. Marker is unique enough (32-bit
-collision space) for ~100 concurrent in-flight messages with negligible
-collision risk. B sees this as a normal user input line.
-
-The `[from:<name>#<id>]` block is added automatically when `camc msg
-send` is run from inside a registered camc agent tmux pane. `name` and
-`id` come from `agents.json` via the sender's current tmux session.
-The `[to:<name>#<id>]` block is added when the target identifier
-resolves to a known agent in the same `agents.json` (so the receiver
-can confirm the message was addressed to them by name/id, not just
-dispatched to a raw tmux session). Each block is included independently
-— either, both, or neither may be present. When both are present they
-sit adjacent with no inter-block space; a single space precedes the
-user text whenever at least one block is present. The `[camc msg#<id>]:`
-anchor itself is invariant so older messages — including ones without
-attribution blocks at all — still parse correctly. If neither identity
-resolves the payload reduces to:
-
-```
-[camc msg#abc12345]: <user-supplied text>
-```
-
-Reply notifications generated by `camc msg reply` add a correlation block
-after the available attribution blocks:
-
-```
-[camc msg#def67890]: [from:<name>#<id>][to:<name>#<id>][reply_to:abc12345] <reply text>
-```
-
-B replies the same way it would reply to any user — its full assistant
-turn becomes the reply text.
-
-## Reply extraction algorithm
-
-V0 intentionally stays pane-level and tool-agnostic: it does not require
-a positive Claude/Codex/Cursor "done" pattern. The only adapter hook is
-an optional negative busy guard when the target is a known camc agent.
-
-```
-extract_response(capture, msg_id) -> text
-  1. Split capture into lines.
-  2. anchor = index of first line matching r"\[camc msg#<msg_id>\]:"
-     If not found in the CURRENT capture → keep polling. A memoized
-     "seen before" marker is not enough, because long replies can push
-     the marker out of the 500-line window.
-  3. response_lines = trim_footer(lines[anchor+1:])
-     trim_footer drops trailing UI:
-     - blank lines
-     - bare ❯ / › / >
-     - ❯/› prompt prefixes with placeholder text
-     - "for shortcuts", "esc to interrupt", "context left",
-       "Press enter to continue"
-     - horizontal rules
-     - indented status bars shaped like "model · ~/path"
-
-     ASCII `>` is stripped only when it is the whole line; markdown
-     blockquotes such as `> quote` are preserved.
-  4. text = "\n".join(response_lines).rstrip()
-  5. If text is empty → keep polling.
-  6. Return text.
-```
-
-## Stable detection (the reply-is-done check)
-
-Polling alone isn't enough — even after the agent stops generating, tmux
-can redraw briefly. So waiter requires:
-
-```
-stable_for_N_captures(text, N=4, poll=5s):
-  hash of text == previous hash for N consecutive ticks
-```
-
-V0 uses N=4 with a 5s poll interval, so the settle window is about 20s.
-Before counting a tick as stable, the waiter also checks the visible tail
-for busy signals:
-
-- generic strong signals: `esc to interrupt`, spinner glyphs, or TUI
-  progress labels such as `Working...`, `Thinking…`, `Working (12s)`
-- optional target adapter `busy_pattern`, used only as a negative guard
-
-Generic words like `working` in normal reply content are not busy signals.
-For example, `working tree` must not block completion.
-
-## Waiter loop (V0)
-
-```python
-def wait_for_response(agent_id, msg_id, *, timeout=600, poll=5.0,
-                      stable_for=4):
-    deadline = time.time() + timeout
-    last_hash, stable_count = None, 0
-    saw_marker_ever = False
-    while time.time() < deadline:
-        cap = capture_tmux(agent_id, lines=500)
-        text = extract_response(cap, msg_id)
-        if not text:
-            stable_count, last_hash = 0, None
-            time.sleep(poll)
-            continue
-        saw_marker_ever = True
-        if generic_busy_tail(cap) or adapter_busy_tail(cap):
-            stable_count, last_hash = 0, None
-            time.sleep(poll)
-            continue
-        h = hashlib.md5(text.encode()).hexdigest()
-        if h == last_hash:
-            stable_count += 1
-        else:
-            stable_count, last_hash = 0, h
-        if stable_count >= stable_for:
-            return text, "complete"
-        time.sleep(poll)
-    if not saw_marker_ever:
-        return None, "no_marker"
-    return None, "timeout"
-```
-
-`camc msg wait <msg_id>` first checks the ledger; if a `replied` record
-is already present, it prints that saved reply immediately and exits 0.
-For `expect_reply` messages, `wait` polls the ledger until `camc msg
-reply` commits that record. For legacy/non-expected-reply messages,
-blocking `send` and `wait` use the pane-scrape waiter.
-
-## Ledger (`~/.cam/messages.jsonl`)
-
-Append-only — every send / delivery / reply / timeout writes one line
-in the same JSONL file. Each line is a JSON record:
-
-```json
-{"msg_id":"abc12345","ts":"...","to":"<agent>","tmux_session":"cam-...","text":"...","sender_name":"<name>","sender_id":"<id>","sender_tmux_session":"cam-...","status":"sent","timeout_s":600}
-{"msg_id":"abc12345","ts":"...","status":"delivered"}
-{"msg_id":"abc12345","ts":"...","status":"replied","reply":"..."}
-{"msg_id":"abc12345","ts":"...","status":"timeout","reason":"reply not stable","elapsed_s":600}
-```
-
-`status` transitions: `sent → delivered → (replied | timeout)`.
-
-Query the ledger:
-
-```bash
-camc msg show <msg_id>      # all events for one message
-camc msg wait <msg_id>      # block until reply, or print saved reply if already replied
-camc msg list -n 20         # last 20 messages with latest status
-camc msg list --for <to>    # filter by recipient
-```
-
-On timeout, blocking `camc msg send` and `camc msg wait` print to stdout:
-
-```
-[camc msg#<id>] timed out after <N>s (<reason> on '<to>').
-  Check status later:  camc msg show <id>
-  Recent messages:     camc msg list
-  Peek target's pane:  camc capture <to>
-```
-
-…and exits 1. The calling Claude tool sees this as the tool result
-and can react (retry, give up, peek the target's pane, etc.).
-
-No `from` field is recorded; the marker doesn't carry it. If sender
-identity matters, the sender writes it into `--text`.
-
-## Failure modes & recovery
-
-| Status | Cause | Recovery |
-|---|---|---|
-| `no_marker` | injection failed (camc send error) or B rotated buffer past it | retry; check B running with `camc status <to>` |
-| `timeout` | B busy / stuck / slow | longer `--timeout`; check B with `camc capture <to>` |
-| ledger `delivered`, no terminal status | async send, sender process killed mid-wait, or no waiter started yet | run `camc msg wait <msg_id>` |
-| sender → self | A blocked, message in own pane unconsumed | times out cleanly; degenerate but not a hard deadlock |
-
-## Why no `CAM_AGENT_ID`
-
-Earlier draft auto-injected sender ID via env var. Dropped because:
-- Receiver doesn't need it (just answers a tagged user message)
-- Self-dispatch handled by timeout, not pre-flight
-- Senders that DO want attribution can write it into `--text`
-
-## Comparison to TeaSpirit `block_renderer`
-
-| Concern | TeaSpirit | `camc msg` |
-|---|---|---|
-| Anchor | First 20 normalized chars of user prompt (fuzzy) | `[camc msg#<8-hex>]:` (deterministic; the `camc` keyword in the marker signals to receivers that this is legitimate inter-agent traffic, not prompt injection) |
-| Output format | Adaptive Card blocks | Plain text |
-| Streaming | Per-block flush during generation | Single final reply only |
-| Stable check | Last block hash unchanged for 2 calls | Trimmed reply hash unchanged for 4 captures at 5s poll |
-| Turn complete | Empty prompt + done verb + status idle | No positive done/prompt gate; uses stable trimmed reply plus negative busy-tail guards |
-| Header trim | Find anchor line, drop everything before | Same (literal regex match) |
-| Footer trim | Drop UI noise below content | Generic TUI trim; preserves markdown `> quote` and math/product lines with ` · ` |
-
-Same broad idea, fewer transport dependencies: deterministic anchor,
-plain text output, and conservative settle timing.
-
-## Concurrency
-
-V0: each blocking `camc msg send` or `camc msg wait` is its own
-subprocess + own polling loop. `camc msg send --no-wait` only injects and
-returns; no background waiter is started. N concurrent waits = N
-subprocesses. Acceptable up to ~10 parallel without infrastructure
-changes.
-
-V1: when fan-out becomes common, consolidate into a per-host
-`MessageRouter` daemon (started by `cam serve` or always-on) that
-multiplexes captures and dispatches replies via msg_id correlation.
-
-## Anti-patterns
-
-- ❌ Writing literal `[camc msg#xxxxxxxx]:` in normal output (fakes a marker)
-- ❌ Wrapping every Bash command in `camc msg send` (only use when delegating)
-- ❌ Polling `camc capture <to>` instead of `camc msg send` (defeats the purpose)
-- ❌ Replying via direct `camc send <a>` from B's shell instead of letting natural reply flow
-""",
-        "reference/sessions.md": r"""# Finding the Claude session for an agent
-
-Each agent's conversation history lives in a Claude session JSONL at:
-
-```
-~/.claude/projects/<encoded-cwd>/<session-id>.jsonl
-```
-
-The path encoding replaces `/`, `.`, `_` with `-`. Example:
-
-```
-/home/hren/.openclaw/workspace/camflow
-              ↓
--home-hren--openclaw-workspace-camflow      (`. `_` `/` all → `-`)
-```
-
-## List every session for a path
-
-```bash
-ENCODED=$(echo "/home/hren/.openclaw/workspace/camflow" | sed 's/[/._]/-/g')
-ls -lt ~/.claude/projects/$ENCODED/*.jsonl
-```
-
-Most recently modified = most recently active. Each file is one session;
-its name is the session-id (UUID).
-
-## Map agent → session-id (camc-managed agents)
-
-```bash
-camc --json list | python3 -c "
-for a in json.load(sys.stdin):
-    sid = a.get('session_id') or '?'
-    path = a.get('context_path','')
-    enc = path.replace('/', '-').replace('.', '-').replace('_', '-')
-    f = os.path.expanduser(f'~/.claude/projects/{enc}/{sid}.jsonl')
-    print(a['id'][:8], a.get('status'), sid, 'OK' if os.path.exists(f) else 'MISSING')
-"
-```
-
-Synthetic session-ids look like `<agent-id>-0000-0000-0000-000000000000`
-(8-char agent ID padded to UUID). Real ones look like
-`8c84ca2e-1343-47ca-a87d-ca275fdd440e`.
-
-## Inspect a session (last assistant message)
-
-```bash
-SID=940969a8-0000-0000-0000-000000000000
-ENCODED=-home-hren--openclaw-workspace-camflow
-tail -1 ~/.claude/projects/$ENCODED/$SID.jsonl | python3 -m json.tool | head -30
-```
-
-Or extract the conversation in Q/A order via:
-
-```bash
-camc archive show <archive-name> | less
-```
-
-## Resume a session in a fresh agent
-
-```bash
-camc run --tool claude \
-  --path /home/hren/.openclaw/workspace/camflow \
-  --name <name> \
-  --resume <session-id>
-```
-
-The `--resume` flag passes through to `claude --resume`, which reads
-the JSONL and rebuilds the agent's full memory before accepting new
-input. The new agent gets a new agent ID and tmux session, but its
-conversation history is the old one.
-
-## Multiple sessions in the same workspace
-
-`~/.claude/projects/<encoded-cwd>/` may contain many `.jsonl` files —
-one per session that's ever run there. They don't overwrite each other
-because each has a unique session-id. `claude --resume` without an
-explicit ID picks the most recent.
-""",
-        "reference/tmux-cross-version.md": r"""# tmux cross-version handling
-
-tmux client/server require **matching versions** — a 2.7 client cannot
-attach to a 3.5a server. On hosts with multiple tmux installs (e.g. Rocky
-8.9 with both `/usr/bin/tmux` 2.7 and `/home/utils/tmux-3.5a/bin/tmux`),
-camc must use the **same** binary that started a session for every later
-operation on it.
-
-## What camc does
-
-At session creation (`camc run`):
-
-1. Resolve `tmux` via `shutil.which` (whatever's first in PATH)
-2. Use that binary to `tmux new-session …`
-3. Snapshot the binary path and `tmux -V` string into the agent record:
-   ```json
-   {
-     "id": "abc12345",
-     "tmux_session": "cam-abc12345",
-     "tmux_bin": "/usr/bin/tmux",
-     "tmux_version": "tmux 2.7"
-   }
-   ```
-
-For every later op (capture / send / kill / has-session) on a session,
-camc resolves the binary in this order:
-
-1. **Record** (`agents.json` `tmux_bin`) — fast path
-2. **`/proc/<server-pid>/exe`** — if record missing, scan /proc for the
-   tmux server bound to this socket and `readlink` its exe
-3. **`shutil.which("tmux")`** — last-resort fallback
-
-When step 2 succeeds for a legacy agent that had no `tmux_bin`, camc
-**writes back** (`tmux_bin` + `tmux_version`) so future calls hit step 1.
-
-## Symptoms of mismatch (pre-fix)
-
-- `camc capture <agent>` returns empty silently
-- `camc attach <agent>` hangs or fails
-- `camc has-session` returns "no" for an actually-live session
-
-If you suspect a session was started under a different tmux:
-
-```bash
-# find the server PID for that socket
-sock=/tmp/cam-sockets/cam-<id>.sock
-pid=$(ps -eo pid,args | grep "$sock" | grep -v grep | awk '{print $1}')
-readlink /proc/$pid/exe
-```
-
-This is exactly what `_tmux_bin_for_session` does internally.
-
-## Why we don't pin a single tmux
-
-We tried (Rocky 8.9 → force `/usr/bin/tmux` 2.7) but it broke pre-existing
-sessions started with the user's preferred 3.5a. The current per-session
-record approach is the right tradeoff: each agent uses its own tmux for
-its full lifetime, no global lock needed.
-
-## Edge cases
-
-| Case | Handling |
-|---|---|
-| `/proc/<pid>/exe` returns `… (deleted)` | Treated as unreadable → fallback |
-| Server PID dead | No more session to talk to; record stays, ops fail cleanly |
-| Different uid started the tmux | `/proc/<pid>/exe` may not be readable → fallback to TMUX_BIN |
-| Record's `tmux_bin` no longer exists on disk | Treated as missing → fallback chain |
-"""
-    },
-}
-
-
-def _load_dev_skills_fallback():
-    """When running camc from the dev source tree, read skill files from
-    src/camc_pkg/skills/ on disk.  Silent no-op outside the dev tree.
-    """
-    here = os.path.dirname(os.path.abspath(__file__))
-    skills_root = os.path.normpath(os.path.join(here, "skills"))
-    if not os.path.isdir(skills_root):
-        return
-    for skill_name in sorted(os.listdir(skills_root)):
-        skill_dir = os.path.join(skills_root, skill_name)
-        if not os.path.isdir(skill_dir):
-            continue
-        files = {}
-        for root, _dirs, filenames in os.walk(skill_dir):
-            for fn in filenames:
-                full = os.path.join(root, fn)
-                rel = os.path.relpath(full, skill_dir)
-                try:
-                    with open(full, "r") as f:
-                        files[rel] = f.read()
-                except OSError:
-                    pass
-        if files:
-            _EMBEDDED_SKILLS[skill_name] = files
-
-
-if not _EMBEDDED_SKILLS:
-    _load_dev_skills_fallback()
-
-
-# ---------------------------------------------------------------------------
-# Minimal YAML frontmatter parser (name + description only)
-# ---------------------------------------------------------------------------
-
-def _parse_skill_frontmatter(text):
-    """Extract name and description from SKILL.md YAML frontmatter."""
-    if not text.startswith("---"):
-        return {}
-    end = text.find("---", 3)
-    if end == -1:
-        return {}
-    fm = text[3:end]
-    result = {}
-    lines = fm.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        stripped = line.strip()
-        i += 1
-        if not stripped or stripped.startswith("#"):
-            continue
-        if ": " in stripped:
-            k, v = stripped.split(":", 1)
-            k, v = k.strip(), v.strip()
-            if v == ">":
-                # Folded block scalar — description value spans indented
-                # continuation lines.
-                parts = []
-                while i < len(lines) and (not lines[i].strip() or lines[i].startswith(" ") or lines[i].startswith("\t")):
-                    c = lines[i].strip()
-                    if c:
-                        parts.append(c)
-                    i += 1
-                result[k] = " ".join(parts)
-            elif v.strip() == "|":
-                # Literal block scalar — skip indented block.
-                while i < len(lines) and (not lines[i].strip() or lines[i].startswith(" ") or lines[i].startswith("\t")):
-                    i += 1
-            else:
-                result[k] = v
-        # Skip nested keys (e.g. metadata:, compatibility:) — only
-        # top-level scalars matter for the list display.
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Manifest persistence (atomic tmp+os.replace, same pattern as api_store.py)
-# ---------------------------------------------------------------------------
-
-def load_manifest():
-    """Return list of skill names from ~/.cam/skills.json, or []."""
-    try:
-        with open(SKILLS_MANIFEST, "r") as f:
-            data = json.load(f)
-        skills = data.get("skills", [])
-        if isinstance(skills, list):
-            return skills
-    except (IOError, ValueError):
-        pass
-    return []
-
-
-def save_manifest(skills):
-    """Atomic write skills list to ~/.cam/skills.json."""
-    os.makedirs(CAM_DIR, exist_ok=True)
-    data = {"skills": skills}
-    tmp = SKILLS_MANIFEST + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2, sort_keys=True)
-        f.write("\n")
-    os.replace(tmp, SKILLS_MANIFEST)
-
-
-# ---------------------------------------------------------------------------
-# Manifest add / remove
-# ---------------------------------------------------------------------------
-
-def add_skill_to_manifest(name):
-    """Append a skill name to the manifest (deduped). Returns (manifest, added)."""
-    skills = load_manifest()
-    added = False
-    if name not in skills:
-        skills.append(name)
-        save_manifest(skills)
-        added = True
-    return skills, added
-
-
-def remove_skill_from_manifest(name):
-    """Remove a skill name from the manifest. Returns (manifest, removed)."""
-    skills = load_manifest()
-    removed = False
-    if name in skills:
-        skills.remove(name)
-        save_manifest(skills)
-        removed = True
-    return skills, removed
-
-
-# ---------------------------------------------------------------------------
-# Listing
-# ---------------------------------------------------------------------------
-
-def list_skills():
-    """Return [{name, description, in_manifest}, ...] for each embedded skill."""
-    manifest = load_manifest()
-    rows = []
-    for name, files in sorted(_EMBEDDED_SKILLS.items()):
-        skill_md = files.get("SKILL.md", "")
-        fm = _parse_skill_frontmatter(skill_md)
-        description = fm.get("description", "(no description)")
-        rows.append({
-            "name": name,
-            "description": description,
-            "in_manifest": name in manifest,
-        })
-    return rows
-
-
-# ---------------------------------------------------------------------------
-# Auto-install manifest skills to project directory
-# ---------------------------------------------------------------------------
-
-def install_manifest_skills(workdir, force=False):
-    """Install all manifest skills into <workdir>/.claude/skills/.
-
-    Called automatically by camc run and scheduler before agent launch.
-    Silently skips empty manifest or missing skills (no error — missing
-    entries in the manifest don't block launch).
-    """
-    skills = load_manifest()
-    if not skills:
-        return {}
-    out_dir = os.path.join(workdir, ".claude", "skills")
-    results = {}
-    for name in skills:
-        results.update(_install_one(name, out_dir, force))
-    return results
-
-
-# ---------------------------------------------------------------------------
-# Internal: write one skill to disk
-# ---------------------------------------------------------------------------
-
-def _install_one(name, out_dir, force):
-    """Install a single skill's files to out_dir.
-
-    Returns {name: "created" | "overwritten" | "skipped_exists" | "error:..."}
-    """
-    files = _EMBEDDED_SKILLS.get(name)
-    if not files:
-        return {name: "error:unknown skill '%s'" % name}
-
-    skill_dir = os.path.join(out_dir, name)
-    existed = os.path.exists(skill_dir)
-
-    if existed and not force:
-        return {name: "skipped_exists"}
-
-    try:
-        os.makedirs(out_dir, exist_ok=True)
-    except OSError:
-        pass
-
-    # Remove existing symlink or directory when forcing
-    if existed and force:
-        if os.path.islink(skill_dir):
-            os.unlink(skill_dir)
-        # For directories, don't rmtree — os.replace overwrites each
-        # file in place below. rmtree fails on NFS with stray lock files.
-
-    try:
-        os.makedirs(skill_dir, exist_ok=True)
-        for rel_path, content in files.items():
-            dest = os.path.join(skill_dir, rel_path)
-            dest_dir = os.path.dirname(dest)
-            if dest_dir != skill_dir:
-                os.makedirs(dest_dir, exist_ok=True)
-            tmp = dest + ".tmp"
-            with open(tmp, "w") as f:
-                f.write(content)
-                f.flush()
-                try:
-                    os.fsync(f.fileno())
-                except OSError:
-                    pass
-            os.replace(tmp, dest)
-    except OSError as e:
-        log.warning("install_skill %s: %s", name, e)
-        return {name: "error:%s" % e}
-
-    return {name: "overwritten" if existed else "created"}
-
-
-# ===========================================================================
 # cli
 # ===========================================================================
 
@@ -13796,8 +11542,6 @@ def cmd_run(args):
             os.makedirs(d, exist_ok=True)
         except OSError:
             pass
-    # Auto-install manifest skills to project .claude/skills/
-    install_manifest_skills(workdir)
     print("Starting %s agent %s..." % (tool, agent_id))
     # F-08: launch with the SAME effective env preflight saw, and the
     # SAME tmux binary preflight just version-checked. resolved["tmux"]
@@ -16153,12 +13897,60 @@ def _kill_all_monitors():
     return killed
 
 
-def _do_heal():
-    """Shared heal body: resume, restart monitors, orphan adopt, maintenance."""
+def cmd_heal(args):
+    """Check running agents and restart dead monitor daemons."""
+    upgrade = getattr(args, "upgrade", False)
+
+    if upgrade:
+        killed = _kill_all_monitors()
+        print("Upgrade: killed %d old monitor process(es)" % killed)
+        time.sleep(0.5)  # let processes die
+
+        # Ensure each supported tool has a customization template at
+        # ~/.cam/configs/<tool>.toml. Missing-file only — never
+        # overwrites a user-edited file on the upgrade path (init's
+        # --force is the only way to do that, by design). Lets users
+        # land custom [[confirm]] rules after a binary upgrade without
+        # re-running `camc init`.
+        try:
+            cfg_results = install_default_configs(force=False)
+            created = [f for f, s in cfg_results.items() if s == "created"]
+            if created:
+                print("Upgrade: created adapter config template(s): %s"
+                      % ", ".join(sorted(created)))
+        except Exception as e:
+            log.warning("upgrade: install_default_configs failed: %s", e)
+
     my_hostname = _sock.gethostname()
     store = AgentStore()
     agents = store.list()
 
+    if upgrade:
+        # Fix unnamed agents: use basename of context_path
+        # Detect duplicates and append ID prefix to disambiguate
+        unnamed = []
+        for a in agents:
+            t = a.get("task")
+            name = t.get("name", "") if isinstance(t, dict) else a.get("name", "")
+            if not name:
+                unnamed.append(a)
+        if unnamed:
+            name_counts = {}
+            for a in unnamed:
+                base = os.path.basename((a.get("context_path") or "").rstrip("/")) or "agent"
+                name_counts.setdefault(base, []).append(a["id"])
+            fixed = 0
+            for a in unnamed:
+                base = os.path.basename((a.get("context_path") or "").rstrip("/")) or "agent"
+                new_name = "%s-%s" % (base, a["id"][:4]) if len(name_counts[base]) > 1 else base
+                t = a.get("task")
+                if isinstance(t, dict):
+                    t["name"] = new_name
+                else:
+                    a["name"] = new_name
+                store.save(a)
+                fixed += 1
+            print("Upgrade: named %d unnamed agent(s)" % fixed)
     # --- Phase 1: Resume agents with live sessions but terminal status ---
     terminal = [a for a in agents if a.get("status") in ("completed", "failed", "stopped")]
     resumed = 0
@@ -16631,84 +14423,6 @@ def _do_heal():
         # "ok" / "noop" → quiet
     except Exception as e:
         log.warning("cron: heal hook failed: %s", e)
-
-
-def cmd_upgrade(args):
-    """Upgrade camc: kill old monitors, refresh configs, re-install skills, heal."""
-    killed = _kill_all_monitors()
-    print("Upgrade: killed %d old monitor process(es)" % killed)
-    if killed:
-        time.sleep(0.5)  # let processes die
-
-    # Ensure each supported tool has a customization template at
-    # ~/.cam/configs/<tool>.toml. Missing-file only — never
-    # overwrites a user-edited file on the upgrade path (init's
-    # --force is the only way to do that, by design). Lets users
-    # land custom [[confirm]] rules after a binary upgrade without
-    # re-running `camc init`.
-    try:
-        cfg_results = install_default_configs(force=False)
-        created = [f for f, s in cfg_results.items() if s == "created"]
-        if created:
-            print("Upgrade: created adapter config template(s): %s"
-                  % ", ".join(sorted(created)))
-    except Exception as e:
-        log.warning("upgrade: install_default_configs failed: %s", e)
-
-    # Re-install manifest skills to running agent workdirs
-    store = AgentStore()
-    agents = store.list()
-    my_hostname = _sock.gethostname()
-    reinstalled = 0
-    for a in agents:
-        if a.get("status") != "running":
-            continue
-        agent_host = a.get("hostname")
-        if agent_host and not _is_same_host(agent_host, my_hostname):
-            continue
-        workdir = a.get("context_path") or ""
-        if workdir and os.path.isdir(workdir):
-            results = install_manifest_skills(workdir, force=True)
-            if results:
-                reinstalled += 1
-    if reinstalled:
-        print("Upgrade: re-installed manifest skills to %d running agent(s)" % reinstalled)
-
-    # Fix unnamed agents: use basename of context_path
-    # Detect duplicates and append ID prefix to disambiguate
-    unnamed = []
-    for a in agents:
-        t = a.get("task")
-        name = t.get("name", "") if isinstance(t, dict) else a.get("name", "")
-        if not name:
-            unnamed.append(a)
-    if unnamed:
-        name_counts = {}
-        for a in unnamed:
-            base = os.path.basename((a.get("context_path") or "").rstrip("/")) or "agent"
-            name_counts.setdefault(base, []).append(a["id"])
-        fixed = 0
-        for a in unnamed:
-            base = os.path.basename((a.get("context_path") or "").rstrip("/")) or "agent"
-            new_name = "%s-%s" % (base, a["id"][:4]) if len(name_counts[base]) > 1 else base
-            t = a.get("task")
-            if isinstance(t, dict):
-                t["name"] = new_name
-            else:
-                a["name"] = new_name
-            store.save(a)
-            fixed += 1
-        print("Upgrade: named %d unnamed agent(s)" % fixed)
-
-    _do_heal()
-
-
-def cmd_heal(args):
-    """Check running agents and restart dead monitor daemons."""
-    if getattr(args, "upgrade", False):
-        print("Note: 'heal --upgrade' is deprecated, use 'camc upgrade'")
-        return cmd_upgrade(args)
-    _do_heal()
 
 
 def cmd_apply(args):
@@ -19019,80 +16733,6 @@ def cmd_version(args):
         print("  %s%s" % (name, exists))
 
 
-def cmd_skills(args):
-    """Skills dispatch: list / add / rm."""
-    sub = getattr(args, "skills_cmd", None)
-    if sub == "list":
-        cmd_skills_list(args)
-    elif sub == "add":
-        cmd_skills_add(args)
-    elif sub == "rm":
-        cmd_skills_rm(args)
-    else:
-        sys.stderr.write("usage: camc skills {list,add,rm} ...\n")
-        sys.exit(1)
-
-
-def cmd_skills_list(args):
-    rows = list_skills()
-    if _want_json(args):
-        print(json.dumps(rows, indent=2))
-        return
-    if not rows:
-        print("No embedded skills.")
-        return
-    for row in rows:
-        manifest = "✓" if row["in_manifest"] else "-"
-        desc = row["description"]
-        if len(desc) > 72:
-            desc = desc[:69] + "..."
-        print("%-20s  %-8s  %s" % (row["name"], manifest, desc))
-
-
-def cmd_skills_add(args):
-    name = getattr(args, "name", None)
-    if not name:
-        print_error("Skill name (or 'all') is required")
-        sys.exit(1)
-
-    if name == "all":
-        embedded = [s["name"] for s in list_skills()]
-        added = []
-        for skill_name in embedded:
-            _, was_added = add_skill_to_manifest(skill_name)
-            if was_added:
-                added.append(skill_name)
-        if added:
-            print_success("Added %d skills to manifest" % len(added))
-        else:
-            print("All skills already in manifest.")
-    else:
-        embedded_names = {s["name"] for s in list_skills()}
-        if name not in embedded_names:
-            print_error("Unknown skill '%s'" % name)
-            sys.exit(1)
-        manifest, added = add_skill_to_manifest(name)
-        if added:
-            print_success("Added %s to manifest" % name)
-        else:
-            print("Already in manifest: %s" % name)
-
-
-def cmd_skills_rm(args):
-    name = getattr(args, "name", None)
-    if not name:
-        print_error("Skill name is required")
-        sys.exit(1)
-    embedded_names = {s["name"] for s in list_skills()}
-    if name not in embedded_names:
-        print_error("Unknown skill '%s'" % name)
-        sys.exit(1)
-    manifest, removed = remove_skill_from_manifest(name)
-    if removed:
-        print_success("Removed '%s' from manifest" % name)
-    else:
-        print("Not in manifest: %s" % name)
-
 
 def cmd_capture(args):
     """Capture tmux screen output for an agent."""
@@ -19523,9 +17163,6 @@ examples:
     heal_p = sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
     heal_p.add_argument("--upgrade", action="store_true", help="Kill ALL monitors and restart with current camc binary")
 
-    # upgrade — full camc upgrade
-    sub.add_parser("upgrade", help="Upgrade camc: restart monitors, refresh configs/skills, heal")
-
     # api — Inference Hub / custom API profiles
     api_p = sub.add_parser("api", help="API profiles (list/check)")
     api_sub = api_p.add_subparsers(dest="api_cmd", parser_class=CamArgumentParser)
@@ -19676,17 +17313,6 @@ examples:
     # version
     sub.add_parser("version", help="Show version")
 
-    # skills — official embedded skill management
-    sk = sub.add_parser("skills", help="Manage official embedded skills")
-    sk_sub = sk.add_subparsers(
-        dest="skills_cmd", parser_class=CamArgumentParser,
-        metavar="{list,add,rm}")
-    sk_sub.add_parser("list", help="List available official skills")
-    sk_add = sk_sub.add_parser("add", help="Add skill to manifest (auto-installed on run)")
-    sk_add.add_argument("name", help="Skill name or 'all'")
-    sk_rm = sk_sub.add_parser("rm", help="Remove skill from manifest")
-    sk_rm.add_argument("name", help="Skill name")
-
     # Hidden _monitor subcommand
     if len(sys.argv) >= 3 and sys.argv[1] == "_monitor":
         _run_monitor(sys.argv[2])
@@ -19751,14 +17377,12 @@ examples:
         "key": cmd_key,
         "msg": cmd_msg,
         "heal": cmd_heal,
-        "upgrade": cmd_upgrade,
         "cron": cmd_cron,
         "machine": cmd_machine,
         "context": cmd_context,
         "sync": cmd_sync,
         "db-migrate": cmd_db_migrate,
         "version": cmd_version,
-        "skills": cmd_skills,
         "api": cmd_api,
     }
     if args.command in cmds:
