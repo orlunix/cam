@@ -108,7 +108,15 @@ _camc_prelude_send_text_to_tmux() {
     if [ "$_camc_rc" -ne 0 ]; then return "$_camc_rc"; fi
 
     if [ "$_camc_send_enter" = "1" ]; then
-        sleep 0.15 2>/dev/null || sleep 1
+        # Match the transport-layer flush pacing in tmux_send_input:
+        # this is based only on payload size, never on the agent tool.
+        _camc_send_bytes=$(printf '%s' "$_camc_text" | wc -c | tr -d '[:space:]')
+        _camc_send_delay=$(awk -v n="${_camc_send_bytes:-0}" 'BEGIN {
+            d = 0.15 + n / 50000.0
+            if (d > 2.0) d = 2.0
+            printf "%.3f", d
+        }')
+        sleep "$_camc_send_delay" 2>/dev/null || sleep 1
         if [ -n "$_camc_socket" ]; then
             "$_camc_tmux" -u -S "$_camc_socket" send-keys -t "$_camc_target" Enter
         else
@@ -128,6 +136,7 @@ _camc_prelude_capture() {
         _camc_id=""
         _camc_text=""
         _camc_have_text=0
+        _camc_use_stdin=0
         _camc_send_enter=1
         _camc_unsafe=0
         while [ $# -gt 0 ]; do
@@ -145,7 +154,11 @@ _camc_prelude_capture() {
                 --no-fast-path)
                     return 1
                     ;;
-                --file|-f|--stdin)
+                --stdin)
+                    if [ "$_camc_have_text" = "1" ] || [ "$_camc_use_stdin" = "1" ]; then _camc_unsafe=1; break; fi
+                    _camc_use_stdin=1
+                    ;;
+                --file|-f)
                     _camc_unsafe=1
                     ;;
                 --*)
@@ -157,7 +170,7 @@ _camc_prelude_capture() {
             esac
             shift
         done
-        if [ "$_camc_unsafe" = "1" ] || [ "$_camc_have_text" != "1" ] || [ -z "$_camc_id" ]; then
+        if [ "$_camc_unsafe" = "1" ] || [ -z "$_camc_id" ] || { [ "$_camc_have_text" != "1" ] && [ "$_camc_use_stdin" != "1" ]; }; then
             return 1
         fi
         _camc_ok=0
@@ -168,11 +181,13 @@ _camc_prelude_capture() {
             esac
         fi
         if [ "$_camc_ok" != "1" ]; then return 1; fi
-        case "$_camc_text" in
-            *'
+        if [ "$_camc_use_stdin" != "1" ]; then
+            case "$_camc_text" in
+                *'
 '*) return 1 ;;
-        esac
-        if [ "${#_camc_text}" -gt 8000 ]; then return 1; fi
+            esac
+            if [ "${#_camc_text}" -gt 8000 ]; then return 1; fi
+        fi
 
         _camc_meta=$(_camc_prelude_lookup_agent_json "$_camc_id" 2>/dev/null || true)
         if [ -z "$_camc_meta" ]; then return 1; fi
@@ -189,6 +204,32 @@ _camc_prelude_capture() {
         fi
         if [ -z "$_camc_tmux" ]; then
             if [ -x /bin/tmux ]; then _camc_tmux="/bin/tmux"; else _camc_tmux="tmux"; fi
+        fi
+
+        if [ "$_camc_use_stdin" = "1" ]; then
+            # Only consume stdin after command/agent eligibility is known.
+            # A non-eligible request must still reach Python with its original
+            # stdin. Once consumed, retain it in a private file so complex
+            # payloads can re-exec Python without losing bytes.
+            command -v mktemp >/dev/null 2>&1 || return 1
+            _camc_stdin_file=$(umask 077 && mktemp "${TMPDIR:-/tmp}/camc-stdin.XXXXXX") || return 1
+            if ! cat > "$_camc_stdin_file"; then
+                rm -f "$_camc_stdin_file"
+                return 1
+            fi
+            _camc_stdin_bytes=$(wc -c < "$_camc_stdin_file" | tr -d '[:space:]')
+            _camc_stdin_lines=$(wc -l < "$_camc_stdin_file" | tr -d '[:space:]')
+            if [ "${_camc_stdin_bytes:-0}" -gt 8000 ] || [ "${_camc_stdin_lines:-0}" -gt 0 ]; then
+                exec 3< "$_camc_stdin_file"
+                rm -f "$_camc_stdin_file"
+                if [ "$_camc_send_enter" = "1" ]; then
+                    exec python3 "$0" send "$_camc_id" --stdin <&3
+                else
+                    exec python3 "$0" send "$_camc_id" --stdin --no-enter <&3
+                fi
+            fi
+            _camc_text=$(cat "$_camc_stdin_file")
+            rm -f "$_camc_stdin_file"
         fi
         _camc_prelude_send_text_to_tmux "$_camc_session" "$_camc_socket" "$_camc_tmux" "$_camc_text" "$_camc_send_enter"
         return "$?"
