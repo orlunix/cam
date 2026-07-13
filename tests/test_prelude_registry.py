@@ -249,3 +249,81 @@ def test_shell_send_text_fast_no_enter(prelude_bench_env):
         assert "not found" not in cap.stdout
     finally:
         subprocess.run(["tmux", "-S", str(sock), "kill-server"], capture_output=True)
+
+
+def test_shell_send_stdin_fast_no_enter_without_python(prelude_bench_env):
+    """Desktop/Mobile's short stdin input must stay in the shell prelude."""
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    camc = os.path.join(repo, "dist", "camc")
+    if not os.path.exists(camc):
+        pytest.skip("dist/camc not built")
+
+    sock = prelude_bench_env["sock"]
+    session = "cam-stdin01"
+    subprocess.run(["tmux", "-S", str(sock), "kill-server"], capture_output=True)
+    try:
+        subprocess.run(["tmux", "-S", str(sock), "new-session", "-d", "-s", session, "sh"], check=True)
+        _write_fast_agent(prelude_bench_env["cam_dir"], "badc0ded", session, sock)
+        env = {**os.environ, "HOME": str(prelude_bench_env["home"])}
+
+        proc = subprocess.run(
+            ["sh", "-x", camc, "send", "badc0ded", "--stdin", "--no-enter"],
+            input="stdin-fast-input",
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == "Sent.\n"
+        assert "exec python3" not in proc.stderr
+        cap = subprocess.run(
+            ["tmux", "-S", str(sock), "capture-pane", "-p", "-J", "-t", session + ":0.0", "-S", "-20"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert "stdin-fast-input" in cap.stdout
+    finally:
+        subprocess.run(["tmux", "-S", str(sock), "kill-server"], capture_output=True)
+
+
+def test_shell_send_stdin_fast_with_enter_without_python(prelude_bench_env):
+    """The normal Desktop/Mobile --stdin path submits through the shell prelude."""
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    camc = os.path.join(repo, "dist", "camc")
+    if not os.path.exists(camc):
+        pytest.skip("dist/camc not built")
+
+    sock = prelude_bench_env["sock"]
+    session = "cam-stdin02"
+    subprocess.run(["tmux", "-S", str(sock), "kill-server"], capture_output=True)
+    try:
+        subprocess.run(["tmux", "-S", str(sock), "new-session", "-d", "-s", session, "sh"], check=True)
+        _write_fast_agent(prelude_bench_env["cam_dir"], "f00dbabe", session, sock)
+        env = {**os.environ, "HOME": str(prelude_bench_env["home"])}
+
+        started = time.monotonic()
+        proc = subprocess.run(
+            ["sh", "-x", camc, "send", "f00dbabe", "--stdin"],
+            input="printf stdin-enter-ok",
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        elapsed = time.monotonic() - started
+
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == "Sent.\n"
+        assert "exec python3" not in proc.stderr
+        # The only submit pacing is the universal transport flush floor.
+        assert elapsed >= 0.13
+        cap = subprocess.run(
+            ["tmux", "-S", str(sock), "capture-pane", "-p", "-J", "-t", session + ":0.0", "-S", "-20"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert "stdin-enter-ok" in cap.stdout
+    finally:
+        subprocess.run(["tmux", "-S", str(sock), "kill-server"], capture_output=True)

@@ -1,5 +1,8 @@
 import os
 import sys
+from types import SimpleNamespace
+
+import pytest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 SRC = os.path.join(ROOT, "src")
@@ -37,3 +40,24 @@ def test_send_confirm_response_multichar_uses_input(monkeypatch):
 
     assert cli._send_confirm_response("cam-test", "yes", True) is True
     assert calls == [("input", "yes", True)]
+
+
+def test_cmd_send_does_not_acknowledge_failed_delivery(monkeypatch, capsys):
+    class FakeStore:
+        def get(self, agent_id):
+            assert agent_id == "deadbeef"
+            return {"tmux_session": "cam-deadbeef", "tool": "claude"}
+
+    monkeypatch.setattr(cli, "AgentStore", lambda: FakeStore())
+    monkeypatch.setattr(cli, "tmux_send_input", lambda *args, **kwargs: False)
+
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_send(SimpleNamespace(
+            id="deadbeef", text="hello", file=None, stdin=False,
+            no_enter=False,
+        ))
+
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "Sent." not in captured.out
+    assert "Failed to send input" in captured.err
