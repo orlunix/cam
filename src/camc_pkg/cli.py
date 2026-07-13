@@ -224,24 +224,6 @@ def _agent_tool(agent):
     return agent.get("tool", "")
 
 
-def _tool_prompt_submit_delay(tool):
-    if not tool:
-        return 0.0
-    try:
-        return _load_config(tool).prompt_submit_delay
-    except Exception:
-        return 0.0
-
-
-def _send_with_submit_delay(session_id, text, send_enter=True, submit_delay=0.0):
-    if submit_delay > 0 and send_enter and text:
-        if not tmux_send_input(session_id, text, send_enter=False):
-            return False
-        time.sleep(submit_delay)
-        return tmux_send_key(session_id, "Enter")
-    return tmux_send_input(session_id, text, send_enter=send_enter)
-
-
 def _send_confirm_response(session_id, response, send_enter):
     if response and len(response) == 1:
         if not tmux_send_key(session_id, response):
@@ -6331,10 +6313,9 @@ def cmd_send(args):
         print("Agent has no tmux session", file=sys.stderr)
         sys.exit(1)
     send_enter = not getattr(args, "no_enter", False)
-    tool = _agent_tool(a) if a else ""
-    submit_delay = _tool_prompt_submit_delay(tool)
-    _send_with_submit_delay(session, text, send_enter=send_enter,
-                            submit_delay=submit_delay)
+    if not tmux_send_input(session, text, send_enter=send_enter):
+        print("Failed to send input", file=sys.stderr)
+        sys.exit(1)
     print("Sent.")
 
 
