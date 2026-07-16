@@ -2587,6 +2587,12 @@ body.desktop[data-theme="light"] .composer-input:focus {
   color: var(--danger, #f85149);
   border-color: rgba(248, 81, 73, 0.45);
 }
+.terminal-history-btn[hidden],
+.terminal-bottom-btn[hidden],
+.terminal-attach-icon[hidden],
+.terminal-tmux-tabs[hidden] {
+  display: none;
+}
 .output-more-history:disabled {
   opacity: 0.55;
   cursor: progress;
@@ -2667,6 +2673,98 @@ body.desktop[data-theme="light"] .composer-input:focus {
   box-sizing: border-box;
   position: relative;
 }
+.terminal-tmux-chrome {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: min(100%, var(--desktop-rail-wide));
+  transform: translateX(-50%);
+  --terminal-chrome-bottom-inset: 20px;
+  z-index: 5;
+  pointer-events: none;
+}
+.terminal-tmux-chrome > * { pointer-events: auto; }
+.terminal-tmux-tabs {
+  position: absolute;
+  top: 10px;
+  left: 16px;
+  right: 56px;
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.terminal-tmux-tab,
+.terminal-history-btn,
+.terminal-bottom-btn,
+.terminal-attach-icon,
+.terminal-tmux-chrome .terminal-attach-status {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--output-float-bg);
+  color: var(--text);
+  box-shadow: 0 1px 4px var(--output-float-shadow);
+  backdrop-filter: blur(2px);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.terminal-tmux-tab {
+  flex: 0 0 auto;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+.terminal-tmux-tab.is-active { border-color: var(--accent, #58a6ff); color: var(--accent, #58a6ff); }
+.terminal-tmux-new { min-width: 26px; font-size: 15px; line-height: 1; }
+.terminal-history-btn,
+.terminal-bottom-btn,
+.terminal-attach-icon {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  cursor: pointer;
+}
+.terminal-history-btn { top: 10px; right: 16px; }
+.terminal-bottom-btn { right: 16px; bottom: var(--terminal-chrome-bottom-inset); }
+.terminal-attach-icon { left: 16px; bottom: var(--terminal-chrome-bottom-inset); }
+.terminal-tmux-chrome .terminal-attach-status {
+  position: absolute;
+  top: 44px;
+  right: auto;
+  bottom: auto;
+  left: 16px;
+  transform: none;
+  max-width: calc(100% - 32px);
+  height: 28px;
+  box-sizing: border-box;
+  padding: 4px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.terminal-tmux-chrome .terminal-attach-status.is-info {
+  color: var(--accent, #58a6ff);
+  border-color: rgba(88, 166, 255, 0.45);
+}
+.terminal-tmux-chrome .terminal-attach-status.is-ok {
+  color: var(--ok, #3fb950);
+  border-color: rgba(63, 185, 80, 0.45);
+}
+.terminal-tmux-chrome .terminal-attach-status.is-error {
+  color: var(--danger, #f85149);
+  border-color: rgba(248, 81, 73, 0.45);
+}
+.terminal-tmux-tab:hover,
+.terminal-history-btn:hover,
+.terminal-bottom-btn:hover,
+.terminal-attach-icon:hover { background: var(--output-float-bg-hover); }
 #mode-agents .agent-composer[hidden],
 .agent-terminal[hidden] { display: none !important; }
 .agent-terminal .agent-terminal-pane,

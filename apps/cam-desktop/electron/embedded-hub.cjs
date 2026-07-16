@@ -739,7 +739,7 @@ function _normalizeAgent(rec, ctx) {
     state:          rec.state  || '',
     tmux_session:   rec.tmux_session || rec.session || '',
     session:        rec.tmux_session || rec.session || '',
-    tmux_socket:    rec.tmux_socket || '',
+    tmux_socket:    rec.tmux_socket || (rec.runtime && rec.runtime.tmux && rec.runtime.tmux.socket) || '',
     tmux_bin:       rec.tmux_bin || (rec.runtime && rec.runtime.tmux && rec.runtime.tmux.bin) || '',
     pid:            rec.pid || null,
     hostname:       rec.hostname || '',
@@ -1264,6 +1264,13 @@ function _stampStartRequestFields(normalized, body) {
 /** Run `camc run` locally (hub's own host). Returns { ok, agentId, record }.
  *  On success, upserts the agent into the store under the given ctx. */
 async function _startLocalAgent(body, ctx) {
+  if (process.platform === 'win32') {
+    return {
+      ok: false,
+      error: 'local_runtime_unsupported',
+      detail: 'Local agents cannot run directly on Windows. Select a configured Linux SSH node. Local execution requires /bin/sh, Python 3, tmux, CAMC, and the selected ' + String((body && body.tool) || 'agent') + ' CLI installed and authenticated in the target runtime.',
+    };
+  }
   const argv = _buildRunArgv(body);
   const res = await new Promise((resolve) => {
     const bin = _localCamcPath();
@@ -4039,11 +4046,13 @@ async function handle(req, res) {
       try { body = await readJsonBody(req); }
       catch (e) { return send400(res, e.message); }
       if (!body || typeof body !== 'object') return send400(res, 'request body must be a JSON object');
-      const prompt = String(body.prompt || '').trim();
-      if (!prompt) return send400(res, 'prompt is required', 'missing_prompt');
       const target = _resolveStartTarget(body);
       if (!target.ok) return sendJson(res, 400, { error: target.error, detail: target.detail });
-      const runBody = { ...body, path: body.path || (target.ctx && target.ctx.path) || '' };
+      const runBody = {
+        ...body,
+        prompt: String(body.prompt || '').trim(),
+        path: body.path || (target.ctx && target.ctx.path) || '',
+      };
       const result = target.baseOpts
         ? await _startRemoteAgent(runBody, target.baseOpts, target.ctx)
         : await _startLocalAgent(runBody, target.ctx);

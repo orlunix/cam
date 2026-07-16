@@ -1343,6 +1343,10 @@ export function mountAgentConsole({ api, state, showToast }) {
   let terminalAttachHint = null;
   let terminalAttachStatus = null;
   let terminalAttachStatusTimer = null;
+  let terminalHistoryBtn = null;
+  let terminalBottomBtn = null;
+  let terminalTabsEl = null;
+  let terminalTmuxRefreshPending = false;
   let filePickMode = 'composer';
   // Workspace Browser (CAM-DESK-FILE-010..017) state. browseAgentId
   // tracks which agent we last loaded; switching agents resets the
@@ -1705,7 +1709,12 @@ export function mountAgentConsole({ api, state, showToast }) {
     termSessionId = ent ? ent.sessionId : null;
     termAgentId = ent ? ent.agentId : null;
     termOpening = ent ? !!ent.opening : false;
+    // The chrome is shared, while tmux window metadata belongs to each cached
+    // terminal. Restore the selected entry synchronously before the next
+    // remote refresh so switching back never leaves an empty/stale tab strip.
+    renderTerminalTabs(ent);
     updateTerminalAttachControls();
+    updateTerminalTmuxControls();
     return ent || null;
   }
 
@@ -1719,7 +1728,10 @@ export function mountAgentConsole({ api, state, showToast }) {
   function applyTerminalAppearance() {
     const theme = terminalThemeFromCss();
     const fontSize = terminalFontSizeFromCss();
-    if (terminalEl) terminalEl.style.background = theme.background;
+    if (terminalEl) {
+      terminalEl.style.background = theme.background;
+      terminalEl.style.setProperty('--terminal-chrome-bottom-inset', `${Math.round(fontSize * 1.5)}px`);
+    }
     for (const ent of terminalSessions.values()) {
       if (!ent.term) continue;
       ent.term.options.theme = theme;
@@ -1868,6 +1880,9 @@ export function mountAgentConsole({ api, state, showToast }) {
         ent.container.hidden = false;
         ent.container.style.visibility = '';
       }
+      // Cached tmux metadata draws immediately; the short pooled-control
+      // refresh reconciles window names/active state afterwards.
+      if (ent.sessionId) void refreshTerminalTmuxControls();
       scheduleTerminalFit({ keepBottom: opts.keepBottom !== false });
       try { ent.term && ent.term.focus(); } catch (_) {}
     }
@@ -1924,6 +1939,13 @@ export function mountAgentConsole({ api, state, showToast }) {
       hasConnected: false,
       needsBottom: true,
       forceBottomUntil: 0,
+      copyBrowsing: false,
+      tmuxReady: false,
+      tmuxWindows: [],
+      tmuxControlRevision: 0,
+      tmuxDiagnosticVisible: false,
+      _wheelHandler: null,
+      _scrollDisposable: null,
     };
     const FitCtor = window.FitAddon && window.FitAddon.FitAddon;
     if (FitCtor) {
@@ -1931,14 +1953,54 @@ export function mountAgentConsole({ api, state, showToast }) {
       entry.term.loadAddon(entry.fit);
     }
     entry.term.open(container);
+    const historyPageSequence = {
+      PageUp: '\x1b[5~',
+      PageDown: '\x1b[6~',
+    };
     entry.term.attachCustomKeyEventHandler((ev) => {
       if (!ev || ev.type !== 'keydown') return true;
+      const historySequence = entry.copyBrowsing ? historyPageSequence[ev.key] : '';
+      if (historySequence) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const bridge = termBridge();
+        if (bridge && entry.sessionId) {
+          void bridge.input({ sessionId: entry.sessionId, data: historySequence });
+        }
+        return false;
+      }
       if (!ev.ctrlKey || ev.shiftKey || ev.altKey || ev.metaKey) return true;
       if (String(ev.key || '').toLowerCase() !== 'v') return true;
       ev.preventDefault();
       ev.stopPropagation();
       void pasteTerminalClipboardText(entry);
       return false;
+    });
+    entry._wheelHandler = (ev) => {
+      if (!ev.deltaY) return;
+      const count = Math.max(1, Math.min(4, Math.ceil(Math.abs(ev.deltaY) / 80)));
+      const direction = ev.deltaY < 0 ? 'up' : 'down';
+      const lines = direction === 'up' ? -count : count;
+      if (entry.copyBrowsing) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const bridge = termBridge();
+        if (bridge && entry.sessionId) {
+          const sequence = direction === 'up' ? '\x1b[A' : '\x1b[B';
+          void bridge.input({ sessionId: entry.sessionId, data: sequence.repeat(5) });
+        }
+        return;
+      }
+      ev.preventDefault();
+      ev.stopPropagation();
+      try { entry.term.scrollLines(lines); } catch (_) {}
+      entry.needsBottom = false;
+      entry.forceBottomUntil = 0;
+      if (termAgentId === entry.agentId) updateTerminalTmuxControls();
+    };
+    container.addEventListener('wheel', entry._wheelHandler, { capture: true, passive: false });
+    entry._scrollDisposable = entry.term.onScroll(() => {
+      if (termAgentId === entry.agentId) updateTerminalTmuxControls();
     });
     entry.term.onData((data) => {
       const bridge = termBridge();
@@ -1984,7 +2046,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       if (!msg) return;
       const ent = terminalEntryBySession(msg.sessionId);
       if (!ent || !ent.term) return;
-      const shouldFollow = terminalShouldForceBottom(ent) || terminalIsAtBottom(ent);
+      const shouldFollow = !ent.copyBrowsing && (terminalShouldForceBottom(ent) || terminalIsAtBottom(ent));
       ent.term.write(String(msg.data || ''), () => {
         if (shouldFollow) terminalScrollToBottom(ent);
       });
@@ -1998,6 +2060,7 @@ export function mountAgentConsole({ api, state, showToast }) {
         try { ent.term.write(`\r\n\x1b[2mterminal detached${suffix}\x1b[0m\r\n`); } catch (_) {}
         ent.sessionId = null;
         ent.opening = false;
+        ent.copyBrowsing = false;
         if (termAgentId === ent.agentId) syncActiveTerminalEntry(ent.agentId);
       }
     });
@@ -2009,12 +2072,17 @@ export function mountAgentConsole({ api, state, showToast }) {
     const bridge = termBridge();
     const sid = ent.sessionId;
     terminalSessions.delete(agentId);
+    try { ent._scrollDisposable && ent._scrollDisposable.dispose(); } catch (_) {}
+    if (ent.container && ent._wheelHandler) {
+      try { ent.container.removeEventListener('wheel', ent._wheelHandler, { capture: true }); } catch (_) {}
+    }
     if (ent.container) {
       try { ent.container.remove(); } catch (_) {}
     }
     try { ent.term && ent.term.dispose(); } catch (_) {}
     ent.sessionId = null;
     ent.opening = false;
+    ent.copyBrowsing = false;
     if (bridge && sid) {
       try { await bridge.close({ sessionId: sid }); } catch (_) {}
     }
@@ -2029,6 +2097,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     const sid = ent.sessionId;
     ent.sessionId = null;
     ent.opening = false;
+    ent.copyBrowsing = false;
     if (bridge && sid) {
       try { await bridge.close({ sessionId: sid }); } catch (_) {}
     }
@@ -2113,6 +2182,9 @@ export function mountAgentConsole({ api, state, showToast }) {
       ent.lastUsed = Date.now();
       ent.hasConnected = true;
       setTerminalAttachStatus(res.reused ? 'Terminal session ready.' : 'Terminal attached.', 'ok');
+      void refreshTerminalTmuxControls();
+      window.setTimeout(() => { void refreshTerminalTmuxControls(); }, 400);
+      window.setTimeout(() => { void refreshTerminalTmuxControls(); }, 1200);
       if (outputMode === 'terminal' && selectedAgent()?.id === agent.id) {
         showTerminalEntry(agent.id, { keepBottom: true });
         scheduleTerminalFit({ keepBottom: true });
@@ -2586,10 +2658,6 @@ export function mountAgentConsole({ api, state, showToast }) {
       + '<button type="button" class="output-more-history" hidden '
       +   'aria-live="polite" '
       +   'title="Fetch more content from the tmux buffer">More +</button>'
-      + '<button type="button" class="terminal-attach-btn" hidden '
-      +   'title="Attach a file/image to this terminal session">Attach</button>'
-      + '<div class="terminal-attach-hint" hidden>Attach files/images here. Ctrl+V stays native text paste.</div>'
-      + '<div class="terminal-attach-status" hidden aria-live="polite"></div>'
       + '<button type="button" class="output-jump-bottom" hidden '
       +   'title="Jump to bottom and resume auto-follow">'
       +   '<span aria-hidden="true">&#x2913;</span>'
@@ -2598,18 +2666,8 @@ export function mountAgentConsole({ api, state, showToast }) {
       + '<div class="output-send-status" hidden aria-live="polite"></div>';
     outputWrap.appendChild(controls);
     moreHistoryBtn = controls.querySelector('.output-more-history');
-    terminalAttachBtn = controls.querySelector('.terminal-attach-btn');
-    terminalAttachHint = controls.querySelector('.terminal-attach-hint');
-    terminalAttachStatus = controls.querySelector('.terminal-attach-status');
     jumpBottomBtn = controls.querySelector('.output-jump-bottom');
     sendStatusPill = controls.querySelector('.output-send-status');
-
-    if (terminalAttachBtn) {
-      terminalAttachBtn.addEventListener('click', () => {
-        if (terminalAttachBtn.disabled) return;
-        void pickAndUploadTerminalAttachment();
-      });
-    }
 
     if (moreHistoryBtn) {
       moreHistoryBtn.addEventListener('click', () => {
@@ -2630,6 +2688,185 @@ export function mountAgentConsole({ api, state, showToast }) {
     }
   }
 
+  if (terminalEl) {
+    const chrome = document.createElement('div');
+    chrome.className = 'terminal-tmux-chrome';
+    chrome.innerHTML = ''
+      + '<div class="terminal-tmux-tabs" role="tablist" aria-label="tmux windows"></div>'
+      + '<button type="button" class="terminal-history-btn" hidden title="Browse tmux history"><span aria-hidden="true">↑</span><span class="sr-only">History</span></button>'
+      + '<button type="button" class="terminal-attach-icon" hidden title="Attach a file or image" aria-label="Attach a file or image">📎</button>'
+      + '<div class="terminal-attach-status" hidden aria-live="polite"></div>'
+      + '<button type="button" class="terminal-bottom-btn" hidden title="Return to live output"><span aria-hidden="true">↓</span><span class="sr-only">To bottom</span></button>';
+    terminalEl.appendChild(chrome);
+    terminalTabsEl = chrome.querySelector('.terminal-tmux-tabs');
+    terminalHistoryBtn = chrome.querySelector('.terminal-history-btn');
+    terminalBottomBtn = chrome.querySelector('.terminal-bottom-btn');
+    terminalAttachBtn = chrome.querySelector('.terminal-attach-icon');
+    terminalAttachStatus = chrome.querySelector('.terminal-attach-status');
+
+    terminalAttachBtn.addEventListener('click', () => {
+      if (!terminalAttachBtn.disabled) void pickAndUploadTerminalAttachment();
+    });
+    terminalHistoryBtn.addEventListener('click', async () => {
+      const ent = terminalSessions.get(termAgentId);
+      const bridge = termBridge();
+      if (!ent || !bridge || !ent.sessionId || terminalHistoryBtn.disabled) return;
+      const sessionId = ent.sessionId;
+      ent.tmuxControlRevision += 1;
+      terminalHistoryBtn.disabled = true;
+      try {
+        const result = await bridge.copyMode({ sessionId: ent.sessionId });
+        if (ent.sessionId !== sessionId) return;
+        if (!result?.ok) {
+          setTerminalAttachStatus(result?.detail || 'Could not enter tmux history.', 'error');
+          return;
+        }
+        ent.copyBrowsing = true;
+        ent.needsBottom = false;
+        ent.forceBottomUntil = 0;
+        updateTerminalTmuxControls();
+        try { ent.term.focus(); } catch (_) {}
+      } catch (e) {
+        setTerminalAttachStatus(e?.message || 'Could not enter tmux history.', 'error');
+      } finally {
+        ent.tmuxControlRevision += 1;
+        terminalHistoryBtn.disabled = false;
+        updateTerminalTmuxControls();
+      }
+    });
+    terminalBottomBtn.addEventListener('click', async () => {
+      const ent = terminalSessions.get(termAgentId);
+      if (!ent || terminalBottomBtn.disabled) return;
+      if (!ent.copyBrowsing) {
+        terminalScrollToBottom(ent);
+        updateTerminalTmuxControls();
+        try { ent.term.focus(); } catch (_) {}
+        return;
+      }
+      const bridge = termBridge();
+      if (!bridge || !ent.sessionId) return;
+      const sessionId = ent.sessionId;
+      ent.tmuxControlRevision += 1;
+      terminalBottomBtn.disabled = true;
+      try {
+        const result = await bridge.cancelCopyMode({ sessionId: ent.sessionId });
+        if (ent.sessionId !== sessionId) return;
+        if (!result?.ok) {
+          setTerminalAttachStatus(result?.detail || 'Could not leave tmux history.', 'error');
+          return;
+        }
+        ent.copyBrowsing = false;
+        terminalScrollToBottom(ent);
+        updateTerminalTmuxControls();
+        try { ent.term.focus(); } catch (_) {}
+      } catch (e) {
+        setTerminalAttachStatus(e?.message || 'Could not leave tmux history.', 'error');
+      } finally {
+        ent.tmuxControlRevision += 1;
+        terminalBottomBtn.disabled = false;
+        updateTerminalTmuxControls();
+      }
+    });
+    terminalTabsEl.addEventListener('click', async (ev) => {
+      const button = ev.target && ev.target.closest('button[data-window-index],button[data-action]');
+      if (!button || button.disabled) return;
+      const ent = terminalSessions.get(termAgentId);
+      const bridge = termBridge();
+      if (!ent || !bridge || !ent.sessionId) return;
+      const result = button.dataset.action === 'create'
+        ? await bridge.createWindow({ sessionId: ent.sessionId })
+        : await bridge.selectWindow({ sessionId: ent.sessionId, index: Number(button.dataset.windowIndex) });
+      if (!result?.ok) { setTerminalAttachStatus(result?.detail || 'tmux window action failed.', 'error'); return; }
+      ent.tmuxReady = true;
+      ent.tmuxWindows = result.windows || [];
+      renderTerminalTabs(ent);
+      updateTerminalTmuxControls();
+      try { ent.term.focus(); } catch (_) {}
+    });
+    window.setInterval(() => {
+      if (outputMode === 'terminal' && termAgentId) void refreshTerminalTmuxControls();
+    }, 2000);
+  }
+
+  function renderTerminalTabs(ent) {
+    if (!terminalTabsEl) return;
+    terminalTabsEl.textContent = '';
+    if (!ent?.tmuxReady) return;
+    for (const windowInfo of ent.tmuxWindows || []) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'terminal-tmux-tab' + (windowInfo.active ? ' is-active' : '');
+      button.dataset.windowIndex = String(windowInfo.index);
+      button.textContent = `${windowInfo.index}: ${windowInfo.name || 'window'}`;
+      button.title = button.textContent;
+      terminalTabsEl.appendChild(button);
+    }
+    const create = document.createElement('button');
+    create.type = 'button';
+    create.className = 'terminal-tmux-tab terminal-tmux-new';
+    create.dataset.action = 'create';
+    create.textContent = '+';
+    create.title = 'New tmux window';
+    terminalTabsEl.appendChild(create);
+  }
+
+  function updateTerminalTmuxControls() {
+    const ent = termAgentId ? terminalSessions.get(termAgentId) : null;
+    const terminalVisible = outputMode === 'terminal' && isAgentsMode() && !!ent?.sessionId;
+    const tmuxVisible = terminalVisible && !!ent?.tmuxReady;
+    if (terminalTabsEl) terminalTabsEl.hidden = !tmuxVisible;
+    if (terminalHistoryBtn) terminalHistoryBtn.hidden = !tmuxVisible || !!ent?.copyBrowsing;
+    if (terminalBottomBtn) terminalBottomBtn.hidden = !terminalVisible || (!ent?.copyBrowsing && terminalIsAtBottom(ent));
+  }
+
+  async function refreshTerminalTmuxControls() {
+    const ent = termAgentId ? terminalSessions.get(termAgentId) : null;
+    const bridge = termBridge();
+    if (!ent || !bridge || !ent.sessionId || terminalTmuxRefreshPending) {
+      updateTerminalTmuxControls();
+      return;
+    }
+    const sessionId = ent.sessionId;
+    const tmuxControlRevision = ent.tmuxControlRevision;
+    terminalTmuxRefreshPending = true;
+    try {
+      const result = await bridge.listWindows({ sessionId });
+      if (terminalSessions.get(termAgentId) !== ent || ent.sessionId !== sessionId) return;
+      if (ent.tmuxControlRevision !== tmuxControlRevision) return;
+      if (!result?.ok) {
+        ent.tmuxReady = false;
+        ent.tmuxDiagnosticVisible = true;
+        const diag = result?.diagnostics || {};
+        const code = [result?.stage, result?.error].filter(Boolean).join('/');
+        const state = [
+          diag.session ? `session=${diag.session}` : '',
+          diag.clientTty ? `client=${diag.clientTty}` : '',
+          `initial=${diag.initialPending ? 'pending' : 'done'}`,
+          `attempts=${Number(diag.recoveryAttempts || 0)}`,
+          diag.beforeClientCount == null ? 'baseline=unavailable' : `baseline=${diag.beforeClientCount}`,
+          diag.lastProbeMs ? `probe=${diag.lastProbeMs}ms` : '',
+        ].filter(Boolean).join(', ');
+        const detail = String(result?.detail || 'no detail');
+        const message = `tmux controls unavailable (${code || 'unknown'}): ${detail}${state ? ` [${state}]` : ''}`;
+        setTerminalAttachStatus(message, 'error', 0);
+        renderTerminalTabs(ent);
+        updateTerminalTmuxControls();
+        return;
+      }
+      ent.tmuxReady = true;
+      ent.tmuxWindows = result.windows || [];
+      ent.copyBrowsing = !!result.copyMode;
+      if (ent.tmuxDiagnosticVisible) {
+        ent.tmuxDiagnosticVisible = false;
+        setTerminalAttachStatus('', 'info', 0);
+      }
+      renderTerminalTabs(ent);
+      updateTerminalTmuxControls();
+    } finally {
+      terminalTmuxRefreshPending = false;
+    }
+  }
+
   function paneIsAtBottom(pane) {
     if (!pane) return true;
     return pane.scrollHeight - pane.scrollTop - pane.clientHeight < 30;
@@ -2647,6 +2884,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     }
     if (!terminalAttachStatus) return;
     terminalAttachStatus.textContent = text || '';
+    terminalAttachStatus.title = text || '';
     terminalAttachStatus.classList.remove('is-error', 'is-ok', 'is-info');
     if (text) {
       terminalAttachStatus.classList.add(kind === 'error' ? 'is-error' : (kind === 'ok' ? 'is-ok' : 'is-info'));
@@ -2655,6 +2893,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       if (ttl > 0) {
         terminalAttachStatusTimer = setTimeout(() => {
           terminalAttachStatus.textContent = '';
+          terminalAttachStatus.title = '';
           terminalAttachStatus.hidden = true;
           terminalAttachStatusTimer = null;
           updateTerminalAttachControls();
@@ -2680,6 +2919,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       terminalAttachStatus.hidden = true;
       terminalAttachStatus.textContent = '';
     }
+    updateTerminalTmuxControls();
   }
 
   function updateHistoryControls() {
