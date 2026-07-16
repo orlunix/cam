@@ -355,6 +355,10 @@ async function _withPooledClient(opts, op /* (client, finishWithTimings) */) {
 
   return new Promise((resolve) => {
     let settled = false;
+    let abortOperation = null;
+    const setAbortOperation = (fn) => {
+      abortOperation = typeof fn === 'function' ? fn : null;
+    };
     const finish = (partial) => {
       if (settled) return;
       settled = true;
@@ -371,15 +375,20 @@ async function _withPooledClient(opts, op /* (client, finishWithTimings) */) {
     };
 
     const tm = setTimeout(() => {
-      // Op-level timeout: destroy this client so a hung channel can't
-      // block future ops. The pool entry is dropped as part of cleanup.
+      // Tmux controls share a connection with the long-lived terminal PTY.
+      // They can opt in to closing only their short exec channel on timeout;
+      // regular operations retain the conservative whole-client reset.
+      const preserveConnection = !!opts.preserve_connection_on_timeout && !!abortOperation;
+      if (preserveConnection) {
+        try { abortOperation(); } catch { /* noop */ }
+      }
       finish({ ok: false, error: 'connect_timeout', detail: `op timeout after ${timeoutMs}ms` });
-      _dropEntry(key, 'op_timeout');
+      if (!preserveConnection) _dropEntry(key, 'op_timeout');
     }, timeoutMs);
     if (tm && typeof tm.unref === 'function') tm.unref();
 
     try {
-      op(entry.client, (partial) => { clearTimeout(tm); finish(partial); });
+      op(entry.client, (partial) => { clearTimeout(tm); finish(partial); }, setAbortOperation);
     } catch (e) {
       clearTimeout(tm);
       finish({ ok: false, error: 'exec_failed', detail: e && e.message });
@@ -392,9 +401,13 @@ async function execRemote(opts) {
   if (!opts || typeof opts.command !== 'string' || !opts.command) {
     return { ok: false, error: 'invalid_args', detail: 'command is required' };
   }
-  const run = () => _withPooledClient(opts, (client, finish) => {
+  const run = () => _withPooledClient(opts, (client, finish, setAbortOperation) => {
     client.exec(opts.command, { pty: false }, (err, stream) => {
       if (err) return finish({ ok: false, error: 'exec_failed', detail: err.message });
+      setAbortOperation(() => {
+        try { stream.close && stream.close(); } catch { /* noop */ }
+        try { stream.destroy && stream.destroy(); } catch { /* noop */ }
+      });
       let stdout = '';
       let stderr = '';
       stream.on('data', (d) => { stdout += d.toString('utf8'); });
@@ -428,7 +441,13 @@ async function execRemote(opts) {
     });
   });
   const first = await run();
-  if (_isRetryableChannelError(first) && first.timings && first.timings.pooled) {
+  // A tmux control request can time out while the shared terminal PTY is
+  // healthy.  Its timeout handler has already closed only that exec channel;
+  // retrying through the generic path would drop the pooled client and detach
+  // the live terminal that this request was meant to protect.
+  const preserveConnectionTimeout = !!opts.preserve_connection_on_timeout
+    && first && first.error === 'connect_timeout';
+  if (!preserveConnectionTimeout && _isRetryableChannelError(first) && first.timings && first.timings.pooled) {
     const second = await _retryOnceAfterPoolDrop(opts, 'exec_retry_after_channel_error', run);
     if (second && second.timings) second.timings.retried = true;
     return second;

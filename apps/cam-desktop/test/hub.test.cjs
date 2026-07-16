@@ -246,6 +246,20 @@ async function main() {
   ok('parity agent records requested_timeout', r.body.agent && r.body.agent.requested_timeout === '30m', JSON.stringify(r.body.agent));
   eq('parity agent records requested_retry', r.body.agent && r.body.agent.requested_retry, 2);
 
+  // An empty Start prompt is an interactive launch, not a validation
+  // failure. CAMC accepts an empty positional prompt and leaves the selected
+  // CLI ready for the user to type in its terminal.
+  setRemoteHandler((opts) => {
+    if (/'run'/.test(opts.command)) return { ok: true, stdout: '  ID: feedbeef\n', stderr: '' };
+    if (/'status'/.test(opts.command)) return { ok: true, stdout: JSON.stringify({ id: 'feedbeef', status: 'running', state: 'initializing', task: { tool: 'claude', name: '', prompt: '' }, context_path: '/home/ren/src', transport_type: 'ssh' }), stderr: '' };
+    return { ok: false, error: 'exec_failed', detail: 'unhandled cmd' };
+  });
+  r = await request('POST', '/api/agents', {
+    tool: 'claude', prompt: '', context: 'ren01', path: '/home/ren/src',
+  });
+  eq('empty prompt start accepted', r.status, 201);
+  eq('empty prompt start agent id', r.body && r.body.agentId, 'feedbeef');
+
   // 7. /api/contexts/:name_or_id resolves by id AND by name.
   r = await request('GET', '/api/contexts/' + encodeURIComponent(ctxId));
   eq('context GET by id', r.status, 200);

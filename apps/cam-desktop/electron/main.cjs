@@ -28,6 +28,13 @@ const https = require('node:https');
 const embeddedHub     = require('./embedded-hub.cjs');
 const credentialStore = require('./credential-store.cjs');
 const sshTransport    = require('./ssh-transport.cjs');
+const { tmuxMetadataForAgent, selectOnlyClient, selectNewClient, parseClientState, parseWindowRows, tmuxCommand } = require('./tmux-controls.cjs');
+
+// An SSH PTY can become a tmux client a little after the attach command
+// starts (notably on PDX). Probe at the renderer's 2s control-refresh cadence
+// only while the selected terminal is waiting, never as a global monitor.
+const TMUX_CLIENT_RECOVERY_MAX_ATTEMPTS = 10;
+const TMUX_CLIENT_RECOVERY_RETRY_DELAY_MS = 30000;
 
 function isSshHandshakeLoss(err) {
   const msg = String(err && (err.message || err) || '');
@@ -243,6 +250,7 @@ function localGetProfile() {
  *
  * Secrets stay in main only. The renderer sees session id + bytes. */
 const _terminals = new Map();   // sessionId → { dispose, contentsId, agentId }
+const _tmuxDiscoveryTails = new Map();
 let _termSeq = 0;
 const TERM_MIN_COLS = 40;
 const TERM_MIN_ROWS = 4;
@@ -387,6 +395,197 @@ function _dropSession(sessionId) {
   try { ent.dispose && ent.dispose(); } catch { /* noop */ }
 }
 
+function _beginTmuxDiscovery(sessionKey) {
+  const previous = _tmuxDiscoveryTails.get(sessionKey) || Promise.resolve();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const tail = previous.then(() => gate);
+  _tmuxDiscoveryTails.set(sessionKey, tail);
+  return previous.then(() => () => {
+    release();
+    if (_tmuxDiscoveryTails.get(sessionKey) === tail) _tmuxDiscoveryTails.delete(sessionKey);
+  });
+}
+
+async function _tmuxExec(ent, args) {
+  if (!ent?.tmux || !ent?.opts) return { ok: false, error: 'tmux_unavailable', detail: 'tmux metadata unavailable' };
+  let command;
+  try { command = tmuxCommand(ent.tmux, args); }
+  catch (e) { return { ok: false, error: 'tmux_unavailable', detail: e.message }; }
+  return sshTransport.execRemote({ ...ent.opts, command, timeout_ms: 3000, preserve_connection_on_timeout: true });
+}
+
+function _tmuxFailure(stage, result, ent) {
+  const baseDetail = String(result?.detail || result?.error || 'tmux control operation failed');
+  const lastProbeError = String(ent?.tmuxLastProbeError || '');
+  return {
+    ok: false,
+    stage,
+    error: result?.error || 'tmux_unavailable',
+    detail: lastProbeError && !baseDetail.includes(lastProbeError)
+      ? `${baseDetail}; last client probe: ${lastProbeError}`
+      : baseDetail,
+    diagnostics: {
+      session: String(ent?.tmux?.session || ''),
+      socket: String(ent?.tmux?.socket || ''),
+      clientTty: String(ent?.tmuxClientTty || ''),
+      initialPending: !!ent?.tmuxInitialDiscoveryPending,
+      recoveryAttempts: Number(ent?.tmuxClientRecoveryAttempts || 0),
+      beforeClientCount: ent?.tmuxBeforeClients instanceof Set ? ent.tmuxBeforeClients.size : null,
+      lastProbeError: lastProbeError,
+      lastProbeMs: Number(ent?.tmuxLastProbeMs || 0),
+    },
+  };
+}
+
+async function _tmuxClientSet(opts, tmux, diagnosticsTarget = null) {
+  const started = Date.now();
+  const record = (error = '') => {
+    if (!diagnosticsTarget || typeof diagnosticsTarget !== 'object') return;
+    diagnosticsTarget.tmuxLastProbeError = String(error || '');
+    diagnosticsTarget.tmuxLastProbeMs = Date.now() - started;
+  };
+  let command;
+  try { command = tmuxCommand(tmux, ['list-clients', '-t', tmux.session, '-F', '#{client_tty}']); }
+  catch (e) { record(e?.message || e); return null; }
+  const result = await sshTransport.execRemote({ ...opts, command, timeout_ms: 3000, preserve_connection_on_timeout: true });
+  if (!result?.ok) {
+    record(`${result?.error || 'probe_failed'}: ${result?.detail || 'no detail'}`);
+    return null;
+  }
+  record('');
+  return new Set(String(result.stdout || '').split(/\r?\n/).filter((tty) => /^\/dev\/pts\/\d+$/.test(tty)));
+}
+
+async function _discoverTmuxClient(sessionId, beforeClients) {
+  const ent = _terminals.get(sessionId);
+  if (!ent?.tmux) return;
+  try {
+    for (let attempt = 0; attempt < 15; attempt++) {
+      const afterClients = await _tmuxClientSet(ent.opts, ent.tmux, ent);
+      const tty = afterClients && (beforeClients
+        ? selectNewClient(beforeClients, afterClients)
+        : selectOnlyClient(afterClients));
+      if (tty) {
+        ent.tmuxClientTty = tty;
+        ent.tmuxControlError = '';
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    ent.tmuxControlError = 'Could not identify this tmux client';
+  } finally {
+    ent.tmuxInitialDiscoveryPending = false;
+  }
+}
+
+async function _retryTmuxClientDiscovery(ent) {
+  if (!ent?.tmux || ent.tmuxClientTty || ent.tmuxInitialDiscoveryPending
+      || ent.tmuxClientRecoveryInFlight || Date.now() < (ent.tmuxClientRecoveryNextAt || 0)) {
+    return false;
+  }
+  ent.tmuxClientRecoveryInFlight = true;
+  ent.tmuxClientRecoveryAttempts += 1;
+  try {
+    const afterClients = await _tmuxClientSet(ent.opts, ent.tmux, ent);
+    const tty = afterClients && (ent.tmuxBeforeClients
+      ? selectNewClient(ent.tmuxBeforeClients, afterClients)
+      : selectOnlyClient(afterClients));
+    if (tty) {
+      ent.tmuxClientTty = tty;
+      ent.tmuxControlError = '';
+      return true;
+    }
+    if (ent.tmuxClientRecoveryAttempts >= TMUX_CLIENT_RECOVERY_MAX_ATTEMPTS) {
+      ent.tmuxClientRecoveryAttempts = 0;
+      ent.tmuxClientRecoveryNextAt = Date.now() + TMUX_CLIENT_RECOVERY_RETRY_DELAY_MS;
+      ent.tmuxControlError = 'Waiting to retry tmux client discovery';
+      return false;
+    }
+    ent.tmuxControlError = 'Waiting for tmux client discovery';
+    return false;
+  } finally {
+    ent.tmuxClientRecoveryInFlight = false;
+  }
+}
+
+function _ownedTerminal(event, payload = {}) {
+  const sid = String(payload && payload.sessionId || '');
+  const ent = _terminals.get(sid);
+  return (ent && ent.contentsId === event.sender.id) ? ent : null;
+}
+
+async function _tmuxClientState(ent) {
+  if (!ent?.tmuxClientTty) await _retryTmuxClientDiscovery(ent);
+  if (!ent?.tmuxClientTty) return _tmuxFailure('client_discovery', {
+    error: 'tmux_unavailable',
+    detail: ent?.tmuxControlError || (ent?.tmux ? 'tmux client discovery pending' : 'tmux metadata unavailable'),
+  }, ent);
+  const result = await _tmuxExec(ent, ['display-message', '-p', '-c', ent.tmuxClientTty, '#{window_index}:#{pane_id}:#{pane_in_mode}']);
+  if (!result?.ok) return _tmuxFailure('client_state', result, ent);
+  const state = parseClientState(result.stdout);
+  return state ? { ok: true, ...state } : _tmuxFailure('client_state', { error: 'tmux_parse_failed', detail: 'invalid client state' }, ent);
+}
+
+async function termListWindows(event, payload = {}) {
+  const ent = _ownedTerminal(event, payload);
+  if (!ent) return { ok: false, error: 'not_found' };
+  const state = await _tmuxClientState(ent);
+  if (!state.ok) return state;
+  const result = await _tmuxExec(ent, ['list-windows', '-t', ent.tmux.session, '-F', '#{window_index}:#{window_name}']);
+  if (!result?.ok) return _tmuxFailure('list_windows', result, ent);
+  const windows = parseWindowRows(result.stdout).map((window) => ({ ...window, active: window.index === state.activeIndex }));
+  return { ok: true, windows, activeIndex: state.activeIndex, paneId: state.paneId, copyMode: state.copyMode };
+}
+
+async function termEnterCopyMode(event, payload = {}) {
+  const ent = _ownedTerminal(event, payload);
+  if (!ent) return { ok: false, error: 'not_found' };
+  const state = await _tmuxClientState(ent);
+  if (!state.ok) return state;
+  if (state.copyMode) return { ok: true, copyMode: true, paneId: state.paneId };
+  const result = await _tmuxExec(ent, ['copy-mode', '-u', '-t', state.paneId]);
+  return result?.ok
+    ? { ok: true, copyMode: true, paneId: state.paneId }
+    : _tmuxFailure('copy_mode_enter', result, ent);
+}
+
+async function termCancelCopyMode(event, payload = {}) {
+  const ent = _ownedTerminal(event, payload);
+  if (!ent) return { ok: false, error: 'not_found' };
+  const state = await _tmuxClientState(ent);
+  if (!state.ok) return state;
+  if (!state.copyMode) return { ok: true, copyMode: false, paneId: state.paneId };
+  const result = await _tmuxExec(ent, ['send-keys', '-X', '-t', state.paneId, 'cancel']);
+  return result?.ok
+    ? { ok: true, copyMode: false, paneId: state.paneId }
+    : _tmuxFailure('copy_mode_cancel', result, ent);
+}
+
+async function termSelectWindow(event, payload = {}) {
+  const ent = _ownedTerminal(event, payload);
+  const index = Number(payload && payload.index);
+  if (!ent) return { ok: false, error: 'not_found' };
+  if (!Number.isInteger(index) || index < 0 || index > 9999) return { ok: false, error: 'invalid_args', detail: 'window index is invalid' };
+  const listed = await termListWindows(event, payload);
+  if (!listed.ok) return listed;
+  if (!listed.windows.some((window) => window.index === index)) return { ok: false, error: 'not_found', detail: 'window not found' };
+  const result = await _tmuxExec(ent, ['switch-client', '-c', ent.tmuxClientTty, '-t', `${ent.tmux.session}:${index}`]);
+  return result?.ok ? termListWindows(event, payload) : result;
+}
+
+async function termCreateWindow(event, payload = {}) {
+  const ent = _ownedTerminal(event, payload);
+  if (!ent) return { ok: false, error: 'not_found' };
+  const state = await _tmuxClientState(ent);
+  if (!state.ok) return state;
+  const created = await _tmuxExec(ent, ['new-window', '-t', ent.tmux.session, '-P', '-F', '#{window_index}']);
+  const index = Number(String(created?.stdout || '').trim());
+  if (!created?.ok || !Number.isInteger(index) || index < 0 || index > 9999) return created?.ok ? { ok: false, error: 'tmux_parse_failed', detail: 'new window index missing' } : created;
+  const selected = await _tmuxExec(ent, ['switch-client', '-c', ent.tmuxClientTty, '-t', `${ent.tmux.session}:${index}`]);
+  return selected?.ok ? termListWindows(event, payload) : selected;
+}
+
 async function termOpen(event, payload = {}) {
   _ensureBackendsConfigured();
   const agentId = String(payload && payload.agentId || '');
@@ -415,6 +614,10 @@ async function termOpen(event, payload = {}) {
   const command = resolved.command || `~/.cam/camc attach ${agentId}`;
   const sender = event.sender;
   const sessionId = `t${++_termSeq}-${Date.now().toString(36)}`;
+  const tmux = tmuxMetadataForAgent(resolved.agent);
+  const releaseTmuxDiscovery = tmux ? await _beginTmuxDiscovery(`${resolved.opts.host}|${tmux.socket}`) : null;
+  const initialTmuxProbe = {};
+  const beforeClients = tmux ? await _tmuxClientSet(resolved.opts, tmux, initialTmuxProbe) : null;
 
   await _repairRemoteTerminalSize(resolved.opts, agentId, cols, rows);
 
@@ -438,6 +641,7 @@ async function termOpen(event, payload = {}) {
   );
 
   if (!ch.ok) {
+    if (releaseTmuxDiscovery) releaseTmuxDiscovery();
     return { ok: false, error: ch.error, detail: ch.detail };
   }
   _terminals.set(sessionId, {
@@ -447,23 +651,32 @@ async function termOpen(event, payload = {}) {
     contentsId: sender.id,
     agentId,
     opts: resolved.opts,
+    tmux,
+    tmuxClientTty: '',
+    tmuxControlError: tmux ? '' : 'tmux metadata unavailable',
+    tmuxBeforeClients: beforeClients,
+    tmuxInitialDiscoveryPending: !!tmux,
+    tmuxClientRecoveryAttempts: 0,
+    tmuxClientRecoveryNextAt: 0,
+    tmuxClientRecoveryInFlight: false,
+    tmuxLastProbeError: initialTmuxProbe.tmuxLastProbeError || '',
+    tmuxLastProbeMs: initialTmuxProbe.tmuxLastProbeMs || 0,
   });
+  if (releaseTmuxDiscovery) void _discoverTmuxClient(sessionId, beforeClients).finally(releaseTmuxDiscovery);
   return { ok: true, sessionId };
 }
 
 function termInput(event, payload = {}) {
-  const sid = String(payload && payload.sessionId || '');
-  const ent = _terminals.get(sid);
-  if (!ent || ent.contentsId !== event.sender.id) return { ok: false, error: 'not_found' };
+  const ent = _ownedTerminal(event, payload);
+  if (!ent) return { ok: false, error: 'not_found' };
   const data = String(payload.data == null ? '' : payload.data);
   ent.write(data);
   return { ok: true };
 }
 
 function termResize(event, payload = {}) {
-  const sid = String(payload && payload.sessionId || '');
-  const ent = _terminals.get(sid);
-  if (!ent || ent.contentsId !== event.sender.id) return { ok: false, error: 'not_found' };
+  const ent = _ownedTerminal(event, payload);
+  if (!ent) return { ok: false, error: 'not_found' };
   const size = _terminalResizeSize(payload);
   if (!size) return { ok: true, ignored: true, reason: 'invalid_terminal_size' };
   ent.resize(size.cols, size.rows);
@@ -472,8 +685,8 @@ function termResize(event, payload = {}) {
 
 function termClose(event, payload = {}) {
   const sid = String(payload && payload.sessionId || '');
-  const ent = _terminals.get(sid);
-  if (!ent || ent.contentsId !== event.sender.id) return { ok: false, error: 'not_found' };
+  const ent = _ownedTerminal(event, payload);
+  if (!ent) return { ok: false, error: 'not_found' };
   _dropSession(sid);
   return { ok: true };
 }
@@ -626,7 +839,11 @@ app.whenReady().then(() => {
   ipcMain.handle('term:input',  (event, p) => termInput(event, p));
   ipcMain.handle('term:resize', (event, p) => termResize(event, p));
   ipcMain.handle('term:close',  (event, p) => termClose(event, p));
-
+  ipcMain.handle('term:listWindows', (event, p) => termListWindows(event, p));
+  ipcMain.handle('term:selectWindow', (event, p) => termSelectWindow(event, p));
+  ipcMain.handle('term:createWindow', (event, p) => termCreateWindow(event, p));
+  ipcMain.handle('term:copyMode', (event, p) => termEnterCopyMode(event, p));
+  ipcMain.handle('term:cancelCopyMode', (event, p) => termCancelCopyMode(event, p));
   createMainWindow();
 
   app.on('activate', () => {
