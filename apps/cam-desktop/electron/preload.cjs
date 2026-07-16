@@ -128,6 +128,11 @@ contextBridge.exposeInMainWorld('CamBridge', {
     input(payload)  { return ipcRenderer.invoke('term:input',  payload || {}); },
     resize(payload) { return ipcRenderer.invoke('term:resize', payload || {}); },
     close(payload)  { return ipcRenderer.invoke('term:close',  payload || {}); },
+    listWindows(payload) { return ipcRenderer.invoke('term:listWindows', payload || {}); },
+    selectWindow(payload) { return ipcRenderer.invoke('term:selectWindow', payload || {}); },
+    createWindow(payload) { return ipcRenderer.invoke('term:createWindow', payload || {}); },
+    copyMode(payload) { return ipcRenderer.invoke('term:copyMode', payload || {}); },
+    cancelCopyMode(payload) { return ipcRenderer.invoke('term:cancelCopyMode', payload || {}); },
     onData(cb) {
       const listener = (_evt, msg) => { try { cb && cb(msg); } catch { /* noop */ } };
       ipcRenderer.on('term:data', listener);
