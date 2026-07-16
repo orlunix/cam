@@ -44,6 +44,14 @@ const historyClick = historyStart >= 0 && historyEnd >= 0 ? source.slice(history
 const bottomStart = historyEnd;
 const bottomEnd = source.indexOf("terminalTabsEl.addEventListener('click'", bottomStart);
 const bottomClick = bottomStart >= 0 && bottomEnd >= 0 ? source.slice(bottomStart, bottomEnd) : "";
+const refreshStart = source.indexOf("terminalRefreshBtn.addEventListener('click'");
+const refreshEnd = source.indexOf("terminalTabsEl.addEventListener('click'", refreshStart);
+const refreshClick = refreshStart >= 0 && refreshEnd >= 0 ? source.slice(refreshStart, refreshEnd) : "";
+const actionBarStart = source.indexOf('<div class="terminal-action-bar"');
+const attachSlot = source.indexOf('terminal-attach-icon', actionBarStart);
+const historySlot = source.indexOf('terminal-history-btn', actionBarStart);
+const bottomSlot = source.indexOf('terminal-bottom-btn', actionBarStart);
+const refreshSlot = source.indexOf('terminal-refresh-btn', actionBarStart);
 const hubPath = path.join(__dirname, "..", "electron", "embedded-hub.cjs");
 const hub = fs.readFileSync(hubPath, "utf8");
 const preloadPath = path.join(__dirname, "..", "electron", "preload.cjs");
@@ -76,6 +84,20 @@ ok("tmux tab control refresh exists", source.includes("refreshTerminalTmuxContro
 ok("terminal has mouse-first history control", source.includes("terminal-history-btn"));
 ok("terminal has a safe history return control", source.includes("terminal-bottom-btn"));
 ok("terminal attach is icon-only in terminal chrome", source.includes("terminal-attach-icon"));
+ok("terminal action bar has four stable ordered slots",
+  actionBarStart >= 0 && attachSlot < historySlot && historySlot < bottomSlot && bottomSlot < refreshSlot);
+ok("terminal action slots stay visible and use disabled state",
+  source.includes("terminalActionBar.hidden = !terminalVisible")
+    && !source.includes("terminalHistoryBtn.hidden =")
+    && !source.includes("terminalBottomBtn.hidden ="));
+ok("terminal action bar keeps the existing bottom-left inset",
+  terminalChromeCss.includes(".terminal-action-bar {")
+    && terminalChromeCss.includes("left: 16px;")
+    && terminalChromeCss.includes("bottom: var(--terminal-chrome-bottom-inset);")
+    && terminalChromeCss.includes("display: flex;")
+    && terminalChromeCss.includes("gap: 4px;"));
+ok("terminal action buttons keep the current size",
+  terminalChromeCss.includes("width: 28px;") && terminalChromeCss.includes("height: 28px;"));
 ok("copy browsing suppresses terminal auto-follow", source.includes("!ent.copyBrowsing"));
 ok("tmux controls have a bounded passive refresh", source.includes("terminalTmuxRefreshPending"));
 ok("terminal status retains its full text as a tooltip", source.includes("terminalAttachStatus.title = text || ''"));
@@ -97,6 +119,30 @@ ok("History leaves Up and Down on xterm's native input path", !source.includes("
 ok("History enters real tmux copy mode before changing local state", historyClick.includes("await bridge.copyMode({ sessionId: ent.sessionId })") && historyClick.indexOf("await bridge.copyMode") < historyClick.indexOf("ent.copyBrowsing = true") && !historyClick.includes("term.scrollLines"));
 ok("To Bottom safely cancels tmux copy mode before local follow", bottomClick.includes("await bridge.cancelCopyMode({ sessionId: ent.sessionId })") && bottomClick.indexOf("await bridge.cancelCopyMode") < bottomClick.indexOf("ent.copyBrowsing = false"));
 ok("To Bottom keeps an immediate local fast path outside copy mode", bottomClick.includes("if (!ent.copyBrowsing) {") && bottomClick.indexOf("if (!ent.copyBrowsing)") < bottomClick.indexOf("await bridge.cancelCopyMode"));
+ok("Refresh reuses the force-open lifecycle", refreshClick.includes("await openTerminalForSelected({ force: true })"));
+ok("force refresh recreates even an already detached xterm",
+  open.includes("if (force) {") && !open.includes("if (force && ent.sessionId)"));
+ok("Refresh prevents overlapping reconnects",
+  source.includes("let terminalRefreshPending = false") && refreshClick.includes("if (terminalRefreshPending"));
+ok("Refresh reports progress and completion",
+  refreshClick.includes("Re-attaching terminal...") && refreshClick.includes("Terminal re-attached."));
+ok("Refresh receives the force-open failure detail",
+  open.includes("return res;")
+    && refreshClick.includes("const result = await openTerminalForSelected({ force: true })")
+    && refreshClick.includes("result?.detail || result?.error"));
+ok("Refresh adds no second main-process protocol",
+  !preload.includes("refresh(payload)") && !main.includes("term:refresh"));
+ok("stale old-session status cannot detach the replacement",
+  source.includes("const ent = terminalEntryBySession(msg.sessionId)") && source.includes("if (!ent) return;"));
+ok("Refresh blocks every action and exposes progress styling",
+  source.includes("const actionsBlocked = terminalRefreshPending")
+    && source.includes("terminalRefreshBtn.classList.toggle('is-refreshing', terminalRefreshPending)")
+    && terminalChromeCss.includes(".terminal-refresh-btn.is-refreshing")
+    && terminalChromeCss.includes("@keyframes terminal-refresh-spin"));
+ok("terminal attachment pending state survives shared control refreshes",
+  source.includes("let terminalAttachmentPending = false")
+    && source.includes("terminalAttachmentPending = terminalDelivery")
+    && source.includes("terminalAttachmentPending = false"));
 ok("tmux refresh reconciles renderer history with pane state", source.includes("ent.copyBrowsing = !!result.copyMode"));
 ok("copy actions invalidate stale tmux refresh state", source.includes("tmuxControlRevision: 0") && source.includes("const tmuxControlRevision = ent.tmuxControlRevision") && source.includes("if (ent.tmuxControlRevision !== tmuxControlRevision) return;"));
 ok("xterm scroll state updates the bottom control", source.includes("entry.term.onScroll(() =>"));
