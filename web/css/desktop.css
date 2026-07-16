@@ -2587,9 +2587,7 @@ body.desktop[data-theme="light"] .composer-input:focus {
   color: var(--danger, #f85149);
   border-color: rgba(248, 81, 73, 0.45);
 }
-.terminal-history-btn[hidden],
-.terminal-bottom-btn[hidden],
-.terminal-attach-icon[hidden],
+.terminal-action-bar[hidden],
 .terminal-tmux-tabs[hidden] {
   display: none;
 }
@@ -2700,6 +2698,7 @@ body.desktop[data-theme="light"] .composer-input:focus {
 .terminal-history-btn,
 .terminal-bottom-btn,
 .terminal-attach-icon,
+.terminal-refresh-btn,
 .terminal-tmux-chrome .terminal-attach-status {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -2721,18 +2720,22 @@ body.desktop[data-theme="light"] .composer-input:focus {
 }
 .terminal-tmux-tab.is-active { border-color: var(--accent, #58a6ff); color: var(--accent, #58a6ff); }
 .terminal-tmux-new { min-width: 26px; font-size: 15px; line-height: 1; }
+.terminal-action-bar {
+  position: absolute;
+  left: 16px;
+  bottom: var(--terminal-chrome-bottom-inset);
+  display: flex;
+  gap: 4px;
+}
 .terminal-history-btn,
 .terminal-bottom-btn,
-.terminal-attach-icon {
-  position: absolute;
+.terminal-attach-icon,
+.terminal-refresh-btn {
   width: 28px;
   height: 28px;
   padding: 0;
   cursor: pointer;
 }
-.terminal-history-btn { top: 10px; right: 16px; }
-.terminal-bottom-btn { right: 16px; bottom: var(--terminal-chrome-bottom-inset); }
-.terminal-attach-icon { left: 16px; bottom: var(--terminal-chrome-bottom-inset); }
 .terminal-tmux-chrome .terminal-attach-status {
   position: absolute;
   top: 44px;
@@ -2762,9 +2765,26 @@ body.desktop[data-theme="light"] .composer-input:focus {
   border-color: rgba(248, 81, 73, 0.45);
 }
 .terminal-tmux-tab:hover,
-.terminal-history-btn:hover,
-.terminal-bottom-btn:hover,
-.terminal-attach-icon:hover { background: var(--output-float-bg-hover); }
+.terminal-history-btn:hover:not(:disabled),
+.terminal-bottom-btn:hover:not(:disabled),
+.terminal-attach-icon:hover:not(:disabled),
+.terminal-refresh-btn:hover:not(:disabled) { background: var(--output-float-bg-hover); }
+.terminal-action-bar button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.terminal-refresh-btn.is-refreshing > span[aria-hidden="true"] {
+  display: inline-block;
+  animation: terminal-refresh-spin 0.8s linear infinite;
+}
+@keyframes terminal-refresh-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .terminal-refresh-btn.is-refreshing > span[aria-hidden="true"] {
+    animation: none;
+  }
+}
 #mode-agents .agent-composer[hidden],
 .agent-terminal[hidden] { display: none !important; }
 .agent-terminal .agent-terminal-pane,
