@@ -638,6 +638,9 @@
                 path. The agent runs directly on that node; no context
                 record is created.</p>
             </div>
+            <label>Task name (optional)
+              <input type="text" id="start-name" placeholder="auto-generated" autocomplete="off">
+            </label>
             <label>Prompt (optional)
               <textarea id="start-prompt" rows="6"
                 placeholder="Describe the task…"
@@ -649,9 +652,6 @@
             <summary>Advanced</summary>
             <div class="settings-section">
               <h3>Options</h3>
-              <label>Task name (optional)
-                <input type="text" id="start-name" placeholder="auto-generated" autocomplete="off">
-              </label>
               <label class="form-checkbox">
                 <input type="checkbox" id="start-autoexit">
                 <span>Auto-exit on completion</span>
