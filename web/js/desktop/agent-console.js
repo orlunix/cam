@@ -1343,9 +1343,13 @@ export function mountAgentConsole({ api, state, showToast }) {
   let terminalAttachHint = null;
   let terminalAttachStatus = null;
   let terminalAttachStatusTimer = null;
+  let terminalActionBar = null;
   let terminalHistoryBtn = null;
   let terminalBottomBtn = null;
+  let terminalRefreshBtn = null;
   let terminalTabsEl = null;
+  let terminalRefreshPending = false;
+  let terminalAttachmentPending = false;
   let terminalTmuxRefreshPending = false;
   let filePickMode = 'composer';
   // Workspace Browser (CAM-DESK-FILE-010..017) state. browseAgentId
@@ -2151,7 +2155,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     // Each agent owns a separate tmux session, so hidden attached clients do
     // not constrain the visible agent's pane size. Cache eviction below closes
     // the least recently used sessions once the live limit is exceeded.
-    if (force && ent.sessionId) {
+    if (force) {
       await closeTerminalSession(agent.id);
       if (!ensureTerminal(agent)) return;
       ent = terminalSessions.get(agent.id);
@@ -2166,7 +2170,9 @@ export function mountAgentConsole({ api, state, showToast }) {
     ent.opening = true;
     syncActiveTerminalEntry(agent.id);
     if (!ent.hasConnected) ent.term.clear();
-    setTerminalAttachStatus(`Connecting terminal to ${agent.task_name || agent.id}...`, 'info', 0);
+    setTerminalAttachStatus(
+      force ? 'Re-attaching terminal...' : `Connecting terminal to ${agent.task_name || agent.id}...`, 'info', 0
+    );
     try {
       fitTerminalAndNotify(ent);
       const openCols = Math.max(80, Number(ent.lastCols || ent.term.cols) || 100);
@@ -2175,7 +2181,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       if (!res || !res.ok) {
         ent.term.write(`\r\n\x1b[31mTerminal attach failed: ${res && (res.detail || res.error) || 'unknown'}\x1b[0m\r\n`);
         ent.sessionId = null;
-        return;
+        return res || { ok: false, error: 'attach_failed', detail: 'Terminal attach failed.' };
       }
       ent.sessionId = res.sessionId;
       ent.opening = false;
@@ -2191,9 +2197,11 @@ export function mountAgentConsole({ api, state, showToast }) {
         ent.term.focus();
       }
       await evictTerminalCacheIfNeeded(agent.id);
+      return res;
     } catch (e) {
       ent.term.write(`\r\n\x1b[31mTerminal attach failed: ${e && e.message || e}\x1b[0m\r\n`);
       ent.sessionId = null;
+      return { ok: false, error: 'attach_failed', detail: e && e.message || String(e) };
     } finally {
       ent.opening = false;
       if (termAgentId === ent.agentId || selectedAgent()?.id === ent.agentId) syncActiveTerminalEntry(ent.agentId);
@@ -2693,14 +2701,19 @@ export function mountAgentConsole({ api, state, showToast }) {
     chrome.className = 'terminal-tmux-chrome';
     chrome.innerHTML = ''
       + '<div class="terminal-tmux-tabs" role="tablist" aria-label="tmux windows"></div>'
-      + '<button type="button" class="terminal-history-btn" hidden title="Browse tmux history"><span aria-hidden="true">↑</span><span class="sr-only">History</span></button>'
-      + '<button type="button" class="terminal-attach-icon" hidden title="Attach a file or image" aria-label="Attach a file or image">📎</button>'
-      + '<div class="terminal-attach-status" hidden aria-live="polite"></div>'
-      + '<button type="button" class="terminal-bottom-btn" hidden title="Return to live output"><span aria-hidden="true">↓</span><span class="sr-only">To bottom</span></button>';
+      + '<div class="terminal-action-bar" hidden>'
+      +   '<button type="button" class="terminal-attach-icon" title="Attach a file or image" aria-label="Attach a file or image">📎</button>'
+      +   '<button type="button" class="terminal-history-btn" title="Browse tmux history" aria-label="History"><span aria-hidden="true">↑</span><span class="sr-only">History</span></button>'
+      +   '<button type="button" class="terminal-bottom-btn" title="Return to live output" aria-label="To bottom"><span aria-hidden="true">↓</span><span class="sr-only">To bottom</span></button>'
+      +   '<button type="button" class="terminal-refresh-btn" disabled title="Re-attach terminal" aria-label="Refresh terminal"><span aria-hidden="true">⟳</span><span class="sr-only">Refresh terminal</span></button>'
+      + '</div>'
+      + '<div class="terminal-attach-status" hidden aria-live="polite"></div>';
     terminalEl.appendChild(chrome);
     terminalTabsEl = chrome.querySelector('.terminal-tmux-tabs');
+    terminalActionBar = chrome.querySelector('.terminal-action-bar');
     terminalHistoryBtn = chrome.querySelector('.terminal-history-btn');
     terminalBottomBtn = chrome.querySelector('.terminal-bottom-btn');
+    terminalRefreshBtn = chrome.querySelector('.terminal-refresh-btn');
     terminalAttachBtn = chrome.querySelector('.terminal-attach-icon');
     terminalAttachStatus = chrome.querySelector('.terminal-attach-status');
 
@@ -2767,6 +2780,34 @@ export function mountAgentConsole({ api, state, showToast }) {
         updateTerminalTmuxControls();
       }
     });
+    terminalRefreshBtn.addEventListener('click', async () => {
+      if (terminalRefreshPending || terminalRefreshBtn.disabled) return;
+      const agentId = selectedAgent()?.id;
+      if (!agentId) return;
+      terminalRefreshPending = true;
+      updateTerminalAttachControls();
+      setTerminalAttachStatus('Re-attaching terminal...', 'info', 0);
+      try {
+        const result = await openTerminalForSelected({ force: true });
+        if (selectedAgent()?.id !== agentId) return;
+        const replacement = terminalSessions.get(agentId);
+        if (!result?.ok || !replacement?.sessionId) {
+          setTerminalAttachStatus(
+            result?.detail || result?.error || 'Terminal re-attach failed.', 'error', 0
+          );
+          return;
+        }
+        setTerminalAttachStatus('Terminal re-attached.', 'ok');
+        try { replacement.term.focus(); } catch (_) {}
+      } catch (e) {
+        if (selectedAgent()?.id === agentId) {
+          setTerminalAttachStatus(e?.message || 'Terminal re-attach failed.', 'error', 0);
+        }
+      } finally {
+        terminalRefreshPending = false;
+        updateTerminalAttachControls();
+      }
+    });
     terminalTabsEl.addEventListener('click', async (ev) => {
       const button = ev.target && ev.target.closest('button[data-window-index],button[data-action]');
       if (!button || button.disabled) return;
@@ -2812,11 +2853,19 @@ export function mountAgentConsole({ api, state, showToast }) {
 
   function updateTerminalTmuxControls() {
     const ent = termAgentId ? terminalSessions.get(termAgentId) : null;
-    const terminalVisible = outputMode === 'terminal' && isAgentsMode() && !!ent?.sessionId;
-    const tmuxVisible = terminalVisible && !!ent?.tmuxReady;
+    const terminalVisible = outputMode === 'terminal' && isAgentsMode();
+    const terminalConnected = terminalVisible && !!ent?.sessionId;
+    const tmuxVisible = terminalConnected && !!ent?.tmuxReady;
+    const actionsBlocked = terminalRefreshPending;
     if (terminalTabsEl) terminalTabsEl.hidden = !tmuxVisible;
-    if (terminalHistoryBtn) terminalHistoryBtn.hidden = !tmuxVisible || !!ent?.copyBrowsing;
-    if (terminalBottomBtn) terminalBottomBtn.hidden = !terminalVisible || (!ent?.copyBrowsing && terminalIsAtBottom(ent));
+    if (terminalActionBar) terminalActionBar.hidden = !terminalVisible;
+    if (terminalHistoryBtn) terminalHistoryBtn.disabled = actionsBlocked || !tmuxVisible || !!ent?.copyBrowsing;
+    if (terminalBottomBtn) terminalBottomBtn.disabled = actionsBlocked || !terminalConnected || (!ent?.copyBrowsing && terminalIsAtBottom(ent));
+    if (terminalRefreshBtn) {
+      terminalRefreshBtn.disabled = actionsBlocked || !terminalVisible || !selectedAgent()
+        || !canUseTerminalMode() || termOpening;
+      terminalRefreshBtn.classList.toggle('is-refreshing', terminalRefreshPending);
+    }
   }
 
   async function refreshTerminalTmuxControls() {
@@ -2906,10 +2955,13 @@ export function mountAgentConsole({ api, state, showToast }) {
   }
 
   function updateTerminalAttachControls() {
-    const show = outputMode === 'terminal' && isAgentsMode() && !!selectedAgent() && canUseTerminalMode();
+    const terminalVisible = outputMode === 'terminal' && isAgentsMode();
+    const show = terminalVisible && !!selectedAgent() && canUseTerminalMode();
+    const actionsBlocked = terminalRefreshPending;
+    if (terminalActionBar) terminalActionBar.hidden = !terminalVisible;
     if (terminalAttachBtn) {
-      terminalAttachBtn.hidden = !show;
-      terminalAttachBtn.disabled = !show || !isConnected() || termOpening || !termSessionId;
+      terminalAttachBtn.disabled = actionsBlocked || terminalAttachmentPending
+        || !show || !isConnected() || termOpening || !termSessionId;
     }
     if (terminalAttachHint) {
       const statusVisible = terminalAttachStatus && !terminalAttachStatus.hidden;
@@ -3187,6 +3239,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       setTerminalAttachStatus('Cannot attach: terminal is not connected yet.', 'error');
       return { ok: false, error: 'terminal_not_connected' };
     }
+    terminalAttachmentPending = terminalDelivery;
     if (attachBtn) attachBtn.disabled = true;
     if (terminalAttachBtn) terminalAttachBtn.disabled = true;
     const setStatus = terminalDelivery ? setTerminalAttachStatus : setUploadStatus;
@@ -3210,6 +3263,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       setStatus(`Attach failed: ${msg}`, terminalDelivery ? 'error' : 'is-error');
       return { ok: false, error: msg };
     } finally {
+      terminalAttachmentPending = false;
       updateTerminalAttachControls();
     }
   }
