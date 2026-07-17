@@ -127,3 +127,17 @@ revisit.
   legacy Tauri build — tracked as cleanup (see the review list in the
   2026-07-17 conversation; `build:windows-msi` script name vs
   `build:win-msi`, artifact path, Rust steps).
+
+## Post-session decision (2026-07-17): local sessions removed
+
+Later the same day the user decided that **local sessions are no longer
+supported**. The entire local-node datapath documented in
+`LOCAL-NODE-DATAPATH.md` — `electron/local-runtime.cjs`, the WSL/native
+camc exec, local agent ingestion, the `/api/local/runtime` preflight,
+the Start-form local node entry and readiness hint, and the script-PTY
+local terminal attach/reopen — was removed. The hub now refuses local
+targets with a structured `local_unsupported` error carrying the
+guidance: to use the local machine as a node, run an SSH server on it
+and add it as an SSH node (tmux and the agent CLI with auth are
+required). The full datapath is archived in commit `eda740d`;
+`LOCAL-NODE-DATAPATH.md` is kept as a retired document for history.

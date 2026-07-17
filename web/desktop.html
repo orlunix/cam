@@ -645,7 +645,6 @@
               <label>Path
                 <input type="text" id="start-path" placeholder="/home/user/project" autocomplete="off">
               </label>
-              <p class="form-hint" id="start-local-runtime-hint" hidden></p>
               <p class="form-hint">No context selected — pick a node and
                 path. The agent runs directly on that node; no context
                 record is created.</p>
@@ -747,6 +746,11 @@
             Hosts the embedded Hub knows about. Click a host card to
             expand its actions and contexts, or <strong>Add Host</strong>
             to register a new one.
+          </p>
+          <p class="settings-help">
+            To use this machine as a node, enable its SSH server and add
+            it as an SSH host — with tmux and the agent CLI
+            (authenticated) installed.
           </p>
         </div>
 

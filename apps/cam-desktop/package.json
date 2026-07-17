@@ -17,11 +17,10 @@
     "build:win-msi": "electron-builder --win msi --config.win.signAndEditExecutable=false --config.win.verifyUpdateCodeSignature=false",
     "dist": "electron-builder",
     "cli": "node cli/camui-cli.cjs",
-    "lint:electron": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/ssh-transport.cjs && node --check electron/embedded-hub.cjs && node --check electron/local-runtime.cjs && node --check electron/credential-store.cjs && node --check cli/camui-cli.cjs",
+    "lint:electron": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/ssh-transport.cjs && node --check electron/embedded-hub.cjs && node --check electron/credential-store.cjs && node --check cli/camui-cli.cjs",
     "test:hub": "node test/hub.test.cjs",
     "test:term": "node test/terminal-follow.test.cjs && node test/tmux-controls.test.cjs",
     "test:start": "node test/start-form.test.cjs",
-    "test:local": "node test/local-runtime.test.cjs",
     "legacy:tauri:dev": "tauri dev",
     "legacy:tauri:build": "tauri build",
     "legacy:tauri:build-web": "tsc --noEmit && vite build"
