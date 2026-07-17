@@ -1,5 +1,7 @@
 # LOCAL-NODE-DATAPATH.md — local agents without SSH (WSL2 on Windows, native on macOS/Linux)
 
+> **RETIRED 2026-07-17**: local sessions are no longer supported. This document describes the removed local-node datapath, kept for history. To use the local machine as a node, run an SSH server on it and add it as an SSH node.
+
 The Desktop embedded hub manages agents on the **local machine as a
 node**, without SSH. All local camc execution is owned by one module,
 `apps/cam-desktop/electron/local-runtime.cjs`; the hub
