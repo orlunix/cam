@@ -9,6 +9,9 @@ dist/*
 !dist/BUILD_LOG.md
 build/
 *.egg
+# electron-builder's resource dir (icons for MSI/DMG) must be committed
+!apps/cam-desktop/build/
+!apps/cam-desktop/build/*
 
 # Virtual environments
 .venv/
