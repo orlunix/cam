@@ -1,8 +1,10 @@
 name: CAM Desktop — macOS DMG
 
-# Unsigned/not-notarized macOS package for CAM Desktop POC testing.
-# Later signing/notarization can be added with Apple Developer cert secrets
-# (CSC_LINK / CSC_KEY_PASSWORD / APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / TEAM_ID).
+# Signed + notarized when the Apple secrets are configured, unsigned
+# POC otherwise. Secrets (repo Settings → Secrets and variables →
+# Actions): CSC_LINK (base64 .p12), CSC_KEY_PASSWORD, APPLE_ID,
+# APPLE_APP_SPECIFIC_PASSWORD, TEAM_ID. On tag pushes the DMG is also
+# attached to the GitHub Release for the tag.
 
 on:
   workflow_dispatch:
@@ -11,7 +13,7 @@ on:
       - 'cam-desktop-v*'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -30,10 +32,6 @@ jobs:
     defaults:
       run:
         working-directory: apps/cam-desktop
-    env:
-      # Keep this first POC build unsigned. Remove/adjust this when signing
-      # and notarization secrets are configured.
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -45,14 +43,35 @@ jobs:
           cache: 'npm'
           cache-dependency-path: apps/cam-desktop/package-lock.json
 
+      - name: Decide signing mode
+        env:
+          HAS_CERT: ${{ secrets.CSC_LINK }}
+        run: |
+          if [ -n "$HAS_CERT" ]; then
+            echo "CSC_IDENTITY_AUTO_DISCOVERY=true" >> "$GITHUB_ENV"
+          else
+            echo "CSC_IDENTITY_AUTO_DISCOVERY=false" >> "$GITHUB_ENV"
+          fi
+
       - name: Install npm dependencies
         run: npm ci
 
       - name: Syntax check Electron entrypoints
         run: npm run lint:electron
 
-      - name: Build unsigned DMG
-        run: npx electron-builder --mac dmg --${{ matrix.arch }} --config.npmRebuild=false --publish=never
+      - name: Build DMG (signed + notarized when secrets present)
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: |
+          EXTRA=""
+          if [ "$CSC_IDENTITY_AUTO_DISCOVERY" = "true" ]; then
+            EXTRA="--config.mac.notarize=true"
+          fi
+          npx electron-builder --mac dmg --${{ matrix.arch }} --config.npmRebuild=false --publish=never $EXTRA
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v7
@@ -62,3 +81,12 @@ jobs:
             apps/cam-desktop/dist/*.dmg
             apps/cam-desktop/dist/*.blockmap
           if-no-files-found: error
+
+      - name: Attach DMG to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" --verify-tag \
+            --title "CAM Desktop ${GITHUB_REF_NAME}" --generate-notes || true
+          gh release upload "${GITHUB_REF_NAME}" apps/cam-desktop/dist/*.dmg --clobber
