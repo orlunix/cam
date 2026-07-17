@@ -4,8 +4,10 @@
  *
  * Implements the Direct connection target as a self-contained Node
  * HTTP server inside Electron main. NO host CAM runtime is required:
- * no `cam` CLI, no `python`, no WSL, no shell spawn. Everything is
- * stdlib (`http`, `crypto`, `fs`, `path`).
+ * no `cam` CLI and no `python` on the host. Everything is stdlib
+ * (`http`, `crypto`, `fs`, `path`). Local-machine agent execution goes
+ * through `local-runtime.cjs`: native execFile of the bundled camc on
+ * macOS/Linux, `wsl.exe ... --exec` into a WSL2 distro on Windows.
  *
  * Wire contract: a strict subset of the existing CAM API that the
  * renderer (`web/js/api.js`) already speaks. Endpoints implemented in
@@ -67,12 +69,14 @@ const crypto = require('node:crypto');
 const fs     = require('node:fs');
 const os     = require('node:os');
 const path   = require('node:path');
-// Local camc discovery (Bug 1: ingest local agents in Direct mode).
-// The hub process runs on the same host as `~/.cam/camc`, so a local
-// child_process spawn is the Direct-mode mirror of the SSH
-// `_sshTransport.execRemote` path used for remote nodes. Keep using
-// stdlib only — no shell, just execFile on the resolved camc binary.
-const { execFile } = require('node:child_process');
+// Local camc execution (Bug 1: ingest local agents in Direct mode, and
+// the local-node datapath): the hub process runs on the same host as
+// the local camc runtime, so a local spawn is the Direct-mode mirror of
+// the SSH `_sshTransport.execRemote` path used for remote nodes. All of
+// it lives in local-runtime.cjs — native execFile on POSIX, `wsl.exe
+// [-d distro] --exec <camc>` into WSL2 on Windows. The hub itself stays
+// stdlib-only; it never spawns directly.
+const _localRuntimeModule = require('./local-runtime.cjs');
 
 const DEFAULT_PORT       = 8420;
 const PORT_SCAN_RANGE    = 50;
@@ -170,6 +174,9 @@ function loadStore(dataDir) {
     try { fs.writeFileSync(state.storePath, JSON.stringify(state.store, null, 2)); }
     catch (e2) { pushLog('warn', `store init write failed: ${e2.message}`); }
   }
+  // The store may carry hubConfig.wslDistro — (re)sync it into the
+  // local runtime now that the store is known.
+  _syncLocalRuntimeConfig();
 }
 
 /** Atomically write the JSON store: write to a sibling .tmp file
@@ -393,6 +400,11 @@ let _credentialStore = null;
 // `ssh-transport.cjs` wrapping ssh2.
 let _sshTransport = null;
 
+// Local runtime (native POSIX / WSL-on-Windows camc execution). Unlike
+// the two collaborators above this one is bundled, so the default is
+// the real module; configure() accepts a mock for tests the same way.
+let _localRuntime = _localRuntimeModule;
+
 // Remote agent-discovery command. Two-pass: prefer the embedded camc
 // shim, fall back to the system `camc` on PATH (which is what the
 // unified CAM/camc environment installs).
@@ -402,9 +414,26 @@ const REMOTE_CAMC_UPLOAD_PATH = '.cam/camc.tmp';
 const REMOTE_SKILLM = '~/.cam/skillm';
 const REMOTE_SKILLM_UPLOAD_PATH = '.cam/skillm.tmp';
 
-function configure({ credentialStore, sshTransport } = {}) {
+function configure({ credentialStore, sshTransport, localRuntime } = {}) {
   if (credentialStore !== undefined) _credentialStore = credentialStore || null;
   if (sshTransport    !== undefined) _sshTransport    = sshTransport    || null;
+  if (localRuntime    !== undefined) _localRuntime    = localRuntime    || _localRuntimeModule;
+  _syncLocalRuntimeConfig();
+}
+
+/** Push hub-resolved settings into the real local-runtime module:
+ *  the bundled/on-PATH camc path (resolution lives here in the hub —
+ *  `_localCamcPath` — and is NOT duplicated by the module) and the
+ *  optional WSL distro from the store (`hubConfig.wslDistro`, default
+ *  '' = WSL default distro; no UI in this milestone — edit the store
+ *  JSON to set it). Mocks that lack configure() are skipped. */
+function _syncLocalRuntimeConfig() {
+  if (!_localRuntime || typeof _localRuntime.configure !== 'function') return;
+  const cfg = (state.store && state.store.hubConfig) || {};
+  _localRuntime.configure({
+    camcPath: _localCamcPath(),
+    wslDistro: typeof cfg.wslDistro === 'string' ? cfg.wslDistro : '',
+  });
 }
 
 function _credentialAvailable() {
@@ -1060,8 +1089,9 @@ async function _syncAllAgentContexts(reason = 'manual') {
 /** Resolve the camc binary to run for local discovery. Prefer the
  *  bundled camc (works on a fresh install with nothing on PATH), then
  *  fall back to `camc` on PATH (the dev/prgn case where the CLI is
- *  installed under ~/.local/bin). `execFile` searches PATH for a bare
- *  name; an ENOENT is mapped to a 'camc_missing' result upstream. */
+ *  installed under ~/.local/bin). Passed into the local runtime via
+ *  `_syncLocalRuntimeConfig`; the runtime's execFile searches PATH for
+ *  a bare name and maps ENOENT to a 'camc_missing' result. */
 function _localCamcPath() {
   return _bundledCamcPath() || 'camc';
 }
@@ -1108,25 +1138,11 @@ function _ensureLocalContext() {
  *  Throttled by `state.localSyncInFlight` so concurrent GET /api/agents
  *  polls do not stack local camc spawns. */
 function _runLocalCamcList() {
-  return new Promise((resolve) => {
-    const bin = _localCamcPath();
-    const child = execFile(bin, ['--json', 'list'], {
-      timeout: LOCAL_SYNC_TIMEOUT_MS,
-      maxBuffer: 4 * 1024 * 1024,
-      windowsHide: true,
-    }, (err, stdout, stderr) => {
-      if (err) {
-        // ENOENT = camc not on PATH and not bundled; treat as "no local
-        // agents", not a hard failure (a fresh install may have no
-        // local camc until the first `cam sync`).
-        const code = (err.code === 'ENOENT') ? 'camc_missing'
-          : (err.killed && /TIMEDOUT/i.test(String(err.message || '')) ? 'timeout' : 'exec_failed');
-        return resolve({ ok: false, error: code, detail: err.message || 'local camc list failed', stdout: '', stderr: stderr || '' });
-      }
-      resolve({ ok: true, stdout: String(stdout || ''), stderr: String(stderr || '') });
-    });
-    void child;
-  });
+  // The local runtime maps ENOENT → camc_missing (= camc not on PATH,
+  // not bundled, or — on Windows — not yet bootstrapped into the WSL
+  // distro); treat that as "no local agents", not a hard failure (a
+  // fresh install may have no local camc until the first start).
+  return _localRuntime.execCamc(['--json', 'list'], { timeoutMs: LOCAL_SYNC_TIMEOUT_MS });
 }
 
 async function _syncLocalAgents() {
@@ -1182,8 +1198,9 @@ async function _syncLocalAgents() {
 // ── Start-agent (POST /api/agents) ────────────────────────────────
 // `camc run` always prints human text (the global --json flag is a
 // no-op for `run`), so we parse the `ID: <id>` line from stdout, then
-// `camc --json status <id>` for the full record. Local uses execFile;
-// remote uses the injected ssh-transport's execRemote (same path as
+// `camc --json status <id>` for the full record. Local runs through
+// the local runtime (native on POSIX, WSL distro on Windows); remote
+// uses the injected ssh-transport's execRemote (same path as
 // _syncContextAgents). For inline node+path with no context, we
 // resolve the node to its machine and run directly — NO context
 // record is created (A2). The returned agent is upserted into the
@@ -1229,19 +1246,12 @@ function _parseRunAgentId(stdout) {
 /** Run `camc --json status <id>` locally and return the parsed agent
  *  record (or null). */
 function _localCamcStatus(agentId) {
-  return new Promise((resolve) => {
-    const bin = _localCamcPath();
-    const child = execFile(bin, ['--json', 'status', agentId], {
-      timeout: 8000,
-      maxBuffer: 2 * 1024 * 1024,
-      windowsHide: true,
-    }, (err, stdout, stderr) => {
-      if (err) return resolve(null);
-      try { resolve(JSON.parse(String(stdout || '') || 'null')); }
-      catch (_) { resolve(null); }
+  return _localRuntime.execCamc(['--json', 'status', agentId], { timeoutMs: 8000 })
+    .then((res) => {
+      if (!res.ok) return null;
+      try { return JSON.parse(res.stdout || 'null'); }
+      catch (_) { return null; }
     });
-    void child;
-  });
 }
 
 /** Stamp the start-request fields that camc does NOT echo back onto
@@ -1261,33 +1271,61 @@ function _stampStartRequestFields(normalized, body) {
   return normalized;
 }
 
-/** Run `camc run` locally (hub's own host). Returns { ok, agentId, record }.
- *  On success, upserts the agent into the store under the given ctx. */
+/** Run `camc run` on the local node (the hub's own machine). Returns
+ *  { ok, agentId, record }. On success, upserts the agent into the
+ *  store under the given ctx.
+ *
+ *  POSIX executes the bundled/on-PATH camc natively. On Windows the
+ *  local runtime is a WSL2 distro: the bundled camc is first
+ *  bootstrapped to `~/.cam/camc` inside the distro (`ensureCamc` —
+ *  md5-hash ready-cached), and the workspace path is mapped
+ *  `C:\foo` → `/mnt/c/foo` (`winToWslPath`). Bootstrap/WSL failures
+ *  surface as structured errors (wsl_missing / wsl_distro_missing /
+ *  camc_bootstrap_failed) with actionable detail. */
 async function _startLocalAgent(body, ctx) {
-  if (process.platform === 'win32') {
-    return {
-      ok: false,
-      error: 'local_runtime_unsupported',
-      detail: 'Local agents cannot run directly on Windows. Select a configured Linux SSH node. Local execution requires /bin/sh, Python 3, tmux, CAMC, and the selected ' + String((body && body.tool) || 'agent') + ' CLI installed and authenticated in the target runtime.',
-    };
+  const platform = (_localRuntime && typeof _localRuntime.getPlatform === 'function')
+    ? _localRuntime.getPlatform() : process.platform;
+  let runBody = body;
+  if (platform === 'win32') {
+    const bundled = _readBundledCamc();
+    if (bundled.error) return { ok: false, error: bundled.error, detail: bundled.detail };
+    const ready = await _localRuntime.ensureCamc(bundled);
+    if (!ready || !ready.ok) {
+      const err = ready || {};
+      return { ok: false, error: err.error || 'camc_bootstrap_failed', detail: err.detail || 'failed to prepare ~/.cam/camc inside the WSL distro' };
+    }
+    if (body && body.path) {
+      runBody = { ...body, path: _localRuntime.winToWslPath(body.path) };
+    }
   }
-  const argv = _buildRunArgv(body);
-  const res = await new Promise((resolve) => {
-    const bin = _localCamcPath();
-    const child = execFile(bin, argv, {
-      timeout: RUN_LOCAL_TIMEOUT_MS,
-      maxBuffer: 4 * 1024 * 1024,
-      windowsHide: true,
-    }, (err, stdout, stderr) => {
-      if (err) {
-        const code = (err.code === 'ENOENT') ? 'camc_missing'
-          : (err.killed && /TIMEDOUT/i.test(String(err.message || '')) ? 'timeout' : 'exec_failed');
-        return resolve({ ok: false, error: code, detail: err.message || 'local camc run failed', stdout: String(stdout || ''), stderr: String(stderr || '') });
-      }
-      resolve({ ok: true, stdout: String(stdout || ''), stderr: String(stderr || '') });
-    });
-    void child;
-  });
+  // Environment gate (LOCAL-DATAPATH): refuse to start when the local
+  // runtime is missing a prerequisite — python3 / tmux / the selected
+  // tool / tool auth. Failing the start with a clear checklist beats
+  // letting camc die inside tmux minutes later. Warn-level issues (e.g.
+  // "tool resolved from PATH, no golden path") do NOT block. On win32
+  // this runs after ensureCamc so the in-distro `camc env check` can
+  // report tool/auth accurately.
+  if (_localRuntime && typeof _localRuntime.checkEnvironment === 'function') {
+    const tool = String((body && body.tool) || 'claude');
+    const env = await _localRuntime.checkEnvironment(tool);
+    const checks = (env && env.checks) || {};
+    const issues = Array.isArray(env && env.issues) ? env.issues : [];
+    const errorIssues = issues.filter(i => i && i.level === 'error');
+    const missing = ['python3', 'tmux', 'tool', 'tool_auth'].filter(k => checks[k] === false);
+    if ((env && env.ok === false) || errorIssues.length || missing.length) {
+      const parts = issues.map(i => `${i.level}: ${i.message}`);
+      if (!parts.length && missing.length) parts.push(`missing prerequisite(s): ${missing.join(', ')}`);
+      return {
+        ok: false,
+        error: 'local_env_not_ready',
+        detail: `Local runtime is not ready to run ${tool}: ${parts.join(' | ')}`.replace(/\s+/g, ' ').slice(0, 500),
+        checks,
+        issues,
+      };
+    }
+  }
+  const argv = _buildRunArgv(runBody);
+  const res = await _localRuntime.execCamc(argv, { timeoutMs: RUN_LOCAL_TIMEOUT_MS });
   if (!res.ok) return res;
   const agentId = _parseRunAgentId(res.stdout);
   if (!agentId) {
@@ -1454,8 +1492,8 @@ function _resolveStartTarget(body) {
 // --api; cursor/aider do not). When the request targets a remote
 // context/node, runs both commands on that node over SSH (same
 // execRemote path as _syncContextAgents); otherwise runs locally via
-// execFile. `source` describes the endpoint + enabled count for the
-// renderer's status line.
+// the local runtime (native POSIX, WSL on Windows). `source` describes
+// the endpoint + enabled count for the renderer's status line.
 
 const API_TOOL_SUPPORT = { claude: true, codex: true, cursor: false, aider: false };
 
@@ -1479,23 +1517,15 @@ function _redactSecrets(s) {
   return out;
 }
 
-function _localCamcJson(args, timeoutMs) {
-  return new Promise((resolve) => {
-    const bin = _localCamcPath();
-    const child = execFile(bin, args, {
-      timeout: timeoutMs || 8000,
-      maxBuffer: 2 * 1024 * 1024,
-      windowsHide: true,
-    }, (err, stdout, stderr) => {
-      if (err) {
-        const code = (err.code === 'ENOENT') ? 'camc_missing'
-          : (err.killed && /TIMEDOUT/i.test(String(err.message || '')) ? 'timeout' : 'exec_failed');
-        return resolve({ ok: false, error: code, detail: _redactSecrets(err.message || 'local camc exec failed'), stdout: '', stderr: stderr || '' });
-      }
-      resolve({ ok: true, stdout: String(stdout || ''), stderr: String(stderr || '') });
-    });
-    void child;
-  });
+/** Run a local camc JSON command through the local runtime (native on
+ *  POSIX, WSL on Windows). Error details are redacted before returning
+ *  since they are surfaced to the renderer. */
+async function _localCamcJson(args, timeoutMs) {
+  const res = await _localRuntime.execCamc(args, { timeoutMs: timeoutMs || 8000 });
+  if (!res.ok) {
+    return { ok: false, error: res.error || 'exec_failed', detail: _redactSecrets(res.detail || 'local camc exec failed'), stdout: '', stderr: res.stderr || '' };
+  }
+  return { ok: true, stdout: res.stdout || '', stderr: res.stderr || '' };
 }
 
 /** Run `camc` JSON commands on a remote SSH node. `baseOpts` carries
@@ -1608,18 +1638,19 @@ async function _getApiModels(query) {
   const { models, defaults, parseError } = _mergeApiModels(listRes, defRes, tag);
   const enabledCount = Array.isArray(models) ? models.filter(m => m && m.enabled !== false).length : 0;
   // Surface a local/remote camc failure to the renderer so the user
-  // sees WHY the list is empty instead of a silent blank. The bundled
-  // `camc` is a POSIX shell-polyglot (`#!/bin/sh` + python heredoc)
-  // that runs on Linux (shebang) but CANNOT be execFile'd on Windows
-  // (no /bin/sh, not a .exe). So on a Windows hub with the local node
-  // selected, the local camc call fails with exec_failed/camc_missing
-  // and the user must pick a remote context (where ~/.cam/camc and the
-  // api-models.json live) to list profiles. The remote path (camc over
-  // SSH on a selected context/node) can ALSO fail — camc missing on
-  // the remote host, ~/.cam/api-models.json absent, a python error, a
-  // nonzero exit, or an SSH connection/cred failure — each previously
-  // returned models:[] with error:null (silent blank). Now we report
-  // the underlying error so the renderer can show it. (CAM-DESK-RUN-013)
+  // sees WHY the list is empty instead of a silent blank. Local calls
+  // go through the local runtime: native execFile of the bundled camc
+  // on POSIX, `wsl.exe --exec` into the WSL2 distro on Windows (the
+  // bundled camc is a POSIX shell-polyglot that cannot be execFile'd
+  // on Windows directly — no /bin/sh). A local failure therefore means
+  // the local runtime is unavailable (no camc on PATH/bundled, no WSL2,
+  // or camc not yet bootstrapped into the distro). The remote path
+  // (camc over SSH on a selected context/node) can ALSO fail — camc
+  // missing on the remote host, ~/.cam/api-models.json absent, a
+  // python error, a nonzero exit, or an SSH connection/cred failure —
+  // each previously returned models:[] with error:null (silent blank).
+  // Now we report the underlying error so the renderer can show it.
+  // (CAM-DESK-RUN-013)
   let err = null, detail = null;
   if (!models.length && !defaults.length) {
     const fail = (listRes && !listRes.ok) ? listRes : (defRes && !defRes.ok ? defRes : null);
@@ -1638,9 +1669,9 @@ async function _getApiModels(query) {
           ? 'remote_camc_failed' : (fail.error || 'remote_camc_failed');
         detail = _redactSecrets(`camc on ${tag} failed (${err}): ${fail.detail || fail.stderr || 'no detail'}`.slice(0, 400));
       } else {
-        // Local camc not runnable (Windows: POSIX shell-polyglot, no /bin/sh).
+        // Local runtime failure (native POSIX, or WSL on Windows).
         err = fail.error === 'ENOENT' ? 'camc_missing' : (fail.error || 'local_camc_unavailable');
-        detail = _redactSecrets(`Local \`camc\` could not run on this host (${err}: ${(fail.detail || 'no detail').slice(0,200)}). The bundled camc is a POSIX shell script; on Windows there is no /bin/sh to exec it. Select a remote context to list profiles from that machine's ~/.cam/api-models.json.`);
+        detail = _redactSecrets(`Local \`camc\` could not run on this host (${err}: ${(fail.detail || 'no detail').slice(0,200)}). On Windows the local runtime is a WSL2 distro — see GET /api/local/runtime for what is missing. Or select a remote context to list profiles from that machine's ~/.cam/api-models.json.`);
       }
     }
   }
@@ -1707,6 +1738,29 @@ function _readBundledCamc() {
     };
   }
   catch (e) { return { error: 'bundled_camc_read_failed', detail: e && e.message }; }
+}
+
+/** Parse a semver-ish triplet out of camc version text:
+ *  "camc v1.2.0 (9909fb1 …)" or "__version__ = \"1.2.0\"" → [1,2,0].
+ *  Returns null when nothing matches. */
+function _parseCamcVersion(s) {
+  const m = /v?(\d+)\.(\d+)\.(\d+)/.exec(String(s || ''));
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+/** Extract the bundled camc's declared `__version__` from its content. */
+function _camcBundledVersion(content) {
+  const m = /__version__\s*=\s*"([0-9.]+)"/.exec(String(content || ''));
+  return m ? _parseCamcVersion(m[1]) : null;
+}
+
+/** Numeric 3-part compare: <0 a older, 0 equal, >0 a newer. */
+function _versionCmp(a, b) {
+  for (let i = 0; i < 3; i++) {
+    const d = (a[i] || 0) - (b[i] || 0);
+    if (d) return d;
+  }
+  return 0;
 }
 
 function _remoteCamcReadyKey(baseOpts, localHash) {
@@ -1777,12 +1831,20 @@ async function _ensureRemoteCamc(baseOpts, { force = false } = {}) {
 
   const remoteHash = await _sshTransport.execRemote({
     ...baseOpts,
-    command: `bash -c 'test -x ${REMOTE_CAMC} && md5sum ${REMOTE_CAMC} 2>/dev/null | cut -c1-12'`,
+    command: `bash -c 'test -x ${REMOTE_CAMC} && ${REMOTE_CAMC} version 2>/dev/null | head -1'`,
   });
-  const remote = remoteHash && remoteHash.ok ? String(remoteHash.stdout || '').trim() : '';
-  if (remote && remote === local.hash) {
+  const remoteOut = remoteHash && remoteHash.ok ? String(remoteHash.stdout || '').trim() : '';
+  // Version-based freshness rule: upload ONLY when the remote camc is
+  // missing or strictly OLDER than the bundled version. A same-version
+  // or newer remote is left untouched even when the content hash
+  // differs (e.g. the host's own cam sync installed a newer build) —
+  // no downgrade ping-pong. `force` (explicit Sync Host) bypasses the
+  // check and always installs the bundled copy.
+  const rv = _parseCamcVersion(remoteOut);
+  const bundledV = _camcBundledVersion(local.content);
+  if (!force && remoteOut && rv && bundledV && _versionCmp(rv, bundledV) >= 0) {
     _markRemoteCamcReady(baseOpts, local.hash);
-    return { ok: true, present: true, hash: remote };
+    return { ok: true, present: true, remote_version: rv.join('.'), hash: local.hash };
   }
 
   const mkdir = await _sshTransport.execRemote({ ...baseOpts, command: 'mkdir -p ~/.cam' });
@@ -1808,10 +1870,10 @@ async function _ensureRemoteCamc(baseOpts, { force = false } = {}) {
   if (!verify || !verify.ok) {
     return { ok: false, error: verify && verify.error || 'remote_camc_verify_failed', detail: verify && (verify.detail || verify.stderr) || '~/.cam/camc is not executable after upload' };
   }
-  const action = remote ? 'updated' : 'installed';
+  const action = remoteOut ? 'updated' : 'installed';
   _markRemoteCamcReady(baseOpts, local.hash);
   pushLog('info', `${action} bundled camc on ${baseOpts.user}@${baseOpts.host}:${baseOpts.port || 22}`);
-  return { ok: true, installed: !remote, updated: !!remote, hash: local.hash };
+  return { ok: true, installed: !remoteOut, updated: !!remoteOut, hash: local.hash };
 }
 
 function _bundledSkillmPath() {
@@ -3110,8 +3172,30 @@ async function _sendAgentInput(agentId, text, sendEnter = true) {
   const resolved = _contextForAgent(agentId);
   if (resolved.error) return { ok: false, error: resolved.error, detail: `Input unavailable: ${resolved.error}` };
   const ctx = resolved.ctx;
-  if (!ctx || !ctx.machine || ctx.machine.type !== 'ssh') {
+  if (!ctx || !ctx.machine) {
     return { ok: false, error: 'not_ssh', detail: `context "${(ctx && ctx.name) || '?'}" is not an SSH context` };
+  }
+  // Local context: run `camc send <id> --stdin` on the local runtime
+  // (native POSIX, or inside the WSL distro on Windows). The text pipes
+  // through the child's stdin — same delivery model as the SSH path,
+  // minus the network. Local camc owns tmux chunking, bracketed paste,
+  // and submit timing.
+  if (ctx.machine.type !== 'ssh') {
+    const args = ['send', agentId, '--stdin'];
+    if (!sendEnter) args.push('--no-enter');
+    const res = await _localRuntime.execCamc(args, {
+      timeoutMs: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000),
+      stdin: Buffer.from(String(text || ''), 'utf8'),
+    });
+    if (!res.ok) {
+      if (_sendLooksDelivered(res)) {
+        const detail = _sendLogDetail(res);
+        pushLog('warn', `input ${agentId} delivered despite nonzero send result${detail ? `: ${detail}` : ''}`);
+        return { ok: true, stdout: res.stdout || '', stderr: res.stderr || '', ack: 'delivered_nonzero' };
+      }
+      return { ok: false, error: res.error || 'send_failed', detail: res.detail || res.stderr || 'local send failed' };
+    }
+    return { ok: true, stdout: res.stdout || '', stderr: res.stderr || '' };
   }
   if (!_sshTransport || typeof _sshTransport.execRemote !== 'function') {
     return { ok: false, error: 'ssh_transport_unavailable', detail: 'embedded Hub has no SSH transport configured' };
@@ -3166,8 +3250,20 @@ async function _sendAgentInput(agentId, text, sendEnter = true) {
 }
 
 async function _execCamcOnContext(ctx, camcArgs, { overrides = {}, timeoutMs = SYNC_DEFAULT_TIMEOUT_MS } = {}) {
-  if (!ctx || !ctx.machine || ctx.machine.type !== 'ssh') {
+  if (!ctx || !ctx.machine) {
     return { ok: false, error: 'not_ssh', detail: `context "${(ctx && ctx.name) || '?'}" is not an SSH context` };
+  }
+  // Local context: run camc on the hub's own machine via the local
+  // runtime (native POSIX, or inside the WSL distro on Windows). This
+  // unlocks capture/stop/rm/edit/key/cron for local agents — they used
+  // to fall into the `not_ssh` refusal below. Bootstrap of the distro
+  // camc happens at agent start (_startLocalAgent), not here.
+  if (ctx.machine.type !== 'ssh') {
+    const res = await _localRuntime.execCamc(camcArgs, { timeoutMs });
+    if (!res.ok) {
+      return { ok: false, error: res.error || 'exec_failed', detail: res.detail || res.stderr || 'local camc exec failed', stderr: res.stderr || '', stdout: res.stdout || '' };
+    }
+    return { ok: true, stdout: res.stdout || '', stderr: res.stderr || '' };
   }
   if (!_sshTransport || typeof _sshTransport.execRemote !== 'function') {
     return { ok: false, error: 'ssh_transport_unavailable', detail: 'embedded Hub has no SSH transport configured' };
@@ -3810,6 +3906,22 @@ async function handle(req, res) {
     });
   }
 
+  // /api/local/runtime?tool=<t> — structured preflight of the local
+  // node runtime (LOCAL-DATAPATH): on Windows reports WSL2 presence,
+  // distro, python3/tmux/tool/auth readiness inside the distro; on
+  // POSIX runs `camc env check --json` natively. Non-blocking advisory
+  // for the Start form; start itself returns the same errors
+  // authoritatively. Loopback-only hub, same bearer auth as the rest.
+  if (method === 'GET' && p === '/api/local/runtime') {
+    const tool = url.searchParams.get('tool') || 'claude';
+    try {
+      const out = await _localRuntime.checkEnvironment(tool);
+      return sendJson(res, 200, out);
+    } catch (e) {
+      return sendJson(res, 200, { ok: false, error: 'check_failed', detail: (e && e.message) || 'local runtime check failed' });
+    }
+  }
+
   // /api/system/ssh-config — read-only suggestion list for the Nodes
   // import UI. Returns parsed entries from the user's `~/.ssh/config`
   // (CAM-DESK-DIRECT-017). Never reads private-key contents — key
@@ -4013,7 +4125,8 @@ async function handle(req, res) {
   }
 
   // API models (Start form model picker). Wraps camc api list + default
-  // show, merged with a static toolSupport map. Local execFile only.
+  // show, merged with a static toolSupport map. Local via the local
+  // runtime, remote over SSH.
   if (p === '/api/api-models' && method === 'GET') {
     const query = {
       context: url.searchParams.get('context') || '',
@@ -4550,6 +4663,14 @@ async function getAttachConnectOpts(agentId) {
   const ctx = _attachContextForAgent(agent, resolved.ctx);
   if (!ctx) return { ok: false, error: 'context_not_found', detail: `agent ${agentId}: context_not_found` };
 
+  // Local-context agent: attach runs on the hub's own machine through
+  // the local runtime (native POSIX, WSL distro on Windows) instead of
+  // an SSH channel. main.cjs branches on `local` and opens a script-PTY
+  // channel via localRuntime.openAttachChannel — no SSH opts involved.
+  if ((agent.machine_type || agent.transport_type || 'ssh') !== 'ssh') {
+    return { ok: true, local: true, agent, ctx, agentId: agent.id || agentId };
+  }
+
   // Match `cam attach`: the live agent machine fields are the source of
   // truth for where the agent actually runs. The context supplies auth
   // metadata/credentials, but stale context host/user/port must not redirect
@@ -4559,16 +4680,38 @@ async function getAttachConnectOpts(agentId) {
   const built = _sshBaseOptsForContext(ctx, 60000);
   if (built.error) return { ok: false, error: built.error, detail: built.detail };
   const opts = { ...built.opts };
-  if ((agent.machine_type || agent.transport_type || 'ssh') !== 'ssh') {
-    return { ok: false, error: 'not_ssh', detail: `agent ${agentId}: terminal attach requires an SSH-backed agent` };
-  }
   if (agent.machine_host) opts.host = agent.machine_host;
   if (agent.machine_user) opts.user = agent.machine_user;
   if (agent.machine_port != null && agent.machine_port !== '') opts.port = agent.machine_port;
 
-  const ready = await _ensureRemoteCamc(opts);
-  if (!ready.ok) {
-    return { ok: false, error: ready.error || 'remote_camc_unavailable', detail: ready.detail || 'failed to prepare ~/.cam/camc on remote host' };
+  // Attach fast path: if the bundled camc is already verified on this
+  // host (ready-cache hit), skip the per-attach ensure probe. On a
+  // ~1s-RTT link that probe alone roughly doubled the attach latency.
+  let ready = { ok: true, cached: true };
+  const bundledForKey = _readBundledCamc();
+  const cacheHit = !bundledForKey.error
+    && state.remoteCamcReadyCache
+    && state.remoteCamcReadyCache.has(_remoteCamcReadyKey(opts, bundledForKey.hash));
+  if (!cacheHit) {
+    // First attach to this host (per hub run): a full ensure can take
+    // several seconds on a slow link (SFTP upload of ~800KB) and must
+    // NOT block the attach when a usable camc already exists remotely —
+    // `camc attach` works with any recent camc. Probe existence cheaply
+    // (one round trip): present → attach now, refresh in the background;
+    // missing → the install genuinely has to complete first.
+    const probe = await _sshTransport.execRemote({
+      ...opts,
+      command: `test -x ${REMOTE_CAMC}`,
+      timeout_ms: 15000,
+    });
+    if (probe && probe.ok) {
+      void _ensureRemoteCamc(opts).catch(() => {});
+    } else {
+      ready = await _ensureRemoteCamc(opts);
+      if (!ready.ok) {
+        return { ok: false, error: ready.error || 'remote_camc_unavailable', detail: ready.detail || 'failed to prepare ~/.cam/camc on remote host' };
+      }
+    }
   }
   return {
     ok: true,

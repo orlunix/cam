@@ -10,10 +10,10 @@
 
 import { api } from '../api.js?v=0.66.0';
 import { state } from '../state.js?v=0.64.0';
-import { mountShell } from './shell.js?v=0.65.0';
-import { mountAgentConsole } from './agent-console.js?v=0.66.0';
+import { mountShell } from './shell.js?v=0.65.1';
+import { mountAgentConsole } from './agent-console.js?v=0.67.0';
 import { mountSettingsMode } from './settings-mode.js?v=0.64.0';
-import { mountStartAgentMode } from './start-agent-mode.js?v=0.64.0';
+import { mountStartAgentMode } from './start-agent-mode.js?v=0.64.1';
 import { mountNodesMode } from './nodes-mode.js?v=0.64.0';
 import { mountSkillsMode } from './skills-mode.js?v=0.64.0';
 import { mountBotsMode } from './bots-mode.js?v=0.64.0';
@@ -26,7 +26,13 @@ const PROFILE_KIND_KEY = 'cam_profile_kind';
 // `start`/`nodes` are real left-nav workspace modes like
 // `agents`/`settings`. `nodes` shows hub-provided controllers/nodes
 // (CAM-DESK-NODEUI-010..017) and is not a connection mode.
-const MODES = ['agents', 'settings', 'start', 'nodes', 'skills', 'bots', 'todos'];
+// Unfinished workspace modes hidden from the nav (desktop.html
+// UNFINISHED-HIDDEN markers). setMode() and cold-start mode restore coerce
+// these to DEFAULT_MODE, so stale localStorage can't activate a hidden mode.
+// Re-enable: delete from HIDDEN_MODES + remove `hidden` on the nav buttons.
+const HIDDEN_MODES = new Set(['bots', 'todos']);
+const MODES = ['agents', 'settings', 'start', 'nodes', 'skills', 'bots', 'todos']
+  .filter(m => !HIDDEN_MODES.has(m));
 const DEFAULT_MODE = 'agents';
 
 function readConfig() {
@@ -308,8 +314,9 @@ function handleEvent(event) {
 
 /* ────────── Mode host ────────── */
 
-// Modes that survive a page reload.
-const PERSISTENT_MODES = new Set(['agents', 'settings', 'start', 'nodes', 'skills', 'bots', 'todos']);
+// Modes that survive a page reload. Derived from MODES so hidden unfinished
+// modes (HIDDEN_MODES above) are never persisted or restored.
+const PERSISTENT_MODES = new Set(MODES);
 
 function setMode(next) {
   if (!MODES.includes(next)) next = DEFAULT_MODE;
