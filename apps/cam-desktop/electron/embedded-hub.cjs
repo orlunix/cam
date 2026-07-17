@@ -5,9 +5,10 @@
  * Implements the Direct connection target as a self-contained Node
  * HTTP server inside Electron main. NO host CAM runtime is required:
  * no `cam` CLI and no `python` on the host. Everything is stdlib
- * (`http`, `crypto`, `fs`, `path`). Local-machine agent execution goes
- * through `local-runtime.cjs`: native execFile of the bundled camc on
- * macOS/Linux, `wsl.exe ... --exec` into a WSL2 distro on Windows.
+ * (`http`, `crypto`, `fs`, `path`). Agent execution is SSH-only:
+ * local sessions were retired 2026-07-17 by product decision — to use
+ * this machine as a node, run an SSH server on it and add it as an
+ * SSH node.
  *
  * Wire contract: a strict subset of the existing CAM API that the
  * renderer (`web/js/api.js`) already speaks. Endpoints implemented in
@@ -69,14 +70,6 @@ const crypto = require('node:crypto');
 const fs     = require('node:fs');
 const os     = require('node:os');
 const path   = require('node:path');
-// Local camc execution (Bug 1: ingest local agents in Direct mode, and
-// the local-node datapath): the hub process runs on the same host as
-// the local camc runtime, so a local spawn is the Direct-mode mirror of
-// the SSH `_sshTransport.execRemote` path used for remote nodes. All of
-// it lives in local-runtime.cjs — native execFile on POSIX, `wsl.exe
-// [-d distro] --exec <camc>` into WSL2 on Windows. The hub itself stays
-// stdlib-only; it never spawns directly.
-const _localRuntimeModule = require('./local-runtime.cjs');
 
 const DEFAULT_PORT       = 8420;
 const PORT_SCAN_RANGE    = 50;
@@ -86,16 +79,19 @@ const SYSTEM_PROMPT_MAX_BYTES = 128 * 1024;
 const SYSTEM_PROMPT_FILES = { claude: 'CLAUDE.md', codex: 'AGENTS.md', cursor: 'AGENTS.md' };
 const STORE_VERSION      = 1;
 const HUB_PRODUCT_VERSION = 'cam-desktop-embedded-1';
-// Bug 1 (CAM-DESK-DIRECT-019): in Direct mode the hub process runs on
-// the same host as `~/.cam/camc`, so local `camc run` agents must be
-// discoverable without a manual Sync. We auto-create a local-type
-// context that anchors those agents so `_contextForAgentRecord`
-// resolves them (otherwise `_pruneUnownedStoreAgents` would drop them
-// as orphans on the next SSH sync) and so Nodes mode shows a "local"
-// host card. The name is fixed; the id is generated once and
-// persisted in the store.
+// Local sessions were retired 2026-07-17 by product decision (local
+// ingestion, formerly "Bug 1"/CAM-DESK-DIRECT-019, is removed). This
+// constant no longer anchors an auto-created context; it only matches
+// LEGACY store rows written by older installs (a stored context or
+// agent whose name/type is 'local'), so normalize/prune code keeps
+// keying on it consistently.
 const LOCAL_CONTEXT_NAME  = 'local';
-const LOCAL_SYNC_TIMEOUT_MS = 8000;
+// Shared refusal for every former local entry point (start, api-models).
+const LOCAL_UNSUPPORTED_ERROR  = 'local_unsupported';
+const LOCAL_UNSUPPORTED_DETAIL = 'Local sessions are not supported. To use this machine as a node, run an SSH server on it and add it as an SSH node (tmux and the agent CLI with auth are required).';
+function _localUnsupported() {
+  return { ok: false, error: LOCAL_UNSUPPORTED_ERROR, detail: LOCAL_UNSUPPORTED_DETAIL };
+}
 // Direct Plain/Rich output polls can arrive every second while the same SSH
 // endpoint is also syncing agents. Keep a very short cache and coalesce
 // duplicate in-flight captures so polls do not stack `camc capture` calls.
@@ -119,7 +115,6 @@ const state = {
   remoteCamcReadyCache: new Map(),
   agentSyncInFlight: false,
   lastAgentSyncAt: 0,
-  localSyncInFlight: false,
 };
 
 function tokenFingerprint(tok) {
@@ -167,6 +162,7 @@ function loadStore(dataDir) {
         ? parsed.adapters
         : DEFAULT_ADAPTERS.slice(),
     };
+    _migrateDropLocalContexts();
     _repairStoreAgents();
   } catch (e) {
     if (e.code !== 'ENOENT') pushLog('warn', `store read failed: ${e.message}`);
@@ -174,9 +170,6 @@ function loadStore(dataDir) {
     try { fs.writeFileSync(state.storePath, JSON.stringify(state.store, null, 2)); }
     catch (e2) { pushLog('warn', `store init write failed: ${e2.message}`); }
   }
-  // The store may carry hubConfig.wslDistro — (re)sync it into the
-  // local runtime now that the store is known.
-  _syncLocalRuntimeConfig();
 }
 
 /** Atomically write the JSON store: write to a sibling .tmp file
@@ -191,6 +184,28 @@ function saveStore() {
   } catch (e) {
     pushLog('warn', `store write failed: ${e.message}`);
   }
+}
+
+/** One-time migration (2026-07-17, local sessions retired): drop
+ *  legacy `machine.type === 'local'` contexts — including the old
+ *  auto-created `local` anchor — and their agent rows from the store.
+ *  Local sessions are no longer supported; users reach the local
+ *  machine by running an SSH server on it and adding it as an SSH
+ *  node. Runs on every load; a no-op once the store is clean. */
+function _migrateDropLocalContexts() {
+  if (!state.store || !Array.isArray(state.store.contexts)) return;
+  const locals = state.store.contexts.filter(c => c && c.machine && (c.machine.type || 'local') === 'local');
+  if (!locals.length) return;
+  const localNames = new Set(locals.map(c => c.name));
+  state.store.contexts = state.store.contexts.filter(c => !(c && c.machine && (c.machine.type || 'local') === 'local'));
+  if (Array.isArray(state.store.agents)) {
+    state.store.agents = state.store.agents.filter(a => !localNames.has(a && a.context_name));
+  }
+  for (const c of locals) {
+    try { _cascadeDeleteCreds(c.id); } catch (_) {}
+    pushLog('info', `migration: dropped retired local context "${c.name}"`);
+  }
+  saveStore();
 }
 
 function _agentDedupeKey(a) {
@@ -400,11 +415,6 @@ let _credentialStore = null;
 // `ssh-transport.cjs` wrapping ssh2.
 let _sshTransport = null;
 
-// Local runtime (native POSIX / WSL-on-Windows camc execution). Unlike
-// the two collaborators above this one is bundled, so the default is
-// the real module; configure() accepts a mock for tests the same way.
-let _localRuntime = _localRuntimeModule;
-
 // Remote agent-discovery command. Two-pass: prefer the embedded camc
 // shim, fall back to the system `camc` on PATH (which is what the
 // unified CAM/camc environment installs).
@@ -414,26 +424,9 @@ const REMOTE_CAMC_UPLOAD_PATH = '.cam/camc.tmp';
 const REMOTE_SKILLM = '~/.cam/skillm';
 const REMOTE_SKILLM_UPLOAD_PATH = '.cam/skillm.tmp';
 
-function configure({ credentialStore, sshTransport, localRuntime } = {}) {
+function configure({ credentialStore, sshTransport } = {}) {
   if (credentialStore !== undefined) _credentialStore = credentialStore || null;
   if (sshTransport    !== undefined) _sshTransport    = sshTransport    || null;
-  if (localRuntime    !== undefined) _localRuntime    = localRuntime    || _localRuntimeModule;
-  _syncLocalRuntimeConfig();
-}
-
-/** Push hub-resolved settings into the real local-runtime module:
- *  the bundled/on-PATH camc path (resolution lives here in the hub —
- *  `_localCamcPath` — and is NOT duplicated by the module) and the
- *  optional WSL distro from the store (`hubConfig.wslDistro`, default
- *  '' = WSL default distro; no UI in this milestone — edit the store
- *  JSON to set it). Mocks that lack configure() are skipped. */
-function _syncLocalRuntimeConfig() {
-  if (!_localRuntime || typeof _localRuntime.configure !== 'function') return;
-  const cfg = (state.store && state.store.hubConfig) || {};
-  _localRuntime.configure({
-    camcPath: _localCamcPath(),
-    wslDistro: typeof cfg.wslDistro === 'string' ? cfg.wslDistro : '',
-  });
 }
 
 function _credentialAvailable() {
@@ -1028,13 +1021,11 @@ async function _syncAllAgentContexts(reason = 'manual') {
     return { ok: false, error: 'sync_in_flight', detail: 'agent sync already running' };
   }
   const contexts = _syncableAgentContexts();
-  // No SSH contexts does NOT mean "nothing to do" — Bug 1: there may
-  // still be local camc agents on the hub's own host to ingest. Run
-  // the local pass first so a Direct-mode install with zero remote
-  // nodes still reflects its local agents.
+  // Only SSH contexts are syncable — local ingestion was retired
+  // 2026-07-17 (local sessions unsupported), so with no SSH contexts
+  // there is genuinely nothing to do.
   if (!contexts.length) {
-    const local = await _syncLocalAgents();
-    return { ok: true, synced: local && local.ok ? 1 : 0, failed: 0, results: local && local.ok ? [{ context: LOCAL_CONTEXT_NAME, ok: true, imported: local.imported || 0, error: null }] : [] };
+    return { ok: true, synced: 0, failed: 0, results: [] };
   }
   state.agentSyncInFlight = true;
   const results = [];
@@ -1047,17 +1038,6 @@ async function _syncAllAgentContexts(reason = 'manual') {
       results.push({ context: ctx.name, ok: !!(r && r.ok), imported: r && r.imported || 0, error: r && r.error || null });
       if (r && r.ok) synced++;
       else failed++;
-    }
-    // Bug 1: ingest local camc agents on the hub's own host as part of
-    // a full sync too, so "Sync All" covers both transports. Run BEFORE
-    // prune so `_pruneUnownedStoreAgents` sees the local anchor context
-    // and does not drop the freshly-imported local rows as orphans.
-    const local = await _syncLocalAgents();
-    if (local && local.ok) {
-      synced++;
-      results.push({ context: LOCAL_CONTEXT_NAME, ok: true, imported: local.imported || 0, error: null });
-    } else if (local && local.error !== 'sync_in_flight' && local.error !== 'camc_missing') {
-      results.push({ context: LOCAL_CONTEXT_NAME, ok: false, imported: 0, error: local.error || 'failed' });
     }
     state.lastAgentSyncAt = Date.now();
     const prune = synced > 0
@@ -1072,142 +1052,18 @@ async function _syncAllAgentContexts(reason = 'manual') {
 }
 
 
-/* ─────────────── Local agent ingestion (Bug 1, CAM-DESK-DIRECT-019) ───────────────
- *
- * In Direct mode the hub process runs on the same host as `~/.cam/camc`,
- * so `camc run` agents launched on the hub's own machine (e.g. prgn)
- * must show up in the agent list without a manual Sync Host. The SSH
- * sync path (`_syncableAgentContexts`) deliberately skips every
- * non-ssh context, so local agents never enter `state.store.agents`
- * unless the operator happens to trigger a self-SSH sync. This block
- * adds the local mirror: run `camc --json list` on the hub process's
- * own host, normalize the records exactly like the remote path, and
- * upsert them under an auto-created local context so the renderer's
- * per-host tally and the prune logic both see them.
- */
-
-/** Resolve the camc binary to run for local discovery. Prefer the
- *  bundled camc (works on a fresh install with nothing on PATH), then
- *  fall back to `camc` on PATH (the dev/prgn case where the CLI is
- *  installed under ~/.local/bin). Passed into the local runtime via
- *  `_syncLocalRuntimeConfig`; the runtime's execFile searches PATH for
- *  a bare name and maps ENOENT to a 'camc_missing' result. */
-function _localCamcPath() {
-  return _bundledCamcPath() || 'camc';
-}
-
-/** Auto-create the local anchor context if no local-type context
- *  exists yet. Idempotent: returns the existing record on subsequent
- *  calls. The context has `machine.type === 'local'` so it is skipped
- *  by the SSH sync path and never double-counted. Its `name` is the
- *  fixed `LOCAL_CONTEXT_NAME` so `_contextForAgentRecord` and the
- *  renderer both key on it. */
-function _ensureLocalContext() {
-  if (!state.store) state.store = _emptyStore();
-  if (!Array.isArray(state.store.contexts)) state.store.contexts = [];
-  const existing = state.store.contexts.find(c => c && c.machine && (c.machine.type || 'local') === 'local');
-  if (existing) return existing;
-  const rec = {
-    id:           crypto.randomUUID(),
-    name:         LOCAL_CONTEXT_NAME,
-    path:         '',
-    machine:      { type: 'local', host: '', user: '', port: null },
-    tags:         [],
-    created_at:   nowIso(),
-    last_used_at: null,
-  };
-  state.store.contexts.push(rec);
-  saveStore();
-  pushLog('info', `local context auto-created: ${rec.name}`);
-  return rec;
-}
-
-/** Run `camc --json list` on the hub's own host and merge the result
- *  into `state.store.agents` under the local context. Mirrors the
- *  remote `_syncContextAgents` shape so the renderer's tally and
- *  `_repairStoreAgents` see identical fields. Does NOT duplicate
- *  SSH-synced rows: `_upsertAgentsForContext` only replaces rows
- *  whose `context_name === LOCAL_CONTEXT_NAME` (or whose
- *  `_agentDedupeKey` collides, which can't happen here because SSH
- *  rows carry a non-empty `machine_host` and a different ctx name).
- *
- *  Returns `{ ok, imported, total, results: { camc } }` (same shape
- *  as `_syncContextAgents`) so callers can mix it into the existing
- *  sync results array. Failures are non-fatal: a missing/broken local
- *  camc just yields an empty import, it never breaks the agent list.
- *  Throttled by `state.localSyncInFlight` so concurrent GET /api/agents
- *  polls do not stack local camc spawns. */
-function _runLocalCamcList() {
-  // The local runtime maps ENOENT → camc_missing (= camc not on PATH,
-  // not bundled, or — on Windows — not yet bootstrapped into the WSL
-  // distro); treat that as "no local agents", not a hard failure (a
-  // fresh install may have no local camc until the first start).
-  return _localRuntime.execCamc(['--json', 'list'], { timeoutMs: LOCAL_SYNC_TIMEOUT_MS });
-}
-
-async function _syncLocalAgents() {
-  if (state.localSyncInFlight) {
-    return { ok: false, error: 'sync_in_flight', imported: 0, total: 0, results: { camc: 'unchanged' } };
-  }
-  state.localSyncInFlight = true;
-  try {
-    const ctx = _ensureLocalContext();
-    const res = await _runLocalCamcList();
-    if (!res.ok) {
-      // Missing local camc on a fresh install is expected — log at
-      // debug-ish level and move on. Surface real exec errors once.
-      if (res.error !== 'camc_missing') {
-        pushLog('warn', `local sync failed: ${res.error}`);
-      }
-      return { ok: false, error: res.error, imported: 0, total: 0, results: { camc: 'failed' } };
-    }
-    let parsed;
-    try { parsed = JSON.parse(res.stdout || '[]'); }
-    catch (e) {
-      pushLog('warn', `local sync: invalid JSON from local camc: ${e && e.message}`);
-      return { ok: false, error: 'invalid_json', imported: 0, total: 0, results: { camc: 'failed' } };
-    }
-    if (!Array.isArray(parsed)) {
-      return { ok: false, error: 'invalid_json', imported: 0, total: 0, results: { camc: 'failed' } };
-    }
-    const normalized = parsed
-      .map(r => _normalizeAgent(r, ctx))
-      .filter(r => r && r.id);
-
-    // Change-detection keyed on id+status+state+updated_at, same as the
-    // remote path, so we can report 'updated'/'unchanged' to the caller.
-    const prev = (state.store && state.store.agents)
-      ? state.store.agents.filter(a => (a.context_name || '') === ctx.name)
-      : [];
-    _upsertAgentsForContext(ctx, normalized);
-    function fp(a) { return `${a.id}|${a.status}|${a.state}|${a.task_name}|${a.updated_at || ''}`; }
-    const prevSig = new Set(prev.map(fp));
-    const newSig  = new Set(normalized.map(fp));
-    const same = (prevSig.size === newSig.size)
-      && [...prevSig].every(k => newSig.has(k));
-    const status = same ? 'unchanged' : 'updated';
-    pushLog('info', `sync ${ctx.name}: ${status} (${normalized.length} agent(s))`);
-    return { ok: true, imported: normalized.length, total: parsed.length, results: { camc: status } };
-  } finally {
-    state.localSyncInFlight = false;
-  }
-}
-
-
-
 // ── Start-agent (POST /api/agents) ────────────────────────────────
 // `camc run` always prints human text (the global --json flag is a
 // no-op for `run`), so we parse the `ID: <id>` line from stdout, then
-// `camc --json status <id>` for the full record. Local runs through
-// the local runtime (native on POSIX, WSL distro on Windows); remote
-// uses the injected ssh-transport's execRemote (same path as
-// _syncContextAgents). For inline node+path with no context, we
-// resolve the node to its machine and run directly — NO context
-// record is created (A2). The returned agent is upserted into the
-// store under the matching context (or the local anchor context for
-// inline local runs) so the next GET /api/agents sees it.
+// `camc --json status <id>` for the full record. Starts run on remote
+// SSH nodes via the injected ssh-transport's execRemote (same path as
+// _syncContextAgents); local starts are refused (`local_unsupported`)
+// since local sessions were retired 2026-07-17. For inline node+path
+// with no context, we resolve the node to its machine and run directly
+// — NO context record is created (A2). The returned agent is upserted
+// into the store under the matching context so the next GET
+// /api/agents sees it.
 
-const RUN_LOCAL_TIMEOUT_MS  = 30000;
 const RUN_REMOTE_TIMEOUT_MS = 45000;
 
 /** Build the `camc run` argv from a start request body. Tool/path/name
@@ -1243,17 +1099,6 @@ function _parseRunAgentId(stdout) {
   return m ? m[1] : '';
 }
 
-/** Run `camc --json status <id>` locally and return the parsed agent
- *  record (or null). */
-function _localCamcStatus(agentId) {
-  return _localRuntime.execCamc(['--json', 'status', agentId], { timeoutMs: 8000 })
-    .then((res) => {
-      if (!res.ok) return null;
-      try { return JSON.parse(res.stdout || 'null'); }
-      catch (_) { return null; }
-    });
-}
-
 /** Stamp the start-request fields that camc does NOT echo back onto
  *  the normalized agent record. `camc --json status` carries auto_confirm
  *  (it forces it on) and retry_count (always 0), but neither the
@@ -1271,78 +1116,15 @@ function _stampStartRequestFields(normalized, body) {
   return normalized;
 }
 
-/** Run `camc run` on the local node (the hub's own machine). Returns
- *  { ok, agentId, record }. On success, upserts the agent into the
- *  store under the given ctx.
- *
- *  POSIX executes the bundled/on-PATH camc natively. On Windows the
- *  local runtime is a WSL2 distro: the bundled camc is first
- *  bootstrapped to `~/.cam/camc` inside the distro (`ensureCamc` —
- *  md5-hash ready-cached), and the workspace path is mapped
- *  `C:\foo` → `/mnt/c/foo` (`winToWslPath`). Bootstrap/WSL failures
- *  surface as structured errors (wsl_missing / wsl_distro_missing /
- *  camc_bootstrap_failed) with actionable detail. */
+/** Local agent starts are UNSUPPORTED by product decision (retired
+ *  2026-07-17): the local runtime (`local-runtime.cjs`, WSL/native
+ *  camc exec) was removed. To use this machine as a node, the user
+ *  runs an SSH server on it and adds it as an SSH node. Kept as the
+ *  single refusal point for any local-targeted start (local context,
+ *  or inline node:'local' — that path is refused earlier in
+ *  `_resolveStartTarget`). */
 async function _startLocalAgent(body, ctx) {
-  const platform = (_localRuntime && typeof _localRuntime.getPlatform === 'function')
-    ? _localRuntime.getPlatform() : process.platform;
-  let runBody = body;
-  if (platform === 'win32') {
-    const bundled = _readBundledCamc();
-    if (bundled.error) return { ok: false, error: bundled.error, detail: bundled.detail };
-    const ready = await _localRuntime.ensureCamc(bundled);
-    if (!ready || !ready.ok) {
-      const err = ready || {};
-      return { ok: false, error: err.error || 'camc_bootstrap_failed', detail: err.detail || 'failed to prepare ~/.cam/camc inside the WSL distro' };
-    }
-    if (body && body.path) {
-      runBody = { ...body, path: _localRuntime.winToWslPath(body.path) };
-    }
-  }
-  // Environment gate (LOCAL-DATAPATH): refuse to start when the local
-  // runtime is missing a prerequisite — python3 / tmux / the selected
-  // tool / tool auth. Failing the start with a clear checklist beats
-  // letting camc die inside tmux minutes later. Warn-level issues (e.g.
-  // "tool resolved from PATH, no golden path") do NOT block. On win32
-  // this runs after ensureCamc so the in-distro `camc env check` can
-  // report tool/auth accurately.
-  if (_localRuntime && typeof _localRuntime.checkEnvironment === 'function') {
-    const tool = String((body && body.tool) || 'claude');
-    const env = await _localRuntime.checkEnvironment(tool);
-    const checks = (env && env.checks) || {};
-    const issues = Array.isArray(env && env.issues) ? env.issues : [];
-    const errorIssues = issues.filter(i => i && i.level === 'error');
-    const missing = ['python3', 'tmux', 'tool', 'tool_auth'].filter(k => checks[k] === false);
-    if ((env && env.ok === false) || errorIssues.length || missing.length) {
-      const parts = issues.map(i => `${i.level}: ${i.message}`);
-      if (!parts.length && missing.length) parts.push(`missing prerequisite(s): ${missing.join(', ')}`);
-      return {
-        ok: false,
-        error: 'local_env_not_ready',
-        detail: `Local runtime is not ready to run ${tool}: ${parts.join(' | ')}`.replace(/\s+/g, ' ').slice(0, 500),
-        checks,
-        issues,
-      };
-    }
-  }
-  const argv = _buildRunArgv(runBody);
-  const res = await _localRuntime.execCamc(argv, { timeoutMs: RUN_LOCAL_TIMEOUT_MS });
-  if (!res.ok) return res;
-  const agentId = _parseRunAgentId(res.stdout);
-  if (!agentId) {
-    return { ok: false, error: 'no_agent_id', detail: 'camc run did not print an agent ID', stdout: res.stdout, stderr: res.stderr };
-  }
-  let record = await _localCamcStatus(agentId);
-  if (!record) {
-    // Fall back to a minimal record so the renderer still gets a row.
-    record = { id: agentId, status: 'running', state: 'initializing', task: { tool: String((body && body.tool) || 'claude'), name: String((body && body.name) || ''), prompt: String((body && body.prompt) || '') }, context_path: String((body && body.path) || ''), transport_type: 'local', hostname: '' };
-  }
-  const normalized = _normalizeAgent(record, ctx);
-  _stampStartRequestFields(normalized, body);
-  if (normalized && normalized.id) {
-    _upsertAgentsForContext(ctx, [normalized]);
-    pushLog('info', `start local agent: ${normalized.id} (${normalized.tool})`);
-  }
-  return { ok: true, agentId, record: normalized };
+  return { ok: false, error: LOCAL_UNSUPPORTED_ERROR, detail: LOCAL_UNSUPPORTED_DETAIL };
 }
 
 /** Run `camc run` on a remote SSH node. Uses the same execRemote path
@@ -1384,10 +1166,12 @@ async function _startRemoteAgent(body, baseOpts, ctx) {
 }
 
 /** Resolve a start request body to the target context + SSH baseOpts.
- *  - body.context set → use that context (local or ssh).
+ *  - body.context set → use that context (local or ssh; a local-type
+ *    context resolves with baseOpts=null and the start is refused by
+ *    `_startLocalAgent`).
  *  - body.node + body.path (A2, inline) → resolve the node's machine
- *    to a context WITHOUT creating a context record. For a local node
- *    we reuse the local anchor context; for an SSH node we synthesize
+ *    to a context WITHOUT creating a context record. A local node is
+ *    refused (`local_unsupported`); for an SSH node we synthesize
  *    a throwaway context shell (machine only) so _normalizeAgent +
  *    _upsertAgentsForContext have something to key on. The throwaway
  *    is NEVER pushed into state.store.contexts.
@@ -1416,7 +1200,8 @@ function _resolveStartTarget(body) {
       }
       return { ok: true, ctx, baseOpts };
     }
-    // local context
+    // local-type context (legacy store row): resolve ok with no
+    // baseOpts; the start itself is refused by `_startLocalAgent`.
     return { ok: true, ctx, baseOpts: null };
   }
   // Inline node+path (A2): no context record. Resolve the node.
@@ -1426,11 +1211,11 @@ function _resolveStartTarget(body) {
     return { ok: false, error: 'missing_target', detail: 'provide either a context or a node + path' };
   }
   // node is a host key: "local" or "user@host:port" (matches the
-  // renderer's hostKeyForMachine). Find any existing context on that
-  // endpoint to reuse its creds.
-  if (nodeKey === 'local') {
-    const localCtx = _ensureLocalContext();
-    return { ok: true, ctx: localCtx, baseOpts: null };
+  // renderer's hostKeyForMachine). Local sessions are unsupported —
+  // refuse with the SSH-node guidance. For SSH keys, find any existing
+  // context on that endpoint to reuse its creds.
+  if (nodeKey === LOCAL_CONTEXT_NAME) {
+    return _localUnsupported();
   }
   // Accept bracketed IPv6 hosts: "user@[2001:db8::1]:22". The host group
   // matches either "[...]" (bracketed IPv6) or a non-colon host (IPv4 /
@@ -1489,11 +1274,11 @@ function _resolveStartTarget(body) {
 // ── API models (GET /api/api-models) ──────────────────────────────
 // Wraps `camc --json api list --all` + `camc api default show --json`
 // and merges them with a static toolSupport map (claude/codex support
-// --api; cursor/aider do not). When the request targets a remote
-// context/node, runs both commands on that node over SSH (same
-// execRemote path as _syncContextAgents); otherwise runs locally via
-// the local runtime (native POSIX, WSL on Windows). `source` describes
-// the endpoint + enabled count for the renderer's status line.
+// --api; cursor/aider do not). Both commands run on the target node
+// over SSH (same execRemote path as _syncContextAgents); local targets
+// are refused (`local_unsupported`) since local sessions were retired
+// 2026-07-17. `source` describes the endpoint + enabled count for the
+// renderer's status line.
 
 const API_TOOL_SUPPORT = { claude: true, codex: true, cursor: false, aider: false };
 
@@ -1515,17 +1300,6 @@ function _redactSecrets(s) {
   let out = String(s);
   for (const re of SECRET_PATTERNS) out = out.replace(re, '[REDACTED]');
   return out;
-}
-
-/** Run a local camc JSON command through the local runtime (native on
- *  POSIX, WSL on Windows). Error details are redacted before returning
- *  since they are surfaced to the renderer. */
-async function _localCamcJson(args, timeoutMs) {
-  const res = await _localRuntime.execCamc(args, { timeoutMs: timeoutMs || 8000 });
-  if (!res.ok) {
-    return { ok: false, error: res.error || 'exec_failed', detail: _redactSecrets(res.detail || 'local camc exec failed'), stdout: '', stderr: res.stderr || '' };
-  }
-  return { ok: true, stdout: res.stdout || '', stderr: res.stderr || '' };
 }
 
 /** Run `camc` JSON commands on a remote SSH node. `baseOpts` carries
@@ -1582,39 +1356,37 @@ function _mergeApiModels(listRes, defRes, logTag) {
 const API_LIST_ARGS  = ['--json', 'api', 'list', '--all'];
 const API_DEFAULT_ARGS = ['api', 'default', 'show', '--json'];
 
-/** Resolve a start-style target (context name OR node key OR empty
- *  for local) for the model-picker. Returns { ok, baseOpts, ctx, label }
+/** Resolve a start-style target (context name OR node key OR empty)
+ *  for the model-picker. Returns { ok, baseOpts, ctx, label }
  *  where label names the endpoint for the status line. Reuses
- *  _resolveStartTarget so creds resolution is identical to start. The
- *  renderer only ever sends a real `context` (for a selected context)
- *  or `node:"local"` (for the "(none)" case); a remote node key without
- *  a context is not produced by the picker, but we synthesize a dummy
- *  path so _resolveStartTarget's inline-node guard doesn't 400. */
+ *  _resolveStartTarget so creds resolution is identical to start. Local
+ *  targets (node:"local", a local-type context, or no target at all)
+ *  are refused with `local_unsupported` — local sessions were retired
+ *  2026-07-17. A remote node key without a context is not produced by
+ *  the picker, but we synthesize a dummy path so _resolveStartTarget's
+ *  inline-node guard doesn't 400. */
 function _resolveApiModelsTarget(query) {
   const ctxName = query && query.context ? String(query.context) : '';
   const nodeKey = query && query.node ? String(query.node) : '';
   if (ctxName) {
     const t = _resolveStartTarget({ context: ctxName });
     if (!t.ok) return t;
+    if (!t.baseOpts) return _localUnsupported(); // local-type context
     const m = (t.ctx && t.ctx.machine) || {};
-    const label = (m.type || 'local') === 'ssh'
-      ? `${m.user || ''}@${m.host}${m.port && m.port !== 22 ? ':' + m.port : ''}`
-      : LOCAL_CONTEXT_NAME;
+    const label = `${m.user || ''}@${m.host}${m.port && m.port !== 22 ? ':' + m.port : ''}`;
     return { ok: true, baseOpts: t.baseOpts, ctx: t.ctx, label };
   }
-  if (nodeKey && nodeKey !== 'local') {
+  if (nodeKey && nodeKey !== LOCAL_CONTEXT_NAME) {
     // Remote node without a context — dummy path (picker doesn't send
     // this today, but keep _resolveStartTarget happy if it ever does).
     const t = _resolveStartTarget({ node: nodeKey, path: '/tmp' });
     if (!t.ok) return t;
     const m = (t.ctx && t.ctx.machine) || {};
-    const label = (m.type || 'local') === 'ssh'
-      ? `${m.user || ''}@${m.host}${m.port && m.port !== 22 ? ':' + m.port : ''}`
-      : LOCAL_CONTEXT_NAME;
+    const label = `${m.user || ''}@${m.host}${m.port && m.port !== 22 ? ':' + m.port : ''}`;
     return { ok: true, baseOpts: t.baseOpts, ctx: t.ctx, label };
   }
-  // local / none
-  return { ok: true, baseOpts: null, ctx: _ensureLocalContext(), label: LOCAL_CONTEXT_NAME };
+  // local / none — unsupported.
+  return _localUnsupported();
 }
 
 async function _getApiModels(query) {
@@ -1623,34 +1395,20 @@ async function _getApiModels(query) {
     return { models: [], defaults: [], toolSupport: API_TOOL_SUPPORT, source: { label: '', enabled_count: 0, error: target.error, detail: target.detail } };
   }
   const tag = target.label || LOCAL_CONTEXT_NAME;
-  let listRes, defRes;
-  if (target.baseOpts) {
-    [listRes, defRes] = await Promise.all([
-      _remoteCamcJson(target.baseOpts, API_LIST_ARGS, 12000),
-      _remoteCamcJson(target.baseOpts, API_DEFAULT_ARGS, 12000),
-    ]);
-  } else {
-    [listRes, defRes] = await Promise.all([
-      _localCamcJson(API_LIST_ARGS, 10000),
-      _localCamcJson(API_DEFAULT_ARGS, 10000),
-    ]);
-  }
+  // Local targets are refused above, so this is always the SSH path.
+  const [listRes, defRes] = await Promise.all([
+    _remoteCamcJson(target.baseOpts, API_LIST_ARGS, 12000),
+    _remoteCamcJson(target.baseOpts, API_DEFAULT_ARGS, 12000),
+  ]);
   const { models, defaults, parseError } = _mergeApiModels(listRes, defRes, tag);
   const enabledCount = Array.isArray(models) ? models.filter(m => m && m.enabled !== false).length : 0;
-  // Surface a local/remote camc failure to the renderer so the user
-  // sees WHY the list is empty instead of a silent blank. Local calls
-  // go through the local runtime: native execFile of the bundled camc
-  // on POSIX, `wsl.exe --exec` into the WSL2 distro on Windows (the
-  // bundled camc is a POSIX shell-polyglot that cannot be execFile'd
-  // on Windows directly — no /bin/sh). A local failure therefore means
-  // the local runtime is unavailable (no camc on PATH/bundled, no WSL2,
-  // or camc not yet bootstrapped into the distro). The remote path
-  // (camc over SSH on a selected context/node) can ALSO fail — camc
-  // missing on the remote host, ~/.cam/api-models.json absent, a
-  // python error, a nonzero exit, or an SSH connection/cred failure —
-  // each previously returned models:[] with error:null (silent blank).
-  // Now we report the underlying error so the renderer can show it.
-  // (CAM-DESK-RUN-013)
+  // Surface a remote camc failure to the renderer so the user sees WHY
+  // the list is empty instead of a silent blank. The remote path (camc
+  // over SSH on a selected context/node) can fail — camc missing on the
+  // remote host, ~/.cam/api-models.json absent, a python error, a
+  // nonzero exit, or an SSH connection/cred failure — each previously
+  // returned models:[] with error:null (silent blank). Now we report
+  // the underlying error so the renderer can show it. (CAM-DESK-RUN-013)
   let err = null, detail = null;
   if (!models.length && !defaults.length) {
     const fail = (listRes && !listRes.ok) ? listRes : (defRes && !defRes.ok ? defRes : null);
@@ -1661,17 +1419,13 @@ async function _getApiModels(query) {
       if (fail.error === 'timeout') {
         err = 'camc_timeout';
         detail = `\`camc api list\` on ${tag} timed out.`;
-      } else if (target.baseOpts) {
+      } else {
         // Remote (SSH) camc failure — include the remote stderr/exit
         // so the user sees the actual reason (camc missing, python
         // error, api-models.json absent, ssh cred failure, etc.).
         err = (fail.error === 'exec_failed' || fail.error === 'remote_nonzero')
           ? 'remote_camc_failed' : (fail.error || 'remote_camc_failed');
         detail = _redactSecrets(`camc on ${tag} failed (${err}): ${fail.detail || fail.stderr || 'no detail'}`.slice(0, 400));
-      } else {
-        // Local runtime failure (native POSIX, or WSL on Windows).
-        err = fail.error === 'ENOENT' ? 'camc_missing' : (fail.error || 'local_camc_unavailable');
-        detail = _redactSecrets(`Local \`camc\` could not run on this host (${err}: ${(fail.detail || 'no detail').slice(0,200)}). On Windows the local runtime is a WSL2 distro — see GET /api/local/runtime for what is missing. Or select a remote context to list profiles from that machine's ~/.cam/api-models.json.`);
       }
     }
   }
@@ -3172,30 +2926,8 @@ async function _sendAgentInput(agentId, text, sendEnter = true) {
   const resolved = _contextForAgent(agentId);
   if (resolved.error) return { ok: false, error: resolved.error, detail: `Input unavailable: ${resolved.error}` };
   const ctx = resolved.ctx;
-  if (!ctx || !ctx.machine) {
+  if (!ctx || !ctx.machine || ctx.machine.type !== 'ssh') {
     return { ok: false, error: 'not_ssh', detail: `context "${(ctx && ctx.name) || '?'}" is not an SSH context` };
-  }
-  // Local context: run `camc send <id> --stdin` on the local runtime
-  // (native POSIX, or inside the WSL distro on Windows). The text pipes
-  // through the child's stdin — same delivery model as the SSH path,
-  // minus the network. Local camc owns tmux chunking, bracketed paste,
-  // and submit timing.
-  if (ctx.machine.type !== 'ssh') {
-    const args = ['send', agentId, '--stdin'];
-    if (!sendEnter) args.push('--no-enter');
-    const res = await _localRuntime.execCamc(args, {
-      timeoutMs: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000),
-      stdin: Buffer.from(String(text || ''), 'utf8'),
-    });
-    if (!res.ok) {
-      if (_sendLooksDelivered(res)) {
-        const detail = _sendLogDetail(res);
-        pushLog('warn', `input ${agentId} delivered despite nonzero send result${detail ? `: ${detail}` : ''}`);
-        return { ok: true, stdout: res.stdout || '', stderr: res.stderr || '', ack: 'delivered_nonzero' };
-      }
-      return { ok: false, error: res.error || 'send_failed', detail: res.detail || res.stderr || 'local send failed' };
-    }
-    return { ok: true, stdout: res.stdout || '', stderr: res.stderr || '' };
   }
   if (!_sshTransport || typeof _sshTransport.execRemote !== 'function') {
     return { ok: false, error: 'ssh_transport_unavailable', detail: 'embedded Hub has no SSH transport configured' };
@@ -3250,20 +2982,8 @@ async function _sendAgentInput(agentId, text, sendEnter = true) {
 }
 
 async function _execCamcOnContext(ctx, camcArgs, { overrides = {}, timeoutMs = SYNC_DEFAULT_TIMEOUT_MS } = {}) {
-  if (!ctx || !ctx.machine) {
+  if (!ctx || !ctx.machine || ctx.machine.type !== 'ssh') {
     return { ok: false, error: 'not_ssh', detail: `context "${(ctx && ctx.name) || '?'}" is not an SSH context` };
-  }
-  // Local context: run camc on the hub's own machine via the local
-  // runtime (native POSIX, or inside the WSL distro on Windows). This
-  // unlocks capture/stop/rm/edit/key/cron for local agents — they used
-  // to fall into the `not_ssh` refusal below. Bootstrap of the distro
-  // camc happens at agent start (_startLocalAgent), not here.
-  if (ctx.machine.type !== 'ssh') {
-    const res = await _localRuntime.execCamc(camcArgs, { timeoutMs });
-    if (!res.ok) {
-      return { ok: false, error: res.error || 'exec_failed', detail: res.detail || res.stderr || 'local camc exec failed', stderr: res.stderr || '', stdout: res.stdout || '' };
-    }
-    return { ok: true, stdout: res.stdout || '', stderr: res.stderr || '' };
   }
   if (!_sshTransport || typeof _sshTransport.execRemote !== 'function') {
     return { ok: false, error: 'ssh_transport_unavailable', detail: 'embedded Hub has no SSH transport configured' };
@@ -3906,22 +3626,6 @@ async function handle(req, res) {
     });
   }
 
-  // /api/local/runtime?tool=<t> — structured preflight of the local
-  // node runtime (LOCAL-DATAPATH): on Windows reports WSL2 presence,
-  // distro, python3/tmux/tool/auth readiness inside the distro; on
-  // POSIX runs `camc env check --json` natively. Non-blocking advisory
-  // for the Start form; start itself returns the same errors
-  // authoritatively. Loopback-only hub, same bearer auth as the rest.
-  if (method === 'GET' && p === '/api/local/runtime') {
-    const tool = url.searchParams.get('tool') || 'claude';
-    try {
-      const out = await _localRuntime.checkEnvironment(tool);
-      return sendJson(res, 200, out);
-    } catch (e) {
-      return sendJson(res, 200, { ok: false, error: 'check_failed', detail: (e && e.message) || 'local runtime check failed' });
-    }
-  }
-
   // /api/system/ssh-config — read-only suggestion list for the Nodes
   // import UI. Returns parsed entries from the user's `~/.ssh/config`
   // (CAM-DESK-DIRECT-017). Never reads private-key contents — key
@@ -4036,6 +3740,12 @@ async function handle(req, res) {
       }
       const built = buildContextRecord(body || {});
       if (built.error) return send400(res, built.detail || built.error, built.error);
+      // Local sessions are retired: a context without an SSH host would
+      // be a local-machine context. Refuse with the SSH guidance.
+      if (built.record && built.record.machine && (built.record.machine.type || 'local') === 'local') {
+        _cascadeDeleteCreds(built.record.id);
+        return sendJson(res, 400, { error: LOCAL_UNSUPPORTED_ERROR, detail: LOCAL_UNSUPPORTED_DETAIL });
+      }
       // Re-check the dup case after build in case of a TOCTOU race —
       // single-process server with no async between the pre-check and
       // here, so this is belt-and-suspenders.
@@ -4125,8 +3835,8 @@ async function handle(req, res) {
   }
 
   // API models (Start form model picker). Wraps camc api list + default
-  // show, merged with a static toolSupport map. Local via the local
-  // runtime, remote over SSH.
+  // show, merged with a static toolSupport map. SSH nodes only — local
+  // targets return source.error = local_unsupported.
   if (p === '/api/api-models' && method === 'GET') {
     const query = {
       context: url.searchParams.get('context') || '',
@@ -4142,10 +3852,6 @@ async function handle(req, res) {
       const refresh = /^(1|true|yes|sync)$/i.test(url.searchParams.get('refresh') || '');
       let sync = null;
       if (refresh) sync = await _syncAllAgentContexts('api-refresh');
-      // Bug 1: also ingest local camc agents on the hub's own host so
-      // they appear in Direct mode without a manual Sync Host. Cheap
-      // local subprocess; throttled by `state.localSyncInFlight`.
-      await _syncLocalAgents();
       _repairStoreAgents();
       return sendJson(res, 200, {
         agents: state.store.agents,
@@ -4663,12 +4369,11 @@ async function getAttachConnectOpts(agentId) {
   const ctx = _attachContextForAgent(agent, resolved.ctx);
   if (!ctx) return { ok: false, error: 'context_not_found', detail: `agent ${agentId}: context_not_found` };
 
-  // Local-context agent: attach runs on the hub's own machine through
-  // the local runtime (native POSIX, WSL distro on Windows) instead of
-  // an SSH channel. main.cjs branches on `local` and opens a script-PTY
-  // channel via localRuntime.openAttachChannel — no SSH opts involved.
+  // Local-context agent: local sessions were retired 2026-07-17, so a
+  // non-SSH agent (only possible from a legacy store row) gets the plain
+  // not_ssh refusal — terminal attach is SSH-only.
   if ((agent.machine_type || agent.transport_type || 'ssh') !== 'ssh') {
-    return { ok: true, local: true, agent, ctx, agentId: agent.id || agentId };
+    return { ok: false, error: 'not_ssh', detail: `agent ${agentId}: terminal attach requires an SSH-backed agent` };
   }
 
   // Match `cam attach`: the live agent machine fields are the source of
