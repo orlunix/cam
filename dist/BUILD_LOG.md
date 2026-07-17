@@ -4591,3 +4591,16 @@ e41f075 camc: prefer latest tool releases
 4daaf26 skills: reorganize managing-camc, add auto-install, new camc-goal-loop
 ```
 
+## v1.2.0  9909fb1 2026-07-15 21:35
+
+- Lines: 20783
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+9909fb1 camc: fast-path stdin sends
+e9025b4 Merge remote camui-desktop-v2 (15 commits) with local skills/env fixes
+e41f075 camc: prefer latest tool releases
+1cc5eef camc: preserve ANSI colors for interactive agents
+676e9c5 camc: read login shell from /etc/passwd, override SHELL for tmux
+```
+
