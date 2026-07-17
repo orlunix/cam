@@ -79,8 +79,9 @@ earlier rect÷cell-size computation diverged from fit() and produced the
 tiled-status corruption; it was removed in favor of the single source.
 Only the anti-poison floor (≥40 cols / ≥4 rows) applies. Same-size
 notifications are dropped at every layer (renderer dedup, main
-`_appliedCols/_appliedRows`); for local script-PTY channels, resize is
-a transparent reopen with hysteresis (±2 cols / ±1 row ignored).
+`_appliedCols/_appliedRows`). (Local script-PTY channels used a
+transparent reopen with hysteresis here — retired 2026-07-17 with the
+rest of the local-session support.)
 (Tabby: `ResizeObserver → fit → onResize → auditTime(100) →
 resizePTY`.)
 
@@ -132,7 +133,7 @@ flush → live stream. Measured on the prgn link: ~1.5–1.9s warm,
 ~5.5–7.7s cold (handshake-bound; ~1s/RTT is the link's floor).
 
 **Resize**: window drag → ResizeObserver → fit() → onResize → debounce
-150ms → `term:resize` → SSH `setWindow` / local reopen (hysteresis) →
+150ms → `term:resize` → SSH `setWindow` →
 tmux redraws once.
 
 **Reconnect**: channel close (abrupt) → renderer marks `dead` + offers
@@ -180,8 +181,13 @@ xterm, scrollback intact.
 |---|---|
 | Terminal entry model, parking, reconnect, ready emit | `web/js/desktop/agent-console.js` |
 | Pane parking CSS | `web/css/desktop.css` (`.agent-terminal-pane.parked`) |
-| Channel lifecycle, ready-gate, UTF-8, local reopen | `apps/cam-desktop/electron/main.cjs` |
+| Channel lifecycle, ready-gate, UTF-8 | `apps/cam-desktop/electron/main.cjs` |
 | SSH pools, keepalive, handshake retry | `apps/cam-desktop/electron/ssh-transport.cjs` |
-| Local runtime (WSL/native exec, attach channel) | `apps/cam-desktop/electron/local-runtime.cjs` |
+| ~~Local runtime (WSL/native exec, attach channel)~~ — retired 2026-07-17, file deleted | was `apps/cam-desktop/electron/local-runtime.cjs` |
 | Hub routes, attach opts, camc version rule | `apps/cam-desktop/electron/embedded-hub.cjs` |
 | Bug history with measurements | `apps/cam-desktop/FIXES-ATTACH-LATENCY.md` |
+
+Note: local sessions (the local runtime and its script-PTY attach/reopen
+paths) were retired on 2026-07-17 — terminal attach is SSH-only from now
+on. To use the local machine as a node, run an SSH server on it and add
+it as an SSH node.

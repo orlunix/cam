@@ -9,9 +9,12 @@
  *
  * Context is OPTIONAL: a "(none — start without context)" entry is
  * the first option in the Context dropdown. When selected, a Node
- * <select> + Path field appears so the user picks WHICH node (local
- * or any registered host) plus a path. The request sends node=<key> +
- * path inline (no context record is created, per A2).
+ * <select> + Path field appears so the user picks WHICH node (any
+ * registered SSH host) plus a path. The request sends node=<key> +
+ * path inline (no context record is created, per A2). Local sessions
+ * were retired 2026-07-17 — the local node is never offered, and the
+ * hub refuses a local target with `local_unsupported` plus SSH-node
+ * guidance.
  *
  * The API picker (Advanced (API) section) lists custom LLM API profiles
  * from the SELECTED context/node via GET /api/api-models?context=… or
@@ -19,12 +22,6 @@
  * section is hidden for tools without --api support (3.3). "Use
  * official/login API" sends --no-default-api; "API token" sends
  * --api-token.
- *
- * When the inline target is the LOCAL node, a one-line readiness hint
- * (GET /api/local/runtime?tool=…) shows what the local runtime is
- * missing (on Windows: WSL2 distro, python3, tmux, tool auth). It is
- * advisory only — Start stays enabled and the hub returns the
- * structured error authoritatively.
  */
 
 import { hostKeyForMachine } from '../shared/node-host-meta.js';
@@ -66,15 +63,11 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   const submitBtn = panel.querySelector('#start-submit');
   const statusEl = panel.querySelector('#start-status');
   const disconnectedEl = panel.querySelector('#start-disconnected');
-  const localRuntimeHintEl = panel.querySelector('#start-local-runtime-hint');
 
   // Cached api-models response (models + defaults + toolSupport + source).
   let apiModelsCache = null;
   // Currently selected API profile name (from clicking a list row).
   let selectedApi = '';
-  // Generation counter for the async local-runtime hint — a late response
-  // for a previous node/tool selection must not overwrite a newer one.
-  let localRuntimeHintSeq = 0;
 
   // Static fallback for tool --api support, used before models are
   // fetched so unsupported tools (cursor/aider) hide the section from
@@ -114,8 +107,8 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   function refreshContextOptions() {
     const contexts = state.get('contexts') || [];
     const cur = ctxSel.value;
-    // First entry: "(none — start without context)" → runs on the local
-    // node with an inline path, no context record (A2).
+    // First entry: "(none — start without context)" → runs inline on
+    // the selected node with a path, no context record (A2).
     const none = `<option value="${NONE_CONTEXT_VALUE}">(none — start without context)</option>`;
     ctxSel.innerHTML = none + contexts.map(c =>
       `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)}${c.path ? ' — ' + escapeHtml(c.path) : ''}</option>`,
@@ -128,15 +121,16 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   }
 
   /** Populate the Node <select> from the unique host machines known
-   *  to the hub (local + every context's machine), keyed by the shared
+   *  to the hub (every context's machine), keyed by the shared
    *  hostKeyForMachine so the value matches what the hub /api/agents
-   *  and /api/api-models routes resolve. Preserves the current selection
-   *  when the underlying contexts list changes. */
+   *  and /api/api-models routes resolve. Local sessions are
+   *  unsupported, so local-type contexts (legacy store rows) are
+   *  skipped. Preserves the current selection when the underlying
+   *  contexts list changes. */
   function refreshNodeOptions() {
     if (!nodeSel) return;
     const contexts = state.get('contexts') || [];
     const seen = new Map(); // key → label
-    seen.set('local', 'local');
     for (const c of contexts) {
       const m = (c && c.machine) || {};
       const key = hostKeyForMachine({
@@ -145,10 +139,9 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
         user: m.user || '',
         port: m.port,
       });
+      if (key === 'local') continue; // local sessions unsupported
       if (!seen.has(key)) {
-        const label = key === 'local'
-          ? 'local'
-          : `${m.user || ''}@${m.host || ''}${m.port ? ':' + m.port : ''}`.replace(/^@/, '');
+        const label = `${m.user || ''}@${m.host || ''}${m.port ? ':' + m.port : ''}`.replace(/^@/, '');
         seen.set(key, label);
       }
     }
@@ -156,16 +149,13 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
     nodeSel.innerHTML = Array.from(seen.entries()).map(
       ([k, label]) => `<option value="${escapeHtml(k)}">${escapeHtml(label)}</option>`,
     ).join('');
-    // Preserve selection if still present; otherwise default to local.
-    if (cur && seen.has(cur)) {
-      nodeSel.value = cur;
-    } else {
-      nodeSel.value = 'local';
-    }
+    // Preserve selection if still present; otherwise the browser keeps
+    // the first option (empty when no SSH node is registered yet).
+    if (cur && seen.has(cur)) nodeSel.value = cur;
   }
 
-  /** Default Path to /home/<user> for the selected node's machine, or
-   *  /home/$USER (best-effort) for the local node. Only pre-fills when
+  /** Default Path to /home/<user> for the selected node's machine.
+   *  Only pre-fills when
    *  the field is empty OR the current value was auto-filled by us
    *  (dataset.autofill === '1'); a user-typed path is preserved across
    *  node changes so switching nodes does not clobber an explicit
@@ -210,51 +200,14 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
     const hasCtx = val && val !== NONE_CONTEXT_VALUE;
     if (nodeFieldsEl) nodeFieldsEl.hidden = !!hasCtx;
     if (!hasCtx) syncDefaultPath();
-    void refreshLocalRuntimeHint();
-  }
-
-  /** One-line, non-blocking readiness hint for the LOCAL node target.
-   *  Asks the hub's GET /api/local/runtime?tool=<t> preflight and shows
-   *  either "Local runtime ready" or the joined issue messages (on
-   *  Windows: missing WSL2 distro / python3 / tmux / tool auth). Any
-   *  failure hides the hint — Start stays enabled regardless and the
-   *  hub returns the structured error authoritatively on submit. */
-  async function refreshLocalRuntimeHint() {
-    if (!localRuntimeHintEl) return;
-    const seq = ++localRuntimeHintSeq;
-    const hide = () => { localRuntimeHintEl.hidden = true; localRuntimeHintEl.textContent = ''; };
-    const ctxVal = ctxSel.value;
-    const hasCtx = ctxVal && ctxVal !== NONE_CONTEXT_VALUE;
-    const nodeKey = hasCtx ? '' : ((nodeSel && nodeSel.value) || 'local');
-    if (nodeKey !== 'local') { hide(); return; }
-    let res = null;
-    try {
-      res = await api.request('GET', `/api/local/runtime?tool=${encodeURIComponent(toolSel.value || 'claude')}`);
-    } catch (_) { res = null; }
-    if (seq !== localRuntimeHintSeq) return; // a newer refresh superseded this one
-    if (!res || typeof res !== 'object') { hide(); return; }
-    const issues = Array.isArray(res.issues) ? res.issues : [];
-    const msgs = issues
-      .map(i => (i && typeof i === 'object' && i.message != null) ? String(i.message) : String(i))
-      .filter(Boolean);
-    let line;
-    if (res.ok && !msgs.length) {
-      line = res.runtime === 'wsl'
-        ? `Local runtime ready (WSL${res.distro ? ` distro: ${res.distro}` : ''}).`
-        : 'Local runtime ready.';
-    } else if (msgs.length) {
-      line = `Local runtime: ${msgs.join(' · ')}`;
-    } else {
-      line = `Local runtime not ready (${String(res.error || 'unknown')}).`;
-    }
-    localRuntimeHintEl.textContent = line;
-    localRuntimeHintEl.hidden = false;
   }
 
   /** The node key to pass to the hub for the API picker / start. For a
    *  real context, we pass nothing (the hub resolves the context). For
-   *  none/empty, we pass the selected Node <select> value (defaults to
-   *  "local" when no node is picked). */
+   *  none/empty, we pass the selected Node <select> value. With no
+   *  registered SSH node the select is empty and the 'local' fallback
+   *  routes to the hub's `local_unsupported` refusal, which carries
+   *  the SSH-node guidance. */
   function currentNodeKey() {
     const val = ctxSel.value;
     if (val && val !== NONE_CONTEXT_VALUE) return '';
@@ -306,9 +259,10 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
     const defName = def ? def.api : '';
     if (!models.length) {
       // Show WHY the list is empty when the hub reported an error,
-      // instead of a silent blank. The hub sets source.error when
-      // the local camc can't run (Windows: bundled camc is a POSIX
-      // shell-polyglot with no /bin/sh) or a remote camc call failed.
+      // instead of a silent blank. The hub sets source.error when the
+      // target is unsupported (local sessions were retired — the
+      // refusal carries the SSH-node guidance) or a remote camc call
+      // failed.
       const src = apiModelsCache && apiModelsCache.source;
       if (apiListEl) {
         if (src && src.error && src.detail) {
@@ -526,7 +480,6 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
       if (apiListEl) { apiListEl.hidden = true; apiListEl.innerHTML = ''; }
       if (apiStatusEl) apiStatusEl.hidden = true;
       applyApiSupport();
-      void refreshLocalRuntimeHint();
     });
   }
   // Path input: clear the auto-fill flag as soon as the user edits the
@@ -539,15 +492,13 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   }
   toolSel.addEventListener('change', () => {
     applyApiSupport();
-    // Different tool → different readiness result + different default /
-    // selected marks. Re-render the list (if cached) so the ★default
-    // moves to the new tool's row.
+    // Different tool → different default / selected marks. Re-render
+    // the list (if cached) so the ★default moves to the new tool's row.
     if (apiModelsCache) {
       selectToolDefaultApi(toolSel.value);
       renderApiList(toolSel.value);
       renderApiStatus(toolSel.value);
     }
-    void refreshLocalRuntimeHint();
   });
   if (apiListBtn) apiListBtn.addEventListener('click', listApiModels);
   // --no-default-api clears an explicit --api selection + re-renders
@@ -595,7 +546,6 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
         applyApiSupport();
         applyConnectionState();
         setStatus('');
-        void refreshLocalRuntimeHint();
       }
     }
     if (c !== prevConn) { prevConn = c; applyConnectionState(); }
