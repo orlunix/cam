@@ -125,6 +125,7 @@ contextBridge.exposeInMainWorld('CamBridge', {
   //   onStatus(cb)                → unsubscribe(); cb({sessionId, kind, code, signal})
   term: {
     open(payload)   { return ipcRenderer.invoke('term:open',   payload || {}); },
+    ready(payload)  { return ipcRenderer.invoke('term:ready',  payload || {}); },
     input(payload)  { return ipcRenderer.invoke('term:input',  payload || {}); },
     resize(payload) { return ipcRenderer.invoke('term:resize', payload || {}); },
     close(payload)  { return ipcRenderer.invoke('term:close',  payload || {}); },
