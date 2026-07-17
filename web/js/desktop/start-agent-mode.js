@@ -19,6 +19,12 @@
  * section is hidden for tools without --api support (3.3). "Use
  * official/login API" sends --no-default-api; "API token" sends
  * --api-token.
+ *
+ * When the inline target is the LOCAL node, a one-line readiness hint
+ * (GET /api/local/runtime?tool=…) shows what the local runtime is
+ * missing (on Windows: WSL2 distro, python3, tmux, tool auth). It is
+ * advisory only — Start stays enabled and the hub returns the
+ * structured error authoritatively.
  */
 
 import { hostKeyForMachine } from '../shared/node-host-meta.js';
@@ -60,11 +66,15 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   const submitBtn = panel.querySelector('#start-submit');
   const statusEl = panel.querySelector('#start-status');
   const disconnectedEl = panel.querySelector('#start-disconnected');
+  const localRuntimeHintEl = panel.querySelector('#start-local-runtime-hint');
 
   // Cached api-models response (models + defaults + toolSupport + source).
   let apiModelsCache = null;
   // Currently selected API profile name (from clicking a list row).
   let selectedApi = '';
+  // Generation counter for the async local-runtime hint — a late response
+  // for a previous node/tool selection must not overwrite a newer one.
+  let localRuntimeHintSeq = 0;
 
   // Static fallback for tool --api support, used before models are
   // fetched so unsupported tools (cursor/aider) hide the section from
@@ -200,6 +210,45 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
     const hasCtx = val && val !== NONE_CONTEXT_VALUE;
     if (nodeFieldsEl) nodeFieldsEl.hidden = !!hasCtx;
     if (!hasCtx) syncDefaultPath();
+    void refreshLocalRuntimeHint();
+  }
+
+  /** One-line, non-blocking readiness hint for the LOCAL node target.
+   *  Asks the hub's GET /api/local/runtime?tool=<t> preflight and shows
+   *  either "Local runtime ready" or the joined issue messages (on
+   *  Windows: missing WSL2 distro / python3 / tmux / tool auth). Any
+   *  failure hides the hint — Start stays enabled regardless and the
+   *  hub returns the structured error authoritatively on submit. */
+  async function refreshLocalRuntimeHint() {
+    if (!localRuntimeHintEl) return;
+    const seq = ++localRuntimeHintSeq;
+    const hide = () => { localRuntimeHintEl.hidden = true; localRuntimeHintEl.textContent = ''; };
+    const ctxVal = ctxSel.value;
+    const hasCtx = ctxVal && ctxVal !== NONE_CONTEXT_VALUE;
+    const nodeKey = hasCtx ? '' : ((nodeSel && nodeSel.value) || 'local');
+    if (nodeKey !== 'local') { hide(); return; }
+    let res = null;
+    try {
+      res = await api.request('GET', `/api/local/runtime?tool=${encodeURIComponent(toolSel.value || 'claude')}`);
+    } catch (_) { res = null; }
+    if (seq !== localRuntimeHintSeq) return; // a newer refresh superseded this one
+    if (!res || typeof res !== 'object') { hide(); return; }
+    const issues = Array.isArray(res.issues) ? res.issues : [];
+    const msgs = issues
+      .map(i => (i && typeof i === 'object' && i.message != null) ? String(i.message) : String(i))
+      .filter(Boolean);
+    let line;
+    if (res.ok && !msgs.length) {
+      line = res.runtime === 'wsl'
+        ? `Local runtime ready (WSL${res.distro ? ` distro: ${res.distro}` : ''}).`
+        : 'Local runtime ready.';
+    } else if (msgs.length) {
+      line = `Local runtime: ${msgs.join(' · ')}`;
+    } else {
+      line = `Local runtime not ready (${String(res.error || 'unknown')}).`;
+    }
+    localRuntimeHintEl.textContent = line;
+    localRuntimeHintEl.hidden = false;
   }
 
   /** The node key to pass to the hub for the API picker / start. For a
@@ -477,6 +526,7 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
       if (apiListEl) { apiListEl.hidden = true; apiListEl.innerHTML = ''; }
       if (apiStatusEl) apiStatusEl.hidden = true;
       applyApiSupport();
+      void refreshLocalRuntimeHint();
     });
   }
   // Path input: clear the auto-fill flag as soon as the user edits the
@@ -489,13 +539,15 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   }
   toolSel.addEventListener('change', () => {
     applyApiSupport();
-    // Different tool → different default + selected marks. Re-render
-    // the list (if cached) so the ★default moves to the new tool's row.
+    // Different tool → different readiness result + different default /
+    // selected marks. Re-render the list (if cached) so the ★default
+    // moves to the new tool's row.
     if (apiModelsCache) {
       selectToolDefaultApi(toolSel.value);
       renderApiList(toolSel.value);
       renderApiStatus(toolSel.value);
     }
+    void refreshLocalRuntimeHint();
   });
   if (apiListBtn) apiListBtn.addEventListener('click', listApiModels);
   // --no-default-api clears an explicit --api selection + re-renders
@@ -543,6 +595,7 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
         applyApiSupport();
         applyConnectionState();
         setStatus('');
+        void refreshLocalRuntimeHint();
       }
     }
     if (c !== prevConn) { prevConn = c; applyConnectionState(); }

@@ -48,6 +48,9 @@ benchmarks/**/runs/*
 # Images
 .cam-images/
 
+# Local toolchains (portable node for desktop builds)
+.tools/
+
 # Claude Code / sibling project workspaces (not part of cam)
 .claude/
 happy/

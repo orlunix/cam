@@ -28,6 +28,7 @@ const https = require('node:https');
 const embeddedHub     = require('./embedded-hub.cjs');
 const credentialStore = require('./credential-store.cjs');
 const sshTransport    = require('./ssh-transport.cjs');
+const localRuntime    = require('./local-runtime.cjs');
 const { tmuxMetadataForAgent, selectOnlyClient, selectNewClient, parseClientState, parseWindowRows, tmuxCommand } = require('./tmux-controls.cjs');
 
 // An SSH PTY can become a tmux client a little after the attach command
@@ -597,7 +598,19 @@ async function termOpen(event, payload = {}) {
   // show the cached xterm buffer without reconnecting.
   const [existingSid, existingEnt] = _sessionForAgent(event.sender.id, agentId);
   if (existingSid) {
-    try { existingEnt && existingEnt.resize && existingEnt.resize(cols, rows); } catch (_) {}
+    try {
+      if (existingEnt && existingEnt.local) {
+        // Local script-PTY: resize is a transparent reopen (see
+        // _resizeLocalTerminal); fire-and-forget, reuse stays instant.
+        void _resizeLocalTerminal(existingEnt, cols, rows);
+      } else if (existingEnt && (existingEnt._appliedCols !== cols || existingEnt._appliedRows !== rows)) {
+        // SSH: skip the setWindow when the size is unchanged (redundant
+        // resizes trigger a full tmux redraw for no benefit).
+        existingEnt.resize && existingEnt.resize(cols, rows);
+        existingEnt._appliedCols = cols;
+        existingEnt._appliedRows = rows;
+      }
+    } catch (_) {}
     if (existingEnt && existingEnt.opts) {
       void _repairRemoteTerminalSize(existingEnt.opts, agentId, cols, rows);
     }
@@ -609,6 +622,77 @@ async function termOpen(event, payload = {}) {
     return { ok: false, error: resolved.error, detail: resolved.detail };
   }
 
+  // Local-context agent: attach on the hub's own machine through the
+  // local runtime's script-PTY channel (native POSIX, WSL on Windows) —
+  // no SSH channel, no remote tmux discovery. The session entry mirrors
+  // the SSH one with opts/tmux null, so window controls degrade to their
+  // 'tmux unavailable' error instead of crashing. `local: true` marks the
+  // entry so termResize uses the reopen-based resize path (script-PTY
+  // has no ioctl).
+  if (resolved.local) {
+    const sender = event.sender;
+    const sessionId = `t${++_termSeq}-${Date.now().toString(36)}`;
+    // Channel generations: every (re)open gets fresh callbacks bound to a
+    // token. Events from a retired (pre-reopen) channel are ignored by
+    // token mismatch — deterministic, unlike a time-based guard, so a
+    // planned resize-reopen can never surface as 'terminal detached'.
+    const holder = { ent: null };
+    const makeChannelHooks = (token) => {
+      const utf8 = _utf8Stream();
+      return {
+        onData: (buf) => {
+          if (sender.isDestroyed()) { _dropSession(sessionId); return; }
+          _termGateSend(sessionId, sender, utf8.decode(buf));
+        },
+        onClose: ({ code, signal }) => {
+          if (holder.ent && holder.ent._liveToken !== token) return;
+          const tail = utf8.flush();
+          if (tail) _termGateSend(sessionId, sender, tail);
+          _termGateClose(sessionId);
+          if (!sender.isDestroyed()) {
+            try { sender.send('term:status', { sessionId, kind: 'closed', code, signal }); }
+            catch { /* noop */ }
+          }
+          _terminals.delete(sessionId);
+        },
+      };
+    };
+    const token = {};
+    const ch = await localRuntime.openAttachChannel(resolved.agentId || agentId, {
+      cols, rows, ...makeChannelHooks(token),
+    });
+    if (!ch.ok) {
+      return { ok: false, error: ch.error, detail: ch.detail };
+    }
+    const ent = {
+      dispose: ch.dispose,
+      write:   ch.write,
+      resize:  ch.resize,
+      contentsId: sender.id,
+      agentId,
+      local: true,
+      _liveToken: token,
+      _makeChannelHooks: makeChannelHooks,
+      _appliedCols: cols,
+      _appliedRows: rows,
+      opts: null,
+      tmux: null,
+      tmuxClientTty: '',
+      tmuxControlError: 'tmux controls unavailable for local attach',
+      tmuxBeforeClients: null,
+      tmuxInitialDiscoveryPending: false,
+      tmuxClientRecoveryAttempts: 0,
+      tmuxClientRecoveryNextAt: 0,
+      tmuxClientRecoveryInFlight: false,
+      tmuxLastProbeError: '',
+      tmuxLastProbeMs: 0,
+    };
+    holder.ent = ent;
+    _terminals.set(sessionId, ent);
+    _termGateOpen(sessionId, sender);
+    return { ok: true, sessionId };
+  }
+
   // `~/.cam/camc attach <agent>` is the attach contract. The embedded
   // Hub has already prepared that exact remote path before returning.
   const command = resolved.command || `~/.cam/camc attach ${agentId}`;
@@ -617,20 +701,33 @@ async function termOpen(event, payload = {}) {
   const tmux = tmuxMetadataForAgent(resolved.agent);
   const releaseTmuxDiscovery = tmux ? await _beginTmuxDiscovery(`${resolved.opts.host}|${tmux.socket}`) : null;
   const initialTmuxProbe = {};
-  const beforeClients = tmux ? await _tmuxClientSet(resolved.opts, tmux, initialTmuxProbe) : null;
 
-  await _repairRemoteTerminalSize(resolved.opts, agentId, cols, rows);
+  // Attach fast path: the client-baseline probe runs in PARALLEL with
+  // the channel open instead of blocking it, and the remote terminal-
+  // size repair is deferred until after the channel is live. The attach
+  // critical path is only getAttachConnectOpts + channel open — one
+  // warm-pool round trip each. Window-control discovery keeps working
+  // because the baseline probe almost always lands before our own
+  // client registers; when it loses the race, discovery falls back to
+  // selectOnlyClient exactly as before.
+  const beforeClientsP = tmux
+    ? _tmuxClientSet(resolved.opts, tmux, initialTmuxProbe)
+    : Promise.resolve(null);
 
+  const tOpen0 = Date.now();
+  const utf8 = _utf8Stream();
   const ch = await sshTransport.openTerminalChannel(
     { ...resolved.opts, command },
     {
       cols, rows,
       onData: (buf) => {
         if (sender.isDestroyed()) { _dropSession(sessionId); return; }
-        try { sender.send('term:data', { sessionId, data: buf.toString('utf8') }); }
-        catch { /* sender torn down */ }
+        _termGateSend(sessionId, sender, utf8.decode(buf));
       },
       onClose: ({ code, signal }) => {
+        const tail = utf8.flush();
+        if (tail) _termGateSend(sessionId, sender, tail);
+        _termGateClose(sessionId);
         if (!sender.isDestroyed()) {
           try { sender.send('term:status', { sessionId, kind: 'closed', code, signal }); }
           catch { /* noop */ }
@@ -639,17 +736,21 @@ async function termOpen(event, payload = {}) {
       },
     }
   );
+  const openMs = Date.now() - tOpen0;
 
   if (!ch.ok) {
     if (releaseTmuxDiscovery) releaseTmuxDiscovery();
     return { ok: false, error: ch.error, detail: ch.detail };
   }
+  const beforeClients = await beforeClientsP;
   _terminals.set(sessionId, {
     dispose: ch.dispose,
     write:   ch.write,
     resize:  ch.resize,
     contentsId: sender.id,
     agentId,
+    _appliedCols: cols,
+    _appliedRows: rows,
     opts: resolved.opts,
     tmux,
     tmuxClientTty: '',
@@ -662,8 +763,12 @@ async function termOpen(event, payload = {}) {
     tmuxLastProbeError: initialTmuxProbe.tmuxLastProbeError || '',
     tmuxLastProbeMs: initialTmuxProbe.tmuxLastProbeMs || 0,
   });
+  // Post-open housekeeping: size repair + window-control discovery are
+  // background work — they must never add to the attach latency.
+  void _repairRemoteTerminalSize(resolved.opts, agentId, cols, rows);
   if (releaseTmuxDiscovery) void _discoverTmuxClient(sessionId, beforeClients).finally(releaseTmuxDiscovery);
-  return { ok: true, sessionId };
+  _termGateOpen(sessionId, sender);
+  return { ok: true, sessionId, timings: { open_ms: openMs } };
 }
 
 function termInput(event, payload = {}) {
@@ -674,12 +779,145 @@ function termInput(event, payload = {}) {
   return { ok: true };
 }
 
-function termResize(event, payload = {}) {
+/** Resize a local script-PTY terminal. script(1) gives no ioctl to the
+ *  PTY, so the resize is a transparent reopen: open the replacement
+ *  channel FIRST, flip the live token (retiring the old channel — its
+ *  later close/data events are ignored by token mismatch), then dispose
+ *  the old one. tmux redraws the pane; the sessionId and the renderer's
+ *  xterm buffer are untouched, and no 'terminal detached' can leak from
+ *  the retired channel. Resize storms (window drags) are coalesced
+ *  single-flight with a trailing size; same-size requests are skipped. */
+async function _resizeLocalTerminal(ent, cols, rows) {
+  if (!ent || !ent.local) return false;
+  if (ent._appliedCols === cols && ent._appliedRows === rows) return true;
+  // Hysteresis: sub-2-column / sub-1-row deltas are layout jitter
+  // (scrollbar appearing, font settling). A detach/reattach cycle per
+  // jitter column redraws the whole pane and visibly garbles TUIs —
+  // skip it; the dead column is invisible.
+  const dCols = Math.abs((ent._appliedCols || 0) - cols);
+  const dRows = Math.abs((ent._appliedRows || 0) - rows);
+  if (dCols < 2 && dRows < 1) return true;
+  if (ent._reopenInFlight) {
+    ent._pendingSize = [cols, rows];
+    return true;
+  }
+  ent._reopenInFlight = true;
+  try {
+    let target = [cols, rows];
+    for (;;) {
+      const [c, r] = target;
+      const token = {};
+      const ch = await localRuntime.openAttachChannel(ent.agentId, {
+        cols: c, rows: r, ...ent._makeChannelHooks(token),
+      });
+      if (!ch.ok) return false;
+      const oldDispose = ent.dispose;
+      ent._liveToken = token;
+      ent.dispose = ch.dispose;
+      ent.write = ch.write;
+      ent.resize = ch.resize;
+      ent._appliedCols = c;
+      ent._appliedRows = r;
+      try { oldDispose && oldDispose(); } catch (_) {}
+      if (!ent._pendingSize) return true;
+      target = ent._pendingSize;
+      ent._pendingSize = null;
+    }
+  } finally {
+    ent._reopenInFlight = false;
+  }
+}
+
+/** Per-channel streaming UTF-8 decoder. A multibyte character split
+ *  across transport chunks must not decode to '�' — decode with
+ *  {stream: true} so trailing partial bytes carry into the next chunk,
+ *  and flush the remainder when the channel closes. (Tabby's
+ *  UTF8SplitterMiddleware equivalent.) */
+function _utf8Stream() {
+  const dec = new TextDecoder('utf-8');
+  return {
+    decode: (buf) => dec.decode(buf, { stream: true }),
+    flush: () => dec.decode(),
+  };
+}
+
+/* ── Ready-gate (Tabby initialDataBuffer equivalent) ────────────────
+ * tmux repaints the whole pane instantly on attach; bytes arriving
+ * before the renderer's xterm has opened and fitted garble the first
+ * screen. Every session's data is buffered until the renderer signals
+ * term:ready, with a hard cap (drop-oldest) and a fallback flush so a
+ * stuck renderer can never wedge the channel. */
+const TERM_READY_FALLBACK_MS = 2000;
+const TERM_READY_BUFFER_CAP = 256 * 1024;
+const _termReady = new Map(); // sessionId -> gate
+
+function _rawTermSend(sessionId, sender, data) {
+  if (!sender || sender.isDestroyed()) return;
+  try { sender.send('term:data', { sessionId, data }); } catch { /* torn down */ }
+}
+
+function _termGateOpen(sessionId, sender) {
+  const gate = { ready: false, chunks: [], bytes: 0, sender, timer: null };
+  gate.timer = setTimeout(() => {
+    gate.ready = true; // renderer never signalled — flush anyway
+    _termGateFlush(sessionId, gate);
+  }, TERM_READY_FALLBACK_MS);
+  if (gate.timer.unref) gate.timer.unref();
+  _termReady.set(sessionId, gate);
+}
+
+function _termGateSend(sessionId, sender, data) {
+  const gate = _termReady.get(sessionId);
+  if (!gate || gate.ready) return _rawTermSend(sessionId, sender, data);
+  gate.sender = sender;
+  gate.chunks.push(data);
+  gate.bytes += data.length;
+  while (gate.bytes > TERM_READY_BUFFER_CAP && gate.chunks.length > 1) {
+    gate.bytes -= gate.chunks.shift().length;
+  }
+}
+
+function _termGateFlush(sessionId, gate) {
+  if (gate.timer) { clearTimeout(gate.timer); gate.timer = null; }
+  for (const chunk of gate.chunks) _rawTermSend(sessionId, gate.sender, chunk);
+  gate.chunks = [];
+  gate.bytes = 0;
+}
+
+function _termGateClose(sessionId) {
+  const gate = _termReady.get(sessionId);
+  if (!gate) return;
+  gate.ready = true;
+  _termGateFlush(sessionId, gate);
+  _termReady.delete(sessionId);
+}
+
+function termReady(event, payload = {}) {
+  const sid = String(payload && payload.sessionId || '');
+  const gate = _termReady.get(sid);
+  if (!gate) return { ok: true, ignored: true };
+  gate.ready = true;
+  _termGateFlush(sid, gate);
+  return { ok: true };
+}
+
+async function termResize(event, payload = {}) {
   const ent = _ownedTerminal(event, payload);
   if (!ent) return { ok: false, error: 'not_found' };
   const size = _terminalResizeSize(payload);
   if (!size) return { ok: true, ignored: true, reason: 'invalid_terminal_size' };
-  ent.resize(size.cols, size.rows);
+  if (ent.local) {
+    const ok = await _resizeLocalTerminal(ent, size.cols, size.rows);
+    return ok ? { ok: true } : { ok: false, error: 'resize_failed', detail: 'local terminal reopen failed' };
+  }
+  // Skip the setWindow round trip when the size is unchanged — every
+  // resize makes tmux redraw the pane, so redundant resizes add visible
+  // churn on tab switches without changing anything.
+  if (ent._appliedCols !== size.cols || ent._appliedRows !== size.rows) {
+    ent.resize(size.cols, size.rows);
+    ent._appliedCols = size.cols;
+    ent._appliedRows = size.rows;
+  }
   return { ok: true };
 }
 
@@ -836,6 +1074,7 @@ app.whenReady().then(() => {
 
   // Terminal mode (CAM-DESK-TERM-001..005). Secrets stay in main.
   ipcMain.handle('term:open',   (event, p) => termOpen(event, p));
+  ipcMain.handle('term:ready',  (event, p) => termReady(event, p));
   ipcMain.handle('term:input',  (event, p) => termInput(event, p));
   ipcMain.handle('term:resize', (event, p) => termResize(event, p));
   ipcMain.handle('term:close',  (event, p) => termClose(event, p));

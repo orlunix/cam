@@ -1775,8 +1775,11 @@ export function mountAgentConsole({ api, state, showToast }) {
     const currentCols = Number(ent.term.cols) || 0;
     const currentRows = Number(ent.term.rows) || 0;
     const cell = terminalMeasuredCellSize(ent);
-    const desiredCols = Math.max(80, Math.floor(rect.width / cell.width));
-    const desiredRows = Math.max(20, Math.floor(Math.max(rect.height, 240) / cell.height));
+    // Floors are the anti-poison guards only (>=40 cols / >=4 rows) —
+    // deliberately NOT 80x20: the recovered size must equal the size the
+    // pane actually fits (the "screen size" contract), never a default.
+    const desiredCols = Math.max(TERMINAL_MIN_NOTIFY_COLS, Math.floor(rect.width / cell.width));
+    const desiredRows = Math.max(4, Math.floor(Math.max(rect.height, 240) / cell.height));
     if (currentCols >= TERMINAL_MIN_NOTIFY_COLS && currentCols >= desiredCols - 4 && currentRows >= 4) return;
     try { ent.term.resize(desiredCols, desiredRows); } catch (_) {}
     try { ent.term.refresh && ent.term.refresh(0, Math.max(0, desiredRows - 1)); } catch (_) {}
@@ -1797,13 +1800,33 @@ export function mountAgentConsole({ api, state, showToast }) {
     if (rect.width < TERMINAL_MIN_NOTIFY_WIDTH || cols < TERMINAL_MIN_NOTIFY_COLS || rows < 4) {
       return false;
     }
+    // Skip the resize notify when the fitted size is unchanged. Every
+    // setWindow makes tmux resize + redraw the whole pane, and on a
+    // high-latency link that redraw burst is what made cached tab
+    // switches feel slow — a same-size switch must not touch the network.
+    const changed = cols !== ent.lastCols || rows !== ent.lastRows;
     ent.lastCols = cols;
     ent.lastRows = rows;
-    if (ent.sessionId) {
-      const bridge = termBridge();
-      if (bridge) bridge.resize({ sessionId: ent.sessionId, cols, rows });
+    if (changed && ent.sessionId) {
+      notifyTerminalResizeDebounced(ent);
     }
     return true;
+  }
+
+  /** Debounced PTY resize notify. Layout settles in bursts (scrollbar
+   *  appearing, font loading, mode switch), and every intermediate size
+   *  makes tmux redraw the whole pane — for local script-PTY channels
+   *  each one is a full detach/reattach. Only the size that stayed
+   *  stable for 150ms is sent, so a burst collapses to one redraw. */
+  function notifyTerminalResizeDebounced(ent) {
+    if (ent._resizeNotifyTimer) clearTimeout(ent._resizeNotifyTimer);
+    ent._resizeNotifyTimer = setTimeout(() => {
+      ent._resizeNotifyTimer = null;
+      const bridge = termBridge();
+      if (bridge && ent.sessionId) {
+        bridge.resize({ sessionId: ent.sessionId, cols: ent.lastCols, rows: ent.lastRows });
+      }
+    }, 150);
   }
 
   function terminalScrollToBottom(ent) {
@@ -1832,7 +1855,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     if (!ent || !ent.container) return false;
     if (outputMode !== 'terminal') return false;
     if (ent.agentId !== termAgentId) return false;
-    if (ent.container.hidden) return false;
+    if (ent.container.classList.contains('parked')) return false;
     if (ent.container.style.visibility === 'hidden') return false;
     return true;
   }
@@ -1860,8 +1883,11 @@ export function mountAgentConsole({ api, state, showToast }) {
   }
 
   function hideTerminalEntries() {
+    // Tabby-style parking: park panes off-viewport instead of
+    // display:none, so a switch costs zero reflow and the xterm grid
+    // (and its ResizeObserver) never sees a hidden box.
     for (const ent of terminalSessions.values()) {
-      if (ent.container) ent.container.hidden = true;
+      if (ent.container) ent.container.classList.add('parked');
     }
   }
 
@@ -1881,7 +1907,7 @@ export function mountAgentConsole({ api, state, showToast }) {
         terminalScrollToBottom(ent);
       }
       if (ent.container) {
-        ent.container.hidden = false;
+        ent.container.classList.remove('parked');
         ent.container.style.visibility = '';
       }
       // Cached tmux metadata draws immediately; the short pooled-control
@@ -1900,7 +1926,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     // xterm-fit needs a laid-out element. Use visibility:hidden instead of
     // hidden/display:none so the browser computes the real width but the user
     // does not see the stale narrow buffer before resize completes.
-    ent.container.hidden = false;
+    ent.container.classList.remove('parked');
     ent.container.style.visibility = 'hidden';
     fitTerminalAndNotify(ent);
     scheduleTerminalFit({ keepBottom: true });
@@ -1938,6 +1964,11 @@ export function mountAgentConsole({ api, state, showToast }) {
       }),
       fit: null,
       sessionId: null,
+      // Tabby-style session lifecycle: 'idle' | 'connecting' | 'live' |
+      // 'dead' | 'reconnecting'. 'dead' + reconnectOffered drives the
+      // in-place "press any key to reconnect" flow.
+      sessionState: 'idle',
+      reconnectOffered: false,
       opening: false,
       lastUsed: Date.now(),
       hasConnected: false,
@@ -2007,6 +2038,13 @@ export function mountAgentConsole({ api, state, showToast }) {
       if (termAgentId === entry.agentId) updateTerminalTmuxControls();
     });
     entry.term.onData((data) => {
+      // In-place reconnect (Tabby ConnectableTerminalTab): an unexpected
+      // drop leaves the pane + scrollback intact and offers reconnect on
+      // the next keystroke instead of forcing a manual re-attach click.
+      if (entry.sessionState === 'dead' && entry.reconnectOffered) {
+        void reconnectTerminalEntry(entry);
+        return;
+      }
       const bridge = termBridge();
       if (!bridge || !entry.sessionId) return;
       bridge.input({ sessionId: entry.sessionId, data });
@@ -2061,13 +2099,64 @@ export function mountAgentConsole({ api, state, showToast }) {
       if (!ent) return;
       if (msg.kind === 'closed') {
         const suffix = msg.error ? `: ${msg.error}` : (msg.code != null ? ` (exit ${msg.code})` : '');
-        try { ent.term.write(`\r\n\x1b[2mterminal detached${suffix}\x1b[0m\r\n`); } catch (_) {}
         ent.sessionId = null;
         ent.opening = false;
         ent.copyBrowsing = false;
+        if (msg.code === 0 && !msg.error) {
+          // Clean exit (agent/session finished): no reconnect offer.
+          ent.sessionState = 'idle';
+          ent.reconnectOffered = false;
+          try { ent.term.write(`\r\n\x1b[2mterminal detached${suffix}\x1b[0m\r\n`); } catch (_) {}
+        } else {
+          // Unexpected drop (connection loss, channel error): keep the
+          // pane + scrollback and offer in-place reconnect on the next
+          // keystroke (Tabby ConnectableTerminalTab pattern).
+          ent.sessionState = 'dead';
+          ent.reconnectOffered = true;
+          try {
+            ent.term.write(`\r\n\x1b[2mterminal disconnected${suffix} — press any key to reconnect\x1b[0m\r\n`);
+          } catch (_) {}
+        }
         if (termAgentId === ent.agentId) syncActiveTerminalEntry(ent.agentId);
       }
     });
+  }
+
+  /** In-place reconnect for a dead terminal entry: reset stale terminal
+   *  modes (mouse tracking / bracketed paste could still be on from a
+   *  crashed full-screen app), then open a fresh channel for the same
+   *  agent into the same xterm — scrollback survives. */
+  async function reconnectTerminalEntry(ent) {
+    if (!ent || ent.sessionState === 'reconnecting' || !ent.term) return;
+    ent.sessionState = 'reconnecting';
+    ent.reconnectOffered = false;
+    const bridge = termBridge();
+    if (!bridge) { ent.sessionState = 'dead'; ent.reconnectOffered = true; return; }
+    try {
+      ent.term.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l');
+      ent.term.write('\r\n\x1b[2mreconnecting…\x1b[0m\r\n');
+      const cols = Math.max(TERMINAL_MIN_NOTIFY_COLS, Number(ent.term.cols) || 80);
+      const rows = Math.max(4, Number(ent.term.rows) || 24);
+      const res = await bridge.open({ agentId: ent.agentId, cols, rows });
+      if (res && res.ok) {
+        ent.sessionId = res.sessionId;
+        ent.sessionState = 'live';
+        ent.lastUsed = Date.now();
+        if (typeof bridge.ready === 'function') {
+          try { bridge.ready({ sessionId: ent.sessionId }); } catch (_) {}
+        }
+        setTerminalAttachStatus('Terminal re-attached.', 'ok');
+        if (termAgentId === ent.agentId) syncActiveTerminalEntry(ent.agentId);
+      } else {
+        ent.sessionState = 'dead';
+        ent.reconnectOffered = true;
+        ent.term.write(`\r\n\x1b[31mReconnect failed: ${res && (res.detail || res.error) || 'unknown'}\x1b[0m\x1b[2m — press any key to retry\x1b[0m\r\n`);
+      }
+    } catch (e) {
+      ent.sessionState = 'dead';
+      ent.reconnectOffered = true;
+      try { ent.term.write(`\r\n\x1b[31mReconnect failed: ${e && e.message || e}\x1b[0m\x1b[2m — press any key to retry\x1b[0m\r\n`); } catch (_) {}
+    }
   }
 
   async function closeTerminalSession(agentId = termAgentId) {
@@ -2168,25 +2257,44 @@ export function mountAgentConsole({ api, state, showToast }) {
     }
     prepareThenShowTerminalEntry(agent.id, 120);
     ent.opening = true;
+    ent.sessionState = 'connecting';
     syncActiveTerminalEntry(agent.id);
     if (!ent.hasConnected) ent.term.clear();
     setTerminalAttachStatus(
       force ? 'Re-attaching terminal...' : `Connecting terminal to ${agent.task_name || agent.id}...`, 'info', 0
     );
     try {
+      // Open at the SCREEN's real size, never a default: xterm's fitted
+      // grid IS the screen size — prepareThenShowTerminalEntry laid the
+      // pane out (visibility:hidden) so fit() already ran and term.cols/
+      // rows are the truth. Do NOT re-derive a size from rect/cell math:
+      // a second source of truth can only diverge from what fit() keeps
+      // maintaining, and a forced wrong grid at open is exactly what
+      // produced the tiled/wrapped tmux status corruption. Only the
+      // anti-poison floor (>=40 cols / >=4 rows) applies.
       fitTerminalAndNotify(ent);
-      const openCols = Math.max(80, Number(ent.lastCols || ent.term.cols) || 100);
-      const openRows = Math.max(20, Number(ent.lastRows || ent.term.rows) || 30);
+      const openCols = Math.max(TERMINAL_MIN_NOTIFY_COLS, Number(ent.term.cols) || 80);
+      const openRows = Math.max(4, Number(ent.term.rows) || 24);
+      ent.lastCols = openCols;
+      ent.lastRows = openRows;
       const res = await bridge.open({ agentId: agent.id, cols: openCols, rows: openRows });
       if (!res || !res.ok) {
         ent.term.write(`\r\n\x1b[31mTerminal attach failed: ${res && (res.detail || res.error) || 'unknown'}\x1b[0m\r\n`);
         ent.sessionId = null;
+        ent.sessionState = 'idle';
         return res || { ok: false, error: 'attach_failed', detail: 'Terminal attach failed.' };
       }
       ent.sessionId = res.sessionId;
       ent.opening = false;
+      ent.sessionState = 'live';
       ent.lastUsed = Date.now();
       ent.hasConnected = true;
+      // Ready-gate (Tabby initialDataBuffer): main buffered the first
+      // pane repaint until the xterm was opened and fitted. It was — the
+      // open size came from the fit above — so release the buffer now.
+      if (typeof bridge.ready === 'function') {
+        try { bridge.ready({ sessionId: ent.sessionId }); } catch (_) {}
+      }
       setTerminalAttachStatus(res.reused ? 'Terminal session ready.' : 'Terminal attached.', 'ok');
       void refreshTerminalTmuxControls();
       window.setTimeout(() => { void refreshTerminalTmuxControls(); }, 400);
@@ -2335,7 +2443,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       if (outputMode === 'terminal') {
         syncModeToggle();
         for (const ent of terminalSessions.values()) {
-          if (ent.container) ent.container.hidden = true;
+          if (ent.container) ent.container.classList.add('parked');
         }
         syncActiveTerminalEntry(null);
         setEnabled(false);

@@ -9,7 +9,7 @@
   <meta name="cam-version" content="v0.64.0">
   <link rel="icon" href="assets/icon-192.png">
   <link rel="stylesheet" href="css/style.css?v=0.64.0">
-  <link rel="stylesheet" href="css/desktop.css?v=0.64.2-scroll-owner">
+  <link rel="stylesheet" href="css/desktop.css?v=0.64.5-tab-parking">
   <link rel="stylesheet" href="css/todos.css?v=2.4.5">
   <link rel="stylesheet" href="vendor/xterm/xterm.css?v=0.64.0">
   <!-- CAM-DESK-TERM-002: xterm UMD bundles expose window.Terminal,
@@ -22,11 +22,11 @@
   <script src="vendor/xterm/addon-serialize.js?v=0.64.0"></script>
   <link rel="modulepreload" href="js/api.js?v=0.66.0">
   <link rel="modulepreload" href="js/state.js?v=0.64.0">
-  <link rel="modulepreload" href="js/desktop/app.js?v=0.66.0">
-  <link rel="modulepreload" href="js/desktop/shell.js?v=0.65.0">
-  <link rel="modulepreload" href="js/desktop/agent-console.js?v=0.66.0">
+  <link rel="modulepreload" href="js/desktop/app.js?v=0.66.1">
+  <link rel="modulepreload" href="js/desktop/shell.js?v=0.65.1">
+  <link rel="modulepreload" href="js/desktop/agent-console.js?v=0.67.0">
   <link rel="modulepreload" href="js/desktop/settings-mode.js?v=0.64.0">
-  <link rel="modulepreload" href="js/desktop/start-agent-mode.js?v=0.64.0">
+  <link rel="modulepreload" href="js/desktop/start-agent-mode.js?v=0.64.1">
   <link rel="modulepreload" href="js/desktop/nodes-mode.js?v=0.64.0">
   <link rel="modulepreload" href="js/desktop/skills-mode.js?v=0.64.0">
   <link rel="modulepreload" href="js/desktop/bots-mode.js?v=0.64.0">
@@ -35,6 +35,8 @@
   <div id="desktop-app" class="desktop-layout">
     <aside id="sidebar" class="desktop-sidebar">
       <div class="sidebar-header">
+        <img class="sidebar-logo-img" src="assets/icon-192.png" alt="CAM logo"
+             width="20" height="20">
         <span class="sidebar-logo">CAM</span>
         <span class="sidebar-sub">Desktop</span>
       </div>
@@ -60,11 +62,17 @@
           <span class="mode-nav-icon">&#9734;</span>
           <span class="mode-nav-label">Skills</span>
         </button>
-        <button class="mode-nav-btn" data-mode="bots" aria-pressed="false">
+        <!-- UNFINISHED-HIDDEN(bots): Bots mode hidden pending completion.
+             Also blocked in web/js/desktop/app.js (HIDDEN_MODES). See
+             apps/cam-desktop/FIXES-UNFINISHED-UI.md. -->
+        <button class="mode-nav-btn" data-mode="bots" aria-pressed="false" hidden>
           <span class="mode-nav-icon">&#9670;</span>
           <span class="mode-nav-label">Bots</span>
         </button>
-        <button class="mode-nav-btn" data-mode="todos" aria-pressed="false">
+        <!-- UNFINISHED-HIDDEN(todos): Todos mode hidden pending completion.
+             Also blocked in web/js/desktop/app.js (HIDDEN_MODES). See
+             apps/cam-desktop/FIXES-UNFINISHED-UI.md. -->
+        <button class="mode-nav-btn" data-mode="todos" aria-pressed="false" hidden>
           <span class="mode-nav-icon">&#9745;</span>
           <span class="mode-nav-label">Todos</span>
         </button>
@@ -188,7 +196,10 @@
             <button type="button" class="settings-tab" data-agent-settings-tab="attributes" aria-pressed="true">Attributes</button>
             <button type="button" class="settings-tab" data-agent-settings-tab="system-prompt" aria-pressed="false">System Prompt</button>
             <button type="button" class="settings-tab" data-agent-settings-tab="automation" aria-pressed="false">Automation</button>
-            <button type="button" class="settings-tab" data-agent-settings-tab="workflow" aria-pressed="false">Workflow</button>
+            <!-- UNFINISHED-HIDDEN(workflow-tab): Workflow tab hidden pending
+                 completion. Also excluded from the tab whitelist in
+                 web/js/desktop/shell.js. See apps/cam-desktop/FIXES-UNFINISHED-UI.md. -->
+            <button type="button" class="settings-tab" data-agent-settings-tab="workflow" aria-pressed="false" hidden>Workflow</button>
           </div>
           <div class="settings-form-pane agent-settings-form-pane">
             <div class="settings-tab-panel" id="agent-settings-tab-attributes" data-agent-settings-panel="attributes">
@@ -634,6 +645,7 @@
               <label>Path
                 <input type="text" id="start-path" placeholder="/home/user/project" autocomplete="off">
               </label>
+              <p class="form-hint" id="start-local-runtime-hint" hidden></p>
               <p class="form-hint">No context selected — pick a node and
                 path. The agent runs directly on that node; no context
                 record is created.</p>
@@ -1071,7 +1083,7 @@
     </main>
   </div>
 
-  <script type="module" src="js/desktop/app.js?v=0.66.0"></script>
+  <script type="module" src="js/desktop/app.js?v=0.66.1"></script>
 </body>
 </html>
 

@@ -4,10 +4,10 @@
  *
  * Runs entirely in-process — no Electron, no real SSH, no real camc.
  * The Hub is hand-written CommonJS that depends only on node stdlib +
- * two injected collaborators (credentialStore, sshTransport), so we
- * can require() it directly, inject mocks, start its HTTP server on an
- * OS-assigned loopback port, and drive the same /api/* surface the
- * renderer uses.
+ * three injected collaborators (credentialStore, sshTransport,
+ * localRuntime), so we can require() it directly, inject mocks, start
+ * its HTTP server on an OS-assigned loopback port, and drive the same
+ * /api/* surface the renderer uses.
  *
  * Run:  node apps/cam-desktop/test/hub.test.cjs
  * Exit: 0 = pass, 1 = fail (prints the failing assertion).
@@ -26,6 +26,13 @@
  *  7. /api/contexts/:name_or_id resolves by id AND by name (Sync/Delete
  *     Host path — CAM-DESK-NODEUI-014/015).
  *  8. Secret redaction helper is unit-tested directly.
+ *  9. Local-node datapath with a mock localRuntime (win32/WSL):
+ *     a. local start succeeds — ensureCamc first, run via execCamc,
+ *        C:\ path mapped to /mnt/c/...;
+ *     b. ensureCamc failure surfaces wsl_missing (400);
+ *     c. capture + stop on a local-context agent go through the local
+ *        runtime (was not_ssh);
+ *     d. GET /api/local/runtime returns structured checks.
  */
 
 'use strict';
@@ -283,6 +290,136 @@ async function main() {
   ok('context delete by id resolves (no 404)', r.status === 200, 'status=' + r.status + ' body=' + JSON.stringify(r.body));
   r = await request('GET', '/api/contexts/' + encodeURIComponent(ctxId));
   eq('context deleted', r.status, 404);
+
+  // ── 9. Local-node datapath (WSL on win32) with a mock localRuntime ──
+  // The mock pretends the local runtime is Windows+WSL: getPlatform()
+  // reports 'win32', execCamc serves canned camc output, ensureCamc is
+  // programmable. This exercises the hub rewiring without a real WSL.
+  const realLocalRuntime = require(path.join(__dirname, '..', 'electron', 'local-runtime.cjs'));
+  const localCalls = [];
+  let _localExecHandler = null;   // per-test override for execCamc
+  let _ensureCamcResult = { ok: true, hash: 'abc123', runtime: 'wsl' };
+  let _ensureCamcCalls = 0;
+  let _checkEnvResult = null;     // per-test override for checkEnvironment
+  const mockLocalRuntime = {
+    getPlatform: () => 'win32',
+    winToWslPath: (p) => realLocalRuntime.winToWslPath(p),
+    async execCamc(args, opts) {
+      localCalls.push({ args: args.map(String), opts });
+      if (_localExecHandler) return _localExecHandler(args, opts);
+      const a = args.map(String);
+      if (a.includes('run')) return { ok: true, stdout: '  ID: abcd1234\n  Tool: claude\n', stderr: '' };
+      if (a.includes('status')) return { ok: true, stdout: JSON.stringify({ id: 'abcd1234', status: 'running', state: 'initializing', task: { tool: 'claude', name: '', prompt: 'hi' }, context_path: '/mnt/c/proj/foo', transport_type: 'local', hostname: '' }), stderr: '' };
+      if (a.includes('capture')) return { ok: true, stdout: 'line1\nline2\n', stderr: '' };
+      if (a.includes('stop')) return { ok: true, stdout: 'Stopped.\n', stderr: '' };
+      if (a.includes('list')) return { ok: true, stdout: '[]', stderr: '' };
+      return { ok: true, stdout: '', stderr: '' };
+    },
+    async ensureCamc(bundled) {
+      _ensureCamcCalls++;
+      if (_ensureCamcResult.ok === false) return _ensureCamcResult;
+      return { ..._ensureCamcResult, bundledHash: bundled && bundled.hash };
+    },
+    async checkEnvironment(tool) {
+      if (_checkEnvResult) return _checkEnvResult;
+      return {
+        ok: true, platform: 'win32', runtime: 'wsl', distro: 'Ubuntu',
+        checks: { python3: true, tmux: true, tool: true, tool_auth: true },
+        issues: [], tool,
+      };
+    },
+  };
+  HUB.configure({ localRuntime: mockLocalRuntime });
+
+  // 9a. Local agent start succeeds on the win32 path: ensureCamc runs
+  //     first, `camc run` goes through execCamc, and the Windows
+  //     workspace path is mapped to /mnt/<drive>/...
+  _ensureCamcResult = { ok: true, hash: 'abc123', runtime: 'wsl' };
+  r = await request('POST', '/api/agents', {
+    tool: 'claude', prompt: 'hi', node: 'local', path: 'C:\\proj\\foo',
+  });
+  eq('win32 local start accepted', r.status, 201);
+  eq('win32 local start agent id', r.body && r.body.agentId, 'abcd1234');
+  ok('ensureCamc ran before run', _ensureCamcCalls >= 1, 'ensureCamc calls=' + _ensureCamcCalls);
+  const runCall = localCalls.find(c => c.args.includes('run'));
+  ok('run went through localRuntime', !!runCall, JSON.stringify(localCalls));
+  const pIdx = runCall ? runCall.args.indexOf('-p') : -1;
+  eq('windows path mapped to /mnt/c', pIdx >= 0 ? runCall.args[pIdx + 1] : null, '/mnt/c/proj/foo');
+  const statusCall = localCalls.find(c => c.args.includes('status'));
+  ok('status fetched after run', !!statusCall);
+
+  // 9b. ensureCamc bootstrap failure surfaces the structured error
+  //     (wsl_missing) instead of starting.
+  _ensureCamcResult = { ok: false, error: 'wsl_missing', detail: 'wsl.exe was not found. Install WSL2.' };
+  r = await request('POST', '/api/agents', {
+    tool: 'claude', prompt: 'hi', node: 'local', path: '/home/u/x',
+  });
+  eq('bootstrap failure status', r.status, 400);
+  eq('bootstrap failure error', r.body && r.body.error, 'wsl_missing');
+  ok('bootstrap failure detail', /WSL2/.test((r.body && r.body.detail) || ''), r.body && r.body.detail);
+  _ensureCamcResult = { ok: true, hash: 'abc123', runtime: 'wsl' };
+
+  // 9e. Environment gate: when the local runtime is missing a
+  //     prerequisite (tmux/tool/auth false or error-level issues), the
+  //     start is refused with local_env_not_ready and `camc run` is
+  //     never executed.
+  localCalls.length = 0;
+  _checkEnvResult = {
+    ok: false, platform: 'win32', runtime: 'wsl', distro: 'Ubuntu',
+    checks: { python3: true, tmux: false, tool: false, tool_auth: false },
+    issues: [
+      { level: 'error', message: 'tmux missing in the WSL distro (e.g. sudo apt install tmux)' },
+      { level: 'warn', message: 'tool resolved from PATH (no golden path present)' },
+    ],
+  };
+  r = await request('POST', '/api/agents', {
+    tool: 'claude', prompt: 'hi', node: 'local', path: '/home/u/x',
+  });
+  eq('env gate status', r.status, 400);
+  eq('env gate error', r.body && r.body.error, 'local_env_not_ready');
+  ok('env gate detail names tmux', /tmux/.test((r.body && r.body.detail) || ''), r.body && r.body.detail);
+  ok('env gate did not run camc run', !localCalls.some(c => c.args.includes('run')), JSON.stringify(localCalls));
+  // Warn-level issues alone must NOT block the start.
+  _checkEnvResult = {
+    ok: true, platform: 'win32', runtime: 'wsl', distro: 'Ubuntu',
+    checks: { python3: true, tmux: true, tool: true, tool_auth: true },
+    issues: [{ level: 'warn', message: 'tool resolved from PATH (no golden path present)' }],
+  };
+  r = await request('POST', '/api/agents', {
+    tool: 'claude', prompt: 'hi', node: 'local', path: '/home/u/x',
+  });
+  eq('warn-only env still starts', r.status, 201);
+  _checkEnvResult = null;
+
+  // 9c. Capture + stop on a local-context agent go through the local
+  //     runtime (these used to return not_ssh).
+  localCalls.length = 0;
+  r = await request('GET', '/api/agents/abcd1234/output?lines=10&format=plain');
+  eq('local capture status', r.status, 200);
+  ok('local capture output', r.body && /line1/.test(r.body.output || ''), JSON.stringify(r.body));
+  ok('capture via localRuntime', localCalls.some(c => c.args.includes('capture')), JSON.stringify(localCalls));
+  localCalls.length = 0;
+  r = await request('DELETE', '/api/agents/abcd1234');
+  eq('local stop status', r.status, 200);
+  ok('stop via localRuntime', localCalls.some(c => c.args.includes('stop')), JSON.stringify(localCalls));
+
+  // 9d. GET /api/local/runtime returns the structured preflight.
+  r = await request('GET', '/api/local/runtime?tool=claude');
+  eq('local runtime route status', r.status, 200);
+  eq('local runtime route runtime', r.body && r.body.runtime, 'wsl');
+  ok('local runtime route checks', !!(r.body && r.body.checks && r.body.checks.python3 === true), JSON.stringify(r.body));
+  eq('local runtime route distro', r.body && r.body.distro, 'Ubuntu');
+
+  // 9f. getAttachConnectOpts returns a local attach descriptor for a
+  //     local-context agent (this used to be the not_ssh refusal that
+  //     blocked terminal attach entirely).
+  const attach = await HUB.getAttachConnectOpts('abcd1234');
+  eq('local attach opts ok', attach && attach.ok, true, JSON.stringify(attach));
+  eq('local attach marked local', attach && attach.local, true);
+  eq('local attach agent id', attach && attach.agentId, 'abcd1234');
+
+  // Restore the real module for a clean shutdown.
+  HUB.configure({ localRuntime: realLocalRuntime });
 
   await stopHub();
 

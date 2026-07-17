@@ -19,6 +19,19 @@ Authoritative documentation lives under `docs/desktop/`. Start there:
   experiment. The app-managed Hub lifecycle now belongs to Direct;
   these files are preserved only for requirement-ID stability.
 
+Change logs and fix records live in this directory (`FIXES-*.md`):
+
+- `TERMINAL-ARCHITECTURE.md` — the terminal tab model: invariants,
+  state ownership, data flow, and the reasoning (Tabby-reference
+  redesign, 2026-07-17).
+- `FIXES-2026-07-17-SESSION.md` — index of the 2026-07-17 session:
+  MSI datapath prep, hidden unfinished UI, logo, local-node datapath
+  (WSL2), attach latency + terminal tab semantics.
+- `FIXES-UNFINISHED-UI.md` — hidden surfaces + `[hidden]` guard + logo.
+- `LOCAL-NODE-DATAPATH.md` — local-node runtime design and error codes.
+- `FIXES-ATTACH-LATENCY.md` — remote attach latency + tab semantics.
+- `FIXES-NODES.md` — earlier Nodes/sync fixes.
+
 ## Architecture in one paragraph
 
 ```text

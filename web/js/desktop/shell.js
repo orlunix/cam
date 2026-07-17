@@ -1559,7 +1559,11 @@ export function mountShell({ api, state, connect }) {
   }
 
   function setAgentSettingsTab(tab) {
-    _agentSettingsTab = ['attributes', 'system-prompt', 'automation', 'workflow'].includes(tab) ? tab : 'attributes';
+    // UNFINISHED-HIDDEN(workflow-tab): the Workflow tab button is hidden in
+    // desktop.html pending completion; keep it out of the whitelist so the
+    // panel can't be activated. Re-enable by restoring 'workflow' here and
+    // removing `hidden` from the tab button. See FIXES-UNFINISHED-UI.md.
+    _agentSettingsTab = ['attributes', 'system-prompt', 'automation'].includes(tab) ? tab : 'attributes';
     for (const btn of agentSettingsTabs) {
       const on = btn.dataset.agentSettingsTab === _agentSettingsTab;
       btn.setAttribute('aria-pressed', on ? 'true' : 'false');
