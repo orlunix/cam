@@ -62,7 +62,7 @@ const transportPath = path.join(__dirname, "..", "electron", "ssh-transport.cjs"
 const transport = fs.readFileSync(transportPath, "utf8");
 
 ok("show function exists", show.length > 0);
-const reveal = show.indexOf("ent.container.hidden = false");
+const reveal = show.indexOf("classList.remove('parked')");
 const fitCall = show.indexOf("scheduleTerminalFit({ keepBottom: opts.keepBottom !== false })");
 ok("show reveals before fitting", reveal >= 0 && fitCall >= 0 && reveal < fitCall, "reveal=" + reveal + " fit=" + fitCall);
 ok("stable fitter exists", fit.length > 0);

@@ -1,6 +1,14 @@
 /* CAM Desktop styles — layered on top of style.css.
    Targets desktop-class viewports (≥ 900px) but degrades fine smaller. */
 
+/* The `hidden` attribute must always win over component display rules.
+   Several components set display explicitly (.mode-nav-btn, .settings-tab,
+   .sidebar-header), which silently defeats `hidden` — this guard is what
+   the UNFINISHED-HIDDEN markers in desktop.html rely on. */
+[hidden] {
+  display: none !important;
+}
+
 body.desktop {
   /* Allow text selection on desktop; style.css disables it for mobile. */
   -webkit-user-select: auto;
@@ -245,6 +253,12 @@ body.desktop textarea:focus-visible {
   gap: 8px;
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
+}
+.sidebar-logo-img {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  align-self: center;
 }
 .sidebar-logo {
   font-weight: 700;
@@ -2636,6 +2650,9 @@ body.desktop[data-theme="light"] .composer-input:focus {
   min-height: 0;
   width: 100%;
   height: 100%;
+  /* Anchor for the absolutely-positioned (and off-screen parked)
+     agent-terminal-pane children. */
+  position: relative;
   background: var(--terminal-bg);
   padding: 0;
   box-sizing: border-box;
@@ -2647,9 +2664,21 @@ body.desktop[data-theme="light"] .composer-input:focus {
 .agent-terminal .agent-terminal-pane {
   width: 100%;
   height: 100%;
+  /* Tabby-style tab parking: panes are positioned so an inactive tab can
+     be parked off-viewport instead of display:none — the layout (and
+     xterm grid size) survives tab switches untouched, so switching back
+     costs zero reflow and zero ResizeObserver churn. */
+  position: absolute;
+  inset: 0;
 }
 .agent-terminal .agent-terminal-pane[hidden] {
   display: none !important;
+}
+.agent-terminal .agent-terminal-pane.parked {
+  left: -10000px;
+  top: 0;
+  right: auto;
+  visibility: hidden;
 }
 .agent-terminal .xterm {
   height: 100%;

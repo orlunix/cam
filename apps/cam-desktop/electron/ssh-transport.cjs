@@ -74,11 +74,19 @@ let _ssh2 = null;
 const IDLE_CLOSE_MS = 600 * 1000;   // Match CAM ControlPersist=600
 const DEFAULT_TIMEOUT_MS = 15000;
 
-/** Pool of long-lived ssh2.Client entries.
+/** Pool of long-lived ssh2.Client entries for EXEC traffic
+ *  (execRemote / writeRemoteFile / SFTP).
  *  Key  : string built by _poolKey (no secrets in plaintext).
  *  Value: { client, state, readyPromise, connectMs, idleTimer,
- *           inflight, justCreated, connectError } */
+ *           inflight, justCreated, connectError, poolRef } */
 const _pool = new Map();
+
+/** Separate pool for INTERACTIVE terminal channels. A terminal attach
+ *  must never die because an unrelated exec timed out or the exec
+ *  connection was reset — tab semantics: switching tabs cannot kill a
+ *  session. Terminal channels share one dedicated connection per
+ *  endpoint (multiplexed), isolated from exec traffic. */
+const _termPool = new Map();
 
 function _loadSsh2() {
   if (_ssh2) return _ssh2;
@@ -193,7 +201,7 @@ function _startIdleTimer(entry) {
   entry.idleTimer = setTimeout(() => {
     // Only drop if still no in-flight ops; a late-arriving op
     // would have already cleared this timer.
-    if (entry.inflight === 0 && _pool.get(entry.key) === entry) {
+    if (entry.inflight === 0 && entry.poolRef.get(entry.key) === entry) {
       _dropEntry(entry.key, 'idle');
     }
   }, IDLE_CLOSE_MS);
@@ -217,9 +225,9 @@ async function _retryOnceAfterPoolDrop(opts, reason, fn) {
 }
 
 function _dropEntry(key, _reason) {
-  const entry = _pool.get(key);
+  const entry = _pool.get(key) || _termPool.get(key);
   if (!entry) return;
-  _pool.delete(key);
+  entry.poolRef.delete(key);
   _clearIdleTimer(entry);
   entry.state = 'closed';
   // Best-effort close. end() asks for clean shutdown; destroy() if needed.
@@ -227,8 +235,9 @@ function _dropEntry(key, _reason) {
   try { entry.client && entry.client.destroy && entry.client.destroy(); } catch { /* noop */ }
 }
 
-function _getOrCreate(key, opts, ssh2) {
-  const existing = _pool.get(key);
+function _getOrCreate(key, opts, ssh2, poolRef) {
+  const pool = poolRef || _pool;
+  const existing = pool.get(key);
   if (existing && existing.state !== 'closed') {
     existing.justCreated = false;
     return existing;
@@ -237,7 +246,7 @@ function _getOrCreate(key, opts, ssh2) {
   const authBuilt = _buildAuth(opts);
   if (authBuilt.error) {
     // Return a sentinel "closed-on-arrival" entry whose readyPromise
-    // rejects immediately. We do NOT insert it into _pool — there's
+    // rejects immediately. We do NOT insert it into the pool — there's
     // nothing to reuse.
     return {
       key,
@@ -255,6 +264,7 @@ function _getOrCreate(key, opts, ssh2) {
   const entry = {
     key,
     client,
+    poolRef: pool,
     state: 'connecting',
     connectMs: null,
     idleTimer: null,
@@ -308,8 +318,15 @@ function _getOrCreate(key, opts, ssh2) {
       host:               String(opts.host),
       port,
       username:           String(opts.user),
-      readyTimeout:       Math.min(10000, timeoutMs),
-      keepaliveInterval:  0,
+      readyTimeout:       Math.min(20000, timeoutMs),
+      // 15s application-level keepalive (was 0 = disabled). A pooled
+      // connection with no keepalive dies silently at NAT/firewall idle
+      // timeouts — the next op then discovers a half-open socket only
+      // via its own (multi-second) timeout, and any attached terminal
+      // channel drops without warning. 15s keeps the mapping warm and
+      // surfaces dead sockets early.
+      keepaliveInterval:  15000,
+      keepaliveCountMax:  3,
       tryKeyboard:        false,
       ...authBuilt.fields,
     };
@@ -317,7 +334,7 @@ function _getOrCreate(key, opts, ssh2) {
     catch (e) { failConnect(e); }
   });
 
-  _pool.set(key, entry);
+  pool.set(key, entry);
   return entry;
 }
 
@@ -589,6 +606,7 @@ async function readRemoteFile(opts) {
 
 function closeAll() {
   for (const k of [..._pool.keys()]) _dropEntry(k, 'closeAll');
+  for (const k of [..._termPool.keys()]) _dropEntry(k, 'closeAll');
 }
 
 function poolStats() {
@@ -599,12 +617,22 @@ function poolStats() {
   for (const [k, e] of _pool.entries()) {
     out.push({
       key:        k,
+      pool:       'exec',
       state:      e.state,
       inflight:   e.inflight,
       connect_ms: e.connectMs,
     });
   }
-  return { size: _pool.size, entries: out, keys: out.map(e => e.key) };
+  for (const [k, e] of _termPool.entries()) {
+    out.push({
+      key:        k,
+      pool:       'term',
+      state:      e.state,
+      inflight:   e.inflight,
+      connect_ms: e.connectMs,
+    });
+  }
+  return { size: _pool.size + _termPool.size, entries: out, keys: out.map(e => e.key) };
 }
 
 /**
@@ -612,9 +640,12 @@ function poolStats() {
  * (CAM-DESK-TERM-001). Unlike execRemote/writeRemoteFile which return
  * after a single roundtrip, this opens a streaming channel:
  *
- *   - The same connection pool is reused (no extra TCP/auth handshake
- *     when an output / sync session is already open to the same
- *     endpoint+auth identity).
+ *   - A dedicated terminal pool (`_termPool`) is used — one shared
+ *     connection per endpoint for ALL terminal channels, isolated from
+ *     the exec pool. An exec timeout or exec-connection reset can no
+ *     longer kill an attached terminal (tab semantics: switching tabs
+ *     must never detach a session). The handshake is still paid only
+ *     once per endpoint.
  *   - A fresh ssh2 channel (`conn.exec(cmd, {pty:{cols,rows,...}}, cb)`)
  *     is opened — concurrent with any other channel on the same
  *     client. Closing this channel does NOT affect other channels and
@@ -655,12 +686,25 @@ async function openTerminalChannel(opts, hooks = {}) {
   }
 
   const key = _poolKey(opts);
-  const entry = _getOrCreate(key, opts, ssh2);
+  // Terminal channels live in the dedicated terminal pool, isolated
+  // from exec traffic: an exec timeout/reset on the exec pool can no
+  // longer kill an attached terminal (the tab-switch detach).
+  let entry = _getOrCreate(key, opts, ssh2, _termPool);
 
   try {
     await entry.readyPromise;
   } catch (e) {
-    return { ok: false, error: e.error || 'exec_failed', detail: e.detail || 'connect failed' };
+    // Retry once on handshake/connect failure: drop the (possibly stale)
+    // pool entry and reconnect from scratch. On VPN/NAT links the first
+    // handshake regularly dies to a transient drop ("Timed out while
+    // waiting for handshake") while a fresh TCP connect recovers.
+    _dropEntry(key, 'terminal_open_retry');
+    entry = _getOrCreate(key, opts, ssh2, _termPool);
+    try {
+      await entry.readyPromise;
+    } catch (e2) {
+      return { ok: false, error: e2.error || 'exec_failed', detail: e2.detail || 'connect failed' };
+    }
   }
 
   // Reserve so the idle timer cannot drop the client mid-attach.
@@ -683,7 +727,7 @@ async function openTerminalChannel(opts, hooks = {}) {
       if (!active) return;
       active = false;
       entry.inflight = Math.max(0, entry.inflight - 1);
-      if (entry.inflight === 0 && _pool.get(key) === entry) {
+      if (entry.inflight === 0 && entry.poolRef.get(key) === entry) {
         _startIdleTimer(entry);
       }
     };
