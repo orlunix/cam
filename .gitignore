@@ -36,6 +36,9 @@ Thumbs.db
 # Temp files
 *.tmp
 
+# Local Git worktrees
+.worktrees/
+
 # Build artifacts
 android/build/
 android/cam-release.keystore
