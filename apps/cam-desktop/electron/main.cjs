@@ -28,7 +28,6 @@ const https = require('node:https');
 const embeddedHub     = require('./embedded-hub.cjs');
 const credentialStore = require('./credential-store.cjs');
 const sshTransport    = require('./ssh-transport.cjs');
-const demoTransport   = require('./demo-transport.cjs'); // DEMO MODE only — installed via demo:enter, removed via demo:exit
 const { tmuxMetadataForAgent, selectOnlyClient, selectNewClient, parseClientState, parseWindowRows, tmuxCommand } = require('./tmux-controls.cjs');
 
 // An SSH PTY can become a tmux client a little after the attach command
@@ -958,19 +957,6 @@ app.whenReady().then(() => {
   ipcMain.handle('local:restart',    () => localRestart());
   ipcMain.handle('local:logs',       () => localLogs());
   ipcMain.handle('local:getProfile', () => localGetProfile());
-
-  // DEMO MODE (deletable): enter installs the offline simulator as the
-  // transport override; exit removes it. Default is null — the normal
-  // SSH datapath is never affected unless the user explicitly enters
-  // demo mode from Settings → Demo.
-  ipcMain.handle('demo:enter', () => {
-    sshTransport.setOverride(demoTransport.demoOverride);
-    return { ok: true };
-  });
-  ipcMain.handle('demo:exit', () => {
-    sshTransport.setOverride(null);
-    return { ok: true };
-  });
 
   // Narrow file picker for the Nodes "Add Host" key-file field.
   // Argument-free; main owns the dialog config.
