@@ -24,6 +24,9 @@ Change logs and fix records live in this directory (`FIXES-*.md`):
 - `TERMINAL-ARCHITECTURE.md` — the terminal tab model: invariants,
   state ownership, data flow, and the reasoning (Tabby-reference
   redesign, 2026-07-17).
+- `MAS-SPIKE.md` — Mac App Store sandbox smoke checklist.
+- `MAS-REVIEW-RISKS.md` — pre-submission rejection risks + demo-mode
+  plan (2026-07-18).
 - `FIXES-2026-07-17-SESSION.md` — index of the 2026-07-17 session:
   MSI datapath prep, hidden unfinished UI, logo, local-node datapath
   (WSL2), attach latency + terminal tab semantics.
