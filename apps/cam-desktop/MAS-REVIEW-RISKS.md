@@ -48,8 +48,12 @@ abuse (mining on our demo box).
 `main.cjs` (`ipcMain.handle('net:probe')`) lets the renderer make the
 main process GET any http(s) URL. Reviewers may read this as an open
 network surface.
-**Fix**: constrain to loopback + private ranges (it exists for Relay
-connectivity self-checks), and document the purpose.
+**Decision (2026-07-18): keep, no constraint** — the probe returns only
+`{status, bytes, ms}` (no body content), so nothing can be exfiltrated;
+it exists for Relay connectivity checks against user-configured (often
+public) relay URLs, and restricting it to private ranges would break
+the Relay feature itself. Explain in review notes: "status-only
+reachability probe for the user's own relay; returns no content."
 
 ### 4. Clipboard attachment reads
 

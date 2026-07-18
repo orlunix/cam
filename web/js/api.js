@@ -282,9 +282,14 @@ export class CamApi {
         method,
         headers,
         body: body != null ? JSON.stringify(body) : undefined,
+        // Never let a request hang forever: an accepted-but-unanswered
+        // connection would otherwise spin the loading state indefinitely.
+        signal: AbortSignal.timeout(15000),
       });
     } catch (e) {
-      const raw = e?.message || String(e);
+      const raw = e && (e.name === 'AbortError' || e.name === 'TimeoutError')
+        ? `request timed out after 15s (${this.serverUrl})`
+        : (e?.message || String(e));
       if (/failed to fetch|networkerror|network error|load failed/i.test(raw)) {
         const err = new Error(
           `Local Hub unreachable at ${this.serverUrl}. ` +
@@ -294,7 +299,9 @@ export class CamApi {
         err.cause = e;
         throw err;
       }
-      throw e;
+      const err = new Error(raw);
+      err.cause = e;
+      throw err;
     }
 
     const text = await resp.text();
