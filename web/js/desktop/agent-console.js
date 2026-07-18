@@ -2953,7 +2953,17 @@ export function mountAgentConsole({ api, state, showToast }) {
   function renderTerminalTabs(ent) {
     if (!terminalTabsEl) return;
     terminalTabsEl.textContent = '';
-    if (!ent?.tmuxReady) return;
+    if (!ent?.tmuxReady) {
+      // Degraded, not hidden: when window controls are unavailable the
+      // strip stays visible with a dim hint instead of disappearing —
+      // the terminal itself is unaffected, and the controls reappear
+      // silently once a retry succeeds.
+      const hint = document.createElement('span');
+      hint.className = 'terminal-tmux-hint';
+      hint.textContent = 'window controls unavailable';
+      terminalTabsEl.appendChild(hint);
+      return;
+    }
     for (const windowInfo of ent.tmuxWindows || []) {
       const button = document.createElement('button');
       button.type = 'button';
@@ -2978,7 +2988,9 @@ export function mountAgentConsole({ api, state, showToast }) {
     const terminalConnected = terminalVisible && !!ent?.sessionId;
     const tmuxVisible = terminalConnected && !!ent?.tmuxReady;
     const actionsBlocked = terminalRefreshPending;
-    if (terminalTabsEl) terminalTabsEl.hidden = !tmuxVisible;
+    // Tab strip stays visible whenever connected — degraded hint inside
+    // when controls aren't ready (renderTerminalTabs handles it).
+    if (terminalTabsEl) terminalTabsEl.hidden = !terminalConnected;
     if (terminalActionBar) terminalActionBar.hidden = !terminalVisible;
     if (terminalHistoryBtn) terminalHistoryBtn.disabled = actionsBlocked || !tmuxVisible || !!ent?.copyBrowsing;
     if (terminalBottomBtn) terminalBottomBtn.disabled = actionsBlocked || !terminalConnected || (!ent?.copyBrowsing && terminalIsAtBottom(ent));
@@ -3005,17 +3017,33 @@ export function mountAgentConsole({ api, state, showToast }) {
       if (ent.tmuxControlRevision !== tmuxControlRevision) return;
       if (!result?.ok) {
         // Quiet degradation: window controls are an enhancement, not an
-        // error condition. Hide the tab strip (updateTerminalTmuxControls
-        // already hides it when tmuxReady is false), keep the terminal
-        // fully usable, and let the background recovery retry bring the
-        // controls back silently. No persistent red banner.
+        // error condition. Show the degraded hint, keep the terminal
+        // fully usable, and retry with bounded backoff — a transient
+        // failure (zombie connection, slow link) heals silently and the
+        // controls appear without the user doing anything. After the
+        // last retry the controls simply stay in the degraded state
+        // until the next entry/switch triggers a fresh refresh.
         ent.tmuxReady = false;
         ent.tmuxDiagnosticVisible = false;
         renderTerminalTabs(ent);
         updateTerminalTmuxControls();
+        const retries = [2000, 5000, 12000, 30000];
+        const n = Number(ent.tmuxRetryCount || 0);
+        if (n < retries.length) {
+          ent.tmuxRetryCount = n + 1;
+          const expectedSession = sessionId;
+          const expectedRevision = ent.tmuxControlRevision;
+          window.setTimeout(() => {
+            const cur = terminalSessions.get(termAgentId);
+            if (cur !== ent || ent.sessionId !== expectedSession) return;
+            if (ent.tmuxControlRevision !== expectedRevision) return;
+            void refreshTerminalTmuxControls();
+          }, retries[n]);
+        }
         return;
       }
       ent.tmuxReady = true;
+      ent.tmuxRetryCount = 0;
       ent.tmuxWindows = result.windows || [];
       ent.copyBrowsing = !!result.copyMode;
       if (ent.tmuxDiagnosticVisible) {
