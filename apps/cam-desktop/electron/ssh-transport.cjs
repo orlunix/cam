@@ -671,7 +671,7 @@ function poolStats() {
  * agent itself.
  */
 async function openTerminalChannel(opts, hooks = {}) {
-  if (_override) return _override({ ...opts, operation: 'openTerminalChannel' });
+  if (_override) return _override({ ...opts, operation: 'openTerminalChannel' }, hooks);
   if (!opts || !opts.host || !opts.user) {
     return { ok: false, error: 'invalid_args', detail: 'host and user are required' };
   }
