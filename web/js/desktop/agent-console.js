@@ -2958,7 +2958,8 @@ export function mountAgentConsole({ api, state, showToast }) {
       // once they are exhausted the strip hides entirely (tmuxHintState
       // 'hidden'). A missing window-controls feature is never a
       // persistent warning; only operation-blocking failures surface.
-      if (ent.tmuxHintState !== 'hidden') {
+      // Guard: ent may be null (no terminal entry selected yet).
+      if (ent && ent.tmuxHintState !== 'hidden') {
         const hint = document.createElement('span');
         hint.className = 'terminal-tmux-hint';
         hint.textContent = 'window controls unavailable';
