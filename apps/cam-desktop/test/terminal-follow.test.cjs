@@ -172,7 +172,11 @@ ok("tmux control failures identify the failing stage", main.includes("function _
 ok("tmux diagnostics expose safe discovery state", main.includes("recoveryAttempts:") && main.includes("initialPending:") && main.includes("beforeClientCount:") && main.includes("lastProbeError:"));
 ok("failed tmux probes retain their underlying error", main.includes("tmuxLastProbeError") && main.includes("tmuxLastProbeMs"));
 ok("renderer persistently surfaces tab discovery failures", source.includes("tmux controls unavailable") && source.includes("setTerminalAttachStatus(message, 'error', 0)") && source.includes("tmuxDiagnosticVisible"));
-ok("tmux commands preserve the terminal connection on timeout", main.includes("preserve_connection_on_timeout: true"));
+ok("tmux control timeouts drop the exec connection for zombie recovery", !main.includes("preserve_connection_on_timeout: true"));
+// Rationale: after the terminal/exec pool split, tmux controls live on
+// the exec pool (no PTY at stake). Dropping on timeout discards a
+// possibly-zombie connection so the next op reconnects — one
+// sacrificed op instead of a connection that never recovers.
 ok("transport aborts opted-in timed-out command channels", transport.includes("preserve_connection_on_timeout") && transport.includes("abortOperation"));
 ok("preserved tmux command timeouts do not retry by dropping the pooled terminal connection", transport.includes("!preserveConnectionTimeout && _isRetryableChannelError(first)"));
 
