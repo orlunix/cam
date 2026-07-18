@@ -3004,21 +3004,13 @@ export function mountAgentConsole({ api, state, showToast }) {
       if (terminalSessions.get(termAgentId) !== ent || ent.sessionId !== sessionId) return;
       if (ent.tmuxControlRevision !== tmuxControlRevision) return;
       if (!result?.ok) {
+        // Quiet degradation: window controls are an enhancement, not an
+        // error condition. Hide the tab strip (updateTerminalTmuxControls
+        // already hides it when tmuxReady is false), keep the terminal
+        // fully usable, and let the background recovery retry bring the
+        // controls back silently. No persistent red banner.
         ent.tmuxReady = false;
-        ent.tmuxDiagnosticVisible = true;
-        const diag = result?.diagnostics || {};
-        const code = [result?.stage, result?.error].filter(Boolean).join('/');
-        const state = [
-          diag.session ? `session=${diag.session}` : '',
-          diag.clientTty ? `client=${diag.clientTty}` : '',
-          `initial=${diag.initialPending ? 'pending' : 'done'}`,
-          `attempts=${Number(diag.recoveryAttempts || 0)}`,
-          diag.beforeClientCount == null ? 'baseline=unavailable' : `baseline=${diag.beforeClientCount}`,
-          diag.lastProbeMs ? `probe=${diag.lastProbeMs}ms` : '',
-        ].filter(Boolean).join(', ');
-        const detail = String(result?.detail || 'no detail');
-        const message = `tmux controls unavailable (${code || 'unknown'}): ${detail}${state ? ` [${state}]` : ''}`;
-        setTerminalAttachStatus(message, 'error', 0);
+        ent.tmuxDiagnosticVisible = false;
         renderTerminalTabs(ent);
         updateTerminalTmuxControls();
         return;
