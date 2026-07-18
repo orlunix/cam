@@ -1133,6 +1133,15 @@ async function _startRemoteAgent(body, baseOpts, ctx) {
   if (!_sshTransport || typeof _sshTransport.execRemote !== 'function') {
     return { ok: false, error: 'ssh_transport_unavailable', detail: 'embedded Hub has no SSH transport configured' };
   }
+  // Bootstrap first: upload the bundled camc when the remote is missing
+  // it or runs an older version. Without this, starting an agent on a
+  // fresh host failed with camc_missing even though deployment is
+  // supposed to be automatic (mirrors _execCamcOnContext).
+  const ready = await _ensureRemoteCamc(baseOpts);
+  if (!ready || !ready.ok) {
+    const err = ready || {};
+    return { ok: false, error: err.error || 'remote_camc_unavailable', detail: err.detail || 'failed to prepare ~/.cam/camc on remote host' };
+  }
   const argv = _buildRunArgv(body);
   // The remote camc binary is at REMOTE_CAMC (~/.cam/camc). execRemote
   // runs the command through a login shell, so shell-quote each token.
