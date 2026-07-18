@@ -18,10 +18,11 @@
     "build:mas": "electron-builder --mac mas --config.npmRebuild=false --publish=never",
     "dist": "electron-builder",
     "cli": "node cli/camui-cli.cjs",
-    "lint:electron": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/ssh-transport.cjs && node --check electron/embedded-hub.cjs && node --check electron/credential-store.cjs && node --check cli/camui-cli.cjs",
+    "lint:electron": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/ssh-transport.cjs && node --check electron/embedded-hub.cjs && node --check electron/demo-transport.cjs && node --check electron/credential-store.cjs && node --check cli/camui-cli.cjs",
     "test:hub": "node test/hub.test.cjs",
     "test:term": "node test/terminal-follow.test.cjs && node test/tmux-controls.test.cjs",
     "test:start": "node test/start-form.test.cjs",
+    "test:demo": "node test/demo-transport.test.cjs",
     "legacy:tauri:dev": "tauri dev",
     "legacy:tauri:build": "tauri build",
     "legacy:tauri:build-web": "tsc --noEmit && vite build"
