@@ -99,7 +99,7 @@ export function mountSettingsMode({ api, state, showToast, readConfig, saveConfi
   const tabButtons = panel.querySelectorAll('.settings-tab[data-tab]');
   const tabPanels  = panel.querySelectorAll('.settings-tab-panel[data-tab]');
   const TAB_KEY    = 'cam_desktop_settings_tab';
-  const VALID_TABS = ['direct', 'relay', 'appearance'];
+  const VALID_TABS = ['direct', 'demo', 'appearance'];
 
   function applyTab(name) {
     if (!VALID_TABS.includes(name)) name = 'direct';
@@ -735,4 +735,58 @@ function mountAppearanceTab({ panel, showToast }) {
       }
     });
   }
+
+  /* ────────── Demo tab ──────────
+   * Entering demo installs the offline simulator as the transport
+   * override (demo:enter in main) and creates a "Demo (built-in)"
+   * context whose auto-sync then pulls the scripted agents. Exiting
+   * deletes that context (its agents are pruned as orphans) and removes
+   * the override. The dummy password exists only to satisfy the
+   * credential check in the attach path — the simulator ignores auth. */
+  const demoEnter  = panel.querySelector('#demo-enter');
+  const demoExit   = panel.querySelector('#demo-exit');
+  const demoStatus = panel.querySelector('#settings-status-demo');
+  const demoBridge = (typeof window !== 'undefined' && window.CamBridge && window.CamBridge.demo) || null;
+
+  function setDemoStatus(text, cls) {
+    if (!demoStatus) return;
+    demoStatus.textContent = text || '';
+    demoStatus.classList.remove('is-error', 'is-ok');
+    if (cls) demoStatus.classList.add(cls);
+  }
+
+  if (demoEnter) demoEnter.addEventListener('click', async () => {
+    if (!demoBridge) { setDemoStatus('Demo bridge unavailable in this build.', 'is-error'); return; }
+    try {
+      await demoBridge.enter();
+      await api.createContext({
+        name: 'demo-node',
+        path: '/home/demo/workspace',
+        host: 'demo.local',
+        user: 'demo',
+        port: 22,
+        auth_method: 'password',
+        password: 'demo',
+        remember_password: true,
+      });
+      setDemoStatus('Demo mode on — open Nodes and start an agent on "demo-node".', 'is-ok');
+      if (typeof showToast === 'function') showToast('Demo mode on', 'success');
+    } catch (e) {
+      setDemoStatus(`Enter demo failed: ${e && e.message || e}`, 'is-error');
+    }
+  });
+
+  if (demoExit) demoExit.addEventListener('click', async () => {
+    try {
+      const demoCtx = (state.get('contexts') || []).find(c => c && c.machine && c.machine.host === 'demo.local');
+      if (demoCtx && demoCtx.id) {
+        await api.deleteContext(demoCtx.id);
+      }
+      await demoBridge.exit();
+      setDemoStatus('Demo mode off.', 'is-ok');
+      if (typeof showToast === 'function') showToast('Demo mode off', 'info');
+    } catch (e) {
+      setDemoStatus(`Exit demo failed: ${e && e.message || e}`, 'is-error');
+    }
+  });
 }

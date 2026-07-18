@@ -145,4 +145,10 @@ contextBridge.exposeInMainWorld('CamBridge', {
       return () => ipcRenderer.removeListener('term:status', listener);
     },
   },
+
+  // DEMO MODE (deletable): enter/exit the offline simulated node.
+  demo: {
+    enter() { return ipcRenderer.invoke('demo:enter'); },
+    exit()  { return ipcRenderer.invoke('demo:exit'); },
+  },
 });
