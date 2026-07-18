@@ -77,6 +77,14 @@ const cachedEnd = open.indexOf("prepareThenShowTerminalEntry(agent.id, 120)", ca
 const cachedBlock = cachedStart >= 0 && cachedEnd >= 0 ? open.slice(cachedStart, cachedEnd) : "";
 ok("cached session has no hidden-delay prep", !cachedBlock.includes("prepareThenShowTerminalEntry"));
 ok("cached session does not reconnect", !cachedBlock.includes("bridge.open"));
+// Bug 2 (2026-07-18): the open must wait for real layout before
+// measuring the grid, so a first attach never opens at the xterm 80x24
+// default while the pane is still hidden.
+const layoutWait = open.indexOf("await waitForTerminalLayout(ent)");
+const openCall = open.indexOf("bridge.open({ agentId: agent.id, cols: openCols, rows: openRows })");
+ok("open waits for layout before measuring", layoutWait >= 0 && openCall > layoutWait,
+  "layoutWait=" + layoutWait + " openCall=" + openCall);
+ok("layout wait helper exists", source.includes("async function waitForTerminalLayout("));
 ok("cache limit remains six", source.includes("const TERMINAL_CACHE_LIMIT = 6"));
 ok("history follow uses viewport state", source.includes("terminalShouldForceBottom(ent) || terminalIsAtBottom(ent)"));
 ok("history write does not recheck and yank viewport", source.includes("if (shouldFollow) terminalScrollToBottom(ent);"));
