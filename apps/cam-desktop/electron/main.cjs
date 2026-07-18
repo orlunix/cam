@@ -336,6 +336,10 @@ for line in out.splitlines():
                 stderr=subprocess.DEVNULL,
                 timeout=2,
             )
+            # Evidence for the recurring "window shrank to ~10 cols"
+            # mystery: record exactly WHICH client was clamping the
+            # window (its name/tty betrays the source device).
+            print(f"REPAIR_DETACHED tiny-client name={name} size={width}x{height}")
     except Exception:
         pass
 
@@ -371,11 +375,20 @@ except Exception:
 async function _repairRemoteTerminalSize(opts, agentId, cols, rows) {
   if (!opts || !agentId) return;
   try {
-    await sshTransport.execRemote({
+    const res = await sshTransport.execRemote({
       ...opts,
       command: _terminalRepairCommand(agentId, cols, rows),
       timeout_ms: 8000,
     });
+    // Evidence for the recurring "window shrank to ~10 cols" mystery:
+    // the repair prints REPAIR_DETACHED lines naming the client it
+    // kicked — log them so the culprit is identifiable afterwards.
+    const out = (res && res.ok && res.stdout) || '';
+    for (const line of String(out).split('\n')) {
+      if (line.startsWith('REPAIR_DETACHED')) {
+        console.warn(`[terminal-repair] ${agentId}: ${line}`);
+      }
+    }
   } catch (_) {
     // Best-effort guard: attach must still proceed if old camc/tmux cannot report metadata.
   }
