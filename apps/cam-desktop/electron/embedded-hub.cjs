@@ -2087,15 +2087,9 @@ async function _browseAgentWrite(agentId, rawPath, content) {
 
   const isLocal = !ctx || !ctx.machine || ctx.machine.type !== 'ssh';
   if (isLocal) {
-    const safe = _safeLocalPathUnderRoot(root, sub);
-    if (safe.error) return { httpStatus: safe.error === 'permission_denied' ? 403 : 400, body: { error: safe.error, detail: safe.detail } };
-    try {
-      fs.mkdirSync(path.dirname(safe.full), { recursive: true });
-      fs.writeFileSync(safe.full, body, 'utf8');
-      return { httpStatus: 200, body: { ok: true, scope: 'agent', agent_id: agent.id || String(agentId), root, path: sub, size: Buffer.byteLength(body, 'utf8') } };
-    } catch (e) {
-      return { httpStatus: 502, body: { error: 'write_failed', detail: e && e.message || 'failed to write file' } };
-    }
+    // Local sessions are retired — writing to the hub host's filesystem
+    // is never allowed (sandbox surface stays network-only).
+    return { httpStatus: 400, body: { error: LOCAL_UNSUPPORTED_ERROR, detail: LOCAL_UNSUPPORTED_DETAIL } };
   }
 
   if (!_sshTransport || typeof _sshTransport.writeRemoteFile !== 'function') {
@@ -2314,17 +2308,9 @@ async function _writeAgentSystemPrompt(agentId, prompt) {
   const isLocal = !ctx || !ctx.machine || ctx.machine.type !== 'ssh';
 
   if (isLocal) {
-    const rootAbs = _localPath(root);
-    const fullAbs = _localPath(fullRemote);
-    if (!_safeLocalPathUnderRoot(rootAbs, fullAbs)) {
-      return { ok: false, error: 'path_traversal', detail: 'resolved prompt path is outside the workspace root' };
-    }
-    try {
-      fs.mkdirSync(path.dirname(fullAbs), { recursive: true });
-      fs.writeFileSync(fullAbs, nextText, 'utf8');
-    } catch (e) {
-      return { ok: false, error: 'system_prompt_write_failed', detail: e && e.message || 'write failed' };
-    }
+    // Local sessions are retired — writing to the hub host's filesystem
+    // is never allowed (sandbox surface stays network-only).
+    return { ok: false, error: LOCAL_UNSUPPORTED_ERROR, detail: LOCAL_UNSUPPORTED_DETAIL };
   } else {
     if (!_sshTransport || typeof _sshTransport.writeRemoteFile !== 'function') {
       return { ok: false, error: 'ssh_transport_unavailable', detail: 'embedded Hub has no SSH transport configured' };
