@@ -2723,6 +2723,13 @@ body.desktop[data-theme="light"] .composer-input:focus {
   overflow-x: auto;
   scrollbar-width: none;
 }
+.terminal-tmux-hint {
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 22px;
+  padding: 0 6px;
+  user-select: none;
+}
 .terminal-tmux-tab,
 .terminal-history-btn,
 .terminal-bottom-btn,
