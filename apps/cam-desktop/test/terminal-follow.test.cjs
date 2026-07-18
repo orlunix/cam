@@ -171,7 +171,7 @@ ok("initial discovery keeps trying when its baseline probe was unavailable", !ma
 ok("tmux control failures identify the failing stage", main.includes("function _tmuxFailure(stage") && main.includes("_tmuxFailure('client_discovery'") && main.includes("_tmuxFailure('client_state'") && main.includes("_tmuxFailure('list_windows'"));
 ok("tmux diagnostics expose safe discovery state", main.includes("recoveryAttempts:") && main.includes("initialPending:") && main.includes("beforeClientCount:") && main.includes("lastProbeError:"));
 ok("failed tmux probes retain their underlying error", main.includes("tmuxLastProbeError") && main.includes("tmuxLastProbeMs"));
-ok("renderer persistently surfaces tab discovery failures", source.includes("tmux controls unavailable") && source.includes("setTerminalAttachStatus(message, 'error', 0)") && source.includes("tmuxDiagnosticVisible"));
+ok("renderer degrades tmux control failures quietly (no persistent error)", source.includes("Quiet degradation") && !source.includes("setTerminalAttachStatus(message, 'error', 0)"));
 ok("tmux control timeouts drop the exec connection for zombie recovery", !main.includes("preserve_connection_on_timeout: true"));
 // Rationale: after the terminal/exec pool split, tmux controls live on
 // the exec pool (no PTY at stake). Dropping on timeout discards a
