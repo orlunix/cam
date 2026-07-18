@@ -425,7 +425,15 @@ async function _tmuxExec(ent, args) {
   let command;
   try { command = tmuxCommand(ent.tmux, args); }
   catch (e) { return { ok: false, error: 'tmux_unavailable', detail: e.message }; }
-  return sshTransport.execRemote({ ...ent.opts, command, timeout_ms: 3000, preserve_connection_on_timeout: true });
+  const res = await sshTransport.execRemote({ ...ent.opts, command, timeout_ms: 15000, preserve_connection_on_timeout: true });
+  // Evidence for "tmux controls slow/timing out": log the transport
+  // timing breakdown on failure so we can see whether the time went to
+  // connect (handshake) or to the op itself, and whether the pool was warm.
+  if (!res?.ok) {
+    const t = res && res.timings ? res.timings : {};
+    console.warn(`[tmux-exec] ${ent.agentId} ${args[0]} failed: ${res && res.error} | pooled=${t.pooled} connect=${t.connect_ms}ms op=${t.op_ms}ms total=${t.total_ms}ms | ${String(res && res.detail || '').slice(0, 160)}`);
+  }
+  return res;
 }
 
 function _tmuxFailure(stage, result, ent) {
@@ -461,8 +469,10 @@ async function _tmuxClientSet(opts, tmux, diagnosticsTarget = null) {
   let command;
   try { command = tmuxCommand(tmux, ['list-clients', '-t', tmux.session, '-F', '#{client_tty}']); }
   catch (e) { record(e?.message || e); return null; }
-  const result = await sshTransport.execRemote({ ...opts, command, timeout_ms: 3000, preserve_connection_on_timeout: true });
+  const result = await sshTransport.execRemote({ ...opts, command, timeout_ms: 15000, preserve_connection_on_timeout: true });
   if (!result?.ok) {
+    const t = result && result.timings ? result.timings : {};
+    console.warn(`[tmux-probe] list-clients failed: ${result && result.error} | pooled=${t.pooled} connect=${t.connect_ms}ms op=${t.op_ms}ms total=${t.total_ms}ms`);
     record(`${result?.error || 'probe_failed'}: ${result?.detail || 'no detail'}`);
     return null;
   }
