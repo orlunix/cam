@@ -3769,6 +3769,13 @@ async function handle(req, res) {
       state.store.contexts.push(built.record);
       saveStore();
       pushLog('info', `context created: ${built.record.name}`);
+      // Auto-sync the new node's agents in the background so its agents
+      // appear without a manual Sync Host (the renderer's 5s store-poll
+      // picks them up on the next tick). Failures only log — the context
+      // is created regardless, and the user can always sync manually.
+      void _syncContextAgents(built.record)
+        .then((r) => pushLog(r && r.ok ? 'info' : 'warn', `auto-sync ${built.record.name}: ${r && r.ok ? `imported ${r.imported || 0}` : (r && (r.detail || r.error)) || 'failed'}`))
+        .catch((e) => pushLog('warn', `auto-sync ${built.record.name} failed: ${e && e.message}`));
       return sendJson(res, 201, built.record);
     }
     return send404(res);
