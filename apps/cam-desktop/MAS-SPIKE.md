@@ -53,7 +53,11 @@ sudo installer -pkg CAM-Desktop-0.2.0-arm64.pkg -target /
 
 ## Next after spike
 
-1. Demo mode (reviewer can't use the app without SSH hosts).
+1. Demo mode (**DONE 2026-07-18**): Settings → Demo installs an offline
+   simulated node (`demo-node`) — agents, terminal playback, and input
+   all work without SSH (`electron/demo-transport.cjs`, self-contained
+   and deletable). Reviewers can exercise the full flow offline; also
+   used for screenshots.
 2. Privacy policy + support URLs, screenshots, privacy labels.
 3. App Store Connect record for com.hren.cam + MAS provisioning profile
    (→ `MAS_PROVISIONING_PROFILE` secret) and installer certificate.
