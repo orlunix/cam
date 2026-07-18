@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- CAM Desktop — Mac App Store entitlements (parent process).
+       The app is an SSH/loopback control surface: no child binaries,
+       no broad filesystem, no background daemons. Every key below maps
+       to a concrete runtime behavior. -->
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+  <!-- ssh2 outbound to user-configured hosts + relay -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <!-- embedded hub binds 127.0.0.1:<port> for the renderer -->
+  <key>com.apple.security.network.server</key>
+  <true/>
+  <!-- file pickers: SSH private keys, attachments (user-selected only) -->
+  <key>com.apple.security.files.user-selected.read-only</key>
+  <true/>
+  <!-- Electron safeStorage stores SSH passwords/passphrases in the
+       app's own keychain access group -->
+  <key>keychain-access-groups</key>
+  <array>
+    <string>ULL2CR6L6J.com.hren.cam</string>
+  </array>
+  <!-- V8/JIT requirements for any Electron app -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+</dict>
+</plist>

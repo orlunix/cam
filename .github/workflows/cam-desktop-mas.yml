@@ -1,0 +1,73 @@
+name: CAM Desktop — Mac App Store (mas pkg)
+
+# Spike build for the Mac App Store track: signed mas .pkg with sandbox
+# entitlements. Secrets: CSC_LINK/CSC_KEY_PASSWORD (Developer ID or
+# 3rd-party Mac certs incl. installer identity), MAS_PROVISIONING_PROFILE
+# (base64 of the .provisionprofile for com.hren.cam). NOT notarized —
+# MAS packages are reviewed by App Store Connect, not notarized.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-mas-pkg:
+    name: Build signed mas pkg (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+    defaults:
+      run:
+        working-directory: apps/cam-desktop
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: apps/cam-desktop/package-lock.json
+
+      - name: Write provisioning profile
+        env:
+          PROFILE_B64: ${{ secrets.MAS_PROVISIONING_PROFILE }}
+        run: |
+          if [ -z "$PROFILE_B64" ]; then
+            echo "::error::MAS_PROVISIONING_PROFILE secret is empty — export the com.hren.cam MAS provisioning profile from App Store Connect and base64 it into the secret."
+            exit 1
+          fi
+          printf '%s' "$PROFILE_B64" | base64 -d > embedded.provisionprofile
+          ls -la embedded.provisionprofile
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Syntax check Electron entrypoints
+        run: npm run lint:electron
+
+      - name: Build signed mas pkg
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'true'
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.TEAM_ID }}
+        run: npm run build:mas
+
+      - name: Upload mas pkg artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: cam-desktop-mas-${{ matrix.arch }}-pkg
+          path: apps/cam-desktop/dist/*.pkg
+          if-no-files-found: error
