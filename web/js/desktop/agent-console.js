@@ -2946,7 +2946,10 @@ export function mountAgentConsole({ api, state, showToast }) {
       try { ent.term.focus(); } catch (_) {}
     });
     window.setInterval(() => {
-      if (outputMode === 'terminal' && termAgentId) void refreshTerminalTmuxControls();
+      // Poll only while the terminal is actually on screen: switching to
+      // Settings/Nodes keeps sessions warm, but the tab strip is hidden
+      // there and remote listWindows execs would be pure churn.
+      if (outputMode === 'terminal' && isAgentsMode() && termAgentId) void refreshTerminalTmuxControls();
     }, 2000);
   }
 
@@ -3010,7 +3013,10 @@ export function mountAgentConsole({ api, state, showToast }) {
   async function refreshTerminalTmuxControls() {
     const ent = termAgentId ? terminalSessions.get(termAgentId) : null;
     const bridge = termBridge();
-    if (!ent || !bridge || !ent.sessionId || terminalTmuxRefreshPending) {
+    // tmuxHintState 'hidden' means bounded retries are exhausted and the
+    // strip is gone — stay quiet on the NETWORK too, not just the UI:
+    // no more listWindows execs until a reattach creates a fresh entry.
+    if (!ent || !bridge || !ent.sessionId || terminalTmuxRefreshPending || ent.tmuxHintState === 'hidden') {
       updateTerminalTmuxControls();
       return;
     }
