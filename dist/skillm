@@ -1358,7 +1358,7 @@ _SOURCES['skillm.cli'] = _join([
     '    if skill.category:',
     "        console.print(f'[bold]Category:[/bold] {skill.category}')",
     '    if skill.tags:',
-    "        console.print(f'[bold]Tags:[/bold] {', '.join(skill.tags)}')",
+    "        console.print('[bold]Tags:[/bold] ' + ', '.join(skill.tags))",
     '    if skill.author:',
     "        console.print(f'[bold]Author:[/bold] {skill.author}')",
     '    if skill.source:',
