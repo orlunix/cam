@@ -920,7 +920,10 @@ async function _syncContextAgents(ctx, overrides = {}) {
     if (pp != null) baseOpts.passphrase = pp;
   }
 
-  const ready = await _checkRemoteCamc(baseOpts);
+  // Bootstrap, don't just check: a missing or older remote camc is
+  // uploaded here (version rule), so Sync Host works on fresh/cleaned
+  // hosts instead of failing with camc_missing.
+  const ready = await _ensureRemoteCamc(baseOpts);
   if (!ready.ok) {
     pushLog('warn', `sync ${ctx.name} failed: ${ready.error}`);
     return {
