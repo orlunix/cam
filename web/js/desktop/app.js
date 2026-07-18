@@ -11,7 +11,7 @@
 import { api } from '../api.js?v=0.66.1';
 import { state } from '../state.js?v=0.64.0';
 import { mountShell } from './shell.js?v=0.65.1';
-import { mountAgentConsole } from './agent-console.js?v=0.67.4';
+import { mountAgentConsole } from './agent-console.js?v=0.67.5';
 import { mountSettingsMode } from './settings-mode.js?v=0.64.1';
 import { mountStartAgentMode } from './start-agent-mode.js?v=0.64.1';
 import { mountNodesMode } from './nodes-mode.js?v=0.64.0';
