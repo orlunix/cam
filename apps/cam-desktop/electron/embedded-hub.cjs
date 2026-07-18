@@ -830,20 +830,22 @@ function _agentMatchesContextEndpoint(a, ctx) {
   return !!ctxKey && !!agentKey && ctxKey === agentKey;
 }
 
-function _upsertAgentsForContext(ctx, newAgents) {
+function _upsertAgentsForContext(ctx, newAgents, { replaceContext = true } = {}) {
   const ctxName = (ctx && ctx.name) || '';
   if (!state.store) state.store = _emptyStore();
   if (!Array.isArray(state.store.agents)) state.store.agents = [];
   const newKeys = new Set(newAgents.map(a => _agentDedupeKey(a)));
   const keep = state.store.agents.filter(a => {
-    if ((a.context_name || '') === ctxName) return false;
     const k = _agentDedupeKey(a);
     if (k && newKeys.has(k)) return false;
-    // Remote `camc list` is authoritative for the whole SSH endpoint,
-    // not just one local context name. Remove same-host rows that vanished
-    // remotely, including stale failed/completed rows imported under older
-    // context names.
-    if (_agentMatchesContextEndpoint(a, ctx)) return false;
+    if (replaceContext) {
+      if ((a.context_name || '') === ctxName) return false;
+      // Remote `camc list` is authoritative for the whole SSH endpoint,
+      // not just one local context name. Remove same-host rows that vanished
+      // remotely, including stale failed/completed rows imported under older
+      // context names.
+      if (_agentMatchesContextEndpoint(a, ctx)) return false;
+    }
     return true;
   });
   state.store.agents = keep.concat(newAgents);
@@ -1168,7 +1170,7 @@ async function _startRemoteAgent(body, baseOpts, ctx) {
   const normalized = _normalizeAgent(record, ctx);
   _stampStartRequestFields(normalized, body);
   if (normalized && normalized.id) {
-    _upsertAgentsForContext(ctx, [normalized]);
+    _upsertAgentsForContext(ctx, [normalized], { replaceContext: false });
     pushLog('info', `start remote agent: ${normalized.id} (${normalized.tool}) on ${baseOpts.user}@${baseOpts.host}`);
   }
   return { ok: true, agentId, record: normalized };
