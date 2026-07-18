@@ -8,7 +8,7 @@
  * no terminal, no server-lifecycle UI.
  */
 
-import { api } from '../api.js?v=0.66.0';
+import { api } from '../api.js?v=0.66.1';
 import { state } from '../state.js?v=0.64.0';
 import { mountShell } from './shell.js?v=0.65.1';
 import { mountAgentConsole } from './agent-console.js?v=0.67.4';
