@@ -126,7 +126,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   let _deferredUpdate = null;
   let _directInput = false;
   let _errorCount = 0;
-  let _outputPollMs = 5000;
+  let _outputPollMs = 2000;
   let _inflightStart = 0;
   let _inflightTimer = null;     // interval updating the in-flight toast
   let _inflightAbort = null;     // AbortController for cancelling slow requests
@@ -681,15 +681,19 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     return !!(window.CamBridge && typeof window.CamBridge.term_open === 'function');
   }
 
+  function canUseAttachedTerminalInput() {
+    return mobileTerminalInput() && terminalSessionReady(agentId);
+  }
+
   async function sendAgentInput(text, withEnter = true) {
-    if (isTerminalMode() && mobileTerminalInput() && terminalSessionReady(agentId)) {
+    if (canUseAttachedTerminalInput()) {
       return sendTerminalInput(agentId, text, { enter: withEnter });
     }
     return api.sendInput(agentId, text, withEnter, agentHints());
   }
 
   async function sendAgentKey(key) {
-    if (isTerminalMode() && mobileTerminalInput() && terminalSessionReady(agentId)) {
+    if (canUseAttachedTerminalInput()) {
       return sendTerminalKey(agentId, key);
     }
     return api.sendKey(agentId, key, agentHints());
@@ -1715,8 +1719,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         }
       });
       _errorCount = 0;
-      if (_outputPollMs !== 5000) {
-        _outputPollMs = 5000;
+      if (_outputPollMs !== 2000) {
+        _outputPollMs = 2000;
         restartOutputPoll();
       }
     } catch (e) {
