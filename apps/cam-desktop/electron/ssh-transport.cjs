@@ -392,9 +392,13 @@ async function _withPooledClient(opts, op /* (client, finishWithTimings) */) {
     };
 
     const tm = setTimeout(() => {
-      // Tmux controls share a connection with the long-lived terminal PTY.
-      // They can opt in to closing only their short exec channel on timeout;
-      // regular operations retain the conservative whole-client reset.
+      // preserve_connection_on_timeout exists for ops that SHARE a
+      // connection with a long-lived PTY they must not kill. Since the
+      // terminal/exec pool split, tmux controls live on the exec pool
+      // (no PTY at stake) and deliberately do NOT pass the flag: a
+      // timeout drops the whole (possibly zombie) client so the next
+      // op reconnects — one sacrificed op instead of a connection that
+      // never recovers.
       const preserveConnection = !!opts.preserve_connection_on_timeout && !!abortOperation;
       if (preserveConnection) {
         try { abortOperation(); } catch { /* noop */ }
