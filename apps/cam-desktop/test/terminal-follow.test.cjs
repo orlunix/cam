@@ -179,6 +179,19 @@ ok("tmux control timeouts drop the exec connection for zombie recovery", !main.i
 // sacrificed op instead of a connection that never recovers.
 ok("transport aborts opted-in timed-out command channels", transport.includes("preserve_connection_on_timeout") && transport.includes("abortOperation"));
 ok("preserved tmux command timeouts do not retry by dropping the pooled terminal connection", transport.includes("!preserveConnectionTimeout && _isRetryableChannelError(first)"));
+// tmux 3.2a (hlren) rejects `display-message -p -c <client>` as a usage
+// error — the probe failed 100% there and the tab strip never appeared.
+// The portable form targets the session instead.
+ok("client state probe uses the portable session-targeted display-message",
+  main.includes("['display-message', '-p', '-t', ent.tmux.session, '#{window_index}:#{pane_id}:#{pane_in_mode}']"));
+ok("client state probe never combines -p with -c (usage error on tmux < 3.3)",
+  !main.includes("['display-message', '-p', '-c',"));
+ok("tmux poll only runs while the terminal page is visible",
+  source.includes("outputMode === 'terminal' && isAgentsMode() && termAgentId"));
+ok("exhausted tmux retries stop remote polling too",
+  source.includes("|| ent.tmuxHintState === 'hidden')"));
+ok("remote size repair is gated on an actual size change",
+  main.includes("const sizeChanged = !!(existingEnt") && main.includes("if (existingEnt.opts) void _repairRemoteTerminalSize(existingEnt.opts, agentId, cols, rows);"));
 
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exitCode = fail ? 1 : 0;

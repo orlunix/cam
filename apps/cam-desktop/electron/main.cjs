@@ -544,7 +544,14 @@ async function _tmuxClientState(ent) {
     error: 'tmux_unavailable',
     detail: ent?.tmuxControlError || (ent?.tmux ? 'tmux client discovery pending' : 'tmux metadata unavailable'),
   }, ent);
-  const result = await _tmuxExec(ent, ['display-message', '-p', '-c', ent.tmuxClientTty, '#{window_index}:#{pane_id}:#{pane_in_mode}']);
+  // Target the session (its current window's active pane) instead of the
+  // client tty: `display-message -p -c <client>` is rejected as a usage
+  // error by tmux < 3.3 (hlren runs 3.2a — the probe failed 100% there,
+  // which kept the tab strip permanently hidden). `-p -t <session>` is
+  // the oldest portable form and gives the same answer for our
+  // single-client attach. The tty is still discovered above because
+  // window actions (switch-client) genuinely need it.
+  const result = await _tmuxExec(ent, ['display-message', '-p', '-t', ent.tmux.session, '#{window_index}:#{pane_id}:#{pane_in_mode}']);
   if (!result?.ok) return _tmuxFailure('client_state', result, ent);
   const state = parseClientState(result.stdout);
   return state ? { ok: true, ...state } : _tmuxFailure('client_state', { error: 'tmux_parse_failed', detail: 'invalid client state' }, ent);
@@ -620,17 +627,18 @@ async function termOpen(event, payload = {}) {
   // show the cached xterm buffer without reconnecting.
   const [existingSid, existingEnt] = _sessionForAgent(event.sender.id, agentId);
   if (existingSid) {
-    try {
-      if (existingEnt && (existingEnt._appliedCols !== cols || existingEnt._appliedRows !== rows)) {
+    const sizeChanged = !!(existingEnt && (existingEnt._appliedCols !== cols || existingEnt._appliedRows !== rows));
+    if (sizeChanged) {
+      try {
         // SSH: skip the setWindow when the size is unchanged (redundant
         // resizes trigger a full tmux redraw for no benefit).
         existingEnt.resize && existingEnt.resize(cols, rows);
         existingEnt._appliedCols = cols;
         existingEnt._appliedRows = rows;
-      }
-    } catch (_) {}
-    if (existingEnt && existingEnt.opts) {
-      void _repairRemoteTerminalSize(existingEnt.opts, agentId, cols, rows);
+      } catch (_) {}
+      // Same rule for the remote repair: a same-size reuse must not touch
+      // the network — refresh-client -C forces a full tmux redraw.
+      if (existingEnt.opts) void _repairRemoteTerminalSize(existingEnt.opts, agentId, cols, rows);
     }
     return { ok: true, sessionId: existingSid, reused: true };
   }
