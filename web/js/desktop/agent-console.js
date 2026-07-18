@@ -2224,8 +2224,22 @@ export function mountAgentConsole({ api, state, showToast }) {
     }
   }
 
-  async function openTerminalForSelected(opts = {}) {
-    const force = !!(opts && opts.force);
+  /** Wait until the entry's pane is actually laid out (wide enough to
+   *  fit), so the open size is the screen's real size instead of the
+   *  xterm 80x24 construction default. Covers the mode/panel transition
+   *  window where the container is still hidden. */
+  async function waitForTerminalLayout(ent, timeoutMs = 600) {
+    const t0 = Date.now();
+    for (;;) {
+      const rect = ent.container && ent.container.getBoundingClientRect
+        ? ent.container.getBoundingClientRect() : { width: 0, height: 0 };
+      if (rect.width >= TERMINAL_MIN_NOTIFY_WIDTH) return true;
+      if (Date.now() - t0 > timeoutMs) return false;
+      await new Promise(r => setTimeout(r, 40));
+    }
+  }
+
+  async function openTerminalForSelected(opts = {}) {    const force = !!(opts && opts.force);
     const agent = selectedAgent();
     if (!agent) {
       syncActiveTerminalEntry(null);
@@ -2264,14 +2278,13 @@ export function mountAgentConsole({ api, state, showToast }) {
       force ? 'Re-attaching terminal...' : `Connecting terminal to ${agent.task_name || agent.id}...`, 'info', 0
     );
     try {
-      // Open at the SCREEN's real size, never a default: xterm's fitted
-      // grid IS the screen size — prepareThenShowTerminalEntry laid the
-      // pane out (visibility:hidden) so fit() already ran and term.cols/
-      // rows are the truth. Do NOT re-derive a size from rect/cell math:
-      // a second source of truth can only diverge from what fit() keeps
-      // maintaining, and a forced wrong grid at open is exactly what
-      // produced the tiled/wrapped tmux status corruption. Only the
-      // anti-poison floor (>=40 cols / >=4 rows) applies.
+      // Wait for the pane to be laid out before measuring. During a
+      // mode/panel transition the container can still be hidden at this
+      // point (rect.width ~ 0), and opening from the xterm 80x24 default
+      // then produces the "small window at first attach" bug the user
+      // sees until a manual refresh. Once laid out, fit() and open at
+      // the screen's real size. (Bug 2, 2026-07-18.)
+      await waitForTerminalLayout(ent);
       fitTerminalAndNotify(ent);
       const openCols = Math.max(TERMINAL_MIN_NOTIFY_COLS, Number(ent.term.cols) || 80);
       const openRows = Math.max(4, Number(ent.term.rows) || 24);
