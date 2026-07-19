@@ -188,6 +188,80 @@ function terminalShouldForceBottom(ent) {
   return ent.needsBottom || (ent.forceBottomUntil && Date.now() < ent.forceBottomUntil);
 }
 
+function terminalIsAtBottom(ent) {
+  const buffer = ent?.term?.buffer?.active;
+  if (!buffer || buffer.viewportY == null || buffer.baseY == null) return true;
+  return buffer.viewportY >= buffer.baseY;
+}
+
+function pauseTerminalAutoFollow(ent) {
+  if (!ent) return;
+  ent.needsBottom = false;
+  ent.forceBottomUntil = 0;
+}
+
+function syncTerminalReadOnlyScrollBridge(ent) {
+  if (!ent?.container) return;
+  if (!ent.readOnly) {
+    if (ent._readOnlyScrollCleanup) {
+      try { ent._readOnlyScrollCleanup(); } catch { /* noop */ }
+      ent._readOnlyScrollCleanup = null;
+    }
+    return;
+  }
+  if (ent._readOnlyScrollCleanup) return;
+
+  let lastY = null;
+  let pendingPx = 0;
+  const lineHeight = () => {
+    const measured = terminalMeasuredCellSize(ent);
+    return Math.max(8, measured?.height || terminalFontSize(ent) * 1.35);
+  };
+  const scrollByPixels = (deltaPx) => {
+    if (!ent.readOnly || !ent.term) return false;
+    pendingPx += deltaPx;
+    const linesFloat = pendingPx / lineHeight();
+    const lines = linesFloat > 0 ? Math.floor(linesFloat) : Math.ceil(linesFloat);
+    if (!lines) return false;
+    pendingPx -= lines * lineHeight();
+    pauseTerminalAutoFollow(ent);
+    try { ent.term.scrollLines(lines); } catch { return false; }
+    return true;
+  };
+  const onTouchStart = (ev) => {
+    if (!ent.readOnly || !ev.touches || ev.touches.length !== 1) return;
+    lastY = ev.touches[0].clientY;
+    pendingPx = 0;
+    pauseTerminalAutoFollow(ent);
+  };
+  const onTouchMove = (ev) => {
+    if (!ent.readOnly || !ev.touches || ev.touches.length !== 1) return;
+    const y = ev.touches[0].clientY;
+    if (lastY == null) {
+      lastY = y;
+      return;
+    }
+    const deltaY = lastY - y;
+    lastY = y;
+    if (Math.abs(deltaY) < 0.5) return;
+    if (scrollByPixels(deltaY)) ev.preventDefault();
+  };
+  const onTouchEnd = () => {
+    lastY = null;
+    pendingPx = 0;
+  };
+  ent.container.addEventListener('touchstart', onTouchStart, { passive: true });
+  ent.container.addEventListener('touchmove', onTouchMove, { passive: false });
+  ent.container.addEventListener('touchend', onTouchEnd, { passive: true });
+  ent.container.addEventListener('touchcancel', onTouchEnd, { passive: true });
+  ent._readOnlyScrollCleanup = () => {
+    ent.container.removeEventListener('touchstart', onTouchStart);
+    ent.container.removeEventListener('touchmove', onTouchMove);
+    ent.container.removeEventListener('touchend', onTouchEnd);
+    ent.container.removeEventListener('touchcancel', onTouchEnd);
+  };
+}
+
 function terminalEntryCanAutoResize(ent) {
   if (!ent?.container) return false;
   if (ent.viewActive === false) return false;
@@ -235,6 +309,32 @@ export function setTerminalViewActive(agentId, active) {
       ent.container.style.visibility = '';
     }
   }
+}
+
+export function setTerminalReadOnly(agentId, readOnly) {
+  const ent = terminalSessions.get(agentId);
+  if (!ent?.term) return false;
+  ent.readOnly = readOnly === true;
+  ent.term.options.disableStdin = ent.readOnly;
+  if (ent.container) {
+    ent.container.classList.toggle('is-read-only', ent.readOnly);
+    const textarea = ent.container.querySelector('.xterm-helper-textarea');
+    if (textarea) {
+      if (ent.readOnly) {
+        textarea.setAttribute('readonly', 'readonly');
+        textarea.setAttribute('inputmode', 'none');
+        try { textarea.blur(); } catch { /* noop */ }
+      } else {
+        textarea.removeAttribute('readonly');
+        textarea.removeAttribute('inputmode');
+      }
+    }
+  }
+  syncTerminalReadOnlyScrollBridge(ent);
+  if (ent.readOnly) {
+    try { ent.term.blur(); } catch { /* noop */ }
+  }
+  return true;
 }
 
 export function setTerminalStatus(hostEl, message, tone = 'info', ttl = 0) {
@@ -428,7 +528,7 @@ function showTerminalEntry(agentId, hostEl, opts = {}) {
   }
   scheduleTerminalFitDeferred(ent, { keepBottom: opts.keepBottom !== false });
   requestAnimationFrame(() => {
-    try { ent.term?.focus(); } catch { /* noop */ }
+    try { if (!ent.readOnly) ent.term?.focus(); } catch { /* noop */ }
   });
   return ent;
 }
@@ -542,6 +642,7 @@ function createTerminalEntry(agent, hostEl) {
     liveText: '',
     suppressDisplay: false,
     viewActive: true,
+    readOnly: false,
     keepSessionAlive: true,
     agentRef: agent,
     apiRef: null,
@@ -557,7 +658,7 @@ function createTerminalEntry(agent, hostEl) {
     entry.term.loadAddon(entry.fit);
   }
   entry.term.open(container);
-  const SerializeCtor = window.SerializeAddon;
+  const SerializeCtor = window.SerializeAddon && (window.SerializeAddon.SerializeAddon || window.SerializeAddon);
   if (SerializeCtor) {
     try {
       entry.serialize = new SerializeCtor();
@@ -571,6 +672,7 @@ function createTerminalEntry(agent, hostEl) {
     _parkedSnapshots.delete(agent.id);
   }
   entry.term.onData((data) => {
+    if (entry.readOnly) return;
     if (!globalBridge || !entry.sessionId) return;
     globalBridge.input({ sessionId: entry.sessionId, data });
   });
@@ -609,9 +711,11 @@ function setupTerminalEvents() {
     ent.bytesReceived = (ent.bytesReceived || 0) + chunk.length;
     appendLiveText(ent, chunk);
     if (ent.suppressDisplay) return;
-    const shouldFollow = ent.agentId === termAgentId || terminalShouldForceBottom(ent);
+    const shouldFollow = ent.readOnly
+      ? (terminalShouldForceBottom(ent) || terminalIsAtBottom(ent))
+      : (ent.agentId === termAgentId || terminalShouldForceBottom(ent));
     ent.term.write(chunk, () => {
-      if (shouldFollow || terminalShouldForceBottom(ent)) terminalScrollToBottom(ent);
+      if (shouldFollow) terminalScrollToBottom(ent);
     });
     if (ent.hostEl && ent.bytesReceived > 0) {
       setTerminalStatus(ent.hostEl, '', 'info');
@@ -866,6 +970,7 @@ export async function openTerminalForAgent(api, agent, hostEl, opts = {}) {
   ent.viewActive = true;
   ent.agentRef = agent;
   ent.apiRef = api;
+  if (opts.readOnly != null) setTerminalReadOnly(agent.id, opts.readOnly);
   if (opts.force) {
     try { ent.term?.clear(); } catch { /* noop */ }
     ent.reconnectAttempt = 0;
@@ -1097,7 +1202,7 @@ export async function sendTerminalInput(agentId, data, opts = {}) {
 
 export function focusTerminalForAgent(agentId) {
   const ent = terminalSessions.get(agentId);
-  if (!ent?.term) return false;
+  if (!ent?.term || ent.readOnly) return false;
   try {
     ent.term.focus();
     return true;
