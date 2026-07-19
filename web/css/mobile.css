@@ -195,6 +195,16 @@ body.camui-v2 #content.agent-detail-active .agent-terminal-pane .xterm-screen {
   max-width: 100%;
 }
 
+body.camui-v2 #content.agent-detail-active .agent-terminal-pane.is-read-only .xterm-viewport {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
+body.camui-v2 #content.agent-detail-active .agent-terminal-pane.is-read-only .xterm-screen {
+  touch-action: pan-y;
+}
+
 body.camui-v2 #content.agent-detail-active .output-pane.is-hidden {
   display: none !important;
 }

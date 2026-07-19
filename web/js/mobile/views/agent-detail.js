@@ -22,6 +22,7 @@ import {
   setTerminalFontSize,
   getTerminalLiveText,
   setTerminalViewActive,
+  setTerminalReadOnly,
   terminalSessionReady,
   seedTerminalPreview,
   setTerminalStatus,
@@ -94,6 +95,7 @@ function loadOutputMode() {
     }
     const v = localStorage.getItem(OUTPUT_MODE_KEY);
     if (v === 'terminal' && canUseTerminalMode(api)) return 'terminal';
+    if (v === 'rich' && canUseTerminalMode(api)) return 'rich';
     if ((v === 'live' || v === 'full') && outputCaptureSupported()) return v;
     if (v === 'full') return 'full';
     if (mobileDirectTerminalDefault() && canUseTerminalMode(api)) return 'terminal';
@@ -283,8 +285,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   }
 
   function updateTerminalChrome(termOn) {
-    const useTermUi = termOn && mobileTerminalInput();
-    // Live Output shares Terminal's compact chrome; only its composer remains visible.
+    const hideComposer = isTerminalMode() && mobileTerminalInput();
+    // Raw/Rich/Terminal share compact chrome; only interactive Terminal hides the composer.
     const useOutputUi = agentIsRunnable() && mobileTerminalInput();
     document.body.classList.toggle('terminal-fullscreen', useOutputUi);
     contentEl.classList.toggle('terminal-ui-active', useOutputUi);
@@ -306,8 +308,10 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       if (keybar) keybar.classList.remove('hidden');
       const jumpBottom = container.querySelector('#jump-bottom');
       if (jumpBottom) {
-        if (useTermUi) {
+        if (isTerminalMode()) {
           jumpBottom.classList.add('hidden');
+        } else if (outputMode === 'rich') {
+          jumpBottom.classList.remove('hidden');
         } else {
           const pane = container.querySelector('#output-pane');
           const atBottom = !pane || pane.scrollHeight - pane.scrollTop - pane.clientHeight < 30;
@@ -315,8 +319,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         }
       }
       if (inputSection) {
-        inputSection.classList.toggle('is-terminal-hidden', useTermUi);
-        inputSection.style.display = useTermUi ? 'none' : '';
+        inputSection.classList.toggle('is-terminal-hidden', hideComposer);
+        inputSection.style.display = hideComposer ? 'none' : '';
       }
     } else {
       document.body.classList.remove('terminal-fullscreen');
@@ -420,14 +424,16 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           btn.title = keybarExpanded ? 'Hide extra keys' : 'Show more keys';
           btn.setAttribute('aria-expanded', String(keybarExpanded));
           if (_syncVisualViewport) _syncVisualViewport();
-          if (isTerminalMode()) requestAnimationFrame(() => scheduleTerminalFit(agentId));
+          if (isTerminalDisplayMode()) requestAnimationFrame(() => scheduleTerminalFit(agentId));
         }
       });
     });
 
     const host = container.querySelector('#terminal-host');
     if (host) {
-      host.addEventListener('click', () => focusTerminalForAgent(agentId));
+      host.addEventListener('click', () => {
+        if (isTerminalMode()) focusTerminalForAgent(agentId);
+      });
     }
   }
 
@@ -473,7 +479,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
 
   function applyFontSize() {
     _applyFontSize();
-    if (isTerminalMode()) {
+    if (isTerminalDisplayMode()) {
       setTerminalFontSize(agentId, _fontSize);
     }
     updateTerminalMetaBar();
@@ -602,7 +608,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       }
       if (Math.abs(gap - _lastVisualKeyboardGap) > 1) {
         _lastVisualKeyboardGap = gap;
-        if (bottomControls && isTerminalMode()) requestAnimationFrame(() => scheduleTerminalFit(agentId));
+        if (bottomControls && isTerminalDisplayMode()) requestAnimationFrame(() => scheduleTerminalFit(agentId));
       }
       if (keyboardOpen && autoScroll) {
         const pane = container.querySelector('#output-pane');
@@ -652,7 +658,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   function updateTerminalMetaBar() {
     const bar = container.querySelector('#terminal-meta-bar');
     if (!bar) return;
-    if (!isTerminalMode() || !mobileTerminalInput()) {
+    if (!isTerminalDisplayMode() || !mobileTerminalInput()) {
       bar.classList.add('hidden');
       return;
     }
@@ -675,6 +681,10 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
 
   function isTerminalMode() {
     return outputMode === 'terminal' && canUseTerminalMode(api);
+  }
+
+  function isTerminalDisplayMode() {
+    return (outputMode === 'terminal' || outputMode === 'rich') && canUseTerminalMode(api);
   }
 
   function mobileTerminalInput() {
@@ -723,7 +733,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     agent = updated;
     const title = container.querySelector('.detail-title h2');
     if (title) {
-      title.textContent = (isTerminalMode() && mobileTerminalInput())
+      title.textContent = (isTerminalDisplayMode() && mobileTerminalInput())
         ? agentDisplayName(updated)
         : (updated.task_name || updated.id.slice(0, 8));
     }
@@ -758,39 +768,47 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       updateTerminalMetaBar();
       return null;
     }
+
+    const displayMode = isTerminalDisplayMode();
+    const showTerminalHost = async () => {
+      terminalHost.classList.add('is-active');
+      terminalHost.classList.remove('is-connecting');
+      const pane = container.querySelector('#output-pane');
+      if (pane) pane.classList.add('is-hidden');
+      setTerminalViewActive(agentId, true);
+      setTerminalReadOnly(agentId, outputMode === 'rich');
+      updateTerminalChrome(true);
+      await resumeTerminalForAgent(api, agent, terminalHost);
+      scheduleTerminalFit(agentId);
+      if (isTerminalMode()) focusTerminalForAgent(agentId);
+    };
+
     if (terminalAttachReady(agentId)) {
-      if (isTerminalMode()) {
-        terminalHost.classList.add('is-active');
-        terminalHost.classList.remove('is-connecting');
-        const pane = container.querySelector('#output-pane');
-        if (pane) pane.classList.add('is-hidden');
-        setTerminalViewActive(agentId, true);
-        updateTerminalChrome(true);
-        await resumeTerminalForAgent(api, agent, terminalHost);
-        focusTerminalForAgent(agentId);
-      }
+      if (displayMode) await showTerminalHost();
       updateTerminalMetaBar();
       return { ok: true, reused: true };
     }
 
     const attempt = ++_attachAttempt;
 
-    // Show terminal chrome when user is in Terminal mode; attach runs either way.
-    if (isTerminalMode()) {
+    // Attach runs for Raw/Rich/Terminal; only Rich/Terminal reveal the xterm host.
+    if (displayMode) {
       terminalHost.classList.add('is-active');
       const pane = container.querySelector('#output-pane');
       if (pane) pane.classList.add('is-hidden');
       setTerminalViewActive(agentId, true);
+      setTerminalReadOnly(agentId, outputMode === 'rich');
       updateTerminalChrome(true);
     }
 
-    const res = await openTerminalForAgent(api, agent, terminalHost, { force: false });
+    const res = await openTerminalForAgent(api, agent, terminalHost, { force: false, readOnly: outputMode === 'rich' });
+    setTerminalReadOnly(agentId, outputMode === 'rich');
     if (attempt !== _attachAttempt) return res;
     if (res && !res.ok && res.error) {
-      state.toast(`Terminal attach: ${res.error}`, 'error', 6000);
-    } else if (res?.ok && isTerminalMode()) {
+      state.toast('Terminal attach: ' + res.error, 'error', 6000);
+    } else if (res?.ok && isTerminalDisplayMode()) {
       scheduleTerminalFit(agentId);
-      focusTerminalForAgent(agentId);
+      if (isTerminalMode()) focusTerminalForAgent(agentId);
     }
     updateTerminalMetaBar();
     return res;
@@ -800,13 +818,14 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     const terminalHost = container.querySelector('#terminal-host');
     const pane = container.querySelector('#output-pane');
     const inputSection = container.querySelector('#input-section');
-    const termOn = outputMode === 'terminal';
-    if (termOn && !canUseTerminalMode(api)) {
+    const wantsTerminalHost = outputMode === 'terminal' || outputMode === 'rich';
+    if (wantsTerminalHost && !canUseTerminalMode(api)) {
       outputMode = outputCaptureSupported() ? 'live' : 'full';
       useFullOutput = outputMode === 'full';
       try { localStorage.setItem(OUTPUT_MODE_KEY, outputMode); } catch {}
     }
-    const showTerminal = outputMode === 'terminal' && canUseTerminalMode(api);
+    const showTerminal = isTerminalDisplayMode();
+    const hideInput = isTerminalMode();
     if (terminalHost) {
       terminalHost.classList.toggle('is-active', showTerminal);
     }
@@ -814,17 +833,21 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       pane.classList.toggle('is-hidden', showTerminal);
     }
     setTerminalViewActive(agentId, showTerminal);
+    setTerminalReadOnly(agentId, outputMode === 'rich');
     updateTerminalChrome(showTerminal);
-    if (inputSection && !showTerminal) {
-      const inputText = inputSection.querySelector('#input-text');
-      if (inputText) inputText.placeholder = 'Send input...';
+    if (inputSection) {
+      inputSection.classList.toggle('is-terminal-hidden', hideInput);
+      inputSection.style.display = hideInput ? 'none' : '';
+      if (!hideInput) {
+        const inputText = inputSection.querySelector('#input-text');
+        if (inputText) inputText.placeholder = 'Send input...';
+      }
     }
-    // Enter agent → always SSH attach (independent of Live/Terminal display).
+    // Enter agent → always SSH attach (independent of visible output display).
     if (agentIsRunnable() && mobileTerminalInput() && canUseTerminalMode(api)) {
-      clearInterval(outputTimer);
-      outputTimer = null;
       scheduleAutoAttach();
-    } else if (!showTerminal && !useFullOutput && outputCaptureSupported()) {
+    }
+    if (!showTerminal && !useFullOutput && outputMode === 'live' && outputCaptureSupported()) {
       restartOutputPoll();
     }
     applyFontSize();
@@ -833,8 +856,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   function updateOutputModeMenu() {
     const modes = [
       ['#toggle-terminal', 'terminal'],
+      ['#toggle-rich', 'rich'],
       ['#toggle-live', 'live'],
-      ['#toggle-full', 'full'],
     ];
     for (const [sel, mode] of modes) {
       const btn = container.querySelector(sel);
@@ -851,7 +874,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       cachedOutput = '';
       _outputHash = null;
       autoScroll = true;
-      // Keep SSH attach alive — Live only changes the display pane.
+      // Keep SSH attach alive — Raw only changes the display pane.
     }
     try { localStorage.setItem(OUTPUT_MODE_KEY, outputMode); } catch {}
     clearInterval(outputTimer);
@@ -859,15 +882,19 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     updateOutputModeMenu();
     applyOutputMode();
     const active = agent && ['running', 'starting', 'pending'].includes(agent.status);
-    if (!isTerminalMode() && active) {
-      restartOutputPoll();
+    if (!isTerminalDisplayMode() && active) {
+      if (useFullOutput) loadOutput();
+      else if (outputMode === 'live') {
+        void loadOutput();
+        restartOutputPoll();
+      }
     }
   }
 
   function restartOutputPoll() {
     clearInterval(outputTimer);
     outputTimer = null;
-    if (isTerminalMode() || useFullOutput) return;
+    if (isTerminalDisplayMode() || useFullOutput) return;
     outputTimer = setInterval(loadOutput, _outputPollMs);
   }
 
@@ -910,7 +937,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
 
     const isActive = ['running', 'starting', 'pending'].includes(agent.status);
     const prompt = agent.prompt || '';
-    const showTerminalOnRender = isActive && outputMode === 'terminal' && canUseTerminalMode(api);
+    const showTerminalOnRender = isActive && isTerminalDisplayMode();
+    const hideInputOnRender = isActive && isTerminalMode();
     const showOutputChromeOnRender = isActive && mobileTerminalInput();
 
     // Active: chat-style layout — output fills space, input anchored at bottom
@@ -927,7 +955,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
             <button class="overflow-menu-btn" id="menu-btn">\u22ee</button>
             <div class="overflow-menu hidden" id="overflow-menu">
               ${canUseTerminalMode(api) ? `<button class="overflow-menu-item ${outputMode === 'terminal' ? 'active' : ''}" id="toggle-terminal">Terminal</button>` : ''}
-              ${outputCaptureSupported() ? `<button class="overflow-menu-item ${outputMode === 'live' ? 'active' : ''}" id="toggle-live">Live output</button>` : ''}
+              ${canUseTerminalMode(api) ? `<button class="overflow-menu-item ${outputMode === 'rich' ? 'active' : ''}" id="toggle-rich">Rich output</button>` : ''}
+              ${outputCaptureSupported() ? `<button class="overflow-menu-item ${outputMode === 'live' ? 'active' : ''}" id="toggle-live">Raw output</button>` : ''}
               <button class="overflow-menu-item" id="toggle-browse">Browse</button>
               <button class="overflow-menu-item" id="refresh-output">Refresh</button>
               <button class="overflow-menu-item" id="toggle-wrap">Scroll mode</button>
@@ -951,7 +980,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           </div>
           <div class="output-bottom-controls" id="output-bottom-controls">
             ${terminalKeyBarHTML(isActive)}
-            <div class="input-section${showTerminalOnRender ? ' is-terminal-hidden' : ''}" id="input-section"${showTerminalOnRender ? ' style="display:none"' : ''}>
+            <div class="input-section${hideInputOnRender ? ' is-terminal-hidden' : ''}" id="input-section"${hideInputOnRender ? ' style="display:none"' : ''}>
               ${inputHTML()}
             </div>
           </div>
@@ -974,7 +1003,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
             <button class="overflow-menu-btn" id="menu-btn">\u22ee</button>
             <div class="overflow-menu hidden" id="overflow-menu">
               ${canUseTerminalMode(api) ? `<button class="overflow-menu-item ${outputMode === 'terminal' ? 'active' : ''}" id="toggle-terminal">Terminal</button>` : ''}
-              ${outputCaptureSupported() ? `<button class="overflow-menu-item ${outputMode === 'live' ? 'active' : ''}" id="toggle-live">Live output</button>` : ''}
+              ${canUseTerminalMode(api) ? `<button class="overflow-menu-item ${outputMode === 'rich' ? 'active' : ''}" id="toggle-rich">Rich output</button>` : ''}
+              ${outputCaptureSupported() ? `<button class="overflow-menu-item ${outputMode === 'live' ? 'active' : ''}" id="toggle-live">Raw output</button>` : ''}
               <button class="overflow-menu-item" id="toggle-browse">Browse</button>
               <button class="overflow-menu-item" id="refresh-output">Refresh</button>
               <button class="overflow-menu-item" id="toggle-wrap">Scroll mode</button>
@@ -1026,7 +1056,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     if (_syncVisualViewport) _syncVisualViewport();
     applyFontSize();
     applyOutputMode();
-    if (!isTerminalMode()) {
+    if (!isTerminalDisplayMode()) {
       loadOutput();
     }
     if (!isActive) loadLogs();
@@ -1148,7 +1178,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       }
       const doSend = async () => {
         const text = inputText.value;
-        if (!text || sending) return;
+        if (sending) return;
         // Optimistic: clear input and disable button immediately
         inputText.value = '';
         sending = true;
@@ -1156,7 +1186,12 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         sendBtn.textContent = '...';
         const preview = text.length > 20 ? text.slice(0, 20) + '\u2026' : text;
         try {
-          await _tracked(`Sending "${preview}"`, () => sendAgentInput(text), true);
+          if (_directInput || !text) {
+            await _tracked('Sending Enter', () => sendAgentKey('Enter'), true);
+            _prevDirectVal = '';
+          } else {
+            await _tracked(`Sending "${preview}"`, () => sendAgentInput(text, true), true);
+          }
           if (!isTerminalMode()) {
             _outputHash = null;
             void loadOutput();
@@ -1164,7 +1199,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         }
         catch (e) {
           // Restore text on failure so user can retry
-          inputText.value = text;
+          if (!_directInput) inputText.value = text;
           state.toast(e.message, 'error');
         }
         sending = false;
@@ -1327,7 +1362,12 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       });
     }
 
-    container.querySelector('#toggle-live').addEventListener('click', () => {
+    container.querySelector('#toggle-rich')?.addEventListener('click', () => {
+      closeMenu();
+      switchOutputMode('rich');
+    });
+
+    container.querySelector('#toggle-live')?.addEventListener('click', () => {
       closeMenu();
       switchOutputMode('live');
     });
@@ -1433,7 +1473,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     if (jumpBtn) {
       jumpBtn.addEventListener('click', () => {
         autoScroll = true;
-        if (isTerminalMode()) {
+        if (isTerminalDisplayMode()) {
           scrollTerminalToBottom(agentId);
           return;
         }
@@ -1691,14 +1731,13 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   }
 
   async function loadOutput() {
-    if (isTerminalMode()) return;
+    if (isTerminalDisplayMode()) return;
     if (fsOverlay) {
       loadFsOutput();
       return;
     }
     const pane = container.querySelector('#output-pane');
     if (!pane) return;
-
     if (_fetchActive) return;
     _fetchActive = true;
 
@@ -1740,8 +1779,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           updatePane(pane, fallback);
         } else {
           const msg = canUseTerminalMode(api)
-            ? 'Live output empty — switch to Terminal or tap Refresh'
-            : (e?.message || 'Live output fetch failed');
+            ? 'Raw output empty — switch to Terminal, Rich output, or tap Refresh'
+            : (e?.message || 'Raw output fetch failed');
           updatePane(pane, msg);
         }
       }
@@ -1814,10 +1853,10 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       _fontSize = output;
       applyFontSize();
     }
-    if (Number.isFinite(ui) && isTerminalMode()) {
+    if (Number.isFinite(ui) && isTerminalDisplayMode()) {
       clearTerminalChromeInlineFont();
     }
-    if (Number.isFinite(output) && isTerminalMode()) {
+    if (Number.isFinite(output) && isTerminalDisplayMode()) {
       scheduleTerminalFit(agentId);
     }
   }
@@ -1828,6 +1867,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     clearInterval(outputTimer);
     clearInterval(elapsedTimer);
     setTerminalViewActive(agentId, false);
+    setTerminalReadOnly(agentId, false);
     void parkTerminalForAgent(agentId);
     _removeInflightToast();
     if (_inflightAbort) _inflightAbort.abort();
