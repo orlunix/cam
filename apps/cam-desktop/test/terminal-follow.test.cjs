@@ -165,7 +165,9 @@ ok("main never writes a raw q to exit copy mode", !main.includes("termInput(even
 ok("tmux client recovery falls back only to a sole client without a baseline", main.includes("selectOnlyClient(afterClients)"));
 ok("tmux client recovery pauses and resumes after bounded probes", main.includes("const TMUX_CLIENT_RECOVERY_RETRY_DELAY_MS = 30000;") && main.includes("tmuxClientRecoveryNextAt: 0"));
 ok("tmux client recovery makes a single post-attach probe", main.includes("async function _retryTmuxClientDiscovery(ent)"));
-ok("tmux state retries discovery after the initial race", main.includes("await _retryTmuxClientDiscovery(ent)"));
+ok("client tty is ensured (with retry) only where switch-client needs it", main.includes("async function _ensureTmuxClientTty(ent)") && main.includes("await _retryTmuxClientDiscovery(ent)"));
+ok("window listing never blocks on client tty discovery", main.includes("if (!ent.tmuxClientTty) void _retryTmuxClientDiscovery(ent).catch(() => {});"));
+ok("switch-client paths gate on an ensured client tty", (main.match(/const client = await _ensureTmuxClientTty\(ent\);/g) || []).length === 2);
 ok("terminal state stores the client set and recovery schedule", main.includes("tmuxBeforeClients: beforeClients") && main.includes("tmuxClientRecoveryAttempts: 0") && main.includes("tmuxClientRecoveryNextAt: 0"));
 ok("initial discovery keeps trying when its baseline probe was unavailable", !main.includes("if (!beforeClients) { ent.tmuxInitialDiscoveryPending = false; return; }"));
 ok("tmux control failures identify the failing stage", main.includes("function _tmuxFailure(stage") && main.includes("_tmuxFailure('client_discovery'") && main.includes("_tmuxFailure('client_state'") && main.includes("_tmuxFailure('list_windows'"));
