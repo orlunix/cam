@@ -34,6 +34,13 @@ import {
   parseAgentRouteHints,
   agentEndpointHints,
 } from '../../shared/agent-helpers.js';
+import {
+  renderRichOutput,
+  setRichOutputVisible,
+  setRichOutputFontSize,
+  scrollRichOutputToBottom,
+  disposeRichOutput,
+} from '../rich-output.js';
 
 const OUTPUT_MODE_KEY = 'cam_mobile_output_mode';
 const OUTPUT_MODE_DEFAULT_KEY = 'cam_mobile_output_mode_default_v4';
@@ -94,6 +101,7 @@ function loadOutputMode() {
     }
     const v = localStorage.getItem(OUTPUT_MODE_KEY);
     if (v === 'terminal' && canUseTerminalMode(api)) return 'terminal';
+    if (v === 'rich' && outputCaptureSupported()) return 'rich';
     if ((v === 'live' || v === 'full') && outputCaptureSupported()) return v;
     if (v === 'full') return 'full';
     if (mobileDirectTerminalDefault() && canUseTerminalMode(api)) return 'terminal';
@@ -126,7 +134,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   let _deferredUpdate = null;
   let _directInput = false;
   let _errorCount = 0;
-  let _outputPollMs = 5000;
+  let _outputPollMs = 2000;
   let _inflightStart = 0;
   let _inflightTimer = null;     // interval updating the in-flight toast
   let _inflightAbort = null;     // AbortController for cancelling slow requests
@@ -476,6 +484,9 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     if (isTerminalMode()) {
       setTerminalFontSize(agentId, _fontSize);
     }
+    if (isRichOutputMode()) {
+      setRichOutputFontSize(agentId, _fontSize);
+    }
     updateTerminalMetaBar();
   }
 
@@ -677,6 +688,10 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     return outputMode === 'terminal' && canUseTerminalMode(api);
   }
 
+  function isRichOutputMode() {
+    return outputMode === 'rich' && outputCaptureSupported();
+  }
+
   function mobileTerminalInput() {
     return !!(window.CamBridge && typeof window.CamBridge.term_open === 'function');
   }
@@ -794,9 +809,11 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
 
   function applyOutputMode() {
     const terminalHost = container.querySelector('#terminal-host');
+    const richHost = container.querySelector('#rich-output-host');
     const pane = container.querySelector('#output-pane');
     const inputSection = container.querySelector('#input-section');
     const termOn = outputMode === 'terminal';
+    const richOn = isRichOutputMode();
     if (termOn && !canUseTerminalMode(api)) {
       outputMode = outputCaptureSupported() ? 'live' : 'full';
       useFullOutput = outputMode === 'full';
@@ -806,8 +823,9 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     if (terminalHost) {
       terminalHost.classList.toggle('is-active', showTerminal);
     }
+    setRichOutputVisible(agentId, richHost, richOn);
     if (pane) {
-      pane.classList.toggle('is-hidden', showTerminal);
+      pane.classList.toggle('is-hidden', showTerminal || richOn);
     }
     setTerminalViewActive(agentId, showTerminal);
     updateTerminalChrome(showTerminal);
@@ -815,8 +833,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       const inputText = inputSection.querySelector('#input-text');
       if (inputText) inputText.placeholder = 'Send input...';
     }
-    // Enter agent → always SSH attach (independent of Live/Terminal display).
-    if (agentIsRunnable() && mobileTerminalInput() && canUseTerminalMode(api)) {
+    // Terminal attach is only for Terminal mode; Raw/Rich use camc output/input APIs.
+    if (showTerminal && agentIsRunnable() && mobileTerminalInput() && canUseTerminalMode(api)) {
       clearInterval(outputTimer);
       outputTimer = null;
       scheduleAutoAttach();
@@ -830,6 +848,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     const modes = [
       ['#toggle-terminal', 'terminal'],
       ['#toggle-live', 'live'],
+      ['#toggle-rich', 'rich'],
       ['#toggle-full', 'full'],
     ];
     for (const [sel, mode] of modes) {
@@ -843,11 +862,11 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     outputMode = mode;
     useFullOutput = mode === 'full';
     if (mode === 'full') outputOffset = 0;
-    if (mode === 'live') {
+    if (mode === 'live' || mode === 'rich') {
       cachedOutput = '';
       _outputHash = null;
       autoScroll = true;
-      // Keep SSH attach alive — Live only changes the display pane.
+      // Raw/Rich share the same long-lived camc output source.
     }
     try { localStorage.setItem(OUTPUT_MODE_KEY, outputMode); } catch {}
     clearInterval(outputTimer);
@@ -855,7 +874,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     updateOutputModeMenu();
     applyOutputMode();
     const active = agent && ['running', 'starting', 'pending'].includes(agent.status);
-    if (!isTerminalMode() && active) {
+    if ((outputMode === 'live' || outputMode === 'rich') && active) {
+      void loadOutput();
       restartOutputPoll();
     }
   }
@@ -907,6 +927,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     const isActive = ['running', 'starting', 'pending'].includes(agent.status);
     const prompt = agent.prompt || '';
     const showTerminalOnRender = isActive && outputMode === 'terminal' && canUseTerminalMode(api);
+    const showRichOnRender = outputMode === 'rich' && outputCaptureSupported();
     const showOutputChromeOnRender = isActive && mobileTerminalInput();
 
     // Active: chat-style layout — output fills space, input anchored at bottom
@@ -923,7 +944,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
             <button class="overflow-menu-btn" id="menu-btn">\u22ee</button>
             <div class="overflow-menu hidden" id="overflow-menu">
               ${canUseTerminalMode(api) ? `<button class="overflow-menu-item ${outputMode === 'terminal' ? 'active' : ''}" id="toggle-terminal">Terminal</button>` : ''}
-              ${outputCaptureSupported() ? `<button class="overflow-menu-item ${outputMode === 'live' ? 'active' : ''}" id="toggle-live">Live output</button>` : ''}
+              ${outputCaptureSupported() ? `<button class="overflow-menu-item ${outputMode === 'live' ? 'active' : ''}" id="toggle-live">Raw output</button>` : ''}
+              ${outputCaptureSupported() ? `<button class="overflow-menu-item ${outputMode === 'rich' ? 'active' : ''}" id="toggle-rich">Rich output</button>` : ''}
               <button class="overflow-menu-item" id="toggle-browse">Browse</button>
               <button class="overflow-menu-item" id="refresh-output">Refresh</button>
               <button class="overflow-menu-item" id="toggle-wrap">Scroll mode</button>
@@ -942,7 +964,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         <div class="output-section" id="output-section">
           <div class="output-wrap">
             <div id="terminal-host" class="terminal-host${showTerminalOnRender ? ' is-active is-connecting' : ''}"></div>
-            <pre class="output-pane${showTerminalOnRender ? ' is-hidden' : ''}" id="output-pane"></pre>
+            <div id="rich-output-host" class="rich-output-host${showRichOnRender ? ' is-active' : ''}"></div>
+            <pre class="output-pane${showTerminalOnRender || showRichOnRender ? ' is-hidden' : ''}" id="output-pane"></pre>
             ${bottomStatusHTML()}
           </div>
           <div class="output-bottom-controls" id="output-bottom-controls">
@@ -970,7 +993,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
             <button class="overflow-menu-btn" id="menu-btn">\u22ee</button>
             <div class="overflow-menu hidden" id="overflow-menu">
               ${canUseTerminalMode(api) ? `<button class="overflow-menu-item ${outputMode === 'terminal' ? 'active' : ''}" id="toggle-terminal">Terminal</button>` : ''}
-              ${outputCaptureSupported() ? `<button class="overflow-menu-item ${outputMode === 'live' ? 'active' : ''}" id="toggle-live">Live output</button>` : ''}
+              ${outputCaptureSupported() ? `<button class="overflow-menu-item ${outputMode === 'live' ? 'active' : ''}" id="toggle-live">Raw output</button>` : ''}
+              ${outputCaptureSupported() ? `<button class="overflow-menu-item ${outputMode === 'rich' ? 'active' : ''}" id="toggle-rich">Rich output</button>` : ''}
               <button class="overflow-menu-item" id="toggle-browse">Browse</button>
               <button class="overflow-menu-item" id="refresh-output">Refresh</button>
               <button class="overflow-menu-item" id="toggle-wrap">Scroll mode</button>
@@ -990,7 +1014,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         <div class="output-section" id="output-section">
           <div class="output-wrap">
             <div id="terminal-host" class="terminal-host"></div>
-            <pre class="output-pane" id="output-pane"></pre>
+            <div id="rich-output-host" class="rich-output-host${showRichOnRender ? ' is-active' : ''}"></div>
+            <pre class="output-pane${showRichOnRender ? ' is-hidden' : ''}" id="output-pane"></pre>
             <button class="jump-bottom-btn hidden" id="jump-bottom">\u2193 Bottom</button>
           </div>
         </div>
@@ -1010,11 +1035,13 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     }
 
     const pane = container.querySelector('#output-pane');
-    if (pane && cachedOutput && !showTerminalOnRender) {
+    if (pane && cachedOutput && !showTerminalOnRender && !showRichOnRender) {
       const shortened = _shortenBoxLines(cachedOutput, pane);
       pane.textContent = shortened;
       cachedOutput = shortened;
       if (autoScroll) pane.scrollTop = pane.scrollHeight;
+    } else if (cachedOutput && showRichOnRender) {
+      renderRichOutput(agentId, container.querySelector('#rich-output-host'), cachedOutput);
     }
 
     wireEvents(isActive);
@@ -1328,6 +1355,11 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       switchOutputMode('live');
     });
 
+    container.querySelector('#toggle-rich')?.addEventListener('click', () => {
+      closeMenu();
+      switchOutputMode('rich');
+    });
+
     container.querySelector('#toggle-browse')?.addEventListener('click', () => {
       closeMenu();
       navigate(`/agent/${encodeURIComponent(agentId)}/files`);
@@ -1431,6 +1463,11 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         autoScroll = true;
         if (isTerminalMode()) {
           scrollTerminalToBottom(agentId);
+          return;
+        }
+        if (isRichOutputMode()) {
+          scrollRichOutputToBottom(agentId);
+          jumpBtn.classList.add('hidden');
           return;
         }
         jumpBtn.classList.add('hidden');
@@ -1710,13 +1747,19 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           const data = await api.agentOutput(agentId, 200, _outputHash, null, agentHints());
           if (data.hash) _outputHash = data.hash;
           if (!data.unchanged && data.output) {
-            updatePane(pane, data.output);
+            if (isRichOutputMode()) {
+              cachedOutput = data.output;
+              state.setOutput(agentId, data.output, _outputHash);
+              renderRichOutput(agentId, container.querySelector('#rich-output-host'), data.output);
+            } else {
+              updatePane(pane, data.output);
+            }
           }
         }
       });
       _errorCount = 0;
-      if (_outputPollMs !== 5000) {
-        _outputPollMs = 5000;
+      if (_outputPollMs !== 2000) {
+        _outputPollMs = 2000;
         restartOutputPoll();
       }
     } catch (e) {
@@ -1736,9 +1779,10 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           updatePane(pane, fallback);
         } else {
           const msg = canUseTerminalMode(api)
-            ? 'Live output empty — switch to Terminal or tap Refresh'
-            : (e?.message || 'Live output fetch failed');
-          updatePane(pane, msg);
+            ? 'Raw output empty — switch to Terminal or tap Refresh'
+            : (e?.message || 'Raw output fetch failed');
+          if (isRichOutputMode()) renderRichOutput(agentId, container.querySelector('#rich-output-host'), msg);
+          else updatePane(pane, msg);
         }
       }
     }
@@ -1816,6 +1860,9 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     if (Number.isFinite(output) && isTerminalMode()) {
       scheduleTerminalFit(agentId);
     }
+    if (Number.isFinite(output) && isRichOutputMode()) {
+      setRichOutputFontSize(agentId, output);
+    }
   }
   window.addEventListener('cam-mobile-appearance', onMobileAppearance);
 
@@ -1832,6 +1879,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     contentEl.classList.remove('terminal-ui-active');
     document.body.classList.remove('terminal-fullscreen');
     closeFullscreen();
+    disposeRichOutput(agentId);
     window.removeEventListener('resize', _onResize);
     window.removeEventListener('resize', _onResizeTerminal);
     window.removeEventListener('cam-terminal-fit', _onTerminalFit);
