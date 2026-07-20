@@ -192,6 +192,7 @@ class AdapterConfig(object):
     """Parsed adapter config from a TOML dict."""
 
     def __init__(self, config):
+        self.config_dir = config.get("adapter", {}).get("config_dir") or ".agents"
         launch = config.get("launch", {})
         self.strip_ansi = launch.get("strip_ansi", False)
         self.command = launch.get("command", [])

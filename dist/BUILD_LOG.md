@@ -4617,3 +4617,42 @@ e41f075 camc: prefer latest tool releases
 676e9c5 camc: read login shell from /etc/passwd, override SHELL for tmux
 ```
 
+## v1.2.0  3e55d01-dirty 2026-07-20 01:39
+
+- Lines: 19766
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+9909fb1 camc: fast-path stdin sends
+e9025b4 Merge remote camui-desktop-v2 (15 commits) with local skills/env fixes
+e41f075 camc: prefer latest tool releases
+1cc5eef camc: preserve ANSI colors for interactive agents
+676e9c5 camc: read login shell from /etc/passwd, override SHELL for tmux
+```
+
+## v1.2.0  3e55d01-dirty 2026-07-20 02:20
+
+- Lines: 19768
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+9909fb1 camc: fast-path stdin sends
+e9025b4 Merge remote camui-desktop-v2 (15 commits) with local skills/env fixes
+e41f075 camc: prefer latest tool releases
+1cc5eef camc: preserve ANSI colors for interactive agents
+676e9c5 camc: read login shell from /etc/passwd, override SHELL for tmux
+```
+
+## v1.2.0  3e55d01-dirty 2026-07-20 02:51
+
+- Lines: 19773
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+9909fb1 camc: fast-path stdin sends
+e9025b4 Merge remote camui-desktop-v2 (15 commits) with local skills/env fixes
+e41f075 camc: prefer latest tool releases
+1cc5eef camc: preserve ANSI colors for interactive agents
+676e9c5 camc: read login shell from /etc/passwd, override SHELL for tmux
+```
+

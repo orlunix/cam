@@ -357,8 +357,9 @@ def cmd_init(args):
     print("Setup complete!")
     print()
     print("Quick start:")
-    print("  camc run claude \"fix the tests\"   # Launch an agent")
-    print("  camc run claude                    # Interactive mode")
+    print("  camc run \"fix the tests\"          # Launch a Codex agent")
+    print("  camc run                           # Codex interactive mode")
+    print("  camc run -t claude \"fix tests\"   # Explicit Claude agent")
     print("  camc list                          # Show all agents")
     print("  camc logs <id> -f                  # Follow output")
     print("  camc attach <id>                   # Attach to tmux")
@@ -662,7 +663,7 @@ def _preflight(tool, tool_binary, workdir, env_setup=None, runtime=None,
 
 
 def cmd_run(args):
-    tool = getattr(args, "tool", None) or "claude"
+    tool = getattr(args, "tool", None) or "codex"
     prompt = getattr(args, "prompt", "") or ""
     workdir = os.path.abspath(args.path)
     os.makedirs(workdir, exist_ok=True)
@@ -901,8 +902,8 @@ def cmd_run(args):
             os.makedirs(d, exist_ok=True)
         except OSError:
             pass
-    # Auto-install manifest skills to project .claude/skills/
-    install_manifest_skills(workdir)
+    # Auto-install manifest skills to the selected tool's project config.
+    install_manifest_skills(workdir, config_dir=config.config_dir)
     print("Starting %s agent %s..." % (tool, agent_id))
     # F-08: launch with the SAME effective env preflight saw, and the
     # SAME tmux binary preflight just version-checked. resolved["tmux"]
@@ -3780,7 +3781,8 @@ def cmd_upgrade(args):
             continue
         workdir = a.get("context_path") or ""
         if workdir and os.path.isdir(workdir):
-            results = install_manifest_skills(workdir, force=True)
+            results = install_manifest_skills(
+                workdir, force=True, config_dir=_load_config(_tf(a, "tool", "claude")).config_dir)
             if results:
                 reinstalled += 1
     if reinstalled:
@@ -6393,8 +6395,8 @@ examples:
   camc list                           List all agents
   camc a myfix                        Attach by name (a = attach)
   camc a 3                            Attach by index (1-based)
-  camc run                            Launch claude interactively
-  camc run -t codex "add tests"       Launch codex with a prompt
+  camc run                            Launch codex interactively
+  camc run -t claude "add tests"      Launch claude with a prompt
   camc stop myfix                     Gracefully stop by name
   camc logs myfix -f                  Follow agent output
   camc kill abc1                      Force kill an agent
@@ -6431,7 +6433,7 @@ examples:
     # run
     r = sub.add_parser("run", help="Start a coding agent on a task")
     r.add_argument("prompt", nargs="?", default="", help="Task prompt (empty for interactive mode)")
-    r.add_argument("--tool", "-t", default="claude", help="Tool name (claude, codex, cursor) [default: claude]")
+    r.add_argument("--tool", "-t", default="codex", help="Tool name (claude, codex, cursor) [default: codex]")
     r.add_argument("--path", "-p", default=os.getcwd(), help="Working directory")
     r.add_argument("--name", "-n", default=None, help="Human-readable name")
     r.add_argument("--auto-exit", "-a", action="store_true", help="Auto-exit on completion")
