@@ -370,7 +370,7 @@ class TestSnapshotShapeAndAutoConfirm:
         feat = _mf.AutoConfirmationFeature()
         snap = _mk_snap(
             output="Do you want to proceed?\n1. Yes\n2. No\n",
-            now=100.0,
+            now=100.0, idle_for=5.0,
         )
         kinds = [a["kind"] for a in feat.confirm(snap, rt)]
         assert "send_input" in kinds

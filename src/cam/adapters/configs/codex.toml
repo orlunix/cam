@@ -9,6 +9,7 @@
 [adapter]
 name = "codex"
 display_name = "OpenAI Codex"
+config_dir = ".codex"
 
 [launch]
 command = ["codex", "-c", "features.goals=true"]
@@ -64,6 +65,15 @@ error_flags = ["IGNORECASE"]
 [[confirm]]
 # Numbered menu — cursor at line start, then "1. Yes".
 pattern = "^›\\s+1\\.\\s*Yes.*$"
+flags = ["IGNORECASE", "MULTILINE"]
+response = "1"
+send_enter = false
+
+[[confirm]]
+# Some Codex builds omit the active cursor marker from captured menus.
+# A stable third "No" option still identifies the approval menu; accept by
+# selecting option 1.
+pattern = "^\\s*3\\.\\s*No,.*$"
 flags = ["IGNORECASE", "MULTILINE"]
 response = "1"
 send_enter = false

@@ -14,6 +14,7 @@
 [adapter]
 name = "cursor"
 display_name = "Cursor Agent"
+config_dir = ".cursor"
 
 [launch]
 command = ["cursor-agent", "--workspace", "{path}"]
