@@ -538,23 +538,39 @@ function _ownedTerminal(event, payload = {}) {
   return (ent && ent.contentsId === event.sender.id) ? ent : null;
 }
 
+// Window listing and pane state depend only on the session, not on the
+// attached client's tty: the display-message probe targets the session.
+// A missing or undiscovered tty must not fail the tab strip — client
+// discovery is kicked in the background here and only gates switch-client
+// (see _ensureTmuxClientTty).
 async function _tmuxClientState(ent) {
-  if (!ent?.tmuxClientTty) await _retryTmuxClientDiscovery(ent);
-  if (!ent?.tmuxClientTty) return _tmuxFailure('client_discovery', {
+  if (!ent?.tmux) return _tmuxFailure('client_discovery', {
     error: 'tmux_unavailable',
-    detail: ent?.tmuxControlError || (ent?.tmux ? 'tmux client discovery pending' : 'tmux metadata unavailable'),
+    detail: 'tmux metadata unavailable',
   }, ent);
+  if (!ent.tmuxClientTty) void _retryTmuxClientDiscovery(ent).catch(() => {});
   // Target the session (its current window's active pane) instead of the
   // client tty: `display-message -p -c <client>` is rejected as a usage
   // error by tmux < 3.3 (hlren runs 3.2a — the probe failed 100% there,
   // which kept the tab strip permanently hidden). `-p -t <session>` is
   // the oldest portable form and gives the same answer for our
-  // single-client attach. The tty is still discovered above because
-  // window actions (switch-client) genuinely need it.
+  // single-client attach.
   const result = await _tmuxExec(ent, ['display-message', '-p', '-t', ent.tmux.session, '#{window_index}:#{pane_id}:#{pane_in_mode}']);
   if (!result?.ok) return _tmuxFailure('client_state', result, ent);
   const state = parseClientState(result.stdout);
   return state ? { ok: true, ...state } : _tmuxFailure('client_state', { error: 'tmux_parse_failed', detail: 'invalid client state' }, ent);
+}
+
+// switch-client is the one operation that genuinely needs the attached
+// client's tty. Unlike window listing, it must wait for discovery and
+// report a clear failure when the client still cannot be identified.
+async function _ensureTmuxClientTty(ent) {
+  if (!ent?.tmuxClientTty) await _retryTmuxClientDiscovery(ent);
+  if (!ent?.tmuxClientTty) return _tmuxFailure('client_discovery', {
+    error: 'tmux_unavailable',
+    detail: ent?.tmuxControlError || 'tmux client discovery pending',
+  }, ent);
+  return { ok: true };
 }
 
 async function termListWindows(event, payload = {}) {
@@ -600,6 +616,8 @@ async function termSelectWindow(event, payload = {}) {
   const listed = await termListWindows(event, payload);
   if (!listed.ok) return listed;
   if (!listed.windows.some((window) => window.index === index)) return { ok: false, error: 'not_found', detail: 'window not found' };
+  const client = await _ensureTmuxClientTty(ent);
+  if (!client.ok) return client;
   const result = await _tmuxExec(ent, ['switch-client', '-c', ent.tmuxClientTty, '-t', `${ent.tmux.session}:${index}`]);
   return result?.ok ? termListWindows(event, payload) : result;
 }
@@ -607,8 +625,8 @@ async function termSelectWindow(event, payload = {}) {
 async function termCreateWindow(event, payload = {}) {
   const ent = _ownedTerminal(event, payload);
   if (!ent) return { ok: false, error: 'not_found' };
-  const state = await _tmuxClientState(ent);
-  if (!state.ok) return state;
+  const client = await _ensureTmuxClientTty(ent);
+  if (!client.ok) return client;
   const created = await _tmuxExec(ent, ['new-window', '-t', ent.tmux.session, '-P', '-F', '#{window_index}']);
   const index = Number(String(created?.stdout || '').trim());
   if (!created?.ok || !Number.isInteger(index) || index < 0 || index > 9999) return created?.ok ? { ok: false, error: 'tmux_parse_failed', detail: 'new window index missing' } : created;
