@@ -6,8 +6,8 @@ description: >
   the user wants to start an agent, send it a prompt, capture its
   output, attach to it, resume / reboot / move it, or clean up records.
   For inter-agent messaging use the camc-messaging skill. For cron/loops use
-  camc-cron-loop. For diagnosing stuck agents use camc-diagnose. For
-  cross-machine fleet ops use the sibling managing-cam skill.
+  camc-cron-loop. For diagnosing stuck agents use camc-diagnose.
+  Cross-machine fleet operations are outside this built-in skill.
 compatibility: Requires camc binary in PATH or at ~/.cam/camc.
 metadata:
   author: hren
@@ -42,7 +42,7 @@ Agents are addressable by name, ID prefix, or `#N` (1-based from `camc list`).
 |---|---|
 | Start agent | `camc run "task" -n <name>` |
 | Start interactively | `camc run -n <name>` |
-| Resume Claude session | `camc run -n <name> --resume <session-id>` |
+| Resume Claude session | `camc run -t claude -n <name> --resume <session-id>` |
 | List agents | `camc list` (or `ls`) |
 | Status detail | `camc status <agent>` |
 | Capture screen | `camc capture <agent> --lines 200` |
@@ -59,12 +59,6 @@ Agents are addressable by name, ID prefix, or `#N` (1-based from `camc list`).
 | Remove | `camc rm <agent>` (always kills tmux; `--archive` to save first) |
 | Bulk cleanup | `camc prune --orphans` |
 | Start with system prompt | `camc run "task" -n name --system-prompt "..."` or `--system-file <path>` |
-| Run via IHUB API | `camc run -t claude --api glm-5.1 -n name "task"` |
-| API health + enable flags | `camc api check` |
-| List API profiles | `camc api list` |
-| Show per-tool defaults | `camc api default show` · `… show --json` |
-| Opt in default API | `camc api default set glm-5.1 --tool claude` |
-| Skip default for one run | `camc run --no-default-api …` |
 
 **Other skill areas:**
 
@@ -73,28 +67,6 @@ Agents are addressable by name, ID prefix, or `#N` (1-based from `camc list`).
 | Inter-agent messaging (delegation) | camc-messaging |
 | Cron jobs & prompt loops | camc-cron-loop |
 | Diagnose stuck/failed agents | camc-diagnose |
-| Archive, DAG, prune, history, adopt | camc-misc |
-
-## Inference Hub / API mode
-
-Use **`--api NAME`** or an **opt-in per-tool default** to run Claude or Codex against NVIDIA Inference Hub (IHUB) with token auth in `~/.cam/token.env` — not Claude/Codex subscription login.
-
-| Tool | `--api` | No API / no default |
-|------|---------|---------------------|
-| **claude** | curated IHUB models | OAuth `/login` via `~/.claude/` |
-| **codex** | same models | OAuth via `~/.codex/` |
-| **cursor** | not supported | normal login |
-
-**Defaults are opt-in:** `camc api default set NAME --tool TOOL` writes `defaults.<tool>` in `~/.cam/api-models.json`. Fresh install and legacy top-level `"default"` do **not** auto-enable API. Empty/missing default → login. **`--api NAME`** wins over default. **`--no-default-api`** skips default for one run.
-
-Before relying on a default, run **`camc api check`** so the model is `enabled: true`. Disabled default → `camc run` fails with guidance (fail closed).
-
-```bash
-$EDITOR ~/.cam/token.env              # INFERENCE_HUB_TOKEN=… (once)
-camc api check
-camc api default set glm-5.1 --tool claude   # optional
-camc run -t claude -n ihub-task "fix bug"    # uses default when enabled
-```
 
 ## 1. Starting an agent
 
@@ -103,12 +75,12 @@ agent later. Use the user's name if given, otherwise generate a short
 clear one (`fix-ecc`, `bug5893270`, `regr-fn100`).
 
 ```bash
-camc run "fix the ECC error" -n fix-ecc                # claude (default)
-camc run "add tests" -t codex -n add-tests
+camc run "fix the ECC error" -n fix-ecc                # codex (default)
+camc run "add tests" -t claude -n add-tests
 camc run -n debug-mem                                   # interactive (no prompt)
 camc run "build" -a -n nightly                          # auto-exit on completion
 camc run "x" -n x --tag NR10 --tag WORK
-camc run "..." -n redo --resume <session-id>            # resume Claude session
+camc run "..." -t claude -n redo --resume <session-id>            # resume Claude session
 camc run "x" -p /path/to/proj -n proj-dev               # explicit path (default: CWD)
 camc run "x" -n y --system-prompt "You are a reviewer." # inject system prompt inline
 camc run "x" -n y --system-file path/to/SKILL.md        # inject system prompt from file
@@ -116,7 +88,7 @@ camc run "x" -n y --system-file path/to/SKILL.md        # inject system prompt f
 
 `--system-prompt` / `--system-file` writes the content into a
 marker-delimited block inside the tool's auto-loaded config file in the
-workdir (`CLAUDE.md` for claude/codex, `AGENTS.md` for codex/cursor).
+workdir (`CLAUDE.md` for claude, `AGENTS.md` for codex/cursor).
 The tool picks it up on startup via its own auto-load mechanism.
 
 **Naming gotcha:** don't use `camflow-*` for personal dev agents.
@@ -271,9 +243,8 @@ use the **camc-diagnose** skill.
 
 ## When NOT to use camc
 
-Use `cam` (sibling skill managing-cam) for cross-machine ops — listing all
-agents on the fleet, syncing, releasing, or running on a remote. camc only
-sees its own host.
+camc only manages agents on its own host. Cross-machine operations require
+the separate `cam` tooling and are outside this built-in skill.
 
 ## Reference (deep-dives — load on demand)
 
@@ -286,8 +257,6 @@ sees its own host.
 
 | Skill | Covers |
 |-------|--------|
-| camc-messaging | Delegation protocol, wire format, mailbox/read API |
+| camc-messaging | Delegation protocol, wire format, mailbox/read protocol |
 | camc-cron-loop | Host cron jobs, per-agent prompt loops |
 | camc-diagnose | Heal deep-dive, monitor details, stuck/failed fix workflows |
-| camc-misc | Archive, DAG/apply, prune, history, adopt |
-| managing-cam | Cross-machine fleet ops via cam server |
