@@ -15,6 +15,7 @@
 [adapter]
 name = "claude"
 display_name = "Claude Code"
+config_dir = ".claude"
 
 [launch]
 # Use POSIX `env KEY=VAL prog…` prefix to set CLAUDE_CODE_DISABLE_MOUSE
