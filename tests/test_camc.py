@@ -1797,6 +1797,19 @@ class TestCmdKey:
 
 
 class TestCliArgParsing:
+    def test_run_defaults_to_codex(self, monkeypatch):
+        from camc_pkg import cli
+
+        calls = []
+        monkeypatch.setattr(sys, "argv", ["camc", "run"])
+        monkeypatch.setattr(cli, "_ensure_logs_on_scratch", lambda: None)
+        monkeypatch.setattr(cli, "cmd_run", lambda args: calls.append(args))
+
+        cli.main()
+
+        assert len(calls) == 1
+        assert calls[0].tool == "codex"
+
     @pytest.mark.parametrize("argv", [
         ["camc", "run", "-name", "install-ts"],
         ["camc", "run", "-name=install-ts"],

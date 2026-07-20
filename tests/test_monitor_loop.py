@@ -369,21 +369,21 @@ class TestStep4AutoConfirm:
     """Step 4: Auto-confirm — pattern detection and response."""
 
     def test_confirm_do_you_want_to_proceed(self):
-        screens = [screen_confirm_proceed()] * 5
+        screens = [screen_confirm_proceed()] * 6
         store, events = run_monitor_steps(screens, max_cycles=10)
         confirms = events.of_type("auto_confirm")
         assert len(confirms) >= 1
         assert confirms[0]["detail"]["response"] == "1"
 
     def test_confirm_yes_option(self):
-        screens = [screen_confirm_yes()] * 5
+        screens = [screen_confirm_yes()] * 6
         store, events = run_monitor_steps(screens, max_cycles=10)
         confirms = events.of_type("auto_confirm")
         assert len(confirms) >= 1
         assert confirms[0]["detail"]["response"] == "1"
 
     def test_confirm_allow_once(self):
-        screens = [screen_confirm_allow()] * 5
+        screens = [screen_confirm_allow()] * 6
         store, events = run_monitor_steps(screens, max_cycles=10)
         confirms = events.of_type("auto_confirm")
         assert len(confirms) >= 1
@@ -400,7 +400,7 @@ class TestStep4AutoConfirm:
 
     def test_confirm_resets_idle(self):
         # idle → confirm dialog → idle_confirmed should reset
-        screens = [screen_idle()] * 10 + [screen_confirm_proceed()] * 5
+        screens = [screen_idle()] * 10 + [screen_confirm_proceed()] * 6
         store, events = run_monitor_steps(screens, max_cycles=30)
         confirms = events.of_type("auto_confirm")
         assert len(confirms) >= 1
@@ -544,7 +544,7 @@ class TestFullLifecycle:
         screens = (
             [screen_empty()] * 2 +           # Startup (alternate buffer)
             [screen_planning()] * 3 +         # Planning
-            [screen_confirm_proceed()] * 3 +  # Confirm dialog
+            [screen_confirm_proceed()] * 6 +  # Confirm dialog
             [screen_testing()] * 3 +          # Testing
             [screen_editing()] * 3 +          # Editing
             [screen_committing()] * 3 +       # Committing
@@ -568,7 +568,7 @@ class TestFullLifecycle:
         screens = []
         for _ in range(5):
             screens += [screen_testing()] * 3
-            screens += [screen_confirm_proceed()] * 3
+            screens += [screen_confirm_proceed()] * 6
         screens += [screen_idle()] * 15
 
         store, events = run_monitor_steps(screens, max_cycles=60)

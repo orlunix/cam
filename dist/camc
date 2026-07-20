@@ -679,7 +679,7 @@ import uuid
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "9909fb1 2026-07-15 21:35"
+__build__ = "8711793 2026-07-20 03:05"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1013,6 +1013,7 @@ _EMBEDDED_CONFIGS = {
 [adapter]
 name = "claude"
 display_name = "Claude Code"
+config_dir = ".claude"
 
 [launch]
 # Use POSIX `env KEY=VAL prog…` prefix to set CLAUDE_CODE_DISABLE_MOUSE
@@ -1138,6 +1139,7 @@ label = "Claude auth file"
 [adapter]
 name = "codex"
 display_name = "OpenAI Codex"
+config_dir = ".codex"
 
 [launch]
 command = ["codex", "-c", "features.goals=true"]
@@ -1197,6 +1199,15 @@ flags = ["IGNORECASE", "MULTILINE"]
 response = "1"
 send_enter = false
 
+[[confirm]]
+# Some Codex builds omit the active cursor marker from captured menus.
+# A stable third "No" option still identifies the approval menu; accept by
+# selecting option 1.
+pattern = "^\\s*3\\.\\s*No,.*$"
+flags = ["IGNORECASE", "MULTILINE"]
+response = "1"
+send_enter = false
+
 # (2026-06-11 hot-fix) The generic bracket-y/n rule
 #   "\[Y/n\]|\[y/N\]"
 # was REMOVED — modern codex uses numbered menus handled by the
@@ -1250,6 +1261,7 @@ name = "OPENAI_API_KEY"
 [adapter]
 name = "cursor"
 display_name = "Cursor Agent"
+config_dir = ".cursor"
 
 [launch]
 command = ["cursor-agent", "--workspace", "{path}"]
@@ -1594,6 +1606,7 @@ class AdapterConfig(object):
     """Parsed adapter config from a TOML dict."""
 
     def __init__(self, config):
+        self.config_dir = config.get("adapter", {}).get("config_dir") or ".agents"
         launch = config.get("launch", {})
         self.strip_ansi = launch.get("strip_ansi", False)
         self.command = launch.get("command", [])
@@ -5041,6 +5054,8 @@ class AutoConfirmationFeature(MonitorFeature):
                             "msg": "[%d] Confirm cooldown (%.1fs remaining)"
                                    % (snap.cycle, cfg.confirm_cooldown - confirm_cd)})
             return actions
+        if snap.idle_for < 5.0:
+            return actions
         residue = input_residue_count(snap.output, runtime.last_confirm_response)
         if residue > 0 and not init_phase:
             actions.append({"kind": "log", "level": "info",
@@ -5747,8 +5762,8 @@ def _launch_agent(task, workdir):
     # runtime env setup into agent launches.
     env_setup = None
 
-    # Auto-install manifest skills to project .claude/skills/
-    install_manifest_skills(workdir)
+    # Auto-install manifest skills to the selected tool's project config.
+    install_manifest_skills(workdir, config_dir=config.config_dir)
 
     if not create_tmux_session(session, launch_cmd, workdir, env_setup=env_setup, inherit_env=True):
         return None
@@ -12018,7 +12033,7 @@ thread:
   is non-fatal because the mailbox already has the message.
 - stdout: `REPLIED_TO=<msg_id>`, `SEQ=<n>`, `MAILBOX=<mailbox_id>`.
 
-`camc msg read` is the new conceptual API:
+`camc msg read` is the new messaging protocol interface:
 - No args → list unread deliveries for the current mailbox (table
   with msg_id / seq / ts / from / preview).
 - `--next` → print body of oldest unread, header includes msg_id and
@@ -12287,1003 +12302,6 @@ multiplexes captures and dispatches replies via msg_id correlation.
 - ❌ Replying via direct `camc send <a>` from B's shell instead of letting natural reply flow
 """
     },
-    "camc-misc": {
-        "SKILL.md": r"""---
-name: camc-misc
-description: >
-  Miscellaneous camc operations: archive agent history, run DAG
-  workflows (camc apply), prune dead records, view agent event
-  history, adopt existing tmux sessions. Use when these specific
-  non-core tasks come up — they're kept separate to keep the main
-  managing-camc skill focused on the agent lifecycle.
-compatibility: Requires camc binary in PATH.
-metadata:
-  author: hren
-  tags: camc, cam, archive, dag, apply, prune, history, adopt,
-    batch, workflow, cleanup, tar, tgz
-  category: infra
-  requires-tools: camc, tmux
-disable-model-invocation: false
-argument-hint: "[archive <agent> | apply -f tasks.yaml | prune | history <agent> | add <session>]"
-allowed-tools: Bash Read Glob Grep
----
-
-# camc-misc — Archive, DAG, Prune, History, Adopt
-
-## 1. Archive
-
-`camc archive` packages a single agent's tmux scrollback + Claude session
-JSONL + monitor logs into a tar.gz, plus subcommands to inspect archives.
-
-### Create
-
-```bash
-camc archive <agent>                   # tar.gz under ~/.cam/archives/
-camc archive <agent> -o /tmp/foo.tgz   # custom output path
-camc archive <agent> --session-id <sid> # specific session jsonl
-```
-
-Filename: `<agent-id>-<session-id>-<YYYYMMDDHHMMSS>[-<name>].tar.gz`.
-`camc rm <agent> --archive` archives before removing (default `rm` does NOT).
-
-### Inspect
-
-```bash
-camc archive list                      # all archives as table
-camc archive info <archive-name>       # header + manifest + last assistant text
-camc archive summary <archive-name>    # per-prompt table (line + summary)
-camc archive show <archive-name>       # full conversation Q/A (pipe to less)
-```
-
-### When to archive
-
-- Before `camc rm` if the conversation is worth keeping
-- End of a long debugging session
-- Before cross-machine reboot (context survives if transfer fails)
-
-Archive is **opt-in** — short-lived workflow agents shouldn't auto-archive.
-
-## 2. DAG workflows (`camc apply`)
-
-Run multiple agents with dependencies from a YAML file.
-
-```bash
-camc apply -f tasks.yaml
-camc apply -f tasks.yaml --dry-run
-camc apply -f tasks.yaml -p /path/to/dir
-```
-
-### YAML schema
-
-```yaml
-version: 1
-defaults:
-  tool: claude
-  timeout: 30m
-
-tasks:
-  - name: research
-    prompt: "Research the ECC error pattern"
-
-  - name: fix
-    prompt: "Fix the ECC error based on research findings"
-    depends_on: [research]
-
-  - name: test
-    prompt: "Run regression to verify the fix"
-    depends_on: [fix]
-    timeout: 1h
-```
-
-### Rules
-
-- No cycles in `depends_on`; all deps must exist in `tasks`
-- Each level (independent siblings) runs in parallel
-- **Detach is NOT supported** — detached agents don't complete before next level
-
-### Patterns
-
-**Fan-out / fan-in:**
-```yaml
-tasks:
-  - { name: split, prompt: "split work into N shards" }
-  - { name: w1, depends_on: [split], prompt: "shard 1" }
-  - { name: w2, depends_on: [split], prompt: "shard 2" }
-  - { name: merge, depends_on: [w1, w2], prompt: "merge results" }
-```
-
-## 3. Prune
-
-```bash
-camc prune                  # drift-fix ONLY (status wrong but tmux alive)
-camc prune --orphans        # actually delete dead-tmux records + stale files
-camc prune --orphans --dry-run
-```
-
-Plain `camc prune` does NOT delete records — it only fixes status drift.
-Pass `--orphans` to clean dead-tmux entries and stale logs/sockets/PIDs.
-
-## 4. History
-
-```bash
-camc history <agent>        # event log: starts, confirms, errors
-```
-
-Events stored append-only in `~/.cam/events.jsonl` (auto-rotates 30 days).
-
-## 5. Adopt an existing tmux session
-
-```bash
-camc add my-existing-session --tool claude --name my-agent
-```
-
-Registers an unmanaged tmux session as a camc-tracked agent.
-
-## Reference
-
-| File | When to read |
-|---|---|
-| `reference/archive.md` | Inspect/extract an archive in detail |
-| `reference/dag.md` | Full DAG spec — validation, failure handling, fan-out patterns |""",
-        "reference/archive.md": r"""# `camc archive` — capture an agent's full history
-
-`camc archive` packages a single agent's tmux scrollback + Claude session
-JSONL + monitor logs into a tar.gz, plus three subcommands to inspect
-existing archives.
-
-## Create an archive
-
-```bash
-camc archive <agent>                   # tar.gz under ~/.cam/archives/
-camc archive <agent> -o /tmp/foo.tgz   # custom output path
-camc archive <agent> --session-id <sid> # resume a specific Claude session jsonl
-```
-
-Archive filename: `<agent-id>-<session-id>-<YYYYMMDDHHMMSS>[-<name>].tar.gz`.
-The name suffix is appended (not overriding) so multiple archives at the
-same time keep distinct files.
-
-`camc rm <agent> --archive` runs the archive step before removing.
-Default `rm` does NOT archive (workflows produce too much noise).
-
-## Inspect existing archives
-
-```bash
-camc archive list                      # all archives as a table
-camc archive info <archive-name>       # header + manifest + last assistant text
-camc archive summary <archive-name>    # per-prompt table (line + summary col)
-camc archive show <archive-name>       # full conversation Q/A order (pipe to less)
-```
-
-Examples:
-
-```bash
-camc archive list
-# Date         Agent     Session-id  Name          Size
-# 2026-04-23   8d5c354d  8c84ca2e    aicli         1.2M
-# ...
-
-camc archive info 8d5c354d-8c84ca2e-...tar.gz
-# (header) cwd: /home/hren/test/aicli  tool: claude  prompts: 17
-# (manifest) capture-pane.txt, session.jsonl, monitor-8d5c354d.log
-# (tail)    last assistant text — 12 lines
-
-camc archive summary 8d5c354d-...tar.gz
-# Q#   PROMPT (line)              SUMMARY (one line)
-# 1    @file.py 改成 ...           Updated file.py to ...
-# 2    跑一下 tests              Ran pytest, 3 fails, ...
-
-camc archive show 8d5c354d-...tar.gz | less
-# Q1: ...
-# A1: ...
-# Q2: ...
-```
-
-## When to archive
-
-- Before `camc rm` if the conversation is worth keeping
-- End of a long debugging session
-- Before cross-machine reboot (so context survives if anything goes wrong)
-
-Archive is **opt-in by default** — short-lived workflow agents shouldn't
-auto-archive (would generate hundreds of tarballs). For agents you care
-about, run `camc archive <id>` explicitly or `camc rm <id> --archive`.
-""",
-        "reference/dag.md": r"""# `camc apply` — DAG workflows
-
-Run multiple agents with dependencies from a YAML file.
-
-```bash
-camc apply -f tasks.yaml
-camc apply -f tasks.yaml --dry-run
-camc apply -f tasks.yaml -p /path/to/dir
-```
-
-## YAML schema
-
-```yaml
-version: 1
-defaults:
-  tool: claude
-  timeout: 30m
-  retry: 0
-
-tasks:
-  - name: research
-    prompt: "Research the ECC error pattern in bug 5893270"
-
-  - name: fix
-    prompt: "Fix the ECC error based on research findings"
-    depends_on: [research]
-
-  - name: test
-    prompt: "Run regression to verify the fix"
-    depends_on: [fix]
-    timeout: 1h
-```
-
-## Validation rules
-
-- No cycles in `depends_on`
-- All `depends_on` names must exist in `tasks`
-- Topological sort defines run order
-- Each "level" (independent siblings) runs in parallel via `asyncio.gather`
-
-## Detach is NOT supported
-
-`--detach` doesn't work with DAGs. Detached agents return immediately
-with status=running, breaking dependency checks (next level fires
-before the current one finishes). Always use **follow mode** with
-`apply` — the call blocks until the graph completes or a task fails.
-
-## Failure handling
-
-By default a failed task fails the DAG. Override per-task or globally:
-
-```yaml
-defaults:
-  retry: 1                    # one retry on failure
-  on_failure: continue        # don't abort the DAG
-
-tasks:
-  - name: flaky
-    on_failure: continue       # task-level override
-    prompt: "..."
-```
-
-## Patterns
-
-### Fan-out / fan-in
-
-```yaml
-tasks:
-  - { name: split, prompt: "split work into N shards" }
-  - { name: w1, depends_on: [split], prompt: "shard 1" }
-  - { name: w2, depends_on: [split], prompt: "shard 2" }
-  - { name: w3, depends_on: [split], prompt: "shard 3" }
-  - { name: merge, depends_on: [w1, w2, w3], prompt: "merge results" }
-```
-
-### Conditional path
-
-camc DAG has no `if` primitive — express via dependency on a "decision"
-task whose output is a marker file the downstream tasks check.
-"""
-    },
-    "managing-cam": {
-        "SKILL.md": r"""---
-name: managing-cam
-description: >
-  Manage AI coding agents (Claude Code, Codex, Cursor) with CAM
-  (Coding Agent Manager). Use when the user asks to list agents,
-  start/stop agents, check agent status, capture output, send input,
-  manage contexts and nodes, or run batch tasks. For inter-agent
-  messaging use the camc-messaging skill; for single-machine agent lifecycle
-  use managing-camc.
-compatibility: Requires cam CLI.
-metadata:
-  author: hren
-  tags: cam, camc, agent, management, claude, coding, codex, cursor,
-    fleet, cross-machine, context, node, sync, release, batch, dag
-  category: infra
-  requires-tools: cam, camc
-disable-model-invocation: false
-argument-hint: "[list | status <agent> | run <prompt> | capture <agent> | send <agent> -t '...' | attach <agent> | context {list,add,rm} | node list]"
-allowed-tools: Bash Read Glob Grep
----
-
-# CAM — Coding Agent Manager
-
-CAM manages AI coding agents (Claude Code, Codex, Cursor) across local and
-remote machines. It's like PM2 for AI agents — start, stop, monitor, interact,
-orchestrate, and deploy. Every agent op is delegated to `camc` on the right
-machine over SSH; per-machine `camc agents.json` is the source of truth.
-
-> **When in doubt, run `--help` first — never guess.** Flags drift between
-> releases. Run `cam --help` for subcommands and `cam <subcommand> --help`
-> for flags before using them.
-
-## Quick Reference
-
-| Task | Command |
-|---|---|
-| List all agents | `cam list` |
-| Agent details | `cam status <id-or-name>` |
-| Start agent | `cam run "task" --ctx <context>` |
-| Stop agent | `cam stop <id-or-name>` |
-| Kill agent | `cam kill <id-or-name>` |
-| Retry failed | `cam retry <id-or-name>` |
-| Capture screen | `cam capture <id-or-name> -n 200` |
-| Send text | `cam send <id-or-name> -t "message"` |
-| Send key | `cam key <id-or-name> -k Escape` |
-| Ask another agent | `camc msg send <to> -t "..."` — see **camc-messaging** skill |
-| Attach tmux | `cam attach <id-or-name>` |
-| View logs | `cam logs <id-or-name> -n 50` |
-| List contexts | `cam context list` |
-| List nodes | `cam node list` |
-
-**Remote camc API mode:** agents run on each machine via `camc`. On the host, use `camc run -t claude|codex --api NAME`, opt-in `camc api default set`, and `camc api check` — same as `managing-camc`. `cam run` does not expose `--api`; SSH to the machine or use `cam sync` + local `camc` there. Cursor `--api` is not supported.
-
-Agent IDs can be short prefixes (e.g. `dfac` matches `dfac113f`), full IDs, or names.
-
-## Agent Lifecycle
-
-### Start a new agent
-
-```bash
-cam run "investigate bug 5893270" --ctx l1tcm --name bug-5893270
-cam run "build fn100 variant" --ctx fn211-man --name fn100-build --timeout 2h
-cam run "research peregrine ECC issues" --ctx pdxbbs --name ecc-research
-```
-
-Options:
-- `--ctx <name>` — work context (required for remote, optional for local)
-- `--name <name>` — human-readable name
-- `--tool <tool>` — agent tool, default: `claude`
-- `--timeout <duration>` — e.g. `30m`, `2h`, `1d`
-- `--retry <n>` — auto-retry on failure
-- `--follow` — follow output instead of detaching
-- `--no-auto-confirm` — require manual confirmation for tool use
-- `--dry-run` — show plan without executing
-
-### Monitor agents
-
-```bash
-cam list                          # all agents, all nodes
-cam list --json                   # JSON output for scripting
-cam status <agent>                # detailed status
-cam logs <agent> -n 100           # last 100 lines of log
-cam logs <agent> -f               # follow log output
-```
-
-### Stop / kill / remove
-
-```bash
-cam stop <agent>                  # graceful stop (sends /exit)
-cam kill <agent>                  # force kill
-cam rm <agent>                    # remove record (delegates to camc rm)
-cam rm <agent> --kill -f          # also kill the session, no confirmation
-```
-
-### Retry failed agents
-
-```bash
-cam retry <agent>                 # re-run with same config
-cam retry <agent> --follow        # re-run and follow output
-```
-
-## Agent Interaction
-
-### Capture screen output
-
-```bash
-cam capture <agent>               # default 100 lines
-cam capture <agent> -n 500        # 500 lines
-cam capture <agent> -n 2000       # full scrollback
-cam capture <agent> --json        # with content hash
-```
-
-### Send text input
-
-```bash
-cam send <agent> -t "hello"                    # send + Enter
-cam send <agent> -t "partial text" --no-enter   # send without Enter
-```
-
-### Send special keys
-
-```bash
-cam key <agent> -k Escape         # Escape key
-cam key <agent> -k Enter          # Enter key
-cam key <agent> -k C-c            # Ctrl+C
-cam key <agent> -k C-d            # Ctrl+D (EOF)
-```
-
-### Interactive attach
-
-```bash
-cam attach <agent>                # attach to tmux session
-# Detach with: Ctrl+B, D
-```
-
-### Ask another agent (delegation)
-
-For inter-agent messaging, use the **camc-messaging** skill. From inside an
-agent's tmux session:
-
-```bash
-camc msg send <to> -t "..."             # block until reply (default 600s)
-camc msg send <to> -t "..." --no-wait   # return msg_id immediately
-camc msg reply <msg_id> -t "..."        # reply on same thread
-camc msg read [--next] [--mark]         # read inbox
-camc msg read <msg_id>                  # replay full thread
-```
-
-Full protocol (wire format, mailbox/ledger, `--expect-reply`,
-receiving messages): see the **camc-messaging** skill.
-Protocol record shapes: see `camc-messaging/reference/messaging.md`.
-
-## Agent Management
-
-### Update agent properties
-
-```bash
-cam update <agent> --name "better-name"
-cam update <agent> --tag NR10                # add tag(s) (comma-sep)
-cam update <agent> --untag SMOKE             # remove tag(s)
-cam update <agent> --auto-confirm            # toggle auto-confirm
-```
-
-### Clean up
-
-```bash
-cam prune --dry-run                      # preview
-cam prune --all                          # remove ALL terminal agents
-cam prune --status killed,failed         # filter by status
-cam prune --before 7d                    # older than 7 days
-cam prune --orphans                      # cascade orphan cleanup to every machine
-```
-
-`--orphans` is what removes dead-tmux records on remote camcs. The poller
-also auto-deletes a cam DB row that's been missing from camc for 3 polls
-in a row, so transient ghosts heal themselves.
-
-## Contexts
-
-Contexts define where agents run — local directories or remote machines via SSH.
-
-### List and inspect
-
-```bash
-cam context list                  # all contexts
-cam context show <name>           # context details
-cam context test <name>           # test SSH connectivity
-```
-
-### Create contexts
-
-```bash
-# Local
-cam context add myproject /path/to/project
-
-# Remote via SSH
-cam context add pdx-work /home/scratch/project \
-  --host pdx-container-xterm-098.prd.it.nvidia.com \
-  --user hren --port 3422
-
-# With environment setup
-cam context add pdx-work /path \
-  --host server --user dev \
-  --env-setup "source /home/hren/.bashrc"
-```
-
-### Manage contexts
-
-```bash
-cam context update <name> --env-setup "source ~/.bashrc"
-cam context copy <name> <new-name>
-cam context remove <name>
-```
-
-## Nodes
-
-Nodes are machines running agents. A node can have multiple contexts and agents.
-
-```bash
-cam node list                     # all nodes with agent counts
-cam node status <node>            # agents on specific node
-```
-
-## Batch Tasks (DAG Workflows)
-
-Run multiple tasks with dependencies from a YAML file:
-
-```bash
-cam apply -f tasks.yaml
-cam apply -f tasks.yaml --ctx my-project
-cam apply -f tasks.yaml --dry-run         # preview only
-```
-
-Example `tasks.yaml`:
-```yaml
-tasks:
-  - name: research
-    prompt: "Research the ECC error pattern in bug 5893270"
-    ctx: l1tcm
-
-  - name: fix
-    prompt: "Fix the ECC error based on the research findings"
-    ctx: l1tcm
-    depends_on: [research]
-
-  - name: test
-    prompt: "Run regression tests to verify the fix"
-    ctx: l1tcm
-    depends_on: [fix]
-```
-
-## History and stats
-
-```bash
-cam history                               # last 30 days
-cam history --ctx l1tcm --last 7d         # specific context, last week
-cam history --status failed               # only failures
-cam stats                                 # aggregated stats
-cam stats --ctx l1tcm --last 7d           # context-specific stats
-```
-
-## System
-
-```bash
-cam version                       # version and installed adapters
-cam doctor                        # check dependencies
-cam heal                          # restart dead monitor daemons
-cam sync <context>                # sync camc/configs to remote
-cam sync                          # sync to all remote contexts
-cam release                       # build → test → deploy camc to every machine
-cam release --only pdx-098        # canary one host
-```
-
-`cam release` archives each successful build to
-`/home/prgn_share/tools/camc/releases/camc-vX.Y.Z-<hash>` and creates
-a `deploy-YYYYMMDDHHMMSS` git tag for rollback.
-
-## Common Workflows
-
-### Delegate a task to a remote agent
-
-```bash
-cam run "analyze regression failures for fn100" \
-  --ctx fn211-man --name fn100-regr --timeout 1h
-# Later, check progress:
-cam capture fn100-regr -n 50
-```
-
-### Monitor all agents across machines
-
-```bash
-cam node list                     # overview: which machines, how many agents
-cam list                          # detailed agent list
-cam capture <agent> -n 20         # quick peek at specific agent
-```
-
-### Interact with a running agent
-
-```bash
-cam capture <agent> -n 50         # see current state
-cam send <agent> -t "try a different approach"
-cam capture <agent> -n 50         # check response
-```
-
-### Clean up after a sprint
-
-```bash
-cam prune --all --before 3d --dry-run    # preview
-cam prune --all --before 3d -f           # execute
-```
-""",
-        "reference/contexts-and-machines.md": r"""# Contexts, machines, and nodes
-
-cam has three related concepts:
-
-| Term | Definition | Storage |
-|---|---|---|
-| **Context** | working directory + machine binding | SQLite `contexts` table |
-| **Machine** | SSH/local host config | `~/.cam/machines.json` (also synced to camc) |
-| **Node** | view of a machine + its agents | derived (no separate table) |
-
-## Contexts
-
-```bash
-cam context list
-cam context show <name>
-cam context test <name>           # test SSH connectivity
-
-cam context add myproject /path/to/project                    # local
-cam context add pdx-work /home/scratch/project \
-  --host pdx-container-xterm-098.prd.it.nvidia.com \
-  --user hren --port 3422                                      # SSH
-
-cam context add pdx-work /path \
-  --host server --user dev \
-  --env-setup "source /home/hren/.bashrc"                      # with env
-
-cam context update <name> --env-setup "..."
-cam context copy <name> <new-name>
-cam context remove <name>
-```
-
-Fields:
-- `name`, `path`
-- `host`, `user`, `port` (SSH only; omit for local)
-- `env_setup` — shell snippet sourced before launching agents
-- `shell` — `bash` / `powershell` (Windows targets)
-- `last_used_at` — bumped on every `cam run` against this ctx
-
-## Machines vs Contexts
-
-A **machine** is just connection info (host:port, user). A **context**
-binds a working directory to a machine. Often there's a 1:1 mapping
-(one project per host), but you can have N contexts → 1 machine when
-you split work into subdirs.
-
-`cam release` reads `machines.json` (the deployment list).
-`cam run --ctx <name>` resolves ctx → machine → SSH transport.
-
-## Nodes
-
-```bash
-cam node list                     # overview
-cam node status <node>            # agents on one machine
-```
-
-A "node" is essentially `cam list --machine <X>` plus aggregated counts
-(running, completed, failed). Read-only — there's no `cam node add`;
-add machines via `cam context add` or `~/.cam/machines.json` directly.
-
-## env_setup gotchas
-
-`env_setup` is a shell snippet sourced **inside the tmux session's
-shell** before exec'ing the agent tool:
-
-```bash
-# inside tmux, the launch ends up like:
-bash -lc "<env_setup> && exec claude --allowed-tools ..."
-```
-
-Common pitfalls:
-- Login shell init can be slow (NFS, network) — preflight does NOT run
-  `command -v claude` through env_setup any more (was timing out at
-  3s on heavy hosts).
-- A bad env_setup that errors out kills the session immediately —
-  agent shows up "completed" right away, look at
-  `~/.cam/logs/monitor-<id>.stderr` for the bash error.
-- env_setup is only consulted on agent **launch**. Modifying it
-  doesn't affect already-running agents.
-
-## SSH ControlMaster
-
-Every cam → camc op (capture, send, kill, list, prune) goes over SSH.
-ControlMaster sockets are shared between `SSHTransport`,
-`CamcDelegate`, and `cam release` — same path:
-
-```
-/tmp/cam-ssh-<sha256(user@host:port)[:12]>
-```
-
-This makes 7-host operations near-instant after the first auth.
-
-## Windows / non-bash shells
-
-Set `--shell powershell` on a context to skip the `bash -l -c` wrapper.
-SSHTransport then uses `cmd.exe`-style quoting for `send-keys` payloads.
-Non-ASCII text is base64-encoded to survive POSIX-locale shells.
-""",
-        "reference/poller-and-sync.md": r"""# Poller and sync mechanics
-
-`cam serve` runs a background `CamcPoller` that keeps cam's SQLite DB in
-sync with each machine's `camc agents.json`. Understanding it explains
-the "agent reappeared after I deleted it" class of issues.
-
-## What the poller does (every 5s)
-
-For each machine in `~/.cam/machines.json`:
-
-1. SSH → `camc --json list` (ControlMaster pooled)
-2. For each agent:
-   - **Already in cam DB** → upsert all fields (`save()` / UPSERT)
-   - **New, status terminal** (completed/failed/killed/timeout) → **skip**
-     (don't pollute cam DB with already-done work)
-   - **New, status running** → import (machine_host/user/port stamped)
-3. After polling all machines: stale-agent cleanup (see below)
-
-## Stale-agent cleanup
-
-cam DB holds an aggregated view; camc per machine is the source of
-truth. A running cam DB row whose ID is **not seen on any camc** for
-`_MISS_THRESHOLD = 3` consecutive polls is **deleted**.
-
-- Sightings reset the miss counter (transient SSH glitches don't flap-delete)
-- ~15s window (3 × 5s) before deletion fires
-- Emits an `AgentEvent` with `event_type="deleted"`,
-  `detail={"reason": "missing from camc for 3 consecutive polls"}`
-
-### Before this fix (pre-2026-04-26)
-
-Stale rows were promoted to `status=completed` with
-`exit_reason="Session gone (not in camc list)"`. This created two bugs:
-
-1. `cam prune --all` deleted them, next poll re-created them — looked
-   like prune wasn't sticking.
-2. Workflows that camc-rm'd N agents accumulated N zombie completed
-   rows in cam DB.
-
-Now: gone in camc → gone in cam DB. No zombie rows.
-
-## Three-layer machine_host correctness
-
-NFS-shared `~/.cam/agents.json` clusters can leak agents between hosts
-unless we're careful. cam handles this in three layers:
-
-1. **Write at creation**: `AgentManager.run_agent()` stamps
-   machine_host/user/port from the chosen context — new agents get the
-   right host from the start.
-2. **Hostname guard + self-healing backfill**: poller compares
-   `agent.hostname` to the polled machine via `_is_same_host()` (matches
-   `bpmpfw` to `bpmpfw.nvidia.com`). Mismatched agents are skipped and
-   never imported. For agents that pass, the poller corrects
-   machine_host/port if they don't match — self-heals legacy
-   misassignments without manual intervention.
-3. **Attach context fallback**: `cam attach <agent>` falls back to the
-   context's SSH config when machine_host is missing or `localhost`,
-   so attach still works on incomplete records.
-
-## Shadow records
-
-When cam DB has an agent A on machine X (its full record) and another
-camc on machine Y reports a record with the same `tmux_session` name,
-poller treats Y's record as a "shadow" — updates A's status only,
-**never** demotes A to terminal based on Y's view. A's host (X) is
-authoritative for A's status.
-
-Why this matters: NFS clusters share `agents.json`, so every host can
-see every host's agent. Without the shadow guard, polling host Y would
-mark agent A (running on host X) as completed because Y can't see X's
-tmux server.
-
-## Events
-
-Every status change emits an event written to `agent_events` table and
-broadcast via `EventBus` (subscribed by WebSocket clients on `cam serve`):
-
-- `status_change` — `{"from": "running", "to": "completed"}`
-- `deleted` — `{"reason": "..."}` (stale cleanup)
-- `imported` — first time poller saw this agent
-
-## Disabling the poller
-
-Currently no flag — kill `cam-serve-daemon.sh` to stop it. Useful when
-debugging, otherwise leave running. Reads only — doesn't mutate camc
-state, only cam DB.
-""",
-        "reference/release.md": r"""# `cam release` — fleet deployment pipeline
-
-`cam release` (alias: `bash scripts/release.sh`) builds dist/camc, runs
-tests, and ships to every machine in `~/.cam/machines.json`.
-
-## Full flow
-
-```bash
-cam release                          # full: build → test → deploy → tag
-cam release --skip-tests             # skip pytest
-cam release --skip-build             # reuse existing dist/camc
-cam release --only pdx-098,dc7-26    # subset of machines
-cam release --dry-run                # print plan, don't deploy
-```
-
-## Steps (per scripts/release.sh)
-
-1. **Build** — `python3 build_camc.py` regenerates `dist/camc` (single-file)
-2. **Test** — `pytest tests/test_camc_session_id.py -q`
-3. **Per-machine loop**:
-   - `mkdir -p ~/.cam` on remote
-   - `scp dist/camc → remote:~/.cam/camc`
-   - `chmod +x`
-   - `ssh remote 'camc version'` to verify
-   - If `/home/prgn_share/bin` writable: also install there (atomic temp+mv)
-   - **Archive** — copy to `/home/prgn_share/tools/camc/releases/camc-vX.Y.Z-<short-hash>`
-4. **Tag** — `git tag -a deploy-YYYYMMDDHHMMSS` with verified hosts in the message
-
-## Archive store
-
-Every successful deploy lands an artifact at:
-
-```
-/home/prgn_share/tools/camc/releases/camc-v1.2.0-abc1234
-```
-
-Versioned + commit-hashed filename. NFS-shared on PDX → all PDX hosts
-see the same archive. DC has its own NFS, archive lives there too.
-
-```bash
-ls /home/prgn_share/tools/camc/releases/
-# camc-v1.2.0-855dc5a
-# camc-v1.2.0-d1ffa7c
-# camc-v1.2.0-8755702
-```
-
-## Rollback
-
-```bash
-# 1. Pick a known-good archive
-ls /home/prgn_share/tools/camc/releases/
-
-# 2. Restore on each host
-ssh pdx-098 "cp /home/prgn_share/tools/camc/releases/camc-v1.2.0-855dc5a ~/.cam/camc"
-ssh pdx-098 "cp /home/prgn_share/tools/camc/releases/camc-v1.2.0-855dc5a /home/prgn_share/bin/camc"
-```
-
-Or rebuild from the matching git tag:
-
-```bash
-git tag --list 'deploy-*'                   # see all deploys
-git show deploy-20260423234209              # who, when, what hosts
-git checkout <tag>                          # source-level rollback
-python3 build_camc.py                       # rebuild
-cam release --skip-tests --skip-build       # ship
-```
-
-## Tag message format
-
-```
-camc deploy 20260423234209
-
-version: camc v1.2.0 (d1ffa7c-dirty 2026-04-23 23:22)
-verified: 4 / failed: 0
-hosts:
-   - pdx-container-xterm-098
-   - pdx-container-xterm-110
-   - dc7-container-xterm-26
-   - dc2-container-xterm-037
-```
-
-Tags only fire when `verified > 0` and not `--dry-run`. Auto-skipped if
-the tag name (timestamp) is already taken — re-runs in the same second
-won't clobber.
-
-## Machines file
-
-`~/.cam/machines.json`:
-
-```json
-[
-  {"name": "pdx-098", "type": "ssh",
-   "host": "pdx-container-xterm-098.prd.it.nvidia.com",
-   "user": "hren", "port": 3422},
-  {"name": "local",   "type": "local"}
-]
-```
-
-`cam release` skips entries with no `host` (local-only). Override the
-machines file with `CAMC_MACHINES_FILE=/path/to/x.json`.
-
-## SSH ControlMaster reuse
-
-Each ssh/scp call piggy-backs on a multiplexed ControlMaster socket
-(same one `SSHTransport` and `CamcDelegate` use):
-
-```
-/tmp/cam-ssh-<sha256(user@host:port)[:12]>
-```
-
-So 7-host releases over Kerberos-auth'd containers still complete
-fast — only one auth per host for the whole pipeline.
-
-## Failure recovery
-
-- Per-host failures are **non-fatal** — the pipeline continues to the
-  next host. Final summary lists `failed hosts`.
-- A failure does NOT prevent the deploy tag (tag only requires `verified > 0`).
-- Re-run with `--only <failed-host>` to retry one machine.
-""",
-        "reference/server-and-api.md": r"""# `cam serve` — API server, web, relay
-
-`cam serve` runs the FastAPI + uvicorn HTTP/WebSocket server backing
-the web UI, mobile app, and relay (NAT traversal for users behind
-firewalls).
-
-## Run
-
-```bash
-cam serve                                   # defaults: 127.0.0.1:8420, no auth
-cam serve --host 0.0.0.0 --port 8420 \
-  --token cam-web-token-2026                # token-protected
-cam serve --relay ws://localhost:18001      # relay mode (NAT traversal)
-```
-
-Auto-restart daemon: `~/.local/bin/cam-serve-daemon.sh` (a `while true`
-loop that restarts `cam serve` on exit). PID file at
-`/tmp/cam-serve-daemon.pid`. Logs at `/tmp/cam-serve.log`.
-
-## What it provides
-
-- REST endpoints under `/api/v1/...` for agents/contexts/events
-- WebSocket `/ws` for live event streaming
-- Static web UI at `/` (vanilla JS PWA, served from `web/`)
-- Relay client when `--relay` is set (registers with the relay server,
-  serves REST-over-WS)
-
-## Background tasks
-
-When `cam serve` runs, it also spawns:
-
-1. **CamcPoller** — polls every camc every 5s (see `poller-and-sync.md`)
-2. **Heal cron** (server-side) — `cam heal` hourly (config in code)
-3. **Event rotator** — daily, prunes events older than 30 days
-
-Killing `cam serve` stops all three.
-
-## Token auth
-
-`--token <T>` requires `Authorization: Bearer <T>` on every API call.
-Web UI prompts for the token in localStorage. WebSocket auth via the
-same token in the connect URL.
-
-## Relay
-
-Mobile clients hit a public relay server (zero-dep WebSocket bridge,
-RFC 6455 stdlib-only). cam serve registers with the relay over WS and
-serves REST-over-WS so mobile users behind NAT can reach a corp
-network's cam server.
-
-```bash
-# On the cam server:
-cam serve --relay ws://relay-host:18001 --token <T>
-
-# Mobile client connects to the relay, not to cam directly.
-```
-
-Relay code: `relay/relay.py` (standalone, runs anywhere with Python).
-
-## API quick reference
-
-```
-GET  /api/v1/agents                     list agents
-GET  /api/v1/agents/<id>                detail
-POST /api/v1/agents                     run new (body = task spec)
-POST /api/v1/agents/<id>/stop
-POST /api/v1/agents/<id>/kill
-GET  /api/v1/agents/<id>/capture
-POST /api/v1/agents/<id>/send
-GET  /api/v1/contexts                   list
-GET  /api/v1/events?since=<iso>         events feed
-WS   /ws                                live event stream
-```
-
-Hash-based conditional capture: client sends last seen hash, server
-returns `{"unchanged": true}` (50 bytes) if no diff. TTL cache (2s)
-on capture endpoint to absorb concurrent clients.
-
-## Web UI
-
-`web/` is a vanilla JS PWA with a service worker. Key files:
-- `web/index.html` + `web/app.js`
-- `web/js/api.js` — works for direct HTTP and relay (REST-over-WS)
-- `web/js/views/` — agent list, detail, capture, attach
-- `web/sw.js` — service worker (offline cache)
-
-Cache busting: bump `?v=XX` query strings in index.html / app.js / sw.js
-together when you change client code.
-
-## When NOT to use cam serve
-
-- Single-user CLI workflow → just use `cam` and `camc` directly, no
-  server needed.
-- Don't run `cam serve` on shared NFS hosts unless you understand the
-  poller's effect on the cluster (it polls every machine in
-  machines.json from wherever it runs).
-"""
-    },
     "managing-camc": {
         "SKILL.md": r"""---
 name: managing-camc
@@ -13293,8 +12311,8 @@ description: >
   the user wants to start an agent, send it a prompt, capture its
   output, attach to it, resume / reboot / move it, or clean up records.
   For inter-agent messaging use the camc-messaging skill. For cron/loops use
-  camc-cron-loop. For diagnosing stuck agents use camc-diagnose. For
-  cross-machine fleet ops use the sibling managing-cam skill.
+  camc-cron-loop. For diagnosing stuck agents use camc-diagnose.
+  Cross-machine fleet operations are outside this built-in skill.
 compatibility: Requires camc binary in PATH or at ~/.cam/camc.
 metadata:
   author: hren
@@ -13329,7 +12347,7 @@ Agents are addressable by name, ID prefix, or `#N` (1-based from `camc list`).
 |---|---|
 | Start agent | `camc run "task" -n <name>` |
 | Start interactively | `camc run -n <name>` |
-| Resume Claude session | `camc run -n <name> --resume <session-id>` |
+| Resume Claude session | `camc run -t claude -n <name> --resume <session-id>` |
 | List agents | `camc list` (or `ls`) |
 | Status detail | `camc status <agent>` |
 | Capture screen | `camc capture <agent> --lines 200` |
@@ -13346,12 +12364,6 @@ Agents are addressable by name, ID prefix, or `#N` (1-based from `camc list`).
 | Remove | `camc rm <agent>` (always kills tmux; `--archive` to save first) |
 | Bulk cleanup | `camc prune --orphans` |
 | Start with system prompt | `camc run "task" -n name --system-prompt "..."` or `--system-file <path>` |
-| Run via IHUB API | `camc run -t claude --api glm-5.1 -n name "task"` |
-| API health + enable flags | `camc api check` |
-| List API profiles | `camc api list` |
-| Show per-tool defaults | `camc api default show` · `… show --json` |
-| Opt in default API | `camc api default set glm-5.1 --tool claude` |
-| Skip default for one run | `camc run --no-default-api …` |
 
 **Other skill areas:**
 
@@ -13360,28 +12372,6 @@ Agents are addressable by name, ID prefix, or `#N` (1-based from `camc list`).
 | Inter-agent messaging (delegation) | camc-messaging |
 | Cron jobs & prompt loops | camc-cron-loop |
 | Diagnose stuck/failed agents | camc-diagnose |
-| Archive, DAG, prune, history, adopt | camc-misc |
-
-## Inference Hub / API mode
-
-Use **`--api NAME`** or an **opt-in per-tool default** to run Claude or Codex against NVIDIA Inference Hub (IHUB) with token auth in `~/.cam/token.env` — not Claude/Codex subscription login.
-
-| Tool | `--api` | No API / no default |
-|------|---------|---------------------|
-| **claude** | curated IHUB models | OAuth `/login` via `~/.claude/` |
-| **codex** | same models | OAuth via `~/.codex/` |
-| **cursor** | not supported | normal login |
-
-**Defaults are opt-in:** `camc api default set NAME --tool TOOL` writes `defaults.<tool>` in `~/.cam/api-models.json`. Fresh install and legacy top-level `"default"` do **not** auto-enable API. Empty/missing default → login. **`--api NAME`** wins over default. **`--no-default-api`** skips default for one run.
-
-Before relying on a default, run **`camc api check`** so the model is `enabled: true`. Disabled default → `camc run` fails with guidance (fail closed).
-
-```bash
-$EDITOR ~/.cam/token.env              # INFERENCE_HUB_TOKEN=… (once)
-camc api check
-camc api default set glm-5.1 --tool claude   # optional
-camc run -t claude -n ihub-task "fix bug"    # uses default when enabled
-```
 
 ## 1. Starting an agent
 
@@ -13390,12 +12380,12 @@ agent later. Use the user's name if given, otherwise generate a short
 clear one (`fix-ecc`, `bug5893270`, `regr-fn100`).
 
 ```bash
-camc run "fix the ECC error" -n fix-ecc                # claude (default)
-camc run "add tests" -t codex -n add-tests
+camc run "fix the ECC error" -n fix-ecc                # codex (default)
+camc run "add tests" -t claude -n add-tests
 camc run -n debug-mem                                   # interactive (no prompt)
 camc run "build" -a -n nightly                          # auto-exit on completion
 camc run "x" -n x --tag NR10 --tag WORK
-camc run "..." -n redo --resume <session-id>            # resume Claude session
+camc run "..." -t claude -n redo --resume <session-id>            # resume Claude session
 camc run "x" -p /path/to/proj -n proj-dev               # explicit path (default: CWD)
 camc run "x" -n y --system-prompt "You are a reviewer." # inject system prompt inline
 camc run "x" -n y --system-file path/to/SKILL.md        # inject system prompt from file
@@ -13403,7 +12393,7 @@ camc run "x" -n y --system-file path/to/SKILL.md        # inject system prompt f
 
 `--system-prompt` / `--system-file` writes the content into a
 marker-delimited block inside the tool's auto-loaded config file in the
-workdir (`CLAUDE.md` for claude/codex, `AGENTS.md` for codex/cursor).
+workdir (`CLAUDE.md` for claude, `AGENTS.md` for codex/cursor).
 The tool picks it up on startup via its own auto-load mechanism.
 
 **Naming gotcha:** don't use `camflow-*` for personal dev agents.
@@ -13558,9 +12548,8 @@ use the **camc-diagnose** skill.
 
 ## When NOT to use camc
 
-Use `cam` (sibling skill managing-cam) for cross-machine ops — listing all
-agents on the fleet, syncing, releasing, or running on a remote. camc only
-sees its own host.
+camc only manages agents on its own host. Cross-machine operations require
+the separate `cam` tooling and are outside this built-in skill.
 
 ## Reference (deep-dives — load on demand)
 
@@ -13573,11 +12562,10 @@ sees its own host.
 
 | Skill | Covers |
 |-------|--------|
-| camc-messaging | Delegation protocol, wire format, mailbox/read API |
+| camc-messaging | Delegation protocol, wire format, mailbox/read protocol |
 | camc-cron-loop | Host cron jobs, per-agent prompt loops |
 | camc-diagnose | Heal deep-dive, monitor details, stuck/failed fix workflows |
-| camc-misc | Archive, DAG/apply, prune, history, adopt |
-| managing-cam | Cross-machine fleet ops via cam server |""",
+""",
         "reference/machines-and-contexts.md": r"""# Machines and contexts
 
 Two related but distinct concepts in camc:
@@ -13885,8 +12873,8 @@ def list_skills():
 # Auto-install manifest skills to project directory
 # ---------------------------------------------------------------------------
 
-def install_manifest_skills(workdir, force=False):
-    """Install all manifest skills into <workdir>/.claude/skills/.
+def install_manifest_skills(workdir, force=False, config_dir=".claude"):
+    """Install manifest skills into <workdir>/<tool-config-dir>/skills/.
 
     Called automatically by camc run and scheduler before agent launch.
     Silently skips empty manifest or missing skills (no error — missing
@@ -13895,7 +12883,7 @@ def install_manifest_skills(workdir, force=False):
     skills = load_manifest()
     if not skills:
         return {}
-    out_dir = os.path.join(workdir, ".claude", "skills")
+    out_dir = os.path.join(workdir, config_dir, "skills")
     results = {}
     for name in skills:
         results.update(_install_one(name, out_dir, force))
@@ -14274,8 +13262,9 @@ def cmd_init(args):
     print("Setup complete!")
     print()
     print("Quick start:")
-    print("  camc run claude \"fix the tests\"   # Launch an agent")
-    print("  camc run claude                    # Interactive mode")
+    print("  camc run \"fix the tests\"          # Launch a Codex agent")
+    print("  camc run                           # Codex interactive mode")
+    print("  camc run -t claude \"fix tests\"   # Explicit Claude agent")
     print("  camc list                          # Show all agents")
     print("  camc logs <id> -f                  # Follow output")
     print("  camc attach <id>                   # Attach to tmux")
@@ -14577,7 +13566,7 @@ def _preflight(tool, tool_binary, workdir, env_setup=None, runtime=None,
 
 
 def cmd_run(args):
-    tool = getattr(args, "tool", None) or "claude"
+    tool = getattr(args, "tool", None) or "codex"
     prompt = getattr(args, "prompt", "") or ""
     workdir = os.path.abspath(args.path)
     os.makedirs(workdir, exist_ok=True)
@@ -14808,8 +13797,8 @@ def cmd_run(args):
             os.makedirs(d, exist_ok=True)
         except OSError:
             pass
-    # Auto-install manifest skills to project .claude/skills/
-    install_manifest_skills(workdir)
+    # Auto-install manifest skills to the selected tool's project config.
+    install_manifest_skills(workdir, config_dir=config.config_dir)
     print("Starting %s agent %s..." % (tool, agent_id))
     # F-08: launch with the SAME effective env preflight saw, and the
     # SAME tmux binary preflight just version-checked. resolved["tmux"]
@@ -17680,7 +16669,8 @@ def cmd_upgrade(args):
             continue
         workdir = a.get("context_path") or ""
         if workdir and os.path.isdir(workdir):
-            results = install_manifest_skills(workdir, force=True)
+            results = install_manifest_skills(
+                workdir, force=True, config_dir=_load_config(_tf(a, "tool", "claude")).config_dir)
             if results:
                 reinstalled += 1
     if reinstalled:
@@ -20251,8 +19241,8 @@ examples:
   camc list                           List all agents
   camc a myfix                        Attach by name (a = attach)
   camc a 3                            Attach by index (1-based)
-  camc run                            Launch claude interactively
-  camc run -t codex "add tests"       Launch codex with a prompt
+  camc run                            Launch codex interactively
+  camc run -t claude "add tests"      Launch claude with a prompt
   camc stop myfix                     Gracefully stop by name
   camc logs myfix -f                  Follow agent output
   camc kill abc1                      Force kill an agent
@@ -20289,7 +19279,7 @@ examples:
     # run
     r = sub.add_parser("run", help="Start a coding agent on a task")
     r.add_argument("prompt", nargs="?", default="", help="Task prompt (empty for interactive mode)")
-    r.add_argument("--tool", "-t", default="claude", help="Tool name (claude, codex, cursor) [default: claude]")
+    r.add_argument("--tool", "-t", default="codex", help="Tool name (claude, codex, cursor) [default: codex]")
     r.add_argument("--path", "-p", default=os.getcwd(), help="Working directory")
     r.add_argument("--name", "-n", default=None, help="Human-readable name")
     r.add_argument("--auto-exit", "-a", action="store_true", help="Auto-exit on completion")

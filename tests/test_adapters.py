@@ -350,6 +350,20 @@ class TestCodexAdapter:
         assert result.response == "1"
         assert result.send_enter is False
 
+    def test_auto_confirm_runtime_menu_from_no_option(self):
+        adapter = CodexAdapter()
+        result = adapter.should_auto_confirm(
+            "Reason: command failed; retry without sandbox?\n"
+            "  1. Yes, proceed (y)\n"
+            "  2. Yes, and don't ask again for these files (a)\n"
+            "  3. No, and tell Codex what to do differently (esc)\n"
+            "Press enter to confirm or esc to cancel"
+        )
+        assert result is not None
+        assert isinstance(result, ConfirmAction)
+        assert result.response == "1"
+        assert result.send_enter is False
+
     def test_no_auto_confirm_press_enter_stale_scrollback(self):
         adapter = CodexAdapter()
         result = adapter.should_auto_confirm(

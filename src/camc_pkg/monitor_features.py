@@ -456,6 +456,8 @@ class AutoConfirmationFeature(MonitorFeature):
                             "msg": "[%d] Confirm cooldown (%.1fs remaining)"
                                    % (snap.cycle, cfg.confirm_cooldown - confirm_cd)})
             return actions
+        if snap.idle_for < 5.0:
+            return actions
         residue = input_residue_count(snap.output, runtime.last_confirm_response)
         if residue > 0 and not init_phase:
             actions.append({"kind": "log", "level": "info",
