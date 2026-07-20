@@ -265,7 +265,8 @@ def test_auto_confirmation_returns_send_input_and_halt_cycle():
     feat = mf.AutoConfirmationFeature()
     snap = _mk_snap(
         output="Do you want to proceed?\n1. Yes\n2. No\n",
-        now=1000.0, prompt_visible=False, bare_prompt=False,
+        now=1000.0, idle_for=5.0,
+        prompt_visible=False, bare_prompt=False,
     )
     actions = feat.confirm(snap, runtime)
     kinds = [a["kind"] for a in actions]
@@ -298,6 +299,23 @@ def test_auto_confirmation_cooldown_window_suppresses_fire():
     assert runtime.last_confirm == 95.0
 
 
+def test_auto_confirmation_requires_screen_stable_for_five_seconds():
+    confirm_rules = [(re.compile(r"1\. Yes"), "1", False)]
+    cfg = _Cfg(confirm_rules=confirm_rules)
+    runtime = mf.MonitorRuntime("aid", cfg, now=100.0)
+    feat = mf.AutoConfirmationFeature()
+    snap = _mk_snap(
+        output="Do you want to proceed?\n1. Yes\n2. No\n",
+        idle_for=4.9,
+        now=100.0,
+    )
+
+    kinds = [a["kind"] for a in feat.confirm(snap, runtime)]
+
+    assert "send_input" not in kinds
+    assert runtime.last_confirm == 0.0
+
+
 def test_auto_confirmation_no_1_spam_guard_python_side():
     """v2 is TOML-only: a screen full of '1' characters MUST NOT
     suppress a matching TOML [[confirm]] rule. The legacy 1-spam guard
@@ -312,7 +330,7 @@ def test_auto_confirmation_no_1_spam_guard_python_side():
     snap = _mk_snap(
         output="1111111\n❯ Do you want to proceed?\n1. Yes\n",
         tail_lines=["1111111", "❯ Do you want to proceed?", "1. Yes"],
-        now=200.0,
+        now=200.0, idle_for=5.0,
     )
     actions = feat.confirm(snap, runtime)
     kinds = [a["kind"] for a in actions]
@@ -384,7 +402,7 @@ def test_successful_confirm_with_1_spam_screen_still_halts_phase_c():
     snap = _mk_snap(
         output="1111111\n❯ Do you want to proceed?\n1. Yes\n",
         tail_lines=["1111111", "❯ Do you want to proceed?", "1. Yes"],
-        changed=True, now=200.0,
+        changed=True, now=200.0, idle_for=5.0,
     )
     applied, halted, phases = _drive_three_phases(features, snap, runtime)
     assert halted
@@ -404,7 +422,7 @@ def test_successful_confirm_halt_also_skips_after_confirm():
     features = mf.build_features()
     snap = _mk_snap(
         output="Do you want to proceed?\n1. Yes\n2. No\n",
-        changed=True, now=300.0,
+        changed=True, now=300.0, idle_for=5.0,
     )
     applied, halted, phases = _drive_three_phases(features, snap, runtime)
     assert halted
@@ -474,7 +492,7 @@ def test_auto_confirmation_fires_purely_from_toml_rule():
         output="Do you want to proceed?\n1. Yes\n2. No\n",
         bare_prompt=True, screen_busy=True, screen_done=True,
         tail_lines=["1111", "❯", "1. Yes"],
-        now=10.0,
+        now=10.0, idle_for=5.0,
     )
     kinds = [a["kind"] for a in feat.confirm(snap, runtime)]
     assert "send_input" in kinds
