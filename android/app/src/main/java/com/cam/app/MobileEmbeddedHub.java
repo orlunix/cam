@@ -517,8 +517,12 @@ public final class MobileEmbeddedHub {
             if (upd.has("error")) {
                 return jsonResponse(400, upd);
             }
+            String oldContextName = existing.optString("name", "");
             JSONObject record = upd.getJSONObject("record");
             replaceContextRecord(existing, record);
+            if (!oldContextName.equals(record.optString("name", ""))) {
+                renameAgentContextNames(oldContextName, record.optString("name", ""));
+            }
             saveStore();
             log("info", "context updated: " + ctxName);
             return jsonResponse(200, record);
@@ -981,6 +985,18 @@ public final class MobileEmbeddedHub {
         replaceContextByName(existing.optString("name", ""), record);
     }
 
+    private void renameAgentContextNames(String oldName, String newName) throws Exception {
+        if (oldName == null || oldName.isEmpty() || newName == null || newName.isEmpty()) return;
+        JSONArray agents = store.optJSONArray("agents");
+        if (agents == null) return;
+        for (int i = 0; i < agents.length(); i++) {
+            JSONObject a = agents.optJSONObject(i);
+            if (a != null && oldName.equals(a.optString("context_name", ""))) {
+                a.put("context_name", newName);
+            }
+        }
+    }
+
     private void removeContextByName(String name) throws Exception {
         JSONArray ctxArr = store.getJSONArray("contexts");
         JSONArray next = new JSONArray();
@@ -1018,6 +1034,19 @@ public final class MobileEmbeddedHub {
 
     private JSONObject applyContextUpdate(JSONObject existing, JSONObject body) throws Exception {
         JSONObject next = new JSONObject(existing.toString());
+        if (body.has("name")) {
+            String nextName = body.optString("name", "").trim();
+            if (!NAME_RE.matcher(nextName).matches()) {
+                return new JSONObject().put("error", "invalid_name")
+                    .put("detail", "name must match [A-Za-z0-9_-]{1,64}");
+            }
+            JSONObject dup = findContextByName(nextName);
+            if (!nextName.equals(existing.optString("name", "")) && dup != null) {
+                return new JSONObject().put("error", "duplicate_name")
+                    .put("detail", "context \"" + nextName + "\" already exists");
+            }
+            next.put("name", nextName);
+        }
         if (body.has("path")) {
             String p = body.optString("path", "").trim();
             if (p.isEmpty()) {
