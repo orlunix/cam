@@ -29,10 +29,13 @@
  * `ssh2.Client` is reused for both `execRemote()` and
  * `writeRemoteFile()`; each operation opens its own channel
  * (`conn.exec` / `conn.sftp`) but does NOT open a new TCP/auth
- * handshake. Idle entries close after ~600s. An entry is dropped
+ * handshake. The app NEVER closes pooled connections on its own
+ * while it is running (desktop semantics 2026-07-18: an open desktop
+ * terminal holds its sessions — unlike mobile there is no suspend
+ * lifecycle to justify idle reaping). An entry is dropped
  * (and its client destroyed) on any of: ssh2 `close`/`end`/`error`,
  * connect failure, auth failure, operation timeout that forces
- * destroy, or explicit `closeAll()`.
+ * destroy, or explicit `closeAll()` (app quit).
  *
  * Public surface:
  *   execRemote({
@@ -71,7 +74,6 @@ const crypto = require('node:crypto');
 let _override = null;
 let _ssh2 = null;
 
-const IDLE_CLOSE_MS = 600 * 1000;   // Match CAM ControlPersist=600
 const DEFAULT_TIMEOUT_MS = 15000;
 
 /** Pool of long-lived ssh2.Client entries for EXEC traffic
@@ -197,17 +199,12 @@ function _clearIdleTimer(entry) {
 }
 
 function _startIdleTimer(entry) {
+  // Desktop semantics (2026-07-18, product decision): NEVER idle-close
+  // pooled SSH connections while the app is running — unlike mobile,
+  // an open desktop terminal holds its sessions. Connections come down
+  // on transport errors or closeAll() (app quit) only. Keep clearing
+  // any timer armed by an older code path.
   _clearIdleTimer(entry);
-  entry.idleTimer = setTimeout(() => {
-    // Only drop if still no in-flight ops; a late-arriving op
-    // would have already cleared this timer.
-    if (entry.inflight === 0 && entry.poolRef.get(entry.key) === entry) {
-      _dropEntry(entry.key, 'idle');
-    }
-  }, IDLE_CLOSE_MS);
-  if (entry.idleTimer && typeof entry.idleTimer.unref === 'function') {
-    entry.idleTimer.unref();   // don't keep Node event loop alive
-  }
 }
 
 function _dropEntryForOpts(opts, reason) {
@@ -364,7 +361,7 @@ async function _withPooledClient(opts, op /* (client, finishWithTimings) */) {
     };
   }
 
-  // Reserve the connection so the idle timer cannot drop us mid-op.
+  // Reserve the connection for the op's lifetime (in-flight accounting).
   entry.inflight++;
   _clearIdleTimer(entry);
   const opT0 = Date.now();
@@ -711,7 +708,7 @@ async function openTerminalChannel(opts, hooks = {}) {
     }
   }
 
-  // Reserve so the idle timer cannot drop the client mid-attach.
+  // Reserve the client for the attach's lifetime (in-flight accounting).
   entry.inflight++;
   _clearIdleTimer(entry);
 

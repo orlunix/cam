@@ -192,6 +192,11 @@ ok("exhausted tmux retries stop remote polling too",
   source.includes("|| ent.tmuxHintState === 'hidden')"));
 ok("remote size repair is gated on an actual size change",
   main.includes("const sizeChanged = !!(existingEnt") && main.includes("if (existingEnt.opts) void _repairRemoteTerminalSize(existingEnt.opts, agentId, cols, rows);"));
+// Desktop semantics 2026-07-18: the app never closes pooled SSH
+// connections on its own while running — an open desktop terminal
+// holds its sessions (unlike mobile).
+ok("pooled SSH connections are never idle-closed",
+  !transport.includes("_dropEntry(entry.key, 'idle')") && transport.includes("NEVER idle-close"));
 
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exitCode = fail ? 1 : 0;
