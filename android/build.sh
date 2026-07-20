@@ -71,6 +71,9 @@ sed -i "s/?v=[0-9][^\"']*/?v=${VERSION}/g" "$WEB_DIR/css/mobile.css" 2>/dev/null
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"/{compiled,gen,classes,dex}
 
+echo "  Syncing launcher icon..."
+python3 "$PROJ_DIR/sync-launcher-icon.py"
+
 echo "[1/6] Compiling resources..."
 "$BUILD_TOOLS/aapt2" compile \
     --dir "$SRC_DIR/res" \

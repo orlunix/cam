@@ -52,6 +52,9 @@ ok("Raw/Rich output input uses camc API with Terminal-only terminal input", deta
 ok("Rich output uses the Raw capture fetch path", !detail.includes("if (isTerminalMode() || isRichOutputMode()) return;") && detail.includes("if (isRichOutputMode())") && detail.includes("renderRichOutput(agentId, container.querySelector('#rich-output-host'), data.output)"));
 ok("Rich output polling is allowed", detail.includes("if (isTerminalMode() || useFullOutput) return;") && !detail.includes("if (isTerminalMode() || isRichOutputMode() || useFullOutput) return;"));
 ok("Raw/Rich output polls every 2s", detail.includes("let _outputPollMs = 2000") && detail.includes("if (_outputPollMs !== 2000)"));
+ok("Output fetch keeps the existing loadOutput call path", detail.includes("await _tracked('Fetching output'"));
+ok("Fetching output status is suppressed at the tracker boundary",
+  detail.includes("if (label === 'Fetching output') return await fn();"));
 ok("Rich output switching restarts output polling", detail.includes("if ((outputMode === 'live' || outputMode === 'rich') && active)"));
 ok("Rich output does not use Terminal stream sync", !detail.includes("syncRichOutputStream") && !detail.includes("refreshRichOutput"));
 
