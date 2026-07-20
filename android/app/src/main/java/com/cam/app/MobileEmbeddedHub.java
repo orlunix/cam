@@ -751,8 +751,8 @@ public final class MobileEmbeddedHub {
         }
         String id = agent.optString("id", agentId);
         byte[] stdin = text.getBytes(StandardCharsets.UTF_8);
-        MobileSshExec.Result res = MobileSshExec.execStdin(
-            auth, MobileSshExec.camcSendCommand(id, sendEnter), stdin, SEND_TIMEOUT_MS);
+        MobileSshExec.Result res = MobileAgentOutputSessions.execStdin(
+            auth, id, MobileSshExec.camcSendCommand(id, sendEnter), stdin, SEND_TIMEOUT_MS);
         if (!res.ok) {
             return new JSONObject()
                 .put("error", res.error != null ? res.error : "send_failed")
@@ -790,8 +790,8 @@ public final class MobileEmbeddedHub {
                 .put("detail", "SSH key path is required for key auth");
         }
         String id = agent.optString("id", agentId);
-        MobileSshExec.Result res = MobileSshExec.exec(
-            auth, MobileSshExec.camcKeyCommand(id, key), SEND_TIMEOUT_MS);
+        MobileSshExec.Result res = MobileAgentOutputSessions.exec(
+            auth, id, MobileSshExec.camcKeyCommand(id, key), SEND_TIMEOUT_MS);
         if (!res.ok) {
             return new JSONObject()
                 .put("error", res.error != null ? res.error : "send_key_failed")
@@ -873,8 +873,8 @@ public final class MobileEmbeddedHub {
             auth.port = agent.optInt("machine_port", auth.port);
         }
         String id = agent.optString("id", agentId);
-        MobileSshExec.Result cap = MobileSshExec.exec(
-            auth, MobileSshExec.camcCaptureCommand(id, lines), SYNC_TIMEOUT_MS);
+        MobileSshExec.Result cap = MobileAgentOutputSessions.exec(
+            auth, id, MobileSshExec.camcCaptureCommand(id, lines), SYNC_TIMEOUT_MS);
         if (!cap.ok) {
             return new JSONObject()
                 .put("error", cap.error != null ? cap.error : "capture_failed")
