@@ -175,8 +175,8 @@ def list_skills():
 # Auto-install manifest skills to project directory
 # ---------------------------------------------------------------------------
 
-def install_manifest_skills(workdir, force=False):
-    """Install all manifest skills into <workdir>/.claude/skills/.
+def install_manifest_skills(workdir, force=False, config_dir=".claude"):
+    """Install manifest skills into <workdir>/<tool-config-dir>/skills/.
 
     Called automatically by camc run and scheduler before agent launch.
     Silently skips empty manifest or missing skills (no error — missing
@@ -185,7 +185,7 @@ def install_manifest_skills(workdir, force=False):
     skills = load_manifest()
     if not skills:
         return {}
-    out_dir = os.path.join(workdir, ".claude", "skills")
+    out_dir = os.path.join(workdir, config_dir, "skills")
     results = {}
     for name in skills:
         results.update(_install_one(name, out_dir, force))

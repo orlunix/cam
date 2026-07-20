@@ -133,7 +133,7 @@ thread:
   is non-fatal because the mailbox already has the message.
 - stdout: `REPLIED_TO=<msg_id>`, `SEQ=<n>`, `MAILBOX=<mailbox_id>`.
 
-`camc msg read` is the new conceptual API:
+`camc msg read` is the new messaging protocol interface:
 - No args → list unread deliveries for the current mailbox (table
   with msg_id / seq / ts / from / preview).
 - `--next` → print body of oldest unread, header includes msg_id and
