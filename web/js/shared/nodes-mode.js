@@ -10,14 +10,14 @@
  *     (Filter Agents, Edit Host, Sync Host, Delete Host, New Context)
  *     plus the contexts list.
  *   - **Context-row level**: collapsed shows context name + remote
- *     path + small [edit] / [delete] buttons; click the row header
+ *     path + small [duplicate] / [edit] / [delete] buttons; click the row header
  *     to reveal env_setup and the last-sync diagnostic detail.
  *
  * Action ownership:
  *   - Host-level:   Filter Agents, Edit Host, Sync Host, Delete
  *                   Host, New Context. Host actions never appear
  *                   on context rows.
- *   - Context-level: Edit Context (name read-only, remote path,
+ *   - Context-level: Duplicate Context, Edit Context (name, remote path,
  *                   env_setup) and Delete Context
  *                   only. No per-context Sync; Sync Host covers
  *                   the host and surfaces the result back on each
@@ -129,6 +129,18 @@ export function mountNodesMode({
 
   function readOnly() {
     return typeof isReadOnly === 'function' && isReadOnly();
+  }
+
+  function nextIndexedContextName(sourceName) {
+    const base = String(sourceName || '').trim() || 'context';
+    const used = new Set((state.get('contexts') || []).map(c => c && c.name).filter(Boolean));
+    let i = 2;
+    let candidate = `${base}-${i}`;
+    while (used.has(candidate)) {
+      i += 1;
+      candidate = `${base}-${i}`;
+    }
+    return candidate;
   }
 
   function applyReadOnlyChrome() {
@@ -481,10 +493,47 @@ export function mountNodesMode({
     return `<div class="host-card-actions">${acts.join('')}</div>`;
   }
 
+  function renderContextActions(ctx) {
+    const browseLabel = mobileForm ? 'Browse' : 'browse';
+    const duplicateLabel = mobileForm ? 'Dup' : 'duplicate';
+    const editLabel = mobileForm ? 'Edit' : 'edit';
+    const deleteLabel = mobileForm ? 'Del' : 'delete';
+    return `
+            ${typeof onBrowseContext === 'function' ? `<button type="button" class="btn-xs ctx-browse-context-btn" data-context-id="${esc(ctx.id || ctx.name)}">${browseLabel}</button>` : ''}
+            ${readOnly() ? '' : `<button type="button" class="btn-xs ctx-duplicate-context-btn" data-name="${esc(ctx.name)}">${duplicateLabel}</button>`}
+            ${readOnly() ? '' : `<button type="button" class="btn-xs ctx-edit-context-btn"   data-name="${esc(ctx.name)}">${editLabel}</button>
+            <button type="button" class="btn-xs btn-xs-danger ctx-delete-context-btn" data-name="${esc(ctx.name)}">${deleteLabel}</button>`}`;
+  }
+
+  function renderDesktopContextMain(ctx, lastOneLine) {
+    return `
+          <div class="ctx-row-main">
+            <div class="ctx-row-title">
+              <span class="ctx-name">${esc(ctx.name)}</span>
+              <span class="ctx-path">${esc(ctx.path || '')}</span>
+            </div>
+            <div class="ctx-row-sub dim">last sync: ${esc(lastOneLine)}</div>
+          </div>`;
+  }
+
+  function renderMobileContextMain(ctx, actionButtons) {
+    return `
+          <div class="ctx-row-main ctx-row-main-stacked">
+            <div class="ctx-row-title">
+              <span class="ctx-name">${esc(ctx.name)}</span>
+            </div>
+            <div class="ctx-row-path-line">
+              <span class="ctx-path">${esc(ctx.path || '')}</span>
+            </div>
+            <div class="ctx-row-actions">${actionButtons}</div>
+          </div>`;
+  }
+
   function renderContextRow(ctx) {
     const expanded = expandedCtxNames.has(ctx.name);
     const env = (ctx.machine && ctx.machine.env_setup) || '';
     const lastOneLine = lastSyncOneLine(ctx);
+    const actionButtons = renderContextActions(ctx);
     const body = expanded ? `
       <div class="ctx-row-body">
         ${env
@@ -499,19 +548,9 @@ export function mountNodesMode({
       <div class="ctx-row${expanded ? ' expanded' : ''}" data-name="${esc(ctx.name)}">
         <div class="ctx-row-header">
           <span class="ctx-row-chevron">&#9656;</span>
-          <div class="ctx-row-main">
-            <div class="ctx-row-title">
-              <span class="ctx-name">${esc(ctx.name)}</span>
-              <span class="ctx-path">${esc(ctx.path || '')}</span>
-            </div>
-            <div class="ctx-row-sub dim">last sync: ${esc(lastOneLine)}</div>
-          </div>
-          <div class="ctx-row-actions">
-            ${typeof onBrowseContext === 'function' ? `<button type="button" class="btn-xs ctx-browse-context-btn" data-context-id="${esc(ctx.id || ctx.name)}">browse</button>` : ''}
-            ${mobileForm ? '' : `<button type="button" class="btn-xs ctx-duplicate-context-btn" data-name="${esc(ctx.name)}">duplicate</button>`}
-            ${readOnly() ? '' : `<button type="button" class="btn-xs ctx-edit-context-btn"   data-name="${esc(ctx.name)}">edit</button>
-            <button type="button" class="btn-xs btn-xs-danger ctx-delete-context-btn" data-name="${esc(ctx.name)}">delete</button>`}
-          </div>
+          ${mobileForm ? renderMobileContextMain(ctx, actionButtons) : `
+          ${renderDesktopContextMain(ctx, lastOneLine)}
+          <div class="ctx-row-actions">${actionButtons}</div>`}
         </div>
         ${body}
       </div>`;
@@ -891,9 +930,9 @@ export function mountNodesMode({
  *   - Add Host:       host + workspace fields visible (create new host).
  *   - Edit Host:      host fields visible; workspace fields hidden;
  *                     submit fan-outs to every context on the host.
- *   - Edit Context:   name is visible/read-only; remote path and
- *                     env setup are editable; host fields are visible
- *                     but disabled/grey; submit PUTs path/env only.
+ *   - Edit Context:   name, remote path, and env setup are editable;
+ *                     host fields are visible but disabled/grey;
+ *                     submit PUTs name/path/env only.
  *   - Add Context:    workspace fields visible; host fields hidden
  *                     (inherited from the parent host); submit POSTs
  *                     a new context that copies the host's machine
@@ -1061,6 +1100,12 @@ function mountNodesActions({
     fPath.addEventListener('input', () => { fPath.dataset.autofill = ''; });
   }
 
+  if (mobileForm && fName) {
+    if (fNodeName) fNodeName.addEventListener('input', syncMobileContextNameDefault);
+    if (fHost) fHost.addEventListener('input', syncMobileContextNameDefault);
+    fName.addEventListener('input', () => { fName.dataset.autofill = ''; });
+  }
+
   if (fBrowse && fKey) {
     fBrowse.addEventListener('click', async () => {
       const f = bridgeFiles();
@@ -1120,6 +1165,47 @@ function mountNodesActions({
 
   function isAddHostMode() {
     return !editHostNode && !editContextTarget && !addContextNode;
+  }
+
+  function mobileDefaultRemotePath(value, user) {
+    const explicit = String(value == null ? '' : value).trim();
+    if (explicit) return explicit;
+    const u = String(user == null ? '' : user).trim();
+    return u ? `/home/${u}` : '/home';
+  }
+
+  function mobileShortHostName(host) {
+    return String(host == null ? '' : host).trim().split('.')[0] || '';
+  }
+
+  function mobileDefaultContextName({ explicitName = '', nodeName = '', host = '' } = {}) {
+    const explicit = String(explicitName == null ? '' : explicitName).trim();
+    if (explicit) return explicit;
+    return pickContextName(String(nodeName == null ? '' : nodeName).trim() || mobileShortHostName(host) || 'node');
+  }
+
+  function ensureMobileRemotePathDefault(user) {
+    if (!mobileForm || !fPath) return;
+    if (fPath.value.trim()) return;
+    fPath.value = mobileDefaultRemotePath('', user);
+    fPath.dataset.autofill = '1';
+  }
+
+  function ensureMobileContextNameDefault(host) {
+    if (!mobileForm || !fName) return;
+    if (fName.value.trim()) return;
+    const nodeName = fNodeName ? fNodeName.value.trim() : '';
+    fName.value = mobileDefaultContextName({ explicitName: '', nodeName, host });
+    fName.dataset.autofill = '1';
+  }
+
+  function syncMobileContextNameDefault() {
+    if (!mobileForm || !fName) return;
+    if (fName.value.trim() && fName.dataset.autofill !== '1') return;
+    const host = fHost ? fHost.value.trim() : '';
+    const nodeName = fNodeName ? fNodeName.value.trim() : '';
+    fName.value = mobileDefaultContextName({ explicitName: '', nodeName, host });
+    fName.dataset.autofill = '1';
   }
 
   function collectDraft() {
@@ -1309,8 +1395,11 @@ function mountNodesActions({
     const m = (ctx && ctx.machine) || {};
     if (fName) {
       fName.value    = ctx.name || '';
-      fName.readOnly = true;
-      fName.setAttribute('aria-readonly', 'true');
+      fName.readOnly = false;
+      fName.disabled = false;
+      fName.removeAttribute('aria-readonly');
+      fName.removeAttribute('aria-disabled');
+      if (mobileForm) fName.dataset.autofill = '';
     }
     if (fPath) {
       fPath.value = ctx.path || (m.user ? `/home/${m.user}` : '');
@@ -1376,9 +1465,10 @@ function mountNodesActions({
 
   /** Open the manage panel to DUPLICATE a context: reuses the
    *  add-context submit path (so a NEW context is created, not an
-   *  update), with the name field editable and prefilled
-   *  "<orig>-copy", and path/env prefilled from the source context.
-   *  Host fields are inherited from the source context's machine. */
+   *  update), with the name field editable and prefilled with the
+   *  next numeric name (for example "ctx-2"), and path/env
+   *  prefilled from the source context. Host fields are inherited
+   *  from the source context's machine. */
   panel._openDuplicateContext = function openDuplicateContext(ctx) {
     if (readOnly()) return;
     if (!ctx) return;
@@ -1432,12 +1522,8 @@ function mountNodesActions({
     if (addCtxScopeEl) addCtxScopeEl.textContent = epLabel;
 
     if (fName) {
-      // Name is editable (unlike edit) and prefilled "<orig>-copy".
-      const used = new Set(all.map(c => c.name));
-      let candidate = `${ctx.name}-copy`;
-      let i = 2;
-      while (used.has(candidate)) candidate = `${ctx.name}-copy-${i++}`;
-      fName.value = candidate;
+      // Name is editable and prefilled with the next numeric suffix.
+      fName.value = nextIndexedContextName(ctx.name);
       // Explicitly editable — duplicate must allow renaming, unlike
       // Edit Context (which is name-read-only). Clear every attribute
       // that could make the field non-editable: readOnly, disabled,
@@ -1495,17 +1581,30 @@ function mountNodesActions({
     const isContextEdit = !!editContextTarget;
     const isAddContext  = !!addContextNode;
 
-    // ── Context-edit: context name read-only; path/env only. ─────
+    // ── Context-edit: context name/path/env. ───────────────────
     if (isContextEdit) {
-      const ctxPath = (fPath && fPath.value.trim()) || '';
-      if (!ctxPath) { setAddStatus('Remote path is required.', 'is-error'); return; }
-      const body = { path: ctxPath, env_setup: fEnv ? fEnv.value.trim() : '' };
-      setAddStatus(`Saving context "${editContextTarget}"…`);
+      const currentCtx = (state.get('contexts') || []).find(c => c.name === editContextTarget || c.id === editContextTarget) || {};
+      const currentMachine = (currentCtx && currentCtx.machine) || {};
+      const nextName = (fName && fName.value.trim()) || '';
+      const ctxPath = mobileForm
+        ? mobileDefaultRemotePath(fPath ? fPath.value : '', currentMachine.user)
+        : ((fPath && fPath.value.trim()) || '');
+      if (!nextName || !ctxPath) { setAddStatus('Context name and remote path are required.', 'is-error'); return; }
+      const body = { name: nextName, path: ctxPath, env_setup: fEnv ? fEnv.value.trim() : '' };
+      setAddStatus(`Saving context "${nextName}"…`);
       try {
         await persistReady('Save context');
         await persistUpdate(editContextTarget, body);
-        setAddStatus(`Saved context "${editContextTarget}" locally.`, 'is-ok');
-        showToast(`Context "${editContextTarget}" saved`, 'success');
+        if (nextName !== editContextTarget) {
+          expandedCtxNames.delete(editContextTarget);
+          expandedCtxNames.add(nextName);
+          if (lastSync.has(editContextTarget) && !lastSync.has(nextName)) {
+            lastSync.set(nextName, lastSync.get(editContextTarget));
+          }
+          lastSync.delete(editContextTarget);
+        }
+        setAddStatus(`Saved context "${nextName}" locally.`, 'is-ok');
+        showToast(`Context "${nextName}" saved`, 'success');
         try { await loadContextsAndAdapters(); } catch (_) {}
         if (typeof loadAgents === 'function') { try { await loadAgents(); } catch (_) {} }
         closeManage({ resetForm: true });
@@ -1521,9 +1620,13 @@ function mountNodesActions({
       const node    = addContextNode;
       const primary = node.contexts[0] || {};
       const m       = (primary && primary.machine) || {};
-      const name    = fName ? fName.value.trim() : '';
-      const ctxPath = (fPath && fPath.value.trim()) || (m.user ? `/home/${m.user}` : '');
-      if (!name || !ctxPath) {
+      const name = mobileForm
+        ? mobileDefaultContextName({ explicitName: fName ? fName.value.trim() : '', nodeName: node.displayName || node.nodeName || '', host: m.host })
+        : (fName ? fName.value.trim() : '');
+      const ctxPath = mobileForm
+        ? mobileDefaultRemotePath(fPath ? fPath.value : '', m.user)
+        : ((fPath && fPath.value.trim()) || (m.user ? `/home/${m.user}` : ''));
+      if (!mobileForm && (!name || !ctxPath)) {
         setAddStatus('Name and remote path are required.', 'is-error');
         return;
       }
@@ -1591,15 +1694,21 @@ function mountNodesActions({
     const user = fUser.value.trim();
     const port = Number.parseInt(fPort.value, 10) || 22;
     const authMethod = (fAuth && fAuth.value) || 'key';
+    ensureMobileRemotePathDefault(user);
+    ensureMobileContextNameDefault(host);
 
     if (!host || !user) {
       setAddStatus('Host and user are required.', 'is-error');
       return;
     }
     if (!isHostEdit) {
-      const name = fName.value.trim();
-      const ctxPath = fPath.value.trim() || (user ? `/home/${user}` : '');
-      if (!name || !ctxPath) {
+      const name = mobileForm
+        ? mobileDefaultContextName({ explicitName: fName.value.trim(), nodeName: fNodeName ? fNodeName.value.trim() : '', host })
+        : fName.value.trim();
+      const ctxPath = mobileForm
+        ? mobileDefaultRemotePath(fPath.value, user)
+        : (fPath.value.trim() || (user ? `/home/${user}` : ''));
+      if (!mobileForm && (!name || !ctxPath)) {
         setAddStatus('Name and remote path are required.', 'is-error');
         return;
       }
@@ -1692,8 +1801,12 @@ function mountNodesActions({
     }
 
     // Add-host path: single POST, then refresh.
-    const name = fName.value.trim();
-    const ctxPath = fPath.value.trim() || (user ? `/home/${user}` : '');
+    const name = mobileForm
+      ? mobileDefaultContextName({ explicitName: fName.value.trim(), nodeName: fNodeName ? fNodeName.value.trim() : '', host })
+      : fName.value.trim();
+    const ctxPath = mobileForm
+      ? mobileDefaultRemotePath(fPath.value, user)
+      : (fPath.value.trim() || (user ? `/home/${user}` : ''));
     const addBody = {
       name,
       path:      ctxPath,
