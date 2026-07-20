@@ -439,7 +439,7 @@ public final class MobileSshExec {
             || msg.contains("failed to connect");
     }
 
-    private static Result execOnSession(Session session, String command, int cmdBudget, byte[] stdin) {
+    static Result execOnSession(Session session, String command, int cmdBudget, byte[] stdin) {
         Result out = new Result();
         ChannelExec channel = null;
         try {

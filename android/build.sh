@@ -107,6 +107,7 @@ javac \
     "$SRC_DIR/java/com/cam/app/MobileSshAuth.java" \
     "$SRC_DIR/java/com/cam/app/MobileSshPool.java" \
     "$SRC_DIR/java/com/cam/app/MobileSshExec.java" \
+    "$SRC_DIR/java/com/cam/app/MobileAgentOutputSessions.java" \
     "$SRC_DIR/java/com/cam/app/MobileTerminalManager.java" \
     "$BUILD_DIR/gen/com/cam/app/R.java"
 
