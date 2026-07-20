@@ -117,9 +117,9 @@ def _inject_embedded_skills(src):
     """Inject skill file trees from src/camc_pkg/skills/ as a nested dict.
 
     _EMBEDDED_SKILLS = {
-        "managing-cam": {
+        "managing-camc": {
             "SKILL.md": r'''...''',
-            "reference/contexts-and-machines.md": r'''...''',
+            "reference/sessions.md": r'''...''',
         },
         ...
     }
