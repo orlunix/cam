@@ -1712,6 +1712,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   // Convenience: wrap an async action with inflight tracking
   // immediate=true shows toast instantly (for user actions like send/key)
   async function _tracked(label, fn, immediate = false) {
+    if (label === 'Fetching output') return await fn();
     const id = _startInflightTracking(label, immediate);
     try {
       const result = await fn();
