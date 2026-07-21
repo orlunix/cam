@@ -42,6 +42,23 @@ public final class MobileSshExec {
         return shellCommand("\"$HOME/.cam/camc\" --json list");
     }
 
+    public static String camcRunCommand(String tool, String path, String prompt, String name, boolean autoExit) {
+        StringBuilder inner = new StringBuilder("\"$HOME/.cam/camc\" --json run -t ")
+            .append(argQuote(tool != null && !tool.trim().isEmpty() ? tool.trim() : "claude"))
+            .append(" -p ").append(argQuote(path != null ? path.trim() : ""));
+        if (name != null && !name.trim().isEmpty()) {
+            inner.append(" -n ").append(argQuote(name.trim()));
+        }
+        if (autoExit) inner.append(" --auto-exit");
+        inner.append(" ").append(argQuote(prompt != null ? prompt : ""));
+        return shellCommand(inner.toString());
+    }
+
+    public static String camcStatusCommand(String agentId) {
+        String id = agentId != null ? agentId.trim() : "";
+        return shellCommand("\"$HOME/.cam/camc\" --json status " + argQuote(id));
+    }
+
     public static String camcCaptureCommand(String agentId, int lines) {
         String id = agentId != null ? agentId.trim() : "";
         int n = lines > 0 ? Math.min(lines, 5000) : 200;
@@ -80,11 +97,17 @@ public final class MobileSshExec {
         return "'" + s.replace("'", "'\\''") + "'";
     }
 
+    private static String argQuote(String s) {
+        return "'" + (s != null ? s : "").replace("'", "'\\''") + "'";
+    }
+
     private MobileSshExec() {}
 
     private static String commandLabel(String command) {
         if (command == null) return "?";
         if (command.contains("camc\" --json list") || command.contains("camc --json list")) return "camc list";
+        if (command.contains(" --json run ")) return "camc run";
+        if (command.contains(" --json status ")) return "camc status";
         if (command.contains("test -x")) return "camc check";
         if (command.contains(" capture ")) return "camc capture";
         if (command.contains(" send ")) return "camc send";

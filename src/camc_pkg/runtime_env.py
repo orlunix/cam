@@ -547,6 +547,7 @@ def check_tool_readiness(runtime, selected_tool, tool_binary=None,
     else:
         spec = _TOOL_SPECS.get(selected_tool, {})
         readiness_source = "fallback"
+    other_tool = not spec
 
     # ---- tmux (required) ----
     # 2026-06-23 PDX hardening: prefer the golden /bin/tmux over PATH
@@ -670,6 +671,14 @@ def check_tool_readiness(runtime, selected_tool, tool_binary=None,
                         % (bin_name, tool_path)],
                 }
                 issues.append(("warn", tool_resolution["warnings"][0]))
+    if not tool_path and other_tool:
+        tool_path = bin_name
+        tool_resolution = {
+            "tool": selected_tool, "bin": tool_path,
+            "source": "unresolved", "warnings": [
+                "tool not found in PATH; passing raw name to tmux: %s" % tool_path],
+        }
+        issues.append(("warn", tool_resolution["warnings"][0]))
     resolved["tool_resolution"] = tool_resolution
     if not tool_path:
         hint = spec.get("install_hint", "ensure '%s' is in effective PATH" % bin_name)
@@ -679,7 +688,8 @@ def check_tool_readiness(runtime, selected_tool, tool_binary=None,
     else:
         resolved["tool"] = tool_path
         version_args = spec.get("version_args", ["--version"])
-        rc, _out = run_probe(runtime, [tool_path] + version_args, timeout=5)
+        rc, _out = (0, "") if other_tool else run_probe(
+            runtime, [tool_path] + version_args, timeout=5)
         # F2: any non-zero rc — including -1 (timeout/OSError) — must
         # block. The previous "warn for rc != 0 and rc != -1" branch
         # let a broken-but-present binary silently pass readiness, then
