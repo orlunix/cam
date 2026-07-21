@@ -611,6 +611,17 @@ function findContextByNameOrId(nameOrId) {
 function applyContextUpdate(existing, body) {
   // Apply only known scalar fields; refuse to rewrite id/created_at.
   const next = { ...existing };
+  if (body.name != null) {
+    const nextName = String(body.name || '').trim();
+    if (!NAME_RE.test(nextName)) {
+      return { error: 'invalid_name', detail: 'name must match [A-Za-z0-9_-]{1,64}' };
+    }
+    const dup = nextName !== existing.name && findContextByName(nextName);
+    if (dup) {
+      return { error: 'duplicate_name', detail: `context "${nextName}" already exists` };
+    }
+    next.name = nextName;
+  }
   if (body.path != null)       next.path = String(body.path).trim();
   if (body.tags != null && Array.isArray(body.tags)) {
     next.tags = body.tags.filter(t => typeof t === 'string' && t).slice(0, 32);
@@ -3786,8 +3797,14 @@ async function handle(req, res) {
       catch (e) { return send400(res, e.message); }
       const upd = applyContextUpdate(existing, body || {});
       if (upd.error) return send400(res, upd.detail || upd.error, upd.error);
+      const oldContextName = existing.name;
       const idx = state.store.contexts.findIndex(c => c === existing);
       state.store.contexts[idx] = upd.record;
+      if (upd.record.name !== oldContextName && Array.isArray(state.store.agents)) {
+        for (const a of state.store.agents) {
+          if (a && a.context_name === oldContextName) a.context_name = upd.record.name;
+        }
+      }
       saveStore();
       pushLog('info', `context updated: ${ctxName}`);
       return sendJson(res, 200, upd.record);

@@ -273,6 +273,23 @@ async function main() {
   r = await request('GET', '/api/contexts/ren01');
   eq('context GET by name', r.status, 200);
   eq('context GET by name matches', r.body && r.body.name, 'ren01');
+
+  r = await request('PATCH', '/api/contexts/' + encodeURIComponent(ctxId), { name: 'v6box' });
+  eq('context rename rejects duplicate name status', r.status, 400);
+  eq('context rename rejects duplicate name error', r.body && r.body.error, 'duplicate_name');
+  r = await request('PATCH', '/api/contexts/' + encodeURIComponent(ctxId), { name: 'ren02' });
+  eq('context rename by id status', r.status, 200);
+  eq('context rename by id changes name', r.body && r.body.name, 'ren02');
+  r = await request('GET', '/api/contexts/ren01');
+  eq('context old name no longer resolves after rename', r.status, 404);
+  r = await request('GET', '/api/contexts/ren02');
+  eq('context new name resolves after rename', r.status, 200);
+  eq('context new name matches', r.body && r.body.name, 'ren02');
+  r = await request('GET', '/api/agents');
+  ok('context rename updates local agent context names',
+    Array.isArray(r.body && r.body.agents)
+      && r.body.agents.some(a => a && a.id === 'feedbeef' && a.context_name === 'ren02'),
+    JSON.stringify(r.body));
   // Sync Host by id (CAM-DESK-NODEUI-014): the /sync sub-route shares
   // the same id-or-name resolution.
   setRemoteHandler((opts) => {
