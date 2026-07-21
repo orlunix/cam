@@ -525,10 +525,10 @@ def _load_config(tool):
     """
     key = "%s.toml" % tool
     if key not in _EMBEDDED_CONFIGS:
-        sys.stderr.write("Error: no config for tool '%s'\n" % tool)
-        sys.stderr.write("Available: %s\n" % ", ".join(
-            k.replace(".toml", "") for k in _EMBEDDED_CONFIGS))
-        sys.exit(1)
+        return AdapterConfig({
+            "adapter": {"config_dir": ".agents"},
+            "launch": {"command": [tool], "prompt_after_launch": False},
+        })
 
     config = _parse_toml(_EMBEDDED_CONFIGS[key])
 

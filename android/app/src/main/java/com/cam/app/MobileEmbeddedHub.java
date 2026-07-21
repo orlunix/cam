@@ -31,6 +31,7 @@ import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -42,6 +43,8 @@ public final class MobileEmbeddedHub {
     private static final int DEFAULT_PORT = 8420;
     private static final int PORT_SCAN = 50;
     private static final Pattern NAME_RE = Pattern.compile("[A-Za-z0-9_-]{1,64}");
+    private static final Pattern NODE_KEY_RE = Pattern.compile("^([^@]+)@(\\[[^\\]]+\\]|[^:]+):(\\d+)$");
+    private static final Pattern RUN_AGENT_ID_RE = Pattern.compile("(?m)^\\s*ID:\\s+([0-9a-fA-F]{6,})\\b");
     private static final String PRODUCT_VERSION = "cam-mobile-embedded-1";
 
     private final Context appContext;
@@ -407,6 +410,24 @@ public final class MobileEmbeddedHub {
                 JSONArray agents = store.optJSONArray("agents");
                 if (agents == null) agents = new JSONArray();
                 return jsonResponse(200, new JSONObject().put("agents", agents));
+            }
+
+            if ("POST".equals(method) && "/api/agents".equals(path)) {
+                JSONObject body = bodyBytes.length > 0
+                    ? new JSONObject(new String(bodyBytes, StandardCharsets.UTF_8))
+                    : new JSONObject();
+                JSONObject started = startAgent(body);
+                if (!started.optBoolean("ok", false)) {
+                    String err = started.optString("error", "start_failed");
+                    return jsonResponse(startHttpStatus(err), new JSONObject()
+                        .put("error", err)
+                        .put("detail", started.optString("detail", "start failed")));
+                }
+                JSONObject agent = started.optJSONObject("record");
+                return jsonResponse(201, new JSONObject()
+                    .put("agent", agent != null ? agent : JSONObject.NULL)
+                    .put("agentId", started.optString("agentId", ""))
+                    .put("direct_limitations", directStartLimitations(body)));
             }
 
             if ("GET".equals(method) && "/api/system/config".equals(path)) {
@@ -1117,6 +1138,299 @@ public final class MobileEmbeddedHub {
 
     private static final int SYNC_TIMEOUT_MS = 60000;
     private static final int SEND_TIMEOUT_MS = 30000;
+    private static final int RUN_REMOTE_TIMEOUT_MS = 45000;
+
+    private JSONObject startAgent(JSONObject body) throws Exception {
+        if (body == null) body = new JSONObject();
+        StartTarget target = resolveStartTarget(body);
+        if (!target.ok()) {
+            return new JSONObject()
+                .put("ok", false)
+                .put("error", target.error)
+                .put("detail", target.detail);
+        }
+        JSONObject runBody = new JSONObject(body.toString());
+        runBody.put("prompt", body.optString("prompt", "").trim());
+        if (!runBody.has("path") || runBody.optString("path", "").trim().isEmpty()) {
+            runBody.put("path", target.ctx != null ? target.ctx.optString("path", "") : "");
+        }
+        return startRemoteAgent(runBody, target);
+    }
+
+    private JSONObject startRemoteAgent(JSONObject body, StartTarget target) throws Exception {
+        if (target == null || target.auth == null) {
+            return new JSONObject()
+                .put("ok", false)
+                .put("error", "not_ssh")
+                .put("detail", "start requires an SSH node");
+        }
+        String tool = body.optString("tool", "claude").trim();
+        String path = body.optString("path", "").trim();
+        String prompt = body.optString("prompt", "");
+        String name = body.optString("name", "").trim();
+        boolean autoExit = body.optBoolean("auto_exit", false);
+
+        MobileHubLog.ssh("start run " + tool + " " + MobileHubLog.endpoint(target.auth));
+        MobileSshExec.SequenceResult seq = MobileSshExec.execSequence(
+            target.auth,
+            new String[] {
+                MobileSshExec.camcCheckCommand(),
+                MobileSshExec.camcRunCommand(tool, path, prompt, name, autoExit),
+            },
+            RUN_REMOTE_TIMEOUT_MS);
+        if (!seq.ok || seq.steps == null || seq.steps.length < 2) {
+            MobileSshExec.Result check = seq.steps != null && seq.steps.length > 0 ? seq.steps[0] : null;
+            if (check == null || !check.ok) {
+                return failStartProbe(check, target.auth.user, target.auth.host, target.auth.port);
+            }
+            MobileSshExec.Result run = seq.steps.length > 1 ? seq.steps[1] : null;
+            return failStartRun(run);
+        }
+
+        MobileSshExec.Result run = seq.steps[1];
+        if (!run.ok) return failStartRun(run);
+        String agentId = parseRunAgentId(run.stdout);
+        if (agentId.isEmpty()) {
+            return new JSONObject()
+                .put("ok", false)
+                .put("error", "no_agent_id")
+                .put("detail", "remote camc run did not print an agent ID");
+        }
+
+        JSONObject record = null;
+        MobileSshExec.Result status = MobileSshExec.exec(
+            target.auth,
+            MobileSshExec.camcStatusCommand(agentId),
+            8000);
+        if (status != null && status.ok) {
+            try { record = new JSONObject(status.stdout.trim()); } catch (Exception ignored) { record = null; }
+        }
+        if (record == null) record = fallbackStartedRecord(agentId, body);
+
+        JSONObject normalized = normalizeAgent(record, target.ctx);
+        stampStartRequestFields(normalized, body);
+        if (normalized != null && !normalized.optString("id", "").isEmpty()) {
+            upsertStartedAgent(normalized);
+            if (target.markContext != null) markContextUsed(target.markContext);
+            log("info", "start remote agent: " + normalized.optString("id") + " (" + normalized.optString("tool") + ")");
+        }
+        return new JSONObject()
+            .put("ok", true)
+            .put("agentId", agentId)
+            .put("record", normalized != null ? normalized : JSONObject.NULL);
+    }
+
+    private StartTarget resolveStartTarget(JSONObject body) throws Exception {
+        String ctxName = body != null ? body.optString("context", "").trim() : "";
+        if (!ctxName.isEmpty()) {
+            JSONObject ctx = resolveContext(ctxName, null);
+            if (ctx == null) return StartTarget.error("context_not_found", "context \"" + ctxName + "\" not found");
+            StartTarget target = startTargetForContext(ctx);
+            if (!target.ok()) return target;
+            target.markContext = ctx;
+            return target;
+        }
+
+        String nodeKey = body != null ? body.optString("node", "").trim() : "";
+        String path = body != null ? body.optString("path", "").trim() : "";
+        if (nodeKey.isEmpty() || path.isEmpty()) {
+            return StartTarget.error("missing_target", "provide either a context or a node + path");
+        }
+        if ("local".equals(nodeKey)) {
+            return StartTarget.error("local_unsupported", "local starts are unsupported on Mobile Direct; add an SSH node first");
+        }
+        Matcher m = NODE_KEY_RE.matcher(nodeKey);
+        if (!m.matches()) {
+            return StartTarget.error("bad_node", "unrecognized node key \"" + nodeKey + "\"");
+        }
+        String user = m.group(1).trim();
+        String host = stripHostBrackets(m.group(2).trim());
+        int port;
+        try { port = Integer.parseInt(m.group(3)); } catch (Exception e) { port = 22; }
+
+        JSONObject donor = findContextForEndpoint(host, user, port);
+        if (donor == null) {
+            return StartTarget.error("node_not_registered", "no registered context for " + user + "@" + host + ":" + port + ". Add the host on the Nodes page first.");
+        }
+        StartTarget target = startTargetForContext(donor);
+        if (!target.ok()) return target;
+        JSONObject throwaway = new JSONObject()
+            .put("id", UUID.randomUUID().toString())
+            .put("name", user + "@" + host + ":" + port)
+            .put("path", path)
+            .put("machine", new JSONObject()
+                .put("type", "ssh")
+                .put("host", host)
+                .put("user", user)
+                .put("port", port)
+                .put("auth_method", target.auth.authMethod)
+                .put("key_file", target.auth.keyFile != null ? target.auth.keyFile : ""));
+        target.ctx = throwaway;
+        target.markContext = donor;
+        target.auth.host = host;
+        target.auth.user = user;
+        target.auth.port = port;
+        return target;
+    }
+
+    private StartTarget startTargetForContext(JSONObject ctx) throws Exception {
+        JSONObject m = ctx != null ? ctx.optJSONObject("machine") : null;
+        if (m == null || !"ssh".equals(m.optString("type", ""))) {
+            return StartTarget.error("not_ssh", "start requires an SSH context");
+        }
+        MobileSshAuth.Options auth = MobileSshAuth.fromMachine(m, credentialStore);
+        if (auth.host == null || auth.host.isEmpty() || auth.user == null || auth.user.isEmpty()) {
+            return StartTarget.error("invalid_context", "SSH host and user are required");
+        }
+        if ("password".equals(auth.authMethod) && (auth.password == null || auth.password.isEmpty())) {
+            return StartTarget.error("credential_missing", "password auth is configured but no remembered password is available");
+        }
+        if ("key".equals(auth.authMethod) && (auth.keyFile == null || auth.keyFile.isEmpty())) {
+            return StartTarget.error("key_file_missing", "SSH key path is required for key auth");
+        }
+        StartTarget t = new StartTarget();
+        t.ctx = ctx;
+        t.auth = auth;
+        return t;
+    }
+
+    private JSONObject findContextForEndpoint(String host, String user, int port) throws Exception {
+        JSONArray ctxArr = store.getJSONArray("contexts");
+        String bareHost = stripHostBrackets(host);
+        String wantUser = user != null ? user.trim() : "";
+        for (int i = 0; i < ctxArr.length(); i++) {
+            JSONObject ctx = ctxArr.getJSONObject(i);
+            JSONObject m = ctx.optJSONObject("machine");
+            if (m == null || !"ssh".equals(m.optString("type", ""))) continue;
+            String haveHost = stripHostBrackets(m.optString("host", "").trim());
+            if (!hostMatches(haveHost, bareHost)) continue;
+            if (!wantUser.equals(m.optString("user", "").trim())) continue;
+            if (port != m.optInt("port", 22)) continue;
+            return ctx;
+        }
+        return null;
+    }
+
+    private static String stripHostBrackets(String host) {
+        String h = host != null ? host.trim() : "";
+        return h.startsWith("[") && h.endsWith("]") && h.length() > 1 ? h.substring(1, h.length() - 1) : h;
+    }
+
+    private static String parseRunAgentId(String stdout) {
+        Matcher m = RUN_AGENT_ID_RE.matcher(stdout != null ? stdout : "");
+        return m.find() ? m.group(1) : "";
+    }
+
+    private JSONObject fallbackStartedRecord(String agentId, JSONObject body) throws Exception {
+        JSONObject task = new JSONObject()
+            .put("tool", body.optString("tool", "claude"))
+            .put("name", body.optString("name", ""))
+            .put("prompt", body.optString("prompt", ""));
+        return new JSONObject()
+            .put("id", agentId)
+            .put("status", "running")
+            .put("state", "initializing")
+            .put("task", task)
+            .put("context_path", body.optString("path", ""))
+            .put("transport_type", "ssh");
+    }
+
+    private void stampStartRequestFields(JSONObject normalized, JSONObject body) throws Exception {
+        if (normalized == null || body == null) return;
+        if (body.has("timeout") && !body.isNull("timeout")) normalized.put("requested_timeout", body.optString("timeout", ""));
+        if (body.has("retry") && !body.isNull("retry")) normalized.put("requested_retry", body.optInt("retry", 0));
+        if (body.has("auto_confirm") && !body.optBoolean("auto_confirm", true)) normalized.put("auto_confirm_requested", false);
+    }
+
+    private void upsertStartedAgent(JSONObject incoming) throws Exception {
+        if (incoming == null || incoming.optString("id", "").isEmpty()) return;
+        JSONArray agents = store.optJSONArray("agents");
+        if (agents == null) agents = new JSONArray();
+        JSONArray keep = new JSONArray();
+        for (int i = 0; i < agents.length(); i++) {
+            JSONObject existing = agents.getJSONObject(i);
+            if (sameAgentIdentity(existing, incoming)) continue;
+            keep.put(existing);
+        }
+        keep.put(incoming);
+        store.put("agents", keep);
+        saveStore();
+    }
+
+    private static boolean sameAgentIdentity(JSONObject a, JSONObject b) {
+        if (a == null || b == null) return false;
+        String aId = a.optString("id", "");
+        String bId = b.optString("id", "");
+        if (aId.isEmpty() || !aId.equals(bId)) return false;
+        String aHost = a.optString("machine_host", "").trim();
+        String bHost = b.optString("machine_host", "").trim();
+        if (aHost.isEmpty() || bHost.isEmpty()) return true;
+        return hostMatches(aHost, bHost)
+            && a.optString("machine_user", "").trim().equals(b.optString("machine_user", "").trim())
+            && a.optInt("machine_port", 22) == b.optInt("machine_port", 22);
+    }
+
+    private JSONObject failStartProbe(MobileSshExec.Result r, String user, String host, int port) throws Exception {
+        JSONObject failed = failAttachProbe(r, user, host, port);
+        if (!failed.has("results")) failed.put("results", new JSONObject().put("camc", "failed"));
+        return failed;
+    }
+
+    private JSONObject failStartRun(MobileSshExec.Result r) throws Exception {
+        if (r == null) {
+            return new JSONObject().put("ok", false).put("error", "exec_failed").put("detail", "remote camc run failed");
+        }
+        String detail = r.detail != null && !r.detail.isEmpty() ? r.detail
+            : (r.stderr != null && !r.stderr.isEmpty() ? r.stderr.trim() : "remote camc run failed");
+        return new JSONObject()
+            .put("ok", false)
+            .put("error", r.error != null && !r.error.isEmpty() ? r.error : "run_failed")
+            .put("detail", detail);
+    }
+
+    private static int startHttpStatus(String error) {
+        if ("context_not_found".equals(error)) return 404;
+        if ("agent_not_found".equals(error)) return 404;
+        if ("missing_target".equals(error) || "bad_node".equals(error)
+            || "node_not_registered".equals(error) || "local_unsupported".equals(error)
+            || "not_ssh".equals(error) || "invalid_context".equals(error)
+            || "credential_missing".equals(error) || "key_file_missing".equals(error)
+            || "camc_missing".equals(error) || "no_agent_id".equals(error)) return 400;
+        return 502;
+    }
+
+    private JSONObject directStartLimitations(JSONObject body) throws Exception {
+        return new JSONObject()
+            .put("mode", "direct")
+            .put("auto_confirm", new JSONObject()
+                .put("sent", body != null && body.has("auto_confirm"))
+                .put("enforced", false)
+                .put("note", "camc run forces auto-confirm on; the toggle is accepted for parity but has no effect in Direct mode."))
+            .put("timeout", new JSONObject()
+                .put("sent", body != null && body.has("timeout") && !body.optString("timeout", "").isEmpty())
+                .put("enforced", false)
+                .put("note", "camc run has no --timeout flag; the value is recorded on the agent but not enforced by camc."))
+            .put("retry", new JSONObject()
+                .put("sent", body != null && body.optInt("retry", 0) > 0)
+                .put("enforced", false)
+                .put("note", "camc run has no --retry flag; the value is recorded on the agent but not enforced by camc."));
+    }
+
+    static final class StartTarget {
+        JSONObject ctx;
+        JSONObject markContext;
+        MobileSshAuth.Options auth;
+        String error = "";
+        String detail = "";
+        boolean ok() { return error == null || error.isEmpty(); }
+        static StartTarget error(String error, String detail) {
+            StartTarget t = new StartTarget();
+            t.error = error;
+            t.detail = detail;
+            return t;
+        }
+    }
+
 
     /** Map SSH probe result — only a successful exec with nonzero exit is camc_missing. */
     private JSONObject failRemoteProbe(MobileSshExec.Result r, String user, String host, int port) throws Exception {

@@ -635,6 +635,12 @@
             <label>Tool
               <select id="start-tool" required></select>
             </label>
+            <label id="start-custom-tool-field" hidden>Tool command
+              <input type="text" id="start-custom-tool"
+                placeholder="e.g. qwen-code or /path/to/agent"
+                autocomplete="off" disabled>
+              <span class="form-hint">Runs via <code>camc run --tool</code>; camc records it as <code>others</code>.</span>
+            </label>
             <label>Context
               <select id="start-context">
                 <option value="">Select context…</option>
