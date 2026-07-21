@@ -43,10 +43,6 @@ export const MOBILE_NODES_HTML = `
         <label data-add-ctx-hide="1" data-ctx-edit-hide="1">Node name
           <input type="text" id="nodes-add-nodename" placeholder="Build server" autocomplete="off">
         </label>
-        <label data-host-edit-hide="1">Context name
-          <input type="text" id="nodes-add-name" required placeholder="my-workspace" autocomplete="off"
-            pattern="[A-Za-z0-9_-]{1,64}" title="Letters, digits, underscore, hyphen (1–64 chars)">
-        </label>
         <label data-ctx-edit-readonly="1" data-add-ctx-hide="1">Host
           <input type="text" id="nodes-add-host" required placeholder="host.example.com" autocomplete="off">
         </label>
@@ -55,9 +51,6 @@ export const MOBILE_NODES_HTML = `
         </label>
         <label data-ctx-edit-readonly="1" data-add-ctx-hide="1">Port
           <input type="number" id="nodes-add-port" min="1" max="65535" value="22">
-        </label>
-        <label data-host-edit-hide="1">Remote path
-          <input type="text" id="nodes-add-path" required placeholder="/home/&lt;user&gt;" autocomplete="off">
         </label>
         <label data-ctx-edit-readonly="1" data-add-ctx-hide="1">Auth method
           <select id="nodes-add-auth">
@@ -104,6 +97,13 @@ export const MOBILE_NODES_HTML = `
           </p>
         </div>
 
+        <label data-host-edit-hide="1">Context name
+          <input type="text" id="nodes-add-name" required placeholder="defaults to node name" autocomplete="off"
+            pattern="[A-Za-z0-9_-]{1,64}" title="Letters, digits, underscore, hyphen (1–64 chars)">
+        </label>
+        <label data-host-edit-hide="1">Remote path
+          <input type="text" id="nodes-add-path" required placeholder="/home/&lt;user&gt;" autocomplete="off">
+        </label>
         <label data-host-edit-hide="1">Env setup (optional)
           <input type="text" id="nodes-add-env" placeholder="source ~/.bashrc" autocomplete="off">
         </label>
@@ -115,9 +115,9 @@ export const MOBILE_NODES_HTML = `
         </p>
         <p class="form-hint" data-ctx-edit-only="1" hidden>
           Editing context "<strong id="nodes-ctx-edit-scope-name">…</strong>".
-          Context name is read-only. Remote path and env setup are
-          changed here. Host fields are shown locked/grey because
-          contexts are bound to their host; use
+          Context name, remote path, and env setup are changed here.
+          Host fields are shown locked/grey because contexts are
+          bound to their host; use
           <strong>Edit Host</strong> to change host settings.
         </p>
         <p class="form-hint" data-add-ctx-only="1" hidden>
