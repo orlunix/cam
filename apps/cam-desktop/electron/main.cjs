@@ -441,7 +441,7 @@ function _probeRemoteTmuxBin(opts) {
     try {
       const res = await sshTransport.execRemote({
         ...opts,
-        command: "/bin/sh -c 'command -v /bin/tmux || command -v tmux'",
+        command: "/bin/sh -c 'command -v tmux || command -v /bin/tmux'",
         timeout_ms: 15000,
       });
       const first = res && res.ok ? String(res.stdout || '').split('\n')[0].trim() : '';
