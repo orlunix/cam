@@ -698,7 +698,7 @@ import uuid
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "c78cc50-dirty 2026-07-23 00:52"
+__build__ = "b3f7f1a-dirty 2026-07-23 01:14"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -15944,7 +15944,15 @@ def cmd_attach(args):
             % (aid, reason, aid))
         sys.exit(1)
     if sock:
-        os.execvp("tmux", ["tmux", "-u", "-S", sock, "attach", "-t", session])
+        # Attach with the SAME binary that started the server (record →
+        # /proc/exe → env). A bare PATH tmux mismatches on upgraded
+        # boxes — e.g. after tmux 3.5a lands, attaching a 2.7 server
+        # with a 3.5a client fails the protocol handshake.
+        try:
+            tmux_bin = _tmux_bin_for_session(session) or "tmux"
+        except Exception:
+            tmux_bin = "tmux"
+        os.execvp(tmux_bin, [tmux_bin, "-u", "-S", sock, "attach", "-t", session])
     else:
         os.execvp("tmux", ["tmux", "attach", "-t", session])
 
