@@ -698,7 +698,7 @@ import uuid
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "126c565-dirty 2026-07-23 01:40"
+__build__ = "a7c0dd7-dirty 2026-07-23 01:47"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -10782,10 +10782,10 @@ _EMBEDDED_SKILLS = {
 name: camc-cron-loop
 description: >
   Schedule recurring shell commands (host cron jobs) and per-agent
-  prompt loops via camc cron. Use when the user wants to schedule
+  prompt loops via ~/.cam/camc cron. Use when the user wants to schedule
   a recurring prompt to an agent, set up a periodic shell command,
   or manage existing cron jobs and loops.
-compatibility: Requires camc binary in PATH.
+compatibility: Requires ~/.cam/camc deployed by the camc release.
 metadata:
   author: hren
   tags: camc, cam, cron, loop, schedule, scheduled, periodic,
@@ -10799,7 +10799,7 @@ allowed-tools: Bash Read Glob Grep
 
 # camc-cron-loop — Scheduled Jobs & Agent Loops
 
-Two kinds of scheduled work, both managed via `camc cron`:
+Two kinds of scheduled work, both managed via `~/.cam/camc cron`:
 
 - **Host cron jobs** — shell commands on a schedule, persistent across reboots
 - **Per-agent prompt loops** — recurring prompts delivered to one agent via mailbox
@@ -10807,21 +10807,21 @@ Two kinds of scheduled work, both managed via `camc cron`:
 ## Host cron jobs
 
 Run any shell/argv command on a schedule. Job files at `~/.cam/cron/jobs.d/`;
-a single marked block in the user's crontab calls `camc cron tick` every minute.
+a single marked block in the user's crontab calls `~/.cam/camc cron tick` every minute.
 
 ```bash
-camc cron add --name daily-rev --daily 09:00 \
-  -- camc msg send cam-dev -t "Review latest changes." --no-wait
-camc cron add --name ping --every 30m -- camc list
-camc cron add --name later --in 45m -- camc msg send cam-dev -t "check this" --no-wait
-camc cron add --name shell-example --every 30m \
-  --shell "camc list > /tmp/camc-list.txt"
+~/.cam/camc cron add --name daily-rev --daily 09:00 \
+  -- ~/.cam/camc msg send cam-dev -t "Review latest changes." --no-wait
+~/.cam/camc cron add --name ping --every 30m -- ~/.cam/camc list
+~/.cam/camc cron add --name later --in 45m -- ~/.cam/camc msg send cam-dev -t "check this" --no-wait
+~/.cam/camc cron add --name shell-example --every 30m \
+  --shell "~/.cam/camc list > /tmp/camc-list.txt"
 ```
 
 ```bash
-camc cron list                          # active jobs table
-camc cron list --json                   # stable JSON (count + jobs[])
-camc cron rm <id|name|prefix>           # archive + remove
+~/.cam/camc cron list                          # active jobs table
+~/.cam/camc cron list --json                   # stable JSON (count + jobs[])
+~/.cam/camc cron rm <id|name|prefix>           # archive + remove
 ```
 
 Schedule presets (exactly one): `--every Nm|Nh`, `--daily HH:MM` (local),
@@ -10832,7 +10832,7 @@ Schedule presets (exactly one): `--every Nm|Nh`, `--daily HH:MM` (local),
 
 Deliver a recurring prompt to **one specific agent** via mailbox.
 Stored in `~/.cam/loops/<owner_id>/agent.loop.json` (separate from
-host cron jobs). Dispatched by `camc cron tick`, but **only when the
+host cron jobs). Dispatched by `~/.cam/camc cron tick`, but **only when the
 owner agent is `status=running` AND `state=idle`** — if busy, the tick
 is silently deferred (no message sent, schedule not advanced).
 This means the agent is never interrupted mid-task, and prompts
@@ -10840,23 +10840,23 @@ never pile up.
 
 ```bash
 # Register a loop on agent "cam-dev"
-camc cron add --loop --owner cam-dev \
+~/.cam/camc cron add --loop --owner cam-dev \
   --name skill-check --every 30m \
   --prompt "Use the managing-camc skill and check whether any agents are stuck."
 
-camc cron add --loop --owner cam-dev \
+~/.cam/camc cron add --loop --owner cam-dev \
   --name daily-status --daily 09:00 \
   --prompt-file path/to/daily-prompt.md \
   --no-expire
 
 # List / remove
-camc cron list --loop --owner cam-dev       # shows this agent's loops
-camc cron rm --loop --owner cam-dev <name>  # archives + removes the loop entry
+~/.cam/camc cron list --loop --owner cam-dev       # shows this agent's loops
+~/.cam/camc cron rm --loop --owner cam-dev <name>  # archives + removes the loop entry
 ```
 
-**Delivery mechanism:** each fire = `camc msg send <owner_id> -t <prompt> --no-wait`.
+**Delivery mechanism:** each fire = `~/.cam/camc msg send <owner_id> -t <prompt> --no-wait`.
 The prompt lands in the agent's mailbox ledger, and the agent reads it
-via `camc msg read --next` on its next idle turn. One message at a time —
+via `~/.cam/camc msg read --next` on its next idle turn. One message at a time —
 no pileup because of the idle-gate.
 
 **Loop file:** `~/.cam/loops/<agent_id>/agent.loop.json` — one file
@@ -10881,10 +10881,10 @@ per agent, `loops:[]` array inside. Multiple loops per agent supported.
 
 | Symptom | Check |
 |---------|-------|
-| Loop not firing | `camc status <owner>` — must be `running` + `idle` |
+| Loop not firing | `~/.cam/camc status <owner>` — must be `running` + `idle` |
 | Loop disabled | `runs.jsonl` — check attempt count vs `max_attempts` |
-| Host cron not running | `camc cron list` — verify job exists; check crontab has the `camc cron tick` block |
-| `camc cron tick` errors | `~/.cam/logs/cron-tick.log` |"""
+| Host cron not running | `~/.cam/camc cron list` — verify job exists; check crontab has the `~/.cam/camc cron tick` block |
+| `~/.cam/camc cron tick` errors | `~/.cam/logs/cron-tick.log` |"""
     },
     "camc-diagnose": {
         "SKILL.md": r"""---
@@ -10895,7 +10895,7 @@ description: >
   the monitor died, capture is empty, or you need to resume a dead
   agent's Claude session. Covers heal, monitor self-healing, and
   common failure modes with step-by-step fixes.
-compatibility: Requires camc binary in PATH.
+compatibility: Requires ~/.cam/camc deployed by the camc release.
 metadata:
   author: hren
   tags: camc, cam, diagnose, diagnosis, heal, stuck, error, failed,
@@ -10912,26 +10912,26 @@ allowed-tools: Bash Read Glob Grep
 ## Quick diagnosis workflow
 
 ```bash
-camc list                              # all agents on this host
-camc status <agent>                    # detailed state: status, state, exit_reason, pid, session
+~/.cam/camc list                              # all agents on this host
+~/.cam/camc status <agent>                    # detailed state: status, state, exit_reason, pid, session
 camc logs <agent> -f                   # follow monitor log for live errors
-camc capture <agent> --lines 30        # see what's on screen
+~/.cam/camc capture <agent> --lines 30        # see what's on screen
 ```
 
 ## Common failure modes
 
 | Symptom | Fix |
 |---------|-----|
-| Status says `running` but tmux is dead | `camc heal` |
-| Monitor died after camc upgrade | `camc upgrade` (or `camc heal --upgrade`) |
-| Agent stuck (idle but not responding) | `camc key <agent> --key Escape`, then `camc send <agent> --text "..."` |
-| Agent `exited` or `failed` | Check `camc status <agent>` for `exit_reason`; `camc reboot <agent>` to retry with same session |
-| Capture empty / attach hangs | `camc capture <agent> --lines 0` to verify; if still blank check `camc status <agent>` for `tmux_session` alive |
+| Status says `running` but tmux is dead | `~/.cam/camc heal` |
+| Monitor died after ~/.cam/camc upgrade | `~/.cam/camc upgrade` (or `~/.cam/camc heal --upgrade`) |
+| Agent stuck (idle but not responding) | `~/.cam/camc key <agent> --key Escape`, then `~/.cam/camc send <agent> --text "..."` |
+| Agent `exited` or `failed` | Check `~/.cam/camc status <agent>` for `exit_reason`; `camc reboot <agent>` to retry with same session |
+| Capture empty / attach hangs | `~/.cam/camc capture <agent> --lines 0` to verify; if still blank check `~/.cam/camc status <agent>` for `tmux_session` alive |
 | Agent `state = error` | `camc logs <agent>` for tracebacks; `camc reboot <agent>` to restart |
-| Many agents stopped responding | `camc heal` restarts all dead monitors |
-| Stale sockets in /tmp/cam-sockets/ | `camc heal` auto-cleans |
+| Many agents stopped responding | `~/.cam/camc heal` restarts all dead monitors |
+| Stale sockets in /tmp/cam-sockets/ | `~/.cam/camc heal` auto-cleans |
 
-## `camc heal` — what it does
+## `~/.cam/camc heal` — what it does
 
 Walks every running agent on the current host:
 
@@ -10942,18 +10942,18 @@ Walks every running agent on the current host:
   only touches agents from the current machine
 
 ```bash
-camc heal               # restart dead monitors
-camc heal --upgrade     # kill ALL monitors, restart with current binary
+~/.cam/camc heal               # restart dead monitors
+~/.cam/camc heal --upgrade     # kill ALL monitors, restart with current binary
 ```
 
 ### When to run heal
 
 | Trigger | Command |
 |---------|---------|
-| `camc list` shows running but nothing's happening | `camc heal` |
-| Just deployed new camc version | `camc upgrade` |
-| Many agents stopped responding to send/key | `camc heal` |
-| Sockets piling up in `/tmp/cam-sockets/` | `camc heal` (auto-cleans) |
+| `~/.cam/camc list` shows running but nothing's happening | `~/.cam/camc heal` |
+| Just deployed new ~/.cam/camc version | `~/.cam/camc upgrade` |
+| Many agents stopped responding to send/key | `~/.cam/camc heal` |
+| Sockets piling up in `/tmp/cam-sockets/` | `~/.cam/camc heal` (auto-cleans) |
 
 ### Cron suggestion
 
@@ -10981,7 +10981,7 @@ Common exceptions handled:
 - `OSError` from flaky NFS read on `agents.json`
 - `tmux server died` mid-capture
 
-After 5 consecutive failures the monitor exits and `camc heal` is
+After 5 consecutive failures the monitor exits and `~/.cam/camc heal` is
 expected to restart it on the next sweep.
 
 Logs: `~/.cam/logs/monitor-<id>.log` (stdout), `monitor-<id>.stderr`.
@@ -11001,7 +11001,7 @@ for a in json.load(sys.stdin):
 "
 
 # Resume it
-camc run --tool claude \
+~/.cam/camc run --tool claude \
   --name <new-name> \
   --resume <session-id>
 ```
@@ -11018,7 +11018,7 @@ For session JSONL paths and inspection, see managing-camc's
 | File | When to read |
 |---|---|
 | `reference/heal-and-monitor.md` | Monitor internals, self-healing details, NFS hostname filtering |""",
-        "reference\heal-and-monitor.md": r"""# `camc heal` and the monitor loop
+        "reference\heal-and-monitor.md": r"""# `~/.cam/camc heal` and the monitor loop
 
 ## What the monitor is
 
@@ -11034,13 +11034,13 @@ Every running agent has a background **monitor** Python subprocess that:
 Logs land in `~/.cam/logs/monitor-<id>.log` (stdout) and
 `monitor-<id>.stderr`. PID file: `~/.cam/pids/<id>.pid`.
 
-## `camc heal`
+## `~/.cam/camc heal`
 
 Walks every running agent on the current host:
 
 ```bash
-camc heal               # restart any agent whose monitor PID is dead
-camc heal --upgrade     # kill ALL monitors, restart each with the current
+~/.cam/camc heal               # restart any agent whose monitor PID is dead
+~/.cam/camc heal --upgrade     # kill ALL monitors, restart each with the current
                         # camc binary — use after deploying a new version
 ```
 
@@ -11049,17 +11049,17 @@ Heal also cleans up:
 - orphan tmux sessions adoptable into agents.json (Phase 3)
 
 Heal **filters by hostname** — on NFS-shared `~/.cam/agents.json` clusters
-(PDX containers), `camc heal` on machine X only touches agents whose
+(PDX containers), `~/.cam/camc heal` on machine X only touches agents whose
 `hostname` field matches X. Other machines' agents are untouched.
 
 ## When to run heal
 
 | Symptom | Action |
 |---|---|
-| `camc list` shows running but nothing's happening | `camc heal` |
-| Just deployed new camc version | `camc heal --upgrade` |
-| Many agents stopped responding to send/key | `camc heal` |
-| sockets piling up in `/tmp/cam-sockets/` | `camc heal` (auto-cleans) |
+| `~/.cam/camc list` shows running but nothing's happening | `~/.cam/camc heal` |
+| Just deployed new ~/.cam/camc version | `~/.cam/camc heal --upgrade` |
+| Many agents stopped responding to send/key | `~/.cam/camc heal` |
+| sockets piling up in `/tmp/cam-sockets/` | `~/.cam/camc heal` (auto-cleans) |
 
 ## Cron suggestion
 
@@ -11070,7 +11070,7 @@ Heal **filters by hostname** — on NFS-shared `~/.cam/agents.json` clusters
 
 `cam sync` deploys this cron entry automatically (best-effort — tolerated
 to fail on hosts without `crontab`). Server side, `cam heal` runs hourly
-and SSHes into each unique host to call `camc heal` once per host.
+and SSHes into each unique host to call `~/.cam/camc heal` once per host.
 
 ## Self-healing details
 
@@ -11081,7 +11081,7 @@ Common exceptions handled:
 - `OSError` from a flaky NFS read on `agents.json`
 - `tmux server died` mid-capture
 
-After 5 consecutive failures the monitor exits and `camc heal` is
+After 5 consecutive failures the monitor exits and `~/.cam/camc heal` is
 expected to restart it on the next sweep.
 """
     },
@@ -11089,13 +11089,13 @@ expected to restart it on the next sweep.
         "SKILL.md": r"""---
 name: camc-goal-loop
 description: >
-  Create goal-driven coding/debugging prompts and set up camc cron
+  Create goal-driven coding/debugging prompts and set up ~/.cam/camc cron
   --loop periodic continuations. Use when the user wants to set up an
   autonomous agent that works through a checklist one item at a time,
   with idle-gated delivery via camc mailbox. Covers MiniSpec prompt
   creation (goal/checklist/verify), camc loop registration, and
   structured progress reporting for resumable agent workflows.
-compatibility: Requires camc binary in PATH.
+compatibility: Requires ~/.cam/camc deployed by the camc release.
 metadata:
   author: hren
   tags: camc, goal, loop, minispec, checklist, verify, autonomous,
@@ -11103,7 +11103,7 @@ metadata:
   category: infra
   requires-tools: camc
 disable-model-invocation: false
-argument-hint: "[create a goal-loop prompt | register a camc cron --loop]"
+argument-hint: "[create a goal-loop prompt | register a ~/.cam/camc cron --loop]"
 allowed-tools: Bash Read Glob Grep Write
 ---
 
@@ -11111,19 +11111,19 @@ allowed-tools: Bash Read Glob Grep Write
 
 Set up autonomous coding agents that work through a checklist one small
 item at a time, verify before claiming completion, and resume safely on
-each idle tick via `camc cron --loop`.
+each idle tick via `~/.cam/camc cron --loop`.
 
-This is a **per-agent prompt loop** — it uses the standard `camc cron add
---loop` mechanism from camc-cron-loop. Delivery is via `camc msg send`
+This is a **per-agent prompt loop** — it uses the standard `~/.cam/camc cron add
+--loop` mechanism from camc-cron-loop. Delivery is via `~/.cam/camc msg send`
 to the agent's mailbox, idle-gated (never interrupts busy agents).
 Loop dispatch is handled by camc's cron tick infrastructure (managed
-by `camc heal`); the agent does not set up or manage crontab.
+by `~/.cam/camc heal`); the agent does not set up or manage crontab.
 
 **Two files produced:**
 1. **Auto-load file** in project root (`CLAUDE.md` for claude, `AGENTS.md` for codex/cursor) — MiniSpec goal/checklist/verify prompt
 2. **`~/.cam/loops/<name>.json`** — loop continuation message (for reproducibility)
 
-Then one `camc cron add --loop` command registers it with default **5m** interval.
+Then one `~/.cam/camc cron add --loop` command registers it with default **5m** interval.
 
 See `camc-cron-loop` skill for the full per-agent prompt loop mechanism
 (idle gate, delivery, busy deferral, lifecycle).
@@ -11134,25 +11134,25 @@ See `camc-cron-loop` skill for the full per-agent prompt loop mechanism
 |---|---|
 | Create MiniSpec prompt | Write `CLAUDE.md` (claude) or `AGENTS.md` (codex/cursor) in project root |
 | Create loop JSON | Write `~/.cam/loops/<name>.json` with continuation message |
-| Register loop | `camc cron add --loop --owner <agent> --name <name> --every 5m --prompt "<msg>"` |
-| List loops | `camc cron list --loop --owner <agent>` |
-| Graceful stop (auto) | Agent archives loop JSON → `camc cron rm` on goal achieved |
-| Manual stop | `camc cron rm --loop --owner <agent> <name>` |
+| Register loop | `~/.cam/camc cron add --loop --owner <agent> --name <name> --every 5m --prompt "<msg>"` |
+| List loops | `~/.cam/camc cron list --loop --owner <agent>` |
+| Graceful stop (auto) | Agent archives loop JSON → `~/.cam/camc cron rm` on goal achieved |
+| Manual stop | `~/.cam/camc cron rm --loop --owner <agent> <name>` |
 | Reclaim loop | Read `~/.cam/loops/<name>.json`, re-register with same `--prompt` |
 
 ## How it works
 
 ```
 agent starts → reads auto-load file (CLAUDE.md / AGENTS.md) → gets MiniSpec
-per-agent prompt loop (camc cron add --loop):
-  → camc msg send <agent> -t "<continuation message>" --no-wait
+per-agent prompt loop (~/.cam/camc cron add --loop):
+  → ~/.cam/camc msg send <agent> -t "<continuation message>" --no-wait
   → idle gate: only fires when agent status=running AND state=idle
-  → agent reads via camc msg read --next on next idle turn
+  → agent reads via ~/.cam/camc msg read --next on next idle turn
   → agent re-reads auto-load file to pick up current state
   → agent does ONE checklist item → verifies → reports YAML
   → agent updates auto-load file (mark item done/partial/blocked)
   → next fire: agent picks up next item
-  → goal achieved: archive loop+goal → camc cron rm → stop
+  → goal achieved: archive loop+goal → ~/.cam/camc cron rm → stop
 ```
 
 The idle gate means the agent is **never interrupted mid-task** — if busy,
@@ -11170,7 +11170,7 @@ message telling the agent to pick up where it left off.
 | **codex** | `AGENTS.md` | `AGENTS.history.md` | `AGENTS.md.bak-YYYYMMDD-HHMMSS` |
 | **cursor** | `AGENTS.md` | `AGENTS.history.md` | `AGENTS.md.bak-YYYYMMDD-HHMMSS` |
 
-Check via `camc status <agent>` → `task.tool`.
+Check via `~/.cam/camc status <agent>` → `task.tool`.
 
 ## 1. File 1 — Auto-load prompt (`CLAUDE.md` / `AGENTS.md`)
 
@@ -11208,7 +11208,7 @@ reproducible:
   "name": "goal-loop",
   "every": "5m",
   "owner": "<agent-id-or-name>",
-  "prompt": "Continue from the current project state using the MiniSpec protocol.\n\nFirst re-read the auto-load file: CLAUDE.md.\n\nThen:\n1. Check whether the Goal is already achieved.\n2. Review every Checklist item and mark it as done, partial, blocked, or not_started.\n3. If the Goal is achieved and all required Checklist items are done: archive the loop and goal together — copy ~/.cam/loops/<name>.json to ~/.cam/loops/archive/<name>.json, copy the auto-load file (CLAUDE.md or AGENTS.md) to ~/.cam/loops/archive/<name>-goal.md, then run `camc cron rm --loop --owner <agent> <loop-name>` to stop the loop, do not delete the loop JSON file — it stays at `~/.cam/loops/<name>.json` for reclaim, set continue_recommended to false, make no code changes, and report completion.\n4. If work remains, choose exactly ONE unfinished Checklist item.\n5. Prefer partial before not_started, small before broad, safe before risky.\n6. Execute only the selected item.\n7. Run the most relevant available checks.\n8. If the selected work changes MiniSpec state, update CLAUDE.md (or AGENTS.md).\n9. Add a short CLAUDE.history.md entry only for significant changes.\n10. Create a timestamped backup before risky or broad prompt edits.\n11. Do not claim success without verification evidence.\n\nReturn the required MiniSpec YAML report."
+  "prompt": "Continue from the current project state using the MiniSpec protocol.\n\nFirst re-read the auto-load file: CLAUDE.md.\n\nThen:\n1. Check whether the Goal is already achieved.\n2. Review every Checklist item and mark it as done, partial, blocked, or not_started.\n3. If the Goal is achieved and all required Checklist items are done: archive the loop and goal together — copy ~/.cam/loops/<name>.json to ~/.cam/loops/archive/<name>.json, copy the auto-load file (CLAUDE.md or AGENTS.md) to ~/.cam/loops/archive/<name>-goal.md, then run `~/.cam/camc cron rm --loop --owner <agent> <loop-name>` to stop the loop, do not delete the loop JSON file — it stays at `~/.cam/loops/<name>.json` for reclaim, set continue_recommended to false, make no code changes, and report completion.\n4. If work remains, choose exactly ONE unfinished Checklist item.\n5. Prefer partial before not_started, small before broad, safe before risky.\n6. Execute only the selected item.\n7. Run the most relevant available checks.\n8. If the selected work changes MiniSpec state, update CLAUDE.md (or AGENTS.md).\n9. Add a short CLAUDE.history.md entry only for significant changes.\n10. Create a timestamped backup before risky or broad prompt edits.\n11. Do not claim success without verification evidence.\n\nReturn the required MiniSpec YAML report."
 }
 ```
 
@@ -11217,7 +11217,7 @@ Full template: `reference/loop.md`. Pick the variant matching the tool.
 ## 3. Register the loop
 
 ```bash
-camc cron add --loop --owner <agent> \
+~/.cam/camc cron add --loop --owner <agent> \
   --name goal-loop --every 5m \
   --prompt "<continuation message from ~/.cam/loops/<name>.json>"
 ```
@@ -11234,7 +11234,7 @@ camc cron add --loop --owner <agent> \
 When the continuation message arrives:
 
 1. **Re-read the auto-load file** — CLAUDE.md or AGENTS.md
-2. **Check goal** — achieved? Archive loop JSON, run `camc cron rm`, keep the loop JSON at `~/.cam/loops/<name>.json` for reclaim, set `continue_recommended: false`, stop.
+2. **Check goal** — achieved? Archive loop JSON, run `~/.cam/camc cron rm`, keep the loop JSON at `~/.cam/loops/<name>.json` for reclaim, set `continue_recommended: false`, stop.
 3. **Review checklist** — mark each item done/partial/blocked/not_started
 4. **Select one item** — partial before not_started, small over broad
 5. **Execute only that item**
@@ -11279,7 +11279,7 @@ minispec_update:
 ```
 
 Set `continue_recommended: false` when goal achieved (agent self-cleans:
-archive loop+goal, `camc cron rm`) or when all items are blocked/impossible
+archive loop+goal, `~/.cam/camc cron rm`) or when all items are blocked/impossible
 (agent stops doing work, loop stays for human to adjust).
 
 ## 5. Project state maintenance
@@ -11330,17 +11330,17 @@ cat > ~/.cam/loops/ecc-goal-loop.json << 'EOFJSON'
   "name": "goal-loop",
   "every": "5m",
   "owner": "ecc-fix",
-  "prompt": "Continue from the current project state using the MiniSpec protocol.\n\nFirst re-read the auto-load file: CLAUDE.md.\n\nThen:\n1. Check whether the Goal is already achieved.\n2. Review every Checklist item and mark it as done, partial, blocked, or not_started.\n3. If the Goal is achieved and all required Checklist items are done: archive the loop and goal together — copy ~/.cam/loops/<name>.json to ~/.cam/loops/archive/<name>.json, copy the auto-load file (CLAUDE.md or AGENTS.md) to ~/.cam/loops/archive/<name>-goal.md, then run `camc cron rm --loop --owner <agent> <loop-name>` to stop the loop, do not delete the loop JSON file — it stays at `~/.cam/loops/<name>.json` for reclaim, set continue_recommended to false, make no code changes, and report completion.\n4. If work remains, choose exactly ONE unfinished Checklist item.\n5. Prefer partial before not_started, small before broad, safe before risky.\n6. Execute only the selected item.\n7. Run the most relevant available checks.\n8. If the selected work changes MiniSpec state, update CLAUDE.md.\n9. Add a short CLAUDE.history.md entry only for significant changes.\n10. Create a timestamped backup before risky or broad prompt edits.\n11. Do not claim success without verification evidence.\n\nReturn the required MiniSpec YAML report."
+  "prompt": "Continue from the current project state using the MiniSpec protocol.\n\nFirst re-read the auto-load file: CLAUDE.md.\n\nThen:\n1. Check whether the Goal is already achieved.\n2. Review every Checklist item and mark it as done, partial, blocked, or not_started.\n3. If the Goal is achieved and all required Checklist items are done: archive the loop and goal together — copy ~/.cam/loops/<name>.json to ~/.cam/loops/archive/<name>.json, copy the auto-load file (CLAUDE.md or AGENTS.md) to ~/.cam/loops/archive/<name>-goal.md, then run `~/.cam/camc cron rm --loop --owner <agent> <loop-name>` to stop the loop, do not delete the loop JSON file — it stays at `~/.cam/loops/<name>.json` for reclaim, set continue_recommended to false, make no code changes, and report completion.\n4. If work remains, choose exactly ONE unfinished Checklist item.\n5. Prefer partial before not_started, small before broad, safe before risky.\n6. Execute only the selected item.\n7. Run the most relevant available checks.\n8. If the selected work changes MiniSpec state, update CLAUDE.md.\n9. Add a short CLAUDE.history.md entry only for significant changes.\n10. Create a timestamped backup before risky or broad prompt edits.\n11. Do not claim success without verification evidence.\n\nReturn the required MiniSpec YAML report."
 }
 EOFJSON
 
 # 3. Start a claude agent
-camc run -t claude "fix ECC errors per CLAUDE.md" -n ecc-fix -p /path/to/project
+~/.cam/camc run -t claude "fix ECC errors per CLAUDE.md" -n ecc-fix -p /path/to/project
 
 # 4. Register the loop (default 5m)
-camc cron add --loop --owner ecc-fix \
+~/.cam/camc cron add --loop --owner ecc-fix \
   --name goal-loop --every 5m \
-  --prompt "Continue from the current project state using the MiniSpec protocol.\n\nFirst re-read the auto-load file: CLAUDE.md.\n\nThen:\n1. Check whether the Goal is already achieved.\n2. Review every Checklist item and mark it as done, partial, blocked, or not_started.\n3. If the Goal is achieved and all required Checklist items are done: archive the loop and goal together — copy ~/.cam/loops/<name>.json to ~/.cam/loops/archive/<name>.json, copy the auto-load file (CLAUDE.md or AGENTS.md) to ~/.cam/loops/archive/<name>-goal.md, then run `camc cron rm --loop --owner <agent> <loop-name>` to stop the loop, do not delete the loop JSON file — it stays at `~/.cam/loops/<name>.json` for reclaim, set continue_recommended to false, make no code changes, and report completion.\n4. If work remains, choose exactly ONE unfinished Checklist item.\n5. Prefer partial before not_started, small before broad, safe before risky.\n6. Execute only the selected item.\n7. Run the most relevant available checks.\n8. If the selected work changes MiniSpec state, update CLAUDE.md.\n9. Add a short CLAUDE.history.md entry only for significant changes.\n10. Create a timestamped backup before risky or broad prompt edits.\n11. Do not claim success without verification evidence.\n\nReturn the required MiniSpec YAML report."
+  --prompt "Continue from the current project state using the MiniSpec protocol.\n\nFirst re-read the auto-load file: CLAUDE.md.\n\nThen:\n1. Check whether the Goal is already achieved.\n2. Review every Checklist item and mark it as done, partial, blocked, or not_started.\n3. If the Goal is achieved and all required Checklist items are done: archive the loop and goal together — copy ~/.cam/loops/<name>.json to ~/.cam/loops/archive/<name>.json, copy the auto-load file (CLAUDE.md or AGENTS.md) to ~/.cam/loops/archive/<name>-goal.md, then run `~/.cam/camc cron rm --loop --owner <agent> <loop-name>` to stop the loop, do not delete the loop JSON file — it stays at `~/.cam/loops/<name>.json` for reclaim, set continue_recommended to false, make no code changes, and report completion.\n4. If work remains, choose exactly ONE unfinished Checklist item.\n5. Prefer partial before not_started, small before broad, safe before risky.\n6. Execute only the selected item.\n7. Run the most relevant available checks.\n8. If the selected work changes MiniSpec state, update CLAUDE.md.\n9. Add a short CLAUDE.history.md entry only for significant changes.\n10. Create a timestamped backup before risky or broad prompt edits.\n11. Do not claim success without verification evidence.\n\nReturn the required MiniSpec YAML report."
 ```
 
 ### New task from scratch (codex / cursor)
@@ -11362,9 +11362,9 @@ cat > ~/.cam/loops/ecc-goal-loop.json << 'EOFJSON'
 }
 EOFJSON
 
-camc run -t codex "fix ECC errors per AGENTS.md" -n ecc-fix -p /path/to/project
+~/.cam/camc run -t codex "fix ECC errors per AGENTS.md" -n ecc-fix -p /path/to/project
 
-camc cron add --loop --owner ecc-fix \
+~/.cam/camc cron add --loop --owner ecc-fix \
   --name goal-loop --every 5m \
   --prompt "Continue from the current project state...\n\nFirst re-read the auto-load file: AGENTS.md.\n..."
 ```
@@ -11373,10 +11373,10 @@ camc cron add --loop --owner ecc-fix \
 
 ```bash
 # Agent already running, auto-load file has partial items
-camc status my-agent           # task.tool: claude → CLAUDE.md, codex → AGENTS.md
+~/.cam/camc status my-agent           # task.tool: claude → CLAUDE.md, codex → AGENTS.md
 
 # Create ~/.cam/loops/continue.json with continuation message, then:
-camc cron add --loop --owner my-agent \
+~/.cam/camc cron add --loop --owner my-agent \
   --name continue --every 5m \
   --prompt "Continue from the current project state..."
 ```
@@ -11388,14 +11388,14 @@ then self-cleans the cron job:
 
 1. Archive the loop: `mkdir -p ~/.cam/loops/archive && cp ~/.cam/loops/<name>.json ~/.cam/loops/archive/<name>.json`
 2. Archive the goal: `cp CLAUDE.md ~/.cam/loops/archive/<name>-goal.md` (or AGENTS.md for codex/cursor)
-3. Remove the cron job: `camc cron rm --loop --owner <agent> <loop-name>` (keeps the JSON file)
+3. Remove the cron job: `~/.cam/camc cron rm --loop --owner <agent> <loop-name>` (keeps the JSON file)
 4. Keep the loop JSON: `~/.cam/loops/<name>.json` stays for reclaim/reproducibility
 5. Set `continue_recommended: false` and report completion
 
 ### Manual stop (interrupt)
 
 ```bash
-camc cron rm --loop --owner <agent> <loop-name>
+~/.cam/camc cron rm --loop --owner <agent> <loop-name>
 ```
 
 Agent also sets `continue_recommended: false` without archiving when all
@@ -11412,7 +11412,7 @@ If the cron job was removed or lost, reclaim it from the JSON:
 cat ~/.cam/loops/goal-loop.json
 
 # Extract the --prompt value and re-register
-camc cron add --loop --owner <agent> \
+~/.cam/camc cron add --loop --owner <agent> \
   --name goal-loop --every 5m \
   --prompt "<prompt value from the JSON>"
 ```
@@ -11424,18 +11424,18 @@ camc cron add --loop --owner <agent> \
 | `reference/prompt.md` | Full MiniSpec prompt template with YAML output block |
 | `reference/loop.md` | Continuation message template + Ralph-style principle |
 | `reference/state-maintenance.md` | When to update/history/backup the auto-load file |""",
-        "reference\loop.md": r"""# MiniSpec Continuation Prompt for camc cron --loop
+        "reference\loop.md": r"""# MiniSpec Continuation Prompt for ~/.cam/camc cron --loop
 
-Delivered by `camc cron add --loop --prompt "..."`. Each tick sends this
-message to the agent's mailbox. The agent reads it via `camc msg read --next`
+Delivered by `~/.cam/camc cron add --loop --prompt "..."`. Each tick sends this
+message to the agent's mailbox. The agent reads it via `~/.cam/camc msg read --next`
 on its next idle turn, does one checklist item, verifies, and reports.
 
 ## The Loop
 
 ```
-camc cron tick → idle gate check (agent must be running + idle)
-  → camc msg send <agent> -t "<continuation prompt>" --no-wait
-  → agent reads via camc msg read --next
+~/.cam/camc cron tick → idle gate check (agent must be running + idle)
+  → ~/.cam/camc msg send <agent> -t "<continuation prompt>" --no-wait
+  → agent reads via ~/.cam/camc msg read --next
   → agent re-reads auto-load file (CLAUDE.md / AGENTS.md)
   → agent picks one unfinished item → executes → verifies
   → agent updates auto-load file (mark progress)
@@ -11452,7 +11452,7 @@ Busy → silently deferred. One message at a time — no pileup.
 
 ```bash
 # Default 5m interval
-camc cron add --loop --owner <agent> \
+~/.cam/camc cron add --loop --owner <agent> \
   --name goal-loop --every 5m \
   --prompt "CONTINUATION_PROMPT_HERE"
 ```
@@ -11473,7 +11473,7 @@ First re-read the auto-load file: CLAUDE.md (for claude) or AGENTS.md (for codex
 Then:
 1. Check whether the Goal is already achieved based on the evidence required.
 2. Review every Checklist item and mark each as done, partial, blocked, or not_started.
-3. If the Goal is achieved and all required Checklist items are done: archive the loop and goal together — copy ~/.cam/loops/<name>.json to ~/.cam/loops/archive/<name>.json, copy the auto-load file (CLAUDE.md or AGENTS.md) to ~/.cam/loops/archive/<name>-goal.md, then run `camc cron rm --loop --owner <agent> <loop-name>` to stop the loop, do not delete the loop JSON file — it stays at `~/.cam/loops/<name>.json` for reclaim, set continue_recommended to false, make no code changes, and report completion.
+3. If the Goal is achieved and all required Checklist items are done: archive the loop and goal together — copy ~/.cam/loops/<name>.json to ~/.cam/loops/archive/<name>.json, copy the auto-load file (CLAUDE.md or AGENTS.md) to ~/.cam/loops/archive/<name>-goal.md, then run `~/.cam/camc cron rm --loop --owner <agent> <loop-name>` to stop the loop, do not delete the loop JSON file — it stays at `~/.cam/loops/<name>.json` for reclaim, set continue_recommended to false, make no code changes, and report completion.
 4. If work remains, choose exactly ONE unfinished Checklist item.
 5. Prefer partial before not_started, small before broad, safe before risky, and finishing existing work before starting new work.
 6. Execute only the selected item — do not do extra work.
@@ -11537,7 +11537,7 @@ agent performs a self-cleaning graceful stop:
 
 1. **Archive the loop**: `mkdir -p ~/.cam/loops/archive && cp ~/.cam/loops/<name>.json ~/.cam/loops/archive/<name>.json`
 2. **Archive the goal**: copy the auto-load file (CLAUDE.md or AGENTS.md) to `~/.cam/loops/archive/<name>-goal.md`
-3. **Remove the cron job**: `camc cron rm --loop --owner <agent> <loop-name>` (does NOT delete the JSON file)
+3. **Remove the cron job**: `~/.cam/camc cron rm --loop --owner <agent> <loop-name>` (does NOT delete the JSON file)
 4. **Keep the loop JSON**: `~/.cam/loops/<name>.json` stays for reclaim/reproducibility
 5. **Report completion**: set `continue_recommended: false`
 
@@ -11556,7 +11556,7 @@ adjust the MiniSpec and resume. The archived files in `~/.cam/loops/archive/`
 - **If the agent is mid-work**, the idle gate defers the first tick
   until `state=idle`
 - The prompt tells the agent to re-read the auto-load file each tick,
-  so state changes from manual `camc send` interactions are picked up""",
+  so state changes from manual `~/.cam/camc send` interactions are picked up""",
         "reference\prompt.md": r"""# MiniSpec Coding/Debug Agent Prompt
 
 Use this template when creating a simple Markdown prompt for a coding or debugging agent.
@@ -11746,7 +11746,7 @@ description: >
   or read/manage a mailbox inbox. msg_id is the thread id;
   the ledger mailbox is source of truth, pane injection is best-effort
   wake-up only.
-compatibility: Requires camc binary in PATH.
+compatibility: Requires ~/.cam/camc deployed by the camc release.
 metadata:
   author: hren
   tags: camc, cam, msg, message, messaging, delegate, delegation,
@@ -11764,42 +11764,42 @@ Delegate tasks from one agent to another via a mailbox/thread protocol.
 **msg_id is the THREAD id** — every message, reply, and follow-up under
 the same logical thread share one msg_id, distinguished by `seq` (send=1,
 reply=2, follow-up=3, …). The append-only ledger at `~/.cam/messages.jsonl`
-is the source of truth; `camc msg read` replays threads from there.
+is the source of truth; `~/.cam/camc msg read` replays threads from there.
 Pane injection is best-effort wake-up only.
 
 ## Quick Reference
 
 | Task | Command |
 |---|---|
-| Ask another agent (block + reply) | `camc msg send <to> -t "..."` |
-| Ask async (return now) | `camc msg send <to> -t "..." --no-wait` |
-| Ask async + require reply commit | `camc msg send <to> -t "..." --no-wait --expect-reply` |
-| Reply on same thread | `camc msg reply <msg_id> -t "..."` |
-| Read inbox | `camc msg read` |
-| Read next unread | `camc msg read --next [--mark]` |
-| Replay full thread | `camc msg read <msg_id>` |
-| Wait for first reply (legacy) | `camc msg wait <msg_id>` |
-| Raw ledger entries | `camc msg show <msg_id>` / `camc msg list` |
+| Ask another agent (block + reply) | `~/.cam/camc msg send <to> -t "..."` |
+| Ask async (return now) | `~/.cam/camc msg send <to> -t "..." --no-wait` |
+| Ask async + require reply commit | `~/.cam/camc msg send <to> -t "..." --no-wait --expect-reply` |
+| Reply on same thread | `~/.cam/camc msg reply <msg_id> -t "..."` |
+| Read inbox | `~/.cam/camc msg read` |
+| Read next unread | `~/.cam/camc msg read --next [--mark]` |
+| Replay full thread | `~/.cam/camc msg read <msg_id>` |
+| Wait for first reply (legacy) | `~/.cam/camc msg wait <msg_id>` |
+| Raw ledger entries | `~/.cam/camc msg show <msg_id>` / `~/.cam/camc msg list` |
 
 ## 1. Sending a message
 
-`camc msg send <to> --text "..."` is a Bash-tool primitive: by default it
+`~/.cam/camc msg send <to> --text "..."` is a Bash-tool primitive: by default it
 blocks until the target's reply is stable, then prints reply on stdout.
-Use as any shell command — `reply=$(camc msg send peer -t "review src/foo.py")`.
+Use as any shell command — `reply=$(~/.cam/camc msg send peer -t "review src/foo.py")`.
 For fan-out or fire-and-later workflows, add `--no-wait`; it returns a
-message id immediately, and the caller later runs `camc msg read <msg_id>`.
+message id immediately, and the caller later runs `~/.cam/camc msg read <msg_id>`.
 
 ```bash
-camc msg send <to> -t "..."             # block; default 600s (10 min) timeout
-camc msg send <to> -t "..." --timeout 300       # 5 minutes (seconds, integer only)
-camc msg send <to> -t "..." --no-wait   # return MSG_ID + STATUS=sent immediately
-camc msg send <to> -t "..." --no-wait --expect-reply
+~/.cam/camc msg send <to> -t "..."             # block; default 600s (10 min) timeout
+~/.cam/camc msg send <to> -t "..." --timeout 300       # 5 minutes (seconds, integer only)
+~/.cam/camc msg send <to> -t "..." --no-wait   # return MSG_ID + STATUS=sent immediately
+~/.cam/camc msg send <to> -t "..." --no-wait --expect-reply
                                         # async + receiver MUST commit reply
 ```
 
-- Targets: any name in `camc list`
+- Targets: any name in `~/.cam/camc list`
 - `--no-wait` means "written to the target tmux pane", not "read" or "understood"
-- `--expect-reply` appends `[Reply via: camc msg reply <msg_id> -t "..."]`
+- `--expect-reply` appends `[Reply via: ~/.cam/camc msg reply <msg_id> -t "..."]`
   to the wire payload. Combines with `--no-wait` for fire-and-later;
   without `--no-wait` it sends and blocks on the ledger in one process.
 - On **timeout**: stdout prints msg_id + query hint; exit code 1
@@ -11808,14 +11808,14 @@ camc msg send <to> -t "..." --no-wait --expect-reply
 ## 2. Reading messages (inbox + threads)
 
 ```bash
-camc msg read                           # inbox: list unread for current mailbox
-camc msg read --next                    # print body of oldest unread (msg_id+seq+from+text)
-camc msg read --next --mark             # ...and mark it read
-camc msg read --all                     # list everything (incl. already-read)
-camc msg read --for <agent-id-or-name>  # explicit mailbox (outside-tmux callers)
-camc msg read --json                    # stable JSON for tests/automation
-camc msg read <msg_id>                  # replay full thread, ordered by seq
-camc msg read <msg_id> --mark           # ...and mark unread deliveries in thread
+~/.cam/camc msg read                           # inbox: list unread for current mailbox
+~/.cam/camc msg read --next                    # print body of oldest unread (msg_id+seq+from+text)
+~/.cam/camc msg read --next --mark             # ...and mark it read
+~/.cam/camc msg read --all                     # list everything (incl. already-read)
+~/.cam/camc msg read --for <agent-id-or-name>  # explicit mailbox (outside-tmux callers)
+~/.cam/camc msg read --json                    # stable JSON for tests/automation
+~/.cam/camc msg read <msg_id>                  # replay full thread, ordered by seq
+~/.cam/camc msg read <msg_id> --mark           # ...and mark unread deliveries in thread
 ```
 
 **Mailbox / read = source of truth.** Every send writes a
@@ -11823,7 +11823,7 @@ camc msg read <msg_id> --mark           # ...and mark unread deliveries in threa
 `delivery(mailbox_id=agent:<to_id>|session:<tmux>|label:<arg>)`
 record into `~/.cam/messages.jsonl` BEFORE the tmux send. Pane
 injection failure does not lose the message — the receiver's
-`camc msg read` will still see it.
+`~/.cam/camc msg read` will still see it.
 
 `--for <label>` overrides the current-process mailbox (useful from a
 normal shell). `--json` emits stable JSON for tests/automation.
@@ -11831,10 +11831,10 @@ normal shell). `--json` emits stable JSON for tests/automation.
 ## 3. Replying
 
 ```bash
-camc msg reply <msg_id> -t "..."        # append next seq to the same thread
+~/.cam/camc msg reply <msg_id> -t "..."        # append next seq to the same thread
 ```
 
-`camc msg reply` does NOT mint a new msg_id — it appends
+`~/.cam/camc msg reply` does NOT mint a new msg_id — it appends
 `turn(seq=N+1)` and a delivery to the OTHER side of the most recent
 turn (typically the original sender), then best-effort injects the
 same `[camc msg#<id>]:` thread marker on the recipient's pane.
@@ -11842,7 +11842,7 @@ The first reply also writes a legacy `status=replied` for backward
 compat with `wait`; subsequent replies append seq=N+1 unconditionally.
 stdout: `REPLIED_TO=<msg_id>`, `SEQ=<n>`, `MAILBOX=<mailbox_id>`.
 
-**Prefer the explicit reply path:** `camc msg reply <msg_id> -t "..."`
+**Prefer the explicit reply path:** `~/.cam/camc msg reply <msg_id> -t "..."`
 records your reply on the SAME thread and is deterministic — it
 survives the sender's wait process exiting. The legacy pane-scrape
 waiter still works for the first reply only.
@@ -11850,13 +11850,13 @@ waiter still works for the first reply only.
 ## 4. Legacy / compat views
 
 ```bash
-camc msg wait <msg_id>                  # existing reply or poll for first reply
-camc msg show <msg_id>                  # raw ledger entries for one message
-camc msg list [--for <to>] [-n 50]      # recent messages summary
+~/.cam/camc msg wait <msg_id>                  # existing reply or poll for first reply
+~/.cam/camc msg show <msg_id>                  # raw ledger entries for one message
+~/.cam/camc msg list [--for <to>] [-n 50]      # recent messages summary
 ```
 
 `wait` is a compatibility helper for the FIRST reply only. For
-multi-turn threads, use `camc msg read <msg_id>`.
+multi-turn threads, use `~/.cam/camc msg read <msg_id>`.
 `show`/`list` include both legacy status records and new V0 records.
 
 ## 5. Wire format
@@ -11879,41 +11879,41 @@ addressee, and answer the rest as you would any user message.
 Your full reply is auto-extracted and delivered back to the sender.
 Don't echo the marker; don't reply "got your message"; just answer.
 
-**If the message ends with `[Reply via: camc msg reply <msg_id> -t "..."]`,**
+**If the message ends with `[Reply via: ~/.cam/camc msg reply <msg_id> -t "..."]`,**
 the sender explicitly required this — don't just type the answer into
 the chat, run that Bash command. It writes a turn under the same thread
 id, fires a best-effort notification back, and unblocks the sender's
 async `wait`/`read`.
 
-**Prefer `camc msg reply <msg_id> -t "..."` even for default sends**
+**Prefer `~/.cam/camc msg reply <msg_id> -t "..."` even for default sends**
 (no `--expect-reply`). It records your reply on the same thread and
-is what the sender's `camc msg read <msg_id>` replays.
+is what the sender's `~/.cam/camc msg read <msg_id>` replays.
 
 ## 7. Patterns
 
 ### Blocking second opinion
 
 ```bash
-reply=$(camc msg send reviewer -t "review src/foo.py for bugs")
+reply=$(~/.cam/camc msg send reviewer -t "review src/foo.py for bugs")
 echo "$reply"
 ```
 
 ### Fan-out (fire-and-later)
 
 ```bash
-id1=$(camc msg send worker1 -t "shard 1" --no-wait | grep MSG_ID | cut -d= -f2)
-id2=$(camc msg send worker2 -t "shard 2" --no-wait | grep MSG_ID | cut -d= -f2)
+id1=$(~/.cam/camc msg send worker1 -t "shard 1" --no-wait | grep MSG_ID | cut -d= -f2)
+id2=$(~/.cam/camc msg send worker2 -t "shard 2" --no-wait | grep MSG_ID | cut -d= -f2)
 # ... later:
-camc msg read $id1
-camc msg read $id2
+~/.cam/camc msg read $id1
+~/.cam/camc msg read $id2
 ```
 
 ### Async with required reply commit
 
 ```bash
-camc msg send peer -t "review this" --no-wait --expect-reply
-# Receiver MUST run: camc msg reply <msg_id> -t "<answer>"
-# Sender polls later: camc msg read <msg_id>
+~/.cam/camc msg send peer -t "review this" --no-wait --expect-reply
+# Receiver MUST run: ~/.cam/camc msg reply <msg_id> -t "<answer>"
+# Sender polls later: ~/.cam/camc msg read <msg_id>
 ```
 
 ## Reference
@@ -11921,91 +11921,91 @@ camc msg send peer -t "review this" --no-wait --expect-reply
 | File | When to read |
 |---|---|
 | `reference/messaging.md` | Full protocol spec — record shapes, failure modes, anchor detection details |""",
-        "reference\messaging.md": r"""# `camc msg` — inter-agent messaging protocol
+        "reference\messaging.md": r"""# `~/.cam/camc msg` — inter-agent messaging protocol
 
 Send a request to another running cam agent. The append-only ledger at
 `~/.cam/messages.jsonl` is the source of truth; the tmux-pane injection
 is a best-effort wake-up notification.
 
 **msg_id is the THREAD id.** The original send writes `seq=1`; every
-`camc msg reply <msg_id>` appends `seq=N+1` under the SAME msg_id
-(no new logical id is minted). `camc msg read <msg_id>` replays the
+`~/.cam/camc msg reply <msg_id>` appends `seq=N+1` under the SAME msg_id
+(no new logical id is minted). `~/.cam/camc msg read <msg_id>` replays the
 whole thread sorted by seq.
 
 **Mailbox = source of truth.** Every send/reply writes a `turn` record
 plus a `delivery` record into the ledger BEFORE the tmux send. If the
 pane injection fails, the message is still in the mailbox; the
-receiver's `camc msg read` will see it. `camc msg read` (no args) lists
+receiver's `~/.cam/camc msg read` will see it. `~/.cam/camc msg read` (no args) lists
 unread deliveries for the current mailbox; `--mark` appends `read`
 records so subsequent reads omit them.
 
 By default the sender blocks on the reply; with `--no-wait`, it returns
-a message id immediately and a later `camc msg read <msg_id>` (or the
-legacy `camc msg wait <msg_id>` for the first reply only) retrieves
+a message id immediately and a later `~/.cam/camc msg read <msg_id>` (or the
+legacy `~/.cam/camc msg wait <msg_id>` for the first reply only) retrieves
 the reply. The mechanism is a normal Bash subprocess — no daemon, no
 special runtime.
 
 Shape:
 ```
-A's Claude → Bash tool → camc msg send <B> → poll B's tmux
+A's Claude → Bash tool → ~/.cam/camc msg send <B> → poll B's tmux
                                             → extract reply
                                             → print(reply); exit 0
 A's Bash tool ← stdout ← exit
 A's Claude ← tool_result
 ```
 
-Identical to `$(curl http://slow.example.com)` semantically — `camc msg
+Identical to `$(curl http://slow.example.com)` semantically — `~/.cam/camc msg
 send` just refuses to exit until the reply is ready.
 
 Async shape:
 ```
-A's Claude → Bash tool → camc msg send <B> --no-wait
+A's Claude → Bash tool → ~/.cam/camc msg send <B> --no-wait
                                             → inject request
                                             → print MSG_ID + STATUS=sent; exit 0
 ... later ...
-A's Claude → Bash tool → camc msg wait <msg_id> → poll B's tmux
+A's Claude → Bash tool → ~/.cam/camc msg wait <msg_id> → poll B's tmux
                                                  → print(reply); exit 0
 ```
 
 Phase 1 expected-reply async shape (deterministic):
 ```
-A's Claude → Bash tool → camc msg send <B> --no-wait --expect-reply
+A's Claude → Bash tool → ~/.cam/camc msg send <B> --no-wait --expect-reply
                                             → inject request + receiver
                                               instruction
                                             → print MSG_ID + STATUS=sent
                                               + EXPECT_REPLY=yes; exit 0
 B's Claude reads request → … does work … → Bash tool →
-                       camc msg reply <orig_id> -t "<final answer>"
+                       ~/.cam/camc msg reply <orig_id> -t "<final answer>"
                                             → notify A back via no-wait
                                               + append `replied` ledger
                                               record on orig_id
 ... later ...
-A's Claude → Bash tool → camc msg wait <orig_id> → poll LEDGER (not pane)
+A's Claude → Bash tool → ~/.cam/camc msg wait <orig_id> → poll LEDGER (not pane)
                                                   → print(reply); exit 0
 ```
 
 ## CLI
 
 ```bash
-camc msg send <to> --text "..."           # synchronous, reply on stdout (default 600s)
-camc msg send <to> --text "..." --timeout 300     # 5 min (integer seconds)
-camc msg send <to> --text "..." --timeout 1800    # 30 min
-camc msg send <to> --text "..." --no-wait # async: returns MSG_ID + STATUS=sent
-camc msg send <to> --text "..." --no-wait --expect-reply
+~/.cam/camc msg send <to> --text "..."           # synchronous, reply on stdout (default 600s)
+~/.cam/camc msg send <to> --text "..." --timeout 300     # 5 min (integer seconds)
+~/.cam/camc msg send <to> --text "..." --timeout 1800    # 30 min
+~/.cam/camc msg send <to> --text "..." --no-wait # async: returns MSG_ID + STATUS=sent
+~/.cam/camc msg send <to> --text "..." --no-wait --expect-reply
                                           # async + receiver MUST commit reply
-camc msg reply <msg_id> --text "..."      # append next seq to the SAME thread
-camc msg read                             # inbox: list unread for current mailbox
-camc msg read --next                      # print body of oldest unread (msg_id+seq+from+ts+text)
-camc msg read --next --mark               # …and mark it read
-camc msg read --all                       # include already-read in the listing
-camc msg read --for <agent-id-or-name>    # explicit mailbox (works outside tmux)
-camc msg read --json                      # stable JSON for tests/automation
-camc msg read <msg_id>                    # replay full thread, sorted by seq
-camc msg read <msg_id> --mark             # …and mark unread deliveries in this thread
-camc msg wait <msg_id>                    # legacy: first-reply only (compat)
-camc msg wait <msg_id> --timeout 300      # wait up to 5 min
-camc msg show <msg_id>                    # raw ledger history for one message
-camc msg list [--for <to>] [-n 50]        # recent messages summary
+~/.cam/camc msg reply <msg_id> --text "..."      # append next seq to the SAME thread
+~/.cam/camc msg read                             # inbox: list unread for current mailbox
+~/.cam/camc msg read --next                      # print body of oldest unread (msg_id+seq+from+ts+text)
+~/.cam/camc msg read --next --mark               # …and mark it read
+~/.cam/camc msg read --all                       # include already-read in the listing
+~/.cam/camc msg read --for <agent-id-or-name>    # explicit mailbox (works outside tmux)
+~/.cam/camc msg read --json                      # stable JSON for tests/automation
+~/.cam/camc msg read <msg_id>                    # replay full thread, sorted by seq
+~/.cam/camc msg read <msg_id> --mark             # …and mark unread deliveries in this thread
+~/.cam/camc msg wait <msg_id>                    # legacy: first-reply only (compat)
+~/.cam/camc msg wait <msg_id> --timeout 300      # wait up to 5 min
+~/.cam/camc msg show <msg_id>                    # raw ledger history for one message
+~/.cam/camc msg list [--for <to>] [-n 50]        # recent messages summary
 ```
 
 Default `send`/`wait` timeout is 600 seconds (10 min) — chosen to
@@ -12031,14 +12031,14 @@ EXPECT_REPLY=yes
 ```
 
 The sent ledger record gains `expect_reply: true`. Subsequent
-`camc msg wait <msg_id>` switches to polling the ledger for a
-`replied` record (committed by the receiver via `camc msg reply`)
+`~/.cam/camc msg wait <msg_id>` switches to polling the ledger for a
+`replied` record (committed by the receiver via `~/.cam/camc msg reply`)
 instead of pane-scrape. This trades minimal receiver compliance (one
 extra Bash call) for full determinism: no flaky text extraction, no
 pane scrollback issues. With `--expect-reply` and no `--no-wait`,
 `send` just send-injects then ledger-polls in one process.
 
-`camc msg reply <msg_id> -t "..."` appends a turn under the SAME
+`~/.cam/camc msg reply <msg_id> -t "..."` appends a turn under the SAME
 thread:
 - looks up the thread (sent record OR any prior turn for msg_id);
   exits 1 if neither exists.
@@ -12047,25 +12047,25 @@ thread:
   the original sent record's `sender_*` for legacy ledgers).
 - appends `turn(seq=next_seq, kind=message, from/to ids+names, text)`
   and `delivery(mailbox_id=…)` records — these are the source-of-truth
-  for `camc msg read`.
+  for `~/.cam/camc msg read`.
 - on FIRST reply only, also appends a legacy `status=replied` so
-  existing `camc msg wait` keeps working. Subsequent replies append
+  existing `~/.cam/camc msg wait` keeps working. Subsequent replies append
   another turn unconditionally — no idempotency block.
 - best-effort tmux notification reuses the SAME `[camc msg#<msg_id>]`
   thread marker (no new logical id, no `[reply_to:…]` block). Failure
   is non-fatal because the mailbox already has the message.
 - stdout: `REPLIED_TO=<msg_id>`, `SEQ=<n>`, `MAILBOX=<mailbox_id>`.
 
-`camc msg read` is the new messaging protocol interface:
+`~/.cam/camc msg read` is the new messaging protocol interface:
 - No args → list unread deliveries for the current mailbox (table
   with msg_id / seq / ts / from / preview).
 - `--next` → print body of oldest unread, header includes msg_id and
-  seq so you can reply with `camc msg reply <msg_id>`.
+  seq so you can reply with `~/.cam/camc msg reply <msg_id>`.
 - `--mark` → append `read` records for everything just listed/printed.
 - `--all` → include already-read entries in the listing.
 - `<msg_id>` → replay the full thread, ordered by seq (not insertion).
   Pure replay does NOT require a mailbox identity, so scripts running
-  outside tmux can `camc msg read <msg_id>` without `--for`. `--mark`
+  outside tmux can `~/.cam/camc msg read <msg_id>` without `--for`. `--mark`
   on the replay path DOES require an identity (or `--for`) since it
   writes mailbox-scoped read records.
 - `--for <label>` → resolve mailbox via AgentStore (id / name) with
@@ -12073,12 +12073,12 @@ thread:
   `label:<arg>`.
 - `--json` → stable JSON output for tests/automation.
 
-`camc msg wait <msg_id>` is now a compatibility helper for the FIRST
+`~/.cam/camc msg wait <msg_id>` is now a compatibility helper for the FIRST
 reply on a thread — it prints any existing `replied` record or polls
 for one. For multi-turn threads (or to bypass the legacy semantics),
-use `camc msg read <msg_id>`.
+use `~/.cam/camc msg read <msg_id>`.
 
-`camc msg show <msg_id>` and `camc msg list` remain raw views over
+`~/.cam/camc msg show <msg_id>` and `~/.cam/camc msg list` remain raw views over
 `~/.cam/messages.jsonl`. They include both legacy status records
 (`sent`, `delivered`, `replied`, `timeout`) and V0 thread records
 (`turn`, `delivery`, `read`). All V0 records carry
@@ -12108,7 +12108,7 @@ the same mailbox_id/msg_id/seq.
 ## Wire format
 
 When A sends, the request is injected into B's tmux pane via
-`camc send <B> --text`:
+`~/.cam/camc send <B> --text`:
 
 ```
 [camc msg#abc12345]: [from:<name>#<id>][to:<name>#<id>] <user-supplied text>
@@ -12118,7 +12118,7 @@ When A sends, the request is injected into B's tmux pane via
 collision space) for ~100 concurrent in-flight messages with negligible
 collision risk. B sees this as a normal user input line.
 
-The `[from:<name>#<id>]` block is added automatically when `camc msg
+The `[from:<name>#<id>]` block is added automatically when `~/.cam/camc msg
 send` is run from inside a registered camc agent tmux pane. `name` and
 `id` come from `agents.json` via the sender's current tmux session.
 The `[to:<name>#<id>]` block is added when the target identifier
@@ -12136,7 +12136,7 @@ resolves the payload reduces to:
 [camc msg#abc12345]: <user-supplied text>
 ```
 
-Reply notifications generated by `camc msg reply` add a correlation block
+Reply notifications generated by `~/.cam/camc msg reply` add a correlation block
 after the available attribution blocks:
 
 ```
@@ -12230,9 +12230,9 @@ def wait_for_response(agent_id, msg_id, *, timeout=600, poll=5.0,
     return None, "timeout"
 ```
 
-`camc msg wait <msg_id>` first checks the ledger; if a `replied` record
+`~/.cam/camc msg wait <msg_id>` first checks the ledger; if a `replied` record
 is already present, it prints that saved reply immediately and exits 0.
-For `expect_reply` messages, `wait` polls the ledger until `camc msg
+For `expect_reply` messages, `wait` polls the ledger until `~/.cam/camc msg
 reply` commits that record. For legacy/non-expected-reply messages,
 blocking `send` and `wait` use the pane-scrape waiter.
 
@@ -12253,19 +12253,19 @@ in the same JSONL file. Each line is a JSON record:
 Query the ledger:
 
 ```bash
-camc msg show <msg_id>      # all events for one message
-camc msg wait <msg_id>      # block until reply, or print saved reply if already replied
-camc msg list -n 20         # last 20 messages with latest status
-camc msg list --for <to>    # filter by recipient
+~/.cam/camc msg show <msg_id>      # all events for one message
+~/.cam/camc msg wait <msg_id>      # block until reply, or print saved reply if already replied
+~/.cam/camc msg list -n 20         # last 20 messages with latest status
+~/.cam/camc msg list --for <to>    # filter by recipient
 ```
 
-On timeout, blocking `camc msg send` and `camc msg wait` print to stdout:
+On timeout, blocking `~/.cam/camc msg send` and `~/.cam/camc msg wait` print to stdout:
 
 ```
 [camc msg#<id>] timed out after <N>s (<reason> on '<to>').
-  Check status later:  camc msg show <id>
-  Recent messages:     camc msg list
-  Peek target's pane:  camc capture <to>
+  Check status later:  ~/.cam/camc msg show <id>
+  Recent messages:     ~/.cam/camc msg list
+  Peek target's pane:  ~/.cam/camc capture <to>
 ```
 
 …and exits 1. The calling Claude tool sees this as the tool result
@@ -12278,9 +12278,9 @@ identity matters, the sender writes it into `--text`.
 
 | Status | Cause | Recovery |
 |---|---|---|
-| `no_marker` | injection failed (camc send error) or B rotated buffer past it | retry; check B running with `camc status <to>` |
-| `timeout` | B busy / stuck / slow | longer `--timeout`; check B with `camc capture <to>` |
-| ledger `delivered`, no terminal status | async send, sender process killed mid-wait, or no waiter started yet | run `camc msg wait <msg_id>` |
+| `no_marker` | injection failed (~/.cam/camc send error) or B rotated buffer past it | retry; check B running with `~/.cam/camc status <to>` |
+| `timeout` | B busy / stuck / slow | longer `--timeout`; check B with `~/.cam/camc capture <to>` |
+| ledger `delivered`, no terminal status | async send, sender process killed mid-wait, or no waiter started yet | run `~/.cam/camc msg wait <msg_id>` |
 | sender → self | A blocked, message in own pane unconsumed | times out cleanly; degenerate but not a hard deadlock |
 
 ## Why no `CAM_AGENT_ID`
@@ -12292,7 +12292,7 @@ Earlier draft auto-injected sender ID via env var. Dropped because:
 
 ## Comparison to TeaSpirit `block_renderer`
 
-| Concern | TeaSpirit | `camc msg` |
+| Concern | TeaSpirit | `~/.cam/camc msg` |
 |---|---|---|
 | Anchor | First 20 normalized chars of user prompt (fuzzy) | `[camc msg#<8-hex>]:` (deterministic; the `camc` keyword in the marker signals to receivers that this is legitimate inter-agent traffic, not prompt injection) |
 | Output format | Adaptive Card blocks | Plain text |
@@ -12307,8 +12307,8 @@ plain text output, and conservative settle timing.
 
 ## Concurrency
 
-V0: each blocking `camc msg send` or `camc msg wait` is its own
-subprocess + own polling loop. `camc msg send --no-wait` only injects and
+V0: each blocking `~/.cam/camc msg send` or `~/.cam/camc msg wait` is its own
+subprocess + own polling loop. `~/.cam/camc msg send --no-wait` only injects and
 returns; no background waiter is started. N concurrent waits = N
 subprocesses. Acceptable up to ~10 parallel without infrastructure
 changes.
@@ -12320,9 +12320,9 @@ multiplexes captures and dispatches replies via msg_id correlation.
 ## Anti-patterns
 
 - ❌ Writing literal `[camc msg#xxxxxxxx]:` in normal output (fakes a marker)
-- ❌ Wrapping every Bash command in `camc msg send` (only use when delegating)
-- ❌ Polling `camc capture <to>` instead of `camc msg send` (defeats the purpose)
-- ❌ Replying via direct `camc send <a>` from B's shell instead of letting natural reply flow
+- ❌ Wrapping every Bash command in `~/.cam/camc msg send` (only use when delegating)
+- ❌ Polling `~/.cam/camc capture <to>` instead of `~/.cam/camc msg send` (defeats the purpose)
+- ❌ Replying via direct `~/.cam/camc send <a>` from B's shell instead of letting natural reply flow
 """
     },
     "managing-camc": {
@@ -12336,7 +12336,7 @@ description: >
   For inter-agent messaging use the camc-messaging skill. For cron/loops use
   camc-cron-loop. For diagnosing stuck agents use camc-diagnose.
   Cross-machine fleet operations are outside this built-in skill.
-compatibility: Requires camc binary in PATH or at ~/.cam/camc.
+compatibility: Requires ~/.cam/camc deployed by the camc release.
 metadata:
   author: hren
   tags: camc, cam, agent, agents, tmux, claude, claude-code, codex,
@@ -12359,34 +12359,34 @@ process, and Claude session-id, so multiple agents in the same
 workspace are fully isolated at the conversation level.
 
 > **When in doubt, run `--help` first — never guess.** Flags drift
-> between releases; the binary is the source of truth. `camc --help`
+> between releases; the binary is the source of truth. `~/.cam/camc --help`
 > for subcommands; `camc <subcommand> --help` for flags.
 
-Agents are addressable by name, ID prefix, or `#N` (1-based from `camc list`).
+Agents are addressable by name, ID prefix, or `#N` (1-based from `~/.cam/camc list`).
 
 ## Quick Reference
 
 | Task | Command |
 |---|---|
-| Start agent | `camc run "task" -n <name>` |
-| Start interactively | `camc run -n <name>` |
-| Resume Claude session | `camc run -t claude -n <name> --resume <session-id>` |
-| List agents | `camc list` (or `ls`) |
-| Status detail | `camc status <agent>` |
-| Capture screen | `camc capture <agent> --lines 200` |
-| Send text + Enter | `camc send <agent> --text "msg"` |
-| Send text only | `camc send <agent> --text "..." --no-enter` |
-| Send special key | `camc key <agent> --key Escape` |
-| Attach interactively | `camc attach <agent>` (Ctrl+B D to detach) |
+| Start agent | `~/.cam/camc run "task" -n <name>` |
+| Start interactively | `~/.cam/camc run -n <name>` |
+| Resume Claude session | `~/.cam/camc run -t claude -n <name> --resume <session-id>` |
+| List agents | `~/.cam/camc list` (or `ls`) |
+| Status detail | `~/.cam/camc status <agent>` |
+| Capture screen | `~/.cam/camc capture <agent> --lines 200` |
+| Send text + Enter | `~/.cam/camc send <agent> --text "msg"` |
+| Send text only | `~/.cam/camc send <agent> --text "..." --no-enter` |
+| Send special key | `~/.cam/camc key <agent> --key Escape` |
+| Attach interactively | `~/.cam/camc attach <agent>` (Ctrl+B D to detach) |
 | Logs | `camc logs <agent> -f` |
 | Reboot (resume session) | `camc reboot <agent>` |
 | Move to other host | `camc reboot <agent> --to host:port` |
 | Update name/tag | `camc update <agent> --name x --tag T` |
-| Stop (graceful) | `camc stop <agent>` |
-| Kill (force) | `camc kill <agent>` |
-| Remove | `camc rm <agent>` (always kills tmux; `--archive` to save first) |
+| Stop (graceful) | `~/.cam/camc stop <agent>` |
+| Kill (force) | `~/.cam/camc kill <agent>` |
+| Remove | `~/.cam/camc rm <agent>` (always kills tmux; `--archive` to save first) |
 | Bulk cleanup | `camc prune --orphans` |
-| Start with system prompt | `camc run "task" -n name --system-prompt "..."` or `--system-file <path>` |
+| Start with system prompt | `~/.cam/camc run "task" -n name --system-prompt "..."` or `--system-file <path>` |
 
 **Other skill areas:**
 
@@ -12403,15 +12403,15 @@ agent later. Use the user's name if given, otherwise generate a short
 clear one (`fix-ecc`, `bug5893270`, `regr-fn100`).
 
 ```bash
-camc run "fix the ECC error" -n fix-ecc                # codex (default)
-camc run "add tests" -t claude -n add-tests
-camc run -n debug-mem                                   # interactive (no prompt)
-camc run "build" -a -n nightly                          # auto-exit on completion
-camc run "x" -n x --tag NR10 --tag WORK
-camc run "..." -t claude -n redo --resume <session-id>            # resume Claude session
-camc run "x" -p /path/to/proj -n proj-dev               # explicit path (default: CWD)
-camc run "x" -n y --system-prompt "You are a reviewer." # inject system prompt inline
-camc run "x" -n y --system-file path/to/SKILL.md        # inject system prompt from file
+~/.cam/camc run "fix the ECC error" -n fix-ecc                # codex (default)
+~/.cam/camc run "add tests" -t claude -n add-tests
+~/.cam/camc run -n debug-mem                                   # interactive (no prompt)
+~/.cam/camc run "build" -a -n nightly                          # auto-exit on completion
+~/.cam/camc run "x" -n x --tag NR10 --tag WORK
+~/.cam/camc run "..." -t claude -n redo --resume <session-id>            # resume Claude session
+~/.cam/camc run "x" -p /path/to/proj -n proj-dev               # explicit path (default: CWD)
+~/.cam/camc run "x" -n y --system-prompt "You are a reviewer." # inject system prompt inline
+~/.cam/camc run "x" -n y --system-file path/to/SKILL.md        # inject system prompt from file
 ```
 
 `--system-prompt` / `--system-file` writes the content into a
@@ -12430,7 +12430,7 @@ Once an agent is running, you talk to it through three commands.
 ### Send a prompt
 
 ```bash
-camc send <agent> --text "please refactor src/foo.py to ..."
+~/.cam/camc send <agent> --text "please refactor src/foo.py to ..."
 ```
 
 `--text` payload is sent literally to the agent's tmux pane, then a
@@ -12439,9 +12439,9 @@ trailing Enter submits it. Use `--no-enter` to type without submitting.
 ### Read what the agent wrote
 
 ```bash
-camc capture <agent>                    # last 100 lines (default)
-camc capture <agent> --lines 500        # more
-camc capture <agent> --lines 0          # full scrollback (60s timeout)
+~/.cam/camc capture <agent>                    # last 100 lines (default)
+~/.cam/camc capture <agent> --lines 500        # more
+~/.cam/camc capture <agent> --lines 0          # full scrollback (60s timeout)
 camc --json capture <agent>             # JSON with content hash
 ```
 
@@ -12451,31 +12451,31 @@ the session would see.
 ### Special keys
 
 ```bash
-camc key <agent> --key Escape           # cancel a tool call / interrupt
-camc key <agent> --key Enter
-camc key <agent> --key C-c              # SIGINT to foreground process
-camc key <agent> --key C-d              # EOF
+~/.cam/camc key <agent> --key Escape           # cancel a tool call / interrupt
+~/.cam/camc key <agent> --key Enter
+~/.cam/camc key <agent> --key C-c              # SIGINT to foreground process
+~/.cam/camc key <agent> --key C-d              # EOF
 ```
 
 ### Typical interaction loop
 
 ```bash
-camc send <agent> --text "summarize the diff"
+~/.cam/camc send <agent> --text "summarize the diff"
 sleep 5                                  # let the model think
-camc capture <agent> --lines 80          # read the answer
+~/.cam/camc capture <agent> --lines 80          # read the answer
 # ...iterate
 ```
 
 When the agent is mid-tool-call and you want to stop it:
 
 ```bash
-camc key <agent> --key Escape
+~/.cam/camc key <agent> --key Escape
 ```
 
 ### Attach for interactive work
 
 ```bash
-camc attach <agent>     # join the tmux session; Ctrl+B D detaches
+~/.cam/camc attach <agent>     # join the tmux session; Ctrl+B D detaches
 ```
 
 ### Inter-agent messaging (delegation)
@@ -12483,10 +12483,10 @@ camc attach <agent>     # join the tmux session; Ctrl+B D detaches
 For asking another agent to do something, use the **camc-messaging** skill:
 
 ```bash
-camc msg send <to> -t "..."             # block until reply
-camc msg send <to> -t "..." --no-wait   # return message id immediately
-camc msg reply <msg_id> -t "..."        # reply on same thread
-camc msg read [--next] [--mark]         # read inbox
+~/.cam/camc msg send <to> -t "..."             # block until reply
+~/.cam/camc msg send <to> -t "..." --no-wait   # return message id immediately
+~/.cam/camc msg reply <msg_id> -t "..."        # reply on same thread
+~/.cam/camc msg read [--next] [--mark]         # read inbox
 ```
 
 Full protocol, wire format, and patterns: see the camc-messaging skill.
@@ -12496,8 +12496,8 @@ Full protocol, wire format, and patterns: see the camc-messaging skill.
 ### Inspect
 
 ```bash
-camc list                          # all agents on this host
-camc status <agent>                # detailed JSON-like state
+~/.cam/camc list                          # all agents on this host
+~/.cam/camc status <agent>                # detailed JSON-like state
 camc logs <agent> -f               # follow monitor log
 ```
 
@@ -12518,10 +12518,10 @@ camc update <agent> --tag SMOKE
 ### Stop / kill / remove
 
 ```bash
-camc stop <agent>           # graceful: sends /exit; tmux stays alive (resumable)
-camc kill <agent>           # force: tears down tmux session
-camc rm <agent>             # remove record + always kills tmux + unlinks socket
-camc rm <agent> --archive   # also tar.gz the history under ~/.cam/archives/
+~/.cam/camc stop <agent>           # graceful: sends /exit; tmux stays alive (resumable)
+~/.cam/camc kill <agent>           # force: tears down tmux session
+~/.cam/camc rm <agent>             # remove record + always kills tmux + unlinks socket
+~/.cam/camc rm <agent> --archive   # also tar.gz the history under ~/.cam/archives/
 ```
 
 ### Bulk cleanup
@@ -12561,9 +12561,9 @@ camc add my-existing-session --tool claude --name my-agent
 
 | Symptom | First thing to try |
 |---|---|
-| Status says `running` but tmux is dead | `camc heal` |
-| Monitor died after camc upgrade | `camc upgrade` |
-| Agent not responding to `send` | `camc capture <agent> --lines 30` to see; then `camc attach` for manual |
+| Status says `running` but tmux is dead | `~/.cam/camc heal` |
+| Monitor died after ~/.cam/camc upgrade | `~/.cam/camc upgrade` |
+| Agent not responding to `send` | `~/.cam/camc capture <agent> --lines 30` to see; then `~/.cam/camc attach` for manual |
 | Want to find an agent's Claude JSONL | `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` — see `reference/sessions.md` |
 
 For deeper diagnosis (stuck agents, exit reasons, heal details):
@@ -12630,7 +12630,7 @@ camc context rm myproject
 `~/.cam/context.json` (singular) is a legacy single-machine config still
 honored as a fallback for `env_setup` when the user has only one machine.
 
-## How a `camc run` resolves machine + context
+## How a `~/.cam/camc run` resolves machine + context
 
 1. `--path` is canonicalized (CWD if omitted)
 2. Optional context name → `contexts.json` → may override `path`
@@ -12721,7 +12721,7 @@ camc archive show <archive-name> | less
 ## Resume a session in a fresh agent
 
 ```bash
-camc run --tool claude \
+~/.cam/camc run --tool claude \
   --path /home/hren/.openclaw/workspace/camflow \
   --name <name> \
   --resume <session-id>
