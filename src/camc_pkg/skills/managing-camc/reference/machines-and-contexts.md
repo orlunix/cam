@@ -39,7 +39,7 @@ camc context rm myproject
 `~/.cam/context.json` (singular) is a legacy single-machine config still
 honored as a fallback for `env_setup` when the user has only one machine.
 
-## How a `camc run` resolves machine + context
+## How a `~/.cam/camc run` resolves machine + context
 
 1. `--path` is canonicalized (CWD if omitted)
 2. Optional context name → `contexts.json` → may override `path`

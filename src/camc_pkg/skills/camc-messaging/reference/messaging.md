@@ -1,88 +1,88 @@
-# `camc msg` — inter-agent messaging protocol
+# `~/.cam/camc msg` — inter-agent messaging protocol
 
 Send a request to another running cam agent. The append-only ledger at
 `~/.cam/messages.jsonl` is the source of truth; the tmux-pane injection
 is a best-effort wake-up notification.
 
 **msg_id is the THREAD id.** The original send writes `seq=1`; every
-`camc msg reply <msg_id>` appends `seq=N+1` under the SAME msg_id
-(no new logical id is minted). `camc msg read <msg_id>` replays the
+`~/.cam/camc msg reply <msg_id>` appends `seq=N+1` under the SAME msg_id
+(no new logical id is minted). `~/.cam/camc msg read <msg_id>` replays the
 whole thread sorted by seq.
 
 **Mailbox = source of truth.** Every send/reply writes a `turn` record
 plus a `delivery` record into the ledger BEFORE the tmux send. If the
 pane injection fails, the message is still in the mailbox; the
-receiver's `camc msg read` will see it. `camc msg read` (no args) lists
+receiver's `~/.cam/camc msg read` will see it. `~/.cam/camc msg read` (no args) lists
 unread deliveries for the current mailbox; `--mark` appends `read`
 records so subsequent reads omit them.
 
 By default the sender blocks on the reply; with `--no-wait`, it returns
-a message id immediately and a later `camc msg read <msg_id>` (or the
-legacy `camc msg wait <msg_id>` for the first reply only) retrieves
+a message id immediately and a later `~/.cam/camc msg read <msg_id>` (or the
+legacy `~/.cam/camc msg wait <msg_id>` for the first reply only) retrieves
 the reply. The mechanism is a normal Bash subprocess — no daemon, no
 special runtime.
 
 Shape:
 ```
-A's Claude → Bash tool → camc msg send <B> → poll B's tmux
+A's Claude → Bash tool → ~/.cam/camc msg send <B> → poll B's tmux
                                             → extract reply
                                             → print(reply); exit 0
 A's Bash tool ← stdout ← exit
 A's Claude ← tool_result
 ```
 
-Identical to `$(curl http://slow.example.com)` semantically — `camc msg
+Identical to `$(curl http://slow.example.com)` semantically — `~/.cam/camc msg
 send` just refuses to exit until the reply is ready.
 
 Async shape:
 ```
-A's Claude → Bash tool → camc msg send <B> --no-wait
+A's Claude → Bash tool → ~/.cam/camc msg send <B> --no-wait
                                             → inject request
                                             → print MSG_ID + STATUS=sent; exit 0
 ... later ...
-A's Claude → Bash tool → camc msg wait <msg_id> → poll B's tmux
+A's Claude → Bash tool → ~/.cam/camc msg wait <msg_id> → poll B's tmux
                                                  → print(reply); exit 0
 ```
 
 Phase 1 expected-reply async shape (deterministic):
 ```
-A's Claude → Bash tool → camc msg send <B> --no-wait --expect-reply
+A's Claude → Bash tool → ~/.cam/camc msg send <B> --no-wait --expect-reply
                                             → inject request + receiver
                                               instruction
                                             → print MSG_ID + STATUS=sent
                                               + EXPECT_REPLY=yes; exit 0
 B's Claude reads request → … does work … → Bash tool →
-                       camc msg reply <orig_id> -t "<final answer>"
+                       ~/.cam/camc msg reply <orig_id> -t "<final answer>"
                                             → notify A back via no-wait
                                               + append `replied` ledger
                                               record on orig_id
 ... later ...
-A's Claude → Bash tool → camc msg wait <orig_id> → poll LEDGER (not pane)
+A's Claude → Bash tool → ~/.cam/camc msg wait <orig_id> → poll LEDGER (not pane)
                                                   → print(reply); exit 0
 ```
 
 ## CLI
 
 ```bash
-camc msg send <to> --text "..."           # synchronous, reply on stdout (default 600s)
-camc msg send <to> --text "..." --timeout 300     # 5 min (integer seconds)
-camc msg send <to> --text "..." --timeout 1800    # 30 min
-camc msg send <to> --text "..." --no-wait # async: returns MSG_ID + STATUS=sent
-camc msg send <to> --text "..." --no-wait --expect-reply
+~/.cam/camc msg send <to> --text "..."           # synchronous, reply on stdout (default 600s)
+~/.cam/camc msg send <to> --text "..." --timeout 300     # 5 min (integer seconds)
+~/.cam/camc msg send <to> --text "..." --timeout 1800    # 30 min
+~/.cam/camc msg send <to> --text "..." --no-wait # async: returns MSG_ID + STATUS=sent
+~/.cam/camc msg send <to> --text "..." --no-wait --expect-reply
                                           # async + receiver MUST commit reply
-camc msg reply <msg_id> --text "..."      # append next seq to the SAME thread
-camc msg read                             # inbox: list unread for current mailbox
-camc msg read --next                      # print body of oldest unread (msg_id+seq+from+ts+text)
-camc msg read --next --mark               # …and mark it read
-camc msg read --all                       # include already-read in the listing
-camc msg read --for <agent-id-or-name>    # explicit mailbox (works outside tmux)
-camc msg read --json                      # stable JSON for tests/automation
-camc msg read <msg_id>                    # replay full thread, sorted by seq
-camc msg read <msg_id> --mark             # …and mark unread deliveries in this thread
-camc msg wait <msg_id>                    # legacy: first-reply only (compat)
-camc msg wait <msg_id> --timeout 300      # wait up to 5 min
-camc msg show <msg_id>                    # raw ledger history for one message
-camc msg list [--for <to>] [-n 50]        # recent messages summary
+~/.cam/camc msg reply <msg_id> --text "..."      # append next seq to the SAME thread
+~/.cam/camc msg read                             # inbox: list unread for current mailbox
+~/.cam/camc msg read --next                      # print body of oldest unread (msg_id+seq+from+ts+text)
+~/.cam/camc msg read --next --mark               # …and mark it read
+~/.cam/camc msg read --all                       # include already-read in the listing
+~/.cam/camc msg read --for <agent-id-or-name>    # explicit mailbox (works outside tmux)
+~/.cam/camc msg read --json                      # stable JSON for tests/automation
+~/.cam/camc msg read <msg_id>                    # replay full thread, sorted by seq
+~/.cam/camc msg read <msg_id> --mark             # …and mark unread deliveries in this thread
+~/.cam/camc msg wait <msg_id>                    # legacy: first-reply only (compat)
+~/.cam/camc msg wait <msg_id> --timeout 300      # wait up to 5 min
+~/.cam/camc msg show <msg_id>                    # raw ledger history for one message
+~/.cam/camc msg list [--for <to>] [-n 50]        # recent messages summary
 ```
 
 Default `send`/`wait` timeout is 600 seconds (10 min) — chosen to
@@ -108,14 +108,14 @@ EXPECT_REPLY=yes
 ```
 
 The sent ledger record gains `expect_reply: true`. Subsequent
-`camc msg wait <msg_id>` switches to polling the ledger for a
-`replied` record (committed by the receiver via `camc msg reply`)
+`~/.cam/camc msg wait <msg_id>` switches to polling the ledger for a
+`replied` record (committed by the receiver via `~/.cam/camc msg reply`)
 instead of pane-scrape. This trades minimal receiver compliance (one
 extra Bash call) for full determinism: no flaky text extraction, no
 pane scrollback issues. With `--expect-reply` and no `--no-wait`,
 `send` just send-injects then ledger-polls in one process.
 
-`camc msg reply <msg_id> -t "..."` appends a turn under the SAME
+`~/.cam/camc msg reply <msg_id> -t "..."` appends a turn under the SAME
 thread:
 - looks up the thread (sent record OR any prior turn for msg_id);
   exits 1 if neither exists.
@@ -124,25 +124,25 @@ thread:
   the original sent record's `sender_*` for legacy ledgers).
 - appends `turn(seq=next_seq, kind=message, from/to ids+names, text)`
   and `delivery(mailbox_id=…)` records — these are the source-of-truth
-  for `camc msg read`.
+  for `~/.cam/camc msg read`.
 - on FIRST reply only, also appends a legacy `status=replied` so
-  existing `camc msg wait` keeps working. Subsequent replies append
+  existing `~/.cam/camc msg wait` keeps working. Subsequent replies append
   another turn unconditionally — no idempotency block.
 - best-effort tmux notification reuses the SAME `[camc msg#<msg_id>]`
   thread marker (no new logical id, no `[reply_to:…]` block). Failure
   is non-fatal because the mailbox already has the message.
 - stdout: `REPLIED_TO=<msg_id>`, `SEQ=<n>`, `MAILBOX=<mailbox_id>`.
 
-`camc msg read` is the new messaging protocol interface:
+`~/.cam/camc msg read` is the new messaging protocol interface:
 - No args → list unread deliveries for the current mailbox (table
   with msg_id / seq / ts / from / preview).
 - `--next` → print body of oldest unread, header includes msg_id and
-  seq so you can reply with `camc msg reply <msg_id>`.
+  seq so you can reply with `~/.cam/camc msg reply <msg_id>`.
 - `--mark` → append `read` records for everything just listed/printed.
 - `--all` → include already-read entries in the listing.
 - `<msg_id>` → replay the full thread, ordered by seq (not insertion).
   Pure replay does NOT require a mailbox identity, so scripts running
-  outside tmux can `camc msg read <msg_id>` without `--for`. `--mark`
+  outside tmux can `~/.cam/camc msg read <msg_id>` without `--for`. `--mark`
   on the replay path DOES require an identity (or `--for`) since it
   writes mailbox-scoped read records.
 - `--for <label>` → resolve mailbox via AgentStore (id / name) with
@@ -150,12 +150,12 @@ thread:
   `label:<arg>`.
 - `--json` → stable JSON output for tests/automation.
 
-`camc msg wait <msg_id>` is now a compatibility helper for the FIRST
+`~/.cam/camc msg wait <msg_id>` is now a compatibility helper for the FIRST
 reply on a thread — it prints any existing `replied` record or polls
 for one. For multi-turn threads (or to bypass the legacy semantics),
-use `camc msg read <msg_id>`.
+use `~/.cam/camc msg read <msg_id>`.
 
-`camc msg show <msg_id>` and `camc msg list` remain raw views over
+`~/.cam/camc msg show <msg_id>` and `~/.cam/camc msg list` remain raw views over
 `~/.cam/messages.jsonl`. They include both legacy status records
 (`sent`, `delivered`, `replied`, `timeout`) and V0 thread records
 (`turn`, `delivery`, `read`). All V0 records carry
@@ -185,7 +185,7 @@ the same mailbox_id/msg_id/seq.
 ## Wire format
 
 When A sends, the request is injected into B's tmux pane via
-`camc send <B> --text`:
+`~/.cam/camc send <B> --text`:
 
 ```
 [camc msg#abc12345]: [from:<name>#<id>][to:<name>#<id>] <user-supplied text>
@@ -195,7 +195,7 @@ When A sends, the request is injected into B's tmux pane via
 collision space) for ~100 concurrent in-flight messages with negligible
 collision risk. B sees this as a normal user input line.
 
-The `[from:<name>#<id>]` block is added automatically when `camc msg
+The `[from:<name>#<id>]` block is added automatically when `~/.cam/camc msg
 send` is run from inside a registered camc agent tmux pane. `name` and
 `id` come from `agents.json` via the sender's current tmux session.
 The `[to:<name>#<id>]` block is added when the target identifier
@@ -213,7 +213,7 @@ resolves the payload reduces to:
 [camc msg#abc12345]: <user-supplied text>
 ```
 
-Reply notifications generated by `camc msg reply` add a correlation block
+Reply notifications generated by `~/.cam/camc msg reply` add a correlation block
 after the available attribution blocks:
 
 ```
@@ -307,9 +307,9 @@ def wait_for_response(agent_id, msg_id, *, timeout=600, poll=5.0,
     return None, "timeout"
 ```
 
-`camc msg wait <msg_id>` first checks the ledger; if a `replied` record
+`~/.cam/camc msg wait <msg_id>` first checks the ledger; if a `replied` record
 is already present, it prints that saved reply immediately and exits 0.
-For `expect_reply` messages, `wait` polls the ledger until `camc msg
+For `expect_reply` messages, `wait` polls the ledger until `~/.cam/camc msg
 reply` commits that record. For legacy/non-expected-reply messages,
 blocking `send` and `wait` use the pane-scrape waiter.
 
@@ -330,19 +330,19 @@ in the same JSONL file. Each line is a JSON record:
 Query the ledger:
 
 ```bash
-camc msg show <msg_id>      # all events for one message
-camc msg wait <msg_id>      # block until reply, or print saved reply if already replied
-camc msg list -n 20         # last 20 messages with latest status
-camc msg list --for <to>    # filter by recipient
+~/.cam/camc msg show <msg_id>      # all events for one message
+~/.cam/camc msg wait <msg_id>      # block until reply, or print saved reply if already replied
+~/.cam/camc msg list -n 20         # last 20 messages with latest status
+~/.cam/camc msg list --for <to>    # filter by recipient
 ```
 
-On timeout, blocking `camc msg send` and `camc msg wait` print to stdout:
+On timeout, blocking `~/.cam/camc msg send` and `~/.cam/camc msg wait` print to stdout:
 
 ```
 [camc msg#<id>] timed out after <N>s (<reason> on '<to>').
-  Check status later:  camc msg show <id>
-  Recent messages:     camc msg list
-  Peek target's pane:  camc capture <to>
+  Check status later:  ~/.cam/camc msg show <id>
+  Recent messages:     ~/.cam/camc msg list
+  Peek target's pane:  ~/.cam/camc capture <to>
 ```
 
 …and exits 1. The calling Claude tool sees this as the tool result
@@ -355,9 +355,9 @@ identity matters, the sender writes it into `--text`.
 
 | Status | Cause | Recovery |
 |---|---|---|
-| `no_marker` | injection failed (camc send error) or B rotated buffer past it | retry; check B running with `camc status <to>` |
-| `timeout` | B busy / stuck / slow | longer `--timeout`; check B with `camc capture <to>` |
-| ledger `delivered`, no terminal status | async send, sender process killed mid-wait, or no waiter started yet | run `camc msg wait <msg_id>` |
+| `no_marker` | injection failed (~/.cam/camc send error) or B rotated buffer past it | retry; check B running with `~/.cam/camc status <to>` |
+| `timeout` | B busy / stuck / slow | longer `--timeout`; check B with `~/.cam/camc capture <to>` |
+| ledger `delivered`, no terminal status | async send, sender process killed mid-wait, or no waiter started yet | run `~/.cam/camc msg wait <msg_id>` |
 | sender → self | A blocked, message in own pane unconsumed | times out cleanly; degenerate but not a hard deadlock |
 
 ## Why no `CAM_AGENT_ID`
@@ -369,7 +369,7 @@ Earlier draft auto-injected sender ID via env var. Dropped because:
 
 ## Comparison to TeaSpirit `block_renderer`
 
-| Concern | TeaSpirit | `camc msg` |
+| Concern | TeaSpirit | `~/.cam/camc msg` |
 |---|---|---|
 | Anchor | First 20 normalized chars of user prompt (fuzzy) | `[camc msg#<8-hex>]:` (deterministic; the `camc` keyword in the marker signals to receivers that this is legitimate inter-agent traffic, not prompt injection) |
 | Output format | Adaptive Card blocks | Plain text |
@@ -384,8 +384,8 @@ plain text output, and conservative settle timing.
 
 ## Concurrency
 
-V0: each blocking `camc msg send` or `camc msg wait` is its own
-subprocess + own polling loop. `camc msg send --no-wait` only injects and
+V0: each blocking `~/.cam/camc msg send` or `~/.cam/camc msg wait` is its own
+subprocess + own polling loop. `~/.cam/camc msg send --no-wait` only injects and
 returns; no background waiter is started. N concurrent waits = N
 subprocesses. Acceptable up to ~10 parallel without infrastructure
 changes.
@@ -397,6 +397,6 @@ multiplexes captures and dispatches replies via msg_id correlation.
 ## Anti-patterns
 
 - ❌ Writing literal `[camc msg#xxxxxxxx]:` in normal output (fakes a marker)
-- ❌ Wrapping every Bash command in `camc msg send` (only use when delegating)
-- ❌ Polling `camc capture <to>` instead of `camc msg send` (defeats the purpose)
-- ❌ Replying via direct `camc send <a>` from B's shell instead of letting natural reply flow
+- ❌ Wrapping every Bash command in `~/.cam/camc msg send` (only use when delegating)
+- ❌ Polling `~/.cam/camc capture <to>` instead of `~/.cam/camc msg send` (defeats the purpose)
+- ❌ Replying via direct `~/.cam/camc send <a>` from B's shell instead of letting natural reply flow

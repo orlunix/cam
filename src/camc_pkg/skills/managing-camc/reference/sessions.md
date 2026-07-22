@@ -59,7 +59,7 @@ camc archive show <archive-name> | less
 ## Resume a session in a fresh agent
 
 ```bash
-camc run --tool claude \
+~/.cam/camc run --tool claude \
   --path /home/hren/.openclaw/workspace/camflow \
   --name <name> \
   --resume <session-id>
