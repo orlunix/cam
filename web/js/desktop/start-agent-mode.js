@@ -26,7 +26,8 @@
 
 import { hostKeyForMachine } from '../shared/node-host-meta.js';
 
-const DEFAULT_TOOLS = ['claude', 'codex', 'cursor', 'aider'];
+const DEFAULT_TOOLS = ['claude', 'codex', 'cursor', 'others'];
+const HIDDEN_TOOLS = new Set(['generic', 'aider']);
 
 const NONE_CONTEXT_VALUE = '__none__';
 
@@ -43,6 +44,8 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   const form = panel.querySelector('#start-form');
   const toolSel = panel.querySelector('#start-tool');
   const ctxSel = panel.querySelector('#start-context');
+  const customToolFieldEl = panel.querySelector('#start-custom-tool-field');
+  const customToolEl = panel.querySelector('#start-custom-tool');
   const nodeFieldsEl = panel.querySelector('#start-node-fields');
   const nodeSel = panel.querySelector('#start-node');
   const pathEl = panel.querySelector('#start-path');
@@ -70,10 +73,9 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   let selectedApi = '';
 
   // Static fallback for tool --api support, used before models are
-  // fetched so unsupported tools (cursor/aider) hide the section from
-  // the start rather than flashing visible-then-hidden. Mirrors the
-  // hub's API_TOOL_SUPPORT map.
-  const TOOL_API_SUPPORT_STATIC = { claude: true, codex: true, cursor: false, aider: false };
+  // fetched so unsupported tools hide the section from the start rather
+  // than flashing visible-then-hidden. Mirrors the hub's API_TOOL_SUPPORT map.
+  const TOOL_API_SUPPORT_STATIC = { claude: true, codex: true, cursor: false, others: false };
 
   function setStatus(text, cls = '') {
     statusEl.textContent = text || '';
@@ -94,14 +96,40 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
     }
   }
 
+  function toolOptions() {
+    const adapters = state.get('adapters');
+    const base = Array.isArray(adapters) && adapters.length ? adapters : DEFAULT_TOOLS;
+    const tools = [];
+    for (const item of [...base, 'others']) {
+      const tool = String(item == null ? '' : item).trim();
+      if (!tool || HIDDEN_TOOLS.has(tool)) continue;
+      if (!tools.includes(tool)) tools.push(tool);
+    }
+    return tools.length ? tools : DEFAULT_TOOLS;
+  }
+
   function refreshToolOptions() {
-    const adapters = state.get('adapters') || DEFAULT_TOOLS;
-    const tools = adapters.filter(a => a && a !== 'generic');
+    const tools = toolOptions();
     const cur = toolSel.value;
     toolSel.innerHTML = tools.map(
       t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`,
     ).join('');
     if (cur && tools.includes(cur)) toolSel.value = cur;
+    toggleCustomTool();
+  }
+
+  function selectedToolCommand() {
+    if (toolSel.value !== 'others') return toolSel.value;
+    return customToolEl ? (customToolEl.value || '').trim() : '';
+  }
+
+  function toggleCustomTool() {
+    const custom = toolSel.value === 'others';
+    if (customToolFieldEl) customToolFieldEl.hidden = !custom;
+    if (customToolEl) {
+      customToolEl.disabled = !custom;
+      customToolEl.required = custom;
+    }
   }
 
   function refreshContextOptions() {
@@ -376,7 +404,7 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
 
   function readForm() {
     const body = {
-      tool: toolSel.value,
+      tool: selectedToolCommand(),
       prompt: (promptEl.value || ' '),
       auto_exit: autoexitEl.checked,
       // CAM-DESK-RUN-011: auto_confirm + timeout + retry are part of the
@@ -419,6 +447,10 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
     e.preventDefault();
     if (!isConnected()) {
       setStatus('Connect to a CAM endpoint in Settings first.', 'is-error');
+      return;
+    }
+    if (!selectedToolCommand()) {
+      setStatus('Enter a tool command for Others.', 'is-error');
       return;
     }
     // Require EITHER a context OR (node + path).
@@ -491,6 +523,7 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
     });
   }
   toolSel.addEventListener('change', () => {
+    toggleCustomTool();
     applyApiSupport();
     // Different tool → different default / selected marks. Re-render
     // the list (if cached) so the ★default moves to the new tool's row.
@@ -526,6 +559,7 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   let prevCtxs = state.get('contexts');
   let prevAdapters = state.get('adapters');
   refreshToolOptions();
+  toggleCustomTool();
   refreshContextOptions();
   refreshNodeOptions();
   toggleNodeFields();
