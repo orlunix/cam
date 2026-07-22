@@ -698,7 +698,7 @@ import uuid
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "b3f7f1a-dirty 2026-07-23 01:14"
+__build__ = "126c565-dirty 2026-07-23 01:40"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -10770,8 +10770,6 @@ def proxy_stop(route=None):
 # skills
 # ===========================================================================
 
-SKILLS_MANIFEST = os.path.join(CAM_DIR, "skills.json")
-
 # ---------------------------------------------------------------------------
 # Embedded skills — injected by build_camc.py at build time.
 # DO NOT edit here. Edit the source files in src/camc_pkg/skills/.
@@ -12821,66 +12819,11 @@ def _parse_skill_frontmatter(text):
 
 
 # ---------------------------------------------------------------------------
-# Manifest persistence (atomic tmp+os.replace, same pattern as api_store.py)
-# ---------------------------------------------------------------------------
-
-def load_manifest():
-    """Return list of skill names from ~/.cam/skills.json, or []."""
-    try:
-        with open(SKILLS_MANIFEST, "r") as f:
-            data = json.load(f)
-        skills = data.get("skills", [])
-        if isinstance(skills, list):
-            return skills
-    except (IOError, ValueError):
-        pass
-    return []
-
-
-def save_manifest(skills):
-    """Atomic write skills list to ~/.cam/skills.json."""
-    os.makedirs(CAM_DIR, exist_ok=True)
-    data = {"skills": skills}
-    tmp = SKILLS_MANIFEST + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2, sort_keys=True)
-        f.write("\n")
-    os.replace(tmp, SKILLS_MANIFEST)
-
-
-# ---------------------------------------------------------------------------
-# Manifest add / remove
-# ---------------------------------------------------------------------------
-
-def add_skill_to_manifest(name):
-    """Append a skill name to the manifest (deduped). Returns (manifest, added)."""
-    skills = load_manifest()
-    added = False
-    if name not in skills:
-        skills.append(name)
-        save_manifest(skills)
-        added = True
-    return skills, added
-
-
-def remove_skill_from_manifest(name):
-    """Remove a skill name from the manifest. Returns (manifest, removed)."""
-    skills = load_manifest()
-    removed = False
-    if name in skills:
-        skills.remove(name)
-        save_manifest(skills)
-        removed = True
-    return skills, removed
-
-
-# ---------------------------------------------------------------------------
 # Listing
 # ---------------------------------------------------------------------------
 
 def list_skills():
-    """Return [{name, description, in_manifest}, ...] for each embedded skill."""
-    manifest = load_manifest()
+    """Return [{name, description, in_manifest}, ...] for bundled skills."""
     rows = []
     for name, files in sorted(_EMBEDDED_SKILLS.items()):
         skill_md = files.get("SKILL.md", "")
@@ -12889,28 +12832,24 @@ def list_skills():
         rows.append({
             "name": name,
             "description": description,
-            "in_manifest": name in manifest,
+            "in_manifest": True,
         })
     return rows
 
 
 # ---------------------------------------------------------------------------
-# Auto-install manifest skills to project directory
+# Auto-install bundled skills to project directory
 # ---------------------------------------------------------------------------
 
 def install_manifest_skills(workdir, force=False, config_dir=".claude"):
-    """Install manifest skills into <workdir>/<tool-config-dir>/skills/.
+    """Install bundled skills into <workdir>/<tool-config-dir>/skills/.
 
     Called automatically by camc run and scheduler before agent launch.
-    Silently skips empty manifest or missing skills (no error — missing
-    entries in the manifest don't block launch).
+    The historical function name remains for internal compatibility.
     """
-    skills = load_manifest()
-    if not skills:
-        return {}
     out_dir = os.path.join(workdir, config_dir, "skills")
     results = {}
-    for name in skills:
+    for name in sorted(_EMBEDDED_SKILLS):
         results.update(_install_one(name, out_dir, force))
     return results
 
@@ -16676,6 +16615,32 @@ def _do_heal():
         log.warning("cron: heal hook failed: %s", e)
 
 
+def _refresh_embedded_skills_for_local_agents(agents):
+    """Force bundled skills into every locally accessible agent workspace."""
+    hostname = _sock.gethostname()
+    refreshed = 0
+    for agent in agents:
+        if agent.get("hostname") and not _is_same_host(agent["hostname"], hostname):
+            continue
+        workdir = agent.get("context_path") or ""
+        if not workdir or not os.path.isdir(workdir):
+            continue
+        try:
+            install_manifest_skills(
+                workdir, force=True,
+                config_dir=_load_config(_tf(agent, "tool", "claude")).config_dir)
+            refreshed += 1
+        except Exception as e:
+            log.warning("heal: skills refresh failed for %s: %s", agent.get("id"), e)
+    return refreshed
+
+
+def _refresh_embedded_skills_after_heal():
+    refreshed = _refresh_embedded_skills_for_local_agents(AgentStore().list())
+    if refreshed:
+        print("Heal: refreshed bundled skills in %d agent workspace(s)" % refreshed)
+
+
 def cmd_upgrade(args):
     """Upgrade camc: kill old monitors, refresh configs, re-install skills, heal."""
     killed = _kill_all_monitors()
@@ -16698,25 +16663,8 @@ def cmd_upgrade(args):
     except Exception as e:
         log.warning("upgrade: install_default_configs failed: %s", e)
 
-    # Re-install manifest skills to running agent workdirs
     store = AgentStore()
     agents = store.list()
-    my_hostname = _sock.gethostname()
-    reinstalled = 0
-    for a in agents:
-        if a.get("status") != "running":
-            continue
-        agent_host = a.get("hostname")
-        if agent_host and not _is_same_host(agent_host, my_hostname):
-            continue
-        workdir = a.get("context_path") or ""
-        if workdir and os.path.isdir(workdir):
-            results = install_manifest_skills(
-                workdir, force=True, config_dir=_load_config(_tf(a, "tool", "claude")).config_dir)
-            if results:
-                reinstalled += 1
-    if reinstalled:
-        print("Upgrade: re-installed manifest skills to %d running agent(s)" % reinstalled)
 
     # Fix unnamed agents: use basename of context_path
     # Detect duplicates and append ID prefix to disambiguate
@@ -16745,6 +16693,7 @@ def cmd_upgrade(args):
         print("Upgrade: named %d unnamed agent(s)" % fixed)
 
     _do_heal()
+    _refresh_embedded_skills_after_heal()
 
 
 def cmd_heal(args):
@@ -16753,6 +16702,7 @@ def cmd_heal(args):
         print("Note: 'heal --upgrade' is deprecated, use 'camc upgrade'")
         return cmd_upgrade(args)
     _do_heal()
+    _refresh_embedded_skills_after_heal()
 
 
 def cmd_apply(args):
@@ -19094,48 +19044,11 @@ def cmd_skills_list(args):
 
 
 def cmd_skills_add(args):
-    name = getattr(args, "name", None)
-    if not name:
-        print_error("Skill name (or 'all') is required")
-        sys.exit(1)
-
-    if name == "all":
-        embedded = [s["name"] for s in list_skills()]
-        added = []
-        for skill_name in embedded:
-            _, was_added = add_skill_to_manifest(skill_name)
-            if was_added:
-                added.append(skill_name)
-        if added:
-            print_success("Added %d skills to manifest" % len(added))
-        else:
-            print("All skills already in manifest.")
-    else:
-        embedded_names = {s["name"] for s in list_skills()}
-        if name not in embedded_names:
-            print_error("Unknown skill '%s'" % name)
-            sys.exit(1)
-        manifest, added = add_skill_to_manifest(name)
-        if added:
-            print_success("Added %s to manifest" % name)
-        else:
-            print("Already in manifest: %s" % name)
+    print("All official skills are bundled with camc and install automatically.")
 
 
 def cmd_skills_rm(args):
-    name = getattr(args, "name", None)
-    if not name:
-        print_error("Skill name is required")
-        sys.exit(1)
-    embedded_names = {s["name"] for s in list_skills()}
-    if name not in embedded_names:
-        print_error("Unknown skill '%s'" % name)
-        sys.exit(1)
-    manifest, removed = remove_skill_from_manifest(name)
-    if removed:
-        print_success("Removed '%s' from manifest" % name)
-    else:
-        print("Not in manifest: %s" % name)
+    print("All official skills are bundled with camc and install automatically.")
 
 
 def cmd_capture(args):
