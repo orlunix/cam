@@ -68,6 +68,19 @@ def test_embedded_skills_install_without_a_user_manifest(tmp_path, one_embedded_
     assert not manifest.exists()
 
 
+def test_embedded_skill_install_writes_non_ascii_content(tmp_path, monkeypatch):
+    """Skill files contain non-ASCII text; the installer must write
+    UTF-8 explicitly so installs never fail on C/POSIX-locale hosts."""
+    monkeypatch.setattr(
+        skills,
+        "_EMBEDDED_SKILLS",
+        {"demo": {"SKILL.md": "---\nname: demo\n---\n中文说明 — emoji ✓\n"}},
+    )
+    result = skills.install_manifest_skills(str(tmp_path), config_dir=".codex")
+    assert result == {"demo": "created"}
+    assert "中文说明" in (tmp_path / ".codex/skills/demo/SKILL.md").read_text(encoding="utf-8")
+
+
 def test_heal_refreshes_embedded_skills_for_each_local_agent(monkeypatch, tmp_path):
     from camc_pkg import cli
 

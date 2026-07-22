@@ -134,7 +134,7 @@ def _inject_embedded_skills(src):
             for fn in filenames:
                 full = os.path.join(root, fn)
                 rel = os.path.relpath(full, skill_dir)
-                with open(full, "r") as f:
+                with open(full, "r", encoding="utf-8") as f:
                     files[rel] = f.read()
         if files:
             skills[skill_name] = files
@@ -395,7 +395,7 @@ def main():
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
 
-    with open(args.output, "w") as f:
+    with open(args.output, "w", encoding="utf-8") as f:
         f.write(output)
     os.chmod(args.output, 0o755)
 
@@ -422,7 +422,7 @@ def main():
         git_log = "(no git)"
     entry = "## v%s  %s\n\n- Lines: %d\n- Output: %s\n- Recent changes:\n```\n%s\n```\n\n" % (
         ver, stamp, lines, args.output, git_log)
-    with open(log_path, "a") as f:
+    with open(log_path, "a", encoding="utf-8") as f:
         f.write(entry)
 
     if args.verify:
