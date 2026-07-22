@@ -96,6 +96,13 @@ ok("system user default comes from Electron preload, used verbatim",
     && mode.includes("function systemUsername")
     && mode.includes("return raw.trim();")
     && !mode.includes("split('\\\\').pop().split('@')[0]"));
+// Sandboxed preloads can require only 'electron' and a tiny built-in
+// allowlist (events/timers/url) — anything else (e.g. 'os') throws
+// "module not found" and kills the whole CamBridge surface.
+ok("preload only requires sandbox-allowed modules",
+  (fs.readFileSync(path.join(root, "apps", "cam-desktop", "electron", "preload.cjs"), "utf8")
+    .match(/require\(\s*['"][^'"]+['"]\s*\)/g) || [])
+    .every((r) => /require\(\s*['"](electron|events|timers|url)['"]\s*\)/.test(r)));
 
 const editContextStart = mode.indexOf("panel._openEditContext = function");
 const editContextEnd = mode.indexOf("panel._openAddContext", editContextStart);

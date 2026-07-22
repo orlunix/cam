@@ -9,7 +9,6 @@
 'use strict';
 
 const { contextBridge, ipcRenderer, shell } = require('electron');
-const os = require('os');
 
 function isHttpUrl(target) {
   return typeof target === 'string' && /^https?:\/\//i.test(target);
@@ -24,10 +23,14 @@ contextBridge.exposeInMainWorld('CamBridge', {
     return process.versions?.electron || '';
   },
   getSystemUser() {
-    // Local OS account name for the Nodes form User default, verbatim
-    // (domain-joined machines may include DOMAIN\ or @domain). Empty
-    // string when unavailable.
-    try { return os.userInfo().username || ''; } catch (_) { return ''; }
+    // Sandboxed preload has no `os` module (only electron + a few
+    // built-ins are require-able) — read the account name from
+    // process.env instead: USERNAME on Windows, USER/LOGNAME on POSIX.
+    // Verbatim value; empty string when unavailable.
+    try {
+      const env = (typeof process !== 'undefined' && process.env) || {};
+      return String(env.USERNAME || env.USER || env.LOGNAME || '').trim();
+    } catch (_) { return ''; }
   },
   openExternal(target) {
     if (isHttpUrl(target)) shell.openExternal(target);
