@@ -4720,6 +4720,7 @@ e9025b4 Merge remote camui-desktop-v2 (15 commits) with local skills/env fixes
 e9025b4 Merge remote camui-desktop-v2 (15 commits) with local skills/env fixes
 ```
 
+<<<<<<< HEAD
 ## v1.2.0  b3f7f1a-dirty 2026-07-23 01:14
 
 - Lines: 19815
@@ -4750,6 +4751,12 @@ b3f7f1a camc: capture fast paths resolve tmux env-first (no forced /bin/tmux)
 
 - Lines: 19815
 - Output: C:\Users\Thinkpad\AppData\Local\Temp\pytest-of-Thinkpad\pytest-2\test_build_camc_default_includ0\camc
+=======
+## v1.2.0  b3f7f1a-dirty 2026-07-22 10:37
+
+- Lines: 19720
+- Output: /home/hren/gitlab/cam/dist/camc
+>>>>>>> origin/camui-desktop-v2
 - Recent changes:
 ```
 b3f7f1a camc: capture fast paths resolve tmux env-first (no forced /bin/tmux)
@@ -4757,5 +4764,18 @@ b3f7f1a camc: capture fast paths resolve tmux env-first (no forced /bin/tmux)
 411cbcf Support custom start tools
 8711793 camc: refresh built-in skills and tool defaults
 9909fb1 camc: fast-path stdin sends
+```
+
+## v1.2.0  126c565-dirty 2026-07-23 01:40
+
+- Lines: 19728
+- Output: C:\Users\Thinkpad\gitlab\cam\dist\camc
+- Recent changes:
+```
+126c565 camc: attach with the server's own tmux binary (was bare PATH execvp)
+b3f7f1a camc: capture fast paths resolve tmux env-first (no forced /bin/tmux)
+347458c fix: prefer runtime tmux path
+411cbcf Support custom start tools
+8711793 camc: refresh built-in skills and tool defaults
 ```
 
