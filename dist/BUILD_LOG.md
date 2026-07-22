@@ -4802,3 +4802,42 @@ b3f7f1a camc: capture fast paths resolve tmux env-first (no forced /bin/tmux)
 347458c fix: prefer runtime tmux path
 ```
 
+## v1.2.0  21ba8df 2026-07-23 01:47
+
+- Lines: 19379
+- Output: C:\Users\Thinkpad\AppData\Local\Temp\pytest-of-Thinkpad\pytest-4\test_build_camc_respects_disab0\camc
+- Recent changes:
+```
+21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+895c23b camc: have bundled skills use deployed binary
+a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+4658fb1 camc: bundle skills and refresh them during heal
+126c565 camc: attach with the server's own tmux binary (was bare PATH execvp)
+```
+
+## v1.2.0  21ba8df 2026-07-23 01:47
+
+- Lines: 19728
+- Output: C:\Users\Thinkpad\AppData\Local\Temp\pytest-of-Thinkpad\pytest-4\test_build_camc_default_includ0\camc
+- Recent changes:
+```
+21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+895c23b camc: have bundled skills use deployed binary
+a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+4658fb1 camc: bundle skills and refresh them during heal
+126c565 camc: attach with the server's own tmux binary (was bare PATH execvp)
+```
+
+## v1.2.0  21ba8df-dirty 2026-07-23 01:53
+
+- Lines: 19736
+- Output: C:\Users\Thinkpad\gitlab\cam\dist\camc
+- Recent changes:
+```
+21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+895c23b camc: have bundled skills use deployed binary
+a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+4658fb1 camc: bundle skills and refresh them during heal
+126c565 camc: attach with the server's own tmux binary (was bare PATH execvp)
+```
+
