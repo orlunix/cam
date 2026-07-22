@@ -348,6 +348,23 @@ export function mountNodesMode({
     return `${m.user || ''}@${m.host || 'local'}:${port}|${ctx?.name || ''}`;
   }
 
+  function formatSyncMs(ms) {
+    if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return '';
+    if (ms < 1000) return `${Math.round(ms)}ms`;
+    return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`;
+  }
+
+  function formatSyncTiming(sync) {
+    if (!sync || typeof sync.totalMs !== 'number') return '';
+    const parts = [];
+    for (const [label, key] of [['lock', 'lockWaitMs'], ['conn', 'connectMs'], ['check', 'checkMs'], ['upload', 'uploadMs'], ['list', 'listMs'], ['import', 'importMs'], ['total', 'totalMs']]) {
+      const value = formatSyncMs(sync[key]);
+      if (value) parts.push(`${label} ${value}`);
+    }
+    if (sync.uploadDecision) parts.push(String(sync.uploadDecision).replace(/_/g, ' '));
+    return parts.length ? `timing: ${parts.join(', ')}` : '';
+  }
+
   function contextSyncHints(ctx) {
     const m = (ctx && ctx.machine) || {};
     return {
@@ -777,10 +794,12 @@ export function mountNodesMode({
           render();
           const code   = resp.error  || 'failed';
           const detail = resp.detail || '';
+          const timing = formatSyncTiming((resp && resp.sync) || null);
           const summary = `Sync host "${epLabel}": ${primary.name}:${code}` +
-            (detail ? ` — ${detail.slice(0, 200)}` : '');
+            (detail ? ` — ${detail.slice(0, 200)}` : '') +
+            (timing ? ` — ${timing}` : '');
           showToast(summary, 'error', 8000);
-          setStatus(`Sync failed (${code})`, 'is-error');
+          setStatus(`Sync failed (${code})${timing ? ` — ${timing}` : ''}`, 'is-error');
           btn.disabled = false;
           btn.textContent = originalText;
           return;
@@ -801,6 +820,7 @@ export function mountNodesMode({
         }
 
         const fc = (resp && resp._client) || {};
+        const sync = (resp && resp.sync) || null;
         const parts = [];
         if (fc.fileUpdated)   parts.push(`${fc.fileUpdated} updated`);
         if (fc.fileUnchanged) parts.push(`${fc.fileUnchanged} unchanged`);
@@ -808,6 +828,8 @@ export function mountNodesMode({
           parts.push(`${resp.imported} agent(s) imported`);
         }
         if (fc.fileFailed) parts.push(`${fc.fileFailed} file(s) failed`);
+        const timing = formatSyncTiming(sync);
+        if (timing) parts.push(timing);
         const coveredNote = others.length
           ? ` (covers ${others.length + 1} context(s) on this host)` : '';
         const summary =

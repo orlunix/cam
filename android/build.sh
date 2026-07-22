@@ -146,10 +146,18 @@ cd "$BUILD_DIR/dex"
 zip -u "$BUILD_DIR/app.tmp.apk" classes.dex
 cd "$PROJ_DIR"
 
-# Bundle web app into assets/web/
+# Bundle web app into assets/web/ and camc into assets/camc/.
 echo "  Bundling web assets..."
 mkdir -p "$BUILD_DIR/assets_staging/assets/web"
 rsync -a --exclude='*.apk' "$WEB_DIR/" "$BUILD_DIR/assets_staging/assets/web/"
+CAMC_DIST="$PROJ_DIR/../dist/camc"
+if [ ! -f "$CAMC_DIST" ]; then
+    echo "ERROR: Missing bundled camc at $CAMC_DIST"
+    exit 1
+fi
+mkdir -p "$BUILD_DIR/assets_staging/assets/camc"
+cp "$CAMC_DIST" "$BUILD_DIR/assets_staging/assets/camc/camc"
+chmod 700 "$BUILD_DIR/assets_staging/assets/camc/camc"
 cd "$BUILD_DIR/assets_staging"
 zip -r -u "$BUILD_DIR/app.tmp.apk" assets/
 cd "$PROJ_DIR"
