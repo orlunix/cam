@@ -8,7 +8,7 @@ description: >
   For inter-agent messaging use the camc-messaging skill. For cron/loops use
   camc-cron-loop. For diagnosing stuck agents use camc-diagnose.
   Cross-machine fleet operations are outside this built-in skill.
-compatibility: Requires camc binary in PATH or at ~/.cam/camc.
+compatibility: Requires ~/.cam/camc deployed by the camc release.
 metadata:
   author: hren
   tags: camc, cam, agent, agents, tmux, claude, claude-code, codex,
@@ -31,34 +31,34 @@ process, and Claude session-id, so multiple agents in the same
 workspace are fully isolated at the conversation level.
 
 > **When in doubt, run `--help` first — never guess.** Flags drift
-> between releases; the binary is the source of truth. `camc --help`
+> between releases; the binary is the source of truth. `~/.cam/camc --help`
 > for subcommands; `camc <subcommand> --help` for flags.
 
-Agents are addressable by name, ID prefix, or `#N` (1-based from `camc list`).
+Agents are addressable by name, ID prefix, or `#N` (1-based from `~/.cam/camc list`).
 
 ## Quick Reference
 
 | Task | Command |
 |---|---|
-| Start agent | `camc run "task" -n <name>` |
-| Start interactively | `camc run -n <name>` |
-| Resume Claude session | `camc run -t claude -n <name> --resume <session-id>` |
-| List agents | `camc list` (or `ls`) |
-| Status detail | `camc status <agent>` |
-| Capture screen | `camc capture <agent> --lines 200` |
-| Send text + Enter | `camc send <agent> --text "msg"` |
-| Send text only | `camc send <agent> --text "..." --no-enter` |
-| Send special key | `camc key <agent> --key Escape` |
-| Attach interactively | `camc attach <agent>` (Ctrl+B D to detach) |
+| Start agent | `~/.cam/camc run "task" -n <name>` |
+| Start interactively | `~/.cam/camc run -n <name>` |
+| Resume Claude session | `~/.cam/camc run -t claude -n <name> --resume <session-id>` |
+| List agents | `~/.cam/camc list` (or `ls`) |
+| Status detail | `~/.cam/camc status <agent>` |
+| Capture screen | `~/.cam/camc capture <agent> --lines 200` |
+| Send text + Enter | `~/.cam/camc send <agent> --text "msg"` |
+| Send text only | `~/.cam/camc send <agent> --text "..." --no-enter` |
+| Send special key | `~/.cam/camc key <agent> --key Escape` |
+| Attach interactively | `~/.cam/camc attach <agent>` (Ctrl+B D to detach) |
 | Logs | `camc logs <agent> -f` |
 | Reboot (resume session) | `camc reboot <agent>` |
 | Move to other host | `camc reboot <agent> --to host:port` |
 | Update name/tag | `camc update <agent> --name x --tag T` |
-| Stop (graceful) | `camc stop <agent>` |
-| Kill (force) | `camc kill <agent>` |
-| Remove | `camc rm <agent>` (always kills tmux; `--archive` to save first) |
+| Stop (graceful) | `~/.cam/camc stop <agent>` |
+| Kill (force) | `~/.cam/camc kill <agent>` |
+| Remove | `~/.cam/camc rm <agent>` (always kills tmux; `--archive` to save first) |
 | Bulk cleanup | `camc prune --orphans` |
-| Start with system prompt | `camc run "task" -n name --system-prompt "..."` or `--system-file <path>` |
+| Start with system prompt | `~/.cam/camc run "task" -n name --system-prompt "..."` or `--system-file <path>` |
 
 **Other skill areas:**
 
@@ -75,15 +75,15 @@ agent later. Use the user's name if given, otherwise generate a short
 clear one (`fix-ecc`, `bug5893270`, `regr-fn100`).
 
 ```bash
-camc run "fix the ECC error" -n fix-ecc                # codex (default)
-camc run "add tests" -t claude -n add-tests
-camc run -n debug-mem                                   # interactive (no prompt)
-camc run "build" -a -n nightly                          # auto-exit on completion
-camc run "x" -n x --tag NR10 --tag WORK
-camc run "..." -t claude -n redo --resume <session-id>            # resume Claude session
-camc run "x" -p /path/to/proj -n proj-dev               # explicit path (default: CWD)
-camc run "x" -n y --system-prompt "You are a reviewer." # inject system prompt inline
-camc run "x" -n y --system-file path/to/SKILL.md        # inject system prompt from file
+~/.cam/camc run "fix the ECC error" -n fix-ecc                # codex (default)
+~/.cam/camc run "add tests" -t claude -n add-tests
+~/.cam/camc run -n debug-mem                                   # interactive (no prompt)
+~/.cam/camc run "build" -a -n nightly                          # auto-exit on completion
+~/.cam/camc run "x" -n x --tag NR10 --tag WORK
+~/.cam/camc run "..." -t claude -n redo --resume <session-id>            # resume Claude session
+~/.cam/camc run "x" -p /path/to/proj -n proj-dev               # explicit path (default: CWD)
+~/.cam/camc run "x" -n y --system-prompt "You are a reviewer." # inject system prompt inline
+~/.cam/camc run "x" -n y --system-file path/to/SKILL.md        # inject system prompt from file
 ```
 
 `--system-prompt` / `--system-file` writes the content into a
@@ -102,7 +102,7 @@ Once an agent is running, you talk to it through three commands.
 ### Send a prompt
 
 ```bash
-camc send <agent> --text "please refactor src/foo.py to ..."
+~/.cam/camc send <agent> --text "please refactor src/foo.py to ..."
 ```
 
 `--text` payload is sent literally to the agent's tmux pane, then a
@@ -111,9 +111,9 @@ trailing Enter submits it. Use `--no-enter` to type without submitting.
 ### Read what the agent wrote
 
 ```bash
-camc capture <agent>                    # last 100 lines (default)
-camc capture <agent> --lines 500        # more
-camc capture <agent> --lines 0          # full scrollback (60s timeout)
+~/.cam/camc capture <agent>                    # last 100 lines (default)
+~/.cam/camc capture <agent> --lines 500        # more
+~/.cam/camc capture <agent> --lines 0          # full scrollback (60s timeout)
 camc --json capture <agent>             # JSON with content hash
 ```
 
@@ -123,31 +123,31 @@ the session would see.
 ### Special keys
 
 ```bash
-camc key <agent> --key Escape           # cancel a tool call / interrupt
-camc key <agent> --key Enter
-camc key <agent> --key C-c              # SIGINT to foreground process
-camc key <agent> --key C-d              # EOF
+~/.cam/camc key <agent> --key Escape           # cancel a tool call / interrupt
+~/.cam/camc key <agent> --key Enter
+~/.cam/camc key <agent> --key C-c              # SIGINT to foreground process
+~/.cam/camc key <agent> --key C-d              # EOF
 ```
 
 ### Typical interaction loop
 
 ```bash
-camc send <agent> --text "summarize the diff"
+~/.cam/camc send <agent> --text "summarize the diff"
 sleep 5                                  # let the model think
-camc capture <agent> --lines 80          # read the answer
+~/.cam/camc capture <agent> --lines 80          # read the answer
 # ...iterate
 ```
 
 When the agent is mid-tool-call and you want to stop it:
 
 ```bash
-camc key <agent> --key Escape
+~/.cam/camc key <agent> --key Escape
 ```
 
 ### Attach for interactive work
 
 ```bash
-camc attach <agent>     # join the tmux session; Ctrl+B D detaches
+~/.cam/camc attach <agent>     # join the tmux session; Ctrl+B D detaches
 ```
 
 ### Inter-agent messaging (delegation)
@@ -155,10 +155,10 @@ camc attach <agent>     # join the tmux session; Ctrl+B D detaches
 For asking another agent to do something, use the **camc-messaging** skill:
 
 ```bash
-camc msg send <to> -t "..."             # block until reply
-camc msg send <to> -t "..." --no-wait   # return message id immediately
-camc msg reply <msg_id> -t "..."        # reply on same thread
-camc msg read [--next] [--mark]         # read inbox
+~/.cam/camc msg send <to> -t "..."             # block until reply
+~/.cam/camc msg send <to> -t "..." --no-wait   # return message id immediately
+~/.cam/camc msg reply <msg_id> -t "..."        # reply on same thread
+~/.cam/camc msg read [--next] [--mark]         # read inbox
 ```
 
 Full protocol, wire format, and patterns: see the camc-messaging skill.
@@ -168,8 +168,8 @@ Full protocol, wire format, and patterns: see the camc-messaging skill.
 ### Inspect
 
 ```bash
-camc list                          # all agents on this host
-camc status <agent>                # detailed JSON-like state
+~/.cam/camc list                          # all agents on this host
+~/.cam/camc status <agent>                # detailed JSON-like state
 camc logs <agent> -f               # follow monitor log
 ```
 
@@ -190,10 +190,10 @@ camc update <agent> --tag SMOKE
 ### Stop / kill / remove
 
 ```bash
-camc stop <agent>           # graceful: sends /exit; tmux stays alive (resumable)
-camc kill <agent>           # force: tears down tmux session
-camc rm <agent>             # remove record + always kills tmux + unlinks socket
-camc rm <agent> --archive   # also tar.gz the history under ~/.cam/archives/
+~/.cam/camc stop <agent>           # graceful: sends /exit; tmux stays alive (resumable)
+~/.cam/camc kill <agent>           # force: tears down tmux session
+~/.cam/camc rm <agent>             # remove record + always kills tmux + unlinks socket
+~/.cam/camc rm <agent> --archive   # also tar.gz the history under ~/.cam/archives/
 ```
 
 ### Bulk cleanup
@@ -233,9 +233,9 @@ camc add my-existing-session --tool claude --name my-agent
 
 | Symptom | First thing to try |
 |---|---|
-| Status says `running` but tmux is dead | `camc heal` |
-| Monitor died after camc upgrade | `camc upgrade` |
-| Agent not responding to `send` | `camc capture <agent> --lines 30` to see; then `camc attach` for manual |
+| Status says `running` but tmux is dead | `~/.cam/camc heal` |
+| Monitor died after ~/.cam/camc upgrade | `~/.cam/camc upgrade` |
+| Agent not responding to `send` | `~/.cam/camc capture <agent> --lines 30` to see; then `~/.cam/camc attach` for manual |
 | Want to find an agent's Claude JSONL | `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` — see `reference/sessions.md` |
 
 For deeper diagnosis (stuck agents, exit reasons, heal details):

@@ -1,6 +1,7 @@
 """Regression coverage for the publishable built-in skill inventory."""
 
 from pathlib import Path
+import re
 
 
 SKILLS_ROOT = Path(__file__).parents[1] / "src" / "camc_pkg" / "skills"
@@ -29,6 +30,11 @@ FORBIDDEN_RELEASE_GUIDANCE = (
     "proxy",
 )
 
+BARE_CAMC_COMMAND = re.compile(
+    r"(?<![\w~/])camc\s+(?:run|list|status|capture|send|msg(?!#)|heal|cron|key|"
+    r"attach|rm|stop|kill|upgrade|version|--help)\b"
+)
+
 
 def test_publishable_builtin_skill_inventory_and_content():
     names = {p.name for p in SKILLS_ROOT.iterdir() if p.is_dir()}
@@ -43,3 +49,6 @@ def test_publishable_builtin_skill_inventory_and_content():
                 path,
                 marker,
             )
+        assert not BARE_CAMC_COMMAND.search(text), (
+            "%s invokes bare camc; skills must use ~/.cam/camc" % path
+        )
