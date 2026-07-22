@@ -2,16 +2,13 @@
 
 Skills ship inside the camc binary (like adapter TOML configs).  This module
 provides the embedded store, a dev-mode fallback loader that reads from the
-source tree, a manifest-based add/rm/list for selecting skills, and
-auto-install from the manifest at agent launch time.
+source tree, an inventory list, and automatic installation at agent launch.
+The bundled release is the sole skill selection source.
 """
 
-import json
 import os
 
-from camc_pkg import CAM_DIR, log
-
-SKILLS_MANIFEST = os.path.join(CAM_DIR, "skills.json")
+from camc_pkg import log
 
 # ---------------------------------------------------------------------------
 # Embedded skills — injected by build_camc.py at build time.
@@ -98,66 +95,11 @@ def _parse_skill_frontmatter(text):
 
 
 # ---------------------------------------------------------------------------
-# Manifest persistence (atomic tmp+os.replace, same pattern as api_store.py)
-# ---------------------------------------------------------------------------
-
-def load_manifest():
-    """Return list of skill names from ~/.cam/skills.json, or []."""
-    try:
-        with open(SKILLS_MANIFEST, "r") as f:
-            data = json.load(f)
-        skills = data.get("skills", [])
-        if isinstance(skills, list):
-            return skills
-    except (IOError, ValueError):
-        pass
-    return []
-
-
-def save_manifest(skills):
-    """Atomic write skills list to ~/.cam/skills.json."""
-    os.makedirs(CAM_DIR, exist_ok=True)
-    data = {"skills": skills}
-    tmp = SKILLS_MANIFEST + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2, sort_keys=True)
-        f.write("\n")
-    os.replace(tmp, SKILLS_MANIFEST)
-
-
-# ---------------------------------------------------------------------------
-# Manifest add / remove
-# ---------------------------------------------------------------------------
-
-def add_skill_to_manifest(name):
-    """Append a skill name to the manifest (deduped). Returns (manifest, added)."""
-    skills = load_manifest()
-    added = False
-    if name not in skills:
-        skills.append(name)
-        save_manifest(skills)
-        added = True
-    return skills, added
-
-
-def remove_skill_from_manifest(name):
-    """Remove a skill name from the manifest. Returns (manifest, removed)."""
-    skills = load_manifest()
-    removed = False
-    if name in skills:
-        skills.remove(name)
-        save_manifest(skills)
-        removed = True
-    return skills, removed
-
-
-# ---------------------------------------------------------------------------
 # Listing
 # ---------------------------------------------------------------------------
 
 def list_skills():
-    """Return [{name, description, in_manifest}, ...] for each embedded skill."""
-    manifest = load_manifest()
+    """Return [{name, description, in_manifest}, ...] for bundled skills."""
     rows = []
     for name, files in sorted(_EMBEDDED_SKILLS.items()):
         skill_md = files.get("SKILL.md", "")
@@ -166,28 +108,24 @@ def list_skills():
         rows.append({
             "name": name,
             "description": description,
-            "in_manifest": name in manifest,
+            "in_manifest": True,
         })
     return rows
 
 
 # ---------------------------------------------------------------------------
-# Auto-install manifest skills to project directory
+# Auto-install bundled skills to project directory
 # ---------------------------------------------------------------------------
 
 def install_manifest_skills(workdir, force=False, config_dir=".claude"):
-    """Install manifest skills into <workdir>/<tool-config-dir>/skills/.
+    """Install bundled skills into <workdir>/<tool-config-dir>/skills/.
 
     Called automatically by camc run and scheduler before agent launch.
-    Silently skips empty manifest or missing skills (no error — missing
-    entries in the manifest don't block launch).
+    The historical function name remains for internal compatibility.
     """
-    skills = load_manifest()
-    if not skills:
-        return {}
     out_dir = os.path.join(workdir, config_dir, "skills")
     results = {}
-    for name in skills:
+    for name in sorted(_EMBEDDED_SKILLS):
         results.update(_install_one(name, out_dir, force))
     return results
 
