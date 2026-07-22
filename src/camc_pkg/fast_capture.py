@@ -73,13 +73,28 @@ def lookup_agent_from_agents_json(agent_id, path=None, my_hostname=None):
         if not session:
             return None
         socket_path = agent.get("tmux_socket") or _default_socket_for_session(session)
-        tmux_bin = agent.get("tmux_bin") or ("/bin/tmux" if os.path.exists("/bin/tmux") else "tmux")
+        tmux_bin = agent.get("tmux_bin") or _env_tmux_bin()
         return {
             "session": session,
             "socket": socket_path,
             "tmux_bin": tmux_bin,
         }
     return None
+
+
+def _env_tmux_bin():
+    """Env-first tmux resolution (matches resolve_tmux_bin's order):
+    PATH via shutil.which, then /bin/tmux if it exists, then the bare
+    name. Never forces /bin/tmux — a v2.7 client against a v3.x server
+    fails the tmux protocol handshake."""
+    try:
+        import shutil
+        found = shutil.which("tmux")
+        if found:
+            return found
+    except Exception:
+        pass
+    return "/bin/tmux" if os.path.exists("/bin/tmux") else "tmux"
 
 
 def _hostname():
