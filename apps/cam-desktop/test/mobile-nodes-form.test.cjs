@@ -45,7 +45,10 @@ ok("mobile nodes has helper for default context name", mode.includes("function m
 ok("mobile nodes has helper for default remote path", mode.includes("function mobileDefaultRemotePath"));
 ok("mobile Add Host defaults context name from node name", mode.includes("ensureMobileContextNameDefault(host)") && mode.includes("mobileDefaultContextName({ explicitName: fName.value.trim(), nodeName: fNodeName ? fNodeName.value.trim() : '', host })"));
 ok("mobile Add Host defaults path from username", mode.includes("ensureMobileRemotePathDefault(user)") && mode.includes("mobileDefaultRemotePath(fPath.value, user)"));
-ok("desktop Add Host still requires explicit context name/path", mode.includes("if (!mobileForm && (!name || !ctxPath))"));
+ok("desktop Add Host defaults context name/path too (no explicit-only gate)",
+  !mode.includes("!mobileForm && (!name || !ctxPath)")
+    && mode.includes("mobileDefaultContextName({ explicitName: fName.value.trim(), nodeName: fNodeName ? fNodeName.value.trim() : '', host })")
+    && mode.includes("mobileDefaultRemotePath(fPath.value, user)"));
 ok("mobile Add Context also defaults context name/path", mode.includes("mobileDefaultContextName({ explicitName: fName ? fName.value.trim() : '', nodeName: node.displayName || node.nodeName || '', host: m.host })") && mode.includes("mobileDefaultRemotePath(fPath ? fPath.value : '', m.user)"));
 ok("mobile context cards expose duplicate action",
   !mode.includes("mobileForm ? '' : `<button type=\"button\" class=\"btn-xs ctx-duplicate-context-btn\"")
@@ -68,6 +71,31 @@ ok("duplicate context names use numeric index",
   mode.includes("function nextIndexedContextName")
     && mode.includes("candidate = `${base}-${i}`")
     && !mode.includes("-copy"));
+
+// Desktop Nodes form: same layout + defaults contract as mobile.
+// (Scope label searches to the add-form — ">User"/">Host" appear
+// elsewhere in desktop.html.)
+const desktopHtml = fs.readFileSync(path.join(root, "web", "desktop.html"), "utf8");
+const desktopFormHtml = desktopHtml.slice(desktopHtml.indexOf('id="nodes-add-form"'));
+const desktopOrder = ["Node name", ">Host", ">User", ">Port", "Auth method", "Context name", "Remote path", "Env setup (optional)"]
+  .map((label) => {
+    const i = desktopFormHtml.indexOf(label);
+    ok(`desktop Nodes form contains ${label}`, i >= 0);
+    return i;
+  });
+ok("desktop Nodes keeps connection fields before defaulted workspace fields",
+  desktopOrder.every((v, i) => i === 0 || v > desktopOrder[i - 1]),
+  `order=${desktopOrder.join(",")}`);
+ok("desktop context name placeholder explains default",
+  /id="nodes-add-name"[^>]*placeholder="defaults to node name"/.test(desktopHtml));
+ok("desktop context name/path rely on JS defaults (no native required)",
+  !/id="nodes-add-name"[^>]*\srequired\b/.test(desktopHtml)
+    && !/id="nodes-add-path"[^>]*\srequired\b/.test(desktopHtml));
+ok("system user default comes from Electron preload, used verbatim",
+  fs.readFileSync(path.join(root, "apps", "cam-desktop", "electron", "preload.cjs"), "utf8").includes("getSystemUser")
+    && mode.includes("function systemUsername")
+    && mode.includes("return raw.trim();")
+    && !mode.includes("split('\\\\').pop().split('@')[0]"));
 
 const editContextStart = mode.indexOf("panel._openEditContext = function");
 const editContextEnd = mode.indexOf("panel._openAddContext", editContextStart);
