@@ -18,11 +18,17 @@ function tmuxMetadataForAgent(agent) {
     ? agent.runtime.tmux : {};
   const session = String(agent.tmux_session || agent.session || "");
   const socket = String(agent.tmux_socket || runtimeTmux.socket || "");
-  // CAMC persists the socket and session; its managed remote installation
-  // uses /bin/tmux when a binary path was not recorded with older agents.
-  const bin = String(agent.tmux_bin || runtimeTmux.bin || "/bin/tmux");
-  if (!safeValue(session) || !safeValue(socket) || !safeValue(bin)) return null;
-  if (!socket.startsWith("/") || !bin.startsWith("/")) return null;
+  // The recorded binary always wins (it is the exact binary that started
+  // the session's server). When older agents have none, bin stays EMPTY
+  // here — no hardcoded /bin/tmux guess (it does not exist on e.g.
+  // Homebrew macOS). Callers probe the remote once per endpoint
+  // (see _probeRemoteTmuxBin in main.cjs); commands are only built once
+  // bin is non-empty, so a failed probe degrades controls quietly.
+  const bin = String(agent.tmux_bin || runtimeTmux.bin || "");
+  if (!safeValue(session) || !safeValue(socket)) return null;
+  if (bin && !safeValue(bin)) return null;
+  if (!socket.startsWith("/")) return null;
+  if (bin && !bin.startsWith("/")) return null;
   return { session, socket, bin };
 }
 

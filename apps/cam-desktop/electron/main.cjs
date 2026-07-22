@@ -412,6 +412,31 @@ function _sessionForAgent(contentsId, agentId) {
   return [null, null];
 }
 
+// Per-endpoint cache of remote tmux binary probes. Older agent records
+// carry no tmux_bin; rather than hardcoding /bin/tmux (absent on e.g.
+// Homebrew macOS), ask the remote once per endpoint and cache the
+// answer — '' means "no tmux found", cached too so we probe at most
+// once per endpoint per app run.
+const _tmuxBinProbes = new Map();  // endpointKey -> Promise<string>
+
+function _probeRemoteTmuxBin(opts) {
+  const key = `${opts.host}|${opts.user}|${opts.port || 22}`;
+  if (_tmuxBinProbes.has(key)) return _tmuxBinProbes.get(key);
+  const p = (async () => {
+    try {
+      const res = await sshTransport.execRemote({
+        ...opts,
+        command: "/bin/sh -c 'command -v /bin/tmux || command -v tmux'",
+        timeout_ms: 15000,
+      });
+      const first = res && res.ok ? String(res.stdout || '').split('\n')[0].trim() : '';
+      return /^\/[^\s]+$/.test(first) ? first : '';
+    } catch (_) { return ''; }
+  })();
+  _tmuxBinProbes.set(key, p);
+  return p;
+}
+
 function _dropSession(sessionId) {
   const ent = _terminals.get(sessionId);
   if (!ent) return;
@@ -559,6 +584,10 @@ async function _tmuxClientState(ent) {
     error: 'tmux_unavailable',
     detail: 'tmux metadata unavailable',
   }, ent);
+  if (!ent.tmux.bin) return _tmuxFailure('client_discovery', {
+    error: 'tmux_unavailable',
+    detail: 'no tmux binary recorded or discoverable on this endpoint',
+  }, ent);
   if (!ent.tmuxClientTty) void _retryTmuxClientDiscovery(ent).catch(() => {});
   // Target the session (its current window's active pane) instead of the
   // client tty: `display-message -p -c <client>` is rejected as a usage
@@ -683,7 +712,17 @@ async function termOpen(event, payload = {}) {
   const sender = event.sender;
   const sessionId = `t${++_termSeq}-${Date.now().toString(36)}`;
   const tmux = tmuxMetadataForAgent(resolved.agent);
-  const releaseTmuxDiscovery = tmux ? await _beginTmuxDiscovery(`${resolved.opts.host}|${tmux.socket}`) : null;
+  if (tmux && !tmux.bin) {
+    // Older agent records carry no tmux_bin. Probe the remote once per
+    // endpoint instead of guessing /bin/tmux; a failed probe leaves the
+    // controls degraded exactly as before (strip hidden, terminal fine).
+    tmux.bin = await _probeRemoteTmuxBin(resolved.opts);
+  }
+  if (tmux && !tmux.bin) {
+    // No recorded or discoverable tmux binary on this endpoint.
+    console.warn(`[tmux-probe] no tmux binary found on ${resolved.opts.host}; window controls disabled`);
+  }
+  const releaseTmuxDiscovery = tmux && tmux.bin ? await _beginTmuxDiscovery(`${resolved.opts.host}|${tmux.socket}`) : null;
   const initialTmuxProbe = {};
 
   // Attach fast path: the client-baseline probe runs in PARALLEL with
@@ -694,7 +733,7 @@ async function termOpen(event, payload = {}) {
   // because the baseline probe almost always lands before our own
   // client registers; when it loses the race, discovery falls back to
   // selectOnlyClient exactly as before.
-  const beforeClientsP = tmux
+  const beforeClientsP = tmux && tmux.bin
     ? _tmuxClientSet(resolved.opts, tmux, initialTmuxProbe)
     : Promise.resolve(null);
 
