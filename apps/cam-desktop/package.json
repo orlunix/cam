@@ -24,7 +24,8 @@
     "test:start": "node test/start-form.test.cjs",
     "legacy:tauri:dev": "tauri dev",
     "legacy:tauri:build": "tauri build",
-    "legacy:tauri:build-web": "tsc --noEmit && vite build"
+    "legacy:tauri:build-web": "tsc --noEmit && vite build",
+    "test:smoke": "node --experimental-websocket test/boot-smoke.test.cjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
