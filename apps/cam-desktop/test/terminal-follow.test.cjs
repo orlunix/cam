@@ -200,5 +200,29 @@ ok("remote size repair is gated on an actual size change",
 ok("pooled SSH connections are never idle-closed",
   !transport.includes("_dropEntry(entry.key, 'idle')") && transport.includes("NEVER idle-close"));
 
+// 2026-07-22 stability bundle: half-dead pooled sockets must not be
+// reused, hung attaches must recover, and unexpected drops reconnect
+// with bounded backoff instead of waiting for a keystroke.
+ok("suspect pool entry is dropped on terminal open failure/timeout",
+  transport.includes("_dropEntry(key, 'open_timeout')") && transport.includes("_dropEntry(key, 'open_failed')"));
+ok("terminal channel open default timeout is tightened to 15s",
+  transport.includes("Number(opts.timeout_ms) || 15000"));
+ok("password auth falls back to keyboard-interactive with password answers",
+  transport.includes("tryKeyboard:        authBuilt.auth === 'password'") && transport.includes("client.on('keyboard-interactive'"));
+ok("OS resume drops only idle pooled entries",
+  transport.includes("function dropIdleEntries") && transport.includes("'resume_idle'") && main.includes("powerMonitor.on('resume'"));
+ok("terminal repair evidence is persisted to a user-visible log",
+  main.includes("function _diagLog") && main.includes("cam-desktop.log"));
+ok("attach retries once on transient open failures",
+  source.includes("TRANSIENT_ATTACH_ERRORS.has(res && res.error)") && source.includes("const TRANSIENT_ATTACH_ERRORS"));
+ok("unexpected drops auto-reconnect with bounded backoff",
+  source.includes("function _scheduleAutoReconnect") && source.includes("AUTO_RECONNECT_DELAYS_TRANSPORT") && source.includes("AUTO_RECONNECT_DELAYS_EXIT"));
+ok("keystroke reconnect cancels the scheduled auto attempt",
+  source.includes("if (ent._autoReconnectTimer) { clearTimeout(ent._autoReconnectTimer); ent._autoReconnectTimer = null; }"));
+ok("persistent attach status is owned per agent and cleared on switch",
+  source.includes("terminalAttachStatusOwner") && source.includes("ttl === 0) ? ownerId : null"));
+ok("slow layouts get a late fit pass",
+  source.includes("window.setTimeout(pass, 700)"));
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exitCode = fail ? 1 : 0;

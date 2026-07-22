@@ -302,6 +302,17 @@ function _getOrCreate(key, opts, ssh2, poolRef) {
     client.on('error', onError);
     client.on('close', onClose);
     client.on('end', onEnd);
+    if (authBuilt.auth === 'password') {
+      // PAM-backed servers (UsePAM yes) verify passwords over the
+      // keyboard-interactive method, not 'password'; k-i-only servers
+      // reject password-only clients outright. Answer every prompt
+      // with the configured password — servers asking for anything
+      // else (OTP etc.) simply fail, exactly as with tryKeyboard off.
+      client.on('keyboard-interactive', (_name, _instructions, _lang, prompts, finish) => {
+        try { finish((Array.isArray(prompts) ? prompts : []).map(() => opts.password)); }
+        catch { /* noop */ }
+      });
+    }
     client.once('ready', () => {
       if (settled) return;
       settled = true;
@@ -324,7 +335,9 @@ function _getOrCreate(key, opts, ssh2, poolRef) {
       // surfaces dead sockets early.
       keepaliveInterval:  15000,
       keepaliveCountMax:  3,
-      tryKeyboard:        false,
+      // PAM/k-i-only servers need the keyboard-interactive fallback
+      // (handler registered above; password auth only).
+      tryKeyboard:        authBuilt.auth === 'password',
       ...authBuilt.fields,
     };
     try { client.connect(connectOpts); }
@@ -610,6 +623,21 @@ function closeAll() {
   for (const k of [..._termPool.keys()]) _dropEntry(k, 'closeAll');
 }
 
+/** Drop only entries with no in-flight work (both pools). Called on OS
+ * resume: idle sockets that silently died while the machine slept get
+ * discarded so the next op reconnects fresh, while busy connections
+ * (live terminals, in-flight execs) are left to detect via their own
+ * traffic/keepalive. This is NOT an idle close — nothing is reaped
+ * while the machine stays awake (desktop semantics 2026-07-18). */
+function dropIdleEntries() {
+  for (const [k, e] of [..._pool.entries()]) {
+    if (e && !e.inflight) _dropEntry(k, 'resume_idle');
+  }
+  for (const [k, e] of [..._termPool.entries()]) {
+    if (e && !e.inflight) _dropEntry(k, 'resume_idle');
+  }
+}
+
 function poolStats() {
   // Keys are safe to expose: they contain only host/user/port/auth/key_file
   // plus a SHA-256 digest (never the raw secret). `inflight` and the
@@ -679,7 +707,7 @@ async function openTerminalChannel(opts, hooks = {}) {
   const onClose = typeof hooks.onClose === 'function' ? hooks.onClose : () => {};
   const cols = Math.max(2, Math.min(500, Number(hooks.cols) || 80));
   const rows = Math.max(2, Math.min(500, Number(hooks.rows) || 24));
-  const openTimeoutMs = Math.max(5000, Math.min(120000, Number(opts.timeout_ms) || 60000));
+  const openTimeoutMs = Math.max(5000, Math.min(120000, Number(opts.timeout_ms) || 15000));
 
   const ssh2 = _loadSsh2();
   if (!ssh2 || !ssh2.Client) {
@@ -744,6 +772,10 @@ async function openTerminalChannel(opts, hooks = {}) {
       const wasActive = active;
       release();
       try { if (stream && typeof stream.destroy === 'function') stream.destroy(); } catch { /* noop */ }
+      // A channel open that times out on a supposedly-ready connection
+      // means the pooled socket is suspect (half-dead). Drop it so the
+      // next attach reconnects instead of reusing the corpse.
+      _dropEntry(key, 'open_timeout');
       if (wasActive) {
         finishOpen({ ok: false, error: 'exec_timeout', detail: 'terminal channel open timed out' });
       }
@@ -760,6 +792,9 @@ async function openTerminalChannel(opts, hooks = {}) {
       }, (err, s) => {
         if (err) {
           release();
+          // Same rationale as the open timeout: a channel-open error on
+          // a ready-pooled connection marks the socket as suspect.
+          _dropEntry(key, 'open_failed');
           return finishOpen({ ok: false, error: 'exec_failed', detail: err.message });
         }
         if (!active) {
@@ -814,6 +849,7 @@ module.exports = {
   openTerminalChannel,
   setOverride,
   closeAll,
+  dropIdleEntries,
   poolStats,
   _setSsh2ForTests,
 };
