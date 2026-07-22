@@ -4400,18 +4400,26 @@ async function getAttachConnectOpts(agentId) {
     return { ok: false, error: 'not_ssh', detail: `agent ${agentId}: terminal attach requires an SSH-backed agent` };
   }
 
-  // Match `cam attach`: the live agent machine fields are the source of
-  // truth for where the agent actually runs. The context supplies auth
-  // metadata/credentials, but stale context host/user/port must not redirect
-  // an attach to the wrong endpoint. Do not pre-filter by agent status here;
-  // `camc attach` has the authoritative tmux-session check and returns the
-  // useful stale-session error when needed.
+  // Endpoint selection (2026-07-22): the context's host/user/port is
+  // the primary attach endpoint — it is provably reachable (agents
+  // were synced through it, and agents physically run on the context's
+  // host). The agent's own machine_* fields are auto-detected by camc
+  // (the box's hostname) and may resolve to a dead/unreachable address
+  // from where the app runs (e.g. prgn agents report hren.nvidia.com
+  // whose IP is dead while prgn.nvidia.com works). machine_* is kept
+  // as a fallback for the stale-context case (context host edited
+  // after agents were created): main retries with fallbackOpts on
+  // connect-class failure.
   const built = _sshBaseOptsForContext(ctx, 60000);
   if (built.error) return { ok: false, error: built.error, detail: built.detail };
   const opts = { ...built.opts };
-  if (agent.machine_host) opts.host = agent.machine_host;
-  if (agent.machine_user) opts.user = agent.machine_user;
-  if (agent.machine_port != null && agent.machine_port !== '') opts.port = agent.machine_port;
+  const machineOpts = { ...opts };
+  if (agent.machine_host) machineOpts.host = agent.machine_host;
+  if (agent.machine_user) machineOpts.user = agent.machine_user;
+  if (agent.machine_port != null && agent.machine_port !== '') machineOpts.port = agent.machine_port;
+  const fallbackOpts = (machineOpts.host !== opts.host
+    || machineOpts.user !== opts.user
+    || String(machineOpts.port || 22) !== String(opts.port || 22)) ? machineOpts : null;
 
   // Attach fast path: if the bundled camc is already verified on this
   // host (ready-cache hit), skip the per-attach ensure probe. On a
@@ -4447,6 +4455,7 @@ async function getAttachConnectOpts(agentId) {
     agent,
     ctx,
     opts,
+    fallbackOpts,
     command: `${REMOTE_CAMC} attach ${_shellQuote(agent.id || agentId)}`,
   };
 }

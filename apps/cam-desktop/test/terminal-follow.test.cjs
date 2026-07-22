@@ -198,6 +198,11 @@ ok("exhausted tmux retries stop remote polling too",
   source.includes("|| ent.tmuxHintState === 'hidden')"));
 ok("remote size repair is gated on an actual size change",
   main.includes("const sizeChanged = !!(existingEnt") && main.includes("if (existingEnt.opts) void _repairRemoteTerminalSize(existingEnt.opts, agentId, cols, rows);"));
+ok("attach prefers the reachable context endpoint, machine fields only as fallback",
+  hub.includes("const fallbackOpts = (machineOpts.host !== opts.host")
+    && hub.includes("machineOpts.host = agent.machine_host")
+    && main.includes("ATTACH_FALLBACK_ERRORS")
+    && !main.includes("if (agent.machine_host) opts.host = agent.machine_host;"));
 // Desktop semantics 2026-07-18: the app never closes pooled SSH
 // connections on its own while running — an open desktop terminal
 // holds its sessions (unlike mobile).
