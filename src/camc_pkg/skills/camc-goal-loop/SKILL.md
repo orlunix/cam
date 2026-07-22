@@ -1,13 +1,13 @@
 ---
 name: camc-goal-loop
 description: >
-  Create goal-driven coding/debugging prompts and set up camc cron
+  Create goal-driven coding/debugging prompts and set up ~/.cam/camc cron
   --loop periodic continuations. Use when the user wants to set up an
   autonomous agent that works through a checklist one item at a time,
   with idle-gated delivery via camc mailbox. Covers MiniSpec prompt
   creation (goal/checklist/verify), camc loop registration, and
   structured progress reporting for resumable agent workflows.
-compatibility: Requires camc binary in PATH.
+compatibility: Requires ~/.cam/camc deployed by the camc release.
 metadata:
   author: hren
   tags: camc, goal, loop, minispec, checklist, verify, autonomous,
@@ -15,7 +15,7 @@ metadata:
   category: infra
   requires-tools: camc
 disable-model-invocation: false
-argument-hint: "[create a goal-loop prompt | register a camc cron --loop]"
+argument-hint: "[create a goal-loop prompt | register a ~/.cam/camc cron --loop]"
 allowed-tools: Bash Read Glob Grep Write
 ---
 
@@ -23,19 +23,19 @@ allowed-tools: Bash Read Glob Grep Write
 
 Set up autonomous coding agents that work through a checklist one small
 item at a time, verify before claiming completion, and resume safely on
-each idle tick via `camc cron --loop`.
+each idle tick via `~/.cam/camc cron --loop`.
 
-This is a **per-agent prompt loop** — it uses the standard `camc cron add
---loop` mechanism from camc-cron-loop. Delivery is via `camc msg send`
+This is a **per-agent prompt loop** — it uses the standard `~/.cam/camc cron add
+--loop` mechanism from camc-cron-loop. Delivery is via `~/.cam/camc msg send`
 to the agent's mailbox, idle-gated (never interrupts busy agents).
 Loop dispatch is handled by camc's cron tick infrastructure (managed
-by `camc heal`); the agent does not set up or manage crontab.
+by `~/.cam/camc heal`); the agent does not set up or manage crontab.
 
 **Two files produced:**
 1. **Auto-load file** in project root (`CLAUDE.md` for claude, `AGENTS.md` for codex/cursor) — MiniSpec goal/checklist/verify prompt
 2. **`~/.cam/loops/<name>.json`** — loop continuation message (for reproducibility)
 
-Then one `camc cron add --loop` command registers it with default **5m** interval.
+Then one `~/.cam/camc cron add --loop` command registers it with default **5m** interval.
 
 See `camc-cron-loop` skill for the full per-agent prompt loop mechanism
 (idle gate, delivery, busy deferral, lifecycle).
@@ -46,25 +46,25 @@ See `camc-cron-loop` skill for the full per-agent prompt loop mechanism
 |---|---|
 | Create MiniSpec prompt | Write `CLAUDE.md` (claude) or `AGENTS.md` (codex/cursor) in project root |
 | Create loop JSON | Write `~/.cam/loops/<name>.json` with continuation message |
-| Register loop | `camc cron add --loop --owner <agent> --name <name> --every 5m --prompt "<msg>"` |
-| List loops | `camc cron list --loop --owner <agent>` |
-| Graceful stop (auto) | Agent archives loop JSON → `camc cron rm` on goal achieved |
-| Manual stop | `camc cron rm --loop --owner <agent> <name>` |
+| Register loop | `~/.cam/camc cron add --loop --owner <agent> --name <name> --every 5m --prompt "<msg>"` |
+| List loops | `~/.cam/camc cron list --loop --owner <agent>` |
+| Graceful stop (auto) | Agent archives loop JSON → `~/.cam/camc cron rm` on goal achieved |
+| Manual stop | `~/.cam/camc cron rm --loop --owner <agent> <name>` |
 | Reclaim loop | Read `~/.cam/loops/<name>.json`, re-register with same `--prompt` |
 
 ## How it works
 
 ```
 agent starts → reads auto-load file (CLAUDE.md / AGENTS.md) → gets MiniSpec
-per-agent prompt loop (camc cron add --loop):
-  → camc msg send <agent> -t "<continuation message>" --no-wait
+per-agent prompt loop (~/.cam/camc cron add --loop):
+  → ~/.cam/camc msg send <agent> -t "<continuation message>" --no-wait
   → idle gate: only fires when agent status=running AND state=idle
-  → agent reads via camc msg read --next on next idle turn
+  → agent reads via ~/.cam/camc msg read --next on next idle turn
   → agent re-reads auto-load file to pick up current state
   → agent does ONE checklist item → verifies → reports YAML
   → agent updates auto-load file (mark item done/partial/blocked)
   → next fire: agent picks up next item
-  → goal achieved: archive loop+goal → camc cron rm → stop
+  → goal achieved: archive loop+goal → ~/.cam/camc cron rm → stop
 ```
 
 The idle gate means the agent is **never interrupted mid-task** — if busy,
@@ -82,7 +82,7 @@ message telling the agent to pick up where it left off.
 | **codex** | `AGENTS.md` | `AGENTS.history.md` | `AGENTS.md.bak-YYYYMMDD-HHMMSS` |
 | **cursor** | `AGENTS.md` | `AGENTS.history.md` | `AGENTS.md.bak-YYYYMMDD-HHMMSS` |
 
-Check via `camc status <agent>` → `task.tool`.
+Check via `~/.cam/camc status <agent>` → `task.tool`.
 
 ## 1. File 1 — Auto-load prompt (`CLAUDE.md` / `AGENTS.md`)
 
@@ -120,7 +120,7 @@ reproducible:
   "name": "goal-loop",
   "every": "5m",
   "owner": "<agent-id-or-name>",
-  "prompt": "Continue from the current project state using the MiniSpec protocol.\n\nFirst re-read the auto-load file: CLAUDE.md.\n\nThen:\n1. Check whether the Goal is already achieved.\n2. Review every Checklist item and mark it as done, partial, blocked, or not_started.\n3. If the Goal is achieved and all required Checklist items are done: archive the loop and goal together — copy ~/.cam/loops/<name>.json to ~/.cam/loops/archive/<name>.json, copy the auto-load file (CLAUDE.md or AGENTS.md) to ~/.cam/loops/archive/<name>-goal.md, then run `camc cron rm --loop --owner <agent> <loop-name>` to stop the loop, do not delete the loop JSON file — it stays at `~/.cam/loops/<name>.json` for reclaim, set continue_recommended to false, make no code changes, and report completion.\n4. If work remains, choose exactly ONE unfinished Checklist item.\n5. Prefer partial before not_started, small before broad, safe before risky.\n6. Execute only the selected item.\n7. Run the most relevant available checks.\n8. If the selected work changes MiniSpec state, update CLAUDE.md (or AGENTS.md).\n9. Add a short CLAUDE.history.md entry only for significant changes.\n10. Create a timestamped backup before risky or broad prompt edits.\n11. Do not claim success without verification evidence.\n\nReturn the required MiniSpec YAML report."
+  "prompt": "Continue from the current project state using the MiniSpec protocol.\n\nFirst re-read the auto-load file: CLAUDE.md.\n\nThen:\n1. Check whether the Goal is already achieved.\n2. Review every Checklist item and mark it as done, partial, blocked, or not_started.\n3. If the Goal is achieved and all required Checklist items are done: archive the loop and goal together — copy ~/.cam/loops/<name>.json to ~/.cam/loops/archive/<name>.json, copy the auto-load file (CLAUDE.md or AGENTS.md) to ~/.cam/loops/archive/<name>-goal.md, then run `~/.cam/camc cron rm --loop --owner <agent> <loop-name>` to stop the loop, do not delete the loop JSON file — it stays at `~/.cam/loops/<name>.json` for reclaim, set continue_recommended to false, make no code changes, and report completion.\n4. If work remains, choose exactly ONE unfinished Checklist item.\n5. Prefer partial before not_started, small before broad, safe before risky.\n6. Execute only the selected item.\n7. Run the most relevant available checks.\n8. If the selected work changes MiniSpec state, update CLAUDE.md (or AGENTS.md).\n9. Add a short CLAUDE.history.md entry only for significant changes.\n10. Create a timestamped backup before risky or broad prompt edits.\n11. Do not claim success without verification evidence.\n\nReturn the required MiniSpec YAML report."
 }
 ```
 
@@ -129,7 +129,7 @@ Full template: `reference/loop.md`. Pick the variant matching the tool.
 ## 3. Register the loop
 
 ```bash
-camc cron add --loop --owner <agent> \
+~/.cam/camc cron add --loop --owner <agent> \
   --name goal-loop --every 5m \
   --prompt "<continuation message from ~/.cam/loops/<name>.json>"
 ```
@@ -146,7 +146,7 @@ camc cron add --loop --owner <agent> \
 When the continuation message arrives:
 
 1. **Re-read the auto-load file** — CLAUDE.md or AGENTS.md
-2. **Check goal** — achieved? Archive loop JSON, run `camc cron rm`, keep the loop JSON at `~/.cam/loops/<name>.json` for reclaim, set `continue_recommended: false`, stop.
+2. **Check goal** — achieved? Archive loop JSON, run `~/.cam/camc cron rm`, keep the loop JSON at `~/.cam/loops/<name>.json` for reclaim, set `continue_recommended: false`, stop.
 3. **Review checklist** — mark each item done/partial/blocked/not_started
 4. **Select one item** — partial before not_started, small over broad
 5. **Execute only that item**
@@ -191,7 +191,7 @@ minispec_update:
 ```
 
 Set `continue_recommended: false` when goal achieved (agent self-cleans:
-archive loop+goal, `camc cron rm`) or when all items are blocked/impossible
+archive loop+goal, `~/.cam/camc cron rm`) or when all items are blocked/impossible
 (agent stops doing work, loop stays for human to adjust).
 
 ## 5. Project state maintenance
@@ -242,17 +242,17 @@ cat > ~/.cam/loops/ecc-goal-loop.json << 'EOFJSON'
   "name": "goal-loop",
   "every": "5m",
   "owner": "ecc-fix",
-  "prompt": "Continue from the current project state using the MiniSpec protocol.\n\nFirst re-read the auto-load file: CLAUDE.md.\n\nThen:\n1. Check whether the Goal is already achieved.\n2. Review every Checklist item and mark it as done, partial, blocked, or not_started.\n3. If the Goal is achieved and all required Checklist items are done: archive the loop and goal together — copy ~/.cam/loops/<name>.json to ~/.cam/loops/archive/<name>.json, copy the auto-load file (CLAUDE.md or AGENTS.md) to ~/.cam/loops/archive/<name>-goal.md, then run `camc cron rm --loop --owner <agent> <loop-name>` to stop the loop, do not delete the loop JSON file — it stays at `~/.cam/loops/<name>.json` for reclaim, set continue_recommended to false, make no code changes, and report completion.\n4. If work remains, choose exactly ONE unfinished Checklist item.\n5. Prefer partial before not_started, small before broad, safe before risky.\n6. Execute only the selected item.\n7. Run the most relevant available checks.\n8. If the selected work changes MiniSpec state, update CLAUDE.md.\n9. Add a short CLAUDE.history.md entry only for significant changes.\n10. Create a timestamped backup before risky or broad prompt edits.\n11. Do not claim success without verification evidence.\n\nReturn the required MiniSpec YAML report."
+  "prompt": "Continue from the current project state using the MiniSpec protocol.\n\nFirst re-read the auto-load file: CLAUDE.md.\n\nThen:\n1. Check whether the Goal is already achieved.\n2. Review every Checklist item and mark it as done, partial, blocked, or not_started.\n3. If the Goal is achieved and all required Checklist items are done: archive the loop and goal together — copy ~/.cam/loops/<name>.json to ~/.cam/loops/archive/<name>.json, copy the auto-load file (CLAUDE.md or AGENTS.md) to ~/.cam/loops/archive/<name>-goal.md, then run `~/.cam/camc cron rm --loop --owner <agent> <loop-name>` to stop the loop, do not delete the loop JSON file — it stays at `~/.cam/loops/<name>.json` for reclaim, set continue_recommended to false, make no code changes, and report completion.\n4. If work remains, choose exactly ONE unfinished Checklist item.\n5. Prefer partial before not_started, small before broad, safe before risky.\n6. Execute only the selected item.\n7. Run the most relevant available checks.\n8. If the selected work changes MiniSpec state, update CLAUDE.md.\n9. Add a short CLAUDE.history.md entry only for significant changes.\n10. Create a timestamped backup before risky or broad prompt edits.\n11. Do not claim success without verification evidence.\n\nReturn the required MiniSpec YAML report."
 }
 EOFJSON
 
 # 3. Start a claude agent
-camc run -t claude "fix ECC errors per CLAUDE.md" -n ecc-fix -p /path/to/project
+~/.cam/camc run -t claude "fix ECC errors per CLAUDE.md" -n ecc-fix -p /path/to/project
 
 # 4. Register the loop (default 5m)
-camc cron add --loop --owner ecc-fix \
+~/.cam/camc cron add --loop --owner ecc-fix \
   --name goal-loop --every 5m \
-  --prompt "Continue from the current project state using the MiniSpec protocol.\n\nFirst re-read the auto-load file: CLAUDE.md.\n\nThen:\n1. Check whether the Goal is already achieved.\n2. Review every Checklist item and mark it as done, partial, blocked, or not_started.\n3. If the Goal is achieved and all required Checklist items are done: archive the loop and goal together — copy ~/.cam/loops/<name>.json to ~/.cam/loops/archive/<name>.json, copy the auto-load file (CLAUDE.md or AGENTS.md) to ~/.cam/loops/archive/<name>-goal.md, then run `camc cron rm --loop --owner <agent> <loop-name>` to stop the loop, do not delete the loop JSON file — it stays at `~/.cam/loops/<name>.json` for reclaim, set continue_recommended to false, make no code changes, and report completion.\n4. If work remains, choose exactly ONE unfinished Checklist item.\n5. Prefer partial before not_started, small before broad, safe before risky.\n6. Execute only the selected item.\n7. Run the most relevant available checks.\n8. If the selected work changes MiniSpec state, update CLAUDE.md.\n9. Add a short CLAUDE.history.md entry only for significant changes.\n10. Create a timestamped backup before risky or broad prompt edits.\n11. Do not claim success without verification evidence.\n\nReturn the required MiniSpec YAML report."
+  --prompt "Continue from the current project state using the MiniSpec protocol.\n\nFirst re-read the auto-load file: CLAUDE.md.\n\nThen:\n1. Check whether the Goal is already achieved.\n2. Review every Checklist item and mark it as done, partial, blocked, or not_started.\n3. If the Goal is achieved and all required Checklist items are done: archive the loop and goal together — copy ~/.cam/loops/<name>.json to ~/.cam/loops/archive/<name>.json, copy the auto-load file (CLAUDE.md or AGENTS.md) to ~/.cam/loops/archive/<name>-goal.md, then run `~/.cam/camc cron rm --loop --owner <agent> <loop-name>` to stop the loop, do not delete the loop JSON file — it stays at `~/.cam/loops/<name>.json` for reclaim, set continue_recommended to false, make no code changes, and report completion.\n4. If work remains, choose exactly ONE unfinished Checklist item.\n5. Prefer partial before not_started, small before broad, safe before risky.\n6. Execute only the selected item.\n7. Run the most relevant available checks.\n8. If the selected work changes MiniSpec state, update CLAUDE.md.\n9. Add a short CLAUDE.history.md entry only for significant changes.\n10. Create a timestamped backup before risky or broad prompt edits.\n11. Do not claim success without verification evidence.\n\nReturn the required MiniSpec YAML report."
 ```
 
 ### New task from scratch (codex / cursor)
@@ -274,9 +274,9 @@ cat > ~/.cam/loops/ecc-goal-loop.json << 'EOFJSON'
 }
 EOFJSON
 
-camc run -t codex "fix ECC errors per AGENTS.md" -n ecc-fix -p /path/to/project
+~/.cam/camc run -t codex "fix ECC errors per AGENTS.md" -n ecc-fix -p /path/to/project
 
-camc cron add --loop --owner ecc-fix \
+~/.cam/camc cron add --loop --owner ecc-fix \
   --name goal-loop --every 5m \
   --prompt "Continue from the current project state...\n\nFirst re-read the auto-load file: AGENTS.md.\n..."
 ```
@@ -285,10 +285,10 @@ camc cron add --loop --owner ecc-fix \
 
 ```bash
 # Agent already running, auto-load file has partial items
-camc status my-agent           # task.tool: claude → CLAUDE.md, codex → AGENTS.md
+~/.cam/camc status my-agent           # task.tool: claude → CLAUDE.md, codex → AGENTS.md
 
 # Create ~/.cam/loops/continue.json with continuation message, then:
-camc cron add --loop --owner my-agent \
+~/.cam/camc cron add --loop --owner my-agent \
   --name continue --every 5m \
   --prompt "Continue from the current project state..."
 ```
@@ -300,14 +300,14 @@ then self-cleans the cron job:
 
 1. Archive the loop: `mkdir -p ~/.cam/loops/archive && cp ~/.cam/loops/<name>.json ~/.cam/loops/archive/<name>.json`
 2. Archive the goal: `cp CLAUDE.md ~/.cam/loops/archive/<name>-goal.md` (or AGENTS.md for codex/cursor)
-3. Remove the cron job: `camc cron rm --loop --owner <agent> <loop-name>` (keeps the JSON file)
+3. Remove the cron job: `~/.cam/camc cron rm --loop --owner <agent> <loop-name>` (keeps the JSON file)
 4. Keep the loop JSON: `~/.cam/loops/<name>.json` stays for reclaim/reproducibility
 5. Set `continue_recommended: false` and report completion
 
 ### Manual stop (interrupt)
 
 ```bash
-camc cron rm --loop --owner <agent> <loop-name>
+~/.cam/camc cron rm --loop --owner <agent> <loop-name>
 ```
 
 Agent also sets `continue_recommended: false` without archiving when all
@@ -324,7 +324,7 @@ If the cron job was removed or lost, reclaim it from the JSON:
 cat ~/.cam/loops/goal-loop.json
 
 # Extract the --prompt value and re-register
-camc cron add --loop --owner <agent> \
+~/.cam/camc cron add --loop --owner <agent> \
   --name goal-loop --every 5m \
   --prompt "<prompt value from the JSON>"
 ```
