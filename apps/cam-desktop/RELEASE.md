@@ -31,10 +31,14 @@ Do not move the tag until all of these are green:
 
 1. Unit/syntax suites (from `apps/cam-desktop`):
    `npm run lint:electron && npm run test:hub && npm run test:term && npm run test:start`
-2. Real-machine E2E against at least one real SSH node (attach, tab
+2. Boot smoke (launches the real app, asserts preload loads + hub
+   starts — catches sandbox-require and boot-chain regressions that
+   static checks cannot see):
+   `npm run test:smoke`
+3. Real-machine E2E against at least one real SSH node (attach, tab
    strip, tab switching). The CDP harnesses used so far live in
    `.tools/cdp-*.cjs` (dev-run Electron with `--remote-debugging-port`).
-3. The diff is minimal and scoped to the fix being released.
+4. The diff is minimal and scoped to the fix being released.
 
 ## Release steps
 
