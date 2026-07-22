@@ -1337,6 +1337,7 @@ export function mountAgentConsole({ api, state, showToast }) {
   let termOpening = false;
   let termUnsubData = null;
   let termUnsubStatus = null;
+  let terminalTabsToggleWired = false;
   let termResizeObserver = null;
   let termThemeObserver = null;
   let terminalAttachBtn = null;
@@ -2087,6 +2088,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       terminalEl.textContent = 'Terminal renderer is unavailable: xterm.js was not loaded.';
       return false;
     }
+    ensureTerminalTabsToggleWiring();
     const ent = createTerminalEntry(agent);
     if (!termResizeObserver) {
       if (window.ResizeObserver) {
@@ -3018,6 +3020,11 @@ export function mountAgentConsole({ api, state, showToast }) {
   function renderTerminalTabs(ent) {
     if (!terminalTabsEl) return;
     terminalTabsEl.textContent = '';
+    // Terminal tabs (the tmux window strip) are an experimental
+    // enhancement, OFF by default — the toggle lives in Start →
+    // Advanced. The terminal itself, History and To Bottom never
+    // depend on this flag.
+    if (!terminalTabsEnabled()) { terminalTabsEl.hidden = true; return; }
     if (!ent?.tmuxReady) {
       // Transient degraded hint only while retries are in flight —
       // once they are exhausted the strip hides entirely (tmuxHintState
@@ -3060,7 +3067,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     // state; once retries are exhausted (tmuxHintState 'hidden') it
     // hides entirely and stays quiet.
     if (terminalTabsEl) {
-      terminalTabsEl.hidden = !terminalConnected || (ent && ent.tmuxHintState === 'hidden' && !ent.tmuxReady);
+      terminalTabsEl.hidden = !terminalTabsEnabled() || !terminalConnected || (ent && ent.tmuxHintState === 'hidden' && !ent.tmuxReady);
     }
     if (terminalActionBar) terminalActionBar.hidden = !terminalVisible;
     if (terminalHistoryBtn) terminalHistoryBtn.disabled = actionsBlocked || !tmuxVisible || !!ent?.copyBrowsing;
@@ -3072,13 +3079,34 @@ export function mountAgentConsole({ api, state, showToast }) {
     }
   }
 
+  // Terminal tabs (the tmux window strip) are an experimental
+  // enhancement, OFF by default — the toggle lives in Start → Advanced
+  // and persists to localStorage. Terminal, History and To Bottom work
+  // regardless.
+  function terminalTabsEnabled() {
+    try { return localStorage.getItem('cam_terminal_tabs_enabled') === '1'; } catch (_) { return false; }
+  }
+
+  /** Re-render the strip when the Advanced toggle flips. */
+  function ensureTerminalTabsToggleWiring() {
+    if (terminalTabsToggleWired) return;
+    terminalTabsToggleWired = true;
+    window.addEventListener('cam:terminal-tabs-changed', () => {
+      const ent = termAgentId ? terminalSessions.get(termAgentId) : null;
+      renderTerminalTabs(ent);
+      updateTerminalTmuxControls();
+      if (terminalTabsEnabled()) void refreshTerminalTmuxControls();
+    });
+  }
+
   async function refreshTerminalTmuxControls() {
     const ent = termAgentId ? terminalSessions.get(termAgentId) : null;
     const bridge = termBridge();
-    // tmuxHintState 'hidden' means bounded retries are exhausted and the
-    // strip is gone — stay quiet on the NETWORK too, not just the UI:
-    // no more listWindows execs until a reattach creates a fresh entry.
-    if (!ent || !bridge || !ent.sessionId || terminalTmuxRefreshPending || ent.tmuxHintState === 'hidden') {
+    // tmuxHintState 'hidden' means the strip is disabled for this agent
+    // (failed or feature-flagged off) — stay quiet on the NETWORK too,
+    // not just the UI: no more listWindows execs until a reattach
+    // creates a fresh entry.
+    if (!terminalTabsEnabled() || !ent || !bridge || !ent.sessionId || terminalTmuxRefreshPending || ent.tmuxHintState === 'hidden') {
       updateTerminalTmuxControls();
       return;
     }
@@ -3091,28 +3119,16 @@ export function mountAgentConsole({ api, state, showToast }) {
       if (ent.tmuxControlRevision !== tmuxControlRevision) return;
       if (!result?.ok) {
         // Quiet degradation: window controls are an enhancement, not an
-        // error condition. Show the degraded hint only while a few
-        // retries are in flight; once they are exhausted the strip
-        // hides entirely and stays quiet — the terminal keeps working
-        // normally. Only operation-blocking failures surface as errors.
+        // error condition. Any control failure (list-windows /
+        // list-clients / display-message) disables the strip for this
+        // agent until a reattach creates a fresh entry — one transient
+        // (<3s) note, no persistent warning, no more polling, and the
+        // terminal keeps working normally.
         ent.tmuxReady = false;
         ent.tmuxDiagnosticVisible = false;
-        const retries = [2000, 5000, 12000, 30000];
-        const n = Number(ent.tmuxRetryCount || 0);
-        if (n < retries.length) {
-          ent.tmuxHintState = 'hint';
-          ent.tmuxRetryCount = n + 1;
-          const expectedSession = sessionId;
-          const expectedRevision = ent.tmuxControlRevision;
-          window.setTimeout(() => {
-            const cur = terminalSessions.get(termAgentId);
-            if (cur !== ent || ent.sessionId !== expectedSession) return;
-            if (ent.tmuxControlRevision !== expectedRevision) return;
-            void refreshTerminalTmuxControls();
-          }, retries[n]);
-        } else {
-          ent.tmuxHintState = 'hidden';
-        }
+        ent.tmuxRetryCount = 0;
+        ent.tmuxHintState = 'hidden';
+        setTerminalAttachStatus('window controls unavailable', 'info', 2800, ent.agentId);
         renderTerminalTabs(ent);
         updateTerminalTmuxControls();
         return;
