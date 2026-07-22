@@ -203,7 +203,9 @@ _camc_prelude_capture() {
             _camc_socket=$(_camc_prelude_default_socket "$_camc_session" 2>/dev/null || true)
         fi
         if [ -z "$_camc_tmux" ]; then
-            if [ -x /bin/tmux ]; then _camc_tmux="/bin/tmux"; else _camc_tmux="tmux"; fi
+            _camc_tmux=$(command -v tmux 2>/dev/null || true)
+            [ -n "$_camc_tmux" ] || { [ -x /bin/tmux ] && _camc_tmux="/bin/tmux"; }
+            [ -n "$_camc_tmux" ] || _camc_tmux="tmux"
         fi
 
         if [ "$_camc_use_stdin" = "1" ]; then
@@ -293,7 +295,9 @@ _camc_prelude_capture() {
                                 _camc_socket=$(_camc_prelude_default_socket "$_camc_session" 2>/dev/null || true)
                             fi
                             if [ -z "$_camc_tmux" ]; then
-                                if [ -x /bin/tmux ]; then _camc_tmux="/bin/tmux"; else _camc_tmux="tmux"; fi
+                                _camc_tmux=$(command -v tmux 2>/dev/null || true)
+                                [ -n "$_camc_tmux" ] || { [ -x /bin/tmux ] && _camc_tmux="/bin/tmux"; }
+                                [ -n "$_camc_tmux" ] || _camc_tmux="tmux"
                             fi
                             _camc_host_ok=1
                             case "$_camc_format" in plain|ansi) ;; *) _camc_host_ok=0 ;; esac
