@@ -203,6 +203,11 @@ ok("attach prefers the reachable context endpoint, machine fields only as fallba
     && hub.includes("machineOpts.host = agent.machine_host")
     && main.includes("ATTACH_FALLBACK_ERRORS")
     && !main.includes("if (agent.machine_host) opts.host = agent.machine_host;"));
+ok("tmux binary is probed per endpoint, never hardcoded to /bin/tmux",
+  main.includes("function _probeRemoteTmuxBin")
+    && main.includes("command -v /bin/tmux || command -v tmux")
+    && main.includes("tmux.bin = await _probeRemoteTmuxBin(resolved.opts)")
+    && !require("fs").readFileSync(require("path").join(__dirname, "..", "electron", "tmux-controls.cjs"), "utf8").includes('|| "/bin/tmux"'));
 // Desktop semantics 2026-07-18: the app never closes pooled SSH
 // connections on its own while running — an open desktop terminal
 // holds its sessions (unlike mobile).
