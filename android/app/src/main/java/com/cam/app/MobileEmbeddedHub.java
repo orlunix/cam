@@ -1140,6 +1140,88 @@ public final class MobileEmbeddedHub {
     private static final int SEND_TIMEOUT_MS = 30000;
     private static final int RUN_REMOTE_TIMEOUT_MS = 45000;
 
+    private MobileSshExec.SequenceResult runSyncList(MobileSshAuth.Options sshAuth) {
+        return MobileSshExec.execSequence(
+            sshAuth,
+            new String[] {
+                MobileSshExec.camcCheckCommand(),
+                MobileSshExec.camcListCommand(),
+            },
+            SYNC_TIMEOUT_MS);
+    }
+
+    private byte[] readBundledCamcForSync() throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        try (InputStream in = appContext.getAssets().open("camc/camc")) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) >= 0) if (n > 0) out.write(buf, 0, n);
+        }
+        return out.toByteArray();
+    }
+
+    private JSONObject deployBundledCamcForSync(MobileSshAuth.Options sshAuth) throws Exception {
+        byte[] content;
+        try {
+            content = readBundledCamcForSync();
+        } catch (Exception e) {
+            return new JSONObject()
+                .put("ok", false)
+                .put("error", "bundled_camc_missing")
+                .put("decision", "upload_failed")
+                .put("detail", "APK does not contain assets/camc/camc: " + e.getMessage());
+        }
+        String tmp = "/tmp/camc-mobile-sync-" + System.currentTimeMillis() + ".tmp";
+        MobileHubLog.ssh("sync upload bundled camc " + MobileHubLog.endpoint(sshAuth));
+        MobileSshExec.Result uploaded = MobileSshExec.uploadFile(sshAuth, tmp, content, SYNC_TIMEOUT_MS);
+        if (uploaded == null || !uploaded.ok) {
+            return new JSONObject()
+                .put("ok", false)
+                .put("error", uploaded != null && uploaded.error != null ? uploaded.error : "remote_camc_upload_failed")
+                .put("decision", "upload_failed")
+                .put("detail", uploaded != null && uploaded.detail != null ? uploaded.detail : "failed to upload bundled camc");
+        }
+        MobileSshExec.Result installed = MobileSshExec.exec(sshAuth,
+            MobileSshExec.shellCommand("mkdir -p \"$HOME/.cam\" && chmod 700 " + tmp
+                + " && mv " + tmp + " \"$HOME/.cam/camc\" && test -x \"$HOME/.cam/camc\""),
+            SYNC_TIMEOUT_MS);
+        if (installed == null || !installed.ok) {
+            return new JSONObject()
+                .put("ok", false)
+                .put("error", installed != null && installed.error != null ? installed.error : "remote_camc_install_failed")
+                .put("decision", "upload_failed")
+                .put("detail", installed != null && installed.detail != null ? installed.detail : "failed to install remote ~/.cam/camc");
+        }
+        return new JSONObject().put("ok", true).put("decision", "uploaded_missing");
+    }
+
+    private static boolean isCamcMissing(MobileSshExec.Result check) {
+        return check != null && ("remote_nonzero".equals(check.error) || "camc_missing".equals(check.error));
+    }
+
+    private static MobileSshExec.Result syncStep(MobileSshExec.SequenceResult seq, int index) {
+        if (seq == null || seq.steps == null || index < 0 || index >= seq.steps.length) return null;
+        return seq.steps[index];
+    }
+
+    private static long commandMs(MobileSshExec.SequenceResult seq, int index) {
+        if (seq == null || seq.commandMs == null || index < 0 || index >= seq.commandMs.length) return 0L;
+        return seq.commandMs[index];
+    }
+
+    private JSONObject syncTiming(long startedAt, MobileSshExec.SequenceResult seq,
+            long uploadMs, String uploadDecision, long importMs) throws Exception {
+        return new JSONObject()
+            .put("lockWaitMs", seq != null ? seq.lockWaitMs : 0L)
+            .put("connectMs", seq != null ? seq.connectMs : 0L)
+            .put("checkMs", commandMs(seq, 0))
+            .put("listMs", commandMs(seq, 1))
+            .put("uploadMs", uploadMs)
+            .put("uploadDecision", uploadDecision != null ? uploadDecision : "")
+            .put("importMs", importMs)
+            .put("totalMs", System.currentTimeMillis() - startedAt);
+    }
+
     private JSONObject startAgent(JSONObject body) throws Exception {
         if (body == null) body = new JSONObject();
         StartTarget target = resolveStartTarget(body);
@@ -1785,27 +1867,45 @@ public final class MobileEmbeddedHub {
                 .put("results", new JSONObject().put("camc", "failed"));
         }
 
-        MobileSshExec.SequenceResult syncRun = MobileSshExec.execSequence(
-            sshAuth,
-            new String[] {
-                MobileSshExec.camcCheckCommand(),
-                MobileSshExec.camcListCommand(),
-            },
-            SYNC_TIMEOUT_MS);
+        long syncStartedAt = System.currentTimeMillis();
+        long uploadMs = 0L;
+        long importMs = 0L;
+        String uploadDecision = "skipped_present";
+        MobileSshExec.SequenceResult syncRun = runSyncList(sshAuth);
+        MobileSshExec.Result check = syncStep(syncRun, 0);
+        if (check == null && syncRun != null) check = syncRun.first();
+        if ((syncRun == null || !syncRun.ok || syncRun.steps == null || syncRun.steps.length < 2)
+                && isCamcMissing(check)) {
+            long uploadStartedAt = System.currentTimeMillis();
+            JSONObject deployed = deployBundledCamcForSync(sshAuth);
+            uploadMs = System.currentTimeMillis() - uploadStartedAt;
+            uploadDecision = deployed.optString("decision", "upload_failed");
+            if (!deployed.optBoolean("ok", false)) {
+                return new JSONObject()
+                    .put("ok", false)
+                    .put("error", deployed.optString("error", "remote_camc_upload_failed"))
+                    .put("detail", deployed.optString("detail", "failed to upload bundled camc"))
+                    .put("sync", syncTiming(syncStartedAt, syncRun, uploadMs, uploadDecision, importMs))
+                    .put("results", new JSONObject().put("camc", "failed"));
+            }
+            syncRun = runSyncList(sshAuth);
+        }
         if (!syncRun.ok || syncRun.steps == null || syncRun.steps.length < 2) {
-            MobileSshExec.Result check = syncRun.first();
+            check = syncRun.first();
             MobileHubLog.ssh("sync fail ctx=" + ctx.optString("name") + " "
                 + (check != null ? check.error + " " + check.detail : "unknown"));
             log("warn", "sync " + ctx.optString("name") + ": probe failed: "
                 + check.error + " " + check.detail);
-            return failRemoteProbe(check, user, host, port);
+            return failRemoteProbe(check, user, host, port)
+                .put("sync", syncTiming(syncStartedAt, syncRun, uploadMs, uploadDecision, importMs));
         }
-        MobileSshExec.Result check = syncRun.steps[0];
+        check = syncRun.steps[0];
         MobileSshExec.Result list = syncRun.steps[1];
         if (!check.ok) {
             log("warn", "sync " + ctx.optString("name") + ": probe failed: "
                 + check.error + " " + check.detail);
-            return failRemoteProbe(check, user, host, port);
+            return failRemoteProbe(check, user, host, port)
+                .put("sync", syncTiming(syncStartedAt, syncRun, uploadMs, uploadDecision, importMs));
         }
         if (!list.ok) {
             log("warn", "sync " + ctx.optString("name") + ": list failed");
@@ -1813,9 +1913,11 @@ public final class MobileEmbeddedHub {
                 .put("ok", false)
                 .put("error", list.error != null && !list.error.isEmpty() ? list.error : "exec_failed")
                 .put("detail", list.detail != null ? list.detail : "remote camc list failed")
+                .put("sync", syncTiming(syncStartedAt, syncRun, uploadMs, uploadDecision, importMs))
                 .put("results", new JSONObject().put("camc", "failed"));
         }
 
+        long importStartedAt = System.currentTimeMillis();
         JSONArray parsed;
         try {
             parsed = new JSONArray(list.stdout.trim());
@@ -1824,6 +1926,7 @@ public final class MobileEmbeddedHub {
                 .put("ok", false)
                 .put("error", "invalid_json")
                 .put("detail", "remote camc did not return JSON array")
+                .put("sync", syncTiming(syncStartedAt, syncRun, uploadMs, uploadDecision, importMs))
                 .put("results", new JSONObject().put("camc", "failed"));
         }
 
@@ -1840,6 +1943,7 @@ public final class MobileEmbeddedHub {
         int prevCount = countAgentsForContext(ctx);
         upsertAgentsForContext(ctx, normalized);
         markContextUsed(ctx);
+        importMs = System.currentTimeMillis() - importStartedAt;
 
         String status = (prevCount == normalized.length()) ? "unchanged" : "updated";
         log("info", "sync " + ctx.optString("name") + ": " + status + " (" + normalized.length() + " agent(s))");
@@ -1848,6 +1952,7 @@ public final class MobileEmbeddedHub {
             .put("ok", true)
             .put("imported", normalized.length())
             .put("total", parsed.length())
+            .put("sync", syncTiming(syncStartedAt, syncRun, uploadMs, uploadDecision, importMs))
             .put("results", new JSONObject().put("camc", status));
     }
 
