@@ -1343,6 +1343,14 @@ export function mountAgentConsole({ api, state, showToast }) {
   let terminalAttachHint = null;
   let terminalAttachStatus = null;
   let terminalAttachStatusTimer = null;
+  let terminalAttachStatusOwner = null;   // agentId owning a persistent (ttl=0) status
+  // Unexpected-drop auto-reconnect: transport drops get the full backoff
+  // ladder (flaps are usually transient); remote exits get two quick
+  // attempts only (a dead agent/tmux won't heal by retrying). After
+  // exhaustion the UI falls back to the keystroke prompt, as before.
+  const AUTO_RECONNECT_DELAYS_TRANSPORT = [0, 2000, 5000, 12000, 30000];
+  const AUTO_RECONNECT_DELAYS_EXIT = [0, 3000];
+  const TRANSIENT_ATTACH_ERRORS = new Set(['exec_timeout', 'exec_failed', 'connect_timeout', 'connect_lost']);
   let terminalActionBar = null;
   let terminalHistoryBtn = null;
   let terminalBottomBtn = null;
@@ -1708,6 +1716,12 @@ export function mountAgentConsole({ api, state, showToast }) {
 
   function syncActiveTerminalEntry(agentId) {
     const ent = agentId ? terminalSessions.get(agentId) : null;
+    // The status chrome is shared; a persistent status posted by another
+    // agent's (possibly hung) attach must not shadow the selected one.
+    if (terminalAttachStatusOwner && terminalAttachStatusOwner !== agentId
+        && terminalAttachStatus && !terminalAttachStatus.hidden) {
+      setTerminalAttachStatus('');
+    }
     term = ent ? ent.term : null;
     termFit = ent ? ent.fit : null;
     termSessionId = ent ? ent.sessionId : null;
@@ -1879,6 +1893,11 @@ export function mountAgentConsole({ api, state, showToast }) {
       raf(pass);
       window.setTimeout(pass, 80);
       window.setTimeout(pass, 220);
+      // Late pass for slow layouts: when the first four fire before the
+      // pane settles (heavy CSS transitions), every guarded pass misses
+      // and the local xterm keeps stale geometry until some unrelated
+      // reflow — which looks exactly like the "~10 cols" shrink.
+      window.setTimeout(pass, 700);
     });
   }
 
@@ -2109,13 +2128,14 @@ export function mountAgentConsole({ api, state, showToast }) {
           try { ent.term.write(`\r\n\x1b[2mterminal detached${suffix}\x1b[0m\r\n`); } catch (_) {}
         } else {
           // Unexpected drop (connection loss, channel error): keep the
-          // pane + scrollback and offer in-place reconnect on the next
-          // keystroke (Tabby ConnectableTerminalTab pattern).
+          // pane + scrollback, auto-reconnect with bounded backoff, and
+          // fall back to the keystroke offer when attempts run out.
           ent.sessionState = 'dead';
           ent.reconnectOffered = true;
           try {
-            ent.term.write(`\r\n\x1b[2mterminal disconnected${suffix} — press any key to reconnect\x1b[0m\r\n`);
+            ent.term.write(`\r\n\x1b[2mterminal disconnected${suffix} — reconnecting…\x1b[0m\r\n`);
           } catch (_) {}
+          _scheduleAutoReconnect(ent, msg);
         }
         if (termAgentId === ent.agentId) syncActiveTerminalEntry(ent.agentId);
       }
@@ -2125,9 +2145,13 @@ export function mountAgentConsole({ api, state, showToast }) {
   /** In-place reconnect for a dead terminal entry: reset stale terminal
    *  modes (mouse tracking / bracketed paste could still be on from a
    *  crashed full-screen app), then open a fresh channel for the same
-   *  agent into the same xterm — scrollback survives. */
-  async function reconnectTerminalEntry(ent) {
+   *  agent into the same xterm — scrollback survives. `opts.auto`
+   *  suppresses per-attempt term noise (the scheduler reports progress
+   *  in the status line instead). */
+  async function reconnectTerminalEntry(ent, opts = {}) {
     if (!ent || ent.sessionState === 'reconnecting' || !ent.term) return;
+    // A manual keystroke attempt cancels any pending scheduled attempt.
+    if (ent._autoReconnectTimer) { clearTimeout(ent._autoReconnectTimer); ent._autoReconnectTimer = null; }
     ent.sessionState = 'reconnecting';
     ent.reconnectOffered = false;
     const bridge = termBridge();
@@ -2142,6 +2166,7 @@ export function mountAgentConsole({ api, state, showToast }) {
         ent.sessionId = res.sessionId;
         ent.sessionState = 'live';
         ent.lastUsed = Date.now();
+        ent._autoReconnectAttempt = 0;
         if (typeof bridge.ready === 'function') {
           try { bridge.ready({ sessionId: ent.sessionId }); } catch (_) {}
         }
@@ -2150,13 +2175,38 @@ export function mountAgentConsole({ api, state, showToast }) {
       } else {
         ent.sessionState = 'dead';
         ent.reconnectOffered = true;
-        ent.term.write(`\r\n\x1b[31mReconnect failed: ${res && (res.detail || res.error) || 'unknown'}\x1b[0m\x1b[2m — press any key to retry\x1b[0m\r\n`);
+        if (!opts.auto) ent.term.write(`\r\n\x1b[31mReconnect failed: ${res && (res.detail || res.error) || 'unknown'}\x1b[0m\x1b[2m — press any key to retry\x1b[0m\r\n`);
       }
     } catch (e) {
       ent.sessionState = 'dead';
       ent.reconnectOffered = true;
-      try { ent.term.write(`\r\n\x1b[31mReconnect failed: ${e && e.message || e}\x1b[0m\x1b[2m — press any key to retry\x1b[0m\r\n`); } catch (_) {}
+      try { if (!opts.auto) ent.term.write(`\r\n\x1b[31mReconnect failed: ${e && e.message || e}\x1b[0m\x1b[2m — press any key to retry\x1b[0m\r\n`); } catch (_) {}
     }
+  }
+
+  /** Bounded auto-reconnect after an unexpected drop. Transport drops
+   *  (flapping links) get the full backoff ladder; remote exits get two
+   *  quick attempts. A keystroke between attempts triggers an immediate
+   *  manual attempt which cancels this schedule. */
+  function _scheduleAutoReconnect(ent, msg) {
+    const transportDrop = !!(msg && (msg.error || msg.code == null));
+    const delays = transportDrop ? AUTO_RECONNECT_DELAYS_TRANSPORT : AUTO_RECONNECT_DELAYS_EXIT;
+    const attempt = ent._autoReconnectAttempt || 0;
+    if (attempt >= delays.length) {
+      setTerminalAttachStatus('Auto-reconnect failed — press any key to retry.', 'error', 0, ent.agentId);
+      try { ent.term.write(`\r\n\x1b[2mauto-reconnect exhausted — press any key to retry\x1b[0m\r\n`); } catch (_) {}
+      return;
+    }
+    ent._autoReconnectAttempt = attempt + 1;
+    setTerminalAttachStatus(`Connection lost — reconnecting (${attempt + 1}/${delays.length})…`, 'info', 0, ent.agentId);
+    ent._autoReconnectTimer = setTimeout(async () => {
+      ent._autoReconnectTimer = null;
+      if (terminalSessions.get(ent.agentId) !== ent || ent.sessionState === 'live') return;
+      await reconnectTerminalEntry(ent, { auto: true });
+      if (ent.sessionState !== 'live' && terminalSessions.get(ent.agentId) === ent) {
+        _scheduleAutoReconnect(ent, msg);
+      }
+    }, delays[attempt]);
   }
 
   async function closeTerminalSession(agentId = termAgentId) {
@@ -2176,6 +2226,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     ent.sessionId = null;
     ent.opening = false;
     ent.copyBrowsing = false;
+    if (ent._autoReconnectTimer) { try { clearTimeout(ent._autoReconnectTimer); } catch (_) {} ent._autoReconnectTimer = null; }
     if (bridge && sid) {
       try { await bridge.close({ sessionId: sid }); } catch (_) {}
     }
@@ -2191,6 +2242,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     ent.sessionId = null;
     ent.opening = false;
     ent.copyBrowsing = false;
+    if (ent._autoReconnectTimer) { try { clearTimeout(ent._autoReconnectTimer); } catch (_) {} ent._autoReconnectTimer = null; }
     if (bridge && sid) {
       try { await bridge.close({ sessionId: sid }); } catch (_) {}
     }
@@ -2275,7 +2327,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     syncActiveTerminalEntry(agent.id);
     if (!ent.hasConnected) ent.term.clear();
     setTerminalAttachStatus(
-      force ? 'Re-attaching terminal...' : `Connecting terminal to ${agent.task_name || agent.id}...`, 'info', 0
+      force ? 'Re-attaching terminal...' : `Connecting terminal to ${agent.task_name || agent.id}...`, 'info', 0, agent.id
     );
     try {
       // Wait for the pane to be laid out before measuring. During a
@@ -2290,7 +2342,16 @@ export function mountAgentConsole({ api, state, showToast }) {
       const openRows = Math.max(4, Number(ent.term.rows) || 24);
       ent.lastCols = openCols;
       ent.lastRows = openRows;
-      const res = await bridge.open({ agentId: agent.id, cols: openCols, rows: openRows });
+      let res = await bridge.open({ agentId: agent.id, cols: openCols, rows: openRows });
+      // One automatic retry on transient failures (wedged pool entry,
+      // half-dead socket). The transport now drops suspect pool entries
+      // on open failure/timeout, so the retry rides a fresh connection.
+      if ((!res || !res.ok) && !opts._retried && TRANSIENT_ATTACH_ERRORS.has(res && res.error)) {
+        await new Promise((r) => setTimeout(r, 1500));
+        if (terminalSessions.get(agent.id) === ent && !ent.sessionId) {
+          res = await bridge.open({ agentId: agent.id, cols: openCols, rows: openRows });
+        }
+      }
       if (!res || !res.ok) {
         ent.term.write(`\r\n\x1b[31mTerminal attach failed: ${res && (res.detail || res.error) || 'unknown'}\x1b[0m\r\n`);
         ent.sessionId = null;
@@ -2302,6 +2363,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       ent.sessionState = 'live';
       ent.lastUsed = Date.now();
       ent.hasConnected = true;
+      ent._autoReconnectAttempt = 0;
       // Ready-gate (Tabby initialDataBuffer): main buffered the first
       // pane repaint until the xterm was opened and fitted. It was — the
       // open size came from the fit above — so release the buffer now.
@@ -2907,7 +2969,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       if (!agentId) return;
       terminalRefreshPending = true;
       updateTerminalAttachControls();
-      setTerminalAttachStatus('Re-attaching terminal...', 'info', 0);
+      setTerminalAttachStatus('Re-attaching terminal...', 'info', 0, agentId);
       try {
         const result = await openTerminalForSelected({ force: true });
         if (selectedAgent()?.id !== agentId) return;
@@ -3081,12 +3143,16 @@ export function mountAgentConsole({ api, state, showToast }) {
     return pane.scrollTop <= 30;
   }
 
-  function setTerminalAttachStatus(text, kind = 'info', ttl = 4000) {
+  function setTerminalAttachStatus(text, kind = 'info', ttl = 4000, ownerId = null) {
     if (terminalAttachStatusTimer) {
       clearTimeout(terminalAttachStatusTimer);
       terminalAttachStatusTimer = null;
     }
     if (!terminalAttachStatus) return;
+    // A persistent (ttl=0) status belongs to the agent whose attach flow
+    // posted it; anything else clears ownership so switching agents never
+    // shows a stale/hung message from another agent's attach.
+    terminalAttachStatusOwner = (text && ttl === 0) ? ownerId : null;
     terminalAttachStatus.textContent = text || '';
     terminalAttachStatus.title = text || '';
     terminalAttachStatus.classList.remove('is-error', 'is-ok', 'is-info');
