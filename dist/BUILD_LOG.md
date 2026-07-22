@@ -4681,3 +4681,42 @@ e41f075 camc: prefer latest tool releases
 e9025b4 Merge remote camui-desktop-v2 (15 commits) with local skills/env fixes
 e41f075 camc: prefer latest tool releases
 ```
+## v1.2.0  c78cc50-dirty 2026-07-23 00:52
+
+- Lines: 19807
+- Output: C:\Users\Thinkpad\gitlab\cam\dist\camc
+- Recent changes:
+```
+347458c fix: prefer runtime tmux path
+411cbcf Support custom start tools
+8711793 camc: refresh built-in skills and tool defaults
+9909fb1 camc: fast-path stdin sends
+e9025b4 Merge remote camui-desktop-v2 (15 commits) with local skills/env fixes
+```
+
+## v1.2.0  c78cc50-dirty 2026-07-23 00:55
+
+- Lines: 19458
+- Output: C:\Users\Thinkpad\AppData\Local\Temp\pytest-of-Thinkpad\pytest-0\test_build_camc_respects_disab0\camc
+- Recent changes:
+```
+347458c fix: prefer runtime tmux path
+411cbcf Support custom start tools
+8711793 camc: refresh built-in skills and tool defaults
+9909fb1 camc: fast-path stdin sends
+e9025b4 Merge remote camui-desktop-v2 (15 commits) with local skills/env fixes
+```
+
+## v1.2.0  c78cc50-dirty 2026-07-23 00:55
+
+- Lines: 19807
+- Output: C:\Users\Thinkpad\AppData\Local\Temp\pytest-of-Thinkpad\pytest-0\test_build_camc_default_includ0\camc
+- Recent changes:
+```
+347458c fix: prefer runtime tmux path
+411cbcf Support custom start tools
+8711793 camc: refresh built-in skills and tool defaults
+9909fb1 camc: fast-path stdin sends
+e9025b4 Merge remote camui-desktop-v2 (15 commits) with local skills/env fixes
+```
+
