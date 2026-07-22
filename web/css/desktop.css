@@ -2707,7 +2707,7 @@ body.desktop[data-theme="light"] .composer-input:focus {
   left: 50%;
   width: min(100%, var(--desktop-rail-wide));
   transform: translateX(-50%);
-  --terminal-chrome-bottom-inset: 20px;
+  --terminal-chrome-bottom-inset: 30px;
   z-index: 5;
   pointer-events: none;
 }
@@ -2738,10 +2738,13 @@ body.desktop[data-theme="light"] .composer-input:focus {
 .terminal-tmux-chrome .terminal-attach-status {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: var(--output-float-bg);
+  /* Translucent chrome: terminal content shows through, while border +
+   * shadow + stronger blur keep the buttons clearly identifiable.
+   * color-mix preserves the dark/light theme variables. */
+  background: color-mix(in srgb, var(--output-float-bg) 55%, transparent);
   color: var(--text);
   box-shadow: 0 1px 4px var(--output-float-shadow);
-  backdrop-filter: blur(2px);
+  backdrop-filter: blur(6px);
   font-size: 11px;
   line-height: 1.4;
 }
@@ -2758,19 +2761,24 @@ body.desktop[data-theme="light"] .composer-input:focus {
 .terminal-tmux-new { min-width: 26px; font-size: 15px; line-height: 1; }
 .terminal-action-bar {
   position: absolute;
-  left: 16px;
+  /* Centered and lifted one row higher so the bar floats above the
+   * scrollback instead of covering the prompt/input line. */
+  left: 50%;
+  transform: translateX(-50%);
   bottom: var(--terminal-chrome-bottom-inset);
   display: flex;
-  gap: 4px;
+  gap: 5px;
 }
 .terminal-history-btn,
 .terminal-bottom-btn,
 .terminal-attach-icon,
 .terminal-refresh-btn {
-  width: 28px;
-  height: 28px;
+  /* 1.2x of the previous 28px/11px (size + gaps scaled together). */
+  width: 34px;
+  height: 34px;
   padding: 0;
   cursor: pointer;
+  font-size: 13px;
 }
 .terminal-tmux-chrome .terminal-attach-status {
   position: absolute;
@@ -2804,7 +2812,7 @@ body.desktop[data-theme="light"] .composer-input:focus {
 .terminal-history-btn:hover:not(:disabled),
 .terminal-bottom-btn:hover:not(:disabled),
 .terminal-attach-icon:hover:not(:disabled),
-.terminal-refresh-btn:hover:not(:disabled) { background: var(--output-float-bg-hover); }
+.terminal-refresh-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--output-float-bg-hover) 72%, transparent); }
 .terminal-action-bar button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
