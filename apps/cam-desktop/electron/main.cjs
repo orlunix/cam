@@ -18,7 +18,7 @@
 
 'use strict';
 
-const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, Menu, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, Menu, clipboard, powerMonitor } = require('electron');
 const fs   = require('node:fs');
 const path = require('node:path');
 const url  = require('node:url');
@@ -372,6 +372,16 @@ except Exception:
   return `python3 - ${_shellQuote(agentId)} ${_shellQuote(String(safeCols))} ${_shellQuote(String(safeRows))} <<'PY'\n${py}\nPY`;
 }
 
+/** Append one line to the user-visible diagnostics log (userData).
+ * Packaged apps have no stdout, so evidence like REPAIR_DETACHED would
+ * otherwise evaporate — this file is where we keep it. */
+function _diagLog(line) {
+  try {
+    const f = path.join(app.getPath('userData'), 'cam-desktop.log');
+    fs.appendFileSync(f, `${new Date().toISOString()} ${line}\n`);
+  } catch (_) {}
+}
+
 async function _repairRemoteTerminalSize(opts, agentId, cols, rows) {
   if (!opts || !agentId) return;
   try {
@@ -387,6 +397,7 @@ async function _repairRemoteTerminalSize(opts, agentId, cols, rows) {
     for (const line of String(out).split('\n')) {
       if (line.startsWith('REPAIR_DETACHED')) {
         console.warn(`[terminal-repair] ${agentId}: ${line}`);
+        _diagLog(`[terminal-repair] ${agentId}: ${line}`);
       }
     }
   } catch (_) {
@@ -1012,6 +1023,18 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+// After an OS sleep the pooled SSH sockets that were idle are almost
+// certainly half-dead — drop exactly those (busy connections keep their
+// live terminals and detect via their own traffic). The next attach
+// then reconnects fresh instead of hanging on a corpse for 45-60s.
+powerMonitor.on('resume', () => {
+  try {
+    sshTransport.dropIdleEntries();
+    console.warn('[cam-desktop] OS resume: dropped idle pooled SSH entries');
+    _diagLog('[cam-desktop] OS resume: dropped idle pooled SSH entries');
+  } catch (_) {}
 });
 
 // CAM-DESK-DIRECT-011 ownership cleanup: when the app exits, stop the
