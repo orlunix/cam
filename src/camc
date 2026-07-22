@@ -698,7 +698,7 @@ import uuid
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "a7c0dd7-dirty 2026-07-23 01:47"
+__build__ = "21ba8df-dirty 2026-07-23 01:53"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -5788,7 +5788,11 @@ def _launch_agent(task, workdir):
     env_setup = None
 
     # Auto-install manifest skills to the selected tool's project config.
-    install_manifest_skills(workdir, config_dir=config.config_dir)
+    # Skills are an enhancement — a failed install must never block launch.
+    try:
+        install_manifest_skills(workdir, config_dir=config.config_dir)
+    except Exception as e:
+        log.warning("skill install skipped: %s", e)
 
     if not create_tmux_session(session, launch_cmd, workdir, env_setup=env_setup, inherit_env=True):
         return None
@@ -12761,7 +12765,7 @@ def _load_dev_skills_fallback():
                 full = os.path.join(root, fn)
                 rel = os.path.relpath(full, skill_dir)
                 try:
-                    with open(full, "r") as f:
+                    with open(full, "r", encoding="utf-8") as f:
                         files[rel] = f.read()
                 except OSError:
                     pass
@@ -12893,7 +12897,7 @@ def _install_one(name, out_dir, force):
             if dest_dir != skill_dir:
                 os.makedirs(dest_dir, exist_ok=True)
             tmp = dest + ".tmp"
-            with open(tmp, "w") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 f.write(content)
                 f.flush()
                 try:
@@ -13763,7 +13767,11 @@ def cmd_run(args):
         except OSError:
             pass
     # Auto-install manifest skills to the selected tool's project config.
-    install_manifest_skills(workdir, config_dir=config.config_dir)
+    # Skills are an enhancement — a failed install must never block launch.
+    try:
+        install_manifest_skills(workdir, config_dir=config.config_dir)
+    except Exception as e:
+        log.warning("skill install skipped: %s", e)
     print("Starting %s agent %s..." % (tool, agent_id))
     # F-08: launch with the SAME effective env preflight saw, and the
     # SAME tmux binary preflight just version-checked. resolved["tmux"]
