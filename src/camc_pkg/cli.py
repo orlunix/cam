@@ -3027,7 +3027,16 @@ def cmd_attach(args):
             % (aid, reason, aid))
         sys.exit(1)
     if sock:
-        os.execvp("tmux", ["tmux", "-u", "-S", sock, "attach", "-t", session])
+        # Attach with the SAME binary that started the server (record →
+        # /proc/exe → env). A bare PATH tmux mismatches on upgraded
+        # boxes — e.g. after tmux 3.5a lands, attaching a 2.7 server
+        # with a 3.5a client fails the protocol handshake.
+        try:
+            from camc_pkg.transport import _tmux_bin_for_session
+            tmux_bin = _tmux_bin_for_session(session) or "tmux"
+        except Exception:
+            tmux_bin = "tmux"
+        os.execvp(tmux_bin, [tmux_bin, "-u", "-S", sock, "attach", "-t", session])
     else:
         os.execvp("tmux", ["tmux", "attach", "-t", session])
 
