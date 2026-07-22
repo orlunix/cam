@@ -904,7 +904,11 @@ def cmd_run(args):
         except OSError:
             pass
     # Auto-install manifest skills to the selected tool's project config.
-    install_manifest_skills(workdir, config_dir=config.config_dir)
+    # Skills are an enhancement — a failed install must never block launch.
+    try:
+        install_manifest_skills(workdir, config_dir=config.config_dir)
+    except Exception as e:
+        log.warning("skill install skipped: %s", e)
     print("Starting %s agent %s..." % (tool, agent_id))
     # F-08: launch with the SAME effective env preflight saw, and the
     # SAME tmux binary preflight just version-checked. resolved["tmux"]

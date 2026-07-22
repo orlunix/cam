@@ -194,7 +194,11 @@ def _launch_agent(task, workdir):
     env_setup = None
 
     # Auto-install manifest skills to the selected tool's project config.
-    install_manifest_skills(workdir, config_dir=config.config_dir)
+    # Skills are an enhancement — a failed install must never block launch.
+    try:
+        install_manifest_skills(workdir, config_dir=config.config_dir)
+    except Exception as e:
+        log.warning("skill install skipped: %s", e)
 
     if not create_tmux_session(session, launch_cmd, workdir, env_setup=env_setup, inherit_env=True):
         return None
