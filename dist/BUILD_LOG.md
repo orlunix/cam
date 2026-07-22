@@ -4720,3 +4720,16 @@ e9025b4 Merge remote camui-desktop-v2 (15 commits) with local skills/env fixes
 e9025b4 Merge remote camui-desktop-v2 (15 commits) with local skills/env fixes
 ```
 
+## v1.2.0  b3f7f1a-dirty 2026-07-22 10:37
+
+- Lines: 19720
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+b3f7f1a camc: capture fast paths resolve tmux env-first (no forced /bin/tmux)
+347458c fix: prefer runtime tmux path
+411cbcf Support custom start tools
+8711793 camc: refresh built-in skills and tool defaults
+9909fb1 camc: fast-path stdin sends
+```
+
