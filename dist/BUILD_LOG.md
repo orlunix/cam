@@ -4669,3 +4669,42 @@ e41f075 camc: prefer latest tool releases
 1cc5eef camc: preserve ANSI colors for interactive agents
 ```
 
+## v1.2.0  4eb784d-dirty 2026-07-22 05:07
+
+- Lines: 19788
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+411cbcf Support custom start tools
+8711793 camc: refresh built-in skills and tool defaults
+9909fb1 camc: fast-path stdin sends
+e9025b4 Merge remote camui-desktop-v2 (15 commits) with local skills/env fixes
+e41f075 camc: prefer latest tool releases
+```
+
+## v1.2.0  4eb784d-dirty 2026-07-22 05:08
+
+- Lines: 19788
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+411cbcf Support custom start tools
+8711793 camc: refresh built-in skills and tool defaults
+9909fb1 camc: fast-path stdin sends
+e9025b4 Merge remote camui-desktop-v2 (15 commits) with local skills/env fixes
+e41f075 camc: prefer latest tool releases
+```
+
+## v1.2.0  4eb784d-dirty 2026-07-22 05:20
+
+- Lines: 19788
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+411cbcf Support custom start tools
+8711793 camc: refresh built-in skills and tool defaults
+9909fb1 camc: fast-path stdin sends
+e9025b4 Merge remote camui-desktop-v2 (15 commits) with local skills/env fixes
+e41f075 camc: prefer latest tool releases
+```
+

@@ -344,9 +344,9 @@ _TOOL_SPECS = {
 # even when the caller's env is messy.
 # ---------------------------------------------------------------------------
 
-# /bin/tmux is the on-box system tmux on every NVIDIA container/VM we
-# care about. Prefer it over PATH (which can be poisoned by the user's
-# login shell) so camc-owned sessions are independent of user setup.
+# /bin/tmux is the fallback tmux on NVIDIA containers/VMs. New sessions
+# prefer the effective runtime PATH so a user's selected tmux binary (for
+# example Homebrew tmux on macOS) matches the client they use to attach.
 _GOLDEN_TMUX_PATHS = (
     "/bin/tmux",
 )
@@ -394,23 +394,22 @@ def resolve_tmux_bin(runtime=None):
     """Resolve the tmux binary camc should drive new sessions with.
 
     Order:
-      1) /bin/tmux (golden) — preferred so camc is independent of user
-         PATH drift and unusual login shells.
-      2) PATH lookup via runtime.env (fallback). When this fires the
-         caller SHOULD surface a warning so operators know camc is
-         depending on user PATH rather than the golden binary.
+      1) PATH lookup via runtime.env — match the tmux client selected by
+         the user's effective launch environment.
+      2) /bin/tmux (golden fallback) — preserve container compatibility
+         when the effective PATH has no tmux.
 
     Returns (path_or_None, source_str). source_str is 'golden' or
     'env' or 'missing'. Callers that just want the path can ignore
     source_str.
     """
-    for golden in _GOLDEN_TMUX_PATHS:
-        if _is_executable_file(golden):
-            return golden, "golden"
     if runtime is not None:
         env_path = resolve_tool(runtime, "tmux")
         if env_path:
             return env_path, "env"
+    for golden in _GOLDEN_TMUX_PATHS:
+        if _is_executable_file(golden):
+            return golden, "golden"
     return None, "missing"
 
 
@@ -550,22 +549,19 @@ def check_tool_readiness(runtime, selected_tool, tool_binary=None,
     other_tool = not spec
 
     # ---- tmux (required) ----
-    # 2026-06-23 PDX hardening: prefer the golden /bin/tmux over PATH
-    # so camc isn't subject to user shell / PATH drift. Falls back to
-    # the runtime-env PATH lookup if golden is missing; that fallback
-    # produces a warning so operators can see camc is depending on
-    # user PATH rather than the on-box tmux.
+    # Prefer the effective runtime PATH so the tmux client used by camc
+    # matches the user's selected tmux version; /bin/tmux is fallback only.
     tmux_path, tmux_source = resolve_tmux_bin(runtime)
     if not tmux_path:
         issues.append(("error",
-            "tmux not found (golden /bin/tmux missing and no PATH match). "
+            "tmux not found (no effective PATH match and /bin fallback missing). "
             "Install: apt install tmux"))
     else:
         resolved["tmux"] = tmux_path
         resolved["tmux_source"] = tmux_source
         if tmux_source == "env":
             issues.append(("warn",
-                "tmux resolved from PATH (%s); golden /bin/tmux not present"
+                "tmux resolved from effective PATH (%s)"
                 % tmux_path))
         rc, out = run_probe(runtime, [tmux_path, "-V"], timeout=3)
         if rc != 0:
