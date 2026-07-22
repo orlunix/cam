@@ -1748,7 +1748,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     const fontSize = terminalFontSizeFromCss();
     if (terminalEl) {
       terminalEl.style.background = theme.background;
-      terminalEl.style.setProperty('--terminal-chrome-bottom-inset', `${Math.round(fontSize * 1.5)}px`);
+      terminalEl.style.setProperty('--terminal-chrome-bottom-inset', `${Math.round(fontSize * 2.3)}px`);
     }
     for (const ent of terminalSessions.values()) {
       if (!ent.term) continue;

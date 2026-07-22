@@ -98,14 +98,15 @@ ok("terminal action slots stay visible and use disabled state",
   source.includes("terminalActionBar.hidden = !terminalVisible")
     && !source.includes("terminalHistoryBtn.hidden =")
     && !source.includes("terminalBottomBtn.hidden ="));
-ok("terminal action bar keeps the existing bottom-left inset",
+ok("terminal action bar is centered and lifted off the input line",
   terminalChromeCss.includes(".terminal-action-bar {")
-    && terminalChromeCss.includes("left: 16px;")
+    && terminalChromeCss.includes("left: 50%;")
+    && terminalChromeCss.includes("transform: translateX(-50%);")
     && terminalChromeCss.includes("bottom: var(--terminal-chrome-bottom-inset);")
     && terminalChromeCss.includes("display: flex;")
-    && terminalChromeCss.includes("gap: 4px;"));
-ok("terminal action buttons keep the current size",
-  terminalChromeCss.includes("width: 28px;") && terminalChromeCss.includes("height: 28px;"));
+    && terminalChromeCss.includes("gap: 5px;"));
+ok("terminal action buttons are scaled 1.2x",
+  terminalChromeCss.includes("width: 34px;") && terminalChromeCss.includes("height: 34px;") && terminalChromeCss.includes("font-size: 13px;"));
 ok("copy browsing suppresses terminal auto-follow", source.includes("!ent.copyBrowsing"));
 ok("tmux controls have a bounded passive refresh", source.includes("terminalTmuxRefreshPending"));
 ok("terminal status retains its full text as a tooltip", source.includes("terminalAttachStatus.title = text || ''"));
@@ -113,7 +114,10 @@ ok("switching back immediately restores the cached agent tabs", sync.includes("r
 ok("showing a cached terminal refreshes its tmux state", show.includes("void refreshTerminalTmuxControls()"));
 ok("terminal chrome is centered on the shared agent control rail", css.includes("width: min(100%, var(--desktop-rail-wide));") && css.includes("left: 50%;") && css.includes("transform: translateX(-50%);"));
 ok("terminal status is under the tabs at the upper left", css.includes(".terminal-tmux-chrome .terminal-attach-status") && css.includes("top: 44px;") && css.includes("left: 16px;"));
-ok("terminal bottom controls retain a terminal-font-relative margin", source.includes("Math.round(fontSize * 1.5)") && source.includes("--terminal-chrome-bottom-inset") && css.includes("bottom: var(--terminal-chrome-bottom-inset);"));
+ok("terminal bottom controls retain a terminal-font-relative margin", source.includes("Math.round(fontSize * 2.3)") && source.includes("--terminal-chrome-bottom-inset") && css.includes("bottom: var(--terminal-chrome-bottom-inset);"));
+ok("terminal chrome is translucent but stays identifiable",
+  terminalChromeCss.includes("color-mix(in srgb, var(--output-float-bg) 55%, transparent)")
+    && terminalChromeCss.includes("backdrop-filter: blur(6px)"));
 ok("terminal controls use tab-shaped corners", terminalChromeCss.includes("border-radius: var(--radius-sm);"));
 ok("current nested camc tmux socket is normalized", hub.includes("rec.tmux_socket || (rec.runtime && rec.runtime.tmux && rec.runtime.tmux.socket) || ''"));
 ok("terminal chrome keeps info status color", css.includes(".terminal-tmux-chrome .terminal-attach-status.is-info"));
