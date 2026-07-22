@@ -1100,7 +1100,7 @@ function mountNodesActions({
     fPath.addEventListener('input', () => { fPath.dataset.autofill = ''; });
   }
 
-  if (mobileForm && fName) {
+  if (fName) {
     if (fNodeName) fNodeName.addEventListener('input', syncMobileContextNameDefault);
     if (fHost) fHost.addEventListener('input', syncMobileContextNameDefault);
     fName.addEventListener('input', () => { fName.dataset.autofill = ''; });
@@ -1178,6 +1178,19 @@ function mountNodesActions({
     return String(host == null ? '' : host).trim().split('.')[0] || '';
   }
 
+  /** Local OS account name for the User-field default. Only Electron
+   * preload (CamBridge) can answer this; plain browsers (mobile/hub
+   * web) have no bridge and the field stays empty. The value is used
+   * verbatim — whatever the OS reports is what the user gets. */
+  function systemUsername() {
+    try {
+      const b = typeof window !== 'undefined' ? window.CamBridge : null;
+      const raw = b && typeof b.getSystemUser === 'function'
+        ? String(b.getSystemUser() || '') : '';
+      return raw.trim();
+    } catch (_) { return ''; }
+  }
+
   function mobileDefaultContextName({ explicitName = '', nodeName = '', host = '' } = {}) {
     const explicit = String(explicitName == null ? '' : explicitName).trim();
     if (explicit) return explicit;
@@ -1185,14 +1198,14 @@ function mountNodesActions({
   }
 
   function ensureMobileRemotePathDefault(user) {
-    if (!mobileForm || !fPath) return;
+    if (!fPath) return;
     if (fPath.value.trim()) return;
     fPath.value = mobileDefaultRemotePath('', user);
     fPath.dataset.autofill = '1';
   }
 
   function ensureMobileContextNameDefault(host) {
-    if (!mobileForm || !fName) return;
+    if (!fName) return;
     if (fName.value.trim()) return;
     const nodeName = fNodeName ? fNodeName.value.trim() : '';
     fName.value = mobileDefaultContextName({ explicitName: '', nodeName, host });
@@ -1200,7 +1213,7 @@ function mountNodesActions({
   }
 
   function syncMobileContextNameDefault() {
-    if (!mobileForm || !fName) return;
+    if (!fName) return;
     if (fName.value.trim() && fName.dataset.autofill !== '1') return;
     const host = fHost ? fHost.value.trim() : '';
     const nodeName = fNodeName ? fNodeName.value.trim() : '';
@@ -1293,6 +1306,18 @@ function mountNodesActions({
       addSubmitBtn.textContent = labelAddHost;
     }
     if (isAddHostMode()) restoreDraft();
+    // User defaults to the local OS account (desktop only — CamBridge).
+    // Path follows the same /home/<user> rule as manual user input.
+    if (isAddHostMode() && fUser && !fUser.value.trim()) {
+      const sysUser = systemUsername();
+      if (sysUser) {
+        fUser.value = sysUser;
+        if (fPath && (!fPath.value || fPath.dataset.autofill === '1')) {
+          fPath.value = `/home/${sysUser}`;
+          fPath.dataset.autofill = '1';
+        }
+      }
+    }
     setTimeout(() => {
       if (initialSubtab === 'manual') {
         if (fNodeName && isAddHostMode()) fNodeName.focus();
@@ -1620,16 +1645,8 @@ function mountNodesActions({
       const node    = addContextNode;
       const primary = node.contexts[0] || {};
       const m       = (primary && primary.machine) || {};
-      const name = mobileForm
-        ? mobileDefaultContextName({ explicitName: fName ? fName.value.trim() : '', nodeName: node.displayName || node.nodeName || '', host: m.host })
-        : (fName ? fName.value.trim() : '');
-      const ctxPath = mobileForm
-        ? mobileDefaultRemotePath(fPath ? fPath.value : '', m.user)
-        : ((fPath && fPath.value.trim()) || (m.user ? `/home/${m.user}` : ''));
-      if (!mobileForm && (!name || !ctxPath)) {
-        setAddStatus('Name and remote path are required.', 'is-error');
-        return;
-      }
+      const name = mobileDefaultContextName({ explicitName: fName ? fName.value.trim() : '', nodeName: node.displayName || node.nodeName || '', host: m.host });
+      const ctxPath = mobileDefaultRemotePath(fPath ? fPath.value : '', m.user);
       const authMethod = m.auth_method || (m.key_file ? 'key' : 'agent');
       const body = {
         name,
@@ -1702,16 +1719,10 @@ function mountNodesActions({
       return;
     }
     if (!isHostEdit) {
-      const name = mobileForm
-        ? mobileDefaultContextName({ explicitName: fName.value.trim(), nodeName: fNodeName ? fNodeName.value.trim() : '', host })
-        : fName.value.trim();
-      const ctxPath = mobileForm
-        ? mobileDefaultRemotePath(fPath.value, user)
-        : (fPath.value.trim() || (user ? `/home/${user}` : ''));
-      if (!mobileForm && (!name || !ctxPath)) {
-        setAddStatus('Name and remote path are required.', 'is-error');
-        return;
-      }
+      // Context name/path default on both form variants: node name →
+      // short host → 'node' for the name, /home/<user> for the path.
+      const name = mobileDefaultContextName({ explicitName: fName.value.trim(), nodeName: fNodeName ? fNodeName.value.trim() : '', host });
+      const ctxPath = mobileDefaultRemotePath(fPath.value, user);
     }
 
     const hostBody = { host, user, port, auth_method: authMethod };
