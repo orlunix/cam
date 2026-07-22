@@ -313,9 +313,24 @@ session = data.get("tmux_session") or data.get("session") or data.get("tmux_name
 if not socket or not session:
     sys.exit(0)
 
+# Resolve the tmux binary the same way camc does: the agent record's
+# tmux_bin (the binary that started the server) first, then the
+# environment's tmux via PATH — never a blind /bin/tmux assumption.
+tmux_bin = (
+    data.get("tmux_bin")
+    or (data.get("runtime") or {}).get("tmux", {}).get("bin")
+    or ""
+)
+if not tmux_bin:
+    try:
+        import shutil
+        tmux_bin = shutil.which("tmux") or "tmux"
+    except Exception:
+        tmux_bin = "tmux"
+
 try:
     out = subprocess.check_output(
-        ["tmux", "-S", str(socket), "list-clients", "-F", "#{client_name}\t#{client_width}\t#{client_height}"],
+        [tmux_bin, "-S", str(socket), "list-clients", "-F", "#{client_name}\t#{client_width}\t#{client_height}"],
         stderr=subprocess.DEVNULL,
         text=True,
         timeout=3,
@@ -331,7 +346,7 @@ for line in out.splitlines():
     try:
         if int(width) < 40 or int(height) < 4:
             subprocess.run(
-                ["tmux", "-S", str(socket), "detach-client", "-t", name],
+                [tmux_bin, "-S", str(socket), "detach-client", "-t", name],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=2,
@@ -348,7 +363,7 @@ for line in out.splitlines():
 # size to the session/window. This also works on newer tmux versions.
 try:
     proc = subprocess.Popen(
-        ["tmux", "-S", str(socket), "-C", "attach-session", "-t", str(session)],
+        [tmux_bin, "-S", str(socket), "-C", "attach-session", "-t", str(session)],
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
