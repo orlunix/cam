@@ -4733,3 +4733,16 @@ b3f7f1a camc: capture fast paths resolve tmux env-first (no forced /bin/tmux)
 9909fb1 camc: fast-path stdin sends
 ```
 
+## v1.2.0  4658fb1-dirty 2026-07-22 10:45
+
+- Lines: 19720
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+4658fb1 camc: bundle skills and refresh them during heal
+b3f7f1a camc: capture fast paths resolve tmux env-first (no forced /bin/tmux)
+347458c fix: prefer runtime tmux path
+411cbcf Support custom start tools
+8711793 camc: refresh built-in skills and tool defaults
+```
+
