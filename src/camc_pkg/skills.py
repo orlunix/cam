@@ -37,7 +37,7 @@ def _load_dev_skills_fallback():
                 full = os.path.join(root, fn)
                 rel = os.path.relpath(full, skill_dir)
                 try:
-                    with open(full, "r") as f:
+                    with open(full, "r", encoding="utf-8") as f:
                         files[rel] = f.read()
                 except OSError:
                     pass
@@ -169,7 +169,7 @@ def _install_one(name, out_dir, force):
             if dest_dir != skill_dir:
                 os.makedirs(dest_dir, exist_ok=True)
             tmp = dest + ".tmp"
-            with open(tmp, "w") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 f.write(content)
                 f.flush()
                 try:
