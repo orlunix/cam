@@ -42,6 +42,23 @@ public final class MobileSshExec {
         return shellCommand("\"$HOME/.cam/camc\" --json list");
     }
 
+    public static String camcRunCommand(String tool, String path, String prompt, String name, boolean autoExit) {
+        StringBuilder inner = new StringBuilder("\"$HOME/.cam/camc\" --json run -t ")
+            .append(argQuote(tool != null && !tool.trim().isEmpty() ? tool.trim() : "claude"))
+            .append(" -p ").append(argQuote(path != null ? path.trim() : ""));
+        if (name != null && !name.trim().isEmpty()) {
+            inner.append(" -n ").append(argQuote(name.trim()));
+        }
+        if (autoExit) inner.append(" --auto-exit");
+        inner.append(" ").append(argQuote(prompt != null ? prompt : ""));
+        return shellCommand(inner.toString());
+    }
+
+    public static String camcStatusCommand(String agentId) {
+        String id = agentId != null ? agentId.trim() : "";
+        return shellCommand("\"$HOME/.cam/camc\" --json status " + argQuote(id));
+    }
+
     public static String camcCaptureCommand(String agentId, int lines) {
         String id = agentId != null ? agentId.trim() : "";
         int n = lines > 0 ? Math.min(lines, 5000) : 200;
@@ -80,11 +97,17 @@ public final class MobileSshExec {
         return "'" + s.replace("'", "'\\''") + "'";
     }
 
+    private static String argQuote(String s) {
+        return "'" + (s != null ? s : "").replace("'", "'\\''") + "'";
+    }
+
     private MobileSshExec() {}
 
     private static String commandLabel(String command) {
         if (command == null) return "?";
         if (command.contains("camc\" --json list") || command.contains("camc --json list")) return "camc list";
+        if (command.contains(" --json run ")) return "camc run";
+        if (command.contains(" --json status ")) return "camc status";
         if (command.contains("test -x")) return "camc check";
         if (command.contains(" capture ")) return "camc capture";
         if (command.contains(" send ")) return "camc send";
@@ -367,17 +390,24 @@ public final class MobileSshExec {
         Object lock = MobileSshPool.lockFor(key);
         Session session = null;
         int cmdBudget = Math.max(5000, Math.min(timeoutMs, 120000));
+        long totalStartedAt = System.currentTimeMillis();
+        long lockStartedAt = totalStartedAt;
         synchronized (lock) {
+            seq.lockWaitMs = System.currentTimeMillis() - lockStartedAt;
             try {
                 MobileHubLog.ssh("exec connect " + MobileHubLog.endpoint(opts));
+                long connectStartedAt = System.currentTimeMillis();
                 session = connectWithRetry(opts, false, Math.max(1, connectAttempts));
+                seq.connectMs = System.currentTimeMillis() - connectStartedAt;
+                seq.commandMs = new long[commands.length];
                 for (int i = 0; i < commands.length; i++) {
                     String label = commandLabel(commands[i]);
                     MobileHubLog.ssh("exec start " + label + " " + MobileHubLog.endpoint(opts));
                     long t0 = System.currentTimeMillis();
                     Result step = execOnSession(session, commands[i], cmdBudget, null);
+                    seq.commandMs[i] = System.currentTimeMillis() - t0;
                     MobileHubLog.ssh("exec " + (step.ok ? "ok" : "fail") + " "
-                        + (System.currentTimeMillis() - t0) + "ms " + label
+                        + seq.commandMs[i] + "ms " + label
                         + (step.ok ? "" : " " + step.detail));
                     seq.steps[i] = step;
                     if (!step.ok) {
@@ -394,6 +424,7 @@ public final class MobileSshExec {
                 seq.detail = msg;
                 return seq;
             } finally {
+                seq.totalMs = System.currentTimeMillis() - totalStartedAt;
                 if (session != null) {
                     try { session.disconnect(); } catch (Exception ignored) {}
                 }
@@ -494,6 +525,10 @@ public final class MobileSshExec {
         public Result[] steps;
         public String error = "";
         public String detail = "";
+        public long lockWaitMs;
+        public long connectMs;
+        public long[] commandMs;
+        public long totalMs;
 
         public Result first() {
             if (steps != null && steps.length > 0 && steps[0] != null) return steps[0];

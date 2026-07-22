@@ -664,6 +664,7 @@ def _preflight(tool, tool_binary, workdir, env_setup=None, runtime=None,
 
 def cmd_run(args):
     tool = getattr(args, "tool", None) or "codex"
+    known_tool = tool in ("claude", "codex", "cursor")
     prompt = getattr(args, "prompt", "") or ""
     workdir = os.path.abspath(args.path)
     os.makedirs(workdir, exist_ok=True)
@@ -929,6 +930,10 @@ def cmd_run(args):
                    (resolved_tmux, SOCKETS_DIR, session, session, workdir))
         sys.exit(1)
 
+    if not known_tool and prompt:
+        time.sleep(config.startup_wait)
+        tmux_send_input(session, prompt, send_enter=True)
+
     # Snapshot the tmux binary + version that actually started this server.
     # tmux client/server protocol requires matching versions, so subsequent
     # capture/send/kill on this session must use the same binary. Record at
@@ -944,8 +949,8 @@ def cmd_run(args):
         pass
 
     name = getattr(args, "name", None) or os.path.basename(workdir) or "%s-%s" % (tool, uuid4().hex[:6])
-    auto_exit = getattr(args, "auto_exit", False)
-    auto_exit_enable = getattr(args, "auto_exit_enable", False)
+    auto_exit = getattr(args, "auto_exit", False) if known_tool else False
+    auto_exit_enable = getattr(args, "auto_exit_enable", False) if known_tool else False
     ctx_name = context.get("name", "") if isinstance(context, dict) else ""
     ctx_host = context.get("host") if isinstance(context, dict) else None
     transport = "ssh" if ctx_host and ctx_host not in ("localhost", "127.0.0.1") else "local"
@@ -954,8 +959,9 @@ def cmd_run(args):
     agent_rec = {
         "id": agent_id,
         "session_id": session_uuid,
-        "task": {"name": name or "", "tool": tool, "prompt": prompt,
-                 "auto_confirm": True, "auto_exit": auto_exit,
+        "task": {"name": name or "", "tool": tool if known_tool else "others",
+                 "prompt": prompt,
+                 "auto_confirm": known_tool, "auto_exit": auto_exit,
                  "auto_exit_enable": auto_exit_enable,
                  "tags": tags,
                  "system_prompt": sp_text,
@@ -966,7 +972,7 @@ def cmd_run(args):
         "context_path": workdir,
         "transport_type": transport,
         "status": "running",
-        "state": "initializing",
+        "state": "initializing" if known_tool else "idle",
         "tmux_session": session,
         "tmux_socket": "",
         "tmux_bin": tmux_bin_used,
@@ -976,6 +982,8 @@ def cmd_run(args):
         "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
         "retry_count": 0, "cost_estimate": None, "files_changed": [],
     }
+    if not known_tool:
+        agent_rec["task"]["requested_tool"] = tool
     if api_plan:
         agent_rec["api"] = {
             "name": api_plan.get("name"),
@@ -1033,7 +1041,8 @@ def cmd_run(args):
         print_warning("Agent is running but auto-confirm/idle detection won't work")
         print_warning("Check: camc logs %s -f" % agent_id)
 
-    print("  ID: %s  Tool: %s  Session: %s" % (agent_id, tool, session))
+    tool_label = tool if known_tool else "others (%s)" % tool
+    print("  ID: %s  Tool: %s  Session: %s" % (agent_id, tool_label, session))
     if name:
         print("  Name: %s" % name)
     print("  Path: %s" % workdir)
@@ -6433,7 +6442,7 @@ examples:
     # run
     r = sub.add_parser("run", help="Start a coding agent on a task")
     r.add_argument("prompt", nargs="?", default="", help="Task prompt (empty for interactive mode)")
-    r.add_argument("--tool", "-t", default="codex", help="Tool name (claude, codex, cursor) [default: codex]")
+    r.add_argument("--tool", "-t", default="codex", help="Tool command (claude, codex, cursor, or other PATH executable) [default: codex]")
     r.add_argument("--path", "-p", default=os.getcwd(), help="Working directory")
     r.add_argument("--name", "-n", default=None, help="Human-readable name")
     r.add_argument("--auto-exit", "-a", action="store_true", help="Auto-exit on completion")
