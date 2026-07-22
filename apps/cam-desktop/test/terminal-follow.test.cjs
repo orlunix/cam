@@ -215,7 +215,7 @@ ok("attach prefers the reachable context endpoint, machine fields only as fallba
     && !main.includes("if (agent.machine_host) opts.host = agent.machine_host;"));
 ok("tmux binary is probed per endpoint, never hardcoded to /bin/tmux",
   main.includes("function _probeRemoteTmuxBin")
-    && main.includes("command -v /bin/tmux || command -v tmux")
+    && main.includes("command -v tmux || command -v /bin/tmux")
     && main.includes("tmux.bin = await _probeRemoteTmuxBin(resolved.opts)")
     && !require("fs").readFileSync(require("path").join(__dirname, "..", "electron", "tmux-controls.cjs"), "utf8").includes('|| "/bin/tmux"'));
 ok("remote size repair resolves tmux binary from record with env fallback",
