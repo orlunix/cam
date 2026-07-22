@@ -4734,6 +4734,7 @@ b3f7f1a camc: capture fast paths resolve tmux env-first (no forced /bin/tmux)
 9909fb1 camc: fast-path stdin sends
 ```
 
+<<<<<<< HEAD
 ## v1.2.0  b3f7f1a-dirty 2026-07-23 01:15
 
 - Lines: 19466
@@ -4773,9 +4774,31 @@ b3f7f1a camc: capture fast paths resolve tmux env-first (no forced /bin/tmux)
 - Recent changes:
 ```
 126c565 camc: attach with the server's own tmux binary (was bare PATH execvp)
+=======
+## v1.2.0  4658fb1-dirty 2026-07-22 10:45
+
+- Lines: 19720
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+4658fb1 camc: bundle skills and refresh them during heal
+>>>>>>> origin/camui-desktop-v2
 b3f7f1a camc: capture fast paths resolve tmux env-first (no forced /bin/tmux)
 347458c fix: prefer runtime tmux path
 411cbcf Support custom start tools
 8711793 camc: refresh built-in skills and tool defaults
+```
+
+## v1.2.0  a7c0dd7-dirty 2026-07-23 01:47
+
+- Lines: 19728
+- Output: C:\Users\Thinkpad\gitlab\cam\dist\camc
+- Recent changes:
+```
+a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+4658fb1 camc: bundle skills and refresh them during heal
+126c565 camc: attach with the server's own tmux binary (was bare PATH execvp)
+b3f7f1a camc: capture fast paths resolve tmux env-first (no forced /bin/tmux)
+347458c fix: prefer runtime tmux path
 ```
 
