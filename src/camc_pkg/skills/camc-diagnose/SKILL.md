@@ -6,7 +6,7 @@ description: >
   the monitor died, capture is empty, or you need to resume a dead
   agent's Claude session. Covers heal, monitor self-healing, and
   common failure modes with step-by-step fixes.
-compatibility: Requires camc binary in PATH.
+compatibility: Requires ~/.cam/camc deployed by the camc release.
 metadata:
   author: hren
   tags: camc, cam, diagnose, diagnosis, heal, stuck, error, failed,
@@ -23,26 +23,26 @@ allowed-tools: Bash Read Glob Grep
 ## Quick diagnosis workflow
 
 ```bash
-camc list                              # all agents on this host
-camc status <agent>                    # detailed state: status, state, exit_reason, pid, session
+~/.cam/camc list                              # all agents on this host
+~/.cam/camc status <agent>                    # detailed state: status, state, exit_reason, pid, session
 camc logs <agent> -f                   # follow monitor log for live errors
-camc capture <agent> --lines 30        # see what's on screen
+~/.cam/camc capture <agent> --lines 30        # see what's on screen
 ```
 
 ## Common failure modes
 
 | Symptom | Fix |
 |---------|-----|
-| Status says `running` but tmux is dead | `camc heal` |
-| Monitor died after camc upgrade | `camc upgrade` (or `camc heal --upgrade`) |
-| Agent stuck (idle but not responding) | `camc key <agent> --key Escape`, then `camc send <agent> --text "..."` |
-| Agent `exited` or `failed` | Check `camc status <agent>` for `exit_reason`; `camc reboot <agent>` to retry with same session |
-| Capture empty / attach hangs | `camc capture <agent> --lines 0` to verify; if still blank check `camc status <agent>` for `tmux_session` alive |
+| Status says `running` but tmux is dead | `~/.cam/camc heal` |
+| Monitor died after ~/.cam/camc upgrade | `~/.cam/camc upgrade` (or `~/.cam/camc heal --upgrade`) |
+| Agent stuck (idle but not responding) | `~/.cam/camc key <agent> --key Escape`, then `~/.cam/camc send <agent> --text "..."` |
+| Agent `exited` or `failed` | Check `~/.cam/camc status <agent>` for `exit_reason`; `camc reboot <agent>` to retry with same session |
+| Capture empty / attach hangs | `~/.cam/camc capture <agent> --lines 0` to verify; if still blank check `~/.cam/camc status <agent>` for `tmux_session` alive |
 | Agent `state = error` | `camc logs <agent>` for tracebacks; `camc reboot <agent>` to restart |
-| Many agents stopped responding | `camc heal` restarts all dead monitors |
-| Stale sockets in /tmp/cam-sockets/ | `camc heal` auto-cleans |
+| Many agents stopped responding | `~/.cam/camc heal` restarts all dead monitors |
+| Stale sockets in /tmp/cam-sockets/ | `~/.cam/camc heal` auto-cleans |
 
-## `camc heal` — what it does
+## `~/.cam/camc heal` — what it does
 
 Walks every running agent on the current host:
 
@@ -53,18 +53,18 @@ Walks every running agent on the current host:
   only touches agents from the current machine
 
 ```bash
-camc heal               # restart dead monitors
-camc heal --upgrade     # kill ALL monitors, restart with current binary
+~/.cam/camc heal               # restart dead monitors
+~/.cam/camc heal --upgrade     # kill ALL monitors, restart with current binary
 ```
 
 ### When to run heal
 
 | Trigger | Command |
 |---------|---------|
-| `camc list` shows running but nothing's happening | `camc heal` |
-| Just deployed new camc version | `camc upgrade` |
-| Many agents stopped responding to send/key | `camc heal` |
-| Sockets piling up in `/tmp/cam-sockets/` | `camc heal` (auto-cleans) |
+| `~/.cam/camc list` shows running but nothing's happening | `~/.cam/camc heal` |
+| Just deployed new ~/.cam/camc version | `~/.cam/camc upgrade` |
+| Many agents stopped responding to send/key | `~/.cam/camc heal` |
+| Sockets piling up in `/tmp/cam-sockets/` | `~/.cam/camc heal` (auto-cleans) |
 
 ### Cron suggestion
 
@@ -92,7 +92,7 @@ Common exceptions handled:
 - `OSError` from flaky NFS read on `agents.json`
 - `tmux server died` mid-capture
 
-After 5 consecutive failures the monitor exits and `camc heal` is
+After 5 consecutive failures the monitor exits and `~/.cam/camc heal` is
 expected to restart it on the next sweep.
 
 Logs: `~/.cam/logs/monitor-<id>.log` (stdout), `monitor-<id>.stderr`.
@@ -113,7 +113,7 @@ for a in json.load(sys.stdin):
 "
 
 # Resume it
-camc run --tool claude \
+~/.cam/camc run --tool claude \
   --name <new-name> \
   --resume <session-id>
 ```
