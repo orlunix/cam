@@ -193,7 +193,9 @@ _camc_prelude_capture() {
             _camc_socket=$(_camc_prelude_default_socket "$_camc_session" 2>/dev/null || true)
         fi
         if [ -z "$_camc_tmux" ]; then
-            if [ -x /bin/tmux ]; then _camc_tmux="/bin/tmux"; else _camc_tmux="tmux"; fi
+            _camc_tmux=$(command -v tmux 2>/dev/null || true)
+            [ -n "$_camc_tmux" ] || { [ -x /bin/tmux ] && _camc_tmux="/bin/tmux"; }
+            [ -n "$_camc_tmux" ] || _camc_tmux="tmux"
         fi
 
         if [ "$_camc_use_stdin" = "1" ]; then
@@ -279,7 +281,9 @@ _camc_prelude_capture() {
                                 _camc_socket=$(_camc_prelude_default_socket "$_camc_session" 2>/dev/null || true)
                             fi
                             if [ -z "$_camc_tmux" ]; then
-                                if [ -x /bin/tmux ]; then _camc_tmux="/bin/tmux"; else _camc_tmux="tmux"; fi
+                                _camc_tmux=$(command -v tmux 2>/dev/null || true)
+                                [ -n "$_camc_tmux" ] || { [ -x /bin/tmux ] && _camc_tmux="/bin/tmux"; }
+                                [ -n "$_camc_tmux" ] || _camc_tmux="tmux"
                             fi
                             _camc_host_ok=1
                             case "$_camc_format" in plain|ansi) ;; *) _camc_host_ok=0 ;; esac
@@ -424,13 +428,28 @@ def lookup_agent_from_agents_json(agent_id, path=None, my_hostname=None):
         if not session:
             return None
         socket_path = agent.get("tmux_socket") or _default_socket_for_session(session)
-        tmux_bin = agent.get("tmux_bin") or ("/bin/tmux" if os.path.exists("/bin/tmux") else "tmux")
+        tmux_bin = agent.get("tmux_bin") or _env_tmux_bin()
         return {
             "session": session,
             "socket": socket_path,
             "tmux_bin": tmux_bin,
         }
     return None
+
+
+def _env_tmux_bin():
+    """Env-first tmux resolution (matches resolve_tmux_bin's order):
+    PATH via shutil.which, then /bin/tmux if it exists, then the bare
+    name. Never forces /bin/tmux — a v2.7 client against a v3.x server
+    fails the tmux protocol handshake."""
+    try:
+        import shutil
+        found = shutil.which("tmux")
+        if found:
+            return found
+    except Exception:
+        pass
+    return "/bin/tmux" if os.path.exists("/bin/tmux") else "tmux"
 
 
 def _hostname():
@@ -679,7 +698,7 @@ import uuid
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "4eb784d-dirty 2026-07-22 05:20"
+__build__ = "c78cc50-dirty 2026-07-23 00:52"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -11001,7 +11020,7 @@ For session JSONL paths and inspection, see managing-camc's
 | File | When to read |
 |---|---|
 | `reference/heal-and-monitor.md` | Monitor internals, self-healing details, NFS hostname filtering |""",
-        "reference/heal-and-monitor.md": r"""# `camc heal` and the monitor loop
+        "reference\heal-and-monitor.md": r"""# `camc heal` and the monitor loop
 
 ## What the monitor is
 
@@ -11407,7 +11426,7 @@ camc cron add --loop --owner <agent> \
 | `reference/prompt.md` | Full MiniSpec prompt template with YAML output block |
 | `reference/loop.md` | Continuation message template + Ralph-style principle |
 | `reference/state-maintenance.md` | When to update/history/backup the auto-load file |""",
-        "reference/loop.md": r"""# MiniSpec Continuation Prompt for camc cron --loop
+        "reference\loop.md": r"""# MiniSpec Continuation Prompt for camc cron --loop
 
 Delivered by `camc cron add --loop --prompt "..."`. Each tick sends this
 message to the agent's mailbox. The agent reads it via `camc msg read --next`
@@ -11540,7 +11559,7 @@ adjust the MiniSpec and resume. The archived files in `~/.cam/loops/archive/`
   until `state=idle`
 - The prompt tells the agent to re-read the auto-load file each tick,
   so state changes from manual `camc send` interactions are picked up""",
-        "reference/prompt.md": r"""# MiniSpec Coding/Debug Agent Prompt
+        "reference\prompt.md": r"""# MiniSpec Coding/Debug Agent Prompt
 
 Use this template when creating a simple Markdown prompt for a coding or debugging agent.
 
@@ -11634,7 +11653,7 @@ minispec_update:
 - `{checklist}` should be bullets with small coding/debug tasks.
 - `{verify}` should be concrete commands or observable acceptance checks.
 """,
-        "reference/state-maintenance.md": r"""# MiniSpec Project State Maintenance
+        "reference\state-maintenance.md": r"""# MiniSpec Project State Maintenance
 
 Use this when the user asks whether `AGENTS.md`, `CLAUDE.md`, or another project prompt/state file should be updated, backed up, or versioned during a coding/debug agent workflow.
 
@@ -11904,7 +11923,7 @@ camc msg send peer -t "review this" --no-wait --expect-reply
 | File | When to read |
 |---|---|
 | `reference/messaging.md` | Full protocol spec — record shapes, failure modes, anchor detection details |""",
-        "reference/messaging.md": r"""# `camc msg` — inter-agent messaging protocol
+        "reference\messaging.md": r"""# `camc msg` — inter-agent messaging protocol
 
 Send a request to another running cam agent. The append-only ledger at
 `~/.cam/messages.jsonl` is the source of truth; the tmux-pane injection
@@ -12572,7 +12591,7 @@ the separate `cam` tooling and are outside this built-in skill.
 | camc-cron-loop | Host cron jobs, per-agent prompt loops |
 | camc-diagnose | Heal deep-dive, monitor details, stuck/failed fix workflows |
 """,
-        "reference/machines-and-contexts.md": r"""# Machines and contexts
+        "reference\machines-and-contexts.md": r"""# Machines and contexts
 
 Two related but distinct concepts in camc:
 
@@ -12644,7 +12663,7 @@ when you want a clean shell + the system tmux's PATH only.
 
 `cam release` reads this same file to know where to ship dist/camc.
 """,
-        "reference/sessions.md": r"""# Finding the Claude session for an agent
+        "reference\sessions.md": r"""# Finding the Claude session for an agent
 
 Each agent's conversation history lives in a Claude session JSONL at:
 
