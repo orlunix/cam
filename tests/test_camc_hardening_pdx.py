@@ -436,21 +436,25 @@ class TestGoldenToolResolution:
 
 
 # ---------------------------------------------------------------------------
-# 7. Golden tmux preferred over PATH; PATH fallback warns
+# 7. Runtime tmux preferred over /bin fallback
 # ---------------------------------------------------------------------------
 
 class TestGoldenTmuxResolution:
-    def test_golden_tmux_wins(self, tmp_path, monkeypatch):
+    def test_runtime_path_tmux_wins_over_system_fallback(self, tmp_path, monkeypatch):
         golden = str(tmp_path / "tmux_golden")
         with open(golden, "w") as f:
             f.write("#!/bin/sh\nexit 0\n")
         os.chmod(golden, 0o755)
         monkeypatch.setattr(_rt, "_GOLDEN_TMUX_PATHS", (golden,))
+        path_tmux = str(tmp_path / "tmux")
+        with open(path_tmux, "w") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        os.chmod(path_tmux, 0o755)
         rt = _rt.RuntimeEnv(env={"PATH": str(tmp_path), "HOME": "/h"},
                              source="explicit", shell="", path=str(tmp_path))
         bin_, source = _rt.resolve_tmux_bin(rt)
-        assert bin_ == golden
-        assert source == "golden"
+        assert bin_ == path_tmux
+        assert source == "env"
 
     def test_path_fallback_when_golden_missing(self, tmp_path, monkeypatch):
         monkeypatch.setattr(_rt, "_GOLDEN_TMUX_PATHS", ("/nope/tmux",))
