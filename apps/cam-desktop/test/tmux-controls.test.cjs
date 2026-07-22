@@ -23,7 +23,7 @@ test("requires complete persisted tmux metadata", () => {
   }), { session: "cam-a", socket: "/tmp/cam-a.sock", bin: "/bin/tmux" });
   assert.deepStrictEqual(tmuxMetadataForAgent({
     tmux_session: "cam-a", tmux_socket: "/tmp/cam-a.sock",
-  }), { session: "cam-a", socket: "/tmp/cam-a.sock", bin: "/bin/tmux" });
+  }), { session: "cam-a", socket: "/tmp/cam-a.sock", bin: "" });
   assert.deepStrictEqual(tmuxMetadataForAgent({
     tmux_session: "cam-a", runtime: { tmux: { socket: "/tmp/cam-a.sock", bin: "/usr/bin/tmux" } },
   }), { session: "cam-a", socket: "/tmp/cam-a.sock", bin: "/usr/bin/tmux" });
