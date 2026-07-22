@@ -9,6 +9,7 @@
 'use strict';
 
 const { contextBridge, ipcRenderer, shell } = require('electron');
+const os = require('os');
 
 function isHttpUrl(target) {
   return typeof target === 'string' && /^https?:\/\//i.test(target);
@@ -21,6 +22,12 @@ contextBridge.exposeInMainWorld('CamBridge', {
   getAppVersion() {
     // Renderer-safe version string from preload's process.versions namespace.
     return process.versions?.electron || '';
+  },
+  getSystemUser() {
+    // Local OS account name for the Nodes form User default, verbatim
+    // (domain-joined machines may include DOMAIN\ or @domain). Empty
+    // string when unavailable.
+    try { return os.userInfo().username || ''; } catch (_) { return ''; }
   },
   openExternal(target) {
     if (isHttpUrl(target)) shell.openExternal(target);
