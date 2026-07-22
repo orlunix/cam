@@ -700,26 +700,34 @@ async function termOpen(event, payload = {}) {
 
   const tOpen0 = Date.now();
   const utf8 = _utf8Stream();
-  const ch = await sshTransport.openTerminalChannel(
-    { ...resolved.opts, command },
-    {
-      cols, rows,
-      onData: (buf) => {
-        if (sender.isDestroyed()) { _dropSession(sessionId); return; }
-        _termGateSend(sessionId, sender, utf8.decode(buf));
-      },
-      onClose: ({ code, signal }) => {
-        const tail = utf8.flush();
-        if (tail) _termGateSend(sessionId, sender, tail);
-        _termGateClose(sessionId);
-        if (!sender.isDestroyed()) {
-          try { sender.send('term:status', { sessionId, kind: 'closed', code, signal }); }
-          catch { /* noop */ }
-        }
-        _terminals.delete(sessionId);
-      },
-    }
-  );
+  const hooks = {
+    cols, rows,
+    onData: (buf) => {
+      if (sender.isDestroyed()) { _dropSession(sessionId); return; }
+      _termGateSend(sessionId, sender, utf8.decode(buf));
+    },
+    onClose: ({ code, signal }) => {
+      const tail = utf8.flush();
+      if (tail) _termGateSend(sessionId, sender, tail);
+      _termGateClose(sessionId);
+      if (!sender.isDestroyed()) {
+        try { sender.send('term:status', { sessionId, kind: 'closed', code, signal }); }
+        catch { /* noop */ }
+      }
+      _terminals.delete(sessionId);
+    },
+  };
+  // Connect-class failures on the primary (context) endpoint retry once
+  // with the agent's own machine fields (stale-context case — see
+  // embedded-hub getAttachConnectOpts). Auth is included: machine_user
+  // may differ from the context user.
+  const ATTACH_FALLBACK_ERRORS = new Set(['connect_timeout', 'connect_refused', 'dns_failure', 'connect_lost', 'auth_failed']);
+  let ch = await sshTransport.openTerminalChannel({ ...resolved.opts, command }, hooks);
+  if (!ch.ok && resolved.fallbackOpts && ATTACH_FALLBACK_ERRORS.has(ch.error)) {
+    console.warn(`[cam-desktop] attach via context host ${resolved.opts.host} failed (${ch.error}); retrying via agent machine fields (${resolved.fallbackOpts.host})`);
+    _diagLog(`[attach] context-host ${resolved.opts.host} failed (${ch.error}); retry via machine fields ${resolved.fallbackOpts.host}`);
+    ch = await sshTransport.openTerminalChannel({ ...resolved.fallbackOpts, command }, hooks);
+  }
   const openMs = Date.now() - tOpen0;
 
   if (!ch.ok) {
