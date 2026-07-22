@@ -390,17 +390,24 @@ public final class MobileSshExec {
         Object lock = MobileSshPool.lockFor(key);
         Session session = null;
         int cmdBudget = Math.max(5000, Math.min(timeoutMs, 120000));
+        long totalStartedAt = System.currentTimeMillis();
+        long lockStartedAt = totalStartedAt;
         synchronized (lock) {
+            seq.lockWaitMs = System.currentTimeMillis() - lockStartedAt;
             try {
                 MobileHubLog.ssh("exec connect " + MobileHubLog.endpoint(opts));
+                long connectStartedAt = System.currentTimeMillis();
                 session = connectWithRetry(opts, false, Math.max(1, connectAttempts));
+                seq.connectMs = System.currentTimeMillis() - connectStartedAt;
+                seq.commandMs = new long[commands.length];
                 for (int i = 0; i < commands.length; i++) {
                     String label = commandLabel(commands[i]);
                     MobileHubLog.ssh("exec start " + label + " " + MobileHubLog.endpoint(opts));
                     long t0 = System.currentTimeMillis();
                     Result step = execOnSession(session, commands[i], cmdBudget, null);
+                    seq.commandMs[i] = System.currentTimeMillis() - t0;
                     MobileHubLog.ssh("exec " + (step.ok ? "ok" : "fail") + " "
-                        + (System.currentTimeMillis() - t0) + "ms " + label
+                        + seq.commandMs[i] + "ms " + label
                         + (step.ok ? "" : " " + step.detail));
                     seq.steps[i] = step;
                     if (!step.ok) {
@@ -417,6 +424,7 @@ public final class MobileSshExec {
                 seq.detail = msg;
                 return seq;
             } finally {
+                seq.totalMs = System.currentTimeMillis() - totalStartedAt;
                 if (session != null) {
                     try { session.disconnect(); } catch (Exception ignored) {}
                 }
@@ -517,6 +525,10 @@ public final class MobileSshExec {
         public Result[] steps;
         public String error = "";
         public String detail = "";
+        public long lockWaitMs;
+        public long connectMs;
+        public long[] commandMs;
+        public long totalMs;
 
         public Result first() {
             if (steps != null && steps.length > 0 && steps[0] != null) return steps[0];
