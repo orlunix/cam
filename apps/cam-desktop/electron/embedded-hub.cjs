@@ -1299,13 +1299,13 @@ function _resolveStartTarget(body) {
 // ── API models (GET /api/api-models) ──────────────────────────────
 // Wraps `camc --json api list --all` + `camc api default show --json`
 // and merges them with a static toolSupport map (claude/codex support
-// --api; cursor/aider do not). Both commands run on the target node
+// --api; cursor/others do not). Both commands run on the target node
 // over SSH (same execRemote path as _syncContextAgents); local targets
 // are refused (`local_unsupported`) since local sessions were retired
 // 2026-07-17. `source` describes the endpoint + enabled count for the
 // renderer's status line.
 
-const API_TOOL_SUPPORT = { claude: true, codex: true, cursor: false, aider: false };
+const API_TOOL_SUPPORT = { claude: true, codex: true, cursor: false, others: false };
 
 /** Defensive secret redaction for error details surfaced to the
  *  renderer. ssh2 auth errors say "All configured authentication methods
