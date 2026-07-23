@@ -823,9 +823,9 @@ class TestCmdCron:
 class TestStandaloneSmoke:
     def test_standalone_camc_cron_list_smoke(self, tmp_path):
         camc = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "src", "camc")
+            os.path.dirname(os.path.dirname(__file__)), "dist", "camc")
         if not os.path.isfile(camc):
-            pytest.skip("standalone src/camc not built")
+            pytest.skip("standalone dist/camc not built")
         env = dict(os.environ)
         env["HOME"] = str(tmp_path)
         r = subprocess.run(
@@ -840,9 +840,9 @@ class TestStandaloneSmoke:
 
     def test_standalone_camc_cron_run_help(self, tmp_path):
         camc = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "src", "camc")
+            os.path.dirname(os.path.dirname(__file__)), "dist", "camc")
         if not os.path.isfile(camc):
-            pytest.skip("standalone src/camc not built")
+            pytest.skip("standalone dist/camc not built")
         env = dict(os.environ)
         env["HOME"] = str(tmp_path)
         # Missing run_id should fail clearly

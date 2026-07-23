@@ -4,7 +4,7 @@
 Usage:
     python build_camc.py              # Output to dist/camc
     python build_camc.py --output X   # Output to X
-    python build_camc.py --verify     # Build and compare with src/camc baseline
+    python build_camc.py --verify     # Build and compare package/bundle help
 
 The single file is stdlib-only, Python 3.6+, zero dependencies.
 
@@ -73,6 +73,32 @@ SRC_DIR = os.path.join(os.path.dirname(__file__), "src")
 DIST_DIR = os.path.join(os.path.dirname(__file__), "dist")
 TOML_DIR = os.path.join(os.path.dirname(__file__), "src", "cam", "adapters", "configs")
 SKILLS_DIR = os.path.join(os.path.dirname(__file__), "src", "camc_pkg", "skills")
+INIT_PATH = os.path.join(PKG_DIR, "__init__.py")
+_VERSION_RE = re.compile(r'^__version__ = "(\d+)\.(\d+)\.(\d+)"$', re.MULTILINE)
+
+
+def _versioned_init_source(init_src, requested=None):
+    """Return source with an explicit version or a patch-only increment."""
+    match = _VERSION_RE.search(init_src)
+    if not match:
+        raise ValueError("src/camc_pkg/__init__.py has no X.Y.Z __version__")
+    if requested:
+        if not re.match(r"^\d+\.\d+\.\d+$", requested):
+            raise ValueError("--version must be MAJOR.MINOR.PATCH")
+        version = requested
+    else:
+        version = "%d.%d.%d" % (int(match.group(1)), int(match.group(2)),
+                                  int(match.group(3)) + 1)
+    return _VERSION_RE.sub('__version__ = "%s"' % version, init_src, count=1), version
+
+
+def _advance_source_version(requested=None):
+    with open(INIT_PATH, "r", encoding="utf-8") as f:
+        init_src = f.read()
+    updated, version = _versioned_init_source(init_src, requested)
+    with open(INIT_PATH, "w", encoding="utf-8", newline="\n") as f:
+        f.write(updated)
+    return version
 
 
 def read_module(name):
@@ -390,8 +416,11 @@ def main():
                         help="Output file path [default: dist/camc]")
     parser.add_argument("--verify", action="store_true",
                         help="Build and verify help output matches")
+    parser.add_argument("--version", metavar="MAJOR.MINOR.PATCH",
+                        help="Set the release version explicitly (otherwise increment patch)")
     args = parser.parse_args()
 
+    _advance_source_version(args.version)
     output = build()
 
     # Ensure output directory exists
