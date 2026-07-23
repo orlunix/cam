@@ -378,6 +378,11 @@ def _scrub_retired_runtime_confirm_rules(rules, tool):
             kept.append(rule)
             continue
         pat = str(rule.get("pattern") or "")
+        # 2026-07-22: old generated codex.toml files used a broad
+        # ``Yes.*`` rule, which can match a user's input box. Drop it so
+        # the bundled comma-required rule is authoritative after upgrade.
+        if tool == "codex" and pat == r"^›\s+1\.\s*Yes.*$":
+            continue
         if any(r.search(pat) for r in retired):
             log.info(
                 "Skipping retired runtime [[confirm]] from external %s.toml: %s",
