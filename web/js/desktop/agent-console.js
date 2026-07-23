@@ -913,6 +913,11 @@ export const OUTPUT_HISTORY_STEPS = [200, 1000, 2000, 4000, 8000];
 const TERMINAL_AGENT_STATUSES = new Set(['completed', 'failed', 'timeout', 'killed']);
 const TERMINAL_MIN_NOTIFY_COLS = 40;
 const TERMINAL_MIN_NOTIFY_WIDTH = 320;
+// Hard renderer-side deadline for one bridge.open attempt. The main-side
+// budget is bounded (probe + connect x2 + 15s channel open), but a dead
+// endpoint chains several of those; without this, a hung open latches
+// termOpening / terminalRefreshPending forever and locks the UI.
+const ATTACH_WATCHDOG_MS = 45000;
 
 /* ─────────── Browse v1: language detection + highlighter ───────────
  *
@@ -1351,7 +1356,7 @@ export function mountAgentConsole({ api, state, showToast }) {
   // exhaustion the UI falls back to the keystroke prompt, as before.
   const AUTO_RECONNECT_DELAYS_TRANSPORT = [0, 2000, 5000, 12000, 30000];
   const AUTO_RECONNECT_DELAYS_EXIT = [0, 3000];
-  const TRANSIENT_ATTACH_ERRORS = new Set(['exec_timeout', 'exec_failed', 'connect_timeout', 'connect_lost']);
+  const TRANSIENT_ATTACH_ERRORS = new Set(['exec_timeout', 'exec_failed', 'connect_timeout', 'connect_lost', 'watchdog_timeout']);
   let terminalActionBar = null;
   let terminalHistoryBtn = null;
   let terminalBottomBtn = null;
@@ -2344,15 +2349,47 @@ export function mountAgentConsole({ api, state, showToast }) {
       const openRows = Math.max(4, Number(ent.term.rows) || 24);
       ent.lastCols = openCols;
       ent.lastRows = openRows;
-      let res = await bridge.open({ agentId: agent.id, cols: openCols, rows: openRows });
+      // bridge.open has no IPC-level deadline of its own — race it
+      // against ATTACH_WATCHDOG_MS so a wedged pool / dead endpoint
+      // cannot latch opening/refresh state forever. A late success is
+      // closed below (see watchdog-close + the stale-entry guard).
+      const openWithWatchdog = async () => {
+        const p = bridge.open({ agentId: agent.id, cols: openCols, rows: openRows });
+        let timedOut = false;
+        const r = await Promise.race([
+          p,
+          new Promise((resolve) => setTimeout(() => {
+            timedOut = true;
+            resolve({ ok: false, error: 'watchdog_timeout', detail: 'attach timed out — click Refresh to retry' });
+          }, ATTACH_WATCHDOG_MS)),
+        ]);
+        if (timedOut) {
+          // The abandoned attempt may still open a channel later — close
+          // it so it cannot linger as a zombie tmux client.
+          void p.then((late) => {
+            if (late && late.ok && late.sessionId) {
+              try { bridge.close({ sessionId: late.sessionId }); } catch (_) {}
+            }
+          }).catch(() => {});
+        }
+        return r;
+      };
+      let res = await openWithWatchdog();
       // One automatic retry on transient failures (wedged pool entry,
       // half-dead socket). The transport now drops suspect pool entries
       // on open failure/timeout, so the retry rides a fresh connection.
       if ((!res || !res.ok) && !opts._retried && TRANSIENT_ATTACH_ERRORS.has(res && res.error)) {
         await new Promise((r) => setTimeout(r, 1500));
         if (terminalSessions.get(agent.id) === ent && !ent.sessionId) {
-          res = await bridge.open({ agentId: agent.id, cols: openCols, rows: openRows });
+          res = await openWithWatchdog();
         }
+      }
+      if (res && res.ok && terminalSessions.get(agent.id) !== ent) {
+        // Superseded by a newer attempt while this open was in flight
+        // (Refresh clicked during opening) — close the channel we just
+        // opened instead of leaving a zombie client behind.
+        try { bridge.close({ sessionId: res.sessionId }); } catch (_) {}
+        return { ok: false, error: 'stale_open', detail: 'attach superseded by a newer attempt' };
       }
       if (!res || !res.ok) {
         ent.term.write(`\r\n\x1b[31mTerminal attach failed: ${res && (res.detail || res.error) || 'unknown'}\x1b[0m\r\n`);
@@ -3073,8 +3110,11 @@ export function mountAgentConsole({ api, state, showToast }) {
     if (terminalHistoryBtn) terminalHistoryBtn.disabled = actionsBlocked || !tmuxVisible || !!ent?.copyBrowsing;
     if (terminalBottomBtn) terminalBottomBtn.disabled = actionsBlocked || !terminalConnected || (!ent?.copyBrowsing && terminalIsAtBottom(ent));
     if (terminalRefreshBtn) {
+      // Refresh is the escape hatch for a stuck attach — it must stay
+      // clickable while opening; the force path abandons the in-flight
+      // attempt (stale-entry guard closes any late channel).
       terminalRefreshBtn.disabled = actionsBlocked || !terminalVisible || !selectedAgent()
-        || !canUseTerminalMode() || termOpening;
+        || !canUseTerminalMode();
       terminalRefreshBtn.classList.toggle('is-refreshing', terminalRefreshPending);
     }
   }
