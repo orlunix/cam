@@ -35,7 +35,7 @@ def _load_dev_skills_fallback():
         for root, _dirs, filenames in os.walk(skill_dir):
             for fn in filenames:
                 full = os.path.join(root, fn)
-                rel = os.path.relpath(full, skill_dir)
+                rel = os.path.relpath(full, skill_dir).replace(os.sep, "/")
                 try:
                     with open(full, "r", encoding="utf-8") as f:
                         files[rel] = f.read()
