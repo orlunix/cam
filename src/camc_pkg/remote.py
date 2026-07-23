@@ -138,9 +138,10 @@ def sync_camc_to_machine(machine, camc_path=None, configs_dir=None):
     if camc_path is None:
         camc_path = os.path.join(CAM_DIR, "camc")
         if not os.path.exists(camc_path):
-            # Try dist/camc relative to the script
+            # Development fallback: use the sole generated dist/camc artifact.
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            camc_path = os.path.join(os.path.dirname(script_dir), "camc")
+            camc_path = os.path.join(os.path.dirname(os.path.dirname(script_dir)),
+                                     "dist", "camc")
     if configs_dir is None:
         configs_dir = CONFIGS_DIR
 
