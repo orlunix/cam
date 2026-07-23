@@ -4867,3 +4867,55 @@ a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-deskto
 a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
 ```
 
+## v1.2.0  39f1438-dirty 2026-07-22 20:23
+
+- Lines: 19737
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+39f1438 camc: make skill installs locale-safe and never launch-blocking
+21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+895c23b camc: have bundled skills use deployed binary
+a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+4658fb1 camc: bundle skills and refresh them during heal
+```
+
+## v1.2.0  39f1438-dirty 2026-07-22 20:39
+
+- Lines: 19744
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+39f1438 camc: make skill installs locale-safe and never launch-blocking
+21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+895c23b camc: have bundled skills use deployed binary
+a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+4658fb1 camc: bundle skills and refresh them during heal
+```
+
+## v1.2.1  2d3c2d3-dirty 2026-07-22 23:26
+
+- Lines: 19744
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+2d3c2d3 camc v1.2.1 + desktop: Sync Host forces bundled camc (forceCamc)
+51c64e5 build: camc artifacts stay Linux-correct when built on Windows
+39f1438 camc: make skill installs locale-safe and never launch-blocking
+21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+895c23b camc: have bundled skills use deployed binary
+```
+
+## v1.2.2  2d3c2d3-dirty 2026-07-23 00:09
+
+- Lines: 19745
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+2d3c2d3 camc v1.2.1 + desktop: Sync Host forces bundled camc (forceCamc)
+51c64e5 build: camc artifacts stay Linux-correct when built on Windows
+39f1438 camc: make skill installs locale-safe and never launch-blocking
+21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+895c23b camc: have bundled skills use deployed binary
+```
+
