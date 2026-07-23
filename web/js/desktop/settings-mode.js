@@ -657,6 +657,7 @@ function mountAppearanceTab({ panel, showToast }) {
   const uiFontValEl    = tabPanel.querySelector('#appearance-ui-font-val');
   const outFontInput   = tabPanel.querySelector('#appearance-output-font');
   const outFontValEl   = tabPanel.querySelector('#appearance-output-font-val');
+  const termTabsEl     = tabPanel.querySelector('#appearance-terminal-tabs');
   const resetBtn       = tabPanel.querySelector('#appearance-reset');
   const statusEl       = tabPanel.querySelector('#settings-status-appearance');
 
@@ -683,8 +684,24 @@ function mountAppearanceTab({ panel, showToast }) {
     if (uiFontValEl)  uiFontValEl.textContent = `${ui} px`;
     if (outFontInput) outFontInput.value     = String(out);
     if (outFontValEl) outFontValEl.textContent = `${out} px`;
+    if (termTabsEl) {
+      try { termTabsEl.checked = localStorage.getItem('cam_terminal_tabs_enabled') === '1'; } catch (_) {}
+    }
   }
   syncFromStorage();
+
+  if (termTabsEl) {
+    // Terminal tabs (tmux window strip) — experimental, off by default.
+    // Persists to localStorage; agent-console re-renders immediately on
+    // the change event and honors the flag on every reload.
+    termTabsEl.addEventListener('change', () => {
+      try { localStorage.setItem('cam_terminal_tabs_enabled', termTabsEl.checked ? '1' : '0'); } catch (_) {}
+      try { window.dispatchEvent(new CustomEvent('cam:terminal-tabs-changed')); } catch (_) {}
+      setStatus(termTabsEl.checked
+        ? 'Terminal tabs enabled.'
+        : 'Terminal tabs disabled.', 'is-ok');
+    });
+  }
 
   if (themeSel) {
     themeSel.addEventListener('change', () => {
