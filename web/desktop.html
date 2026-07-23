@@ -612,6 +612,14 @@
                   min="10" max="20" step="1" value="13">
                 <span class="appearance-value" id="appearance-output-font-val">13 px</span>
               </label>
+              <label class="form-checkbox">
+                <input type="checkbox" id="appearance-terminal-tabs">
+                <span>Terminal tabs (tmux windows)</span>
+                <span class="form-hint">Experimental: show a tab strip for
+                  the agent's tmux windows in Terminal mode. Off by
+                  default — the terminal works exactly the same without
+                  it. Applies immediately and persists across reloads.</span>
+              </label>
             </div>
             <div class="settings-actions">
               <button type="button" class="btn-secondary" id="appearance-reset">Reset to defaults</button>
@@ -687,14 +695,6 @@
                   --auto-confirm</code>; in Direct mode <code>camc
                   run</code> forces this on regardless (the toggle is
                   accepted for parity but has no effect there).</span>
-              </label>
-              <label class="form-checkbox">
-                <input type="checkbox" id="start-terminal-tabs">
-                <span>Terminal tabs (tmux windows)</span>
-                <span class="form-hint">Experimental: show a tab strip for
-                  the agent's tmux windows in Terminal mode. Off by
-                  default — the terminal works exactly the same without
-                  it.</span>
               </label>
               <label>Timeout (optional)
                 <input type="text" id="start-timeout"
