@@ -217,6 +217,12 @@ ok("refresh stays clickable while an attach is opening",
     && !source.includes("|| !canUseTerminalMode() || termOpening;"));
 ok("app exposes a soft reset (reload without closing)",
   preload.includes("resetApp") && main.includes("ipcMain.handle('app:reset'") && main.includes("sshTransport.closeAll()"));
+ok("window switch/create use the live attach stream first (pty fast path)",
+  main.includes("function _ptySwitchWindow") && main.includes("via: 'pty'") && main.includes("ent.write('\\x02c')"));
+ok("window switch drops the pre-switch listWindows validation",
+  !main.includes("listed.windows.some"));
+ok("tab clicks highlight optimistically and reconcile after pty switch",
+  source.includes("result.via === 'pty'") && source.includes("active: w.index === index"));
 ok("conn bar exposes a reload-app button wired to reset + reload",
   fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('id="app-reload-btn"')
     && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "desktop", "app.js"), "utf8").includes("await window.CamBridge.resetApp()"));
