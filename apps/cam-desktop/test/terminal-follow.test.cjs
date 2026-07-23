@@ -196,10 +196,12 @@ ok("tmux poll only runs while the terminal page is visible",
   source.includes("outputMode === 'terminal' && isAgentsMode() && termAgentId"));
 ok("exhausted tmux retries stop remote polling too",
   source.includes("|| ent.tmuxHintState === 'hidden')"));
-ok("terminal tabs are opt-in via the Start Advanced toggle, default off",
+ok("terminal tabs are opt-in via Settings Appearance, default off",
   source.includes("function terminalTabsEnabled")
     && source.includes("cam_terminal_tabs_enabled")
-    && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('id="start-terminal-tabs"'));
+    && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('id="appearance-terminal-tabs"')
+    && !fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('id="start-terminal-tabs"')
+    && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "desktop", "settings-mode.js"), "utf8").includes("appearance-terminal-tabs"));
 ok("tmux control failure disables the strip with one transient (<3s) note",
   source.includes("ent.tmuxHintState = 'hidden';")
     && source.includes("setTerminalAttachStatus('window controls unavailable', 'info', 2800, ent.agentId)")
