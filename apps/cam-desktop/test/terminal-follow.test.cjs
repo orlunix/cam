@@ -192,8 +192,8 @@ ok("client state probe uses the portable session-targeted display-message",
   main.includes("['display-message', '-p', '-t', ent.tmux.session, '#{window_index}:#{pane_id}:#{pane_in_mode}']"));
 ok("client state probe never combines -p with -c (usage error on tmux < 3.3)",
   !main.includes("['display-message', '-p', '-c',"));
-ok("tmux poll only runs while the terminal page is visible",
-  source.includes("outputMode === 'terminal' && isAgentsMode() && termAgentId"));
+ok("tab strip state refresh is fully event-driven (no interval poll)",
+  !/setInterval[\s\S]{0,200}refreshTerminalTmuxControls/.test(source));
 ok("exhausted tmux retries stop remote polling too",
   source.includes("|| ent.tmuxHintState === 'hidden')"));
 ok("terminal tabs are opt-in via Settings Appearance, default off",
