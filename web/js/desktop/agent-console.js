@@ -3036,13 +3036,28 @@ export function mountAgentConsole({ api, state, showToast }) {
       const ent = terminalSessions.get(termAgentId);
       const bridge = termBridge();
       if (!ent || !bridge || !ent.sessionId) return;
-      const result = button.dataset.action === 'create'
+      const isCreate = button.dataset.action === 'create';
+      const index = isCreate ? -1 : Number(button.dataset.windowIndex);
+      // Optimistic highlight: the switch itself is key-bytes on the live
+      // stream (ms), so light the tab now and reconcile with the next
+      // listWindows result instead of blocking the UI on execs.
+      if (!isCreate && Array.isArray(ent.tmuxWindows)) {
+        ent.tmuxWindows = ent.tmuxWindows.map((w) => ({ ...w, active: w.index === index }));
+        renderTerminalTabs(ent);
+      }
+      const result = isCreate
         ? await bridge.createWindow({ sessionId: ent.sessionId })
-        : await bridge.selectWindow({ sessionId: ent.sessionId, index: Number(button.dataset.windowIndex) });
+        : await bridge.selectWindow({ sessionId: ent.sessionId, index });
       if (!result?.ok) { setTerminalAttachStatus(result?.detail || 'tmux window action failed.', 'error'); return; }
       ent.tmuxReady = true;
-      ent.tmuxWindows = result.windows || [];
-      renderTerminalTabs(ent);
+      if (result.via === 'pty') {
+        // Key-byte path: server switched already; refresh state shortly
+        // (single listWindows in the background) to realign names/active.
+        window.setTimeout(() => { void refreshTerminalTmuxControls(); }, 300);
+      } else {
+        ent.tmuxWindows = result.windows || [];
+        renderTerminalTabs(ent);
+      }
       updateTerminalTmuxControls();
       try { ent.term.focus(); } catch (_) {}
     });
