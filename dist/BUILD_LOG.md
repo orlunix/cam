@@ -4854,3 +4854,16 @@ a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-deskto
 4658fb1 camc: bundle skills and refresh them during heal
 ```
 
+## v1.2.1  51c64e5-dirty 2026-07-23 13:57
+
+- Lines: 19736
+- Output: /mnt/c/Users/Thinkpad/gitlab/cam/dist/camc
+- Recent changes:
+```
+51c64e5 build: camc artifacts stay Linux-correct when built on Windows
+39f1438 camc: make skill installs locale-safe and never launch-blocking
+21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+895c23b camc: have bundled skills use deployed binary
+a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+```
+
