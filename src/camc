@@ -698,7 +698,7 @@ import uuid
 # ===========================================================================
 
 __version__ = "1.2.0"
-__build__ = "21ba8df-dirty 2026-07-23 01:53"
+__build__ = "39f1438-dirty 2026-07-23 11:19"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -11022,7 +11022,7 @@ For session JSONL paths and inspection, see managing-camc's
 | File | When to read |
 |---|---|
 | `reference/heal-and-monitor.md` | Monitor internals, self-healing details, NFS hostname filtering |""",
-        "reference\heal-and-monitor.md": r"""# `~/.cam/camc heal` and the monitor loop
+        "reference/heal-and-monitor.md": r"""# `~/.cam/camc heal` and the monitor loop
 
 ## What the monitor is
 
@@ -11428,7 +11428,7 @@ cat ~/.cam/loops/goal-loop.json
 | `reference/prompt.md` | Full MiniSpec prompt template with YAML output block |
 | `reference/loop.md` | Continuation message template + Ralph-style principle |
 | `reference/state-maintenance.md` | When to update/history/backup the auto-load file |""",
-        "reference\loop.md": r"""# MiniSpec Continuation Prompt for ~/.cam/camc cron --loop
+        "reference/loop.md": r"""# MiniSpec Continuation Prompt for ~/.cam/camc cron --loop
 
 Delivered by `~/.cam/camc cron add --loop --prompt "..."`. Each tick sends this
 message to the agent's mailbox. The agent reads it via `~/.cam/camc msg read --next`
@@ -11561,7 +11561,7 @@ adjust the MiniSpec and resume. The archived files in `~/.cam/loops/archive/`
   until `state=idle`
 - The prompt tells the agent to re-read the auto-load file each tick,
   so state changes from manual `~/.cam/camc send` interactions are picked up""",
-        "reference\prompt.md": r"""# MiniSpec Coding/Debug Agent Prompt
+        "reference/prompt.md": r"""# MiniSpec Coding/Debug Agent Prompt
 
 Use this template when creating a simple Markdown prompt for a coding or debugging agent.
 
@@ -11655,7 +11655,7 @@ minispec_update:
 - `{checklist}` should be bullets with small coding/debug tasks.
 - `{verify}` should be concrete commands or observable acceptance checks.
 """,
-        "reference\state-maintenance.md": r"""# MiniSpec Project State Maintenance
+        "reference/state-maintenance.md": r"""# MiniSpec Project State Maintenance
 
 Use this when the user asks whether `AGENTS.md`, `CLAUDE.md`, or another project prompt/state file should be updated, backed up, or versioned during a coding/debug agent workflow.
 
@@ -11925,7 +11925,7 @@ id2=$(~/.cam/camc msg send worker2 -t "shard 2" --no-wait | grep MSG_ID | cut -d
 | File | When to read |
 |---|---|
 | `reference/messaging.md` | Full protocol spec — record shapes, failure modes, anchor detection details |""",
-        "reference\messaging.md": r"""# `~/.cam/camc msg` — inter-agent messaging protocol
+        "reference/messaging.md": r"""# `~/.cam/camc msg` — inter-agent messaging protocol
 
 Send a request to another running cam agent. The append-only ledger at
 `~/.cam/messages.jsonl` is the source of truth; the tmux-pane injection
@@ -12593,7 +12593,7 @@ the separate `cam` tooling and are outside this built-in skill.
 | camc-cron-loop | Host cron jobs, per-agent prompt loops |
 | camc-diagnose | Heal deep-dive, monitor details, stuck/failed fix workflows |
 """,
-        "reference\machines-and-contexts.md": r"""# Machines and contexts
+        "reference/machines-and-contexts.md": r"""# Machines and contexts
 
 Two related but distinct concepts in camc:
 
@@ -12665,7 +12665,7 @@ when you want a clean shell + the system tmux's PATH only.
 
 `cam release` reads this same file to know where to ship dist/camc.
 """,
-        "reference\sessions.md": r"""# Finding the Claude session for an agent
+        "reference/sessions.md": r"""# Finding the Claude session for an agent
 
 Each agent's conversation history lives in a Claude session JSONL at:
 
@@ -12763,7 +12763,7 @@ def _load_dev_skills_fallback():
         for root, _dirs, filenames in os.walk(skill_dir):
             for fn in filenames:
                 full = os.path.join(root, fn)
-                rel = os.path.relpath(full, skill_dir)
+                rel = os.path.relpath(full, skill_dir).replace(os.sep, "/")
                 try:
                     with open(full, "r", encoding="utf-8") as f:
                         files[rel] = f.read()
