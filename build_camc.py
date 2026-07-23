@@ -133,7 +133,11 @@ def _inject_embedded_skills(src):
         for root, _dirs, filenames in os.walk(skill_dir):
             for fn in filenames:
                 full = os.path.join(root, fn)
-                rel = os.path.relpath(full, skill_dir)
+                # Keys must be forward-slash relative paths on every
+                # build host (os.path.relpath emits backslashes on
+                # Windows, which would land as literal backslashes in
+                # installed file names on the target).
+                rel = os.path.relpath(full, skill_dir).replace(os.sep, "/")
                 with open(full, "r", encoding="utf-8") as f:
                     files[rel] = f.read()
         if files:
@@ -395,7 +399,7 @@ def main():
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
 
-    with open(args.output, "w", encoding="utf-8") as f:
+    with open(args.output, "w", encoding="utf-8", newline="\n") as f:
         f.write(output)
     os.chmod(args.output, 0o755)
 
