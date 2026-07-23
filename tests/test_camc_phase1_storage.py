@@ -95,3 +95,28 @@ class TestPhase1Storage:
         cli.main()
 
         assert len(calls) == 1
+
+    @pytest.mark.parametrize("symlinked", ("cam_dir", "logs_dir"))
+    def test_main_skips_scratch_probe_when_cam_storage_is_already_symlinked(
+            self, tmp_path, monkeypatch, symlinked):
+        home = tmp_path / "home"
+        cam_dir = home / ".cam"
+        logs_dir = cam_dir / "logs"
+        target = tmp_path / "scratch-target"
+        target.mkdir()
+        if symlinked == "cam_dir":
+            cam_dir.parent.mkdir()
+            cam_dir.symlink_to(target, target_is_directory=True)
+        else:
+            logs_dir.parent.mkdir(parents=True)
+            logs_dir.symlink_to(target, target_is_directory=True)
+        calls = []
+        monkeypatch.setattr(sys, "argv", ["camc", "list"])
+        monkeypatch.setattr(cli, "CAM_DIR", str(cam_dir))
+        monkeypatch.setattr(cli, "LOGS_DIR", str(logs_dir))
+        monkeypatch.setattr(cli, "_ensure_logs_on_scratch", lambda: calls.append("probe"))
+        monkeypatch.setattr(cli, "cmd_list", lambda args: None)
+
+        cli.main()
+
+        assert calls == []
