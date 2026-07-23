@@ -206,6 +206,20 @@ ok("tmux control failure disables the strip with one transient (<3s) note",
     && !source.includes("const retries = [2000, 5000, 12000, 30000]"));
 ok("tab strip never polls while feature-disabled",
   source.includes("if (!terminalTabsEnabled() || !ent || !bridge || !ent.sessionId"));
+ok("attach open has a renderer-side watchdog deadline",
+  source.includes("ATTACH_WATCHDOG_MS = 45000") && source.includes("Promise.race") && source.includes("watchdog_timeout"));
+ok("watchdog timeout joins the transient-retry set",
+  source.includes("'watchdog_timeout'"));
+ok("late-opening channels are closed on watchdog and superseded paths",
+  source.includes("late.sessionId") && source.includes("stale_open"));
+ok("refresh stays clickable while an attach is opening",
+  source.includes("terminalRefreshBtn.disabled = actionsBlocked || !terminalVisible || !selectedAgent()")
+    && !source.includes("|| !canUseTerminalMode() || termOpening;"));
+ok("app exposes a soft reset (reload without closing)",
+  preload.includes("resetApp") && main.includes("ipcMain.handle('app:reset'") && main.includes("sshTransport.closeAll()"));
+ok("conn bar exposes a reload-app button wired to reset + reload",
+  fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('id="app-reload-btn"')
+    && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "desktop", "app.js"), "utf8").includes("await window.CamBridge.resetApp()"));
 ok("remote size repair is gated on an actual size change",
   main.includes("const sizeChanged = !!(existingEnt") && main.includes("if (existingEnt.opts) void _repairRemoteTerminalSize(existingEnt.opts, agentId, cols, rows);"));
 ok("attach prefers the reachable context endpoint, machine fields only as fallback",
