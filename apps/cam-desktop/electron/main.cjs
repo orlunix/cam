@@ -1046,6 +1046,20 @@ app.whenReady().then(() => {
     app.exit(0);
   });
 
+  // Soft reset ("Reload app" button): dispose every open terminal
+  // channel and drop both SSH pools, but keep the process + embedded
+  // hub (and its store) alive. The renderer reloads itself afterwards.
+  ipcMain.handle('app:reset', () => {
+    try {
+      for (const sid of [..._terminals.keys()]) _dropSession(sid);
+      sshTransport.closeAll();
+      _diagLog('[app:reset] terminals disposed, SSH pools dropped');
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: 'reset_failed', detail: e && e.message || String(e) };
+    }
+  });
+
   // Direct Hub lifecycle (CAM-DESK-DIRECT-010..019). All handlers are
   // argument-free or take a tiny structured payload; main owns every
   // port/token decision. The renderer cannot specify a binary, a
