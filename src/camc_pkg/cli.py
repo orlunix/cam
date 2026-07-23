@@ -6870,11 +6870,12 @@ examples:
     if getattr(args, "verbose", False):
         logging.getLogger("camc").setLevel(logging.DEBUG)
 
-    # Phase 1 home-quota protection is best-effort only.
-    try:
-        _ensure_logs_on_scratch()
-    except Exception:
-        pass
+    # Already-relocated storage needs no scratch discovery (and no ypcat).
+    if not (os.path.islink(CAM_DIR) or os.path.islink(LOGS_DIR)):
+        try:
+            _ensure_logs_on_scratch()
+        except Exception:
+            pass
 
     cmds = {
         "env": cmd_env,
