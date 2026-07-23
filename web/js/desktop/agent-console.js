@@ -3061,12 +3061,13 @@ export function mountAgentConsole({ api, state, showToast }) {
       updateTerminalTmuxControls();
       try { ent.term.focus(); } catch (_) {}
     });
-    window.setInterval(() => {
-      // Poll only while the terminal is actually on screen: switching to
-      // Settings/Nodes keeps sessions warm, but the tab strip is hidden
-      // there and remote listWindows execs would be pure churn.
-      if (outputMode === 'terminal' && isAgentsMode() && termAgentId) void refreshTerminalTmuxControls();
-    }, 2000);
+    // Tab strip is fully event-driven: refresh on attach, on returning
+    // to the terminal page (showTerminalEntry), on strip actions (the
+    // 300ms reconcile after a pty switch/create), and on the Settings
+    // toggle. No periodic listWindows polling at all — a window created
+    // out-of-band (manual C-b c in the terminal) simply appears at the
+    // next of those events.
+
   }
 
   function renderTerminalTabs(ent) {
