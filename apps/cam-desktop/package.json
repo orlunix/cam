@@ -67,7 +67,7 @@
         "to": "web"
       },
       {
-        "from": "../../src/camc",
+        "from": "../../dist/camc",
         "to": "camc/camc"
       },
       {
