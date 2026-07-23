@@ -63,8 +63,10 @@ error_flags = ["IGNORECASE"]
 # false-fired on scrollback prose. The single rule below requires the
 # active cursor › at line start — only matches when the menu is drawn.
 [[confirm]]
-# Numbered menu — cursor at line start, then "1. Yes".
-pattern = "^›\\s+1\\.\\s*Yes.*$"
+# Numbered menu — cursor at line start, then "1. Yes, ...".
+# The comma distinguishes the menu from a user's stable input such as
+# "1. yes it is".
+pattern = "^›\\s+1\\.\\s*Yes,\\s+.*$"
 flags = ["IGNORECASE", "MULTILINE"]
 response = "1"
 send_enter = false

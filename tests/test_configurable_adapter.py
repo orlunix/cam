@@ -727,6 +727,17 @@ class TestGlobalInputCursorGuard:
         assert response == "1"
         assert send_enter is False
 
+    def test_codex_numbered_confirm_requires_comma_after_yes(self, tmp_path, monkeypatch):
+        """A stable user input such as '1. yes it is' is never a menu."""
+        from camc_pkg import adapters
+        from camc_pkg.detection import should_auto_confirm
+
+        monkeypatch.setattr(adapters, "CONFIGS_DIR", str(tmp_path))
+        cfg = adapters._load_config("codex")
+
+        assert should_auto_confirm("› 1. Yes, proceed (y)", cfg) is not None
+        assert should_auto_confirm("› 1. yes it is", cfg) is None
+
     def test_bare_input_cursor_blocks_confirm(self):
         """Bare input cursor means the user is typing — skip confirm."""
         from camc_pkg.detection import should_auto_confirm
