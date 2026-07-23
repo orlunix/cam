@@ -1497,7 +1497,8 @@ function _bundledCamcPath() {
   if (process.resourcesPath) {
     candidates.push(path.join(process.resourcesPath, 'camc', 'camc'));
   }
-  candidates.push(path.resolve(__dirname, '..', '..', '..', 'src', 'camc'));
+  // dist/camc is the single release artifact (src/camc was retired
+  // 2026-07-23, dc67bc3).
   candidates.push(path.resolve(__dirname, '..', '..', '..', 'dist', 'camc'));
   for (const c of candidates) {
     try { if (fs.statSync(c).isFile()) return c; } catch (_) {}
@@ -1507,7 +1508,7 @@ function _bundledCamcPath() {
 
 function _readBundledCamc() {
   const p = _bundledCamcPath();
-  if (!p) return { error: 'bundled_camc_missing', detail: 'bundled camc was not found in resources/camc/camc, src/camc, or dist/camc' };
+  if (!p) return { error: 'bundled_camc_missing', detail: 'bundled camc was not found in resources/camc/camc or dist/camc' };
   try {
     const content = fs.readFileSync(p);
     return {
