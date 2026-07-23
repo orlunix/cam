@@ -697,8 +697,8 @@ import uuid
 # Constants and logging
 # ===========================================================================
 
-__version__ = "1.2.1"
-__build__ = "51c64e5-dirty 2026-07-23 13:57"
+__version__ = "1.2.2"
+__build__ = "2d3c2d3-dirty 2026-07-23 00:09"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1212,8 +1212,10 @@ error_flags = ["IGNORECASE"]
 # false-fired on scrollback prose. The single rule below requires the
 # active cursor › at line start — only matches when the menu is drawn.
 [[confirm]]
-# Numbered menu — cursor at line start, then "1. Yes".
-pattern = "^›\\s+1\\.\\s*Yes.*$"
+# Numbered menu — cursor at line start, then "1. Yes, ...".
+# The comma distinguishes the menu from a user's stable input such as
+# "1. yes it is".
+pattern = "^›\\s+1\\.\\s*Yes,\\s+.*$"
 flags = ["IGNORECASE", "MULTILINE"]
 response = "1"
 send_enter = false
@@ -1811,6 +1813,11 @@ def _scrub_retired_runtime_confirm_rules(rules, tool):
             kept.append(rule)
             continue
         pat = str(rule.get("pattern") or "")
+        # 2026-07-22: old generated codex.toml files used a broad
+        # ``Yes.*`` rule, which can match a user's input box. Drop it so
+        # the bundled comma-required rule is authoritative after upgrade.
+        if tool == "codex" and pat == r"^›\s+1\.\s*Yes.*$":
+            continue
         if any(r.search(pat) for r in retired):
             log.info(
                 "Skipping retired runtime [[confirm]] from external %s.toml: %s",
@@ -4116,9 +4123,10 @@ def sync_camc_to_machine(machine, camc_path=None, configs_dir=None):
     if camc_path is None:
         camc_path = os.path.join(CAM_DIR, "camc")
         if not os.path.exists(camc_path):
-            # Try dist/camc relative to the script
+            # Development fallback: use the sole generated dist/camc artifact.
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            camc_path = os.path.join(os.path.dirname(script_dir), "camc")
+            camc_path = os.path.join(os.path.dirname(os.path.dirname(script_dir)),
+                                     "dist", "camc")
     if configs_dir is None:
         configs_dir = CONFIGS_DIR
 
@@ -19684,11 +19692,12 @@ examples:
     if getattr(args, "verbose", False):
         logging.getLogger("camc").setLevel(logging.DEBUG)
 
-    # Phase 1 home-quota protection is best-effort only.
-    try:
-        _ensure_logs_on_scratch()
-    except Exception:
-        pass
+    # Already-relocated storage needs no scratch discovery (and no ypcat).
+    if not (os.path.islink(CAM_DIR) or os.path.islink(LOGS_DIR)):
+        try:
+            _ensure_logs_on_scratch()
+        except Exception:
+            pass
 
     cmds = {
         "env": cmd_env,
