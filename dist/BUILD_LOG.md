@@ -4841,3 +4841,16 @@ a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-deskto
 126c565 camc: attach with the server's own tmux binary (was bare PATH execvp)
 ```
 
+## v1.2.0  39f1438-dirty 2026-07-23 11:19
+
+- Lines: 19736
+- Output: C:\Users\Thinkpad\gitlab\cam\dist\camc
+- Recent changes:
+```
+39f1438 camc: make skill installs locale-safe and never launch-blocking
+21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+895c23b camc: have bundled skills use deployed binary
+a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+4658fb1 camc: bundle skills and refresh them during heal
+```
+
