@@ -3027,6 +3027,14 @@ export function mountAgentConsole({ api, state, showToast }) {
       const bridge = termBridge();
       if (!ent || !bridge || !ent.sessionId || terminalHistoryBtn.disabled) return;
       const sessionId = ent.sessionId;
+      // In copy mode the same button pages up one screen via the live
+      // stream (tmux copy-mode interprets PageUp directly — no exec,
+      // no mode change). Outside copy mode it enters copy mode.
+      if (ent.copyBrowsing) {
+        try { bridge.input({ sessionId: ent.sessionId, data: '\x1b[5~' }); } catch (_) {}
+        try { ent.term.focus(); } catch (_) {}
+        return;
+      }
       ent.tmuxControlRevision += 1;
       terminalHistoryBtn.disabled = true;
       try {
@@ -3203,7 +3211,12 @@ export function mountAgentConsole({ api, state, showToast }) {
       terminalTabsEl.hidden = !terminalTabsEnabled(termAgentId) || !terminalConnected || (ent && ent.tmuxHintState === 'hidden' && !ent.tmuxReady);
     }
     if (terminalActionBar) terminalActionBar.hidden = !terminalVisible;
-    if (terminalHistoryBtn) terminalHistoryBtn.disabled = actionsBlocked || !tmuxVisible || !!ent?.copyBrowsing;
+    if (terminalHistoryBtn) {
+      // Enabled in copy mode too: the same button pages up one screen
+      // via the live stream (see the click handler).
+      terminalHistoryBtn.disabled = actionsBlocked || !tmuxVisible;
+      terminalHistoryBtn.title = ent?.copyBrowsing ? 'Page up (tmux copy mode)' : 'Browse tmux history';
+    }
     if (terminalBottomBtn) terminalBottomBtn.disabled = actionsBlocked || !terminalConnected || (!ent?.copyBrowsing && terminalIsAtBottom(ent));
     if (terminalRefreshBtn) {
       // Refresh is the escape hatch for a stuck attach — it must stay
