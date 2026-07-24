@@ -3456,6 +3456,25 @@ function expandHome(p) {
   return p;
 }
 
+/** ssh_config arguments may be enclosed in double quotes (OpenSSH
+ *  grammar). Strip one matching pair; anything else is left alone. */
+function _unquote(v) {
+  const s = String(v == null ? '' : v).trim();
+  return (s.length >= 2 && s.startsWith('"') && s.endsWith('"')) ? s.slice(1, -1) : s;
+}
+
+/** IdentityFile may be absolute, ~/..., or relative (OpenSSH resolves
+ *  relative paths against ~/.ssh/). Normalize to an absolute path. */
+function _normalizeIdentityFile(v) {
+  let p = _unquote(v);
+  if (!p) return p;
+  p = expandHome(p);
+  if (!p.startsWith('/')) {
+    p = path.join(os.homedir(), '.ssh', p);
+  }
+  return p;
+}
+
 function sshConfigPaths() {
   const out = [];
   const home = os.homedir();
@@ -3514,10 +3533,10 @@ function parseSshConfig(text) {
     let val;
     switch (key) {
       case 'hostname':
-        for (const blk of active) blk.hostName = value;
+        for (const blk of active) blk.hostName = _unquote(value);
         break;
       case 'user':
-        for (const blk of active) blk.user = value;
+        for (const blk of active) blk.user = _unquote(value);
         break;
       case 'port': {
         const p = Number.parseInt(value, 10);
@@ -3526,7 +3545,7 @@ function parseSshConfig(text) {
         break;
       }
       case 'identityfile':
-        val = expandHome(value);
+        val = _normalizeIdentityFile(value);
         for (const blk of active) blk.identityFile = val;
         break;
       default: break;
