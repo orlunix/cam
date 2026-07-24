@@ -59,6 +59,6 @@ sudo installer -pkg CAM-Desktop-0.2.0-arm64.pkg -target /
    and deletable). Reviewers can exercise the full flow offline; also
    used for screenshots.
 2. Privacy policy + support URLs, screenshots, privacy labels.
-3. App Store Connect record for com.hren.cam + MAS provisioning profile
+3. App Store Connect record for com.hren.cam.mas + MAS provisioning profile
    (→ `MAS_PROVISIONING_PROFILE` secret) and installer certificate.
 4. TestFlight for Mac pass, then App Review.

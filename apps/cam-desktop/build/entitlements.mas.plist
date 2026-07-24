@@ -21,7 +21,7 @@
        app's own keychain access group -->
   <key>keychain-access-groups</key>
   <array>
-    <string>ULL2CR6L6J.com.hren.cam</string>
+    <string>ULL2CR6L6J.com.hren.cam.mas</string>
   </array>
   <!-- V8/JIT requirements for any Electron app -->
   <key>com.apple.security.cs.allow-jit</key>
