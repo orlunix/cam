@@ -531,6 +531,7 @@ export function mountShell({ api, state, connect }) {
   const agentSettingsPanels = Array.from(document.querySelectorAll('[data-agent-settings-panel]'));
   const agentSettingsName = document.getElementById('agent-settings-name');
   const agentSettingsAuto = document.getElementById('agent-settings-auto-confirm');
+  const agentSettingsTermTabs = document.getElementById('agent-settings-terminal-tabs');
   const agentSettingsTags = document.getElementById('agent-settings-tags');
   const agentSettingsSave = document.getElementById('agent-settings-save');
   const agentSettingsReset = document.getElementById('agent-settings-reset');
@@ -1582,12 +1583,17 @@ export function mountShell({ api, state, connect }) {
     }
   }
 
+  function terminalTabsKeyFor(agentId) {
+    return `cam_terminal_tabs_enabled:${agentId}`;
+  }
+
   function fillAgentSettings(agent) {
     if (!agent) {
       if (agentSettingsTitle) agentSettingsTitle.textContent = 'Agent Settings';
       if (agentSettingsMeta) agentSettingsMeta.textContent = 'Select an agent to edit settings.';
       if (agentSettingsName) agentSettingsName.value = '';
       if (agentSettingsAuto) agentSettingsAuto.checked = false;
+      if (agentSettingsTermTabs) agentSettingsTermTabs.checked = false;
       if (agentSettingsTags) agentSettingsTags.value = '';
       if (agentSettingsSave) agentSettingsSave.disabled = true;
       if (agentSettingsReset) agentSettingsReset.disabled = true;
@@ -1617,6 +1623,9 @@ export function mountShell({ api, state, connect }) {
     }
     if (agentSettingsName) agentSettingsName.value = name;
     if (agentSettingsAuto) agentSettingsAuto.checked = agentAutoConfirm(agent);
+    if (agentSettingsTermTabs) {
+      try { agentSettingsTermTabs.checked = localStorage.getItem(terminalTabsKeyFor(agent.id)) !== '0'; } catch (_) {}
+    }
     if (agentSettingsTags) agentSettingsTags.value = tags.join(', ');
     if (agentSettingsSave) agentSettingsSave.disabled = false;
     if (agentSettingsReset) agentSettingsReset.disabled = false;
@@ -1832,6 +1841,14 @@ export function mountShell({ api, state, connect }) {
   agentSettingsTabs.forEach(btn => btn.addEventListener('click', () => setAgentSettingsTab(btn.dataset.agentSettingsTab)));
   agentSettingsSave?.addEventListener('click', () => { void saveAgentSettingsAttributes(); });
   agentSettingsReset?.addEventListener('click', () => fillAgentSettings(activeSettingsAgent()));
+  agentSettingsTermTabs?.addEventListener('change', () => {
+    // Terminal tabs is a per-agent UI preference (renderer-local, not a
+    // hub agent field): applies immediately, remembered per agent id.
+    const agent = activeSettingsAgent();
+    if (!agent) return;
+    try { localStorage.setItem(terminalTabsKeyFor(agent.id), agentSettingsTermTabs.checked ? '1' : '0'); } catch (_) {}
+    try { window.dispatchEvent(new CustomEvent('cam:terminal-tabs-changed')); } catch (_) {}
+  });
   agentSystemPromptReload?.addEventListener('click', () => { void loadAgentSystemPrompt({ force: true }); });
   agentSystemPromptSave?.addEventListener('click', () => { void saveAgentSystemPrompt(); });
   agentSystemPromptReset?.addEventListener('click', () => {
