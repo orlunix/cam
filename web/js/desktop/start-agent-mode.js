@@ -60,17 +60,6 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   const promptEl = panel.querySelector('#start-prompt');
   const autoexitEl = panel.querySelector('#start-autoexit');
   const autoconfirmEl = panel.querySelector('#start-autoconfirm');
-  const terminalTabsEl = panel.querySelector('#start-terminal-tabs');
-  if (terminalTabsEl) {
-    // App-level terminal-tab preference (experimental tmux window strip,
-    // off by default). Persisted immediately; agent-console re-renders
-    // on the change event.
-    try { terminalTabsEl.checked = localStorage.getItem('cam_terminal_tabs_enabled') === '1'; } catch (_) {}
-    terminalTabsEl.addEventListener('change', () => {
-      try { localStorage.setItem('cam_terminal_tabs_enabled', terminalTabsEl.checked ? '1' : '0'); } catch (_) {}
-      try { window.dispatchEvent(new CustomEvent('cam:terminal-tabs-changed')); } catch (_) {}
-    });
-  }
   const timeoutEl = panel.querySelector('#start-timeout');
   const retryEl = panel.querySelector('#start-retry');
   const nameEl = panel.querySelector('#start-name');
