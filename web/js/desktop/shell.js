@@ -1624,7 +1624,7 @@ export function mountShell({ api, state, connect }) {
     if (agentSettingsName) agentSettingsName.value = name;
     if (agentSettingsAuto) agentSettingsAuto.checked = agentAutoConfirm(agent);
     if (agentSettingsTermTabs) {
-      try { agentSettingsTermTabs.checked = localStorage.getItem(terminalTabsKeyFor(agent.id)) === '1'; } catch (_) {}
+      try { agentSettingsTermTabs.checked = localStorage.getItem(terminalTabsKeyFor(agent.id)) !== '0'; } catch (_) {}
     }
     if (agentSettingsTags) agentSettingsTags.value = tags.join(', ');
     if (agentSettingsSave) agentSettingsSave.disabled = false;

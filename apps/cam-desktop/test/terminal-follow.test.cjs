@@ -201,6 +201,9 @@ ok("terminal tabs are a per-agent opt-in in agent Settings > Attributes",
     && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('id="agent-settings-terminal-tabs"')
     && !fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('id="appearance-terminal-tabs"')
     && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "desktop", "shell.js"), "utf8").includes("terminalTabsKeyFor"));
+ok("terminal tabs default on with per-agent opt-out ('0'), silent fallback",
+  source.includes("!== '0'") && source.includes("cam_terminal_tabs_enabled:${agentId}")
+    && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "desktop", "shell.js"), "utf8").includes("!== '0'"));
 ok("tmux control failure disables the strip with one transient (<3s) note",
   source.includes("ent.tmuxHintState = 'hidden';")
     && source.includes("setTerminalAttachStatus('window controls unavailable', 'info', 2800, ent.agentId)")

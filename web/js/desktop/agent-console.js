@@ -3216,13 +3216,15 @@ export function mountAgentConsole({ api, state, showToast }) {
   }
 
   // Terminal tabs (the tmux window strip) are an experimental
-  // enhancement, OFF by default and configured PER AGENT in the
-  // agent's own Settings → Attributes page (stored in localStorage
-  // under cam_terminal_tabs_enabled:<agentId>). The terminal itself,
-  // History and To Bottom never depend on this flag.
+  // enhancement, ON by default since the switch/create path rides the
+  // attach stream. The fallback contract is silence: missing tmux
+  // metadata, no discoverable tmux binary, or any control failure
+  // hides the strip (tmuxHintState 'hidden') and the terminal keeps
+  // working exactly as if the feature were off. The per-agent toggle
+  // in agent Settings → Attributes is the explicit opt-out ('0').
   function terminalTabsEnabled(agentId) {
     if (!agentId) return false;
-    try { return localStorage.getItem(`cam_terminal_tabs_enabled:${agentId}`) === '1'; } catch (_) { return false; }
+    try { return localStorage.getItem(`cam_terminal_tabs_enabled:${agentId}`) !== '0'; } catch (_) { return true; }
   }
 
   /** Re-render the strip when the per-agent Attributes toggle flips. */
