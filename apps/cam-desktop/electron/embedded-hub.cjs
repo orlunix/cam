@@ -3556,13 +3556,26 @@ function sshConfigHosts() {
     out.available = true;
     const blocks = parseSshConfig(text);
     out.hosts = blocks
-      .map((b) => ({
-        alias:         b.alias,
-        host:          b.hostName || b.alias,
-        user:          b.user || '',
-        port:          b.port || 22,
-        identity_file: b.identityFile || '',
-      }))
+      .map((b) => {
+        const identityFile = b.identityFile || '';
+        // A referenced IdentityFile that does not exist on this machine
+        // (e.g. config copied from another host, or the user only has a
+        // differently-named key) would create an unsyncable context —
+        // surface it so the UI can fall back to agent auth instead of
+        // silently importing a broken key path.
+        let keyExists = null;
+        if (identityFile) {
+          try { keyExists = fs.existsSync(identityFile); } catch (_) { keyExists = false; }
+        }
+        return {
+          alias:         b.alias,
+          host:          b.hostName || b.alias,
+          user:          b.user || '',
+          port:          b.port || 22,
+          identity_file: identityFile,
+          key_exists:    keyExists,
+        };
+      })
       .filter((h) => h.host && h.user); // skip entries without enough info
     break; // only the first existing config
   }

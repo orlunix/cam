@@ -1920,7 +1920,7 @@ function mountNodesActions({
     importList.innerHTML = hosts.map((h, i) => `
       <div class="nodes-import-row" data-i="${i}">
         <div class="nodes-import-name">${esc(h.alias)}</div>
-        <div class="nodes-import-meta">${esc(h.user || '')}@${esc(h.host)}${h.port && h.port !== 22 ? ':' + h.port : ''}${h.identity_file ? ' · key: ' + esc(h.identity_file) : ''}</div>
+        <div class="nodes-import-meta">${esc(h.user || '')}@${esc(h.host)}${h.port && h.port !== 22 ? ':' + h.port : ''}${h.identity_file ? ' · key: ' + esc(h.identity_file) : ''}${h.identity_file && h.key_exists === false ? ' <strong class="import-key-missing">(not found)</strong>' : ''}</div>
         <button type="button" class="btn-sm btn-secondary nodes-import-btn" data-i="${i}">Import</button>
       </div>
     `).join('');
@@ -1931,13 +1931,19 @@ function mountNodesActions({
         if (!h) return;
         const name = pickContextName(h.alias);
         const user = h.user || '';
+        // Referenced IdentityFile missing on this machine (e.g. config
+        // copied from another host, or the user only has a differently-
+        // named key): fall back to agent auth instead of importing a
+        // key path that can never authenticate.
+        const keyOk = !!h.identity_file && h.key_exists !== false;
         const body = {
           name,
           path:      user ? `/home/${user}` : '/home',
           host:      h.host,
           user,
           port:      h.port || 22,
-          key_file:  h.identity_file || '',
+          auth_method: keyOk ? 'key' : 'agent',
+          key_file:  keyOk ? h.identity_file : '',
           env_setup: '',
         };
         btn.disabled = true;
@@ -1946,7 +1952,11 @@ function mountNodesActions({
           await requireNodesConnected('Import host');
           await api.createContext(body);
           btn.textContent = 'Imported';
-          setImportStatus(`Imported "${name}".`, 'is-ok');
+          setImportStatus(
+            keyOk
+              ? `Imported "${name}".`
+              : `Imported "${name}" with SSH agent auth (key file not found locally).`,
+            'is-ok');
           showToast(`Host imported as "${name}"`, 'success');
           try { await loadContextsAndAdapters(); } catch (_) {}
         } catch (err) {
