@@ -60,6 +60,9 @@ live only in App Store Connect fields / GitHub secrets.
   >    server. Every management path the reviewer sees (sync, capture,
   >    attach, interactive input, window switching) is identical for real
   >    CLIs.
+  >    Starting a new agent from the app also works on the demo server —
+  >    every tool choice (claude / codex / cursor) launches a simulated
+  >    CLI that walks a plausible read/plan/edit loop for any prompt.
   > 3. The app stores credentials only in the system Keychain. The
   >    `net:probe` IPC is a status-only reachability check (HTTP status,
   >    byte count, latency — no content) against the user's own relay URL.
