@@ -933,10 +933,8 @@ async function _syncContextAgents(ctx, overrides = {}) {
 
   // Bootstrap, don't just check: a missing or older remote camc is
   // uploaded here (version rule), so Sync Host works on fresh/cleaned
-  // hosts instead of failing with camc_missing. An explicit Sync Host
-  // click (overrides.forceCamc) forces the bundled copy down — the
-  // version rule alone can never ship a same-version rebuild.
-  const ready = await _ensureRemoteCamc(baseOpts, { force: !!overrides.forceCamc });
+  // hosts instead of failing with camc_missing.
+  const ready = await _ensureRemoteCamc(baseOpts);
   if (!ready.ok) {
     pushLog('warn', `sync ${ctx.name} failed: ${ready.error}`);
     return {
@@ -1499,7 +1497,8 @@ function _bundledCamcPath() {
   if (process.resourcesPath) {
     candidates.push(path.join(process.resourcesPath, 'camc', 'camc'));
   }
-  candidates.push(path.resolve(__dirname, '..', '..', '..', 'src', 'camc'));
+  // dist/camc is the single release artifact (src/camc was retired
+  // 2026-07-23, dc67bc3).
   candidates.push(path.resolve(__dirname, '..', '..', '..', 'dist', 'camc'));
   for (const c of candidates) {
     try { if (fs.statSync(c).isFile()) return c; } catch (_) {}
@@ -1509,7 +1508,7 @@ function _bundledCamcPath() {
 
 function _readBundledCamc() {
   const p = _bundledCamcPath();
-  if (!p) return { error: 'bundled_camc_missing', detail: 'bundled camc was not found in resources/camc/camc, src/camc, or dist/camc' };
+  if (!p) return { error: 'bundled_camc_missing', detail: 'bundled camc was not found in resources/camc/camc or dist/camc' };
   try {
     const content = fs.readFileSync(p);
     return {
@@ -3839,9 +3838,6 @@ async function handle(req, res) {
       const overrides = {};
       if (typeof body.password   === 'string' && body.password)   overrides.password   = body.password;
       if (typeof body.passphrase === 'string' && body.passphrase) overrides.passphrase = body.passphrase;
-      // The explicit Sync Host button forces the bundled camc down —
-      // the version rule alone can never ship a same-version rebuild.
-      overrides.forceCamc = true;
       const result = await _syncContextAgents(existing, overrides);
       // Always 200: the renderer's existing per-context tally relies
       // on `results` + an `ok` flag, not on HTTP status. Auth/connect

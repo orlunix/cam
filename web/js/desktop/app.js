@@ -541,6 +541,28 @@ async function init() {
   }, POLL_INTERVAL_MS);
 }
 
+/* "Reload app" button — soft reset without closing the app: main
+   disposes terminal channels and drops both SSH pools, then the
+   renderer reloads itself. The current mode is already persisted on
+   every setMode (cam_desktop_mode), so the reload lands back where
+   the user was; the embedded hub (and its store) keeps running. */
+try {
+  const reloadBtn = document.getElementById('app-reload-btn');
+  if (reloadBtn) {
+    reloadBtn.addEventListener('click', async () => {
+      if (reloadBtn.disabled) return;
+      reloadBtn.disabled = true;
+      reloadBtn.classList.add('is-reloading');
+      try {
+        if (window.CamBridge && typeof window.CamBridge.resetApp === 'function') {
+          await window.CamBridge.resetApp();
+        }
+      } catch (_) {}
+      location.reload();
+    });
+  }
+} catch (_) {}
+
 /* Debug handles — guarded behind a developer opt-in to avoid shipping
    global references in default builds. To enable in DevTools:
      localStorage.setItem('cam_desktop_debug', '1') && location.reload()

@@ -82,6 +82,8 @@
         title="Edit connection in Settings mode">
         <span class="conn-dot disconnected" id="conn-status"></span>
         <span class="conn-label" id="conn-label">disconnected</span>
+        <button type="button" class="conn-reload-btn" id="app-reload-btn"
+          title="Reload app (resets connections, keeps your data)">&#x21bb;</button>
       </div>
 
       <div class="sidebar-mode-content" id="sidebar-agents-content">
@@ -211,6 +213,14 @@
                 <label class="form-checkbox">
                   <input type="checkbox" id="agent-settings-auto-confirm">
                   <span>Auto-confirm prompts</span>
+                </label>
+                <label class="form-checkbox">
+                  <input type="checkbox" id="agent-settings-terminal-tabs">
+                  <span>Terminal tabs (tmux windows)</span>
+                  <span class="form-hint">Experimental: show a tab strip for
+                    this agent's tmux windows in Terminal mode. On by
+                    default and hidden silently when tmux controls are
+                    unavailable — uncheck to opt out for this agent.</span>
                 </label>
                 <label>Tags
                   <input type="text" id="agent-settings-tags" placeholder="tag1, tag2" autocomplete="off">
@@ -685,14 +695,6 @@
                   --auto-confirm</code>; in Direct mode <code>camc
                   run</code> forces this on regardless (the toggle is
                   accepted for parity but has no effect there).</span>
-              </label>
-              <label class="form-checkbox">
-                <input type="checkbox" id="start-terminal-tabs">
-                <span>Terminal tabs (tmux windows)</span>
-                <span class="form-hint">Experimental: show a tab strip for
-                  the agent's tmux windows in Terminal mode. Off by
-                  default — the terminal works exactly the same without
-                  it.</span>
               </label>
               <label>Timeout (optional)
                 <input type="text" id="start-timeout"
