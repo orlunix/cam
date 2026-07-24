@@ -664,6 +664,7 @@ from datetime import datetime
 from datetime import datetime, timedelta, timezone
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from socketserver import ThreadingMixIn
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -697,8 +698,8 @@ import uuid
 # Constants and logging
 # ===========================================================================
 
-__version__ = "1.2.2"
-__build__ = "2d3c2d3-dirty 2026-07-23 00:09"
+__version__ = "1.2.6"
+__build__ = "dc67bc3-dirty 2026-07-23 20:21"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -3173,6 +3174,34 @@ def tmux_kill_session(session_id):
     return rc == 0
 
 
+def tmux_rename_session(session_id, new_session_id):
+    """Rename a live session and retain camc's private-socket route."""
+    if not session_id or not new_session_id or session_id == new_session_id:
+        return False
+    socket = _find_tmux_socket(session_id)
+    new_socket = None
+    if socket:
+        new_socket = os.path.join(os.path.dirname(socket), new_session_id + ".sock")
+        if os.path.lexists(new_socket):
+            return False
+    base = _tmux_base(session_id)
+    rc, _ = _run(base + ["rename-session", "-t", session_id, new_session_id])
+    if rc != 0:
+        return False
+    if not new_socket:
+        return True
+    try:
+        # The tmux server remains bound to the old socket name after its
+        # session is renamed. A sibling symlink lets normal camc lookup find it.
+        os.symlink(os.path.basename(socket), new_socket)
+        return True
+    except OSError as exc:
+        log.warning("tmux rename %s -> %s could not create socket alias: %s",
+                    session_id, new_session_id, exc)
+        _run(base + ["rename-session", "-t", new_session_id, session_id])
+        return False
+
+
 def _tmux_paste_startup_command(tmux, socket, target, text):
     """Paste a startup command into a freshly-created shell pane.
 
@@ -3383,6 +3412,7 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
 _CURSOR_LINE_RE = re.compile(r"^\s*[❯›→>](\s|$)")
 _BARE_CURSOR_RE = re.compile(r"^\s*[❯›→>]\s*$")
 _CURSOR_PREFIX_RE = re.compile(r"^\s*[❯›→>]\s+(.*?)\s*$")
+_ACTIVE_UI_LINES = 8
 
 
 def _find_cursor_line(lines):
@@ -3391,6 +3421,16 @@ def _find_cursor_line(lines):
         if _CURSOR_LINE_RE.match(line):
             return line
     return None
+
+
+def _active_ui_lines(output, config):
+    """Return the small visible UI region where prompts and menus live."""
+    configured = getattr(config, "confirm_recent_lines", _ACTIVE_UI_LINES)
+    try:
+        limit = min(_ACTIVE_UI_LINES, max(1, int(configured)))
+    except (TypeError, ValueError):
+        limit = _ACTIVE_UI_LINES
+    return [line for line in output.splitlines() if line.strip()][-limit:]
 
 
 def has_input_cursor(output, last_response="", prev_output=""):
@@ -3472,8 +3512,7 @@ def should_auto_confirm(output, config, last_response="", prev_output=""):
     # appear at the bottom of the screen.  Matching the full output causes
     # false positives when the agent's *response* contains trigger text
     # (e.g. a table mentioning "1. Yes").
-    lines = [l for l in clean.splitlines() if l.strip()]
-    recent = "\n".join(lines[-config.confirm_recent_lines:])
+    recent = "\n".join(_active_ui_lines(clean, config))
     for pattern, response, send_enter in config.confirm_rules:
         m = pattern.search(recent)
         if m:
@@ -3528,7 +3567,18 @@ def is_ready_for_input(output, config):
     if not config.ready_pattern:
         return True
     clean = strip_ansi(output) if config.strip_ansi else output
-    return bool(config.ready_pattern.search(clean))
+    active_lines = _active_ui_lines(clean, config)
+    active = "\n".join(active_lines)
+    # A visible selection menu is not an input-ready prompt, even when an
+    # older prompt line remains in scrollback or the selection uses the same
+    # cursor glyph. Keep the menu text for classification; do not strip it.
+    for pattern, _response, _send_enter in config.confirm_rules:
+        if pattern.search(active):
+            return False
+    cursor_line = _find_cursor_line(active_lines)
+    if cursor_line is not None:
+        return bool(config.ready_pattern.search(cursor_line))
+    return bool(config.ready_pattern.search(active))
 
 
 def should_boot_confirm(output, config, last_response="", prev_output=""):
@@ -3536,8 +3586,7 @@ def should_boot_confirm(output, config, last_response="", prev_output=""):
     if config.strip_ansi:
         output = strip_ansi(output)
     clean = clean_for_confirm(output)
-    lines = [l for l in clean.splitlines() if l.strip()]
-    recent = "\n".join(lines[-config.confirm_recent_lines:])
+    recent = "\n".join(_active_ui_lines(clean, config))
     for pattern, response, send_enter in config.confirm_rules:
         m = pattern.search(recent)
         if m:
@@ -3554,7 +3603,10 @@ def should_confirm_initializing(output, boot_config, tool_config,
         if hit:
             return hit, boot_config
     if tool_config:
-        hit = should_auto_confirm(
+        # The tool's initial menu is not user input. In particular Codex
+        # changes its active cursor line when rendering `1. Yes`; the normal
+        # runtime input guard would mistake that transition for typing.
+        hit = should_boot_confirm(
             output, tool_config, last_response=last_response, prev_output=prev_output)
         if hit:
             return hit, tool_config
@@ -5029,8 +5081,8 @@ class BootPromptFeature(MonitorFeature):
             if cfg.prompt_submit_delay > 0:
                 actions.append({"kind": "send_input",
                                 "text": prompt, "send_enter": False})
-                actions.append({"kind": "halt_cycle",
-                                "sleep": cfg.prompt_submit_delay})
+                actions.append({"kind": "sleep",
+                                "seconds": cfg.prompt_submit_delay})
                 actions.append({"kind": "send_key", "key": "Enter"})
             else:
                 actions.append({"kind": "send_input",
@@ -5273,6 +5325,8 @@ def _apply_action(action, *, session, agent_id, store, events_fn):
                         send_enter=action.get("send_enter", True))
     elif kind == "send_key":
         tmux_send_key(session, action["key"])
+    elif kind == "sleep":
+        time.sleep(float(action.get("seconds", 0) or 0))
     elif kind == "store_update":
         store.update(agent_id, **action.get("fields", {}))
     elif kind == "event":
@@ -16712,11 +16766,99 @@ def cmd_upgrade(args):
     _refresh_embedded_skills_after_heal()
 
 
+def _legacy_agents_backup(store):
+    """Copy the active store before an explicit legacy migration."""
+    source = getattr(store, "_path", None)
+    if not source or not os.path.isfile(source):
+        return None
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    base = source + ".legacy-" + stamp
+    destination = base
+    suffix = 1
+    while os.path.exists(destination):
+        suffix += 1
+        destination = "%s-%d" % (base, suffix)
+    shutil.copy2(source, destination)
+    return Path(destination)
+
+
+def _migrate_legacy_agents(store):
+    """Replace verified ``session`` records with current-schema records.
+
+    This is intentionally separate from normal heal: it does not start,
+    stop, or restart monitors. Current-schema records are not modified.
+    """
+    candidates = [a for a in store.list()
+                  if isinstance(a, dict) and a.get("session")
+                  and not a.get("tmux_session")]
+    if not candidates:
+        return 0, 0, None
+    if not any(tmux_session_exists(str(a["session"]).strip())
+               for a in candidates):
+        return 0, len(candidates), None
+    backup = _legacy_agents_backup(store)
+    if not backup:
+        print("Legacy migration skipped: could not back up agents.json")
+        return 0, len(candidates), None
+
+    migrated = [0]
+    skipped = [0]
+
+    def _replace(agents):
+        known_ids = set(str(a.get("id", "")) for a in agents
+                        if isinstance(a, dict))
+        for index, agent in enumerate(agents):
+            if (not isinstance(agent, dict) or not agent.get("session")
+                    or agent.get("tmux_session")):
+                continue
+            old_session = str(agent["session"]).strip()
+            if not old_session or not tmux_session_exists(old_session):
+                skipped[0] += 1
+                continue
+            agent_id = ""
+            for _ in range(32):
+                candidate_id = uuid4().hex[:8]
+                if candidate_id not in known_ids:
+                    agent_id = candidate_id
+                    known_ids.add(candidate_id)
+                    break
+            if not agent_id:
+                skipped[0] += 1
+                continue
+            new_session = "cam-%s-m" % agent_id
+            if tmux_session_exists(new_session):
+                skipped[0] += 1
+                continue
+            if not tmux_rename_session(old_session, new_session):
+                skipped[0] += 1
+                continue
+            record = _agent_to_cam_json(agent)
+            record["id"] = agent_id
+            record["tmux_session"] = new_session
+            record["tmux_socket"] = _find_tmux_socket(new_session) or ""
+            for key in ("tmux_bin", "tmux_version"):
+                if agent.get(key):
+                    record[key] = agent[key]
+            agents[index] = record
+            migrated[0] += 1
+        return agents
+
+    store._modify(_replace)
+    return migrated[0], skipped[0], backup
+
+
 def cmd_heal(args):
     """Check running agents and restart dead monitor daemons."""
     if getattr(args, "upgrade", False):
         print("Note: 'heal --upgrade' is deprecated, use 'camc upgrade'")
         return cmd_upgrade(args)
+    if getattr(args, "agents", False):
+        migrated, skipped, backup = _migrate_legacy_agents(AgentStore())
+        if backup:
+            print("Legacy agents backup: %s" % backup)
+        print("Legacy agent migration: %d migrated, %d skipped" %
+              (migrated, skipped))
+        return
     _do_heal()
     _refresh_embedded_skills_after_heal()
 
@@ -19493,7 +19635,9 @@ examples:
                           help="Show last N messages [default: 50]")
 
     heal_p = sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
-    heal_p.add_argument("--upgrade", action="store_true", help="Kill ALL monitors and restart with current camc binary")
+    heal_modes = heal_p.add_mutually_exclusive_group()
+    heal_modes.add_argument("--upgrade", action="store_true", help="Kill ALL monitors and restart with current camc binary")
+    heal_modes.add_argument("--agents", action="store_true", help="Migrate verified legacy agent records without touching monitors")
 
     # upgrade — full camc upgrade
     sub.add_parser("upgrade", help="Upgrade camc: restart monitors, refresh configs/skills, heal")
