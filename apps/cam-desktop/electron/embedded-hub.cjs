@@ -3464,12 +3464,15 @@ function _unquote(v) {
 }
 
 /** IdentityFile may be absolute, ~/..., or relative (OpenSSH resolves
- *  relative paths against ~/.ssh/). Normalize to an absolute path. */
+ *  relative paths against ~/.ssh/). Normalize to an absolute path —
+ *  path.isAbsolute is platform-aware (POSIX /... and Windows C:\...
+ *  plus UNC \\server\...), a startsWith('/') check would misread
+ *  Windows drive-letter paths as relative. */
 function _normalizeIdentityFile(v) {
   let p = _unquote(v);
   if (!p) return p;
   p = expandHome(p);
-  if (!p.startsWith('/')) {
+  if (!path.isAbsolute(p)) {
     p = path.join(os.homedir(), '.ssh', p);
   }
   return p;
