@@ -591,6 +591,12 @@ export function mountShell({ api, state, connect }) {
   let _agentActionEsc = null;
   let _agentSettingsAgentId = null;
   let _agentSettingsTab = 'attributes';
+  // Signature of the values last written into the Attributes form by
+  // fillAgentSettings. The agents array identity changes on every
+  // status_update; refilling the form unconditionally would clobber
+  // in-progress edits, so the subscriber only refills when the target
+  // agent or its persisted attributes actually changed.
+  let _agentSettingsAttrSig = '';
   let _agentSystemPromptLoadedFor = null;
   let _agentSystemPromptInitial = '';
   let _agentSystemPromptLoading = false;
@@ -1587,7 +1593,13 @@ export function mountShell({ api, state, connect }) {
     return `cam_terminal_tabs_enabled:${agentId}`;
   }
 
+  function agentAttrSig(agent) {
+    if (!agent) return '';
+    return `${agentName(agent)}|${agentAutoConfirm(agent) ? '1' : '0'}|${agentTags(agent).join(',')}`;
+  }
+
   function fillAgentSettings(agent) {
+    _agentSettingsAttrSig = agentAttrSig(agent);
     if (!agent) {
       if (agentSettingsTitle) agentSettingsTitle.textContent = 'Agent Settings';
       if (agentSettingsMeta) agentSettingsMeta.textContent = 'Select an agent to edit settings.';
@@ -2055,7 +2067,13 @@ export function mountShell({ api, state, connect }) {
       if (agentSettingsPanel && !agentSettingsPanel.hidden) {
         const prevSettingsAgent = _agentSettingsAgentId;
         if (s && s !== _agentSettingsAgentId) _agentSettingsAgentId = s;
-        fillAgentSettings(activeSettingsAgent());
+        const settingsTarget = activeSettingsAgent();
+        // Only refill the form when switching agents or when the persisted
+        // attributes actually changed — a plain status_update must not
+        // clobber in-progress edits in the open form.
+        if (_agentSettingsAgentId !== prevSettingsAgent || agentAttrSig(settingsTarget) !== _agentSettingsAttrSig) {
+          fillAgentSettings(settingsTarget);
+        }
         if (_agentSettingsTab === 'system-prompt' && _agentSettingsAgentId && _agentSettingsAgentId !== prevSettingsAgent) {
           void loadAgentSystemPrompt({ force: true });
         }
