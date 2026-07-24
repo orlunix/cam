@@ -79,7 +79,7 @@ with `local_unsupported`; no local filesystem write surface remains.
 
 - No auto-update mechanism ✓ (MAS hard requirement)
 - No private APIs, no local child binaries (ssh2 is pure JS) ✓
-- Keychain access group `ULL2CR6L6J.com.hren.cam` (TeamID.BundleID) ✓
+- Keychain access group `ULL2CR6L6J.com.hren.cam.mas` (TeamID.BundleID) ✓
 - Unfinished surfaces (Bots / Todos / Workflow) hidden —
   click through every visible button on the Mac build before submitting ✓
 - camc/skillm uploads run remotely on the user's own hosts; state in
@@ -87,7 +87,7 @@ with `local_unsupported`; no local filesystem write surface remains.
 
 ## User-side (non-code)
 
-1. App Store Connect app record for `com.hren.cam` + MAS provisioning
+1. App Store Connect app record for `com.hren.cam.mas` + MAS provisioning
    profile → `MAS_PROVISIONING_PROFILE` secret.
 2. "3rd Party Mac Developer Installer" certificate (pkg signing).
 3. Privacy policy + support pages (GitHub Pages).
