@@ -396,8 +396,8 @@ class BootPromptFeature(MonitorFeature):
             if cfg.prompt_submit_delay > 0:
                 actions.append({"kind": "send_input",
                                 "text": prompt, "send_enter": False})
-                actions.append({"kind": "halt_cycle",
-                                "sleep": cfg.prompt_submit_delay})
+                actions.append({"kind": "sleep",
+                                "seconds": cfg.prompt_submit_delay})
                 actions.append({"kind": "send_key", "key": "Enter"})
             else:
                 actions.append({"kind": "send_input",
