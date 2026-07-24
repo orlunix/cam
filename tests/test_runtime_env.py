@@ -24,6 +24,8 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
+import uuid
 
 import pytest
 
@@ -532,6 +534,39 @@ def test_create_tmux_session_pastes_startup_command(monkeypatch):
                    for argv in argv_calls)
     assert any(argv[-1] == "Enter" for argv in argv_calls
                if "send-keys" in argv)
+
+
+@pytest.mark.skipif(not shutil.which("tmux"), reason="requires tmux")
+def test_failed_startup_command_leaves_repairable_tmux_shell(tmp_path, monkeypatch):
+    """A resolved tool can still fail after launch; keep its shell usable.
+
+    ``cmd_run`` creates the interactive tmux shell first and only then
+    pastes the agent command.  This integration check proves that an
+    immediately failing command does not take away the user's terminal:
+    they can type a repair command into the same session afterwards.
+    """
+    session_id = "repair-terminal-" + uuid.uuid4().hex[:12]
+    sockets_dir = tmp_path / "sockets"
+    monkeypatch.setattr(transport, "SOCKETS_DIR", str(sockets_dir))
+
+    try:
+        assert transport.create_tmux_session(
+            session_id,
+            ["/bin/sh", "-c", "exit 7"],
+            str(tmp_path),
+            inherit_env=True,
+            tmux_bin=shutil.which("tmux"),
+            tmux_config="",
+        )
+        time.sleep(0.25)
+        assert transport.tmux_session_exists(session_id)
+        assert transport.tmux_send_input(
+            session_id, "printf REPAIR_TERMINAL_STILL_USABLE", send_enter=True)
+        time.sleep(0.25)
+        assert "REPAIR_TERMINAL_STILL_USABLE" in transport.capture_tmux(
+            session_id, lines=30)
+    finally:
+        transport.tmux_kill_session(session_id)
 
 
 # ---------------------------------------------------------------------------
