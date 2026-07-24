@@ -210,6 +210,13 @@ ok("tmux control failure disables the strip with one transient (<3s) note",
   source.includes("ent.tmuxHintState = 'hidden';")
     && source.includes("setTerminalAttachStatus('window controls unavailable', 'info', 2800, ent.agentId)")
     && !source.includes("const retries = [2000, 5000, 12000, 30000]"));
+{
+  const shellSrc = fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "desktop", "shell.js"), "utf8");
+  ok("agent settings form refill is guarded by attribute signature (no edit clobber on status_update)",
+    shellSrc.includes("agentAttrSig(settingsTarget) !== _agentSettingsAttrSig")
+      && shellSrc.includes("function agentAttrSig(agent)")
+      && shellSrc.includes("_agentSettingsAttrSig = agentAttrSig(agent);"));
+}
 ok("tab strip never polls while feature-disabled",
   source.includes("if (!terminalTabsEnabled(termAgentId) || !ent || !bridge || !ent.sessionId"));
 ok("attach open has a renderer-side watchdog deadline",
