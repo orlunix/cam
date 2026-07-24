@@ -125,5 +125,10 @@ ok("android hub accepts context rename updates",
   fs.readFileSync(path.join(root, "android", "app", "src", "main", "java", "com", "cam", "app", "MobileEmbeddedHub.java"), "utf8")
     .includes("if (body.has(\"name\"))"));
 
+ok("ssh-config import flags missing IdentityFile and falls back to agent auth",
+  mode.includes("key_exists !== false") && mode.includes("auth_method: keyOk ? 'key' : 'agent'"));
+ok("hub reports IdentityFile existence for ssh-config import",
+  fs.readFileSync(path.join(root, "apps", "cam-desktop", "electron", "embedded-hub.cjs"), "utf8").includes("key_exists:"));
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exitCode = fail ? 1 : 0;
