@@ -70,8 +70,9 @@ live only in App Store Connect fields / GitHub secrets.
 - [ ] Apple-side (account holder only):
   - [ ] App Store Connect app record for `com.hren.cam.mas`
   - [ ] MAS provisioning profile → GitHub secret `MAS_PROVISIONING_PROFILE`
-  - [ ] One p12 with "Apple Distribution" + "Mac Installer Distribution"
-        certs → GitHub secrets `MAS_CSC_LINK` (base64 p12) and
+  - [ ] Two p12s (one key each): Apple Distribution cert+key →
+        `MAS_APP_CSC_LINK` (base64), Mac Installer Distribution cert+key →
+        `MAS_INSTALLER_CSC_LINK` (base64), shared p12 password →
         `MAS_CSC_KEY_PASSWORD` — separate from the Developer-ID `CSC_LINK`
         used by the DMG flow so the two tracks never interfere
   - [ ] Run `CAM Desktop — Mac App Store (mas pkg)` workflow → signed pkg
