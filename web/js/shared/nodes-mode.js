@@ -1931,19 +1931,17 @@ function mountNodesActions({
         if (!h) return;
         const name = pickContextName(h.alias);
         const user = h.user || '';
-        // Referenced IdentityFile missing on this machine (e.g. config
-        // copied from another host, or the user only has a differently-
-        // named key): fall back to agent auth instead of importing a
-        // key path that can never authenticate.
-        const keyOk = !!h.identity_file && h.key_exists !== false;
+        // Import honors the config as written (key auth). A missing
+        // IdentityFile is surfaced at sync precheck with guidance, not
+        // silently rerouted.
         const body = {
           name,
           path:      user ? `/home/${user}` : '/home',
           host:      h.host,
           user,
           port:      h.port || 22,
-          auth_method: keyOk ? 'key' : 'agent',
-          key_file:  keyOk ? h.identity_file : '',
+          auth_method: 'key',
+          key_file:  h.identity_file || '',
           env_setup: '',
         };
         btn.disabled = true;
@@ -1953,10 +1951,10 @@ function mountNodesActions({
           await api.createContext(body);
           btn.textContent = 'Imported';
           setImportStatus(
-            keyOk
-              ? `Imported "${name}".`
-              : `Imported "${name}" with SSH agent auth (key file not found locally).`,
-            'is-ok');
+            h.identity_file && h.key_exists === false
+              ? `Imported "${name}" — WARNING: key file not found locally. Edit the host to select a valid key file or use password auth.`
+              : `Imported "${name}".`,
+            h.identity_file && h.key_exists === false ? 'is-error' : 'is-ok');
           showToast(`Host imported as "${name}"`, 'success');
           try { await loadContextsAndAdapters(); } catch (_) {}
         } catch (err) {
