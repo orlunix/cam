@@ -89,9 +89,11 @@ jobs:
           rm -f /tmp/mas-app.pem /tmp/mas-installer.pem
 
       - name: Build signed mas pkg
+        timeout-minutes: 25
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'true'
           APPLE_TEAM_ID: ${{ secrets.TEAM_ID }}
+          DEBUG: 'electron-osx-sign,electron-builder'
         run: npm run build:mas
 
       - name: Upload mas pkg artifact
