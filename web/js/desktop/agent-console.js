@@ -1357,6 +1357,14 @@ export function mountAgentConsole({ api, state, showToast }) {
   const AUTO_RECONNECT_DELAYS_TRANSPORT = [0, 2000, 5000, 12000, 30000];
   const AUTO_RECONNECT_DELAYS_EXIT = [0, 3000];
   const TRANSIENT_ATTACH_ERRORS = new Set(['exec_timeout', 'exec_failed', 'connect_timeout', 'connect_lost', 'watchdog_timeout']);
+  // Background retry after the foreground ladder exhausts: a quick
+  // first attempt so the state never looks frozen, then a slow loop
+  // until success or the entry is closed. A failure budget resets only
+  // after the channel SUSTAINS >10s, so "connected but instantly
+  // dropped" can never re-arm the ladder into an infinite loop.
+  const AUTO_RECONNECT_BG_FIRST_MS = 10000;
+  const AUTO_RECONNECT_BG_INTERVAL_MS = 30000;
+  const RECONNECT_SUSTAIN_MS = 10000;
   let terminalActionBar = null;
   let terminalHistoryBtn = null;
   let terminalBottomBtn = null;
@@ -2140,7 +2148,7 @@ export function mountAgentConsole({ api, state, showToast }) {
           ent.sessionState = 'dead';
           ent.reconnectOffered = true;
           try {
-            ent.term.write(`\r\n\x1b[2mterminal disconnected${suffix} — reconnecting…\x1b[0m\r\n`);
+            ent.term.write(`\r\n\x1b[2mterminal disconnected${suffix} — 自动重试中，按任意键立即重试\x1b[0m\r\n`);
           } catch (_) {}
           _scheduleAutoReconnect(ent, msg);
         }
@@ -2157,8 +2165,10 @@ export function mountAgentConsole({ api, state, showToast }) {
    *  in the status line instead). */
   async function reconnectTerminalEntry(ent, opts = {}) {
     if (!ent || ent.sessionState === 'reconnecting' || !ent.term) return;
-    // A manual keystroke attempt cancels any pending scheduled attempt.
+    // A manual attempt (keystroke / status-pill click) cancels any
+    // pending scheduled attempt, ladder or background loop.
     if (ent._autoReconnectTimer) { clearTimeout(ent._autoReconnectTimer); ent._autoReconnectTimer = null; }
+    if (ent._bgRetryTimer) { clearTimeout(ent._bgRetryTimer); ent._bgRetryTimer = null; }
     ent.sessionState = 'reconnecting';
     ent.reconnectOffered = false;
     const bridge = termBridge();
@@ -2173,7 +2183,17 @@ export function mountAgentConsole({ api, state, showToast }) {
         ent.sessionId = res.sessionId;
         ent.sessionState = 'live';
         ent.lastUsed = Date.now();
-        ent._autoReconnectAttempt = 0;
+        ent._liveSince = Date.now();
+        // Reset the failure budget only after the channel SUSTAINS —
+        // a connect that dies within seconds must keep counting, or a
+        // flapping link loops forever on reset-on-each-partial-success.
+        window.setTimeout(() => {
+          if (terminalSessions.get(ent.agentId) === ent && ent.sessionState === 'live') {
+            ent._autoReconnectAttempt = 0;
+          }
+        }, RECONNECT_SUSTAIN_MS);
+        if (ent._bgRetryTimer) { clearTimeout(ent._bgRetryTimer); ent._bgRetryTimer = null; }
+        ent._bgRetryCount = 0;
         if (typeof bridge.ready === 'function') {
           try { bridge.ready({ sessionId: ent.sessionId }); } catch (_) {}
         }
@@ -2193,15 +2213,17 @@ export function mountAgentConsole({ api, state, showToast }) {
 
   /** Bounded auto-reconnect after an unexpected drop. Transport drops
    *  (flapping links) get the full backoff ladder; remote exits get two
-   *  quick attempts. A keystroke between attempts triggers an immediate
-   *  manual attempt which cancels this schedule. */
+   *  quick attempts. When the ladder exhausts, control hands to
+   *  _startBackgroundRetry instead of stopping at an invisible
+   *  "press any key" state. A keystroke or status-pill click between
+   *  attempts triggers an immediate manual attempt and cancels the
+   *  schedule. */
   function _scheduleAutoReconnect(ent, msg) {
     const transportDrop = !!(msg && (msg.error || msg.code == null));
     const delays = transportDrop ? AUTO_RECONNECT_DELAYS_TRANSPORT : AUTO_RECONNECT_DELAYS_EXIT;
     const attempt = ent._autoReconnectAttempt || 0;
     if (attempt >= delays.length) {
-      setTerminalAttachStatus('Auto-reconnect failed — press any key to retry.', 'error', 0, ent.agentId);
-      try { ent.term.write(`\r\n\x1b[2mauto-reconnect exhausted — press any key to retry\x1b[0m\r\n`); } catch (_) {}
+      _startBackgroundRetry(ent);
       return;
     }
     ent._autoReconnectAttempt = attempt + 1;
@@ -2214,6 +2236,32 @@ export function mountAgentConsole({ api, state, showToast }) {
         _scheduleAutoReconnect(ent, msg);
       }
     }, delays[attempt]);
+  }
+
+  /** Slow background retry loop after the foreground ladder exhausts.
+   *  First attempt soon (10s) so the state never looks frozen, then
+   *  every 30s until success or the entry is closed/replaced. The
+   *  status pill says what happened and what happens next, and is
+   *  clickable for an immediate retry. */
+  function _startBackgroundRetry(ent) {
+    if (ent._bgRetryTimer) return;
+    const schedule = (delay) => {
+      ent._bgRetryTimer = setTimeout(async () => {
+        ent._bgRetryTimer = null;
+        if (terminalSessions.get(ent.agentId) !== ent || ent.sessionState === 'live') return;
+        ent._bgRetryCount = (ent._bgRetryCount || 0) + 1;
+        setTerminalAttachStatus(`连接已断 · 后台重试中（第 ${ent._bgRetryCount} 次） · 点击立即重试`, 'info', 0, ent.agentId);
+        await reconnectTerminalEntry(ent, { auto: true });
+        if (ent.sessionState !== 'live' && terminalSessions.get(ent.agentId) === ent) {
+          schedule(AUTO_RECONNECT_BG_INTERVAL_MS);
+        }
+      }, delay);
+    };
+    setTerminalAttachStatus('连接已断 · 10s 后自动后台重试 · 点击立即重试', 'info', 0, ent.agentId);
+    try {
+      ent.term.write(`\r\n\x1b[2mconnection lost — 10s 后自动后台重试，按任意键立即重试\x1b[0m\r\n`);
+    } catch (_) {}
+    schedule(AUTO_RECONNECT_BG_FIRST_MS);
   }
 
   async function closeTerminalSession(agentId = termAgentId) {
@@ -2234,6 +2282,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     ent.opening = false;
     ent.copyBrowsing = false;
     if (ent._autoReconnectTimer) { try { clearTimeout(ent._autoReconnectTimer); } catch (_) {} ent._autoReconnectTimer = null; }
+    if (ent._bgRetryTimer) { try { clearTimeout(ent._bgRetryTimer); } catch (_) {} ent._bgRetryTimer = null; }
     if (bridge && sid) {
       try { await bridge.close({ sessionId: sid }); } catch (_) {}
     }
@@ -2250,6 +2299,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     ent.opening = false;
     ent.copyBrowsing = false;
     if (ent._autoReconnectTimer) { try { clearTimeout(ent._autoReconnectTimer); } catch (_) {} ent._autoReconnectTimer = null; }
+    if (ent._bgRetryTimer) { try { clearTimeout(ent._bgRetryTimer); } catch (_) {} ent._bgRetryTimer = null; }
     if (bridge && sid) {
       try { await bridge.close({ sessionId: sid }); } catch (_) {}
     }
@@ -2360,7 +2410,7 @@ export function mountAgentConsole({ api, state, showToast }) {
           p,
           new Promise((resolve) => setTimeout(() => {
             timedOut = true;
-            resolve({ ok: false, error: 'watchdog_timeout', detail: 'attach timed out — click Refresh to retry' });
+            resolve({ ok: false, error: 'watchdog_timeout', detail: 'attach timed out — 超时未连接，点击状态栏或 Refresh 立即重试' });
           }, ATTACH_WATCHDOG_MS)),
         ]);
         if (timedOut) {
@@ -2938,6 +2988,17 @@ export function mountAgentConsole({ api, state, showToast }) {
     terminalRefreshBtn = chrome.querySelector('.terminal-refresh-btn');
     terminalAttachBtn = chrome.querySelector('.terminal-attach-icon');
     terminalAttachStatus = chrome.querySelector('.terminal-attach-status');
+    if (terminalAttachStatus) {
+      // The status pill is the visible retry affordance: while an entry
+      // is dead it shows what happened and what happens next, and a
+      // click retries immediately (no hidden "press any key" gate).
+      terminalAttachStatus.style.cursor = 'pointer';
+      terminalAttachStatus.addEventListener('click', () => {
+        const ent = termAgentId ? terminalSessions.get(termAgentId) : null;
+        if (!ent || ent.sessionState !== 'dead') return;
+        void reconnectTerminalEntry(ent);
+      });
+    }
 
     terminalAttachBtn.addEventListener('click', () => {
       if (!terminalAttachBtn.disabled) void pickAndUploadTerminalAttachment();
