@@ -902,3 +902,8 @@ body.camui-v2 #mobile-nodes .ctx-meta-val {
     padding: 0 10px 10px 28px;
   }
 }
+
+.import-key-missing {
+  color: var(--danger-text, #f85149);
+  font-weight: normal;
+}
