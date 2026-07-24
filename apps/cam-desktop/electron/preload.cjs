@@ -41,6 +41,12 @@ contextBridge.exposeInMainWorld('CamBridge', {
     // context and cannot touch the renderer's localStorage.
     ipcRenderer.send('cam:restart');
   },
+  resetApp() {
+    // Soft reset without closing the app: main disposes all terminal
+    // channels and drops both SSH pools; the renderer then reloads
+    // itself while the embedded hub (and its store) keeps running.
+    return ipcRenderer.invoke('app:reset');
+  },
 
   // Direct Hub lifecycle (CAM-DESK-DIRECT-010..019,
   // CAM-DESK-HUB-010..012). The Direct Hub is an embedded Node HTTP

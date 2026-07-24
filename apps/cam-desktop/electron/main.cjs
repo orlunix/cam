@@ -663,14 +663,31 @@ async function termCancelCopyMode(event, payload = {}) {
     : _tmuxFailure('copy_mode_cancel', result, ent);
 }
 
+/** Drive a window switch through the live attach PTY: the switch is
+ *  tmux-internal on the same stream, so key sequences do it in ms with
+ *  zero exec round trips. C-b <digit> covers windows 0-9; anything
+ *  higher goes through the C-b : command prompt. Returns false when the
+ *  write fails (caller then uses the exec fallback). */
+function _ptySwitchWindow(ent, index) {
+  try {
+    if (index <= 9) ent.write(`\x02${index}`);
+    else ent.write(`\x02:select-window -t :${index}\r`);
+    return true;
+  } catch (_) { return false; }
+}
+
 async function termSelectWindow(event, payload = {}) {
   const ent = _ownedTerminal(event, payload);
   const index = Number(payload && payload.index);
   if (!ent) return { ok: false, error: 'not_found' };
   if (!Number.isInteger(index) || index < 0 || index > 9999) return { ok: false, error: 'invalid_args', detail: 'window index is invalid' };
-  const listed = await termListWindows(event, payload);
-  if (!listed.ok) return listed;
-  if (!listed.windows.some((window) => window.index === index)) return { ok: false, error: 'not_found', detail: 'window not found' };
+  // Fast path: the switch is tmux-internal on the live attach stream —
+  // drive it with key sequences, no exec round trips. The renderer
+  // reconciles the strip via its next listWindows poll.
+  if (typeof ent.write === 'function' && _ptySwitchWindow(ent, index)) {
+    return { ok: true, via: 'pty' };
+  }
+  // Exec fallback (no live channel): switch-client needs the client tty.
   const client = await _ensureTmuxClientTty(ent);
   if (!client.ok) return client;
   const result = await _tmuxExec(ent, ['switch-client', '-c', ent.tmuxClientTty, '-t', `${ent.tmux.session}:${index}`]);
@@ -680,6 +697,11 @@ async function termSelectWindow(event, payload = {}) {
 async function termCreateWindow(event, payload = {}) {
   const ent = _ownedTerminal(event, payload);
   if (!ent) return { ok: false, error: 'not_found' };
+  // Fast path: C-b c creates the window on the live stream (see
+  // _ptySwitchWindow for the rationale).
+  if (typeof ent.write === 'function') {
+    try { ent.write('\x02c'); return { ok: true, via: 'pty' }; } catch (_) {}
+  }
   const client = await _ensureTmuxClientTty(ent);
   if (!client.ok) return client;
   const created = await _tmuxExec(ent, ['new-window', '-t', ent.tmux.session, '-P', '-F', '#{window_index}']);
@@ -1044,6 +1066,20 @@ app.whenReady().then(() => {
   ipcMain.on('cam:restart', () => {
     app.relaunch();
     app.exit(0);
+  });
+
+  // Soft reset ("Reload app" button): dispose every open terminal
+  // channel and drop both SSH pools, but keep the process + embedded
+  // hub (and its store) alive. The renderer reloads itself afterwards.
+  ipcMain.handle('app:reset', () => {
+    try {
+      for (const sid of [..._terminals.keys()]) _dropSession(sid);
+      sshTransport.closeAll();
+      _diagLog('[app:reset] terminals disposed, SSH pools dropped');
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: 'reset_failed', detail: e && e.message || String(e) };
+    }
   });
 
   // Direct Hub lifecycle (CAM-DESK-DIRECT-010..019). All handlers are

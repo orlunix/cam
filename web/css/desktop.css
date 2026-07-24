@@ -333,6 +333,26 @@ body.desktop textarea:focus-visible {
   border-radius: 50%;
   display: inline-block;
 }
+.conn-reload-btn {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.conn-reload-btn:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+.conn-reload-btn.is-reloading {
+  animation: terminal-refresh-spin 0.8s linear infinite;
+}
 .conn-label {
   color: var(--text-dim);
   flex: 1;

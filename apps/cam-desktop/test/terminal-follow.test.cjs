@@ -129,6 +129,8 @@ ok("History wheel sends five line keys through the live PTY", wheel.includes("if
 ok("History maps PageUp and PageDown through the live PTY", source.includes("PageUp: '\\x1b[5~'") && source.includes("PageDown: '\\x1b[6~'") && keyHandler.includes("bridge.input({ sessionId: entry.sessionId"));
 ok("History leaves Up and Down on xterm's native input path", !source.includes("ArrowUp: -1") && !source.includes("ArrowDown: 1"));
 ok("History enters real tmux copy mode before changing local state", historyClick.includes("await bridge.copyMode({ sessionId: ent.sessionId })") && historyClick.indexOf("await bridge.copyMode") < historyClick.indexOf("ent.copyBrowsing = true") && !historyClick.includes("term.scrollLines"));
+ok("History button pages up via the live stream while in copy mode",
+  historyClick.includes("if (ent.copyBrowsing) {") && historyClick.includes("bridge.input({ sessionId: ent.sessionId, data: '\\x1b[5~' })"));
 ok("To Bottom safely cancels tmux copy mode before local follow", bottomClick.includes("await bridge.cancelCopyMode({ sessionId: ent.sessionId })") && bottomClick.indexOf("await bridge.cancelCopyMode") < bottomClick.indexOf("ent.copyBrowsing = false"));
 ok("To Bottom keeps an immediate local fast path outside copy mode", bottomClick.includes("if (!ent.copyBrowsing) {") && bottomClick.indexOf("if (!ent.copyBrowsing)") < bottomClick.indexOf("await bridge.cancelCopyMode"));
 ok("Refresh reuses the force-open lifecycle", refreshClick.includes("await openTerminalForSelected({ force: true })"));
@@ -192,20 +194,44 @@ ok("client state probe uses the portable session-targeted display-message",
   main.includes("['display-message', '-p', '-t', ent.tmux.session, '#{window_index}:#{pane_id}:#{pane_in_mode}']"));
 ok("client state probe never combines -p with -c (usage error on tmux < 3.3)",
   !main.includes("['display-message', '-p', '-c',"));
-ok("tmux poll only runs while the terminal page is visible",
-  source.includes("outputMode === 'terminal' && isAgentsMode() && termAgentId"));
+ok("tab strip state refresh is fully event-driven (no interval poll)",
+  !/setInterval[\s\S]{0,200}refreshTerminalTmuxControls/.test(source));
 ok("exhausted tmux retries stop remote polling too",
   source.includes("|| ent.tmuxHintState === 'hidden')"));
-ok("terminal tabs are opt-in via the Start Advanced toggle, default off",
-  source.includes("function terminalTabsEnabled")
-    && source.includes("cam_terminal_tabs_enabled")
-    && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('id="start-terminal-tabs"'));
+ok("terminal tabs are a per-agent opt-in in agent Settings > Attributes",
+  source.includes("cam_terminal_tabs_enabled:${agentId}")
+    && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('id="agent-settings-terminal-tabs"')
+    && !fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('id="appearance-terminal-tabs"')
+    && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "desktop", "shell.js"), "utf8").includes("terminalTabsKeyFor"));
+ok("terminal tabs default on with per-agent opt-out ('0'), silent fallback",
+  source.includes("!== '0'") && source.includes("cam_terminal_tabs_enabled:${agentId}")
+    && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "desktop", "shell.js"), "utf8").includes("!== '0'"));
 ok("tmux control failure disables the strip with one transient (<3s) note",
   source.includes("ent.tmuxHintState = 'hidden';")
     && source.includes("setTerminalAttachStatus('window controls unavailable', 'info', 2800, ent.agentId)")
     && !source.includes("const retries = [2000, 5000, 12000, 30000]"));
 ok("tab strip never polls while feature-disabled",
-  source.includes("if (!terminalTabsEnabled() || !ent || !bridge || !ent.sessionId"));
+  source.includes("if (!terminalTabsEnabled(termAgentId) || !ent || !bridge || !ent.sessionId"));
+ok("attach open has a renderer-side watchdog deadline",
+  source.includes("ATTACH_WATCHDOG_MS = 45000") && source.includes("Promise.race") && source.includes("watchdog_timeout"));
+ok("watchdog timeout joins the transient-retry set",
+  source.includes("'watchdog_timeout'"));
+ok("late-opening channels are closed on watchdog and superseded paths",
+  source.includes("late.sessionId") && source.includes("stale_open"));
+ok("refresh stays clickable while an attach is opening",
+  source.includes("terminalRefreshBtn.disabled = actionsBlocked || !terminalVisible || !selectedAgent()")
+    && !source.includes("|| !canUseTerminalMode() || termOpening;"));
+ok("app exposes a soft reset (reload without closing)",
+  preload.includes("resetApp") && main.includes("ipcMain.handle('app:reset'") && main.includes("sshTransport.closeAll()"));
+ok("window switch/create use the live attach stream first (pty fast path)",
+  main.includes("function _ptySwitchWindow") && main.includes("via: 'pty'") && main.includes("ent.write('\\x02c')"));
+ok("window switch drops the pre-switch listWindows validation",
+  !main.includes("listed.windows.some"));
+ok("tab clicks highlight optimistically and reconcile after pty switch",
+  source.includes("result.via === 'pty'") && source.includes("active: w.index === index"));
+ok("conn bar exposes a reload-app button wired to reset + reload",
+  fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('id="app-reload-btn"')
+    && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "desktop", "app.js"), "utf8").includes("await window.CamBridge.resetApp()"));
 ok("remote size repair is gated on an actual size change",
   main.includes("const sizeChanged = !!(existingEnt") && main.includes("if (existingEnt.opts) void _repairRemoteTerminalSize(existingEnt.opts, agentId, cols, rows);"));
 ok("attach prefers the reachable context endpoint, machine fields only as fallback",
@@ -243,8 +269,19 @@ ok("attach retries once on transient open failures",
   source.includes("TRANSIENT_ATTACH_ERRORS.has(res && res.error)") && source.includes("const TRANSIENT_ATTACH_ERRORS"));
 ok("unexpected drops auto-reconnect with bounded backoff",
   source.includes("function _scheduleAutoReconnect") && source.includes("AUTO_RECONNECT_DELAYS_TRANSPORT") && source.includes("AUTO_RECONNECT_DELAYS_EXIT"));
+ok("failure budget resets only after a sustained (>10s) reconnect",
+  source.includes("RECONNECT_SUSTAIN_MS") && source.includes("ent._liveSince = Date.now();")
+    && !source.includes("ent._autoReconnectAttempt = 0;\n        if (typeof bridge.ready === 'function')"));
+ok("exhausted ladder continues as a background retry loop with guidance",
+  source.includes("function _startBackgroundRetry")
+    && source.includes("AUTO_RECONNECT_BG_FIRST_MS") && source.includes("AUTO_RECONNECT_BG_INTERVAL_MS")
+    && !source.includes("auto-reconnect exhausted"));
+ok("status pill is the visible, clickable retry affordance",
+  source.includes("terminalAttachStatus.addEventListener('click'"));
 ok("keystroke reconnect cancels the scheduled auto attempt",
   source.includes("if (ent._autoReconnectTimer) { clearTimeout(ent._autoReconnectTimer); ent._autoReconnectTimer = null; }"));
+ok("reconnect path has the same watchdog (no 'reconnecting' latch)",
+  fn("reconnectTerminalEntry", "_scheduleAutoReconnect").includes("ATTACH_WATCHDOG_MS"));
 ok("persistent attach status is owned per agent and cleared on switch",
   source.includes("terminalAttachStatusOwner") && source.includes("ttl === 0) ? ownerId : null"));
 ok("slow layouts get a late fit pass",
