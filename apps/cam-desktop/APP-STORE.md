@@ -70,7 +70,10 @@ live only in App Store Connect fields / GitHub secrets.
 - [ ] Apple-side (account holder only):
   - [ ] App Store Connect app record for `com.hren.cam`
   - [ ] MAS provisioning profile → GitHub secret `MAS_PROVISIONING_PROFILE`
-  - [ ] "Apple Distribution" + "3rd Party Mac Developer Installer" certs → secrets
+  - [ ] One p12 with "Apple Distribution" + "Mac Installer Distribution"
+        certs → GitHub secrets `MAS_CSC_LINK` (base64 p12) and
+        `MAS_CSC_KEY_PASSWORD` — separate from the Developer-ID `CSC_LINK`
+        used by the DMG flow so the two tracks never interfere
   - [ ] Run `CAM Desktop — Mac App Store (mas pkg)` workflow → signed pkg
   - [ ] Sandbox smoke per `MAS-SPIKE.md` on a real Mac
   - [ ] 1280×800 screenshots (Mac)
