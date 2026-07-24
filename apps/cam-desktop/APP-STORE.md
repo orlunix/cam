@@ -54,6 +54,12 @@ live only in App Store Connect fields / GitHub secrets.
   >    weekly-summary). Open any agent and press Attach for a live
   >    terminal; nightly-benchmark prints continuous progress, code-review
   >    accepts interactive input.
+  >    The demo agents are scripted stand-ins — the app manages real
+  >    agent CLIs (Claude Code, Codex, Kimi, ...) installed on the user's
+  >    own hosts, and we do not place paid LLM accounts on a shared demo
+  >    server. Every management path the reviewer sees (sync, capture,
+  >    attach, interactive input, window switching) is identical for real
+  >    CLIs.
   > 3. The app stores credentials only in the system Keychain. The
   >    `net:probe` IPC is a status-only reachability check (HTTP status,
   >    byte count, latency — no content) against the user's own relay URL.
