@@ -5,7 +5,7 @@ name: CAM Desktop — Mac App Store (mas pkg)
 # containing the Apple Distribution + Mac Installer Distribution certs —
 # kept separate from CSC_LINK so the Developer-ID DMG flow is untouched),
 # MAS_PROVISIONING_PROFILE (base64 of the .provisionprofile for
-# com.hren.cam). NOT notarized — MAS packages are reviewed by App Store
+# com.hren.cam.mas). NOT notarized — MAS packages are reviewed by App Store
 # Connect, not notarized.
 
 on:
