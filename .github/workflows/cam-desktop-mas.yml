@@ -74,6 +74,12 @@ jobs:
           set -euo pipefail
           printf '%s' "$APP_P12_B64" | base64 -d > /tmp/mas-app.p12
           printf '%s' "$INSTALLER_P12_B64" | base64 -d > /tmp/mas-installer.p12
+          # Debug: verify the decoded p12s match what was uploaded into the
+          # secrets and are parseable before touching the keychain.
+          shasum -a 256 /tmp/mas-app.p12 /tmp/mas-installer.p12
+          file /tmp/mas-app.p12 /tmp/mas-installer.p12
+          openssl pkcs12 -in /tmp/mas-app.p12 -passin "pass:$P12_PASSWORD" -noout && echo APP_P12_PARSE_OK
+          openssl pkcs12 -in /tmp/mas-installer.p12 -passin "pass:$P12_PASSWORD" -noout && echo INSTALLER_P12_PARSE_OK
           KC=build-mas.keychain-db
           KC_PASS="$(openssl rand -hex 16)"
           security create-keychain -p "$KC_PASS" "$KC"
