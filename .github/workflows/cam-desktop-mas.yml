@@ -1,15 +1,12 @@
 name: CAM Desktop — Mac App Store (mas pkg)
 
 # Spike build for the Mac App Store track: signed mas .pkg with sandbox
-# entitlements. Secrets: MAS_APP_CSC_LINK (base64 p12 of the Apple
-# Distribution / "3rd Party Mac Developer Application" cert+key),
-# MAS_INSTALLER_CSC_LINK (base64 p12 of the Mac Installer Distribution /
-# "3rd Party Mac Developer Installer" cert+key), MAS_CSC_KEY_PASSWORD
-# (shared p12 password), MAS_PROVISIONING_PROFILE (base64 of the
-# .provisionprofile for com.hren.cam.mas). Two separate p12s because
-# openssl/electron-builder can only carry one key per p12; both are
-# imported into a temp keychain below. NOT notarized — MAS packages are
-# reviewed by App Store Connect, not notarized.
+# entitlements. Secrets: MAS_APP_PEM / MAS_INSTALLER_PEM (base64 of plain
+# PEM = cert + private key for the Apple Distribution and Mac Installer
+# Distribution identities; PEM because macOS `security import` rejects
+# openssl-produced p12 files), MAS_PROVISIONING_PROFILE (base64 of the
+# .provisionprofile for com.hren.cam.mas). NOT notarized — MAS packages
+# are reviewed by App Store Connect, not notarized.
 
 on:
   workflow_dispatch:
@@ -67,31 +64,29 @@ jobs:
 
       - name: Import MAS signing certificates
         env:
-          APP_P12_B64: ${{ secrets.MAS_APP_CSC_LINK }}
-          INSTALLER_P12_B64: ${{ secrets.MAS_INSTALLER_CSC_LINK }}
-          P12_PASSWORD: ${{ secrets.MAS_CSC_KEY_PASSWORD }}
+          APP_PEM_B64: ${{ secrets.MAS_APP_PEM }}
+          INSTALLER_PEM_B64: ${{ secrets.MAS_INSTALLER_PEM }}
         run: |
           set -euo pipefail
-          printf '%s' "$APP_P12_B64" | base64 -d > /tmp/mas-app.p12
-          printf '%s' "$INSTALLER_P12_B64" | base64 -d > /tmp/mas-installer.p12
-          # Debug: verify the decoded p12s match what was uploaded into the
-          # secrets and are parseable before touching the keychain.
-          shasum -a 256 /tmp/mas-app.p12 /tmp/mas-installer.p12
-          file /tmp/mas-app.p12 /tmp/mas-installer.p12
-          openssl pkcs12 -in /tmp/mas-app.p12 -passin "pass:$P12_PASSWORD" -noout && echo APP_P12_PARSE_OK
-          openssl pkcs12 -in /tmp/mas-installer.p12 -passin "pass:$P12_PASSWORD" -noout && echo INSTALLER_P12_PARSE_OK
+          # PEM (cert + private key) import — macOS `security` rejects
+          # openssl-3-produced p12 files ("Unknown format in import") and
+          # legacy RC2 p12s, so the identities travel as plain PEM instead.
+          printf '%s' "$APP_PEM_B64" | base64 -d > /tmp/mas-app.pem
+          printf '%s' "$INSTALLER_PEM_B64" | base64 -d > /tmp/mas-installer.pem
+          openssl x509 -in /tmp/mas-app.pem -noout -subject
+          openssl x509 -in /tmp/mas-installer.pem -noout -subject
           KC=build-mas.keychain-db
           KC_PASS="$(openssl rand -hex 16)"
           security create-keychain -p "$KC_PASS" "$KC"
           security set-keychain-settings -lut 21600 "$KC"
           security unlock-keychain -p "$KC_PASS" "$KC"
-          security import /tmp/mas-app.p12 -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign
-          security import /tmp/mas-installer.p12 -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security import /tmp/mas-app.pem -k "$KC" -T /usr/bin/codesign
+          security import /tmp/mas-installer.pem -k "$KC" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASS" "$KC" >/dev/null
           security list-keychains -d user -s "$KC" $(security list-keychains -d user | sed -e 's/"//g')
           security default-keychain -d user -s "$KC"
           security find-identity -v -p codesigning "$KC"
-          rm -f /tmp/mas-app.p12 /tmp/mas-installer.p12
+          rm -f /tmp/mas-app.pem /tmp/mas-installer.pem
 
       - name: Build signed mas pkg
         env:
