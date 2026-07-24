@@ -1,12 +1,15 @@
 name: CAM Desktop — Mac App Store (mas pkg)
 
 # Spike build for the Mac App Store track: signed mas .pkg with sandbox
-# entitlements. Secrets: MAS_CSC_LINK/MAS_CSC_KEY_PASSWORD (a single p12
-# containing the Apple Distribution + Mac Installer Distribution certs —
-# kept separate from CSC_LINK so the Developer-ID DMG flow is untouched),
-# MAS_PROVISIONING_PROFILE (base64 of the .provisionprofile for
-# com.hren.cam.mas). NOT notarized — MAS packages are reviewed by App Store
-# Connect, not notarized.
+# entitlements. Secrets: MAS_APP_CSC_LINK (base64 p12 of the Apple
+# Distribution / "3rd Party Mac Developer Application" cert+key),
+# MAS_INSTALLER_CSC_LINK (base64 p12 of the Mac Installer Distribution /
+# "3rd Party Mac Developer Installer" cert+key), MAS_CSC_KEY_PASSWORD
+# (shared p12 password), MAS_PROVISIONING_PROFILE (base64 of the
+# .provisionprofile for com.hren.cam.mas). Two separate p12s because
+# openssl/electron-builder can only carry one key per p12; both are
+# imported into a temp keychain below. NOT notarized — MAS packages are
+# reviewed by App Store Connect, not notarized.
 
 on:
   workflow_dispatch:
@@ -59,11 +62,31 @@ jobs:
       - name: Syntax check Electron entrypoints
         run: npm run lint:electron
 
+      - name: Import MAS signing certificates
+        env:
+          APP_P12_B64: ${{ secrets.MAS_APP_CSC_LINK }}
+          INSTALLER_P12_B64: ${{ secrets.MAS_INSTALLER_CSC_LINK }}
+          P12_PASSWORD: ${{ secrets.MAS_CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$APP_P12_B64" | base64 -d > /tmp/mas-app.p12
+          printf '%s' "$INSTALLER_P12_B64" | base64 -d > /tmp/mas-installer.p12
+          KC=build-mas.keychain-db
+          KC_PASS="$(openssl rand -hex 16)"
+          security create-keychain -p "$KC_PASS" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PASS" "$KC"
+          security import /tmp/mas-app.p12 -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security import /tmp/mas-installer.p12 -k "$KC" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASS" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | sed -e 's/"//g')
+          security default-keychain -d user -s "$KC"
+          security find-identity -v -p codesigning "$KC"
+          rm -f /tmp/mas-app.p12 /tmp/mas-installer.p12
+
       - name: Build signed mas pkg
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'true'
-          CSC_LINK: ${{ secrets.MAS_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAS_CSC_KEY_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.TEAM_ID }}
         run: npm run build:mas
 
