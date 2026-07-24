@@ -12,6 +12,7 @@ import sys
 import time
 import socket as _sock
 from uuid import uuid4, uuid5, NAMESPACE_DNS as _UUID_NS
+from pathlib import Path
 
 from camc_pkg import __build__
 from camc_pkg.skills import list_skills, install_manifest_skills
@@ -185,6 +186,7 @@ from camc_pkg.storage import AgentStore, EventStore
 from camc_pkg.transport import (
     _find_tmux_socket, capture_tmux, tmux_session_exists,
     tmux_send_input, tmux_send_key, tmux_kill_session, create_tmux_session,
+    tmux_rename_session,
 )
 from camc_pkg.system_prompt import (
     target_file, write_block, strip_block, has_block, load_prompt_text,
@@ -3848,11 +3850,99 @@ def cmd_upgrade(args):
     _refresh_embedded_skills_after_heal()
 
 
+def _legacy_agents_backup(store):
+    """Copy the active store before an explicit legacy migration."""
+    source = getattr(store, "_path", None)
+    if not source or not os.path.isfile(source):
+        return None
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    base = source + ".legacy-" + stamp
+    destination = base
+    suffix = 1
+    while os.path.exists(destination):
+        suffix += 1
+        destination = "%s-%d" % (base, suffix)
+    shutil.copy2(source, destination)
+    return Path(destination)
+
+
+def _migrate_legacy_agents(store):
+    """Replace verified ``session`` records with current-schema records.
+
+    This is intentionally separate from normal heal: it does not start,
+    stop, or restart monitors. Current-schema records are not modified.
+    """
+    candidates = [a for a in store.list()
+                  if isinstance(a, dict) and a.get("session")
+                  and not a.get("tmux_session")]
+    if not candidates:
+        return 0, 0, None
+    if not any(tmux_session_exists(str(a["session"]).strip())
+               for a in candidates):
+        return 0, len(candidates), None
+    backup = _legacy_agents_backup(store)
+    if not backup:
+        print("Legacy migration skipped: could not back up agents.json")
+        return 0, len(candidates), None
+
+    migrated = [0]
+    skipped = [0]
+
+    def _replace(agents):
+        known_ids = set(str(a.get("id", "")) for a in agents
+                        if isinstance(a, dict))
+        for index, agent in enumerate(agents):
+            if (not isinstance(agent, dict) or not agent.get("session")
+                    or agent.get("tmux_session")):
+                continue
+            old_session = str(agent["session"]).strip()
+            if not old_session or not tmux_session_exists(old_session):
+                skipped[0] += 1
+                continue
+            agent_id = ""
+            for _ in range(32):
+                candidate_id = uuid4().hex[:8]
+                if candidate_id not in known_ids:
+                    agent_id = candidate_id
+                    known_ids.add(candidate_id)
+                    break
+            if not agent_id:
+                skipped[0] += 1
+                continue
+            new_session = "cam-%s-m" % agent_id
+            if tmux_session_exists(new_session):
+                skipped[0] += 1
+                continue
+            if not tmux_rename_session(old_session, new_session):
+                skipped[0] += 1
+                continue
+            record = _agent_to_cam_json(agent)
+            record["id"] = agent_id
+            record["tmux_session"] = new_session
+            record["tmux_socket"] = _find_tmux_socket(new_session) or ""
+            for key in ("tmux_bin", "tmux_version"):
+                if agent.get(key):
+                    record[key] = agent[key]
+            agents[index] = record
+            migrated[0] += 1
+        return agents
+
+    store._modify(_replace)
+    return migrated[0], skipped[0], backup
+
+
 def cmd_heal(args):
     """Check running agents and restart dead monitor daemons."""
     if getattr(args, "upgrade", False):
         print("Note: 'heal --upgrade' is deprecated, use 'camc upgrade'")
         return cmd_upgrade(args)
+    if getattr(args, "agents", False):
+        migrated, skipped, backup = _migrate_legacy_agents(AgentStore())
+        if backup:
+            print("Legacy agents backup: %s" % backup)
+        print("Legacy agent migration: %d migrated, %d skipped" %
+              (migrated, skipped))
+        return
     _do_heal()
     _refresh_embedded_skills_after_heal()
 
@@ -6671,7 +6761,9 @@ examples:
                           help="Show last N messages [default: 50]")
 
     heal_p = sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
-    heal_p.add_argument("--upgrade", action="store_true", help="Kill ALL monitors and restart with current camc binary")
+    heal_modes = heal_p.add_mutually_exclusive_group()
+    heal_modes.add_argument("--upgrade", action="store_true", help="Kill ALL monitors and restart with current camc binary")
+    heal_modes.add_argument("--agents", action="store_true", help="Migrate verified legacy agent records without touching monitors")
 
     # upgrade — full camc upgrade
     sub.add_parser("upgrade", help="Upgrade camc: restart monitors, refresh configs/skills, heal")

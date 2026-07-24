@@ -4919,3 +4919,55 @@ a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-deskto
 895c23b camc: have bundled skills use deployed binary
 ```
 
+## v1.2.3  dc67bc3-dirty 2026-07-23 02:07
+
+- Lines: 19864
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+dc67bc3 camc: centralize release artifact and version builds
+2d3c2d3 camc v1.2.1 + desktop: Sync Host forces bundled camc (forceCamc)
+51c64e5 build: camc artifacts stay Linux-correct when built on Windows
+39f1438 camc: make skill installs locale-safe and never launch-blocking
+21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+```
+
+## v1.2.4  dc67bc3-dirty 2026-07-23 20:18
+
+- Lines: 19878
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+dc67bc3 camc: centralize release artifact and version builds
+2d3c2d3 camc v1.2.1 + desktop: Sync Host forces bundled camc (forceCamc)
+51c64e5 build: camc artifacts stay Linux-correct when built on Windows
+39f1438 camc: make skill installs locale-safe and never launch-blocking
+21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+```
+
+## v1.2.5  dc67bc3-dirty 2026-07-23 20:19
+
+- Lines: 19887
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+dc67bc3 camc: centralize release artifact and version builds
+2d3c2d3 camc v1.2.1 + desktop: Sync Host forces bundled camc (forceCamc)
+51c64e5 build: camc artifacts stay Linux-correct when built on Windows
+39f1438 camc: make skill installs locale-safe and never launch-blocking
+21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+```
+
+## v1.2.6  dc67bc3-dirty 2026-07-23 20:21
+
+- Lines: 19889
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+dc67bc3 camc: centralize release artifact and version builds
+2d3c2d3 camc v1.2.1 + desktop: Sync Host forces bundled camc (forceCamc)
+51c64e5 build: camc artifacts stay Linux-correct when built on Windows
+39f1438 camc: make skill installs locale-safe and never launch-blocking
+21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
+```
+
