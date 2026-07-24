@@ -50,19 +50,18 @@ live only in App Store Connect fields / GitHub secrets.
   >
   > 1. Nodes → Add Node → enter Host 115.159.85.212, user "demo",
   >    password <password>, port 22 → Save → Sync.
-  > 2. Three pre-staged agents appear (nightly-benchmark, code-review,
-  >    weekly-summary). Open any agent and press Attach for a live
-  >    terminal; nightly-benchmark prints continuous progress, code-review
-  >    accepts interactive input.
-  >    The demo agents are scripted stand-ins — the app manages real
-  >    agent CLIs (Claude Code, Codex, Kimi, ...) installed on the user's
-  >    own hosts, and we do not place paid LLM accounts on a shared demo
-  >    server. Every management path the reviewer sees (sync, capture,
-  >    attach, interactive input, window switching) is identical for real
-  >    CLIs.
-  >    Starting a new agent from the app also works on the demo server —
-  >    every tool choice (claude / codex / cursor) launches a simulated
-  >    CLI that walks a plausible read/plan/edit loop for any prompt.
+  > 2. Pre-staged agents appear (claude-assistant, nightly-benchmark,
+  >    code-review, weekly-summary). Open any agent and press Attach for
+  >    a live terminal.
+  >    **claude-assistant is a REAL agent**: a genuine Claude Code CLI on
+  >    the demo server, backed by a Kimi API key (ANTHROPIC_BASE_URL →
+  >    api.moonshot.cn). Send it a prompt and it answers with a live LLM.
+  >    The other pre-staged agents are scripted stand-ins, and starting a
+  >    new agent with the codex / cursor tool choices launches a simulated
+  >    CLI (read/plan/edit loop) — we do not place additional paid LLM
+  >    accounts on a shared demo server. Every management path the
+  >    reviewer sees (sync, capture, attach, interactive input, window
+  >    switching) is identical for real and simulated CLIs.
   > 3. The app stores credentials only in the system Keychain. The
   >    `net:probe` IPC is a status-only reachability check (HTTP status,
   >    byte count, latency — no content) against the user's own relay URL.
