@@ -214,6 +214,14 @@
                   <input type="checkbox" id="agent-settings-auto-confirm">
                   <span>Auto-confirm prompts</span>
                 </label>
+                <label class="form-checkbox">
+                  <input type="checkbox" id="agent-settings-terminal-tabs">
+                  <span>Terminal tabs (tmux windows)</span>
+                  <span class="form-hint">Experimental: show a tab strip for
+                    this agent's tmux windows in Terminal mode. Off by
+                    default — applies immediately and is remembered per
+                    agent on this device.</span>
+                </label>
                 <label>Tags
                   <input type="text" id="agent-settings-tags" placeholder="tag1, tag2" autocomplete="off">
                 </label>
@@ -611,14 +619,6 @@
                 <input type="range" id="appearance-output-font"
                   min="10" max="20" step="1" value="13">
                 <span class="appearance-value" id="appearance-output-font-val">13 px</span>
-              </label>
-              <label class="form-checkbox">
-                <input type="checkbox" id="appearance-terminal-tabs">
-                <span>Terminal tabs (tmux windows)</span>
-                <span class="form-hint">Experimental: show a tab strip for
-                  the agent's tmux windows in Terminal mode. Off by
-                  default — the terminal works exactly the same without
-                  it. Applies immediately and persists across reloads.</span>
               </label>
             </div>
             <div class="settings-actions">
