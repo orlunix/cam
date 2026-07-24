@@ -2792,22 +2792,9 @@ async function _uploadAgentFile(agentId, body) {
   const isLocal = !ctx || !ctx.machine || ctx.machine.type !== 'ssh';
 
   if (isLocal) {
-    const rootAbs = _localPath(root);
-    const destAbs = _localPath(destPath);
-    try {
-      const realRoot = fs.realpathSync.native(rootAbs);
-      const resolvedDest = path.resolve(destAbs);
-      const relative = path.relative(realRoot, resolvedDest);
-      if (relative === '' || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-        return { ok: false, error: 'path_traversal', detail: 'upload destination is outside the agent workspace' };
-      }
-      fs.mkdirSync(path.dirname(resolvedDest), { recursive: true });
-      fs.writeFileSync(resolvedDest, decoded.content);
-      pushLog('info', `upload ${agentId}: ${destPath} (${decoded.content.length} bytes)`);
-      return { ok: true, path: destPath, size: decoded.content.length };
-    } catch (e) {
-      return { ok: false, error: 'local_upload_failed', detail: e && e.message || 'failed to write workspace attachment' };
-    }
+    // Local sessions are retired — writing to the hub host's filesystem
+    // is never allowed (sandbox surface stays network-only).
+    return { ok: false, error: LOCAL_UNSUPPORTED_ERROR, detail: LOCAL_UNSUPPORTED_DETAIL };
   }
 
   if (!_sshTransport || typeof _sshTransport.writeRemoteFile !== 'function') {
