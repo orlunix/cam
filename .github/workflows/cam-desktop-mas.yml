@@ -103,5 +103,5 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: cam-desktop-mas-${{ matrix.arch }}-pkg
-          path: apps/cam-desktop/dist/*.pkg
+          path: apps/cam-desktop/dist/**/*.pkg
           if-no-files-found: error
