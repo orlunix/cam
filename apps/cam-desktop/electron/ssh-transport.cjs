@@ -153,7 +153,7 @@ function _buildAuth(opts) {
     let keyBuf;
     try { keyBuf = fs.readFileSync(opts.key_file); }
     catch (e) {
-      if (e.code === 'ENOENT') return { error: 'key_file_missing', detail: `${opts.key_file}: not found` };
+      if (e.code === 'ENOENT') return { error: 'key_file_missing', detail: `${opts.key_file}: not found — edit the host to select a valid key file or use password auth` };
       return { error: 'key_read_failed', detail: e && e.message };
     }
     const fields = { privateKey: keyBuf };
