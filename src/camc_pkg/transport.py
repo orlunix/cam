@@ -462,6 +462,34 @@ def tmux_kill_session(session_id):
     return rc == 0
 
 
+def tmux_rename_session(session_id, new_session_id):
+    """Rename a live session and retain camc's private-socket route."""
+    if not session_id or not new_session_id or session_id == new_session_id:
+        return False
+    socket = _find_tmux_socket(session_id)
+    new_socket = None
+    if socket:
+        new_socket = os.path.join(os.path.dirname(socket), new_session_id + ".sock")
+        if os.path.lexists(new_socket):
+            return False
+    base = _tmux_base(session_id)
+    rc, _ = _run(base + ["rename-session", "-t", session_id, new_session_id])
+    if rc != 0:
+        return False
+    if not new_socket:
+        return True
+    try:
+        # The tmux server remains bound to the old socket name after its
+        # session is renamed. A sibling symlink lets normal camc lookup find it.
+        os.symlink(os.path.basename(socket), new_socket)
+        return True
+    except OSError as exc:
+        log.warning("tmux rename %s -> %s could not create socket alias: %s",
+                    session_id, new_session_id, exc)
+        _run(base + ["rename-session", "-t", new_session_id, session_id])
+        return False
+
+
 def _tmux_paste_startup_command(tmux, socket, target, text):
     """Paste a startup command into a freshly-created shell pane.
 
