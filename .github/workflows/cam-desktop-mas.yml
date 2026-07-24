@@ -80,9 +80,12 @@ jobs:
           security create-keychain -p "$KC_PASS" "$KC"
           security set-keychain-settings -lut 21600 "$KC"
           security unlock-keychain -p "$KC_PASS" "$KC"
-          security import /tmp/mas-app.pem -k "$KC" -T /usr/bin/codesign
-          security import /tmp/mas-installer.pem -k "$KC" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASS" "$KC" >/dev/null
+          security import /tmp/mas-app.pem -k "$KC" -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/productbuild
+          security import /tmp/mas-installer.pem -k "$KC" -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/productbuild
+          # productbuild (pkg signing) is not codesign: it needs its own
+          # partition id, otherwise it blocks forever on an unanswerable
+          # GUI key-access prompt (the 25-min hang fixed here).
+          security set-key-partition-list -S apple-tool:,apple:,codesign:,productbuild:,security: -s -k "$KC_PASS" "$KC" >/dev/null
           security list-keychains -d user -s "$KC" $(security list-keychains -d user | sed -e 's/"//g')
           security default-keychain -d user -s "$KC"
           security find-identity -v -p codesigning "$KC"
