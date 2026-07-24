@@ -33,6 +33,7 @@ from camc_pkg.utils import strip_ansi, clean_for_confirm
 _CURSOR_LINE_RE = re.compile(r"^\s*[❯›→>](\s|$)")
 _BARE_CURSOR_RE = re.compile(r"^\s*[❯›→>]\s*$")
 _CURSOR_PREFIX_RE = re.compile(r"^\s*[❯›→>]\s+(.*?)\s*$")
+_ACTIVE_UI_LINES = 8
 
 
 def _find_cursor_line(lines):
@@ -41,6 +42,16 @@ def _find_cursor_line(lines):
         if _CURSOR_LINE_RE.match(line):
             return line
     return None
+
+
+def _active_ui_lines(output, config):
+    """Return the small visible UI region where prompts and menus live."""
+    configured = getattr(config, "confirm_recent_lines", _ACTIVE_UI_LINES)
+    try:
+        limit = min(_ACTIVE_UI_LINES, max(1, int(configured)))
+    except (TypeError, ValueError):
+        limit = _ACTIVE_UI_LINES
+    return [line for line in output.splitlines() if line.strip()][-limit:]
 
 
 def has_input_cursor(output, last_response="", prev_output=""):
@@ -122,8 +133,7 @@ def should_auto_confirm(output, config, last_response="", prev_output=""):
     # appear at the bottom of the screen.  Matching the full output causes
     # false positives when the agent's *response* contains trigger text
     # (e.g. a table mentioning "1. Yes").
-    lines = [l for l in clean.splitlines() if l.strip()]
-    recent = "\n".join(lines[-config.confirm_recent_lines:])
+    recent = "\n".join(_active_ui_lines(clean, config))
     for pattern, response, send_enter in config.confirm_rules:
         m = pattern.search(recent)
         if m:
@@ -178,7 +188,18 @@ def is_ready_for_input(output, config):
     if not config.ready_pattern:
         return True
     clean = strip_ansi(output) if config.strip_ansi else output
-    return bool(config.ready_pattern.search(clean))
+    active_lines = _active_ui_lines(clean, config)
+    active = "\n".join(active_lines)
+    # A visible selection menu is not an input-ready prompt, even when an
+    # older prompt line remains in scrollback or the selection uses the same
+    # cursor glyph. Keep the menu text for classification; do not strip it.
+    for pattern, _response, _send_enter in config.confirm_rules:
+        if pattern.search(active):
+            return False
+    cursor_line = _find_cursor_line(active_lines)
+    if cursor_line is not None:
+        return bool(config.ready_pattern.search(cursor_line))
+    return bool(config.ready_pattern.search(active))
 
 
 def should_boot_confirm(output, config, last_response="", prev_output=""):
@@ -186,8 +207,7 @@ def should_boot_confirm(output, config, last_response="", prev_output=""):
     if config.strip_ansi:
         output = strip_ansi(output)
     clean = clean_for_confirm(output)
-    lines = [l for l in clean.splitlines() if l.strip()]
-    recent = "\n".join(lines[-config.confirm_recent_lines:])
+    recent = "\n".join(_active_ui_lines(clean, config))
     for pattern, response, send_enter in config.confirm_rules:
         m = pattern.search(recent)
         if m:
@@ -204,7 +224,10 @@ def should_confirm_initializing(output, boot_config, tool_config,
         if hit:
             return hit, boot_config
     if tool_config:
-        hit = should_auto_confirm(
+        # The tool's initial menu is not user input. In particular Codex
+        # changes its active cursor line when rendering `1. Yes`; the normal
+        # runtime input guard would mistake that transition for typing.
+        hit = should_boot_confirm(
             output, tool_config, last_response=last_response, prev_output=prev_output)
         if hit:
             return hit, tool_config
