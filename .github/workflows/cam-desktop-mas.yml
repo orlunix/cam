@@ -13,6 +13,9 @@ name: CAM Desktop — Mac App Store (mas pkg)
 
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - 'cam-desktop-mas-v*'
 
 permissions:
   contents: read
