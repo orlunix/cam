@@ -71,6 +71,9 @@ retired so these are unreachable, but a sandbox denial in logs would be
 a question.
 **Fix**: make both branches refuse like the rest of the local surface
 (small change, removes the entire local-write surface).
+**DONE (2026-07-24)**: all three local-write branches (workspace write,
+system-prompt write, and image upload in `_uploadAgentFile`) now refuse
+with `local_unsupported`; no local filesystem write surface remains.
 
 ## Low risk (standard hygiene, already OK)
 
