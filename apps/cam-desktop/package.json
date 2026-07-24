@@ -108,6 +108,7 @@
       "artifactName": "CAM-Desktop-${version}-${arch}.${ext}"
     },
     "mas": {
+      "bundleId": "com.hren.cam.mas",
       "entitlements": "build/entitlements.mas.plist",
       "entitlementsInherit": "build/entitlements.mas.inherit.plist",
       "provisioningProfile": "embedded.provisionprofile",

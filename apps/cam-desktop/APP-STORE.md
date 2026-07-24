@@ -68,7 +68,7 @@ live only in App Store Connect fields / GitHub secrets.
 - [x] Local filesystem-write surface removed (`local_unsupported` everywhere)
 - [x] Support + privacy pages live (GitHub Pages)
 - [ ] Apple-side (account holder only):
-  - [ ] App Store Connect app record for `com.hren.cam`
+  - [ ] App Store Connect app record for `com.hren.cam.mas`
   - [ ] MAS provisioning profile → GitHub secret `MAS_PROVISIONING_PROFILE`
   - [ ] One p12 with "Apple Distribution" + "Mac Installer Distribution"
         certs → GitHub secrets `MAS_CSC_LINK` (base64 p12) and
