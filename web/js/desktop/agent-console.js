@@ -2178,7 +2178,26 @@ export function mountAgentConsole({ api, state, showToast }) {
       ent.term.write('\r\n\x1b[2mreconnecting…\x1b[0m\r\n');
       const cols = Math.max(TERMINAL_MIN_NOTIFY_COLS, Number(ent.term.cols) || 80);
       const rows = Math.max(4, Number(ent.term.rows) || 24);
-      const res = await bridge.open({ agentId: ent.agentId, cols, rows });
+      // Same watchdog as the full attach path: without it a hung
+      // bridge.open latches sessionState at 'reconnecting' forever —
+      // keystrokes are ignored (dead-only), the ladder no-ops on the
+      // same guard, and only an app restart clears it.
+      const openP = bridge.open({ agentId: ent.agentId, cols, rows });
+      let timedOut = false;
+      const res = await Promise.race([
+        openP,
+        new Promise((resolve) => setTimeout(() => {
+          timedOut = true;
+          resolve({ ok: false, error: 'watchdog_timeout', detail: 'attach timed out — 超时未连接，点击状态栏或按任意键重试' });
+        }, ATTACH_WATCHDOG_MS)),
+      ]);
+      if (timedOut) {
+        void openP.then((late) => {
+          if (late && late.ok && late.sessionId) {
+            try { bridge.close({ sessionId: late.sessionId }); } catch (_) {}
+          }
+        }).catch(() => {});
+      }
       if (res && res.ok) {
         ent.sessionId = res.sessionId;
         ent.sessionState = 'live';

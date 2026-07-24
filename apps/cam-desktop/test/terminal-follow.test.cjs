@@ -276,6 +276,8 @@ ok("status pill is the visible, clickable retry affordance",
   source.includes("terminalAttachStatus.addEventListener('click'"));
 ok("keystroke reconnect cancels the scheduled auto attempt",
   source.includes("if (ent._autoReconnectTimer) { clearTimeout(ent._autoReconnectTimer); ent._autoReconnectTimer = null; }"));
+ok("reconnect path has the same watchdog (no 'reconnecting' latch)",
+  fn("reconnectTerminalEntry", "_scheduleAutoReconnect").includes("ATTACH_WATCHDOG_MS"));
 ok("persistent attach status is owned per agent and cleared on switch",
   source.includes("terminalAttachStatusOwner") && source.includes("ttl === 0) ? ownerId : null"));
 ok("slow layouts get a late fit pass",
