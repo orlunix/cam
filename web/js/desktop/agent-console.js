@@ -3154,10 +3154,10 @@ export function mountAgentConsole({ api, state, showToast }) {
     if (!terminalTabsEl) return;
     terminalTabsEl.textContent = '';
     // Terminal tabs (the tmux window strip) are an experimental
-    // enhancement, OFF by default — the toggle lives in Start →
-    // Advanced. The terminal itself, History and To Bottom never
-    // depend on this flag.
-    if (!terminalTabsEnabled()) { terminalTabsEl.hidden = true; return; }
+    // enhancement, OFF by default and configured per agent in the
+    // agent's own Settings → Attributes. The terminal itself, History
+    // and To Bottom never depend on this flag.
+    if (!terminalTabsEnabled(ent && ent.agentId)) { terminalTabsEl.hidden = true; return; }
     if (!ent?.tmuxReady) {
       // Transient degraded hint only while retries are in flight —
       // once they are exhausted the strip hides entirely (tmuxHintState
@@ -3200,7 +3200,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     // state; once retries are exhausted (tmuxHintState 'hidden') it
     // hides entirely and stays quiet.
     if (terminalTabsEl) {
-      terminalTabsEl.hidden = !terminalTabsEnabled() || !terminalConnected || (ent && ent.tmuxHintState === 'hidden' && !ent.tmuxReady);
+      terminalTabsEl.hidden = !terminalTabsEnabled(termAgentId) || !terminalConnected || (ent && ent.tmuxHintState === 'hidden' && !ent.tmuxReady);
     }
     if (terminalActionBar) terminalActionBar.hidden = !terminalVisible;
     if (terminalHistoryBtn) terminalHistoryBtn.disabled = actionsBlocked || !tmuxVisible || !!ent?.copyBrowsing;
@@ -3216,14 +3216,16 @@ export function mountAgentConsole({ api, state, showToast }) {
   }
 
   // Terminal tabs (the tmux window strip) are an experimental
-  // enhancement, OFF by default — the toggle lives in Start → Advanced
-  // and persists to localStorage. Terminal, History and To Bottom work
-  // regardless.
-  function terminalTabsEnabled() {
-    try { return localStorage.getItem('cam_terminal_tabs_enabled') === '1'; } catch (_) { return false; }
+  // enhancement, OFF by default and configured PER AGENT in the
+  // agent's own Settings → Attributes page (stored in localStorage
+  // under cam_terminal_tabs_enabled:<agentId>). The terminal itself,
+  // History and To Bottom never depend on this flag.
+  function terminalTabsEnabled(agentId) {
+    if (!agentId) return false;
+    try { return localStorage.getItem(`cam_terminal_tabs_enabled:${agentId}`) === '1'; } catch (_) { return false; }
   }
 
-  /** Re-render the strip when the Advanced toggle flips. */
+  /** Re-render the strip when the per-agent Attributes toggle flips. */
   function ensureTerminalTabsToggleWiring() {
     if (terminalTabsToggleWired) return;
     terminalTabsToggleWired = true;
@@ -3231,7 +3233,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       const ent = termAgentId ? terminalSessions.get(termAgentId) : null;
       renderTerminalTabs(ent);
       updateTerminalTmuxControls();
-      if (terminalTabsEnabled()) void refreshTerminalTmuxControls();
+      if (terminalTabsEnabled(termAgentId)) void refreshTerminalTmuxControls();
     });
   }
 
@@ -3242,7 +3244,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     // (failed or feature-flagged off) — stay quiet on the NETWORK too,
     // not just the UI: no more listWindows execs until a reattach
     // creates a fresh entry.
-    if (!terminalTabsEnabled() || !ent || !bridge || !ent.sessionId || terminalTmuxRefreshPending || ent.tmuxHintState === 'hidden') {
+    if (!terminalTabsEnabled(termAgentId) || !ent || !bridge || !ent.sessionId || terminalTmuxRefreshPending || ent.tmuxHintState === 'hidden') {
       updateTerminalTmuxControls();
       return;
     }
