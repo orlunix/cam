@@ -131,7 +131,8 @@ ok("hub reports IdentityFile existence for ssh-config import",
   fs.readFileSync(path.join(root, "apps", "cam-desktop", "electron", "embedded-hub.cjs"), "utf8").includes("key_exists:"));
 ok("ssh-config parser strips quotes and resolves relative IdentityFile against ~/.ssh",
   fs.readFileSync(path.join(root, "apps", "cam-desktop", "electron", "embedded-hub.cjs"), "utf8").includes("function _normalizeIdentityFile")
-    && fs.readFileSync(path.join(root, "apps", "cam-desktop", "electron", "embedded-hub.cjs"), "utf8").includes("path.join(os.homedir(), '.ssh', p)"));
+    && fs.readFileSync(path.join(root, "apps", "cam-desktop", "electron", "embedded-hub.cjs"), "utf8").includes("path.join(os.homedir(), '.ssh', p)")
+    && fs.readFileSync(path.join(root, "apps", "cam-desktop", "electron", "embedded-hub.cjs"), "utf8").includes("path.isAbsolute"));
 
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exitCode = fail ? 1 : 0;
