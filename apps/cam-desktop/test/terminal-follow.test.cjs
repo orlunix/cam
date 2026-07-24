@@ -261,6 +261,8 @@ ok("terminal channel open default timeout is tightened to 15s",
   transport.includes("Number(opts.timeout_ms) || 15000"));
 ok("password auth falls back to keyboard-interactive with password answers",
   transport.includes("tryKeyboard:        authBuilt.auth === 'password'") && transport.includes("client.on('keyboard-interactive'"));
+ok("encrypted key without passphrase falls back to ssh agent",
+  transport.includes("falling back to agent") && transport.includes("ssh2.utils.parseKey(keyBuf)"));
 ok("OS resume drops only idle pooled entries",
   transport.includes("function dropIdleEntries") && transport.includes("'resume_idle'") && main.includes("powerMonitor.on('resume'"));
 ok("terminal repair evidence is persisted to a user-visible log",

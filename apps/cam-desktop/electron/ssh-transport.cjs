@@ -157,7 +157,27 @@ function _buildAuth(opts) {
       return { error: 'key_read_failed', detail: e && e.message };
     }
     const fields = { privateKey: keyBuf };
-    if (opts.passphrase) fields.passphrase = opts.passphrase;
+    if (opts.passphrase) {
+      fields.passphrase = opts.passphrase;
+    } else {
+      // A key that cannot be parsed without a passphrase (encrypted
+      // key, no passphrase provided) can never authenticate directly —
+      // fall back to the SSH agent, which is exactly how the system
+      // ssh (and Cursor/VSCode Remote) still connects via Keychain.
+      const sock = process.env.SSH_AUTH_SOCK || '';
+      if (sock) {
+        let parseable = true;
+        try {
+          const ssh2 = _loadSsh2();
+          const parsed = ssh2 && ssh2.utils && ssh2.utils.parseKey(keyBuf);
+          parseable = !!(parsed && !(parsed instanceof Error) && (!Array.isArray(parsed) || parsed.length > 0));
+        } catch (_) { parseable = false; }
+        if (!parseable) {
+          console.warn('[ssh-auth] key file not parseable without passphrase; falling back to agent');
+          return { auth: 'agent', fields: { agent: sock } };
+        }
+      }
+    }
     return { auth, fields };
   }
   if (auth === 'agent') {
