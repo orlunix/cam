@@ -265,6 +265,15 @@ ok("attach retries once on transient open failures",
   source.includes("TRANSIENT_ATTACH_ERRORS.has(res && res.error)") && source.includes("const TRANSIENT_ATTACH_ERRORS"));
 ok("unexpected drops auto-reconnect with bounded backoff",
   source.includes("function _scheduleAutoReconnect") && source.includes("AUTO_RECONNECT_DELAYS_TRANSPORT") && source.includes("AUTO_RECONNECT_DELAYS_EXIT"));
+ok("failure budget resets only after a sustained (>10s) reconnect",
+  source.includes("RECONNECT_SUSTAIN_MS") && source.includes("ent._liveSince = Date.now();")
+    && !source.includes("ent._autoReconnectAttempt = 0;\n        if (typeof bridge.ready === 'function')"));
+ok("exhausted ladder continues as a background retry loop with guidance",
+  source.includes("function _startBackgroundRetry")
+    && source.includes("AUTO_RECONNECT_BG_FIRST_MS") && source.includes("AUTO_RECONNECT_BG_INTERVAL_MS")
+    && !source.includes("auto-reconnect exhausted"));
+ok("status pill is the visible, clickable retry affordance",
+  source.includes("terminalAttachStatus.addEventListener('click'"));
 ok("keystroke reconnect cancels the scheduled auto attempt",
   source.includes("if (ent._autoReconnectTimer) { clearTimeout(ent._autoReconnectTimer); ent._autoReconnectTimer = null; }"));
 ok("persistent attach status is owned per agent and cleared on switch",
