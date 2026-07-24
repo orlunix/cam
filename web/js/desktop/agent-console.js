@@ -913,6 +913,11 @@ export const OUTPUT_HISTORY_STEPS = [200, 1000, 2000, 4000, 8000];
 const TERMINAL_AGENT_STATUSES = new Set(['completed', 'failed', 'timeout', 'killed']);
 const TERMINAL_MIN_NOTIFY_COLS = 40;
 const TERMINAL_MIN_NOTIFY_WIDTH = 320;
+// Hard renderer-side deadline for one bridge.open attempt. The main-side
+// budget is bounded (probe + connect x2 + 15s channel open), but a dead
+// endpoint chains several of those; without this, a hung open latches
+// termOpening / terminalRefreshPending forever and locks the UI.
+const ATTACH_WATCHDOG_MS = 45000;
 
 /* ─────────── Browse v1: language detection + highlighter ───────────
  *
@@ -1351,7 +1356,15 @@ export function mountAgentConsole({ api, state, showToast }) {
   // exhaustion the UI falls back to the keystroke prompt, as before.
   const AUTO_RECONNECT_DELAYS_TRANSPORT = [0, 2000, 5000, 12000, 30000];
   const AUTO_RECONNECT_DELAYS_EXIT = [0, 3000];
-  const TRANSIENT_ATTACH_ERRORS = new Set(['exec_timeout', 'exec_failed', 'connect_timeout', 'connect_lost']);
+  const TRANSIENT_ATTACH_ERRORS = new Set(['exec_timeout', 'exec_failed', 'connect_timeout', 'connect_lost', 'watchdog_timeout']);
+  // Background retry after the foreground ladder exhausts: a quick
+  // first attempt so the state never looks frozen, then a slow loop
+  // until success or the entry is closed. A failure budget resets only
+  // after the channel SUSTAINS >10s, so "connected but instantly
+  // dropped" can never re-arm the ladder into an infinite loop.
+  const AUTO_RECONNECT_BG_FIRST_MS = 10000;
+  const AUTO_RECONNECT_BG_INTERVAL_MS = 30000;
+  const RECONNECT_SUSTAIN_MS = 10000;
   let terminalActionBar = null;
   let terminalHistoryBtn = null;
   let terminalBottomBtn = null;
@@ -2135,7 +2148,7 @@ export function mountAgentConsole({ api, state, showToast }) {
           ent.sessionState = 'dead';
           ent.reconnectOffered = true;
           try {
-            ent.term.write(`\r\n\x1b[2mterminal disconnected${suffix} — reconnecting…\x1b[0m\r\n`);
+            ent.term.write(`\r\n\x1b[2mterminal disconnected${suffix} — 自动重试中，按任意键立即重试\x1b[0m\r\n`);
           } catch (_) {}
           _scheduleAutoReconnect(ent, msg);
         }
@@ -2152,8 +2165,10 @@ export function mountAgentConsole({ api, state, showToast }) {
    *  in the status line instead). */
   async function reconnectTerminalEntry(ent, opts = {}) {
     if (!ent || ent.sessionState === 'reconnecting' || !ent.term) return;
-    // A manual keystroke attempt cancels any pending scheduled attempt.
+    // A manual attempt (keystroke / status-pill click) cancels any
+    // pending scheduled attempt, ladder or background loop.
     if (ent._autoReconnectTimer) { clearTimeout(ent._autoReconnectTimer); ent._autoReconnectTimer = null; }
+    if (ent._bgRetryTimer) { clearTimeout(ent._bgRetryTimer); ent._bgRetryTimer = null; }
     ent.sessionState = 'reconnecting';
     ent.reconnectOffered = false;
     const bridge = termBridge();
@@ -2163,12 +2178,41 @@ export function mountAgentConsole({ api, state, showToast }) {
       ent.term.write('\r\n\x1b[2mreconnecting…\x1b[0m\r\n');
       const cols = Math.max(TERMINAL_MIN_NOTIFY_COLS, Number(ent.term.cols) || 80);
       const rows = Math.max(4, Number(ent.term.rows) || 24);
-      const res = await bridge.open({ agentId: ent.agentId, cols, rows });
+      // Same watchdog as the full attach path: without it a hung
+      // bridge.open latches sessionState at 'reconnecting' forever —
+      // keystrokes are ignored (dead-only), the ladder no-ops on the
+      // same guard, and only an app restart clears it.
+      const openP = bridge.open({ agentId: ent.agentId, cols, rows });
+      let timedOut = false;
+      const res = await Promise.race([
+        openP,
+        new Promise((resolve) => setTimeout(() => {
+          timedOut = true;
+          resolve({ ok: false, error: 'watchdog_timeout', detail: 'attach timed out — 超时未连接，点击状态栏或按任意键重试' });
+        }, ATTACH_WATCHDOG_MS)),
+      ]);
+      if (timedOut) {
+        void openP.then((late) => {
+          if (late && late.ok && late.sessionId) {
+            try { bridge.close({ sessionId: late.sessionId }); } catch (_) {}
+          }
+        }).catch(() => {});
+      }
       if (res && res.ok) {
         ent.sessionId = res.sessionId;
         ent.sessionState = 'live';
         ent.lastUsed = Date.now();
-        ent._autoReconnectAttempt = 0;
+        ent._liveSince = Date.now();
+        // Reset the failure budget only after the channel SUSTAINS —
+        // a connect that dies within seconds must keep counting, or a
+        // flapping link loops forever on reset-on-each-partial-success.
+        window.setTimeout(() => {
+          if (terminalSessions.get(ent.agentId) === ent && ent.sessionState === 'live') {
+            ent._autoReconnectAttempt = 0;
+          }
+        }, RECONNECT_SUSTAIN_MS);
+        if (ent._bgRetryTimer) { clearTimeout(ent._bgRetryTimer); ent._bgRetryTimer = null; }
+        ent._bgRetryCount = 0;
         if (typeof bridge.ready === 'function') {
           try { bridge.ready({ sessionId: ent.sessionId }); } catch (_) {}
         }
@@ -2188,15 +2232,17 @@ export function mountAgentConsole({ api, state, showToast }) {
 
   /** Bounded auto-reconnect after an unexpected drop. Transport drops
    *  (flapping links) get the full backoff ladder; remote exits get two
-   *  quick attempts. A keystroke between attempts triggers an immediate
-   *  manual attempt which cancels this schedule. */
+   *  quick attempts. When the ladder exhausts, control hands to
+   *  _startBackgroundRetry instead of stopping at an invisible
+   *  "press any key" state. A keystroke or status-pill click between
+   *  attempts triggers an immediate manual attempt and cancels the
+   *  schedule. */
   function _scheduleAutoReconnect(ent, msg) {
     const transportDrop = !!(msg && (msg.error || msg.code == null));
     const delays = transportDrop ? AUTO_RECONNECT_DELAYS_TRANSPORT : AUTO_RECONNECT_DELAYS_EXIT;
     const attempt = ent._autoReconnectAttempt || 0;
     if (attempt >= delays.length) {
-      setTerminalAttachStatus('Auto-reconnect failed — press any key to retry.', 'error', 0, ent.agentId);
-      try { ent.term.write(`\r\n\x1b[2mauto-reconnect exhausted — press any key to retry\x1b[0m\r\n`); } catch (_) {}
+      _startBackgroundRetry(ent);
       return;
     }
     ent._autoReconnectAttempt = attempt + 1;
@@ -2209,6 +2255,32 @@ export function mountAgentConsole({ api, state, showToast }) {
         _scheduleAutoReconnect(ent, msg);
       }
     }, delays[attempt]);
+  }
+
+  /** Slow background retry loop after the foreground ladder exhausts.
+   *  First attempt soon (10s) so the state never looks frozen, then
+   *  every 30s until success or the entry is closed/replaced. The
+   *  status pill says what happened and what happens next, and is
+   *  clickable for an immediate retry. */
+  function _startBackgroundRetry(ent) {
+    if (ent._bgRetryTimer) return;
+    const schedule = (delay) => {
+      ent._bgRetryTimer = setTimeout(async () => {
+        ent._bgRetryTimer = null;
+        if (terminalSessions.get(ent.agentId) !== ent || ent.sessionState === 'live') return;
+        ent._bgRetryCount = (ent._bgRetryCount || 0) + 1;
+        setTerminalAttachStatus(`连接已断 · 后台重试中（第 ${ent._bgRetryCount} 次） · 点击立即重试`, 'info', 0, ent.agentId);
+        await reconnectTerminalEntry(ent, { auto: true });
+        if (ent.sessionState !== 'live' && terminalSessions.get(ent.agentId) === ent) {
+          schedule(AUTO_RECONNECT_BG_INTERVAL_MS);
+        }
+      }, delay);
+    };
+    setTerminalAttachStatus('连接已断 · 10s 后自动后台重试 · 点击立即重试', 'info', 0, ent.agentId);
+    try {
+      ent.term.write(`\r\n\x1b[2mconnection lost — 10s 后自动后台重试，按任意键立即重试\x1b[0m\r\n`);
+    } catch (_) {}
+    schedule(AUTO_RECONNECT_BG_FIRST_MS);
   }
 
   async function closeTerminalSession(agentId = termAgentId) {
@@ -2229,6 +2301,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     ent.opening = false;
     ent.copyBrowsing = false;
     if (ent._autoReconnectTimer) { try { clearTimeout(ent._autoReconnectTimer); } catch (_) {} ent._autoReconnectTimer = null; }
+    if (ent._bgRetryTimer) { try { clearTimeout(ent._bgRetryTimer); } catch (_) {} ent._bgRetryTimer = null; }
     if (bridge && sid) {
       try { await bridge.close({ sessionId: sid }); } catch (_) {}
     }
@@ -2245,6 +2318,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     ent.opening = false;
     ent.copyBrowsing = false;
     if (ent._autoReconnectTimer) { try { clearTimeout(ent._autoReconnectTimer); } catch (_) {} ent._autoReconnectTimer = null; }
+    if (ent._bgRetryTimer) { try { clearTimeout(ent._bgRetryTimer); } catch (_) {} ent._bgRetryTimer = null; }
     if (bridge && sid) {
       try { await bridge.close({ sessionId: sid }); } catch (_) {}
     }
@@ -2344,15 +2418,47 @@ export function mountAgentConsole({ api, state, showToast }) {
       const openRows = Math.max(4, Number(ent.term.rows) || 24);
       ent.lastCols = openCols;
       ent.lastRows = openRows;
-      let res = await bridge.open({ agentId: agent.id, cols: openCols, rows: openRows });
+      // bridge.open has no IPC-level deadline of its own — race it
+      // against ATTACH_WATCHDOG_MS so a wedged pool / dead endpoint
+      // cannot latch opening/refresh state forever. A late success is
+      // closed below (see watchdog-close + the stale-entry guard).
+      const openWithWatchdog = async () => {
+        const p = bridge.open({ agentId: agent.id, cols: openCols, rows: openRows });
+        let timedOut = false;
+        const r = await Promise.race([
+          p,
+          new Promise((resolve) => setTimeout(() => {
+            timedOut = true;
+            resolve({ ok: false, error: 'watchdog_timeout', detail: 'attach timed out — 超时未连接，点击状态栏或 Refresh 立即重试' });
+          }, ATTACH_WATCHDOG_MS)),
+        ]);
+        if (timedOut) {
+          // The abandoned attempt may still open a channel later — close
+          // it so it cannot linger as a zombie tmux client.
+          void p.then((late) => {
+            if (late && late.ok && late.sessionId) {
+              try { bridge.close({ sessionId: late.sessionId }); } catch (_) {}
+            }
+          }).catch(() => {});
+        }
+        return r;
+      };
+      let res = await openWithWatchdog();
       // One automatic retry on transient failures (wedged pool entry,
       // half-dead socket). The transport now drops suspect pool entries
       // on open failure/timeout, so the retry rides a fresh connection.
       if ((!res || !res.ok) && !opts._retried && TRANSIENT_ATTACH_ERRORS.has(res && res.error)) {
         await new Promise((r) => setTimeout(r, 1500));
         if (terminalSessions.get(agent.id) === ent && !ent.sessionId) {
-          res = await bridge.open({ agentId: agent.id, cols: openCols, rows: openRows });
+          res = await openWithWatchdog();
         }
+      }
+      if (res && res.ok && terminalSessions.get(agent.id) !== ent) {
+        // Superseded by a newer attempt while this open was in flight
+        // (Refresh clicked during opening) — close the channel we just
+        // opened instead of leaving a zombie client behind.
+        try { bridge.close({ sessionId: res.sessionId }); } catch (_) {}
+        return { ok: false, error: 'stale_open', detail: 'attach superseded by a newer attempt' };
       }
       if (!res || !res.ok) {
         ent.term.write(`\r\n\x1b[31mTerminal attach failed: ${res && (res.detail || res.error) || 'unknown'}\x1b[0m\r\n`);
@@ -2901,6 +3007,17 @@ export function mountAgentConsole({ api, state, showToast }) {
     terminalRefreshBtn = chrome.querySelector('.terminal-refresh-btn');
     terminalAttachBtn = chrome.querySelector('.terminal-attach-icon');
     terminalAttachStatus = chrome.querySelector('.terminal-attach-status');
+    if (terminalAttachStatus) {
+      // The status pill is the visible retry affordance: while an entry
+      // is dead it shows what happened and what happens next, and a
+      // click retries immediately (no hidden "press any key" gate).
+      terminalAttachStatus.style.cursor = 'pointer';
+      terminalAttachStatus.addEventListener('click', () => {
+        const ent = termAgentId ? terminalSessions.get(termAgentId) : null;
+        if (!ent || ent.sessionState !== 'dead') return;
+        void reconnectTerminalEntry(ent);
+      });
+    }
 
     terminalAttachBtn.addEventListener('click', () => {
       if (!terminalAttachBtn.disabled) void pickAndUploadTerminalAttachment();
@@ -2910,6 +3027,14 @@ export function mountAgentConsole({ api, state, showToast }) {
       const bridge = termBridge();
       if (!ent || !bridge || !ent.sessionId || terminalHistoryBtn.disabled) return;
       const sessionId = ent.sessionId;
+      // In copy mode the same button pages up one screen via the live
+      // stream (tmux copy-mode interprets PageUp directly — no exec,
+      // no mode change). Outside copy mode it enters copy mode.
+      if (ent.copyBrowsing) {
+        try { bridge.input({ sessionId: ent.sessionId, data: '\x1b[5~' }); } catch (_) {}
+        try { ent.term.focus(); } catch (_) {}
+        return;
+      }
       ent.tmuxControlRevision += 1;
       terminalHistoryBtn.disabled = true;
       try {
@@ -2999,32 +3124,48 @@ export function mountAgentConsole({ api, state, showToast }) {
       const ent = terminalSessions.get(termAgentId);
       const bridge = termBridge();
       if (!ent || !bridge || !ent.sessionId) return;
-      const result = button.dataset.action === 'create'
+      const isCreate = button.dataset.action === 'create';
+      const index = isCreate ? -1 : Number(button.dataset.windowIndex);
+      // Optimistic highlight: the switch itself is key-bytes on the live
+      // stream (ms), so light the tab now and reconcile with the next
+      // listWindows result instead of blocking the UI on execs.
+      if (!isCreate && Array.isArray(ent.tmuxWindows)) {
+        ent.tmuxWindows = ent.tmuxWindows.map((w) => ({ ...w, active: w.index === index }));
+        renderTerminalTabs(ent);
+      }
+      const result = isCreate
         ? await bridge.createWindow({ sessionId: ent.sessionId })
-        : await bridge.selectWindow({ sessionId: ent.sessionId, index: Number(button.dataset.windowIndex) });
+        : await bridge.selectWindow({ sessionId: ent.sessionId, index });
       if (!result?.ok) { setTerminalAttachStatus(result?.detail || 'tmux window action failed.', 'error'); return; }
       ent.tmuxReady = true;
-      ent.tmuxWindows = result.windows || [];
-      renderTerminalTabs(ent);
+      if (result.via === 'pty') {
+        // Key-byte path: server switched already; refresh state shortly
+        // (single listWindows in the background) to realign names/active.
+        window.setTimeout(() => { void refreshTerminalTmuxControls(); }, 300);
+      } else {
+        ent.tmuxWindows = result.windows || [];
+        renderTerminalTabs(ent);
+      }
       updateTerminalTmuxControls();
       try { ent.term.focus(); } catch (_) {}
     });
-    window.setInterval(() => {
-      // Poll only while the terminal is actually on screen: switching to
-      // Settings/Nodes keeps sessions warm, but the tab strip is hidden
-      // there and remote listWindows execs would be pure churn.
-      if (outputMode === 'terminal' && isAgentsMode() && termAgentId) void refreshTerminalTmuxControls();
-    }, 2000);
+    // Tab strip is fully event-driven: refresh on attach, on returning
+    // to the terminal page (showTerminalEntry), on strip actions (the
+    // 300ms reconcile after a pty switch/create), and on the Settings
+    // toggle. No periodic listWindows polling at all — a window created
+    // out-of-band (manual C-b c in the terminal) simply appears at the
+    // next of those events.
+
   }
 
   function renderTerminalTabs(ent) {
     if (!terminalTabsEl) return;
     terminalTabsEl.textContent = '';
     // Terminal tabs (the tmux window strip) are an experimental
-    // enhancement, OFF by default — the toggle lives in Start →
-    // Advanced. The terminal itself, History and To Bottom never
-    // depend on this flag.
-    if (!terminalTabsEnabled()) { terminalTabsEl.hidden = true; return; }
+    // enhancement, OFF by default and configured per agent in the
+    // agent's own Settings → Attributes. The terminal itself, History
+    // and To Bottom never depend on this flag.
+    if (!terminalTabsEnabled(ent && ent.agentId)) { terminalTabsEl.hidden = true; return; }
     if (!ent?.tmuxReady) {
       // Transient degraded hint only while retries are in flight —
       // once they are exhausted the strip hides entirely (tmuxHintState
@@ -3067,27 +3208,39 @@ export function mountAgentConsole({ api, state, showToast }) {
     // state; once retries are exhausted (tmuxHintState 'hidden') it
     // hides entirely and stays quiet.
     if (terminalTabsEl) {
-      terminalTabsEl.hidden = !terminalTabsEnabled() || !terminalConnected || (ent && ent.tmuxHintState === 'hidden' && !ent.tmuxReady);
+      terminalTabsEl.hidden = !terminalTabsEnabled(termAgentId) || !terminalConnected || (ent && ent.tmuxHintState === 'hidden' && !ent.tmuxReady);
     }
     if (terminalActionBar) terminalActionBar.hidden = !terminalVisible;
-    if (terminalHistoryBtn) terminalHistoryBtn.disabled = actionsBlocked || !tmuxVisible || !!ent?.copyBrowsing;
+    if (terminalHistoryBtn) {
+      // Enabled in copy mode too: the same button pages up one screen
+      // via the live stream (see the click handler).
+      terminalHistoryBtn.disabled = actionsBlocked || !tmuxVisible;
+      terminalHistoryBtn.title = ent?.copyBrowsing ? 'Page up (tmux copy mode)' : 'Browse tmux history';
+    }
     if (terminalBottomBtn) terminalBottomBtn.disabled = actionsBlocked || !terminalConnected || (!ent?.copyBrowsing && terminalIsAtBottom(ent));
     if (terminalRefreshBtn) {
+      // Refresh is the escape hatch for a stuck attach — it must stay
+      // clickable while opening; the force path abandons the in-flight
+      // attempt (stale-entry guard closes any late channel).
       terminalRefreshBtn.disabled = actionsBlocked || !terminalVisible || !selectedAgent()
-        || !canUseTerminalMode() || termOpening;
+        || !canUseTerminalMode();
       terminalRefreshBtn.classList.toggle('is-refreshing', terminalRefreshPending);
     }
   }
 
   // Terminal tabs (the tmux window strip) are an experimental
-  // enhancement, OFF by default — the toggle lives in Start → Advanced
-  // and persists to localStorage. Terminal, History and To Bottom work
-  // regardless.
-  function terminalTabsEnabled() {
-    try { return localStorage.getItem('cam_terminal_tabs_enabled') === '1'; } catch (_) { return false; }
+  // enhancement, ON by default since the switch/create path rides the
+  // attach stream. The fallback contract is silence: missing tmux
+  // metadata, no discoverable tmux binary, or any control failure
+  // hides the strip (tmuxHintState 'hidden') and the terminal keeps
+  // working exactly as if the feature were off. The per-agent toggle
+  // in agent Settings → Attributes is the explicit opt-out ('0').
+  function terminalTabsEnabled(agentId) {
+    if (!agentId) return false;
+    try { return localStorage.getItem(`cam_terminal_tabs_enabled:${agentId}`) !== '0'; } catch (_) { return true; }
   }
 
-  /** Re-render the strip when the Advanced toggle flips. */
+  /** Re-render the strip when the per-agent Attributes toggle flips. */
   function ensureTerminalTabsToggleWiring() {
     if (terminalTabsToggleWired) return;
     terminalTabsToggleWired = true;
@@ -3095,7 +3248,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       const ent = termAgentId ? terminalSessions.get(termAgentId) : null;
       renderTerminalTabs(ent);
       updateTerminalTmuxControls();
-      if (terminalTabsEnabled()) void refreshTerminalTmuxControls();
+      if (terminalTabsEnabled(termAgentId)) void refreshTerminalTmuxControls();
     });
   }
 
@@ -3106,7 +3259,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     // (failed or feature-flagged off) — stay quiet on the NETWORK too,
     // not just the UI: no more listWindows execs until a reattach
     // creates a fresh entry.
-    if (!terminalTabsEnabled() || !ent || !bridge || !ent.sessionId || terminalTmuxRefreshPending || ent.tmuxHintState === 'hidden') {
+    if (!terminalTabsEnabled(termAgentId) || !ent || !bridge || !ent.sessionId || terminalTmuxRefreshPending || ent.tmuxHintState === 'hidden') {
       updateTerminalTmuxControls();
       return;
     }
