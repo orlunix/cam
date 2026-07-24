@@ -196,18 +196,17 @@ ok("tab strip state refresh is fully event-driven (no interval poll)",
   !/setInterval[\s\S]{0,200}refreshTerminalTmuxControls/.test(source));
 ok("exhausted tmux retries stop remote polling too",
   source.includes("|| ent.tmuxHintState === 'hidden')"));
-ok("terminal tabs are opt-in via Settings Appearance, default off",
-  source.includes("function terminalTabsEnabled")
-    && source.includes("cam_terminal_tabs_enabled")
-    && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('id="appearance-terminal-tabs"')
-    && !fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('id="start-terminal-tabs"')
-    && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "desktop", "settings-mode.js"), "utf8").includes("appearance-terminal-tabs"));
+ok("terminal tabs are a per-agent opt-in in agent Settings > Attributes",
+  source.includes("cam_terminal_tabs_enabled:${agentId}")
+    && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('id="agent-settings-terminal-tabs"')
+    && !fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('id="appearance-terminal-tabs"')
+    && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "desktop", "shell.js"), "utf8").includes("terminalTabsKeyFor"));
 ok("tmux control failure disables the strip with one transient (<3s) note",
   source.includes("ent.tmuxHintState = 'hidden';")
     && source.includes("setTerminalAttachStatus('window controls unavailable', 'info', 2800, ent.agentId)")
     && !source.includes("const retries = [2000, 5000, 12000, 30000]"));
 ok("tab strip never polls while feature-disabled",
-  source.includes("if (!terminalTabsEnabled() || !ent || !bridge || !ent.sessionId"));
+  source.includes("if (!terminalTabsEnabled(termAgentId) || !ent || !bridge || !ent.sessionId"));
 ok("attach open has a renderer-side watchdog deadline",
   source.includes("ATTACH_WATCHDOG_MS = 45000") && source.includes("Promise.race") && source.includes("watchdog_timeout"));
 ok("watchdog timeout joins the transient-retry set",
