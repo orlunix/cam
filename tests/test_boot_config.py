@@ -4,6 +4,7 @@ from pathlib import Path
 
 from camc_pkg.adapters import AdapterConfig, _parse_toml
 from camc_pkg.detection import (
+    is_ready_for_input,
     is_ready_for_boot,
     should_boot_confirm,
     should_confirm_initializing,
@@ -57,3 +58,23 @@ def test_cursor_boot_trust_rule():
     hit = should_boot_confirm(screen, boot)
     assert hit is not None
     assert hit[0] == "a"
+
+
+def test_codex_current_menu_beats_stale_prompt_during_boot():
+    tool = _boot_config("codex.toml")
+    previous = "› old user input\nworking\n"
+    screen = previous + "Allow this action?\n› 1. Yes, proceed (y)\n  2. No\n"
+
+    hit, cfg = should_confirm_initializing(
+        screen, None, tool, prev_output=previous)
+
+    assert hit is not None
+    assert cfg is tool
+    assert is_ready_for_input(screen, tool) is False
+
+
+def test_cursor_ready_prompt_survives_footer_lines():
+    tool = _boot_config("cursor.toml")
+    screen = "→ Add a follow-up\n\nComposer 2.5 Fast · 8%\n/workspace"
+
+    assert is_ready_for_input(screen, tool) is True

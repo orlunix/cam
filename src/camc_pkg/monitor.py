@@ -137,6 +137,8 @@ def _apply_action(action, *, session, agent_id, store, events_fn):
                         send_enter=action.get("send_enter", True))
     elif kind == "send_key":
         tmux_send_key(session, action["key"])
+    elif kind == "sleep":
+        time.sleep(float(action.get("seconds", 0) or 0))
     elif kind == "store_update":
         store.update(agent_id, **action.get("fields", {}))
     elif kind == "event":
