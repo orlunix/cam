@@ -70,22 +70,14 @@ export const MOBILE_NODES_HTML = `
           <label>Passphrase (optional)
             <input type="password" id="nodes-add-passphrase" autocomplete="new-password"
               placeholder="leave blank if key is unencrypted">
-          </label>
-          <label class="form-checkbox">
-            <input type="checkbox" id="nodes-add-remember-passphrase">
-            <span>Remember passphrase</span>
-            <span class="form-hint">Encrypted with the OS keychain (Electron safeStorage). Never stored in plaintext.</span>
+            <span class="form-hint">If set, stored encrypted in the OS keychain.</span>
           </label>
         </div>
 
         <div class="nodes-auth-section" id="nodes-auth-password" data-auth="password" data-ctx-edit-hide="1" hidden>
           <label>Password
             <input type="password" id="nodes-add-password" autocomplete="new-password">
-          </label>
-          <label class="form-checkbox">
-            <input type="checkbox" id="nodes-add-remember-password">
-            <span>Remember password</span>
-            <span class="form-hint">Encrypted with the OS keychain (Electron safeStorage). Never stored in plaintext.</span>
+            <span class="form-hint">Stored encrypted in the OS keychain.</span>
           </label>
         </div>
 

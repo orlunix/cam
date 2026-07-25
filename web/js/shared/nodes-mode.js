@@ -26,10 +26,10 @@
  * New Context: opens the manage panel in add-context mode with host
  * fields hidden (inherited from the parent host) and workspace
  * fields visible. For password-auth hosts the password sub-form is
- * shown and Remember password is required — the embedded Hub does
- * not auto-clone credential references to new contexts, so the user
- * must re-enter the password for the new record. Renderer never
- * touches existing credential bytes.
+ * shown; the entered password is always remembered (OS keychain) —
+ * the embedded Hub does not auto-clone credential references to new
+ * contexts, so the user must re-enter the password for the new record.
+ * Renderer never touches existing credential bytes.
  *
  * The embedded Hub currently persists `machine` fields per context.
  * The renderer treats that as an internal compatibility detail and
@@ -1468,7 +1468,7 @@ function mountNodesActions({
   /** Open the manage panel to add a NEW context under an existing
    *  host. Host fields are hidden (inherited from the parent host);
    *  workspace fields are entered fresh. For password-auth hosts the
-   *  password sub-form is shown and Remember password is required. */
+   *  password sub-form is shown (always remembered, OS keychain). */
   panel._openAddContext = function openAddContext(node) {
     if (readOnly()) return;
     if (!node || !node.contexts || node.contexts.length === 0) return;
@@ -1681,27 +1681,17 @@ function mountNodesActions({
       };
       if (authMethod === 'key') {
         body.key_file = m.key_file || '';
-        if (fRemPassph && fRemPassph.checked) {
-          const pp = (fPassphrase && fPassphrase.value) || '';
-          if (!pp) {
-            setAddStatus('Enter a passphrase or uncheck Remember passphrase.', 'is-error');
-            return;
-          }
+        // Secrets are always remembered (OS keychain) — no opt-out
+        // checkbox, same convention as other SSH clients.
+        const pp = (fPassphrase && fPassphrase.value) || '';
+        if (pp) {
           body.passphrase = pp;
           body.remember_passphrase = true;
         }
       } else if (authMethod === 'password') {
         const pw  = fPassword ? fPassword.value : '';
-        const rem = !!(fRemPasswd && fRemPasswd.checked);
-        if (!rem && !relaxPasswordRemember) {
-          setAddStatus(
-            'Password auth requires Remember password — the embedded Hub does not auto-clone credentials to new contexts.',
-            'is-error',
-          );
-          return;
-        }
         if (!pw) {
-          setAddStatus('Enter a password to remember.', 'is-error');
+          setAddStatus('Enter a password.', 'is-error');
           return;
         }
         body.password = pw;
@@ -1751,37 +1741,26 @@ function mountNodesActions({
     if (authMethod === 'key') {
       hostBody.key_file = fKey ? fKey.value.trim() : '';
       const pass = fPassphrase ? fPassphrase.value : '';
-      const rem  = !!(fRemPassph && fRemPassph.checked);
-      if (rem) {
-        if (!pass) {
-          setAddStatus('Enter a passphrase or uncheck Remember passphrase.', 'is-error');
-          return;
-        }
+      // Secrets are always remembered (OS keychain) — no opt-out
+      // checkbox, same convention as other SSH clients.
+      if (pass) {
         hostBody.passphrase = pass;
         hostBody.remember_passphrase = true;
       }
     } else if (authMethod === 'password') {
       hostBody.key_file = '';
       const pw  = fPassword ? fPassword.value : '';
-      const rem = !!(fRemPasswd && fRemPasswd.checked);
       const keepExistingPassword =
         isHostEdit && editHostNode &&
         editHostNode.contexts.every(ctx => {
           const m = (ctx && ctx.machine) || {};
           return (m.auth_method || '') === 'password' && !!m.credential_saved;
-        }) && !rem;
-      if (!rem && !keepExistingPassword && !relaxPasswordRemember) {
-        setAddStatus('Password auth requires Remember password (until a per-sync password prompt is added).', 'is-error');
-        return;
-      }
-      if (pw && (rem || relaxPasswordRemember)) {
+        });
+      if (pw) {
         hostBody.password = pw;
         hostBody.remember_password = true;
       } else if (!keepExistingPassword && !isHostEdit) {
         setAddStatus('Enter a password.', 'is-error');
-        return;
-      } else if (rem && !pw) {
-        setAddStatus('Enter a password to remember.', 'is-error');
         return;
       }
     } else if (authMethod === 'agent') {
