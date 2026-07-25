@@ -133,6 +133,19 @@ ok("ssh-config parser strips quotes and resolves relative IdentityFile against ~
   fs.readFileSync(path.join(root, "apps", "cam-desktop", "electron", "embedded-hub.cjs"), "utf8").includes("function _normalizeIdentityFile")
     && fs.readFileSync(path.join(root, "apps", "cam-desktop", "electron", "embedded-hub.cjs"), "utf8").includes("path.join(os.homedir(), '.ssh', p)")
     && fs.readFileSync(path.join(root, "apps", "cam-desktop", "electron", "embedded-hub.cjs"), "utf8").includes("path.isAbsolute"));
+{
+  const nodesSrc = fs.readFileSync(path.join(root, "web", "js", "shared", "nodes-mode.js"), "utf8");
+  const deskHtml = fs.readFileSync(path.join(root, "web", "desktop.html"), "utf8");
+  const mobSrc = fs.readFileSync(path.join(root, "web", "js", "mobile", "nodes-shell.js"), "utf8");
+  ok("secrets are always remembered — no remember checkboxes, remember flag set when secret provided",
+    !deskHtml.includes("nodes-add-remember-password")
+      && !deskHtml.includes("nodes-add-remember-passphrase")
+      && !mobSrc.includes("nodes-add-remember-password")
+      && !mobSrc.includes("nodes-add-remember-passphrase")
+      && !nodesSrc.includes("requires Remember password")
+      && nodesSrc.includes("body.remember_password = true")
+      && nodesSrc.includes("hostBody.remember_password = true"));
+}
 
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exitCode = fail ? 1 : 0;
