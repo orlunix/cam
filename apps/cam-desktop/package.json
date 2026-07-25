@@ -15,7 +15,7 @@
     "build": "electron-builder",
     "build:win": "electron-builder --win",
     "build:win-msi": "electron-builder --win msi --config.win.signAndEditExecutable=false --config.win.verifyUpdateCodeSignature=false",
-    "build:mas": "electron-builder --mac mas --config.npmRebuild=false --publish=never",
+    "build:mas": "electron-builder --mac mas --universal --config.npmRebuild=false --publish=never",
     "dist": "electron-builder",
     "cli": "node cli/camui-cli.cjs",
     "lint:electron": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/ssh-transport.cjs && node --check electron/embedded-hub.cjs && node --check electron/credential-store.cjs && node --check cli/camui-cli.cjs",
