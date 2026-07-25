@@ -110,6 +110,9 @@
     "mas": {
       "appId": "com.hren.cam.mas",
       "minimumSystemVersion": "12.0",
+      "extendInfo": {
+        "LSMinimumSystemVersion": "12.0"
+      },
       "entitlements": "build/entitlements.mas.plist",
       "entitlementsInherit": "build/entitlements.mas.inherit.plist",
       "provisioningProfile": "embedded.provisionprofile",
