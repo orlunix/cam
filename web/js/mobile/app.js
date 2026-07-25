@@ -1,24 +1,24 @@
 /**
  * CamUI Mobile V2 — Relay entry (v2.2.0) + additive Direct mode hooks.
  */
-import { api } from '../api.js?v=2.4.51';
-import { state } from '../state.js?v=2.4.51';
-import { renderDashboard } from './views/dashboard.js?v=2.4.51';
-import { renderAgentDetail } from './views/agent-detail.js?v=2.4.51';
-import { renderStartAgent } from './views/start-agent.js?v=2.4.51';
-import { renderSettings } from './settings.js?v=2.4.51';
-import { readRelayConfig, hasRelayConfig } from './settings-relay.js?v=2.4.51';
-import { renderFileBrowser, renderAgentFileBrowser } from './views/file-browser.js?v=2.4.51';
-import { renderNodes } from './nodes-page.js?v=2.4.51';
-import { renderSkills } from './skills.js?v=2.4.51';
-import { renderTodos } from './todos.js?v=2.4.51';
-import { renderAgentSettings } from './agent-settings.js?v=2.4.51';
-import { maybeInitDirectMode } from './direct-init.js?v=2.4.51';
-import { installMobileCamBridgeShim } from './mobile-bridge.js?v=2.4.51';
-import { refreshHubCapabilities, setHubCapabilities, HUB_CAP_FULL } from '../shared/hub-capabilities.js?v=2.4.51';
-import { loadAgentFilters } from '../shared/agent-filters.js?v=2.4.51';
-import { applyMobileAppearance } from '../shared/mobile-appearance.js?v=2.4.51';
-import { filterAgentsOnEnabledHosts } from '../shared/node-host-meta.js?v=2.4.51';
+import { api } from '../api.js?v=2.4.53';
+import { state } from '../state.js?v=2.4.53';
+import { renderDashboard } from './views/dashboard.js?v=2.4.53';
+import { renderAgentDetail } from './views/agent-detail.js?v=2.4.53';
+import { renderStartAgent } from './views/start-agent.js?v=2.4.53';
+import { renderSettings } from './settings.js?v=2.4.53';
+import { readRelayConfig, hasRelayConfig } from './settings-relay.js?v=2.4.53';
+import { renderFileBrowser, renderAgentFileBrowser } from './views/file-browser.js?v=2.4.53';
+import { renderNodes } from './nodes-page.js?v=2.4.53';
+import { renderSkills } from './skills.js?v=2.4.53';
+import { renderTodos } from './todos.js?v=2.4.53';
+import { renderAgentSettings } from './agent-settings.js?v=2.4.53';
+import { maybeInitDirectMode } from './direct-init.js?v=2.4.53';
+import { installMobileCamBridgeShim } from './mobile-bridge.js?v=2.4.53';
+import { refreshHubCapabilities, setHubCapabilities, HUB_CAP_FULL } from '../shared/hub-capabilities.js?v=2.4.53';
+import { loadAgentFilters } from '../shared/agent-filters.js?v=2.4.53';
+import { applyMobileAppearance } from '../shared/mobile-appearance.js?v=2.4.53';
+import { filterAgentsOnEnabledHosts } from '../shared/node-host-meta.js?v=2.4.53';
 
 const PROFILE_KIND_KEY = 'cam_profile_kind';
 
@@ -380,6 +380,26 @@ export { api, state };
 
 window.__camApi = api;
 window.__camState = state;
-window.__camMobileV2 = true;
 
-init();
+// Guard against double module instances: mobile.html loads this file with a
+// ?v= stamp while views import it bare, so it can be evaluated twice. Only
+// one instance may run init() — otherwise every listener, poll loop, and
+// connect() call is duplicated.
+//
+// init() MUST be deferred: the bare instance is evaluated before the stamped
+// one (cyclic imports via the views), and at that point the view modules are
+// still mid-evaluation (their const bindings are in TDZ), so calling init()
+// synchronously fails. A microtask runs after the whole module graph has
+// settled, making init() safe regardless of which instance schedules it.
+function scheduleInit() {
+  if (window.__camMobileV2) {
+    console.warn('[mobile] duplicate app.js instance detected — skipping init()');
+    return;
+  }
+  window.__camMobileV2 = true;
+  Promise.resolve().then(() => {
+    init().catch((e) => console.error('[mobile] init failed', e));
+  });
+}
+
+scheduleInit();
