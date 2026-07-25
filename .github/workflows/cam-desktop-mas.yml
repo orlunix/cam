@@ -105,3 +105,17 @@ jobs:
           name: cam-desktop-mas-${{ matrix.arch }}-pkg
           path: apps/cam-desktop/dist/**/*.pkg
           if-no-files-found: error
+
+      - name: Upload pkg to App Store Connect
+        timeout-minutes: 30
+        env:
+          ASC_API_KEY_B64: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/private_keys"
+          printf '%s' "$ASC_API_KEY_B64" | base64 -d > "$HOME/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          PKG=$(find apps/cam-desktop/dist -name '*.pkg' | head -1)
+          echo "uploading $PKG as key $ASC_KEY_ID"
+          xcrun altool --upload-app --file "$PKG" --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
