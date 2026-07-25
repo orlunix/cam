@@ -228,8 +228,10 @@ ok("late-opening channels are closed on watchdog and superseded paths",
 ok("refresh stays clickable while an attach is opening",
   source.includes("terminalRefreshBtn.disabled = actionsBlocked || !terminalVisible || !selectedAgent()")
     && !source.includes("|| !canUseTerminalMode() || termOpening;"));
-ok("app exposes a soft reset (reload without closing)",
-  preload.includes("resetApp") && main.includes("ipcMain.handle('app:reset'") && main.includes("sshTransport.closeAll()"));
+ok("app exposes a full reset (relaunch like quit + reopen)",
+  preload.includes("resetApp") && main.includes("ipcMain.handle('app:reset'")
+    && main.includes("app.relaunch()") && main.includes("app.exit(0)")
+    && !main.includes("terminals disposed, SSH pools dropped"));
 ok("window switch/create use the live attach stream first (pty fast path)",
   main.includes("function _ptySwitchWindow") && main.includes("via: 'pty'") && main.includes("ent.write('\\x02c')"));
 ok("window switch drops the pre-switch listWindows validation",
