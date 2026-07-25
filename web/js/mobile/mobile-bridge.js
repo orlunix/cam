@@ -1,11 +1,45 @@
-/** Android CamBridge shims (Direct Hub + file picker). */
+/** Android CamBridge shims (Direct Hub + file picker).
+ *
+ * Pending-callback state lives on window.__camBridgeShared, NOT in module
+ * instance state: mobile.html loads app.js with a ?v= stamp while views
+ * import it bare, so this module can be evaluated as two instances, and the
+ * shim is reinstalled on every agent-detail entry / onPageFinished. With
+ * instance-private state, a reinstall orphaned in-flight callbacks — the
+ * promise never settled and the UI wedged in the "Connecting via SSH…"
+ * dead state until a manual page refresh.
+ */
 
-let _dhSeq = 0;
-const _dhPending = {};
-let _termSeq = 0;
-const _termPending = {};
-const _termDataHandlers = new Set();
-const _termStatusHandlers = new Set();
+const _sh = (() => {
+  const fresh = () => ({
+    dhSeq: 0,
+    termSeq: 0,
+    dhPending: {},
+    termPending: {},
+    termDataHandlers: new Set(),
+    termStatusHandlers: new Set(),
+  });
+  if (typeof window === 'undefined') return fresh();
+  window.__camBridgeShared = window.__camBridgeShared || fresh();
+  return window.__camBridgeShared;
+})();
+
+// Native bridge calls only settle via the native callback; if the callback
+// is lost (or an SSH connect stalls), reject after a timeout instead of
+// hanging forever. A late native response for a timed-out id is dropped
+// harmlessly (the pending entry is already gone).
+const TERM_TIMEOUT_MS = { open: 60000, input: 10000, resize: 10000, close: 15000 };
+const HUB_OP_TIMEOUT_MS = 60000;      // start/stop/restart/check/logs/getProfile
+const HUB_REQUEST_TIMEOUT_MS = 90000; // hub API requests (SSH-backed, serialized)
+
+function _armTimeout(pendingMap, id, ms, label) {
+  return setTimeout(() => {
+    const p = pendingMap[id];
+    if (!p) return;
+    delete pendingMap[id];
+    console.warn(`[mobile-bridge] ${label} timed out after ${ms}ms (id=${id})`);
+    p.reject(new Error(`${label} timed out — no response from native side`));
+  }, ms);
+}
 
 function invokeTerm(method, payload = {}) {
   return new Promise((resolve, reject) => {
@@ -14,12 +48,15 @@ function invokeTerm(method, payload = {}) {
       reject(new Error('Terminal bridge unavailable'));
       return;
     }
-    const id = 'tm' + (++_termSeq);
-    _termPending[id] = { resolve, reject };
+    const id = 'tm' + (++_sh.termSeq);
+    _sh.termPending[id] = { resolve, reject };
+    _sh.termPending[id].timer = _armTimeout(
+      _sh.termPending, id, TERM_TIMEOUT_MS[method] || 30000, `term_${method}`);
     try {
       bridge['term_' + method](id, JSON.stringify(payload || {}));
     } catch (err) {
-      delete _termPending[id];
+      clearTimeout(_sh.termPending[id] && _sh.termPending[id].timer);
+      delete _sh.termPending[id];
       reject(err);
     }
   });
@@ -32,12 +69,12 @@ function buildTermBridge() {
     resize(payload) { return invokeTerm('resize', payload); },
     close(payload) { return invokeTerm('close', payload); },
     onData(cb) {
-      _termDataHandlers.add(cb);
-      return () => _termDataHandlers.delete(cb);
+      _sh.termDataHandlers.add(cb);
+      return () => _sh.termDataHandlers.delete(cb);
     },
     onStatus(cb) {
-      _termStatusHandlers.add(cb);
-      return () => _termStatusHandlers.delete(cb);
+      _sh.termStatusHandlers.add(cb);
+      return () => _sh.termStatusHandlers.delete(cb);
     },
   };
 }
@@ -72,8 +109,10 @@ function invokeDirectHub(method) {
       reject(new Error('Embedded Hub bridge unavailable'));
       return;
     }
-    const id = 'dh' + (++_dhSeq);
-    _dhPending[id] = { resolve, reject };
+    const id = 'dh' + (++_sh.dhSeq);
+    _sh.dhPending[id] = { resolve, reject };
+    _sh.dhPending[id].timer = _armTimeout(
+      _sh.dhPending, id, HUB_OP_TIMEOUT_MS, `directHub_${method}`);
     try {
       // Must call on the injected object — never extract the method reference.
       switch (method) {
@@ -84,12 +123,14 @@ function invokeDirectHub(method) {
         case 'logs': bridge.directHub_logs(id); break;
         case 'getProfile': bridge.directHub_getProfile(id); break;
         default:
-          delete _dhPending[id];
+          clearTimeout(_sh.dhPending[id].timer);
+          delete _sh.dhPending[id];
           reject(new Error('Unknown Hub method: ' + method));
           return;
       }
     } catch (err) {
-      delete _dhPending[id];
+      clearTimeout(_sh.dhPending[id] && _sh.dhPending[id].timer);
+      delete _sh.dhPending[id];
       reject(err);
     }
   });
@@ -121,19 +162,22 @@ function invokeDirectHubRequest(method, path, body, token) {
       reject(new Error('Embedded Hub API bridge unavailable'));
       return;
     }
-    const id = 'dh' + (++_dhSeq);
-    _dhPending[id] = {
+    const id = 'dh' + (++_sh.dhSeq);
+    _sh.dhPending[id] = {
       resolve: (res) => {
         if (res && res.ok) resolve(res.data);
         else reject(hubErr(res));
       },
       reject,
     };
+    _sh.dhPending[id].timer = _armTimeout(
+      _sh.dhPending, id, HUB_REQUEST_TIMEOUT_MS, `hub ${method} ${path}`);
     try {
       const bodyJson = body != null ? JSON.stringify(body) : '';
       bridge.directHub_request(id, method, path || '/', bodyJson, token || '');
     } catch (err) {
-      delete _dhPending[id];
+      clearTimeout(_sh.dhPending[id] && _sh.dhPending[id].timer);
+      delete _sh.dhPending[id];
       reject(err);
     }
   });
@@ -155,8 +199,9 @@ export function installMobileCamBridgeShim() {
   if (typeof window === 'undefined') return false;
 
   window.__camTermCb = (id, json) => {
-    const p = _termPending[id];
-    delete _termPending[id];
+    const p = _sh.termPending[id];
+    clearTimeout(p && p.timer);
+    delete _sh.termPending[id];
     if (!p) return;
     let data = null;
     if (json != null && json !== 'null') {
@@ -174,19 +219,20 @@ export function installMobileCamBridgeShim() {
     try { msg = typeof json === 'string' ? JSON.parse(json) : json; } catch { return; }
     if (!msg) return;
     if (kind === 'data') {
-      for (const h of _termDataHandlers) {
+      for (const h of _sh.termDataHandlers) {
         try { h(msg); } catch { /* noop */ }
       }
     } else if (kind === 'status') {
-      for (const h of _termStatusHandlers) {
+      for (const h of _sh.termStatusHandlers) {
         try { h(msg); } catch { /* noop */ }
       }
     }
   };
 
   window.__camDirectHubCb = (id, ok, json) => {
-    const p = _dhPending[id];
-    delete _dhPending[id];
+    const p = _sh.dhPending[id];
+    clearTimeout(p && p.timer);
+    delete _sh.dhPending[id];
     if (!p) return;
     let data = null;
     if (json != null && json !== 'null') {
