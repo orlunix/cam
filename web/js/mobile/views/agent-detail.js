@@ -454,9 +454,13 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     if (host) {
       host.addEventListener('click', () => focusTerminalForAgent(agentId));
 
-      // Swipe-to-scroll, active ONLY in tmux copy mode — outside it the
+      // Swipe gestures, active ONLY in tmux copy mode — outside it the
       // handlers return immediately, so existing touch behavior (selection,
       // taps, xterm scrolling) is untouched.
+      //   vertical drag : distance → line scrolling (natural direction)
+      //   horizontal ←  : cursor to top line of the current screen
+      //   horizontal →  : cursor to bottom line of the current screen
+      // Horizontal jumps never exit copy mode.
       let swipe = null;
       const swipeGated = () => isTerminalMode() && copyModeActive && terminalSessionReady(agentId);
       const swipeCellH = () => {
@@ -467,23 +471,36 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       };
       host.addEventListener('touchstart', (e) => {
         if (!swipeGated() || e.touches.length !== 1) { swipe = null; return; }
-        swipe = { y: e.touches[0].clientY, acc: 0, engaged: false, trail: [] };
+        swipe = { x: e.touches[0].clientX, y: e.touches[0].clientY,
+                  acc: 0, mode: null };
       }, { passive: true });
       host.addEventListener('touchmove', (e) => {
         if (!swipe || !swipeGated() || e.touches.length !== 1) return;
+        const x = e.touches[0].clientX;
         const y = e.touches[0].clientY;
+        if (swipe.mode === 'h') return;      // horizontal already fired once
+        const dx = x - swipe.x;
         const dy = y - swipe.y;
-        if (!swipe.engaged) {
-          if (Math.abs(dy) < 10) return;   // let taps / long-press selection through
-          swipe.engaged = true;
+        if (swipe.mode === null) {
+          if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) {
+            swipe.mode = 'v';
+          } else if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+            swipe.mode = 'h';
+            e.preventDefault();
+            const action = dx < 0 ? 'top' : 'bottom';
+            setBottomStatus(dx < 0 ? 'Cursor to top line…' : 'Cursor to bottom line…', 'info', 1500);
+            void terminalCopyMode(agentId, action)
+              .catch((err) => setBottomStatus(err.message || 'Jump failed', 'error', 2500));
+            return;
+          } else {
+            return;                           // let taps / long-press selection through
+          }
         }
-        e.preventDefault();                // we own this gesture now
+        e.preventDefault();                   // vertical: we own this gesture now
         // Natural (webpage) direction: finger drags content — swipe down
         // reveals older lines (Up keys), swipe up reveals newer (Down keys).
         swipe.acc += dy;
         swipe.y = y;
-        swipe.trail.push({ t: performance.now(), y });
-        if (swipe.trail.length > 12) swipe.trail.shift();
         const cellH = swipeCellH();
         let lines = Math.trunc(swipe.acc / cellH);
         if (lines !== 0) {
@@ -494,40 +511,9 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
             .catch(() => {});
         }
       }, { passive: false });
-      const swipeEnd = async () => {
-        const s = swipe;
-        swipe = null;
-        // Fling detection: a flick decelerates before lift-off, so measuring
-        // only the trailing window misclassifies real flicks as slow drags.
-        // Use the PEAK velocity of any ~80ms window across the gesture.
-        if (!s || !s.engaged || s.trail.length < 2 || !swipeGated()) return;
-        let peak = 0;
-        for (let i = 0; i < s.trail.length; i++) {
-          for (let j = i + 1; j < s.trail.length; j++) {
-            const dt = s.trail[j].t - s.trail[i].t;
-            if (dt <= 0 || dt > 100) continue;
-            const v = (s.trail[j].y - s.trail[i].y) / dt;
-            if (Math.abs(v) > Math.abs(peak)) peak = v;
-          }
-        }
-        if (Math.abs(peak) < 0.8) return;
-        if (peak > 0) {
-          try {
-            setBottomStatus('Jumping to history top…', 'info', 1500);
-            await terminalCopyMode(agentId, 'top');
-          } catch (e) {
-            setBottomStatus(e.message || 'Jump failed', 'error', 2500);
-          }
-        } else {
-          try { await sendTerminalRaw(agentId, 'q'); } catch { /* noop */ }
-          copyModeActive = false;
-          syncHistoryChrome();
-          setBottomStatus('', 'info');
-          scrollTerminalToBottom(agentId);
-        }
-      };
-      host.addEventListener('touchend', () => { void swipeEnd(); }, { passive: true });
-      host.addEventListener('touchcancel', () => { swipe = null; }, { passive: true });
+      const swipeEnd = () => { swipe = null; };
+      host.addEventListener('touchend', swipeEnd, { passive: true });
+      host.addEventListener('touchcancel', swipeEnd, { passive: true });
     }
   }
 
