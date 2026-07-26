@@ -45,6 +45,10 @@ phone client for monitoring and controlling those agents.
 
 ### Read first
 
+- **`docs/mobile/stability-roadmap.md`** — the living document:
+  current status, remaining issues, roadmap batches, verification
+  protocol, and a trust map for the older (stale) docs below.
+
 - `docs/mobile/relay-first-plan.md` — the locked V2 Relay plan (routes,
   API mapping, polling patterns, localStorage keys).
 - `docs/mobile/direct-mode.md` — the Direct-mode plan (this branch).
