@@ -1,7 +1,7 @@
 # Mobile V2 — Stability Status & Roadmap
 
 **Living document.** Current line: branch `camui-desktop-v2`, version
-2.4.55 (2026-07-25). This file supersedes the older `docs/mobile/*`
+2.4.56 (2026-07-25). This file supersedes the older `docs/mobile/*`
 plans, which are stale (last touched 2026-06-28) — see §6 for what to
 trust where.
 
@@ -14,15 +14,16 @@ trust where.
   `MobileSshPool.lockFor()`); `ensureStoreLoaded`/`saveStore`
   synchronized. Regression test: `android/test/lockrepro/` (real hub
   classes on the JVM + Android stubs; `run.sh`).
-- **Terminal History button (tmux copy mode)** (2.4.55): terminal mode
-  gains a symmetric pair in the floating status row — left `⤒ History`
-  (enter copy mode via remote `tmux copy-mode -u`; further clicks
-  `halfpage-up`), right `⤓` (now always visible in terminal mode: snaps
-  to bottom, and exits copy mode via `send-keys -X cancel`). State is
-  set only after the hub verifies `#{pane_in_mode}` (desktop's
-  invariant). Chain: JS `terminalCopyMode` → `term_copymode` bridge →
-  `MobileTerminalManager.copyMode` → `MobileEmbeddedHub.terminalCopyMode`
-  (probes the same socket dirs as camc's `_find_tmux_socket`).
+- **Terminal History button (tmux copy mode)** (2.4.55, key-stream in
+  2.4.56): terminal mode gains a symmetric pair in the floating status
+  row — left `⤒ History`, right `⤓` (always visible in terminal mode).
+  2.4.55 drove copy mode via per-click SSH tmux exec (verified but
+  laggy); 2.4.56 switched to **key-stream over the live PTY**: enter =
+  `C-b [` (camc tmux.conf sets no prefix → default C-b), page =
+  `Up × rows/2`, exit = `q`. State is optimistic (no pane read-back);
+  the verified command path remains available
+  (`MobileEmbeddedHub.terminalCopyMode`) if reconciliation is needed.
+  Buttons made translucent (rgba 0.38 + blur) in 2.4.56.
 - **"Connecting via SSH…" dead state** (2.4.52–2.4.53): native-bridge pending
   callback maps were module-instance state and got orphaned on every
   shim reinstall; with no timeout, the attach promise never settled and

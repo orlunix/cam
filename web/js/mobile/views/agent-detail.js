@@ -23,7 +23,6 @@ import {
   getTerminalLiveText,
   setTerminalViewActive,
   terminalSessionReady,
-  terminalCopyMode,
   seedTerminalPreview,
   setTerminalStatus,
 } from '../../shared/terminal-mount.js';
@@ -1480,18 +1479,19 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     if (historyBtn) {
       historyBtn.addEventListener('click', async () => {
         if (!isTerminalMode()) return;
+        // Key-stream copy mode: bytes ride the live PTY (typing speed),
+        // no per-click SSH exec. State is optimistic — camc sessions use
+        // the default C-b prefix (camc tmux.conf sets no prefix).
         try {
-          const res = await terminalCopyMode(agentId, copyModeActive ? 'up' : 'enter');
-          if (res === null) {
-            setBottomStatus('History needs a Direct terminal session', 'warning', 2500);
-            return;
-          }
-          copyModeActive = !!res.copyMode;
-          syncHistoryChrome();
-          if (copyModeActive) {
+          if (!copyModeActive) {
+            await sendTerminalRaw(agentId, '\x02['); // C-b [ → copy mode
+            copyModeActive = true;
+            syncHistoryChrome();
             setBottomStatus('Copy mode — ⤒ ½ up · ⤓ exit', 'info');
           } else {
-            setBottomStatus('', 'info');
+            const stats = getTerminalSessionStats(agentId);
+            const half = Math.max(1, Math.floor((stats?.rows || 24) / 2));
+            await sendTerminalRaw(agentId, '\x1b[A'.repeat(half)); // Up × rows/2
           }
         } catch (e) {
           setBottomStatus(e.message || 'History failed', 'error', 3000);
@@ -1505,8 +1505,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         if (isTerminalMode()) {
           if (copyModeActive) {
             try {
-              const res = await terminalCopyMode(agentId, 'cancel');
-              if (res) copyModeActive = !!res.copyMode;
+              await sendTerminalRaw(agentId, 'q'); // copy-mode quit
             } catch (e) {
               setBottomStatus(e.message || 'Could not exit copy mode', 'error', 3000);
               return;
