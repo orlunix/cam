@@ -1076,13 +1076,20 @@ app.whenReady().then(() => {
   // the window flash.
   ipcMain.handle('app:reset', async () => {
     try {
+      const nTerms = _terminals.size;
       for (const sid of [..._terminals.keys()]) _dropSession(sid);
       sshTransport.closeAll();
+      _diagLog(`[app:reset] terminals disposed (${nTerms}), SSH pools dropped; restarting hub`);
       _ensureBackendsConfigured();
-      await embeddedHub.restart({ dataDir: userDataDir() });
-      _diagLog('[app:reset] terminals disposed, SSH pools dropped, hub restarted');
-      return { ok: true };
+      const r = await embeddedHub.restart({ dataDir: userDataDir() });
+      if (r && r.ok) {
+        _diagLog(`[app:reset] hub restarted on ${r.apiUrl} — reset complete`);
+        return { ok: true };
+      }
+      _diagLog(`[app:reset] hub restart FAILED: ${(r && (r.error || r.detail)) || 'unknown'}`);
+      return { ok: false, error: (r && r.error) || 'hub_restart_failed', detail: (r && r.detail) || 'embedded hub restart failed' };
     } catch (e) {
+      _diagLog(`[app:reset] FAILED: ${(e && e.message) || e}`);
       return { ok: false, error: 'reset_failed', detail: e && e.message || String(e) };
     }
   });
