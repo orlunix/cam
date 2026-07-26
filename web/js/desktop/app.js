@@ -549,19 +549,37 @@ async function init() {
    back where the user was. Same end state as quit + reopen. */
 try {
   const reloadBtn = document.getElementById('app-reload-btn');
+  const rlog = (m) => { try { window.CamBridge && window.CamBridge.diagLog && window.CamBridge.diagLog(m); } catch (_) {} };
   if (reloadBtn) {
     reloadBtn.addEventListener('click', async () => {
       if (reloadBtn.disabled) return;
       reloadBtn.disabled = true;
       reloadBtn.classList.add('is-reloading');
+      rlog('reload: clicked, calling resetApp');
       try {
         if (window.CamBridge && typeof window.CamBridge.resetApp === 'function') {
-          await window.CamBridge.resetApp();
+          const r = await window.CamBridge.resetApp();
+          rlog(`reload: resetApp resolved ok=${r && r.ok}`);
+        } else {
+          rlog('reload: CamBridge.resetApp unavailable');
         }
-      } catch (_) {}
+      } catch (e) { rlog(`reload: resetApp threw ${(e && e.message) || e}`); }
       location.reload();
     });
   }
+} catch (_) {}
+
+/* Forward connection-mode transitions + hub boot outcome into the main
+   diag log — the renderer side of any "stuck" report. */
+try {
+  const dlog = (m) => { try { window.CamBridge && window.CamBridge.diagLog && window.CamBridge.diagLog(m); } catch (_) {} };
+  let prevMode = '';
+  state.subscribe(() => {
+    const m = state.get('connectionMode') || '';
+    if (m !== prevMode) { dlog(`conn mode: ${prevMode || '(init)'} -> ${m}`); prevMode = m; }
+  });
+  window.addEventListener('error', (e) => dlog(`window error: ${e.message}`));
+  window.addEventListener('unhandledrejection', (e) => dlog(`unhandled rejection: ${(e.reason && e.reason.message) || e.reason}`));
 } catch (_) {}
 
 /* Debug handles — guarded behind a developer opt-in to avoid shipping

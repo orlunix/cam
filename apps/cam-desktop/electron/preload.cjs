@@ -47,6 +47,11 @@ contextBridge.exposeInMainWorld('CamBridge', {
     // itself while the embedded hub (and its store) keeps running.
     return ipcRenderer.invoke('app:reset');
   },
+  // Forward one renderer log line into main's userData/cam-desktop.log,
+  // so stuck-state evidence covers both sides of the bridge.
+  diagLog(line) {
+    return ipcRenderer.invoke('diag:log', String(line == null ? '' : line).slice(0, 300));
+  },
 
   // Direct Hub lifecycle (CAM-DESK-DIRECT-010..019,
   // CAM-DESK-HUB-010..012). The Direct Hub is an embedded Node HTTP
