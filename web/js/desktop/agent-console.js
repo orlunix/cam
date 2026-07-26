@@ -2156,9 +2156,15 @@ export function mountAgentConsole({ api, state, showToast }) {
           // fall back to the keystroke offer when attempts run out.
           ent.sessionState = 'dead';
           ent.reconnectOffered = true;
+          alog(`terminal dropped ${ent.agentId} (${suffix || 'no-code'}); scheduling auto-reconnect`);
           try {
-            ent.term.write(`\r\n\x1b[2mterminal disconnected${suffix} — 自动重试中，按任意键立即重试\x1b[0m\r\n`);
+            ent.term.write(`\r\n\x1b[2mterminal disconnected${suffix} — reconnecting automatically, press any key to retry now\x1b[0m\r\n`);
           } catch (_) {}
+          // "Press any key" must work even when the terminal pane is not
+          // focused — xterm's onData only fires when it is. A one-shot
+          // document-level listener covers the unfocused case; it is
+          // removed as soon as a reconnect starts.
+          armRetryKeyHandler(ent);
           _scheduleAutoReconnect(ent, msg);
         }
         if (termAgentId === ent.agentId) syncActiveTerminalEntry(ent.agentId);
@@ -2178,8 +2184,10 @@ export function mountAgentConsole({ api, state, showToast }) {
     // pending scheduled attempt, ladder or background loop.
     if (ent._autoReconnectTimer) { clearTimeout(ent._autoReconnectTimer); ent._autoReconnectTimer = null; }
     if (ent._bgRetryTimer) { clearTimeout(ent._bgRetryTimer); ent._bgRetryTimer = null; }
+    if (ent._retryKeyHandler) { try { document.removeEventListener('keydown', ent._retryKeyHandler, true); } catch (_) {} ent._retryKeyHandler = null; }
     ent.sessionState = 'reconnecting';
     ent.reconnectOffered = false;
+    alog(`reconnect attempt ${ent.agentId}${opts.auto ? ' (auto)' : ' (manual)'}`);
     const bridge = termBridge();
     if (!bridge) { ent.sessionState = 'dead'; ent.reconnectOffered = true; return; }
     try {
@@ -2197,7 +2205,7 @@ export function mountAgentConsole({ api, state, showToast }) {
         openP,
         new Promise((resolve) => setTimeout(() => {
           timedOut = true;
-          resolve({ ok: false, error: 'watchdog_timeout', detail: 'attach timed out — 超时未连接，点击状态栏或按任意键重试' });
+          resolve({ ok: false, error: 'watchdog_timeout', detail: 'attach timed out — retrying in the background, click the status pill or press any key to retry now' });
         }, ATTACH_WATCHDOG_MS)),
       ]);
       if (timedOut) {
@@ -2230,13 +2238,32 @@ export function mountAgentConsole({ api, state, showToast }) {
       } else {
         ent.sessionState = 'dead';
         ent.reconnectOffered = true;
+        armRetryKeyHandler(ent);
         if (!opts.auto) ent.term.write(`\r\n\x1b[31mReconnect failed: ${res && (res.detail || res.error) || 'unknown'}\x1b[0m\x1b[2m — press any key to retry\x1b[0m\r\n`);
       }
     } catch (e) {
       ent.sessionState = 'dead';
       ent.reconnectOffered = true;
+      armRetryKeyHandler(ent);
       try { if (!opts.auto) ent.term.write(`\r\n\x1b[31mReconnect failed: ${e && e.message || e}\x1b[0m\x1b[2m — press any key to retry\x1b[0m\r\n`); } catch (_) {}
     }
+  }
+
+  /** One-shot document-level "press any key to retry": xterm's onData
+   *  only fires when the pane is focused, so the offer must also be
+   *  armed at document level. Removed as soon as a reconnect starts. */
+  function armRetryKeyHandler(ent) {
+    if (ent._retryKeyHandler) {
+      try { document.removeEventListener('keydown', ent._retryKeyHandler, true); } catch (_) {}
+    }
+    ent._retryKeyHandler = () => {
+      document.removeEventListener('keydown', ent._retryKeyHandler, true);
+      ent._retryKeyHandler = null;
+      if (terminalSessions.get(ent.agentId) === ent && ent.sessionState === 'dead') {
+        void reconnectTerminalEntry(ent);
+      }
+    };
+    document.addEventListener('keydown', ent._retryKeyHandler, true);
   }
 
   /** Bounded auto-reconnect after an unexpected drop. Transport drops
@@ -2278,16 +2305,16 @@ export function mountAgentConsole({ api, state, showToast }) {
         ent._bgRetryTimer = null;
         if (terminalSessions.get(ent.agentId) !== ent || ent.sessionState === 'live') return;
         ent._bgRetryCount = (ent._bgRetryCount || 0) + 1;
-        setTerminalAttachStatus(`连接已断 · 后台重试中（第 ${ent._bgRetryCount} 次） · 点击立即重试`, 'info', 0, ent.agentId);
+        setTerminalAttachStatus(`Connection lost · background retry #${ent._bgRetryCount} · click to retry now`, 'info', 0, ent.agentId);
         await reconnectTerminalEntry(ent, { auto: true });
         if (ent.sessionState !== 'live' && terminalSessions.get(ent.agentId) === ent) {
           schedule(AUTO_RECONNECT_BG_INTERVAL_MS);
         }
       }, delay);
     };
-    setTerminalAttachStatus('连接已断 · 10s 后自动后台重试 · 点击立即重试', 'info', 0, ent.agentId);
+    setTerminalAttachStatus('Connection lost · auto background retry in 10s · click to retry now', 'info', 0, ent.agentId);
     try {
-      ent.term.write(`\r\n\x1b[2mconnection lost — 10s 后自动后台重试，按任意键立即重试\x1b[0m\r\n`);
+      ent.term.write(`\r\n\x1b[2mconnection lost — auto retry in the background, press any key to retry now\x1b[0m\r\n`);
     } catch (_) {}
     schedule(AUTO_RECONNECT_BG_FIRST_MS);
   }
@@ -2439,7 +2466,7 @@ export function mountAgentConsole({ api, state, showToast }) {
           p,
           new Promise((resolve) => setTimeout(() => {
             timedOut = true;
-            resolve({ ok: false, error: 'watchdog_timeout', detail: 'attach timed out — 超时未连接，点击状态栏或 Refresh 立即重试' });
+            resolve({ ok: false, error: 'watchdog_timeout', detail: 'attach timed out — click the status bar or Refresh to retry' });
           }, ATTACH_WATCHDOG_MS)),
         ]);
         if (timedOut) {
