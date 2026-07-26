@@ -254,6 +254,8 @@ function localGetProfile() {
  * Secrets stay in main only. The renderer sees session id + bytes. */
 const _terminals = new Map();   // sessionId → { dispose, contentsId, agentId }
 const _tmuxDiscoveryTails = new Map();
+// Pending gate releases, so resetApp can force-release a wedged queue.
+const _tmuxDiscoveryReleases = new Set();
 let _termSeq = 0;
 const TERM_MIN_COLS = 40;
 const TERM_MIN_ROWS = 4;
@@ -468,10 +470,27 @@ function _beginTmuxDiscovery(sessionKey) {
   const gate = new Promise((resolve) => { release = resolve; });
   const tail = previous.then(() => gate);
   _tmuxDiscoveryTails.set(sessionKey, tail);
+  _tmuxDiscoveryReleases.add(release);
   return previous.then(() => () => {
+    _tmuxDiscoveryReleases.delete(release);
     release();
     if (_tmuxDiscoveryTails.get(sessionKey) === tail) _tmuxDiscoveryTails.delete(sessionKey);
   });
+}
+
+/** Release every queued tmux-discovery gate. Part of resetApp: a wedged
+ *  discovery (attach hung mid-flight, e.g. on a VPN DNS flap) otherwise
+ *  survives an in-app reset and keeps blocking every later attach to
+ *  that session — the "reload后页面卡住" bug. A process restart clears
+ *  these implicitly; the in-app reset must do it explicitly. */
+function _resetTmuxDiscovery() {
+  const n = _tmuxDiscoveryReleases.size;
+  for (const release of [..._tmuxDiscoveryReleases]) {
+    try { release(); } catch { /* noop */ }
+  }
+  _tmuxDiscoveryReleases.clear();
+  _tmuxDiscoveryTails.clear();
+  return n;
 }
 
 async function _tmuxExec(ent, args) {
@@ -766,7 +785,27 @@ async function termOpen(event, payload = {}) {
     // No recorded or discoverable tmux binary on this endpoint.
     console.warn(`[tmux-probe] no tmux binary found on ${resolved.opts.host}; window controls disabled`);
   }
-  const releaseTmuxDiscovery = tmux && tmux.bin ? await _beginTmuxDiscovery(`${resolved.opts.host}|${tmux.socket}`) : null;
+  // Bounded discovery-queue wait: a wedged previous discovery (attach
+  // hung mid-flight on a network flap) must not block THIS attach
+  // forever — 15s and we proceed without ordering (discovery falls back
+  // to selectOnlyClient on overlap, which is already handled).
+  const tGate0 = Date.now();
+  const discoveryKey = `${resolved.opts.host}|${tmux ? tmux.socket : ''}`;
+  const discoveryBeginP = tmux && tmux.bin ? _beginTmuxDiscovery(discoveryKey) : null;
+  const releaseTmuxDiscovery = discoveryBeginP
+    ? await Promise.race([
+        discoveryBeginP,
+        new Promise((resolve) => setTimeout(() => resolve(null), 15000)),
+      ])
+    : null;
+  if (discoveryBeginP && !releaseTmuxDiscovery) {
+    _diagLog(`[attach] ${agentId}: tmux discovery queue wait exceeded 15s — proceeding without ordering`);
+    // The abandoned chain link still resolves one day — release our own
+    // gate immediately then, so later attaches are not queued behind us.
+    void discoveryBeginP.then((releaseFn) => {
+      try { if (releaseFn) releaseFn(); } catch { /* noop */ }
+    });
+  }
   const initialTmuxProbe = {};
 
   // Attach fast path: the client-baseline probe runs in PARALLEL with
@@ -1094,7 +1133,8 @@ app.whenReady().then(() => {
       const nTerms = _terminals.size;
       for (const sid of [..._terminals.keys()]) _dropSession(sid);
       sshTransport.closeAll();
-      _diagLog(`[app:reset] terminals disposed (${nTerms}), SSH pools dropped; restarting hub`);
+      const nGates = _resetTmuxDiscovery();
+      _diagLog(`[app:reset] terminals disposed (${nTerms}), SSH pools dropped, tmux discovery gates released (${nGates}); restarting hub`);
       _ensureBackendsConfigured();
       const r = await embeddedHub.restart({ dataDir: userDataDir() });
       if (r && r.ok) {
