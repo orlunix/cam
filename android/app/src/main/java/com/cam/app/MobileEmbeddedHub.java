@@ -207,8 +207,16 @@ public final class MobileEmbeddedHub {
         }
     }
 
-    /** In-process Hub API — bypasses WebView fetch to loopback (CORS/cleartext). */
-    public synchronized JSONObject apiRequest(String method, String path, String auth, String bodyJson) {
+    /** In-process Hub API — bypasses WebView fetch to loopback (CORS/cleartext).
+     *
+     * NOT synchronized: the loopback HTTP path (handleClient → route) has
+     * always run concurrently, and a global monitor here let one unreachable
+     * host's SSH attempt (up to ~6 min with retries) stall every unrelated
+     * UI request. Per-host ordering is enforced where it belongs — the SSH
+     * layer serializes same-host operations via MobileSshPool.lockFor()
+     * inside MobileSshExec. Shared-state safety: ensureStoreLoaded() and
+     * saveStore() are synchronized below. */
+    public JSONObject apiRequest(String method, String path, String auth, String bodyJson) {
         ensureStoreLoaded();
         byte[] bodyBytes = new byte[0];
         if (bodyJson != null && !bodyJson.isEmpty()) {
@@ -1653,6 +1661,72 @@ public final class MobileEmbeddedHub {
             .put("command", command);
     }
 
+    /**
+     * tmux copy-mode control for the mobile terminal (Direct mode).
+     * action: "enter" (copy-mode -u), "up" (halfpage-up), "cancel" (-X cancel).
+     * Executes tmux against the agent's camc socket over SSH and verifies the
+     * resulting pane state — callers must trust copyMode only when ok=true,
+     * mirroring desktop's "enter must succeed before local state" invariant.
+     */
+    JSONObject terminalCopyMode(String agentId, JSONObject hints, String action) {
+        try {
+            if (!"enter".equals(action) && !"up".equals(action) && !"cancel".equals(action)) {
+                return new JSONObject().put("ok", false).put("error", "invalid_args")
+                    .put("detail", "action must be enter|up|cancel");
+            }
+            AttachPlan plan = resolveAttachPlan(agentId, hints);
+            if (!plan.ok()) {
+                return new JSONObject().put("ok", false)
+                    .put("error", plan.error != null ? plan.error : "attach_failed")
+                    .put("detail", plan.detail != null ? plan.detail : "");
+            }
+            JSONObject agent = findAgentById(agentId, hints);
+            String session = agent != null ? agent.optString("tmux_session", "") : "";
+            if (session.isEmpty() && agent != null) session = agent.optString("session", "");
+            if (session.isEmpty()) session = agentId;
+            String qSession = session.replace("'", "'\\''");
+
+            String tmuxCmd;
+            switch (action) {
+                case "enter":
+                    tmuxCmd = "copy-mode -u -t '" + qSession + "'";
+                    break;
+                case "up":
+                    tmuxCmd = "send-keys -X -t '" + qSession + "' halfpage-up";
+                    break;
+                default:
+                    tmuxCmd = "send-keys -X -t '" + qSession + "' cancel";
+                    break;
+            }
+            // Probe the same socket dirs camc's _find_tmux_socket checks.
+            String inner =
+                "s=''; "
+                + "for d in /tmp/cam-sockets /tmp/cam-agent-sockets \"$HOME/.local/share/cam/sockets\"; do "
+                + "[ -S \"$d/" + qSession + ".sock\" ] && { s=\"$d/" + qSession + ".sock\"; break; }; "
+                + "done; "
+                + "[ -n \"$s\" ] || { echo 'tmux socket not found for " + qSession + "' >&2; exit 3; }; "
+                + "tmux -S \"$s\" " + tmuxCmd + " || exit 4; "
+                + "tmux -S \"$s\" display-message -p -t '" + qSession + "' '#{pane_in_mode}'";
+            MobileSshExec.Result res = MobileSshExec.exec(
+                plan.auth, MobileSshExec.shellCommand(inner), SEND_TIMEOUT_MS);
+            if (!res.ok) {
+                return new JSONObject().put("ok", false)
+                    .put("error", res.error != null && !res.error.isEmpty() ? res.error : "tmux_failed")
+                    .put("detail", res.detail != null ? res.detail : "");
+            }
+            boolean inMode = "1".equals(res.stdout != null ? res.stdout.trim() : "");
+            return new JSONObject().put("ok", true).put("copyMode", inMode);
+        } catch (Exception e) {
+            try {
+                return new JSONObject().put("ok", false)
+                    .put("error", "internal_error")
+                    .put("detail", e.getMessage() != null ? e.getMessage() : "");
+            } catch (Exception ignored) {
+                return new JSONObject();
+            }
+        }
+    }
+
     /** Internal attach plan — includes decrypted auth; never expose to WebView/HTTP. */
     AttachPlan resolveAttachPlan(String agentId, JSONObject hints) throws Exception {
         JSONObject resolved = resolveAttachConnect(agentId, hints);
@@ -2197,7 +2271,7 @@ public final class MobileEmbeddedHub {
         return token.equals(auth.substring(prefix.length()).trim());
     }
 
-    private void ensureStoreLoaded() {
+    private synchronized void ensureStoreLoaded() {
         if (store != null) return;
         dataDir = new File(appContext.getFilesDir(), "cam-hub");
         if (!dataDir.exists()) dataDir.mkdirs();
@@ -2235,7 +2309,7 @@ public final class MobileEmbeddedHub {
             .put("adapters", new JSONArray().put("claude").put("codex").put("cursor"));
     }
 
-    private void saveStore() {
+    private synchronized void saveStore() {
         if (storePath == null || store == null) return;
         try {
             File tmp = new File(storePath.getAbsolutePath() + ".tmp");

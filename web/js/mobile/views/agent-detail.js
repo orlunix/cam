@@ -23,6 +23,7 @@ import {
   getTerminalLiveText,
   setTerminalViewActive,
   terminalSessionReady,
+  terminalCopyMode,
   seedTerminalPreview,
   setTerminalStatus,
 } from '../../shared/terminal-mount.js';
@@ -169,6 +170,9 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   // Keep this per-detail-view so opening the native keyboard never collapses keys.
   let keybarExpanded = false;
   let bottomStatusTimer = null;
+  // tmux copy-mode browsing state (terminal mode only). Only set after the
+  // hub verifies the real pane state — mirrors the desktop invariant.
+  let copyModeActive = false;
   const UPLOAD_RAW_MAX_BYTES = 18 * 1024 * 1024;
 
   // Output font size — pinch-to-zoom; mobile terminal default 12px (readable, more cols).
@@ -233,10 +237,20 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   function bottomStatusHTML() {
     return `
       <div class="output-status-row" id="output-status-row">
-        <span class="output-status-spacer" aria-hidden="true"></span>
+        <button type="button" class="jump-bottom-btn history-btn hidden" id="term-history" title="Browse tmux history (copy mode)" aria-label="History"><span aria-hidden="true">\u2912</span></button>
         <span class="output-status-text" id="output-status-text" aria-live="polite"></span>
         <button type="button" class="jump-bottom-btn hidden" id="jump-bottom" title="Jump to bottom and resume auto-follow" aria-label="Jump to bottom"><span aria-hidden="true">&#x2913;</span></button>
       </div>`;
+  }
+
+  /** Show/refresh the History button (terminal mode + native bridge only). */
+  function syncHistoryChrome() {
+    const btn = container.querySelector('#term-history');
+    if (!btn) return;
+    const visible = isTerminalMode() && mobileTerminalInput();
+    btn.classList.toggle('hidden', !visible);
+    btn.classList.toggle('is-active', copyModeActive);
+    btn.title = copyModeActive ? 'Page up (½ screen) — ⤓ exits copy mode' : 'Browse tmux history (copy mode)';
   }
 
   function setBottomStatus(text = '', tone = '', clearAfter = 0) {
@@ -315,7 +329,9 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       const jumpBottom = container.querySelector('#jump-bottom');
       if (jumpBottom) {
         if (useTermUi) {
-          jumpBottom.classList.add('hidden');
+          // Terminal mode: always available — snaps to bottom, and exits
+          // tmux copy mode while browsing history.
+          jumpBottom.classList.remove('hidden');
         } else {
           const pane = container.querySelector('#output-pane');
           const atBottom = !pane || pane.scrollHeight - pane.scrollTop - pane.clientHeight < 30;
@@ -346,6 +362,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         inputSection.style.display = '';
       }
     }
+    syncHistoryChrome();
   }
 
   function wireTerminalKeyBar() {
@@ -860,6 +877,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   function switchOutputMode(mode) {
     if (outputMode === mode) return;
     outputMode = mode;
+    if (mode !== 'terminal') copyModeActive = false;
     useFullOutput = mode === 'full';
     if (mode === 'full') outputOffset = 0;
     if (mode === 'live' || mode === 'rich') {
@@ -1458,10 +1476,45 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     updateFontSizeLabel();
 
     const jumpBtn = container.querySelector('#jump-bottom');
+    const historyBtn = container.querySelector('#term-history');
+    if (historyBtn) {
+      historyBtn.addEventListener('click', async () => {
+        if (!isTerminalMode()) return;
+        try {
+          const res = await terminalCopyMode(agentId, copyModeActive ? 'up' : 'enter');
+          if (res === null) {
+            setBottomStatus('History needs a Direct terminal session', 'warning', 2500);
+            return;
+          }
+          copyModeActive = !!res.copyMode;
+          syncHistoryChrome();
+          if (copyModeActive) {
+            setBottomStatus('Copy mode — ⤒ ½ up · ⤓ exit', 'info');
+          } else {
+            setBottomStatus('', 'info');
+          }
+        } catch (e) {
+          setBottomStatus(e.message || 'History failed', 'error', 3000);
+        }
+      });
+    }
+
     if (jumpBtn) {
-      jumpBtn.addEventListener('click', () => {
+      jumpBtn.addEventListener('click', async () => {
         autoScroll = true;
         if (isTerminalMode()) {
+          if (copyModeActive) {
+            try {
+              const res = await terminalCopyMode(agentId, 'cancel');
+              if (res) copyModeActive = !!res.copyMode;
+            } catch (e) {
+              setBottomStatus(e.message || 'Could not exit copy mode', 'error', 3000);
+              return;
+            }
+            copyModeActive = false;
+            syncHistoryChrome();
+            setBottomStatus('', 'info');
+          }
           scrollTerminalToBottom(agentId);
           return;
         }
@@ -1478,6 +1531,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         }
       });
     }
+    syncHistoryChrome();
 
     const stopBtn = container.querySelector('#stop-btn');
     if (stopBtn) stopBtn.addEventListener('click', async () => {
@@ -1871,6 +1925,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     _attachAttempt += 1;
     clearInterval(outputTimer);
     clearInterval(elapsedTimer);
+    copyModeActive = false;
     setTerminalViewActive(agentId, false);
     void parkTerminalForAgent(agentId);
     _removeInflightToast();
