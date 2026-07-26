@@ -541,12 +541,12 @@ async function init() {
   }, POLL_INTERVAL_MS);
 }
 
-/* "Reload app" button — full restart, identical to quitting and
-   relaunching: main disposes everything and relaunches the app (new
-   main process, new embedded hub, new renderer, fresh SSH pools).
-   The current mode is already persisted on every setMode
-   (cam_desktop_mode) and the hub store lives on disk, so the user
-   lands back where they was with nodes/agents intact. */
+/* "Reload app" button — full in-app restart WITHOUT closing the
+   window: main disposes every terminal channel, drops both SSH pools,
+   and restarts the embedded hub (store reloads from disk; nothing is
+   lost), then the renderer reloads itself. The current mode is already
+   persisted on every setMode (cam_desktop_mode), so the reload lands
+   back where the user was. Same end state as quit + reopen. */
 try {
   const reloadBtn = document.getElementById('app-reload-btn');
   if (reloadBtn) {
@@ -557,10 +557,9 @@ try {
       try {
         if (window.CamBridge && typeof window.CamBridge.resetApp === 'function') {
           await window.CamBridge.resetApp();
-          return; // main relaunches the whole app — nothing more to do
         }
       } catch (_) {}
-      location.reload(); // fallback when the bridge is unavailable (browser/dev)
+      location.reload();
     });
   }
 } catch (_) {}
