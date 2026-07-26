@@ -166,6 +166,17 @@ public final class MobileTerminalManager {
         }
     }
 
+    /** tmux copy-mode control (enter/up/cancel) — see MobileEmbeddedHub.terminalCopyMode. */
+    public JSONObject copyMode(String sessionId, String action) {
+        try {
+            Entry ent = sessions.get(sessionId);
+            if (ent == null || !ent.active) return err("not_found", "terminal session not found");
+            return hub.terminalCopyMode(ent.agentId, null, action);
+        } catch (Exception e) {
+            return err("internal_error", e.getMessage());
+        }
+    }
+
     public boolean hasActiveSessions() {
         for (Entry ent : sessions.values()) {
             if (ent != null && ent.active && channelAlive(ent)) return true;
