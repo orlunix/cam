@@ -116,6 +116,23 @@ public class CamJsBridge {
         }).start();
     }
 
+    @JavascriptInterface
+    public void term_copymode(String cbId, String payloadJson) {
+        new Thread(() -> {
+            try {
+                JSONObject p = payloadJson != null && !payloadJson.isEmpty()
+                    ? new JSONObject(payloadJson) : new JSONObject();
+                termCallback(cbId, terminalManager.copyMode(
+                    p.optString("sessionId", ""), p.optString("action", "")));
+            } catch (Exception e) {
+                try {
+                    termCallback(cbId, new JSONObject()
+                        .put("ok", false).put("error", "internal_error").put("detail", e.getMessage()));
+                } catch (Exception ignored) {}
+            }
+        }).start();
+    }
+
     /** Relay terminals are JavaScript-backed, so expose their attached state to Activity. */
     @JavascriptInterface
     public void setTerminalBackgroundKeepAlive(boolean keepAlive) {
