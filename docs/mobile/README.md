@@ -1,5 +1,11 @@
 # CAM Mobile Docs
 
+> **STATUS (2026-07-25): largely stale.** The authoritative living
+> document is **[`stability-roadmap.md`](./stability-roadmap.md)**
+> (current state, remaining issues, roadmap, doc trust map). The files
+> below are kept for history; check the trust map in §6 there before
+> believing any section.
+
 Planning documents for **CamUI Mobile V2** (PWA + native WebView shells).
 
 ## V1 vs V2
