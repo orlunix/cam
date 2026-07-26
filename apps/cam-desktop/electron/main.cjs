@@ -1068,15 +1068,19 @@ app.whenReady().then(() => {
     app.exit(0);
   });
 
-  // Full reset ("Reload app" button): identical to quitting and
-  // relaunching — new main process, new embedded hub, new renderer,
-  // fresh SSH pools. The hub store lives on disk so nodes/agents come
-  // back; the renderer's persisted mode lands the user where they were.
-  ipcMain.handle('app:reset', () => {
+  // Full in-app reset ("Reload app" button): restart the backend
+  // WITHOUT closing the window — dispose every terminal channel, drop
+  // both SSH pools, and restart the embedded hub (its store reloads
+  // from disk, so nodes/agents/credentials are untouched). The renderer
+  // reloads itself right after. Same end state as quit + reopen, minus
+  // the window flash.
+  ipcMain.handle('app:reset', async () => {
     try {
-      _diagLog('[app:reset] relaunching app');
-      app.relaunch();
-      app.exit(0);
+      for (const sid of [..._terminals.keys()]) _dropSession(sid);
+      sshTransport.closeAll();
+      _ensureBackendsConfigured();
+      await embeddedHub.restart({ dataDir: userDataDir() });
+      _diagLog('[app:reset] terminals disposed, SSH pools dropped, hub restarted');
       return { ok: true };
     } catch (e) {
       return { ok: false, error: 'reset_failed', detail: e && e.message || String(e) };
