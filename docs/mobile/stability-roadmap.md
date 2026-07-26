@@ -1,13 +1,29 @@
 # Mobile V2 — Stability Status & Roadmap
 
 **Living document.** Current line: branch `camui-desktop-v2`, version
-2.4.53 (2026-07-25). This file supersedes the older `docs/mobile/*`
+2.4.55 (2026-07-25). This file supersedes the older `docs/mobile/*`
 plans, which are stale (last touched 2026-06-28) — see §6 for what to
 trust where.
 
-## 1. Fixed recently (2.4.52–2.4.53)
+## 1. Fixed recently (2.4.52–2.4.55)
 
-- **"Connecting via SSH…" dead state** (048a3e3): native-bridge pending
+- **Hub global lock** (2.4.54): `MobileEmbeddedHub.apiRequest` was globally
+  `synchronized` — one blackhole host's SSH attempt stalled every Direct
+  request (measured 117s in the repro). Removed the global monitor;
+  per-host ordering stays where it belongs (the SSH layer's
+  `MobileSshPool.lockFor()`); `ensureStoreLoaded`/`saveStore`
+  synchronized. Regression test: `android/test/lockrepro/` (real hub
+  classes on the JVM + Android stubs; `run.sh`).
+- **Terminal History button (tmux copy mode)** (2.4.55): terminal mode
+  gains a symmetric pair in the floating status row — left `⤒ History`
+  (enter copy mode via remote `tmux copy-mode -u`; further clicks
+  `halfpage-up`), right `⤓` (now always visible in terminal mode: snaps
+  to bottom, and exits copy mode via `send-keys -X cancel`). State is
+  set only after the hub verifies `#{pane_in_mode}` (desktop's
+  invariant). Chain: JS `terminalCopyMode` → `term_copymode` bridge →
+  `MobileTerminalManager.copyMode` → `MobileEmbeddedHub.terminalCopyMode`
+  (probes the same socket dirs as camc's `_find_tmux_socket`).
+- **"Connecting via SSH…" dead state** (2.4.52–2.4.53): native-bridge pending
   callback maps were module-instance state and got orphaned on every
   shim reinstall; with no timeout, the attach promise never settled and
   only a manual page refresh recovered. Fixed by moving pending
@@ -52,12 +68,9 @@ local fix:
 
 ### 2.2 Direct mode (phone-hosted hub)
 
-1. **Global `synchronized apiRequest`** (`MobileEmbeddedHub.java`) —
-   one unreachable host (120s connect timeout × up to 3 retries ≈ up
-   to ~6 min) stalls ALL Direct UI. Repro: add a blackhole host
-   (e.g. `192.0.2.1` — must be silent-drop, not connection-refused),
-   Sync it, then immediately use a good host → everything queues
-   behind the lock; JS-side 90s timeout fires even for healthy hosts.
+1. ~~**Global `synchronized apiRequest`** (`MobileEmbeddedHub.java`) —
+   one unreachable host stalls ALL Direct UI.~~ **Fixed in 2.4.54** (see
+   §1). Repro preserved in `android/test/lockrepro/`.
 2. **No agents auto-refresh** — Direct has neither agents polling nor
    an event stream (`/api/ws` unimplemented in the hub, disabled
    after 3 failures): dashboard state goes stale until manual refresh.
@@ -95,9 +108,7 @@ local fix:
 ## 3. Roadmap
 
 **Batch 1 — Direct daily-use (next release)**
-- Un-serialize the hub: per-host serialization instead of the global
-  monitor (or move SSH I/O off the lock). Acceptance: §2.2.1 repro —
-  good-host requests proceed while a blackhole host spins.
+- ~~Un-serialize the hub~~ — **done in 2.4.54**.
 - Direct-mode agents polling in `refreshAgents` (~30s, visibility
   gated) until `/api/ws` exists in the hub.
 - Quick wins: 10s loop visibility check + in-flight guard; stop output
