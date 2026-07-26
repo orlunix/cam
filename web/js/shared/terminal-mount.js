@@ -1116,6 +1116,25 @@ export async function sendTerminalKey(agentId, key) {
   return sendTerminalInput(agentId, bytes, { enter: false });
 }
 
+/**
+ * tmux copy-mode control (Direct native bridge only).
+ * action: 'enter' | 'up' | 'cancel'. Returns the bridge result
+ * { ok, copyMode } — trust copyMode only when ok is true (verified against
+ * the real pane state). Returns null when the bridge has no copymode op
+ * (e.g. Relay terminals).
+ */
+export async function terminalCopyMode(agentId, action) {
+  const ent = terminalSessions.get(agentId);
+  if (!ent?.sessionId || !globalBridge || typeof globalBridge.copymode !== 'function') {
+    return null;
+  }
+  const res = await globalBridge.copymode({ sessionId: ent.sessionId, action });
+  if (res && res.ok === false) {
+    throw new Error(res.detail || res.error || 'copy mode failed');
+  }
+  return res;
+}
+
 export function applyMobileTerminalFont(ent) {
   if (!ent?.term || !isAndroidWebView()) return;
   ent.term.options.fontSize = terminalFontSizeFromCss();

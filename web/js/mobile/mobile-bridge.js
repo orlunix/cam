@@ -27,7 +27,7 @@ const _sh = (() => {
 // is lost (or an SSH connect stalls), reject after a timeout instead of
 // hanging forever. A late native response for a timed-out id is dropped
 // harmlessly (the pending entry is already gone).
-const TERM_TIMEOUT_MS = { open: 60000, input: 10000, resize: 10000, close: 15000 };
+const TERM_TIMEOUT_MS = { open: 60000, input: 10000, resize: 10000, close: 15000, copymode: 30000 };
 const HUB_OP_TIMEOUT_MS = 60000;      // start/stop/restart/check/logs/getProfile
 const HUB_REQUEST_TIMEOUT_MS = 90000; // hub API requests (SSH-backed, serialized)
 
@@ -68,6 +68,7 @@ function buildTermBridge() {
     input(payload) { return invokeTerm('input', payload); },
     resize(payload) { return invokeTerm('resize', payload); },
     close(payload) { return invokeTerm('close', payload); },
+    copymode(payload) { return invokeTerm('copymode', payload); },
     onData(cb) {
       _sh.termDataHandlers.add(cb);
       return () => _sh.termDataHandlers.delete(cb);
