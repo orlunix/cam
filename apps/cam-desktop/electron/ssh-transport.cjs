@@ -90,6 +90,13 @@ const _pool = new Map();
  *  endpoint (multiplexed), isolated from exec traffic. */
 const _termPool = new Map();
 
+/** Optional diagnostic logger — main injects _diagLog so every connect/
+ *  channel-open step lands in userData/cam-desktop.log alongside the
+ *  renderer evidence. */
+let _logFn = null;
+function setLogger(fn) { _logFn = (typeof fn === 'function') ? fn : null; }
+function _log(msg) { if (_logFn) { try { _logFn(msg); } catch { /* noop */ } } }
+
 function _loadSsh2() {
   if (_ssh2) return _ssh2;
   try { _ssh2 = require('ssh2'); }
@@ -257,6 +264,7 @@ function _getOrCreate(key, opts, ssh2, poolRef) {
   const existing = pool.get(key);
   if (existing && existing.state !== 'closed') {
     existing.justCreated = false;
+    _log(`connect reuse ${opts.host}:${opts.port || 22} state=${existing.state} pool=${pool === _termPool ? 'term' : 'exec'}`);
     return existing;
   }
 
@@ -298,6 +306,7 @@ function _getOrCreate(key, opts, ssh2, poolRef) {
       settled = true;
       const c = (err && err.error && err.detail) ? err : _classifyError(err);
       entry.connectError = c;
+      _log(`connect fail ${opts.host}:${port} after ${Date.now() - t0}ms: ${c.error} ${c.detail || ''}`);
       _dropEntry(key, 'connect_error');
       reject(c);
     };
@@ -305,6 +314,7 @@ function _getOrCreate(key, opts, ssh2, poolRef) {
       if (entry.state === 'connecting') failConnect(err);
       else _dropEntry(key, 'error');
     };
+    _log(`connect start ${opts.user}@${opts.host}:${port} (pool=${pool === _termPool ? 'term' : 'exec'})`);
     const onClose = () => {
       // If we never reached ready, treat close as connect failure.
       if (entry.state === 'connecting') failConnect(new Error('Connection lost before handshake'));
@@ -338,6 +348,7 @@ function _getOrCreate(key, opts, ssh2, poolRef) {
       settled = true;
       entry.state = 'ready';
       entry.connectMs = Date.now() - t0;
+      _log(`connect ready ${opts.host}:${port} in ${entry.connectMs}ms`);
       _startIdleTimer(entry);
       resolve();
     });
@@ -796,6 +807,7 @@ async function openTerminalChannel(opts, hooks = {}) {
       // means the pooled socket is suspect (half-dead). Drop it so the
       // next attach reconnects instead of reusing the corpse.
       _dropEntry(key, 'open_timeout');
+      _log(`channel open TIMEOUT ${opts.host} after ${openTimeoutMs}ms — pool entry dropped`);
       if (wasActive) {
         finishOpen({ ok: false, error: 'exec_timeout', detail: 'terminal channel open timed out' });
       }
@@ -803,6 +815,7 @@ async function openTerminalChannel(opts, hooks = {}) {
     if (openTimer && typeof openTimer.unref === 'function') openTimer.unref();
 
     try {
+      _log(`channel open ${opts.host}: ${opts.command} (timeout ${openTimeoutMs}ms)`);
       entry.client.exec(opts.command, {
         pty: {
           term: 'xterm-256color',
@@ -815,12 +828,14 @@ async function openTerminalChannel(opts, hooks = {}) {
           // Same rationale as the open timeout: a channel-open error on
           // a ready-pooled connection marks the socket as suspect.
           _dropEntry(key, 'open_failed');
+          _log(`channel open FAILED ${opts.host}: ${err && err.message}`);
           return finishOpen({ ok: false, error: 'exec_failed', detail: err.message });
         }
         if (!active) {
           try { if (s && typeof s.destroy === 'function') s.destroy(); } catch { /* noop */ }
           return;
         }
+        _log(`channel open ok ${opts.host}`);
         stream = s;
         s.on('data', (d) => { if (active) onData(d); });
         if (s.stderr) s.stderr.on('data', (d) => { if (active) onData(d); });
@@ -868,6 +883,7 @@ module.exports = {
   readRemoteFile,
   openTerminalChannel,
   setOverride,
+  setLogger,
   closeAll,
   dropIdleEntries,
   poolStats,
