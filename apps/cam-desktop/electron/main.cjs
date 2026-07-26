@@ -1074,6 +1074,11 @@ app.whenReady().then(() => {
   // from disk, so nodes/agents/credentials are untouched). The renderer
   // reloads itself right after. Same end state as quit + reopen, minus
   // the window flash.
+  ipcMain.handle('diag:log', (_e, line) => {
+    _diagLog(`[renderer] ${String(line || '').slice(0, 300)}`);
+    return { ok: true };
+  });
+
   ipcMain.handle('app:reset', async () => {
     try {
       const nTerms = _terminals.size;

@@ -1637,6 +1637,15 @@ export function mountAgentConsole({ api, state, showToast }) {
     return window.CamBridge && window.CamBridge.term ? window.CamBridge.term : null;
   }
 
+  /** One renderer evidence line into main's userData/cam-desktop.log. */
+  function alog(msg) {
+    try {
+      if (window.CamBridge && typeof window.CamBridge.diagLog === 'function') {
+        window.CamBridge.diagLog(`[attach] ${msg}`);
+      }
+    } catch (_) {}
+  }
+
   function attachmentBridge() {
     return window.CamBridge && window.CamBridge.files
       ? window.CamBridge.files
@@ -2423,6 +2432,7 @@ export function mountAgentConsole({ api, state, showToast }) {
       // cannot latch opening/refresh state forever. A late success is
       // closed below (see watchdog-close + the stale-entry guard).
       const openWithWatchdog = async () => {
+        alog(`open start ${agent.id} ${openCols}x${openRows}${force ? ' (force)' : ''}`);
         const p = bridge.open({ agentId: agent.id, cols: openCols, rows: openRows });
         let timedOut = false;
         const r = await Promise.race([
@@ -2433,6 +2443,7 @@ export function mountAgentConsole({ api, state, showToast }) {
           }, ATTACH_WATCHDOG_MS)),
         ]);
         if (timedOut) {
+          alog(`watchdog timeout ${agent.id} after ${ATTACH_WATCHDOG_MS}ms`);
           // The abandoned attempt may still open a channel later — close
           // it so it cannot linger as a zombie tmux client.
           void p.then((late) => {
@@ -2461,11 +2472,13 @@ export function mountAgentConsole({ api, state, showToast }) {
         return { ok: false, error: 'stale_open', detail: 'attach superseded by a newer attempt' };
       }
       if (!res || !res.ok) {
+        alog(`open failed ${agent.id}: ${(res && (res.error || res.detail)) || 'unknown'}`);
         ent.term.write(`\r\n\x1b[31mTerminal attach failed: ${res && (res.detail || res.error) || 'unknown'}\x1b[0m\r\n`);
         ent.sessionId = null;
         ent.sessionState = 'idle';
         return res || { ok: false, error: 'attach_failed', detail: 'Terminal attach failed.' };
       }
+      alog(`open ok ${agent.id} sid=${res.sessionId}${res.reused ? ' (reused)' : ''}`);
       ent.sessionId = res.sessionId;
       ent.opening = false;
       ent.sessionState = 'live';
