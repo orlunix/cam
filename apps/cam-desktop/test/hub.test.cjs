@@ -322,6 +322,28 @@ async function main() {
 
   await stopHub();
 
+  // ── Hub restart (resetApp path): stop must not hang on open
+  //    keep-alive connections — the renderer polls constantly, and
+  //    server.close() alone waits for them to drain forever. The first
+  //    client request after a restart may reuse a dead pooled socket
+  //    (ECONNRESET once); a retry must succeed.
+  {
+    const res = await HUB.restart({ dataDir: tmpDir });
+    assert(res && res.ok, 'hub restart failed: ' + JSON.stringify(res));
+    _base = `http://127.0.0.1:${res.apiUrl.split(':').pop()}`;
+    _token = res.apiToken;
+    let restartOk = false, restartErr = '';
+    for (let i = 0; i < 3 && !restartOk; i++) {
+      try {
+        r = await request('GET', '/api/contexts');
+        restartOk = r.status === 200 && Array.isArray(r.body && r.body.contexts);
+        if (!restartOk) restartErr = 'status=' + r.status;
+      } catch (e) { restartErr = e.message; }
+    }
+    ok('hub serves requests after in-process restart (retry allowed)', restartOk, restartErr);
+    await stopHub();
+  }
+
   // ── Summary ─────────────────────────────────────────────────────
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail) { for (const f of failures) console.error('  ' + f); process.exit(1); }
