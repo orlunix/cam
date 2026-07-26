@@ -1664,7 +1664,8 @@ public final class MobileEmbeddedHub {
     /**
      * tmux copy-mode control for the mobile terminal (Direct mode).
      * action: "enter" (copy-mode -u), "up" (halfpage-up), "cancel" (-X cancel),
-     * "top" (history-top).
+     * "top" (top-line — cursor to first line of the current screen),
+     * "bottom" (bottom-line — cursor to last line of the current screen).
      * Executes tmux against the agent's camc socket over SSH and verifies the
      * resulting pane state — callers must trust copyMode only when ok=true,
      * mirroring desktop's "enter must succeed before local state" invariant.
@@ -1672,9 +1673,9 @@ public final class MobileEmbeddedHub {
     JSONObject terminalCopyMode(String agentId, JSONObject hints, String action) {
         try {
             if (!"enter".equals(action) && !"up".equals(action) && !"cancel".equals(action)
-                    && !"top".equals(action)) {
+                    && !"top".equals(action) && !"bottom".equals(action)) {
                 return new JSONObject().put("ok", false).put("error", "invalid_args")
-                    .put("detail", "action must be enter|up|cancel|top");
+                    .put("detail", "action must be enter|up|cancel|top|bottom");
             }
             AttachPlan plan = resolveAttachPlan(agentId, hints);
             if (!plan.ok()) {
@@ -1697,7 +1698,10 @@ public final class MobileEmbeddedHub {
                     tmuxCmd = "send-keys -X -t '" + qSession + "' halfpage-up";
                     break;
                 case "top":
-                    tmuxCmd = "send-keys -X -t '" + qSession + "' history-top";
+                    tmuxCmd = "send-keys -X -t '" + qSession + "' top-line";
+                    break;
+                case "bottom":
+                    tmuxCmd = "send-keys -X -t '" + qSession + "' bottom-line";
                     break;
                 default:
                     tmuxCmd = "send-keys -X -t '" + qSession + "' cancel";
