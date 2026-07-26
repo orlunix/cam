@@ -489,6 +489,17 @@ body.camui-v2 #content.agent-detail-active .output-status-row .jump-bottom-btn:a
   background: rgba(255, 255, 255, 0.1);
 }
 
+/* History button — symmetric twin of jump-bottom at the row's left cell. */
+body.camui-v2 #content.agent-detail-active .output-status-row .jump-bottom-btn.history-btn {
+  justify-self: start;
+}
+
+body.camui-v2 #content.agent-detail-active .output-status-row .jump-bottom-btn.history-btn.is-active {
+  background: rgba(31, 111, 235, 0.35);
+  border-color: #1f6feb;
+  color: #79b8ff;
+}
+
 body.camui-v2 #content.agent-detail-active .terminal-keybar {
   flex-shrink: 0;
   display: flex;
