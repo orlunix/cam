@@ -452,6 +452,48 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     const host = container.querySelector('#terminal-host');
     if (host) {
       host.addEventListener('click', () => focusTerminalForAgent(agentId));
+
+      // Swipe-to-scroll, active ONLY in tmux copy mode — outside it the
+      // handlers return immediately, so existing touch behavior (selection,
+      // taps, xterm scrolling) is untouched.
+      let swipe = null;
+      const swipeGated = () => isTerminalMode() && copyModeActive && terminalSessionReady(agentId);
+      const swipeCellH = () => {
+        const stats = getTerminalSessionStats(agentId);
+        const h = stats && stats.rows > 0 && stats.viewportHeight > 0
+          ? stats.viewportHeight / stats.rows : 0;
+        return h > 4 ? h : 18;
+      };
+      host.addEventListener('touchstart', (e) => {
+        if (!swipeGated() || e.touches.length !== 1) { swipe = null; return; }
+        swipe = { y: e.touches[0].clientY, acc: 0, engaged: false };
+      }, { passive: true });
+      host.addEventListener('touchmove', (e) => {
+        if (!swipe || !swipeGated() || e.touches.length !== 1) return;
+        const y = e.touches[0].clientY;
+        const dy = y - swipe.y;
+        if (!swipe.engaged) {
+          if (Math.abs(dy) < 10) return;   // let taps / long-press selection through
+          swipe.engaged = true;
+        }
+        e.preventDefault();                // we own this gesture now
+        // Natural (webpage) direction: finger drags content — swipe down
+        // reveals older lines (Up keys), swipe up reveals newer (Down keys).
+        swipe.acc += dy;
+        swipe.y = y;
+        const cellH = swipeCellH();
+        let lines = Math.trunc(swipe.acc / cellH);
+        if (lines !== 0) {
+          swipe.acc -= lines * cellH;
+          lines = Math.max(-50, Math.min(50, lines));
+          const key = lines > 0 ? '\x1b[A' : '\x1b[B';
+          void sendTerminalRaw(agentId, key.repeat(Math.abs(lines)))
+            .catch(() => {});
+        }
+      }, { passive: false });
+      const swipeEnd = () => { swipe = null; };
+      host.addEventListener('touchend', swipeEnd, { passive: true });
+      host.addEventListener('touchcancel', swipeEnd, { passive: true });
     }
   }
 
