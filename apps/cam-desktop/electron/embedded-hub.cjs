@@ -4275,8 +4275,17 @@ async function stop() {
     return { ok: true, state: publicState() };
   }
   await new Promise((resolve) => {
-    try { state.server.close(() => resolve()); }
-    catch { resolve(); }
+    const guard = setTimeout(resolve, 3000);
+    try {
+      state.server.close(() => { clearTimeout(guard); resolve(); });
+      // server.close() resolves only after every connection drains, and
+      // the renderer holds keep-alive polls open — without force-close
+      // a hub restart hangs forever (resetApp never resolved, the
+      // renderer never reloaded). Node >= 18.2 has closeAllConnections.
+      if (typeof state.server.closeAllConnections === 'function') {
+        state.server.closeAllConnections();
+      }
+    } catch { clearTimeout(guard); resolve(); }
   });
   state.server    = null;
   state.startedAt = 0;
