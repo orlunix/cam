@@ -1697,7 +1697,7 @@ public final class MobileEmbeddedHub {
                     tmuxCmd = "send-keys -X -t '" + qSession + "' halfpage-up";
                     break;
                 case "top":
-                    tmuxCmd = "send-keys -X -t '" + qSession + "' top-line";
+                    tmuxCmd = "send-keys -X -t '" + qSession + "' history-top";
                     break;
                 default:
                     tmuxCmd = "send-keys -X -t '" + qSession + "' cancel";

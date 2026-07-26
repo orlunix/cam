@@ -513,7 +513,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         if (Math.abs(peak) < 0.8) return;
         if (peak > 0) {
           try {
-            setBottomStatus('Cursor to screen top…', 'info', 1500);
+            setBottomStatus('Jumping to history top…', 'info', 1500);
             await terminalCopyMode(agentId, 'top');
           } catch (e) {
             setBottomStatus(e.message || 'Jump failed', 'error', 2500);
