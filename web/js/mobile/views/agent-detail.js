@@ -23,6 +23,7 @@ import {
   getTerminalLiveText,
   setTerminalViewActive,
   terminalSessionReady,
+  terminalCopyMode,
   seedTerminalPreview,
   setTerminalStatus,
 } from '../../shared/terminal-mount.js';
@@ -466,7 +467,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       };
       host.addEventListener('touchstart', (e) => {
         if (!swipeGated() || e.touches.length !== 1) { swipe = null; return; }
-        swipe = { y: e.touches[0].clientY, acc: 0, engaged: false };
+        swipe = { y: e.touches[0].clientY, acc: 0, engaged: false, trail: [] };
       }, { passive: true });
       host.addEventListener('touchmove', (e) => {
         if (!swipe || !swipeGated() || e.touches.length !== 1) return;
@@ -481,6 +482,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         // reveals older lines (Up keys), swipe up reveals newer (Down keys).
         swipe.acc += dy;
         swipe.y = y;
+        swipe.trail.push({ t: performance.now(), y });
+        if (swipe.trail.length > 12) swipe.trail.shift();
         const cellH = swipeCellH();
         let lines = Math.trunc(swipe.acc / cellH);
         if (lines !== 0) {
@@ -491,9 +494,38 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
             .catch(() => {});
         }
       }, { passive: false });
-      const swipeEnd = () => { swipe = null; };
-      host.addEventListener('touchend', swipeEnd, { passive: true });
-      host.addEventListener('touchcancel', swipeEnd, { passive: true });
+      const swipeEnd = async () => {
+        const s = swipe;
+        swipe = null;
+        // Fling: fast vertical flick within the last ~120ms jumps straight
+        // to history top (swipe down) or back to the live bottom (swipe up).
+        if (!s || !s.engaged || s.trail.length < 2 || !swipeGated()) return;
+        const last = s.trail[s.trail.length - 1];
+        let first = s.trail[0];
+        for (let i = s.trail.length - 1; i >= 0; i--) {
+          if (last.t - s.trail[i].t > 120) { first = s.trail[i]; break; }
+        }
+        const dt = last.t - first.t;
+        if (dt <= 0) return;
+        const v = (last.y - first.y) / dt;   // px/ms, + = finger moving down
+        if (Math.abs(v) < 1.2) return;
+        if (v > 0) {
+          try {
+            setBottomStatus('Jumping to top…', 'info', 1500);
+            await terminalCopyMode(agentId, 'top');
+          } catch (e) {
+            setBottomStatus(e.message || 'Jump failed', 'error', 2500);
+          }
+        } else {
+          try { await sendTerminalRaw(agentId, 'q'); } catch { /* noop */ }
+          copyModeActive = false;
+          syncHistoryChrome();
+          setBottomStatus('', 'info');
+          scrollTerminalToBottom(agentId);
+        }
+      };
+      host.addEventListener('touchend', () => { void swipeEnd(); }, { passive: true });
+      host.addEventListener('touchcancel', () => { swipe = null; }, { passive: true });
     }
   }
 
