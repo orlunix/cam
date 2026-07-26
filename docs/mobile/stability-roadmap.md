@@ -1,7 +1,7 @@
 # Mobile V2 — Stability Status & Roadmap
 
 **Living document.** Current line: branch `camui-desktop-v2`, version
-2.4.56 (2026-07-25). This file supersedes the older `docs/mobile/*`
+2.4.64 (2026-07-25). This file supersedes the older `docs/mobile/*`
 plans, which are stale (last touched 2026-06-28) — see §6 for what to
 trust where.
 
@@ -14,16 +14,20 @@ trust where.
   `MobileSshPool.lockFor()`); `ensureStoreLoaded`/`saveStore`
   synchronized. Regression test: `android/test/lockrepro/` (real hub
   classes on the JVM + Android stubs; `run.sh`).
-- **Terminal History button (tmux copy mode)** (2.4.55, key-stream in
-  2.4.56): terminal mode gains a symmetric pair in the floating status
-  row — left `⤒ History`, right `⤓` (always visible in terminal mode).
-  2.4.55 drove copy mode via per-click SSH tmux exec (verified but
-  laggy); 2.4.56 switched to **key-stream over the live PTY**: enter =
-  `C-b [` (camc tmux.conf sets no prefix → default C-b), page =
-  `Up × rows/2`, exit = `q`. State is optimistic (no pane read-back);
-  the verified command path remains available
-  (`MobileEmbeddedHub.terminalCopyMode`) if reconciliation is needed.
-  Buttons made translucent (rgba 0.38 + blur) in 2.4.56.
+- **Copy-mode browsing UX, final form** (2.4.56–2.4.64): terminal
+  History button (`⤒` left / `⤓` right in the floating status row)
+  enters tmux copy mode via key-stream (`C-b [` — camc tmux.conf sets
+  no prefix); **vertical drag** on the terminal maps distance to line
+  counts over the live PTY (webpage-like scrolling, gated on
+  copyModeActive so selection/taps are untouched); **horizontal
+  swipes** jump cursor to top/bottom line of the current screen
+  (`send-keys -X top-line|bottom-line` via hub exec, stays in copy
+  mode); `⤓` tap exits (`q`). A fling/velocity experiment (2.4.61–63)
+  was tried and reverted — final model has no velocity detection.
+  Buttons + status pill use a 30% dark tint, no blur, light outline
+  (iterated 2.4.57–59 on-device). The verified command path
+  (`MobileEmbeddedHub.terminalCopyMode`: enter|up|cancel|top|bottom,
+  pane state read back via `#{pane_in_mode}`) remains available.
 - **"Connecting via SSH…" dead state** (2.4.52–2.4.53): native-bridge pending
   callback maps were module-instance state and got orphaned on every
   shim reinstall; with no timeout, the attach promise never settled and
