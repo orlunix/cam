@@ -232,6 +232,13 @@ ok("app exposes a full in-app reset (hub restart, window stays)",
   preload.includes("resetApp") && main.includes("ipcMain.handle('app:reset'")
     && main.includes("sshTransport.closeAll()")
     && main.includes("await embeddedHub.restart({ dataDir: userDataDir() })"));
+ok("resetApp force-releases wedged tmux discovery gates (reload-stuck root fix)",
+  main.includes("function _resetTmuxDiscovery()")
+    && main.includes("const nGates = _resetTmuxDiscovery()")
+    && main.includes("_tmuxDiscoveryReleases.add(release)"));
+ok("tmux discovery queue wait is bounded (15s) with self-release of abandoned links",
+  main.includes("Promise.race([") && main.includes("tmux discovery queue wait exceeded 15s")
+    && main.includes("void discoveryBeginP.then((releaseFn)"));
 ok("window switch/create use the live attach stream first (pty fast path)",
   main.includes("function _ptySwitchWindow") && main.includes("via: 'pty'") && main.includes("ent.write('\\x02c')"));
 ok("window switch drops the pre-switch listWindows validation",
