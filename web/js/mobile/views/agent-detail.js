@@ -497,21 +497,23 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       const swipeEnd = async () => {
         const s = swipe;
         swipe = null;
-        // Fling: fast vertical flick within the last ~120ms jumps straight
-        // to history top (swipe down) or back to the live bottom (swipe up).
+        // Fling detection: a flick decelerates before lift-off, so measuring
+        // only the trailing window misclassifies real flicks as slow drags.
+        // Use the PEAK velocity of any ~80ms window across the gesture.
         if (!s || !s.engaged || s.trail.length < 2 || !swipeGated()) return;
-        const last = s.trail[s.trail.length - 1];
-        let first = s.trail[0];
-        for (let i = s.trail.length - 1; i >= 0; i--) {
-          if (last.t - s.trail[i].t > 120) { first = s.trail[i]; break; }
+        let peak = 0;
+        for (let i = 0; i < s.trail.length; i++) {
+          for (let j = i + 1; j < s.trail.length; j++) {
+            const dt = s.trail[j].t - s.trail[i].t;
+            if (dt <= 0 || dt > 100) continue;
+            const v = (s.trail[j].y - s.trail[i].y) / dt;
+            if (Math.abs(v) > Math.abs(peak)) peak = v;
+          }
         }
-        const dt = last.t - first.t;
-        if (dt <= 0) return;
-        const v = (last.y - first.y) / dt;   // px/ms, + = finger moving down
-        if (Math.abs(v) < 1.2) return;
-        if (v > 0) {
+        if (Math.abs(peak) < 0.8) return;
+        if (peak > 0) {
           try {
-            setBottomStatus('Jumping to top…', 'info', 1500);
+            setBottomStatus('Cursor to screen top…', 'info', 1500);
             await terminalCopyMode(agentId, 'top');
           } catch (e) {
             setBottomStatus(e.message || 'Jump failed', 'error', 2500);
