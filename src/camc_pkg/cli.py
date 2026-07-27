@@ -1144,33 +1144,45 @@ def cmd_list(args):
         return
 
     any_tags = any(isinstance(_tf(a, "tags"), list) and _tf(a, "tags") for a in agents)
-    rows = []
+    display_rows = []
     for a in agents:
         tags = _tf(a, "tags")
         tag_str = ",".join(tags) if isinstance(tags, list) else ""
-        row = [
-            a.get("id", "?")[:8],
-            (_tf(a, "name") or "")[:16],
-        ]
+        display = {
+            "id": a.get("id", "?")[:8],
+            "name": _tf(a, "name") or "",
+            "tag": tag_str,
+            "tool": _tf(a, "tool", "?"),
+            "status": a.get("status", "?"),
+            "state": a.get("state") or "-",
+            "prompt": (_tf(a, "prompt") or "")[:24],
+            "updated": _time_ago(_recency(a) or None),
+        }
+        display_rows.append(display)
+
+    rows = []
+    for display in display_rows:
+        row = [display["id"], display["name"]]
         if any_tags:
-            row.append(tag_str[:20])
+            row.append(display["tag"][:20])
         row += [
-            _tf(a, "tool", "?"),
-            styled_status(a.get("status", "?")),
-            styled_state(a.get("state")),
-            (_tf(a, "prompt") or "")[:24],
-            # F-07: UPDATED column matches the sort order; uses the
-            # cached value so we don't issue a third tmux RPC.
-            _time_ago(_recency(a) or None),
+            display["tool"],
+            styled_status(display["status"]),
+            styled_state(None if display["state"] == "-" else display["state"]),
+            display["prompt"], display["updated"],
         ]
         rows.append(row)
     if any_tags:
         headers = ["ID", "NAME", "TAG", "TOOL", "STATUS", "STATE", "PROMPT", "UPDATED"]
         col_styles = {0: "dim", 1: "bold", 2: "cyan", 4: None, 7: "dim"}
+        col_max_widths = {0: 8, 1: 32, 2: 20, 3: 10, 4: 12, 5: 10, 6: 24, 7: 12}
     else:
         headers = ["ID", "NAME", "TOOL", "STATUS", "STATE", "PROMPT", "UPDATED"]
         col_styles = {0: "dim", 1: "bold", 3: None, 6: "dim"}
-    print_table(headers, rows, title="Agents", col_styles=col_styles)
+        col_max_widths = {0: 8, 1: 32, 2: 10, 3: 12, 4: 10, 5: 24, 6: 12}
+    print_table(headers, rows, title="Agents", col_styles=col_styles,
+                no_truncate_cols={1},
+                col_max_widths=col_max_widths)
 
 
 def cmd_logs(args):

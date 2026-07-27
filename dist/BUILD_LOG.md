@@ -5088,3 +5088,55 @@ dc67bc3 camc: centralize release artifact and version builds
 51c64e5 build: camc artifacts stay Linux-correct when built on Windows
 ```
 
+## v1.2.16  e0b52f1-dirty 2026-07-27 00:27
+
+- Lines: 20010
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+e35b22e camc: stabilize monitor and message submit
+2bf3e81 camc: refresh managed tmux config
+46c1720 camc: safely migrate legacy agents and fix boot confirms
+dc67bc3 camc: centralize release artifact and version builds
+2d3c2d3 camc v1.2.1 + desktop: Sync Host forces bundled camc (forceCamc)
+```
+
+## v1.2.17  e0b52f1-dirty 2026-07-27 00:53
+
+- Lines: 19968
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+e35b22e camc: stabilize monitor and message submit
+2bf3e81 camc: refresh managed tmux config
+46c1720 camc: safely migrate legacy agents and fix boot confirms
+dc67bc3 camc: centralize release artifact and version builds
+2d3c2d3 camc v1.2.1 + desktop: Sync Host forces bundled camc (forceCamc)
+```
+
+## v1.2.18  e0b52f1-dirty 2026-07-27 01:11
+
+- Lines: 19996
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+e35b22e camc: stabilize monitor and message submit
+2bf3e81 camc: refresh managed tmux config
+46c1720 camc: safely migrate legacy agents and fix boot confirms
+dc67bc3 camc: centralize release artifact and version builds
+2d3c2d3 camc v1.2.1 + desktop: Sync Host forces bundled camc (forceCamc)
+```
+
+## v1.2.19  e0b52f1-dirty 2026-07-27 01:21
+
+- Lines: 20011
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+e35b22e camc: stabilize monitor and message submit
+2bf3e81 camc: refresh managed tmux config
+46c1720 camc: safely migrate legacy agents and fix boot confirms
+dc67bc3 camc: centralize release artifact and version builds
+2d3c2d3 camc v1.2.1 + desktop: Sync Host forces bundled camc (forceCamc)
+```
+
