@@ -140,8 +140,8 @@ ok("ssh-config parser strips quotes and resolves relative IdentityFile against ~
   const deskHtml = fs.readFileSync(path.join(root, "web", "desktop.html"), "utf8");
   const mobSrc = fs.readFileSync(path.join(root, "web", "js", "mobile", "nodes-shell.js"), "utf8");
   ok("per-host Heal panel: hub endpoint + panel + sequential ops",
-    hubSrc.includes("sub === '/heal'") && hubSrc.includes("tmux: 'heal tmux'")
-      && hubSrc.includes("monitor: 'heal monitor'") && hubSrc.includes("restart: 'heal restart'")
+    hubSrc.includes("sub === '/heal'") && hubSrc.includes("tmux: 'heal --tmux'")
+      && hubSrc.includes("monitor: 'heal --monitor'") && hubSrc.includes("restart: 'heal --restart'")
       && apiSrc.includes("healContext")
       && nodesSrc.includes("heal-host-btn") && nodesSrc.includes("renderHealPanel")
       && nodesSrc.includes("api.healContext"));
