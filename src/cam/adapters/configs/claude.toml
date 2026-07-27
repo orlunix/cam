@@ -18,11 +18,11 @@ display_name = "Claude Code"
 config_dir = ".claude"
 
 [launch]
-# Use POSIX `env KEY=VAL prog…` prefix to set CLAUDE_CODE_DISABLE_MOUSE
-# in the agent's environment. tmux execs argv directly without a shell,
+# Use POSIX `env KEY=VAL prog…` prefix to disable Claude mouse handling and
+# alternate-screen use. tmux execs argv directly without a shell,
 # so this works identically under bash / zsh / csh / tcsh / fish / dash
 # login shells — /usr/bin/env is the single source of truth.
-command = ["env", "CLAUDE_CODE_DISABLE_MOUSE=1", "claude", "--allowed-tools", "Bash,Edit,Read,Write,Glob,Grep,WebFetch,TodoWrite,NotebookEdit"]
+command = ["env", "CLAUDE_CODE_DISABLE_MOUSE=1", "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1", "claude", "--allowed-tools", "Bash,Edit,Read,Write,Glob,Grep,WebFetch,TodoWrite,NotebookEdit"]
 auto_permission_mode = true     # add --permission-mode auto to launch command (default on as of 2026-06-11)
 prompt_after_launch = true
 startup_wait = 90.0
@@ -117,7 +117,7 @@ exit_command = "/exit"        # command to send if exit_action = "send_exit"
 # Adapter-owned readiness (F-08). Tool-specific auth/version policy
 # lives here so each tool owns its rules in TOML instead of being
 # hardcoded in runtime_env._TOOL_SPECS. The launch command above uses
-# `env CLAUDE_CODE_DISABLE_MOUSE=1 claude ...` for shell-agnostic env
+# `env CLAUDE_CODE_DISABLE_MOUSE=1 CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude ...` for shell-agnostic env
 # injection; readiness.binary disambiguates so the check resolves
 # `claude` itself, not /usr/bin/env.
 [readiness]

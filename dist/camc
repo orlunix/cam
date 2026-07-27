@@ -698,8 +698,8 @@ import uuid
 # Constants and logging
 # ===========================================================================
 
-__version__ = "1.2.7"
-__build__ = "e6e0228-dirty 2026-07-26 19:59"
+__version__ = "1.2.15"
+__build__ = "2bf3e81-dirty 2026-07-26 22:07"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1036,11 +1036,11 @@ display_name = "Claude Code"
 config_dir = ".claude"
 
 [launch]
-# Use POSIX `env KEY=VAL prog…` prefix to set CLAUDE_CODE_DISABLE_MOUSE
-# in the agent's environment. tmux execs argv directly without a shell,
+# Use POSIX `env KEY=VAL prog…` prefix to disable Claude mouse handling and
+# alternate-screen use. tmux execs argv directly without a shell,
 # so this works identically under bash / zsh / csh / tcsh / fish / dash
 # login shells — /usr/bin/env is the single source of truth.
-command = ["env", "CLAUDE_CODE_DISABLE_MOUSE=1", "claude", "--allowed-tools", "Bash,Edit,Read,Write,Glob,Grep,WebFetch,TodoWrite,NotebookEdit"]
+command = ["env", "CLAUDE_CODE_DISABLE_MOUSE=1", "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1", "claude", "--allowed-tools", "Bash,Edit,Read,Write,Glob,Grep,WebFetch,TodoWrite,NotebookEdit"]
 auto_permission_mode = true     # add --permission-mode auto to launch command (default on as of 2026-06-11)
 prompt_after_launch = true
 startup_wait = 90.0
@@ -1135,7 +1135,7 @@ exit_command = "/exit"        # command to send if exit_action = "send_exit"
 # Adapter-owned readiness (F-08). Tool-specific auth/version policy
 # lives here so each tool owns its rules in TOML instead of being
 # hardcoded in runtime_env._TOOL_SPECS. The launch command above uses
-# `env CLAUDE_CODE_DISABLE_MOUSE=1 claude ...` for shell-agnostic env
+# `env CLAUDE_CODE_DISABLE_MOUSE=1 CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude ...` for shell-agnostic env
 # injection; readiness.binary disambiguates so the check resolves
 # `claude` itself, not /usr/bin/env.
 [readiness]
@@ -10885,7 +10885,8 @@ camc logs <agent> -f                   # follow monitor log for live errors
 | Symptom | Fix |
 |---------|-----|
 | Status says `running` but tmux is dead | `~/.cam/camc heal` |
-| Monitor died after ~/.cam/camc upgrade | `~/.cam/camc upgrade` (or `~/.cam/camc heal --upgrade`) |
+| Need to replace a healthy local monitor too | `~/.cam/camc heal --restart` |
+| tmux settings need a refresh | `~/.cam/camc heal --tmux` |
 | Agent stuck (idle but not responding) | `~/.cam/camc key <agent> --key Escape`, then `~/.cam/camc send <agent> --text "..."` |
 | Agent `exited` or `failed` | Check `~/.cam/camc status <agent>` for `exit_reason`; `camc reboot <agent>` to retry with same session |
 | Capture empty / attach hangs | `~/.cam/camc capture <agent> --lines 0` to verify; if still blank check `~/.cam/camc status <agent>` for `tmux_session` alive |
@@ -10904,16 +10905,24 @@ Walks every running agent on the current host:
   only touches agents from the current machine
 
 ```bash
-~/.cam/camc heal               # restart dead monitors
-~/.cam/camc heal --upgrade     # kill ALL monitors, restart with current binary
+~/.cam/camc heal               # default: recover dead monitors; do not restart healthy ones
+~/.cam/camc heal --monitor     # explicit spelling of the same default monitor heal
+~/.cam/camc heal --restart     # one verified local monitor at a time, then normal heal
+~/.cam/camc heal --tmux        # rewrite CAMC tmux.conf, source it in each local agent socket
+~/.cam/camc heal --agents      # migrate only verified legacy agents.json records
 ```
+
+`heal --upgrade` is retained only as a hidden, deprecated compatibility
+command. Do not use it for routine monitor recovery; use `heal --restart`
+when a deliberate local monitor restart is needed.
 
 ### When to run heal
 
 | Trigger | Command |
 |---------|---------|
 | `~/.cam/camc list` shows running but nothing's happening | `~/.cam/camc heal` |
-| Just deployed new ~/.cam/camc version | `~/.cam/camc upgrade` |
+| Need to deliberately restart healthy local monitors | `~/.cam/camc heal --restart` |
+| Need the managed tmux template on active local servers | `~/.cam/camc heal --tmux` |
 | Many agents stopped responding to send/key | `~/.cam/camc heal` |
 | Sockets piling up in `/tmp/cam-sockets/` | `~/.cam/camc heal` (auto-cleans) |
 
@@ -10979,7 +10988,8 @@ For session JSONL paths and inspection, see managing-camc's
 
 | File | When to read |
 |---|---|
-| `reference/heal-and-monitor.md` | Monitor internals, self-healing details, NFS hostname filtering |""",
+| `reference/heal-and-monitor.md` | Monitor internals, self-healing details, NFS hostname filtering |
+""",
         "reference/heal-and-monitor.md": r"""# `~/.cam/camc heal` and the monitor loop
 
 ## What the monitor is
@@ -12524,9 +12534,23 @@ camc add my-existing-session --tool claude --name my-agent
 | Symptom | First thing to try |
 |---|---|
 | Status says `running` but tmux is dead | `~/.cam/camc heal` |
-| Monitor died after ~/.cam/camc upgrade | `~/.cam/camc upgrade` |
+| Need to replace a healthy local monitor | `~/.cam/camc heal --restart` |
+| Need to refresh the managed tmux configuration | `~/.cam/camc heal --tmux` |
 | Agent not responding to `send` | `~/.cam/camc capture <agent> --lines 30` to see; then `~/.cam/camc attach` for manual |
 | Want to find an agent's Claude JSONL | `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` — see `reference/sessions.md` |
+
+### Heal modes
+
+- `camc heal` and `camc heal --monitor` are the default monitor heal: they
+  recover dead monitors without forcing healthy monitors to restart.
+- `camc heal --restart` restarts verified local monitors one at a time, then
+  runs the normal monitor heal.
+- `camc heal --tmux` rewrites CAMC's managed `tmux.conf` and sources it in
+  every local agent tmux socket; it does not run monitor or agent migration.
+- `camc heal --agents` migrates only verified legacy agent records; it does
+  not touch monitors.
+- `camc heal --upgrade` is hidden and deprecated compatibility only; do not
+  use it for normal maintenance.
 
 For deeper diagnosis (stuck agents, exit reasons, heal details):
 use the **camc-diagnose** skill.
@@ -16101,6 +16125,78 @@ def _kill_all_monitors():
     return killed
 
 
+def _monitor_pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+
+
+def _restart_local_monitors():
+    """Restart one verified local monitor at a time without duplicates."""
+    store = AgentStore()
+    hostname = _sock.gethostname()
+    restarted = failed = skipped = 0
+    for agent in store.list():
+        aid = agent.get("id")
+        session = _sf(agent, "tmux_session")
+        if (agent.get("status") != "running" or not aid or not session
+                or (agent.get("hostname")
+                    and not _is_same_host(agent["hostname"], hostname))
+                or not tmux_session_exists(session)):
+            skipped += 1
+            continue
+
+        pids = [pid for pid, _ in _find_monitor_pids(aid)]
+        record_pid = _sf(agent, "pid", None)
+        if record_pid and record_pid not in pids and _monitor_pid_alive(record_pid):
+            print("  %s: restart skipped (monitor PID %s not verified)" %
+                  (aid, record_pid))
+            failed += 1
+            continue
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        deadline = time.time() + 3.0
+        live = [pid for pid in pids if _monitor_pid_alive(pid)]
+        while live and time.time() < deadline:
+            time.sleep(0.05)
+            live = [pid for pid in live if _monitor_pid_alive(pid)]
+        for pid in live:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        kill_deadline = time.time() + 1.0
+        while live and time.time() < kill_deadline:
+            time.sleep(0.05)
+            live = [pid for pid in live if _monitor_pid_alive(pid)]
+        if live:
+            print("  %s: restart failed (old monitor still alive)" % aid)
+            failed += 1
+            continue
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, _CAMC_SCRIPT, "_monitor", aid] if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg", "_monitor", aid],
+                stdout=subprocess.DEVNULL,
+                stderr=open(os.path.join(LOGS_DIR, "monitor-%s.stderr" % aid), "a"),
+                start_new_session=True)
+            if not _monitor_pid_alive(proc.pid):
+                raise RuntimeError("new monitor exited immediately")
+            store.update(aid, pid=proc.pid)
+            print("  %s: restarted monitor (PID %d)" % (aid, proc.pid))
+            restarted += 1
+        except Exception as e:
+            print("  %s: restart failed: %s" % (aid, e))
+            failed += 1
+    return restarted, failed, skipped
+
+
 def _do_heal():
     """Shared heal body: resume, restart monitors, orphan adopt, maintenance."""
     my_hostname = _sock.gethostname()
@@ -16746,7 +16842,37 @@ def _migrate_legacy_agents(store):
 def cmd_heal(args):
     """Check running agents and restart dead monitor daemons."""
     if getattr(args, "tmux", False):
-        print("Tmux: refreshed %s" % ensure_camc_tmux_config())
+        config = ensure_camc_tmux_config()
+        reloaded = failed = skipped = 0
+        hostname = _sock.gethostname()
+        for agent in AgentStore().list():
+            agent_host = agent.get("hostname")
+            socket = agent.get("tmux_socket")
+            if ((agent_host and not _is_same_host(agent_host, hostname))
+                    or not socket):
+                skipped += 1
+                continue
+            tmux_bin = agent.get("tmux_bin") or "tmux"
+            try:
+                result = subprocess.run(
+                    [tmux_bin, "-S", socket, "source-file", config],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=3)
+                if result.returncode == 0:
+                    reloaded += 1
+                else:
+                    failed += 1
+            except (OSError, subprocess.TimeoutExpired):
+                failed += 1
+        print("Tmux: refreshed %s; %d server(s) reloaded, %d failed, %d skipped" %
+              (config, reloaded, failed, skipped))
+        return
+    if getattr(args, "restart", False):
+        restarted, failed, skipped = _restart_local_monitors()
+        print("Monitor restart: %d restarted, %d failed, %d skipped" %
+              (restarted, failed, skipped))
+        _do_heal()
+        _refresh_embedded_skills_after_heal()
         return
     if getattr(args, "upgrade", False):
         print("Note: 'heal --upgrade' is deprecated, use 'camc upgrade'")
@@ -17028,6 +17154,23 @@ def _msg_resolve_session(to_arg):
     return target, session, tool_busy
 
 
+_MSG_SUBMIT_DELAY_DEFAULT = 0.5
+
+
+def _msg_submit_delay(target):
+    """Return the target adapter's Enter delay, with a safe default."""
+    tool = _agent_tool(target) if target else ""
+    if tool:
+        try:
+            delay = float(getattr(_load_config(tool),
+                                  "prompt_submit_delay", 0.0) or 0.0)
+            if delay > 0:
+                return delay
+        except (SystemExit, ValueError, TypeError, OSError):
+            pass
+    return _MSG_SUBMIT_DELAY_DEFAULT
+
+
 def _msg_clean_header_value(value):
     """Keep protocol metadata on one bracketed line."""
     return (str(value or "")
@@ -17146,7 +17289,8 @@ _MSG_REPLY_INSTRUCTION = (
 
 
 def _msg_inject(session, to_label, text, timeout_s,
-                expect_reply=False, reply_to=None):
+                expect_reply=False, reply_to=None,
+                submit_delay=_MSG_SUBMIT_DELAY_DEFAULT):
     """Inject [camc msg#<id>]: marker into pane. Logs ledger sent/delivered.
 
     Returns (msg_id, ok). On delivery failure, logs deliver_failed and
@@ -17223,7 +17367,11 @@ def _msg_inject(session, to_label, text, timeout_s,
         "to_id": to_id, "to_name": to_name,
     })
 
-    if not tmux_send_input(session, payload, send_enter=True):
+    if not tmux_send_input(session, payload, send_enter=False):
+        _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
+        return (msg_id, False)
+    time.sleep(submit_delay)
+    if not tmux_send_key(session, "Enter"):
         _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
         return (msg_id, False)
     _msg_ledger_append({"msg_id": msg_id, "status": "delivered"})
@@ -17699,7 +17847,8 @@ def cmd_msg_send(args):
         sys.exit(1)
 
     msg_id, ok = _msg_inject(session, args.to, text, timeout,
-                             expect_reply=expect_reply)
+                             expect_reply=expect_reply,
+                             submit_delay=_msg_submit_delay(target))
     if not ok:
         sys.stderr.write("camc msg: failed to deliver to '%s'\n" % args.to)
         sys.exit(1)
@@ -19535,12 +19684,17 @@ examples:
 
     heal_p = sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
     heal_modes = heal_p.add_mutually_exclusive_group()
-    heal_modes.add_argument("--upgrade", action="store_true", help="Kill ALL monitors and restart with current camc binary")
+    heal_modes.add_argument("--monitor", action="store_true", help="Check agents and restart dead monitors (default)")
+    heal_modes.add_argument("--restart", action="store_true", help="Restart each local agent monitor, then run monitor heal")
+    heal_modes.add_argument("--upgrade", action="store_true", help=argparse.SUPPRESS)
     heal_modes.add_argument("--agents", action="store_true", help="Migrate verified legacy agent records without touching monitors")
     heal_modes.add_argument("--tmux", action="store_true", help="Refresh CAMC-managed tmux configuration only")
 
     # upgrade — full camc upgrade
-    sub.add_parser("upgrade", help="Upgrade camc: restart monitors, refresh configs/skills, heal")
+    sub.add_parser("upgrade", help=argparse.SUPPRESS)
+    for _act in list(sub._choices_actions):
+        if _act.dest == "upgrade":
+            sub._choices_actions.remove(_act)
 
     # api — Inference Hub / custom API profiles
     api_p = sub.add_parser("api", help="API profiles (list/check)")
@@ -19731,6 +19885,8 @@ examples:
         # instead of triggering a misleading "create needs id" error.
         sys.argv.insert(2, "create")
 
+    sub.metavar = "{%s}" % ",".join(
+        name for name in sub.choices if name != "upgrade")
     args = p.parse_args()
     # Enable debug logging if --verbose
     if getattr(args, "verbose", False):
