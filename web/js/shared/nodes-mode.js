@@ -935,6 +935,9 @@ export function mountNodesMode({
           }
           const resp = await api.healContext(primary.id || primary.name, [...ent.ops]);
           ent.results = (resp && resp.results) || [];
+          if (resp && (resp.camc === 'updated' || resp.camc === 'installed')) {
+            ent.results.unshift({ op: 'camc', ok: true, code: null, ms: 0, error: '', tail: `camc ${resp.camc} on this host` });
+          }
           const okCount = ent.results.filter(r => r.ok).length;
           const failCount = ent.results.length - okCount;
           ent.last = {
