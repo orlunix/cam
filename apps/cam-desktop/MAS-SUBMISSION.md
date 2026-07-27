@@ -132,6 +132,18 @@ Apple reads the deployment target from the **mach-o load commands**
 "build:mas": "electron-builder --mac mas --universal ..."
 ```
 
+### 11. Automated entitlement check: `network.server` "no matching functionality"
+
+First submission was auto-rejected (2026-07-26): the static analysis saw
+`com.apple.security.network.server` but no obvious server UI.
+**We do need it** — the embedded hub binds `127.0.0.1:<random port>` and
+`listen()` on loopback requires the server entitlement even with no
+external interface. **Fix**: justify, don't remove — the justification
+was added to App Review Information → Notes and sent as the Resolution
+Center reply; resubmitted with no code change. **Lesson for next time:**
+put the entitlement rationale in the review notes *before* the first
+submission (it's in `APP-STORE.md` now).
+
 ## What remains manual (by design)
 
 - App record creation (one-time, pitfall 9)
