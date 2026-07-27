@@ -3877,7 +3877,7 @@ async function handle(req, res) {
       let body;
       try { body = await readJsonBody(req); }
       catch (e) { return send400(res, e.message); }
-      const OP_CMDS = { heal: 'heal', upgrade: 'upgrade', 'heal-tmux': 'heal tmux' };
+      const OP_CMDS = { monitor: 'heal monitor', restart: 'heal restart', tmux: 'heal tmux' };
       const requested = Array.isArray(body && body.ops) ? body.ops : [];
       const ops = requested.filter(o => Object.prototype.hasOwnProperty.call(OP_CMDS, o));
       if (!ops.length) {
