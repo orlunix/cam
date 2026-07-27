@@ -280,6 +280,8 @@ class TestMsgNoWait:
         sent_calls = []
         monkeypatch.setattr(cli, "tmux_send_input",
                             lambda s, t, send_enter=True: (sent_calls.append((s, t)), deliver_ok)[1])
+        monkeypatch.setattr(cli, "tmux_send_key", lambda s, key: deliver_ok)
+        monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
         return cli, ledger, sent_calls
 
     def test_no_wait_returns_immediately(self, monkeypatch, tmp_path, capsys):
@@ -489,6 +491,67 @@ class TestMsgNoWait:
         assert "%7" in seen["args"]
 
 
+class TestMsgSubmitDelay:
+    """Message submission uses the target adapter delay, never real tmux."""
+
+    def _send(self, monkeypatch, target, config):
+        import argparse
+        from camc_pkg import cli
+
+        seen = {}
+        monkeypatch.setattr(cli, "_msg_resolve_session",
+                            lambda to: (target, "cam-fake", None))
+        monkeypatch.setattr(cli, "_load_config", lambda tool: config)
+        monkeypatch.setattr(cli, "_msg_inject",
+                            lambda session, to, text, timeout, expect_reply=False,
+                            submit_delay=None: (
+                                seen.update(submit_delay=submit_delay) or
+                                ("deadbeef", True)))
+        with pytest.raises(SystemExit) as exit_info:
+            cli.cmd_msg_send(argparse.Namespace(
+                to="target", text="hello", timeout=5,
+                no_wait=True, expect_reply=False))
+        assert exit_info.value.code == 0
+        return seen["submit_delay"]
+
+    def test_msg_uses_codex_adapter_submit_delay(self, monkeypatch):
+        delay = self._send(monkeypatch, {"task": {"tool": "codex"}},
+                           SimpleNamespace(prompt_submit_delay=0.5))
+        assert delay == 0.5
+
+    def test_msg_uses_explicit_adapter_submit_delay(self, monkeypatch):
+        delay = self._send(monkeypatch, {"task": {"tool": "cursor"}},
+                           SimpleNamespace(prompt_submit_delay=0.8))
+        assert delay == 0.8
+
+    def test_msg_defaults_to_half_second_without_adapter_value(self, monkeypatch):
+        delay = self._send(monkeypatch, None,
+                           SimpleNamespace(prompt_submit_delay=0.0))
+        assert delay == 0.5
+
+    def test_inject_waits_adapter_delay_before_single_enter(self, monkeypatch, tmp_path):
+        from camc_pkg import cli
+
+        events = []
+        monkeypatch.setattr(cli, "_MSG_LEDGER_PATH", str(tmp_path / "messages.jsonl"))
+        monkeypatch.setattr(cli, "_msg_sender_identity", lambda: None)
+        monkeypatch.setattr(cli, "_msg_target_identity", lambda to: None)
+        monkeypatch.setattr(cli, "tmux_send_input",
+                            lambda session, text, send_enter=True:
+                            events.append(("input", send_enter)) or True)
+        monkeypatch.setattr(cli, "tmux_send_key",
+                            lambda session, key:
+                            events.append(("key", key)) or True)
+        monkeypatch.setattr(cli.time, "sleep",
+                            lambda seconds: events.append(("sleep", seconds)))
+
+        _msg_id, ok = cli._msg_inject(
+            "cam-fake", "target", "hello", 5, submit_delay=0.8)
+
+        assert ok
+        assert events == [("input", False), ("sleep", 0.8), ("key", "Enter")]
+
+
 class TestMsgExpectReply:
     """`--expect-reply` Phase 1 async: receiver instruction appended to
     wire, sent record flagged, `wait` switches to ledger-poll, and
@@ -506,6 +569,8 @@ class TestMsgExpectReply:
         sent_calls = []
         monkeypatch.setattr(cli, "tmux_send_input",
                             lambda s, t, send_enter=True: (sent_calls.append((s, t)), deliver_ok)[1])
+        monkeypatch.setattr(cli, "tmux_send_key", lambda s, key: deliver_ok)
+        monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
         return cli, ledger, sent_calls
 
     def test_expect_reply_no_wait_appends_instruction(self, monkeypatch, tmp_path, capsys):
@@ -581,6 +646,8 @@ class TestMsgReply:
         sent_calls = []
         monkeypatch.setattr(cli, "tmux_send_input",
                             lambda s, t, send_enter=True: (sent_calls.append((s, t)), True)[1])
+        monkeypatch.setattr(cli, "tmux_send_key", lambda s, key: True)
+        monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
         return cli, ledger, sent_calls
 
     def test_reply_unknown_id_exits_1(self, monkeypatch, tmp_path, capsys):
@@ -1050,6 +1117,8 @@ class TestMsgSendMailbox:
         sent_calls = []
         monkeypatch.setattr(cli, "tmux_send_input",
                             lambda s, t, send_enter=True: (sent_calls.append((s, t)), True)[1])
+        monkeypatch.setattr(cli, "tmux_send_key", lambda s, key: True)
+        monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
         return cli, ledger, sent_calls
 
     def test_send_writes_turn_seq1_and_delivery(self, monkeypatch, tmp_path, capsys):
