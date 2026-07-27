@@ -171,13 +171,13 @@ export function mountNodesMode({
   // results:[{op,ok,code,ms,error,tail}], last:{ts, ok, text}}.
   const healState = new Map();
   const HEAL_OPS = [
-    { id: 'heal',      label: 'Heal — restart dead monitors, resume agents, clean stale sockets' },
-    { id: 'upgrade',   label: 'Upgrade camc — restarts ALL agent monitors on this host' },
-    { id: 'heal-tmux', label: 'Heal tmux — reload managed tmux.conf on this host (newer camc)' },
+    { id: 'monitor', label: 'Heal monitors — resume agents, restart dead monitors, clean stale sockets', done: 'monitors healed' },
+    { id: 'restart', label: 'Restart monitors — all agent monitors restart with the current camc', done: 'monitors restarted' },
+    { id: 'tmux',    label: 'Update tmux — reload managed tmux.conf on this host', done: 'tmux.conf updated' },
   ];
   function healEnt(key) {
     let e = healState.get(key);
-    if (!e) { e = { open: false, busy: false, ops: new Set(['heal']), results: null, last: null }; healState.set(key, e); }
+    if (!e) { e = { open: false, busy: false, ops: new Set(['monitor']), results: null, last: null }; healState.set(key, e); }
     return e;
   }
 
@@ -600,11 +600,15 @@ export function mountNodesMode({
     if (e.busy) {
       resultsHtml = `<div class="heal-results dim">Running ${esc(e.ops.size)} op(s)…</div>`;
     } else if (e.results) {
-      resultsHtml = `<div class="heal-results">` + e.results.map(r => `
+      resultsHtml = `<div class="heal-results">` + e.results.map(r => {
+        const opDef = HEAL_OPS.find(o => o.id === r.op);
+        const status = r.ok ? (opDef ? opDef.done : 'done') : (r.error || 'failed');
+        return `
         <div class="heal-result ${r.ok ? 'is-ok' : 'is-error'}">
-          ${r.ok ? '✓' : '✗'} ${esc(r.op)} · ${(r.ms / 1000).toFixed(1)}s${r.ok ? '' : ` · ${esc(r.error || 'failed')}`}
+          ${r.ok ? '✓' : '✗'} ${esc(r.op)} · ${esc(status)} · ${(r.ms / 1000).toFixed(1)}s
           ${r.tail ? `<div class="heal-result-tail dim">${esc(r.tail)}</div>` : ''}
-        </div>`).join('') + `</div>`;
+        </div>`;
+      }).join('') + `</div>`;
     }
     const last = e.last
       ? `<div class="heal-last dim">Last heal: ${esc(e.last.text)} · ${esc(fmtAgo(e.last.ts))}</div>`
