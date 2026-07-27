@@ -108,7 +108,7 @@ function request(method, p, body) {
         resolve({ status: res.statusCode, body: parsed });
       });
     });
-    req.on('error', reject);
+    req.on('error', (e) => { e.message = `${method} ${p}: ${e.message}`; reject(e); });
     if (body != null) req.write(JSON.stringify(body));
     req.end();
   });
@@ -319,6 +319,32 @@ async function main() {
   eq('local start refused status', r.status, 400);
   eq('local start refused error', r.body && r.body.error, 'local_unsupported');
   ok('local start detail has SSH guidance', /SSH server/.test((r.body && r.body.detail) || '') && /SSH node/.test((r.body && r.body.detail) || ''), r.body && r.body.detail);
+
+  // ── Heal endpoint: runs selected camc ops sequentially, whitelist ──
+  {
+    let r0 = await request('POST', '/api/contexts', {
+      name: 'healbox', host: '10.0.0.9', user: 'demo', port: 22,
+      auth_method: 'agent', path: '/home/demo',
+    });
+    eq('heal: seed context', r0.status, 201);
+    const calls = [];
+    setRemoteHandler((opts) => {
+      calls.push(opts.command);
+      if (/camc heal tmux/.test(opts.command)) return { ok: false, error: 'remote_nonzero', detail: 'usage: camc ...', stdout: '', stderr: 'usage: camc' };
+      return { ok: true, stdout: 'Heal: 2 healthy, 0 restarted', stderr: '' };
+    });
+    let hr = await request('POST', '/api/contexts/healbox/heal', { ops: ['heal', 'heal-tmux', 'bogus'] });
+    eq('heal status', hr.status, 200);
+    eq('heal ran whitelisted ops only', hr.body && hr.body.results && hr.body.results.length, 2);
+    eq('heal op1 ok', hr.body.results[0].ok, true);
+    eq('heal op2 fails through (old camc)', hr.body.results[1].ok, false);
+    ok('heal passes camc error tail through', /usage/.test(hr.body.results[1].tail || ''), JSON.stringify(hr.body.results[1]));
+    ok('heal executed sequentially via remote camc', calls.some(c => /camc heal$/.test(c)) && calls.some(c => /camc heal tmux/.test(c)), JSON.stringify(calls));
+    hr = await request('POST', '/api/contexts/healbox/heal', { ops: ['bogus'] });
+    eq('heal invalid ops rejected', hr.status, 400);
+    eq('heal invalid ops error', hr.body && hr.body.error, 'invalid_ops');
+    setRemoteHandler(null);
+  }
 
   await stopHub();
 
