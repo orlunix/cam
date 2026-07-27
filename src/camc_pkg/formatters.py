@@ -8,6 +8,8 @@ Both modes produce equivalent information — just different visual polish.
 import json
 import os
 import sys
+import textwrap
+import unicodedata
 
 # ---------------------------------------------------------------------------
 # Rich detection
@@ -31,6 +33,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 _use_color = sys.stdout.isatty()
+
 
 _ANSI = {
     "red": "\033[31m",
@@ -100,7 +103,8 @@ def styled_state(state):
 # Table output
 # ---------------------------------------------------------------------------
 
-def print_table(headers, rows, title=None, col_styles=None, col_widths=None):
+def print_table(headers, rows, title=None, col_styles=None, col_widths=None,
+                no_truncate_cols=None, col_max_widths=None):
     """Print a table with optional Rich or ANSI fallback.
 
     Args:
@@ -109,18 +113,43 @@ def print_table(headers, rows, title=None, col_styles=None, col_widths=None):
         title: optional table title
         col_styles: optional dict {col_index: rich_style_string} for Rich mode
         col_widths: optional dict {col_index: min_width} for ANSI fallback
+        no_truncate_cols: column indexes that wrap instead of using ellipsis
+        col_max_widths: optional dict {col_index: maximum width} for Rich
     """
     if not rows:
         return
 
     col_styles = col_styles or {}
     col_widths = col_widths or {}
+    col_max_widths = col_max_widths or {}
+    no_truncate_cols = set(no_truncate_cols or ())
 
     if _HAS_RICH:
         table = Table(title=title, show_lines=False)
         for i, h in enumerate(headers):
             style = col_styles.get(i, None)
-            table.add_column(h, style=style, no_wrap=(i == 0))
+            preferred_width = None
+            if i in no_truncate_cols:
+                longest = max(
+                    [len(str(h))] + [
+                        len(_strip_ansi(str(row[i] if i < len(row) else "")))
+                        for row in rows
+                    ]
+                )
+                # At normal widths this is exactly min(longest value, cap).
+                # On a narrow terminal, reserve room for the fixed fields so
+                # Rich cannot collapse this important column to zero.
+                terminal_cap = max(12, _console.width // 4)
+                preferred_width = min(
+                    longest, col_max_widths.get(i, longest), terminal_cap,
+                )
+            table.add_column(
+                h, style=style,
+                no_wrap=i not in no_truncate_cols,
+                overflow="fold" if i in no_truncate_cols else "ellipsis",
+                width=preferred_width,
+                max_width=col_max_widths.get(i),
+            )
         for row in rows:
             cells = []
             for cell in row:
@@ -133,41 +162,66 @@ def print_table(headers, rows, title=None, col_styles=None, col_widths=None):
     else:
         # Calculate column widths
         ncols = len(headers)
-        widths = [max(len(str(h)), col_widths.get(i, 0)) for i, h in enumerate(headers)]
+        widths = [max(_display_width(str(h)), col_widths.get(i, 0)) for i, h in enumerate(headers)]
         for row in rows:
             for i in range(min(ncols, len(row))):
                 cell = row[i]
                 # Strip ANSI for width calc, but keep for display
                 plain = _strip_ansi(str(cell)) if cell is not None else ""
-                widths[i] = max(widths[i], len(plain))
+                widths[i] = max(widths[i], _display_width(plain))
 
-        # Cap widths to avoid overflow
-        widths = [min(w, 40) for w in widths]
+        # Use the same per-column caps as Rich.  The sole wrapping column is
+        # normally NAME; secondary fields stay on one line with an ellipsis.
+        widths = [min(w, col_max_widths.get(i, 40)) for i, w in enumerate(widths)]
 
-        fmt_parts = []
-        for i, w in enumerate(widths):
-            if i == ncols - 1:
-                fmt_parts.append("%s")  # last col unlimited
-            else:
-                fmt_parts.append("%%-%ds" % w)
-        fmt = "  ".join(fmt_parts)
+        def format_cells(cells):
+            padded = []
+            for i, cell in enumerate(cells):
+                text = str(cell)
+                padded.append(text + " " * max(0, widths[i] - _display_width(text)))
+            return "  ".join(padded)
 
         if title:
             print(_c(title, "bold"))
-        print(fmt % tuple(headers))
+        print(format_cells(headers))
         print("-" * (sum(widths) + 2 * (ncols - 1)))
         for row in rows:
-            cells = []
+            cell_lines = []
             for i in range(ncols):
                 c = row[i] if i < len(row) else ""
-                cells.append(str(c) if c is not None else "")
-            print(fmt % tuple(cells))
+                raw = str(c) if c is not None else ""
+                plain = _strip_ansi(raw)
+                if i in no_truncate_cols:
+                    cell_lines.append(textwrap.wrap(
+                        plain, width=widths[i], break_long_words=True,
+                        break_on_hyphens=False,
+                    ) or [""])
+                elif len(plain) > widths[i]:
+                    cell_lines.append([plain[:max(0, widths[i] - 1)] + "…"])
+                else:
+                    cell_lines.append([raw])
+            for line_no in range(max(len(lines) for lines in cell_lines)):
+                cells = [
+                    lines[line_no] if line_no < len(lines) else ""
+                    for lines in cell_lines
+                ]
+                print(format_cells(cells))
 
 
 def _strip_ansi(text):
     """Strip ANSI escape codes for width calculation."""
     import re
     return re.sub(r'\033\[[0-9;]*m', '', text)
+
+
+def _display_width(text):
+    """Terminal cell width after ANSI escapes; emoji/wide glyphs take two."""
+    width = 0
+    for char in _strip_ansi(text):
+        if unicodedata.combining(char):
+            continue
+        width += 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+    return width
 
 
 # ---------------------------------------------------------------------------
