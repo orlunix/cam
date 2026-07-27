@@ -147,6 +147,10 @@ submission (it's in `APP-STORE.md` now).
 ## What remains manual (by design)
 
 - App record creation (one-time, pitfall 9)
+- **Export compliance is per-build**: every newly uploaded build needs
+  `usesNonExemptEncryption: false` set (PATCH /v1/builds/{id}) or the
+  version page blocks "Add for Review" with "missing export compliance
+  information". Set it right after the upload, before attaching.
 - 1280×800 Mac screenshots (take them on a real Mac against the demo
   server — see `APP-STORE.md`)
 - Privacy labels, age rating, and the final **Submit for Review**
