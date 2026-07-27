@@ -34,7 +34,8 @@ camc logs <agent> -f                   # follow monitor log for live errors
 | Symptom | Fix |
 |---------|-----|
 | Status says `running` but tmux is dead | `~/.cam/camc heal` |
-| Monitor died after ~/.cam/camc upgrade | `~/.cam/camc upgrade` (or `~/.cam/camc heal --upgrade`) |
+| Need to replace a healthy local monitor too | `~/.cam/camc heal --restart` |
+| tmux settings need a refresh | `~/.cam/camc heal --tmux` |
 | Agent stuck (idle but not responding) | `~/.cam/camc key <agent> --key Escape`, then `~/.cam/camc send <agent> --text "..."` |
 | Agent `exited` or `failed` | Check `~/.cam/camc status <agent>` for `exit_reason`; `camc reboot <agent>` to retry with same session |
 | Capture empty / attach hangs | `~/.cam/camc capture <agent> --lines 0` to verify; if still blank check `~/.cam/camc status <agent>` for `tmux_session` alive |
@@ -53,16 +54,24 @@ Walks every running agent on the current host:
   only touches agents from the current machine
 
 ```bash
-~/.cam/camc heal               # restart dead monitors
-~/.cam/camc heal --upgrade     # kill ALL monitors, restart with current binary
+~/.cam/camc heal               # default: recover dead monitors; do not restart healthy ones
+~/.cam/camc heal --monitor     # explicit spelling of the same default monitor heal
+~/.cam/camc heal --restart     # one verified local monitor at a time, then normal heal
+~/.cam/camc heal --tmux        # rewrite CAMC tmux.conf, source it in each local agent socket
+~/.cam/camc heal --agents      # migrate only verified legacy agents.json records
 ```
+
+`heal --upgrade` is retained only as a hidden, deprecated compatibility
+command. Do not use it for routine monitor recovery; use `heal --restart`
+when a deliberate local monitor restart is needed.
 
 ### When to run heal
 
 | Trigger | Command |
 |---------|---------|
 | `~/.cam/camc list` shows running but nothing's happening | `~/.cam/camc heal` |
-| Just deployed new ~/.cam/camc version | `~/.cam/camc upgrade` |
+| Need to deliberately restart healthy local monitors | `~/.cam/camc heal --restart` |
+| Need the managed tmux template on active local servers | `~/.cam/camc heal --tmux` |
 | Many agents stopped responding to send/key | `~/.cam/camc heal` |
 | Sockets piling up in `/tmp/cam-sockets/` | `~/.cam/camc heal` (auto-cleans) |
 
