@@ -330,7 +330,7 @@ async function main() {
     const calls = [];
     setRemoteHandler((opts) => {
       calls.push(opts.command);
-      if (/camc heal tmux/.test(opts.command)) return { ok: false, error: 'remote_nonzero', detail: 'usage: camc ...', stdout: '', stderr: 'usage: camc' };
+      if (/camc heal --tmux/.test(opts.command)) return { ok: false, error: 'remote_nonzero', detail: 'usage: camc ...', stdout: '', stderr: 'usage: camc' };
       return { ok: true, stdout: 'Heal: 2 healthy, 0 restarted', stderr: '' };
     });
     let hr = await request('POST', '/api/contexts/healbox/heal', { ops: ['monitor', 'tmux', 'bogus'] });
@@ -339,7 +339,7 @@ async function main() {
     eq('heal op1 ok', hr.body.results[0].ok, true);
     eq('heal op2 fails through (old camc)', hr.body.results[1].ok, false);
     ok('heal passes camc error tail through', /usage/.test(hr.body.results[1].tail || ''), JSON.stringify(hr.body.results[1]));
-    ok('heal executed sequentially via remote camc', calls.some(c => /camc heal monitor/.test(c)) && calls.some(c => /camc heal tmux/.test(c)), JSON.stringify(calls));
+    ok('heal executed sequentially via remote camc', calls.some(c => /camc heal --monitor/.test(c)) && calls.some(c => /camc heal --tmux/.test(c)), JSON.stringify(calls));
     hr = await request('POST', '/api/contexts/healbox/heal', { ops: ['bogus'] });
     eq('heal invalid ops rejected', hr.status, 400);
     eq('heal invalid ops error', hr.body && hr.body.error, 'invalid_ops');
