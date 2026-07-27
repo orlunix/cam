@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import signal
 import shutil
 import subprocess
 import sys
@@ -3286,6 +3287,78 @@ def _kill_all_monitors():
     return killed
 
 
+def _monitor_pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        return True
+    except (ProcessLookupError, OSError):
+        return False
+
+
+def _restart_local_monitors():
+    """Restart one verified local monitor at a time without duplicates."""
+    store = AgentStore()
+    hostname = _sock.gethostname()
+    restarted = failed = skipped = 0
+    for agent in store.list():
+        aid = agent.get("id")
+        session = _sf(agent, "tmux_session")
+        if (agent.get("status") != "running" or not aid or not session
+                or (agent.get("hostname")
+                    and not _is_same_host(agent["hostname"], hostname))
+                or not tmux_session_exists(session)):
+            skipped += 1
+            continue
+
+        pids = [pid for pid, _ in _find_monitor_pids(aid)]
+        record_pid = _sf(agent, "pid", None)
+        if record_pid and record_pid not in pids and _monitor_pid_alive(record_pid):
+            print("  %s: restart skipped (monitor PID %s not verified)" %
+                  (aid, record_pid))
+            failed += 1
+            continue
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        deadline = time.time() + 3.0
+        live = [pid for pid in pids if _monitor_pid_alive(pid)]
+        while live and time.time() < deadline:
+            time.sleep(0.05)
+            live = [pid for pid in live if _monitor_pid_alive(pid)]
+        for pid in live:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        kill_deadline = time.time() + 1.0
+        while live and time.time() < kill_deadline:
+            time.sleep(0.05)
+            live = [pid for pid in live if _monitor_pid_alive(pid)]
+        if live:
+            print("  %s: restart failed (old monitor still alive)" % aid)
+            failed += 1
+            continue
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, _CAMC_SCRIPT, "_monitor", aid] if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg", "_monitor", aid],
+                stdout=subprocess.DEVNULL,
+                stderr=open(os.path.join(LOGS_DIR, "monitor-%s.stderr" % aid), "a"),
+                start_new_session=True)
+            if not _monitor_pid_alive(proc.pid):
+                raise RuntimeError("new monitor exited immediately")
+            store.update(aid, pid=proc.pid)
+            print("  %s: restarted monitor (PID %d)" % (aid, proc.pid))
+            restarted += 1
+        except Exception as e:
+            print("  %s: restart failed: %s" % (aid, e))
+            failed += 1
+    return restarted, failed, skipped
+
+
 def _do_heal():
     """Shared heal body: resume, restart monitors, orphan adopt, maintenance."""
     my_hostname = _sock.gethostname()
@@ -3935,7 +4008,37 @@ def cmd_heal(args):
     """Check running agents and restart dead monitor daemons."""
     if getattr(args, "tmux", False):
         from camc_pkg.transport import ensure_camc_tmux_config
-        print("Tmux: refreshed %s" % ensure_camc_tmux_config())
+        config = ensure_camc_tmux_config()
+        reloaded = failed = skipped = 0
+        hostname = _sock.gethostname()
+        for agent in AgentStore().list():
+            agent_host = agent.get("hostname")
+            socket = agent.get("tmux_socket")
+            if ((agent_host and not _is_same_host(agent_host, hostname))
+                    or not socket):
+                skipped += 1
+                continue
+            tmux_bin = agent.get("tmux_bin") or "tmux"
+            try:
+                result = subprocess.run(
+                    [tmux_bin, "-S", socket, "source-file", config],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=3)
+                if result.returncode == 0:
+                    reloaded += 1
+                else:
+                    failed += 1
+            except (OSError, subprocess.TimeoutExpired):
+                failed += 1
+        print("Tmux: refreshed %s; %d server(s) reloaded, %d failed, %d skipped" %
+              (config, reloaded, failed, skipped))
+        return
+    if getattr(args, "restart", False):
+        restarted, failed, skipped = _restart_local_monitors()
+        print("Monitor restart: %d restarted, %d failed, %d skipped" %
+              (restarted, failed, skipped))
+        _do_heal()
+        _refresh_embedded_skills_after_heal()
         return
     if getattr(args, "upgrade", False):
         print("Note: 'heal --upgrade' is deprecated, use 'camc upgrade'")
@@ -4218,6 +4321,23 @@ def _msg_resolve_session(to_arg):
     return target, session, tool_busy
 
 
+_MSG_SUBMIT_DELAY_DEFAULT = 0.5
+
+
+def _msg_submit_delay(target):
+    """Return the target adapter's Enter delay, with a safe default."""
+    tool = _agent_tool(target) if target else ""
+    if tool:
+        try:
+            delay = float(getattr(_load_config(tool),
+                                  "prompt_submit_delay", 0.0) or 0.0)
+            if delay > 0:
+                return delay
+        except (SystemExit, ValueError, TypeError, OSError):
+            pass
+    return _MSG_SUBMIT_DELAY_DEFAULT
+
+
 def _msg_clean_header_value(value):
     """Keep protocol metadata on one bracketed line."""
     return (str(value or "")
@@ -4337,7 +4457,8 @@ _MSG_REPLY_INSTRUCTION = (
 
 
 def _msg_inject(session, to_label, text, timeout_s,
-                expect_reply=False, reply_to=None):
+                expect_reply=False, reply_to=None,
+                submit_delay=_MSG_SUBMIT_DELAY_DEFAULT):
     """Inject [camc msg#<id>]: marker into pane. Logs ledger sent/delivered.
 
     Returns (msg_id, ok). On delivery failure, logs deliver_failed and
@@ -4414,7 +4535,11 @@ def _msg_inject(session, to_label, text, timeout_s,
         "to_id": to_id, "to_name": to_name,
     })
 
-    if not tmux_send_input(session, payload, send_enter=True):
+    if not tmux_send_input(session, payload, send_enter=False):
+        _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
+        return (msg_id, False)
+    time.sleep(submit_delay)
+    if not tmux_send_key(session, "Enter"):
         _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
         return (msg_id, False)
     _msg_ledger_append({"msg_id": msg_id, "status": "delivered"})
@@ -4890,7 +5015,8 @@ def cmd_msg_send(args):
         sys.exit(1)
 
     msg_id, ok = _msg_inject(session, args.to, text, timeout,
-                             expect_reply=expect_reply)
+                             expect_reply=expect_reply,
+                             submit_delay=_msg_submit_delay(target))
     if not ok:
         sys.stderr.write("camc msg: failed to deliver to '%s'\n" % args.to)
         sys.exit(1)
@@ -6766,12 +6892,17 @@ examples:
 
     heal_p = sub.add_parser("heal", help="Check running agents and restart dead monitor daemons")
     heal_modes = heal_p.add_mutually_exclusive_group()
-    heal_modes.add_argument("--upgrade", action="store_true", help="Kill ALL monitors and restart with current camc binary")
+    heal_modes.add_argument("--monitor", action="store_true", help="Check agents and restart dead monitors (default)")
+    heal_modes.add_argument("--restart", action="store_true", help="Restart each local agent monitor, then run monitor heal")
+    heal_modes.add_argument("--upgrade", action="store_true", help=argparse.SUPPRESS)
     heal_modes.add_argument("--agents", action="store_true", help="Migrate verified legacy agent records without touching monitors")
     heal_modes.add_argument("--tmux", action="store_true", help="Refresh CAMC-managed tmux configuration only")
 
     # upgrade — full camc upgrade
-    sub.add_parser("upgrade", help="Upgrade camc: restart monitors, refresh configs/skills, heal")
+    sub.add_parser("upgrade", help=argparse.SUPPRESS)
+    for _act in list(sub._choices_actions):
+        if _act.dest == "upgrade":
+            sub._choices_actions.remove(_act)
 
     # api — Inference Hub / custom API profiles
     api_p = sub.add_parser("api", help="API profiles (list/check)")
@@ -6962,6 +7093,8 @@ examples:
         # instead of triggering a misleading "create needs id" error.
         sys.argv.insert(2, "create")
 
+    sub.metavar = "{%s}" % ",".join(
+        name for name in sub.choices if name != "upgrade")
     args = p.parse_args()
     # Enable debug logging if --verbose
     if getattr(args, "verbose", False):
