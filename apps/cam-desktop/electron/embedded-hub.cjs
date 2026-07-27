@@ -3867,6 +3867,43 @@ async function handle(req, res) {
       // can show as a warning toast.
       return sendJson(res, 200, result);
     }
+    // Host-scoped heal operations (Nodes → Heal…): run selected camc
+    // commands sequentially over this context's SSH connection and
+    // return one result per op. `heal-tmux` is a newer camc subcommand;
+    // older remote camc answers with its own usage error, which we pass
+    // through so the UI can hint "Sync Host to redeploy camc".
+    if (method === 'POST' && sub === '/heal') {
+      if (!existing) return send404(res);
+      let body;
+      try { body = await readJsonBody(req); }
+      catch (e) { return send400(res, e.message); }
+      const OP_CMDS = { heal: 'heal', upgrade: 'upgrade', 'heal-tmux': 'heal tmux' };
+      const requested = Array.isArray(body && body.ops) ? body.ops : [];
+      const ops = requested.filter(o => Object.prototype.hasOwnProperty.call(OP_CMDS, o));
+      if (!ops.length) {
+        return send400(res, 'ops must be a non-empty array of: ' + Object.keys(OP_CMDS).join(', '), 'invalid_ops');
+      }
+      const baseBuilt = _sshBaseOptsForContext(existing, Math.max(SYNC_DEFAULT_TIMEOUT_MS, 120000));
+      if (baseBuilt.error) return sendJson(res, 200, { ok: false, error: baseBuilt.error, detail: baseBuilt.detail, results: [] });
+      const results = [];
+      for (const op of ops) {
+        const t0 = Date.now();
+        const cmd = `${REMOTE_CAMC} ${OP_CMDS[op]}`;
+        const r = await _sshTransport.execRemote({ ...baseBuilt.opts, command: cmd });
+        const out = String((r && (r.stdout || r.stderr)) || '').trim();
+        const tail = out.split('\n').slice(-3).join('\n').slice(0, 400);
+        results.push({
+          op,
+          ok: !!(r && r.ok),
+          code: r && typeof r.code === 'number' ? r.code : null,
+          ms: Date.now() - t0,
+          error: r && !r.ok ? (r.error || 'failed') : '',
+          tail,
+        });
+        pushLog(r && r.ok ? 'info' : 'warn', `heal ${existing.name} ${op}: ${r && r.ok ? 'ok' : (r && r.error) || 'failed'}`);
+      }
+      return sendJson(res, 200, { ok: results.every(x => x.ok), results });
+    }
     if (method === 'POST' && sub === '/copy') return send501(res, 'context copy');
     if (method === 'GET'   && sub === '/files') {
       const subpath = url.searchParams.get('path') || '';
