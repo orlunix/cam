@@ -3885,6 +3885,19 @@ async function handle(req, res) {
       }
       const baseBuilt = _sshBaseOptsForContext(existing, Math.max(SYNC_DEFAULT_TIMEOUT_MS, 120000));
       if (baseBuilt.error) return sendJson(res, 200, { ok: false, error: baseBuilt.error, detail: baseBuilt.detail, results: [] });
+      // Heal needs a current camc on the host (subcommands land there
+      // first): run the same version-rule ensure Sync Host uses, so an
+      // outdated remote camc is redeployed before the ops run.
+      const ready = await _ensureRemoteCamc(baseBuilt.opts);
+      if (!ready || !ready.ok) {
+        return sendJson(res, 200, {
+          ok: false,
+          error: (ready && ready.error) || 'remote_camc_unavailable',
+          detail: (ready && ready.detail) || 'failed to prepare ~/.cam/camc on remote host',
+          results: [],
+        });
+      }
+      const camcStatus = ready.updated ? 'updated' : ready.installed ? 'installed' : 'present';
       const results = [];
       for (const op of ops) {
         const t0 = Date.now();
@@ -3902,7 +3915,7 @@ async function handle(req, res) {
         });
         pushLog(r && r.ok ? 'info' : 'warn', `heal ${existing.name} ${op}: ${r && r.ok ? 'ok' : (r && r.error) || 'failed'}`);
       }
-      return sendJson(res, 200, { ok: results.every(x => x.ok), results });
+      return sendJson(res, 200, { ok: results.every(x => x.ok), camc: camcStatus, results });
     }
     if (method === 'POST' && sub === '/copy') return send501(res, 'context copy');
     if (method === 'GET'   && sub === '/files') {
