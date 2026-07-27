@@ -686,6 +686,11 @@ export class CamApi {
     if (m.port != null && m.port !== '') body.port = m.port;
     return this.request('POST', `/api/contexts/${encodeURIComponent(nameOrId)}/sync`, body);
   }
+  // Host-scoped heal operations (Nodes → Heal…): sequential camc
+  // commands over the context's SSH connection; one result per op.
+  healContext(nameOrId, ops) {
+    return this.request('POST', `/api/contexts/${encodeURIComponent(nameOrId)}/heal`, { ops });
+  }
   listFiles(contextId, path = '') { return this.request('GET', `/api/contexts/${contextId}/files?path=${encodeURIComponent(path)}`); }
   readFile(contextId, path) { return this.request('GET', `/api/contexts/${contextId}/files/read?path=${encodeURIComponent(path)}`); }
 
