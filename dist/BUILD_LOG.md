@@ -4971,3 +4971,16 @@ dc67bc3 camc: centralize release artifact and version builds
 21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
 ```
 
+## v1.2.7  e6e0228-dirty 2026-07-26 19:59
+
+- Lines: 19789
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+46c1720 camc: safely migrate legacy agents and fix boot confirms
+dc67bc3 camc: centralize release artifact and version builds
+2d3c2d3 camc v1.2.1 + desktop: Sync Host forces bundled camc (forceCamc)
+51c64e5 build: camc artifacts stay Linux-correct when built on Windows
+39f1438 camc: make skill installs locale-safe and never launch-blocking
+```
+

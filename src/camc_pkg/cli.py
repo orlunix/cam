@@ -3933,6 +3933,10 @@ def _migrate_legacy_agents(store):
 
 def cmd_heal(args):
     """Check running agents and restart dead monitor daemons."""
+    if getattr(args, "tmux", False):
+        from camc_pkg.transport import ensure_camc_tmux_config
+        print("Tmux: refreshed %s" % ensure_camc_tmux_config())
+        return
     if getattr(args, "upgrade", False):
         print("Note: 'heal --upgrade' is deprecated, use 'camc upgrade'")
         return cmd_upgrade(args)
@@ -6764,6 +6768,7 @@ examples:
     heal_modes = heal_p.add_mutually_exclusive_group()
     heal_modes.add_argument("--upgrade", action="store_true", help="Kill ALL monitors and restart with current camc binary")
     heal_modes.add_argument("--agents", action="store_true", help="Migrate verified legacy agent records without touching monitors")
+    heal_modes.add_argument("--tmux", action="store_true", help="Refresh CAMC-managed tmux configuration only")
 
     # upgrade — full camc upgrade
     sub.add_parser("upgrade", help="Upgrade camc: restart monitors, refresh configs/skills, heal")

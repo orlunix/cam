@@ -1,6 +1,5 @@
 """Transport layer: tmux session management (create, capture, send, kill)."""
 
-import hashlib
 import os
 import shlex
 import shutil
@@ -21,28 +20,23 @@ from camc_pkg.utils import strip_ansi, _run
 # camc-managed config with `-f <path>` makes camc tmux behavior
 # independent of user config.
 #
-# v1 template content kept tmux 2.7 compatible (no `set-option -ga`,
-# no `assume-paste-time`). The 'camc-template-version' header lets the
-# next slice auto-refresh the template when we bump the version; the
-# 'camc-template-sha256' header tracks the hash of the managed body
-# so a user-modified file is left alone.
+# The template remains tmux 2.7 compatible (no `set-option -ga`, no
+# `assume-paste-time`). It is entirely CAMC-owned and rewritten on each
+# refresh, so it cannot drift from the binary's supported configuration.
 
-_CAMC_TMUX_CONFIG_VERSION = 2
+_CAMC_TMUX_CONFIG_VERSION = 3
 _CAMC_TMUX_CONFIG_BODY = (
     "# camc-managed: true\n"
     "# camc-template: tmux\n"
     "# camc-template-version: {version}\n"
-    "# camc-template-sha256: {sha}\n"
     "#\n"
-    "# Edit this file to override; the 'camc-managed' header is what\n"
-    "# camc uses to decide whether to refresh on version bumps. Once\n"
-    "# you modify the file, change or remove the sha line so camc\n"
-    "# leaves it alone.\n"
+    "# This file is generated and overwritten by camc.\n"
     "\n"
     "set-option -g history-limit 50000\n"
     "set-option -g status on\n"
     "set-option -g mouse off\n"
     'set-option -g default-terminal "screen-256color"\n'
+    "set-window-option -g alternate-screen off\n"
 )
 
 
@@ -50,128 +44,29 @@ def _camc_tmux_config_path():
     return os.path.join(CAM_DIR, "configs", "tmux.conf")
 
 
-def _camc_tmux_body_sha(text):
-    """Hash a tmux config body while ignoring its sha header line."""
-    canonical_for_hash = "\n".join(
-        l for l in text.splitlines()
-        if not l.startswith("# camc-template-sha256:")
-    )
-    return hashlib.sha256(
-        canonical_for_hash.encode("utf-8")).hexdigest()[:16]
-
-
-def _camc_tmux_managed_body(version=_CAMC_TMUX_CONFIG_VERSION):
-    """Return the canonical body for a given template version. The
-    sha line is computed over the *non-sha* lines so the hash is
-    deterministic and self-referential without recursion."""
-    no_sha = _CAMC_TMUX_CONFIG_BODY.format(version=version, sha="<pending>")
-    sha = _camc_tmux_body_sha(no_sha)
-    return _CAMC_TMUX_CONFIG_BODY.format(version=version, sha=sha)
-
-
-def _camc_tmux_existing_meta(path):
-    """Return (managed, version, sha) for an existing tmux config
-    file, or (False, 0, '') when the file isn't camc-managed."""
-    try:
-        with open(path, "r") as f:
-            head = f.read(2048)
-    except (OSError, IOError):
-        return False, 0, ""
-    managed = ("# camc-managed: true" in head)
-    if not managed:
-        return False, 0, ""
-    version = 0
-    sha = ""
-    for line in head.splitlines():
-        if line.startswith("# camc-template-version:"):
-            try:
-                version = int(line.split(":", 1)[1].strip())
-            except (ValueError, IndexError):
-                version = 0
-        elif line.startswith("# camc-template-sha256:"):
-            sha = line.split(":", 1)[1].strip()
-    return True, version, sha
-
-
 def ensure_camc_tmux_config(path=None):
-    """Make sure ``~/.cam/configs/tmux.conf`` exists with the current
-    v1 template body.
-
-    Behavior:
-      * Missing file -> created with the v1 body (mode 0600).
-      * File exists and is camc-managed AND matches the expected
-        sha of its declared version -> refresh to current version
-        if older (idempotent on the current version).
-      * File exists and is camc-managed but has been MODIFIED
-        (sha mismatch on its declared version) -> leave alone +
-        log a warning.
-      * File exists and is NOT camc-managed (user-authored) ->
-        leave alone, no log.
-
-    Returns the file path. Safe to call from many sites; the lock
-    cost is one fs stat + one read on the file.
-    """
+    """Atomically rewrite CAMC's private tmux configuration template."""
     path = path or _camc_tmux_config_path()
-    body = _camc_tmux_managed_body(_CAMC_TMUX_CONFIG_VERSION)
+    body = _CAMC_TMUX_CONFIG_BODY.format(version=_CAMC_TMUX_CONFIG_VERSION)
     try:
         os.makedirs(os.path.dirname(path))
     except OSError:
         pass
-    if not os.path.exists(path):
-        try:
-            tmp = path + ".tmp"
-            with open(tmp, "w") as f:
-                f.write(body)
-                f.flush()
-                try:
-                    os.fsync(f.fileno())
-                except OSError:
-                    pass
-            os.replace(tmp, path)
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            f.write(body)
+            f.flush()
             try:
-                os.chmod(path, 0o600)
+                os.fsync(f.fileno())
             except OSError:
                 pass
-            log.info("camc tmux config created at %s (v%d)",
-                     path, _CAMC_TMUX_CONFIG_VERSION)
-        except OSError as e:
-            log.warning("failed to create camc tmux config %s: %s", path, e)
-        return path
-    # File exists — decide whether to refresh.
-    managed, existing_version, existing_sha = _camc_tmux_existing_meta(path)
-    if not managed:
-        # User-authored file; leave alone.
-        return path
-    try:
-        with open(path, "r") as f:
-            existing_text = f.read()
-    except (OSError, IOError) as e:
-        log.warning("failed to read camc tmux config %s: %s", path, e)
-        return path
-    actual_sha = _camc_tmux_body_sha(existing_text)
-    if existing_sha != actual_sha:
-        log.warning(
-            "camc tmux config at %s is camc-managed but has been "
-            "modified locally (sha mismatch); refusing to refresh",
-            path)
-        return path
-    if existing_version < _CAMC_TMUX_CONFIG_VERSION:
-        # Managed AND unmodified AND older — refresh.
-        try:
-            tmp = path + ".tmp"
-            with open(tmp, "w") as f:
-                f.write(body)
-                f.flush()
-                try:
-                    os.fsync(f.fileno())
-                except OSError:
-                    pass
-            os.replace(tmp, path)
-            log.info("camc tmux config refreshed: %s (v%d -> v%d)",
-                     path, existing_version, _CAMC_TMUX_CONFIG_VERSION)
-        except OSError as e:
-            log.warning(
-                "failed to refresh camc tmux config %s: %s", path, e)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+        log.info("camc tmux config refreshed: %s (v%d)",
+                 path, _CAMC_TMUX_CONFIG_VERSION)
+    except OSError as e:
+        log.warning("failed to refresh camc tmux config %s: %s", path, e)
     return path
 
 
