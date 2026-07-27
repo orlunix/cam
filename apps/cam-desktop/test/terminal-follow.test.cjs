@@ -128,7 +128,10 @@ ok("normal wheel pauses terminal auto-follow", wheel.includes("entry.needsBottom
 ok("History wheel sends five line keys through the live PTY", wheel.includes("if (entry.copyBrowsing)") && wheel.includes("sequence.repeat(5)") && wheel.includes("bridge.input({ sessionId: entry.sessionId"));
 ok("History maps PageUp and PageDown through the live PTY", source.includes("PageUp: '\\x1b[5~'") && source.includes("PageDown: '\\x1b[6~'") && keyHandler.includes("bridge.input({ sessionId: entry.sessionId"));
 ok("History leaves Up and Down on xterm's native input path", !source.includes("ArrowUp: -1") && !source.includes("ArrowDown: 1"));
-ok("History enters real tmux copy mode before changing local state", historyClick.includes("await bridge.copyMode({ sessionId: ent.sessionId })") && historyClick.indexOf("await bridge.copyMode") < historyClick.indexOf("ent.copyBrowsing = true") && !historyClick.includes("term.scrollLines"));
+ok("History enters copy mode via the live stream (prefix+[), optimistic state",
+  historyClick.includes("bridge.input({ sessionId: ent.sessionId, data: '\\x02[' })")
+    && historyClick.indexOf("data: '\\x02['") < historyClick.indexOf("ent.copyBrowsing = true")
+    && !historyClick.includes("await bridge.copyMode") && !historyClick.includes("term.scrollLines"));
 ok("History button pages up via the live stream while in copy mode",
   historyClick.includes("if (ent.copyBrowsing) {") && historyClick.includes("bridge.input({ sessionId: ent.sessionId, data: '\\x1b[5~' })"));
 ok("To Bottom safely cancels tmux copy mode before local follow", bottomClick.includes("await bridge.cancelCopyMode({ sessionId: ent.sessionId })") && bottomClick.indexOf("await bridge.cancelCopyMode") < bottomClick.indexOf("ent.copyBrowsing = false"));
