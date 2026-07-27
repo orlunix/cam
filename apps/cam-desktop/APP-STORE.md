@@ -66,6 +66,12 @@ live only in App Store Connect fields / GitHub secrets.
   >    `net:probe` IPC is a status-only reachability check (HTTP status,
   >    byte count, latency — no content) against the user's own relay URL.
   >    Clipboard file reads happen only on an explicit paste gesture.
+  > 4. Sandbox entitlements: `com.apple.security.network.server` is
+  >    required because the app embeds a local HTTP server (the "hub")
+  >    that binds 127.0.0.1 on a random high port with a per-launch
+  >    bearer token; the app's own Electron renderer is its only client.
+  >    The app never listens on non-loopback interfaces; all remote
+  >    traffic is outbound SSH (network.client).
   >    camc/skillm helpers are uploaded to and execute on the user's own
   >    SSH hosts only; no downloaded code executes locally.
 

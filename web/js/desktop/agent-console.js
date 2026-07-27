@@ -3075,25 +3075,24 @@ export function mountAgentConsole({ api, state, showToast }) {
         try { ent.term.focus(); } catch (_) {}
         return;
       }
-      ent.tmuxControlRevision += 1;
-      terminalHistoryBtn.disabled = true;
+      // Enter copy mode via the live attach stream (prefix + '['). The
+      // keystroke rides the already-warm PTY — instant even on slow
+      // links, where the tmux-exec path ('copy-mode -u -t pane') cost a
+      // full SSH round trip (~3s on some machines). Optimistic state,
+      // same pattern as tab switching; the pane shows the copy-mode UI
+      // immediately if it worked.
       try {
-        const result = await bridge.copyMode({ sessionId: ent.sessionId });
-        if (ent.sessionId !== sessionId) return;
-        if (!result?.ok) {
-          setTerminalAttachStatus(result?.detail || 'Could not enter tmux history.', 'error');
-          return;
-        }
+        bridge.input({ sessionId: ent.sessionId, data: '\x02[' });
         ent.copyBrowsing = true;
         ent.needsBottom = false;
         ent.forceBottomUntil = 0;
         updateTerminalTmuxControls();
         try { ent.term.focus(); } catch (_) {}
       } catch (e) {
+        ent.copyBrowsing = false;
         setTerminalAttachStatus(e?.message || 'Could not enter tmux history.', 'error');
       } finally {
         ent.tmuxControlRevision += 1;
-        terminalHistoryBtn.disabled = false;
         updateTerminalTmuxControls();
       }
     });
