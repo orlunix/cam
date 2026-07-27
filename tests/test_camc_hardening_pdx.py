@@ -1,7 +1,6 @@
 """Focused tests for the 2026-06-23 PDX/DC hardening:
   * Golden tmux path resolution + warning on PATH fallback.
-  * camc-owned ~/.cam/configs/tmux.conf template creation + refresh +
-    don't-clobber-user-edits.
+  * camc-owned ~/.cam/configs/tmux.conf template creation + forced refresh.
   * create_tmux_session injects ``-f <config>`` into new-session.
   * Startup command injection uses set-buffer + paste-buffer (not
     send-keys -l) when paste succeeds.
@@ -14,7 +13,6 @@
 Python 3.6 compatible. No new dependencies.
 """
 
-import hashlib
 import os
 import re
 import sys
@@ -31,11 +29,11 @@ from camc_pkg import transport as _tx     # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# 1. ensure_camc_tmux_config — missing file -> created with v1 body
+# 1. ensure_camc_tmux_config — CAMC-owned file is always regenerated
 # ---------------------------------------------------------------------------
 
 class TestTmuxConfigTemplate:
-    def test_missing_file_is_created(self, tmp_path):
+    def test_template_is_generated_with_current_options(self, tmp_path):
         path = str(tmp_path / "tmux.conf")
         out = _tx.ensure_camc_tmux_config(path=path)
         assert out == path
@@ -43,106 +41,23 @@ class TestTmuxConfigTemplate:
         with open(path) as f:
             body = f.read()
         assert "# camc-managed: true" in body
-        assert "# camc-template-version: 1" in body
+        assert "# camc-template-version: 3" in body
         assert "set-option -g history-limit 50000" in body
-        assert "set-option -g status off" in body
+        assert "set-option -g status on" in body
         assert "set-option -g mouse off" in body
         assert 'set-option -g default-terminal "screen-256color"' in body
+        assert "set-window-option -g alternate-screen off" in body
         # File should be readable + private.
         st = os.stat(path)
         assert (st.st_mode & 0o077) == 0, "tmux.conf must be 0600"
 
-    def test_user_modified_file_is_not_overwritten(self, tmp_path):
+    def test_existing_file_is_overwritten(self, tmp_path):
         path = str(tmp_path / "tmux.conf")
-        _tx.ensure_camc_tmux_config(path=path)
-        # Simulate user edit: still camc-managed banner but body
-        # changed -> sha mismatch.
-        with open(path) as f:
-            text = f.read()
-        edited = text + "\nset-option -g monitor-activity off\n"
         with open(path, "w") as f:
-            f.write(edited)
-        # Call again — must NOT overwrite.
+            f.write("stale content\n")
         _tx.ensure_camc_tmux_config(path=path)
         with open(path) as f:
-            assert "monitor-activity" in f.read(), \
-                "user edit was clobbered"
-
-    def test_non_managed_user_file_is_not_touched(self, tmp_path):
-        path = str(tmp_path / "tmux.conf")
-        user_body = "# my own config\nset-option -g history-limit 999\n"
-        with open(path, "w") as f:
-            f.write(user_body)
-        _tx.ensure_camc_tmux_config(path=path)
-        with open(path) as f:
-            assert f.read() == user_body, \
-                "user-authored file was overwritten"
-
-    def test_future_version_bump_preserves_user_append(self, tmp_path, monkeypatch):
-        # Regression for F1: a future template-version bump must NOT
-        # clobber an in-place user edit even when the user did not
-        # touch the sha header line. The refresh decision must hash
-        # the actual file body and refuse on mismatch.
-        path = str(tmp_path / "tmux.conf")
-        _tx.ensure_camc_tmux_config(path=path)
-        with open(path) as f:
-            text = f.read()
-        # User appends a managed-looking line WITHOUT editing the sha.
-        with open(path, "w") as f:
-            f.write(text + "set-option -g monitor-activity off\n")
-        # Simulate future bump (v2). The header still says v1, the
-        # sha still matches the *advertised* v1 sha, but the actual
-        # file content no longer matches.
-        monkeypatch.setattr(_tx, "_CAMC_TMUX_CONFIG_VERSION", 2)
-        _tx.ensure_camc_tmux_config(path=path)
-        with open(path) as f:
-            after = f.read()
-        assert "monitor-activity" in after, \
-            "future version bump clobbered the user's appended line"
-        assert "# camc-template-version: 1" in after, \
-            "user-edited file was refreshed to v2 despite the modification"
-
-    def test_managed_unchanged_older_version_refreshes(self, tmp_path, monkeypatch):
-        path = str(tmp_path / "tmux.conf")
-        # Force the module to think v1 was an older version, then
-        # bump to v2 for the refresh check.
-        # Write a v0 managed file with a sha that matches the v0 body.
-        v0_no_sha = _tx._CAMC_TMUX_CONFIG_BODY.format(
-            version=0, sha="<pending>")
-        canonical = "\n".join(
-            l for l in v0_no_sha.splitlines()
-            if not l.startswith("# camc-template-sha256:"))
-        v0_sha = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
-        v0_body = _tx._CAMC_TMUX_CONFIG_BODY.format(version=0, sha=v0_sha)
-        with open(path, "w") as f:
-            f.write(v0_body)
-        # Current code version is 1 — old v0 file should refresh.
-        _tx.ensure_camc_tmux_config(path=path)
-        with open(path) as f:
-            text = f.read()
-        assert "# camc-template-version: 1" in text, \
-            "older managed file did not refresh"
-
-
-    def test_user_modified_file_survives_future_version_bump(self, tmp_path, monkeypatch):
-        path = str(tmp_path / "tmux.conf")
-        _tx.ensure_camc_tmux_config(path=path)
-        with open(path) as f:
-            original = f.read()
-        with open(path, "w") as f:
-            f.write(original + "\nset-option -g monitor-activity off\n")
-
-        old_version = _tx._CAMC_TMUX_CONFIG_VERSION
-        monkeypatch.setattr(_tx, "_CAMC_TMUX_CONFIG_VERSION",
-                            old_version + 1)
-        _tx.ensure_camc_tmux_config(path=path)
-
-        with open(path) as f:
-            text = f.read()
-        assert "monitor-activity" in text, \
-            "future template bump clobbered user edit"
-        assert "# camc-template-version: %d" % old_version in text, \
-            "modified user file should not be refreshed"
+            assert "stale content" not in f.read()
 
 
 # ---------------------------------------------------------------------------
