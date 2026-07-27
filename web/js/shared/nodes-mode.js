@@ -167,6 +167,20 @@ export function mountNodesMode({
   // toast disappeared.
   const lastSync = new Map();
 
+  // Per-host heal panel state (Nodes → Heal…): {open, busy, ops:Set,
+  // results:[{op,ok,code,ms,error,tail}], last:{ts, ok, text}}.
+  const healState = new Map();
+  const HEAL_OPS = [
+    { id: 'heal',      label: 'Heal — restart dead monitors, resume agents, clean stale sockets' },
+    { id: 'upgrade',   label: 'Upgrade camc — restarts ALL agent monitors on this host' },
+    { id: 'heal-tmux', label: 'Heal tmux — reload managed tmux.conf on this host (newer camc)' },
+  ];
+  function healEnt(key) {
+    let e = healState.get(key);
+    if (!e) { e = { open: false, busy: false, ops: new Set(['heal']), results: null, last: null }; healState.set(key, e); }
+    return e;
+  }
+
   function setStatus(text, cls = '') {
     if (!statusEl) return;
     statusEl.textContent = text || '';
@@ -500,6 +514,7 @@ export function mountNodesMode({
       if (canSyncHost()) {
         acts.push(
           `<button type="button" class="btn-sm sync-host-btn"  data-key="${esc(node.key)}">Sync Host</button>`,
+          `<button type="button" class="btn-sm heal-host-btn"  data-key="${esc(node.key)}">Heal…</button>`,
         );
       }
       acts.push(
@@ -573,12 +588,46 @@ export function mountNodesMode({
       </div>`;
   }
 
+  function renderHealPanel(node) {
+    const e = healState.get(node.key);
+    if (!e || !e.open) return '';
+    const rows = HEAL_OPS.map(op => `
+      <label class="form-checkbox heal-op">
+        <input type="checkbox" data-heal-op="${esc(op.id)}" data-key="${esc(node.key)}" ${e.ops.has(op.id) ? 'checked' : ''} ${e.busy ? 'disabled' : ''}>
+        <span>${esc(op.label)}</span>
+      </label>`).join('');
+    let resultsHtml = '';
+    if (e.busy) {
+      resultsHtml = `<div class="heal-results dim">Running ${esc(e.ops.size)} op(s)…</div>`;
+    } else if (e.results) {
+      resultsHtml = `<div class="heal-results">` + e.results.map(r => `
+        <div class="heal-result ${r.ok ? 'is-ok' : 'is-error'}">
+          ${r.ok ? '✓' : '✗'} ${esc(r.op)} · ${(r.ms / 1000).toFixed(1)}s${r.ok ? '' : ` · ${esc(r.error || 'failed')}`}
+          ${r.tail ? `<div class="heal-result-tail dim">${esc(r.tail)}</div>` : ''}
+        </div>`).join('') + `</div>`;
+    }
+    const last = e.last
+      ? `<div class="heal-last dim">Last heal: ${esc(e.last.text)} · ${esc(fmtAgo(e.last.ts))}</div>`
+      : '';
+    return `
+      <div class="heal-panel" data-key="${esc(node.key)}">
+        <div class="heal-panel-head dim">Run on ${esc(node.user)}@${esc(node.host)}:${esc(node.port)}:</div>
+        ${rows}
+        <div class="heal-panel-actions">
+          <button type="button" class="btn-primary btn-sm heal-run-btn" data-key="${esc(node.key)}" ${e.busy || !e.ops.size ? 'disabled' : ''}>Run (${e.ops.size})</button>
+        </div>
+        ${resultsHtml}
+        ${last}
+      </div>`;
+  }
+
   function renderCard(node) {
     const isExpanded = expandedHostKey === node.key;
     const disabled = node.enabled === false;
     const body = isExpanded ? `
       <div class="host-card-body">
         ${renderHostActions(node)}
+        ${renderHealPanel(node)}
         ${node.agentCount > 0
           ? `<div class="host-card-agents dim">${node.runningCount} running / ${node.agentCount} total agent(s)</div>`
           : ''}
@@ -840,6 +889,66 @@ export function mountNodesMode({
         setStatus(summary, fc.fileFailed ? 'is-error' : 'is-ok');
         btn.disabled = false;
         btn.textContent = originalText;
+      });
+    });
+
+    // Heal… — toggle the per-host heal panel, track checkbox state,
+    // run the selected camc ops sequentially via the hub.
+    listEl.querySelectorAll('.heal-host-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const ent = healEnt(btn.dataset.key);
+        ent.open = !ent.open;
+        render();
+      });
+    });
+    listEl.querySelectorAll('input[data-heal-op]').forEach(cb => {
+      cb.addEventListener('click', (e) => e.stopPropagation());
+      cb.addEventListener('change', () => {
+        const ent = healEnt(cb.dataset.key);
+        if (cb.checked) ent.ops.add(cb.dataset.healOp);
+        else ent.ops.delete(cb.dataset.healOp);
+        render();
+      });
+    });
+    listEl.querySelectorAll('.heal-run-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const node = hosts.find(n => n.key === btn.dataset.key);
+        if (!node || node.contexts.length === 0) return;
+        const primary = node.contexts[0];
+        const ent = healEnt(node.key);
+        if (ent.busy || !ent.ops.size) return;
+        ent.busy = true;
+        ent.results = null;
+        render();
+        const epLabel = `${node.user}@${node.host}:${node.port}`;
+        try {
+          if (typeof ensureHubForSave === 'function') {
+            await ensureHubForSave();
+          } else {
+            await requireNodesConnected('Heal');
+          }
+          const resp = await api.healContext(primary.id || primary.name, [...ent.ops]);
+          ent.results = (resp && resp.results) || [];
+          const okCount = ent.results.filter(r => r.ok).length;
+          const failCount = ent.results.length - okCount;
+          ent.last = {
+            ts: Date.now(),
+            text: failCount ? `${okCount} ok, ${failCount} failed` : `${okCount} op(s) ok`,
+          };
+          showToast(`Heal "${epLabel}": ${ent.last.text}`, failCount ? 'warning' : 'success', 6000);
+          try { await loadContextsAndAdapters(); } catch (_) {}
+          if (typeof loadAgents === 'function') { try { await loadAgents(); } catch (_) {} }
+        } catch (err) {
+          const msg = (err && err.message) || String(err);
+          ent.results = [{ op: 'heal', ok: false, code: null, ms: 0, error: msg, tail: '' }];
+          ent.last = { ts: Date.now(), text: `failed: ${msg.slice(0, 80)}` };
+          showToast(`Heal "${epLabel}" failed: ${msg}`, 'error', 8000);
+        } finally {
+          ent.busy = false;
+          render();
+        }
       });
     });
 
