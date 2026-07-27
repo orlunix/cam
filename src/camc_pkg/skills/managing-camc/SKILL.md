@@ -234,9 +234,23 @@ camc add my-existing-session --tool claude --name my-agent
 | Symptom | First thing to try |
 |---|---|
 | Status says `running` but tmux is dead | `~/.cam/camc heal` |
-| Monitor died after ~/.cam/camc upgrade | `~/.cam/camc upgrade` |
+| Need to replace a healthy local monitor | `~/.cam/camc heal --restart` |
+| Need to refresh the managed tmux configuration | `~/.cam/camc heal --tmux` |
 | Agent not responding to `send` | `~/.cam/camc capture <agent> --lines 30` to see; then `~/.cam/camc attach` for manual |
 | Want to find an agent's Claude JSONL | `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` — see `reference/sessions.md` |
+
+### Heal modes
+
+- `camc heal` and `camc heal --monitor` are the default monitor heal: they
+  recover dead monitors without forcing healthy monitors to restart.
+- `camc heal --restart` restarts verified local monitors one at a time, then
+  runs the normal monitor heal.
+- `camc heal --tmux` rewrites CAMC's managed `tmux.conf` and sources it in
+  every local agent tmux socket; it does not run monitor or agent migration.
+- `camc heal --agents` migrates only verified legacy agent records; it does
+  not touch monitors.
+- `camc heal --upgrade` is hidden and deprecated compatibility only; do not
+  use it for normal maintenance.
 
 For deeper diagnosis (stuck agents, exit reasons, heal details):
 use the **camc-diagnose** skill.
