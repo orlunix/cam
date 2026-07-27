@@ -2169,6 +2169,47 @@ body.desktop[data-theme="light"] .composer-input:focus {
   font-size: 11px;
   margin-bottom: 8px;
 }
+#mode-nodes .heal-panel {
+  margin: 4px 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.03);
+}
+#mode-nodes .heal-panel-head {
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+#mode-nodes .heal-op {
+  display: block;
+  font-size: 12px;
+  margin: 4px 0;
+}
+#mode-nodes .heal-panel-actions {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-end;
+}
+#mode-nodes .heal-results {
+  margin-top: 8px;
+  font-size: 11px;
+}
+#mode-nodes .heal-result {
+  margin: 3px 0;
+}
+#mode-nodes .heal-result.is-ok { color: var(--ok, #3fb950); }
+#mode-nodes .heal-result.is-error { color: var(--danger, #f85149); }
+#mode-nodes .heal-result-tail {
+  font-size: 10px;
+  margin-left: 16px;
+  white-space: pre-wrap;
+  opacity: 0.85;
+}
+#mode-nodes .heal-last {
+  margin-top: 6px;
+  font-size: 10px;
+}
+
 #mode-nodes .host-card-contexts {
   margin-top: 8px;
 }
