@@ -70,6 +70,7 @@
 
 const fs     = require('node:fs');
 const crypto = require('node:crypto');
+const _systemSsh = require('./system-ssh.cjs');
 
 let _override = null;
 let _ssh2 = null;
@@ -530,6 +531,17 @@ async function _withPooledClient(opts, op /* (client, finishWithTimings) */) {
 
 async function execRemote(opts) {
   if (_override) return _override(opts);
+  // Per-node exec driver: 'system' routes every exec through the OS
+  // OpenSSH client (ProxyJump/certificates/GSSAPI come free from
+  // ~/.ssh/config). Absent or 'ssh2' = the built-in datapath, byte for
+  // byte identical to before. Terminal attach is unaffected either way.
+  if (opts && opts.ssh_driver === 'system') {
+    try {
+      return await _systemSsh.execViaSystemSsh(opts);
+    } catch (e) {
+      return { ok: false, error: 'system_ssh_failed', detail: e && e.message || String(e), via: 'system-ssh' };
+    }
+  }
   if (!opts || typeof opts.command !== 'string' || !opts.command) {
     return { ok: false, error: 'invalid_args', detail: 'command is required' };
   }
