@@ -490,6 +490,14 @@ function buildContextRecord(body) {
   if (isSSH && !user) {
     return { error: 'missing_user', detail: 'SSH contexts require host and user' };
   }
+  // Per-node exec driver: 'system' (OS OpenSSH) or default built-in ssh2.
+  if (body.ssh_driver != null) {
+    const d = String(body.ssh_driver).trim().toLowerCase();
+    if (d && d !== 'ssh2' && d !== 'system') {
+      return { error: 'invalid_ssh_driver', detail: 'ssh_driver must be "ssh2" or "system"' };
+    }
+    body._ssh_driver = d === 'system' ? 'system' : '';
+  }
   const keyFile  = body.key_file  == null ? '' : String(body.key_file).trim();
   const envSetup = body.env_setup == null ? '' : String(body.env_setup).trim();
   const tags     = Array.isArray(body.tags)
@@ -542,6 +550,7 @@ function buildContextRecord(body) {
     // `password` (or `passphrase`) in the body. Useful for
     // safeStorage-less debug.
     if (allowOneShot) machine.allow_one_shot = true;
+    if (body._ssh_driver === 'system') machine.ssh_driver = 'system';
   }
 
   // Optional Remember support. Raw secret never makes it to the
@@ -641,6 +650,15 @@ function applyContextUpdate(existing, body) {
   m.type = m.host ? 'ssh' : 'local';
   if (m.type === 'ssh' && !m.user) {
     return { error: 'missing_user', detail: 'SSH contexts require host and user' };
+  }
+  // Per-node exec driver: 'system' (OS OpenSSH) or default built-in ssh2.
+  if (body.ssh_driver != null) {
+    const d = String(body.ssh_driver).trim().toLowerCase();
+    if (d && d !== 'ssh2' && d !== 'system') {
+      return { error: 'invalid_ssh_driver', detail: 'ssh_driver must be "ssh2" or "system"' };
+    }
+    if (d === 'system') m.ssh_driver = 'system';
+    else delete m.ssh_driver;
   }
 
   // Auth method change tracking: when auth_method changes, drop the
@@ -2210,6 +2228,10 @@ function _sshBaseOptsForContext(ctx, timeoutMs = SYNC_DEFAULT_TIMEOUT_MS) {
     key_file:    m.key_file || '',
     timeout_ms:  timeoutMs,
   };
+  // Per-node exec driver: 'system' routes this node's exec calls
+  // through the OS OpenSSH client (see electron/system-ssh.cjs).
+  // Absent = built-in ssh2 datapath, unchanged.
+  if (m.ssh_driver === 'system') opts.ssh_driver = 'system';
   if (opts.auth_method === 'password') {
     const pw = _credentialFor(ctx);
     if (pw == null || pw === '') {
