@@ -1157,6 +1157,7 @@ function mountNodesActions({
   const fPort       = panel.querySelector('#nodes-add-port');
   const fPath       = panel.querySelector('#nodes-add-path');
   const fAuth       = panel.querySelector('#nodes-add-auth');
+  const fSshDriver  = panel.querySelector('#nodes-add-ssh-driver');
   const fKey        = panel.querySelector('#nodes-add-keyfile');
   const fBrowse     = panel.querySelector('#nodes-add-browse');
   const fPassphrase = panel.querySelector('#nodes-add-passphrase');
@@ -1712,6 +1713,7 @@ function mountNodesActions({
     if (fUser) fUser.value = nodeM.user || '';
     if (fPort) fPort.value = String(nodeM.port || 22);
     if (fAuth) fAuth.value = nodeM.auth_method || (nodeM.key_file ? 'key' : 'agent');
+    if (fSshDriver) fSshDriver.value = nodeM.ssh_driver === 'system' ? 'system' : 'ssh2';
     if (fKey)  fKey.value  = fAuth && fAuth.value === 'key' ? (nodeM.key_file || '') : '';
     if (fPassphrase) fPassphrase.value = '';
     if (fPassword)   fPassword.value   = '';
@@ -1854,6 +1856,8 @@ function mountNodesActions({
     }
 
     const hostBody = { host, user, port, auth_method: authMethod };
+    if (fSshDriver && fSshDriver.value === 'system') hostBody.ssh_driver = 'system';
+    else if (isHostEdit) hostBody.ssh_driver = 'ssh2';
     if (authMethod === 'key') {
       hostBody.key_file = fKey ? fKey.value.trim() : '';
       const pass = fPassphrase ? fPassphrase.value : '';

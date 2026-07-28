@@ -255,6 +255,13 @@ ok("Diagnostics lives in a Settings tab (not the main mode nav)",
     && !fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('data-mode="diagnostics"')
     && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('id="settings-tab-diagnostics"')
     && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "desktop", "settings-mode.js"), "utf8").includes("mountDiagnosticsMode"));
+ok("System OpenSSH driver: isolated module, strict 'system' gate, form dropdown",
+  transport.includes("opts.ssh_driver === 'system'")
+    && transport.includes("require('./system-ssh.cjs')")
+    && fs.readFileSync(path.join(__dirname, "..", "electron", "system-ssh.cjs"), "utf8").includes("execViaSystemSsh")
+    && !transport.includes("opts.ssh_fallback")
+    && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('id="nodes-add-ssh-driver"')
+    && hub.includes("opts.ssh_driver = 'system'"));
 ok("tmux discovery queue wait is bounded (15s) with self-release of abandoned links",
   main.includes("Promise.race([") && main.includes("tmux discovery queue wait exceeded 15s")
     && main.includes("void discoveryBeginP.then((releaseFn)"));
