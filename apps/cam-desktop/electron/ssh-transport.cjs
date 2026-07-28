@@ -97,9 +97,33 @@ let _logFn = null;
 function setLogger(fn) { _logFn = (typeof fn === 'function') ? fn : null; }
 function _log(msg) { if (_logFn) { try { _logFn(msg); } catch { /* noop */ } } }
 
+/** Compose a one-line negotiation summary from the captured ssh2 debug
+ *  stream: server banner, kex/cipher/hostkey actually negotiated, and
+ *  the auth method we used. Purely presentational — appended to the
+ *  connect-ready log line. */
+function _negotiatedSummary(dbgLines, authMethod) {
+  const grab = (re) => {
+    for (let i = dbgLines.length - 1; i >= 0; i--) {
+      const m = re.exec(dbgLines[i]);
+      if (m) return m[1];
+    }
+    return '';
+  };
+  const banner  = grab(/Remote version: (SSH-2.0-\S+)/) || grab(/(SSH-2.0-[^\s']+)/) || grab(/(SSH-2.0-\S+)/);
+  const kex     = grab(/Handshake: KEX algorithm: (\S+)/);
+  const cipher  = grab(/Handshake: S->C cipher: (\S+)/) || grab(/Handshake: C->S cipher: (\S+)/);
+  const hostkey = grab(/Handshake: Host key format: (\S+)/);
+  const parts = [];
+  if (banner)  parts.push(banner.replace(/^SSH-2.0-/, ''));
+  if (kex)     parts.push(`kex=${kex}`);
+  if (cipher)  parts.push(`cipher=${cipher}`);
+  if (hostkey) parts.push(`hostkey=${hostkey}`);
+  if (authMethod) parts.push(`auth=${authMethod}`);
+  return parts.length ? ` [${parts.join(', ')}]` : '';
+}
+
 function _loadSsh2() {
-  if (_ssh2) return _ssh2;
-  try { _ssh2 = require('ssh2'); }
+  if (_ssh2) return _ssh2;  try { _ssh2 = require('ssh2'); }
   catch (e) {
     _ssh2 = { _loadError: e && e.message };
   }
@@ -315,17 +339,26 @@ function _getOrCreate(key, opts, ssh2, poolRef) {
     };
     const onError = (err) => {
       if (entry.state === 'connecting') failConnect(err);
-      else _dropEntry(key, 'error');
+      else {
+        _log(`connect lost ${opts.host}:${port} (pool=${pool === _termPool ? 'term' : 'exec'}): ${(err && err.message) || 'error'}`);
+        _dropEntry(key, 'error');
+      }
     };
     _log(`connect start ${opts.user}@${opts.host}:${port} (pool=${pool === _termPool ? 'term' : 'exec'})`);
     const onClose = () => {
       // If we never reached ready, treat close as connect failure.
       if (entry.state === 'connecting') failConnect(new Error('Connection lost before handshake'));
-      else _dropEntry(key, 'close');
+      else {
+        _log(`connect closed ${opts.host}:${port} (pool=${pool === _termPool ? 'term' : 'exec'})`);
+        _dropEntry(key, 'close');
+      }
     };
     const onEnd = () => {
       if (entry.state === 'connecting') failConnect(new Error('Connection ended before handshake'));
-      else _dropEntry(key, 'end');
+      else {
+        _log(`connect ended ${opts.host}:${port} (pool=${pool === _termPool ? 'term' : 'exec'})`);
+        _dropEntry(key, 'end');
+      }
     };
 
     // Keep a permanent error listener for the full client lifetime.
@@ -351,7 +384,7 @@ function _getOrCreate(key, opts, ssh2, poolRef) {
       settled = true;
       entry.state = 'ready';
       entry.connectMs = Date.now() - t0;
-      _log(`connect ready ${opts.host}:${port} in ${entry.connectMs}ms`);
+      _log(`connect ready ${opts.host}:${port} in ${entry.connectMs}ms${_negotiatedSummary(dbgLines, authBuilt.auth)}`);
       _startIdleTimer(entry);
       resolve();
     });
