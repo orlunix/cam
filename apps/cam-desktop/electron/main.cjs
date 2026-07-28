@@ -1128,6 +1128,20 @@ app.whenReady().then(() => {
     return { ok: true };
   });
 
+  // Diagnostics page: return the last N lines of the app diag log
+  // (ssh connects, attach stages, resets, renderer events). Read-only.
+  ipcMain.handle('diag:tail', (_e, lines = 300) => {
+    try {
+      const f = path.join(app.getPath('userData'), 'cam-desktop.log');
+      const text = fs.readFileSync(f, 'utf8');
+      const all = text.split('\n');
+      const n = Math.max(1, Math.min(2000, Number(lines) || 300));
+      return { ok: true, lines: all.slice(-n) };
+    } catch (e) {
+      return { ok: false, error: 'diag_read_failed', detail: e && e.message || String(e), lines: [] };
+    }
+  });
+
   ipcMain.handle('app:reset', async () => {
     try {
       const nTerms = _terminals.size;

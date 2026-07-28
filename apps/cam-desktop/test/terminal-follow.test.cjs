@@ -244,6 +244,12 @@ ok("ssh handshake debug is captured and dumped on connect failure + legacy algor
     && transport.includes("handshake debug (last")
     && transport.includes("diffie-hellman-group14-sha1")
     && transport.includes("ssh-rsa") && transport.includes("3des-cbc"));
+ok("Diagnostics mode: diag:tail IPC + page + mount wiring",
+  main.includes("ipcMain.handle('diag:tail'")
+    && preload.includes("diagTail(lines)")
+    && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "desktop", "app.js"), "utf8").includes("mountDiagnosticsMode")
+    && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('id="mode-diagnostics"')
+    && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('data-diag-filter'));
 ok("tmux discovery queue wait is bounded (15s) with self-release of abandoned links",
   main.includes("Promise.race([") && main.includes("tmux discovery queue wait exceeded 15s")
     && main.includes("void discoveryBeginP.then((releaseFn)"));
