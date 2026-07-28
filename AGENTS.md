@@ -42,3 +42,15 @@ debugging/unblocks, or when `cam-dev` is unavailable. If bypassing
 
 Do not push unless the user explicitly authorizes it. Commit only when
 the user asks for a commit or clearly approves the completed change.
+
+## Verification Rules (hard-won)
+
+- **Connection-layer changes (ssh-transport, auth, algorithms) must be
+  verified against the packaged Electron runtime, not only WSL node.**
+  Electron ships BoringSSL while WSL/dev node links OpenSSL — feature
+  support differs (2026-07-28: chacha20-poly1305 passed in WSL, broke
+  every attach in the packaged MSI). WSL tests are reference only;
+  the MSI smoke test is the bar.
+- Never enumerate feature-detected crypto algorithms by name; extend
+  the library's runtime-verified defaults (append form) with pure-JS
+  legacy algorithms only.
