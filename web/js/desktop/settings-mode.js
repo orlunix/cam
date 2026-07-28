@@ -68,6 +68,8 @@ function shortRedact(fp) {
  *  no command/argv/path/env passed from renderer. The renderer cannot
  *  reach this surface in a browser tab — it lives on
  *  `window.CamBridge.directHub`. See preload.cjs. */
+import { mountDiagnosticsMode } from './diagnostics-mode.js?v=0.65.1';
+
 function bridgeDirectHub() {
   const b = typeof window !== 'undefined' ? window.CamBridge : null;
   return (b && b.directHub) || null;
@@ -131,6 +133,16 @@ export function mountSettingsMode({ api, state, showToast, readConfig, saveConfi
 
   /* ────────── Direct tab — app-managed Hub lifecycle ────────── */
   mountDirectTab({ panel, api, state, showToast, readConfig, saveConfig, connect });
+
+  /* ────────── Diagnostics tab — app diag log viewer (moved off the
+   * main mode nav 2026-07-28: a debugging surface doesn't belong in
+   * the primary sidebar; Settings is its home). ────────── */
+  {
+    const diagPanel = panel.querySelector('#settings-tab-diagnostics');
+    if (diagPanel && typeof mountDiagnosticsMode === 'function') {
+      mountDiagnosticsMode({ panel: diagPanel });
+    }
+  }
 
   /* ────────── Relay tab ──────────
    * The Relay user-mode points at an external relay endpoint that
