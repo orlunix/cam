@@ -32,7 +32,7 @@ const PROFILE_KIND_KEY = 'cam_profile_kind';
 // these to DEFAULT_MODE, so stale localStorage can't activate a hidden mode.
 // Re-enable: delete from HIDDEN_MODES + remove `hidden` on the nav buttons.
 const HIDDEN_MODES = new Set(['bots', 'todos']);
-const MODES = ['agents', 'settings', 'start', 'nodes', 'skills', 'bots', 'todos', 'diagnostics']
+const MODES = ['agents', 'settings', 'start', 'nodes', 'skills', 'bots', 'todos']
   .filter(m => !HIDDEN_MODES.has(m));
 const DEFAULT_MODE = 'agents';
 
@@ -495,7 +495,6 @@ async function init() {
   mountSkillsMode({ api, state, showToast });
   mountBotsMode({ api, state, showToast });
   mountTodosMode({ api, state, showToast });
-  mountDiagnosticsMode({ panel: document.getElementById('mode-diagnostics') });
 
   // First connection attempt.
   //

@@ -62,10 +62,6 @@
           <span class="mode-nav-icon">&#9734;</span>
           <span class="mode-nav-label">Skills</span>
         </button>
-        <button class="mode-nav-btn" data-mode="diagnostics" aria-pressed="false">
-          <span class="mode-nav-icon">&#9881;</span>
-          <span class="mode-nav-label">Diagnostics</span>
-        </button>
         <!-- UNFINISHED-HIDDEN(bots): Bots mode hidden pending completion.
              Also blocked in web/js/desktop/app.js (HIDDEN_MODES). See
              apps/cam-desktop/FIXES-UNFINISHED-UI.md. -->
@@ -518,6 +514,33 @@
             role="tab" aria-pressed="false" hidden>Relay</button>
           <button type="button" class="settings-tab" data-tab="appearance"
             role="tab" aria-pressed="false">Appearance</button>
+          <button type="button" class="settings-tab" data-tab="diagnostics"
+            role="tab" aria-pressed="false">Diagnostics</button>
+        </div>
+
+        <!-- ── Diagnostics tab: app diag log viewer (SSH handshakes,
+             attach stages, resets, renderer events) ── -->
+        <div class="settings-tab-panel" id="settings-tab-diagnostics" data-tab="diagnostics" hidden>
+          <div class="diag-toolbar">
+            <div class="diag-filters" id="diag-filters" role="tablist" aria-label="Log filters">
+              <button type="button" class="diag-filter active" data-diag-filter="all">All</button>
+              <button type="button" class="diag-filter" data-diag-filter="connect">connect</button>
+              <button type="button" class="diag-filter" data-diag-filter="channel">channel</button>
+              <button type="button" class="diag-filter" data-diag-filter="attach">attach</button>
+              <button type="button" class="diag-filter" data-diag-filter="reset">reset</button>
+              <button type="button" class="diag-filter" data-diag-filter="renderer">renderer</button>
+            </div>
+            <div class="diag-actions">
+              <label class="diag-auto form-checkbox">
+                <input type="checkbox" id="diag-auto">
+                <span>auto-refresh</span>
+              </label>
+              <button type="button" class="btn-secondary btn-sm" id="diag-refresh">Refresh</button>
+              <button type="button" class="btn-secondary btn-sm" id="diag-copy">Copy</button>
+            </div>
+          </div>
+          <pre class="diag-log" id="diag-log" aria-live="polite"></pre>
+          <div class="diag-status" id="diag-status"></div>
         </div>
 
         <!-- ── Direct tab (CAM-DESK-DIRECT-010..019: app-managed Hub) ── -->
@@ -910,38 +933,6 @@
         <div class="settings-status" id="nodes-status" aria-live="polite"></div>
       </section>
 
-
-      <!-- Diagnostics workspace: recent connection/attach/reset log lines
-           from the app diag log, filterable and copyable. -->
-      <section class="mode-panel" id="mode-diagnostics" data-mode="diagnostics" hidden>
-        <div class="settings-header">
-          <h2>Diagnostics</h2>
-          <p class="settings-help">
-            Recent connection activity from the app log (SSH handshakes, attach
-            stages, resets, renderer events). Newest entries at the bottom.
-          </p>
-        </div>
-        <div class="diag-toolbar">
-          <div class="diag-filters" id="diag-filters" role="tablist" aria-label="Log filters">
-            <button type="button" class="diag-filter active" data-diag-filter="all">All</button>
-            <button type="button" class="diag-filter" data-diag-filter="connect">connect</button>
-            <button type="button" class="diag-filter" data-diag-filter="channel">channel</button>
-            <button type="button" class="diag-filter" data-diag-filter="attach">attach</button>
-            <button type="button" class="diag-filter" data-diag-filter="reset">reset</button>
-            <button type="button" class="diag-filter" data-diag-filter="renderer">renderer</button>
-          </div>
-          <div class="diag-actions">
-            <label class="diag-auto form-checkbox">
-              <input type="checkbox" id="diag-auto">
-              <span>auto-refresh</span>
-            </label>
-            <button type="button" class="btn-secondary btn-sm" id="diag-refresh">Refresh</button>
-            <button type="button" class="btn-secondary btn-sm" id="diag-copy">Copy</button>
-          </div>
-        </div>
-        <pre class="diag-log" id="diag-log" aria-live="polite"></pre>
-        <div class="diag-status" id="diag-status"></div>
-      </section>
 
       <!-- Skills workspace (CAM-DESK-SKILLM-010..014) -->
       <section class="mode-panel" id="mode-skills" data-mode="skills" hidden>

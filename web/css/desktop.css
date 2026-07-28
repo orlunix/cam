@@ -2211,7 +2211,7 @@ body.desktop[data-theme="light"] .composer-input:focus {
 }
 
 /* Diagnostics mode */
-#mode-diagnostics .diag-toolbar {
+#settings-tab-diagnostics .diag-toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -2219,12 +2219,12 @@ body.desktop[data-theme="light"] .composer-input:focus {
   margin: 8px 0;
   flex-wrap: wrap;
 }
-#mode-diagnostics .diag-filters {
+#settings-tab-diagnostics .diag-filters {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
 }
-#mode-diagnostics .diag-filter {
+#settings-tab-diagnostics .diag-filter {
   border: 1px solid var(--border);
   background: transparent;
   color: var(--dim);
@@ -2233,24 +2233,24 @@ body.desktop[data-theme="light"] .composer-input:focus {
   font-size: 11px;
   cursor: pointer;
 }
-#mode-diagnostics .diag-filter.active {
+#settings-tab-diagnostics .diag-filter.active {
   color: var(--fg);
   border-color: var(--accent);
   background: rgba(88, 166, 255, 0.12);
 }
-#mode-diagnostics .diag-actions {
+#settings-tab-diagnostics .diag-actions {
   display: flex;
   gap: 6px;
   align-items: center;
 }
-#mode-diagnostics .diag-auto {
+#settings-tab-diagnostics .diag-auto {
   font-size: 11px;
   color: var(--dim);
   display: inline-flex;
   gap: 4px;
   align-items: center;
 }
-#mode-diagnostics .diag-log {
+#settings-tab-diagnostics .diag-log {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
   line-height: 1.5;
@@ -2265,7 +2265,7 @@ body.desktop[data-theme="light"] .composer-input:focus {
   white-space: pre-wrap;
   word-break: break-all;
 }
-#mode-diagnostics .diag-status {
+#settings-tab-diagnostics .diag-status {
   margin-top: 6px;
   font-size: 11px;
   color: var(--dim);
