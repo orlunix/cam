@@ -244,6 +244,11 @@ ok("ssh handshake debug is captured and dumped on connect failure + legacy algor
     && transport.includes("handshake debug (last")
     && transport.includes("diffie-hellman-group14-sha1")
     && transport.includes("ssh-rsa") && transport.includes("3des-cbc"));
+ok("connect-ready line carries the negotiated summary + drop reasons are logged",
+  transport.includes("_negotiatedSummary(dbgLines, authBuilt.auth)")
+    && transport.includes("connect lost ")
+    && transport.includes("connect closed ")
+    && transport.includes("connect ended "));
 ok("Diagnostics lives in a Settings tab (not the main mode nav)",
   main.includes("ipcMain.handle('diag:tail'")
     && preload.includes("diagTail(lines)")
