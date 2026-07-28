@@ -2210,6 +2210,67 @@ body.desktop[data-theme="light"] .composer-input:focus {
   font-size: 10px;
 }
 
+/* Diagnostics mode */
+#mode-diagnostics .diag-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+  flex-wrap: wrap;
+}
+#mode-diagnostics .diag-filters {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+#mode-diagnostics .diag-filter {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--dim);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+#mode-diagnostics .diag-filter.active {
+  color: var(--fg);
+  border-color: var(--accent);
+  background: rgba(88, 166, 255, 0.12);
+}
+#mode-diagnostics .diag-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+#mode-diagnostics .diag-auto {
+  font-size: 11px;
+  color: var(--dim);
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+#mode-diagnostics .diag-log {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin: 0;
+  height: calc(100vh - 260px);
+  min-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+#mode-diagnostics .diag-status {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--dim);
+}
+
 #mode-nodes .host-card-contexts {
   margin-top: 8px;
 }
