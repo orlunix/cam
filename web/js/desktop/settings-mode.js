@@ -101,7 +101,7 @@ export function mountSettingsMode({ api, state, showToast, readConfig, saveConfi
   const tabButtons = panel.querySelectorAll('.settings-tab[data-tab]');
   const tabPanels  = panel.querySelectorAll('.settings-tab-panel[data-tab]');
   const TAB_KEY    = 'cam_desktop_settings_tab';
-  const VALID_TABS = ['direct', 'appearance'];
+  const VALID_TABS = ['direct', 'appearance', 'diagnostics'];
 
   function applyTab(name) {
     if (!VALID_TABS.includes(name)) name = 'direct';
