@@ -1547,13 +1547,12 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         try {
           if (!copyModeActive) {
             await sendTerminalRaw(agentId, '\x02['); // C-b [ → copy mode
+            await sendTerminalRaw(agentId, '\x1b[5~'); // initial page up (desktop's copy-mode -u)
             copyModeActive = true;
             syncHistoryChrome();
-            setBottomStatus('Copy mode — ⤒ ½ up · ⤓ exit', 'info');
+            setBottomStatus('Copy mode — ⤒ page up · ⤓ exit', 'info');
           } else {
-            const stats = getTerminalSessionStats(agentId);
-            const half = Math.max(1, Math.floor((stats?.rows || 24) / 2));
-            await sendTerminalRaw(agentId, '\x1b[A'.repeat(half)); // Up × rows/2
+            await sendTerminalRaw(agentId, '\x1b[5~'); // PPage — same as desktop
           }
         } catch (e) {
           setBottomStatus(e.message || 'History failed', 'error', 3000);
