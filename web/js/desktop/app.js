@@ -18,6 +18,7 @@ import { mountNodesMode } from './nodes-mode.js?v=0.64.0';
 import { mountSkillsMode } from './skills-mode.js?v=0.64.0';
 import { mountBotsMode } from './bots-mode.js?v=0.64.0';
 import { mountTodosMode } from './todos-mode.js?v=0.65.0';
+import { mountDiagnosticsMode } from './diagnostics-mode.js?v=0.65.1';
 
 const POLL_INTERVAL_MS = 5000;
 const AGENT_SNAPSHOT_SYNC_EVERY_TICKS = 6; // ~30s at POLL_INTERVAL_MS.
@@ -31,7 +32,7 @@ const PROFILE_KIND_KEY = 'cam_profile_kind';
 // these to DEFAULT_MODE, so stale localStorage can't activate a hidden mode.
 // Re-enable: delete from HIDDEN_MODES + remove `hidden` on the nav buttons.
 const HIDDEN_MODES = new Set(['bots', 'todos']);
-const MODES = ['agents', 'settings', 'start', 'nodes', 'skills', 'bots', 'todos']
+const MODES = ['agents', 'settings', 'start', 'nodes', 'skills', 'bots', 'todos', 'diagnostics']
   .filter(m => !HIDDEN_MODES.has(m));
 const DEFAULT_MODE = 'agents';
 
@@ -494,6 +495,7 @@ async function init() {
   mountSkillsMode({ api, state, showToast });
   mountBotsMode({ api, state, showToast });
   mountTodosMode({ api, state, showToast });
+  mountDiagnosticsMode({ panel: document.getElementById('mode-diagnostics') });
 
   // First connection attempt.
   //
