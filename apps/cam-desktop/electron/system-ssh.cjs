@@ -61,12 +61,45 @@ async function probeSsh() {
   return _probe;
 }
 
+function _missingDetail() {
+  return process.platform === 'win32'
+    ? 'No OpenSSH client found on this machine. Install it via Settings → Apps → Optional features → OpenSSH Client, or switch this node back to the built-in driver.'
+    : 'No ssh client found in PATH on this machine. Install OpenSSH, or switch this node back to the built-in driver.';
+}
+
+/** Map OS-ssh stderr to a clear, actionable error. Distinguishes:
+ *  auth failure / dns / refused / timeout / unreachable / host-key /
+ *  generic remote failure (with the stderr tail attached). */
+function _classifySystemSshError(r) {
+  const s = String(r.stderr || r.stdout || '');
+  const tail = s.trim().split('\n').slice(-3).join(' ').slice(0, 300);
+  const map = [
+    [/Permission denied/i,                 'auth_failed',       'authentication failed — key/agent rejected by the server'],
+    [/Could not resolve hostname|Name or service not known|Temporary failure in name resolution/i, 'dns_failure', 'DNS resolution failed — check VPN/network'],
+    [/Connection refused/i,                'connect_refused',   'connection refused — sshd not listening on this port'],
+    [/Connection timed out|Operation timed out|connect to host .* timed out/i, 'connect_timeout', 'connection timed out — host unreachable (VPN/network?)'],
+    [/No route to host/i,                  'connect_unreachable','no route to host — check VPN/network'],
+    [/Host key verification failed/i,      'host_key_failed',   'host key verification failed — accept the key in ~/.ssh/known_hosts or check for MITM'],
+    [/Operation not permitted|Permission denied \(publickey/i, 'auth_failed', 'authentication failed'],
+  ];
+  for (const [re, error, label] of map) {
+    if (re.test(s)) return { error, detail: `${label}. ssh: ${tail}` };
+  }
+  if (r.error === 'timeout') {
+    return { error: 'connect_timeout', detail: `system ssh timed out after the configured budget. ${tail}` };
+  }
+  if (r.code != null && r.code !== 0) {
+    return { error: 'remote_nonzero', detail: `remote command exited with code ${r.code}${tail ? `. ssh: ${tail}` : ''}` };
+  }
+  return { error: r.error || 'exec_failed', detail: tail || (r.detail || 'system ssh failed') };
+}
+
 /** Execute opts.command on opts.host via the OS ssh client.
  *  Returns the same shape as ssh-transport's execRemote plus `via`. */
 async function execViaSystemSsh(opts) {
   const probe = await probeSsh();
   if (!probe.available) {
-    return { ok: false, error: 'system_ssh_unavailable', detail: 'no usable system ssh client found', via: 'system-ssh' };
+    return { ok: false, error: 'system_ssh_unavailable', detail: _missingDetail(), via: 'system-ssh' };
   }
   const port = opts.port || 22;
   const timeoutMs = Math.max(5000, Math.min(120000, Number(opts.timeout_ms) || 30000));
@@ -94,12 +127,8 @@ async function execViaSystemSsh(opts) {
     code: r.code,
   };
   if (r.ok) return { ok: true, ...res };
-  return {
-    ok: false,
-    error: r.error === 'timeout' ? 'connect_timeout' : (r.code != null ? 'remote_nonzero' : (r.error || 'exec_failed')),
-    detail: String(r.stderr || r.stdout || r.detail || '').trim().slice(0, 400),
-    ...res,
-  };
+  const classified = _classifySystemSshError(r);
+  return { ok: false, error: classified.error, detail: classified.detail, ...res };
 }
 
 module.exports = { execViaSystemSsh, probeSsh };
