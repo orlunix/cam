@@ -151,6 +151,13 @@ submission (it's in `APP-STORE.md` now).
   `usesNonExemptEncryption: false` set (PATCH /v1/builds/{id}) or the
   version page blocks "Add for Review" with "missing export compliance
   information". Set it right after the upload, before attaching.
+- **Availability is NOT implied by READY_FOR_SALE**: if no territories
+  are selected under Pricing and Availability → App Availability, the
+  app stays READY_FOR_SALE forever without ever appearing on the
+  storefront (direct link redirects elsewhere). Select all territories
+  once — it is app-level and carries over to later versions. Symptom
+  fixed 2026-07-28: state flips to "Ready for Distribution" and the
+  page goes live within hours.
 - 1280×800 Mac screenshots (take them on a real Mac against the demo
   server — see `APP-STORE.md`)
 - Privacy labels, age rating, and the final **Submit for Review**
