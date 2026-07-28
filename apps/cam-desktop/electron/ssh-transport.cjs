@@ -307,6 +307,9 @@ function _getOrCreate(key, opts, ssh2, poolRef) {
       const c = (err && err.error && err.detail) ? err : _classifyError(err);
       entry.connectError = c;
       _log(`connect fail ${opts.host}:${port} after ${Date.now() - t0}ms: ${c.error} ${c.detail || ''}`);
+      if (dbgLines.length) {
+        _log(`connect fail ${opts.host}:${port} handshake debug (last ${dbgLines.length}):\n  ` + dbgLines.slice(-40).join('\n  '));
+      }
       _dropEntry(key, 'connect_error');
       reject(c);
     };
@@ -353,11 +356,52 @@ function _getOrCreate(key, opts, ssh2, poolRef) {
       resolve();
     });
 
+    // Handshake debug: capture ssh2's debug lines per connection and
+    // dump them into the diag log on connect FAILURE only (success
+    // stays quiet). This is how a bare "15s timeout" gets a cause —
+    // algorithm negotiation failure, auth-method exhaustion, or a
+    // silent TCP stall are all visible in the ssh2 debug stream.
+    const dbgLines = [];
+    const dbg = (line) => {
+      dbgLines.push(String(line));
+      if (dbgLines.length > 80) dbgLines.shift();
+    };
+
+    // Algorithm list: ssh2's pure-JS defaults are modern-only and fail
+    // against legacy servers (the "OpenSSH connects but the app does
+    // not" class). Listing modern + legacy explicitly — offering more
+    // is safe; the server picks.
+    const algorithms = {
+      kex: [
+        'curve25519-sha256', 'curve25519-sha256@libssh.org',
+        'ecdh-sha2-nistp256', 'ecdh-sha2-nistp384', 'ecdh-sha2-nistp521',
+        'diffie-hellman-group-exchange-sha256',
+        'diffie-hellman-group16-sha512', 'diffie-hellman-group18-sha512',
+        'diffie-hellman-group14-sha256', 'diffie-hellman-group14-sha1',
+        'diffie-hellman-group-exchange-sha1', 'diffie-hellman-group1-sha1',
+      ],
+      serverHostKey: [
+        'ssh-ed25519', 'ecdsa-sha2-nistp256', 'ecdsa-sha2-nistp384', 'ecdsa-sha2-nistp521',
+        'rsa-sha2-512', 'rsa-sha2-256', 'ssh-rsa', 'ssh-dss',
+      ],
+      cipher: [
+        'chacha20-poly1305@openssh.com',
+        'aes128-gcm@openssh.com', 'aes256-gcm@openssh.com',
+        'aes128-ctr', 'aes192-ctr', 'aes256-ctr',
+        'aes256-cbc', 'aes192-cbc', 'aes128-cbc', '3des-cbc',
+      ],
+      hmac: ['hmac-sha2-256-etm@openssh.com', 'hmac-sha2-512-etm@openssh.com',
+             'hmac-sha2-256', 'hmac-sha2-512', 'hmac-sha1'],
+      compress: ['none', 'zlib@openssh.com', 'zlib'],
+    };
+
     const connectOpts = {
       host:               String(opts.host),
       port,
       username:           String(opts.user),
       readyTimeout:       Math.min(20000, timeoutMs),
+      algorithms,
+      debug:              dbg,
       // 15s application-level keepalive (was 0 = disabled). A pooled
       // connection with no keepalive dies silently at NAT/firewall idle
       // timeouts — the next op then discovers a half-open socket only

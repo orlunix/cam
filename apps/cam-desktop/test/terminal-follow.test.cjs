@@ -239,6 +239,11 @@ ok("resetApp force-releases wedged tmux discovery gates (reload-stuck root fix)"
   main.includes("function _resetTmuxDiscovery()")
     && main.includes("const nGates = _resetTmuxDiscovery()")
     && main.includes("_tmuxDiscoveryReleases.add(release)"));
+ok("ssh handshake debug is captured and dumped on connect failure + legacy algorithms offered",
+  transport.includes("debug:              dbg,")
+    && transport.includes("handshake debug (last")
+    && transport.includes("diffie-hellman-group14-sha1")
+    && transport.includes("ssh-rsa") && transport.includes("3des-cbc"));
 ok("tmux discovery queue wait is bounded (15s) with self-release of abandoned links",
   main.includes("Promise.race([") && main.includes("tmux discovery queue wait exceeded 15s")
     && main.includes("void discoveryBeginP.then((releaseFn)"));
