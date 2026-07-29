@@ -141,7 +141,7 @@ async function openViaSystemSsh(opts, hooks = {}) {
   };
 
   const spawnAttach = (c, r) => new Promise((resolve) => {
-    const ch = spawn(probe.path, args(c, r), { windowsHide: true });
+    const ch = spawn(probe.path, ['-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3', ...args(c, r)], { windowsHide: true });
     child = ch;
     let openedHere = false;
     const openTimer = setTimeout(() => {
@@ -183,9 +183,18 @@ async function openViaSystemSsh(opts, hooks = {}) {
       try { return child && child.stdin && child.stdin.write(buf); } catch { return false; }
     },
     resize(c, r) {
-      cols = Math.max(2, Math.min(500, c | 0));
-      rows = Math.max(2, Math.min(500, r | 0));
+      const nc = Math.max(2, Math.min(500, c | 0));
+      const nr = Math.max(2, Math.min(500, r | 0));
       if (disposed || !opened) return false;
+      // The renderer refits generously (tab switch, focus, pane layout)
+      // and often reports the SAME or ±1 size — respawning on every
+      // jitter made system-attach look like it was always reconnecting
+      // (repro: Settings → Diagnostics → back to agent). tmux absorbs
+      // ±1 gracefully, so only respawn on a real change.
+      if (nc === cols && nr === rows) return true;
+      if (Math.abs(nc - cols) < 2 && Math.abs(nr - rows) < 2) return true;
+      cols = nc;
+      rows = nr;
       if (resizeTimer) clearTimeout(resizeTimer);
       resizeTimer = setTimeout(async () => {
         resizeTimer = null;
@@ -194,7 +203,7 @@ async function openViaSystemSsh(opts, hooks = {}) {
         try { child && child.kill('SIGKILL'); } catch { /* noop */ }
         suppressClose = false;
         await spawnAttach(cols, rows);
-      }, 400);
+      }, 600);
       return true;
     },
   };
