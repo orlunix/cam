@@ -314,7 +314,18 @@ async function listViaLs(opts) {
   const cmd = `ls -lA --time-style=long-iso -- ${shellQuote(opts.remotePath)}`;
   const r = await execViaSystemSsh({ ...opts, command: cmd });
   if (!r.ok) {
-    if (/No such file or directory|cannot access/i.test(String(r.stderr || r.detail || ''))) {
+    const errText = String(r.stderr || r.detail || '');
+    // BSD/macOS: --time-style is GNU-only. Fail with a clear, actionable
+    // error instead of a parsing meltdown.
+    if (/illegal option|invalid option|unknown option|usage:/i.test(errText)) {
+      return {
+        ok: false,
+        error: 'unsupported_platform',
+        detail: 'Browse requires GNU coreutils on the remote host (macOS/BSD not supported yet) — switch this node back to the built-in driver for full browse.',
+        via: 'system-ssh',
+      };
+    }
+    if (/No such file or directory|cannot access/i.test(errText)) {
       return { ok: false, error: 'not_found', detail: `No such directory: ${opts.remotePath}`, via: 'system-ssh' };
     }
     return { ok: false, error: r.error, detail: r.detail, via: 'system-ssh' };
@@ -346,7 +357,16 @@ async function readViaCat(opts) {
   // (two words) and breaks naive splitting.
   const st = await execViaSystemSsh({ ...opts, command: `stat -c '%A %s' -- ${shellQuote(opts.remotePath)}` });
   if (!st.ok) {
-    if (/No such file or directory|cannot stat/i.test(String(st.stderr || st.detail || ''))) {
+    const stErr = String(st.stderr || st.detail || '');
+    if (/illegal option|invalid option|unknown option|usage:/i.test(stErr)) {
+      return {
+        ok: false,
+        error: 'unsupported_platform',
+        detail: 'Browse requires GNU coreutils on the remote host (macOS/BSD not supported yet) — switch this node back to the built-in driver for full browse.',
+        via: 'system-ssh',
+      };
+    }
+    if (/No such file or directory|cannot stat/i.test(stErr)) {
       return { ok: false, error: 'not_found', detail: `No such file: ${opts.remotePath}`, via: 'system-ssh' };
     }
     return { ok: false, error: st.error, detail: st.detail, via: 'system-ssh' };
@@ -360,8 +380,8 @@ async function readViaCat(opts) {
   if (size > maxBytes) {
     return { ok: false, error: 'too_large', detail: `file is ${size} bytes (max ${maxBytes})`, size, via: 'system-ssh' };
   }
-  // Text path: plain cat (fast). Binary-safe fallback: base64 wrap when
-  // the payload is not valid UTF-8.
+  // Text preview: plain cat (fast). Binary files are out of scope by
+  // product decision (no binary preview in the browse tab).
   const r = await execViaSystemSsh({ ...opts, command: `head -c ${maxBytes} -- ${shellQuote(opts.remotePath)}` });
   if (!r.ok) return { ok: false, error: r.error, detail: r.detail, via: 'system-ssh' };
   const text = String(r.stdout || '');
