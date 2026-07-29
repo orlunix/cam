@@ -418,7 +418,7 @@ let _sshTransport = null;
 // Remote agent-discovery command. Two-pass: prefer the embedded camc
 // shim, fall back to the system `camc` on PATH (which is what the
 // unified CAM/camc environment installs).
-const SYNC_DEFAULT_TIMEOUT_MS = 15000;
+const SYNC_DEFAULT_TIMEOUT_MS = 30000;
 const REMOTE_CAMC = '~/.cam/camc';
 const REMOTE_CAMC_UPLOAD_PATH = '.cam/camc.tmp';
 const REMOTE_SKILLM = '~/.cam/skillm';
