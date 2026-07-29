@@ -72,6 +72,24 @@ const fs     = require('node:fs');
 const crypto = require('node:crypto');
 const _systemSsh = require('./system-ssh.cjs');
 
+/* Driver registry (DRIVER-MAP-001): every transport method routes
+ * through here. The built-in ssh2 implementations live below as
+ * private functions; the System OpenSSH driver is system-ssh.cjs.
+ * `opts.ssh_driver === 'system'` selects it per node; anything else
+ * keeps the built-in datapath, byte for byte. */
+const DRIVERS = {
+  system: {
+    exec:  (opts)        => _systemSsh.execViaSystemSsh(opts),
+    open:  (opts, hooks) => _systemSsh.openViaSystemSsh(opts, hooks),
+    write: (opts)        => _systemSsh.writeViaScp(opts),
+    list:  (opts)        => _systemSsh.listViaLs(opts),
+    read:  (opts)        => _systemSsh.readViaCat(opts),
+  },
+};
+function _systemDriver(opts) {
+  return (opts && opts.ssh_driver === 'system') ? DRIVERS.system : null;
+}
+
 let _override = null;
 let _ssh2 = null;
 
@@ -531,14 +549,11 @@ async function _withPooledClient(opts, op /* (client, finishWithTimings) */) {
 
 async function execRemote(opts) {
   if (_override) return _override(opts);
-  // Per-node exec driver: 'system' routes every exec through the OS
-  // OpenSSH client (ProxyJump/certificates/GSSAPI come free from
-  // ~/.ssh/config). Absent or 'ssh2' = the built-in datapath, byte for
-  // byte identical to before. Terminal attach is unaffected either way.
-  if (opts && opts.ssh_driver === 'system') {
+  const sd = _systemDriver(opts);
+  if (sd) {
     try {
       _log(`exec via system-ssh ${opts.user}@${opts.host}:${opts.port || 22}: ${String(opts.command || '').slice(0, 80)}`);
-      const r = await _systemSsh.execViaSystemSsh(opts);
+      const r = await sd.exec(opts);
       _log(`exec via system-ssh ${opts.host}:${opts.port || 22} ${r.ok ? 'ok' : `failed: ${r.error}`}`);
       return r;
     } catch (e) {
@@ -610,6 +625,16 @@ async function execRemote(opts) {
 
 async function writeRemoteFile(opts) {
   if (_override) return _override({ ...opts, operation: 'writeRemoteFile' });
+  const sd = _systemDriver(opts);
+  if (sd) {
+    try {
+      const r = await sd.write(opts);
+      _log(`upload via system-ssh ${opts.host}:${opts.port || 22} ${r.ok ? `ok ${r.bytes}B` : `failed: ${r.error}`}: ${opts.remotePath}`);
+      return r;
+    } catch (e) {
+      return { ok: false, error: 'system_ssh_failed', detail: e && e.message || String(e), via: 'system-ssh' };
+    }
+  }
   if (!opts || typeof opts.remotePath !== 'string' || !opts.remotePath) {
     return { ok: false, error: 'invalid_args', detail: 'remotePath is required' };
   }
@@ -648,6 +673,8 @@ async function writeRemoteFile(opts) {
  * Read-only: never opens a writable handle. */
 async function listRemoteFiles(opts) {
   if (_override) return _override({ ...opts, operation: 'listRemoteFiles' });
+  const sd = _systemDriver(opts);
+  if (sd) return sd.list(opts);
   if (!opts || typeof opts.remotePath !== 'string' || !opts.remotePath) {
     return { ok: false, error: 'invalid_args', detail: 'remotePath is required' };
   }
@@ -697,6 +724,8 @@ async function listRemoteFiles(opts) {
  * detection by the caller. */
 async function readRemoteFile(opts) {
   if (_override) return _override({ ...opts, operation: 'readRemoteFile' });
+  const sd = _systemDriver(opts);
+  if (sd) return sd.read(opts);
   if (!opts || typeof opts.remotePath !== 'string' || !opts.remotePath) {
     return { ok: false, error: 'invalid_args', detail: 'remotePath is required' };
   }
@@ -824,12 +853,11 @@ function poolStats() {
  */
 async function openTerminalChannel(opts, hooks = {}) {
   if (_override) return _override({ ...opts, operation: 'openTerminalChannel' }, hooks);
-  // Per-node driver: 'system' attaches via the OS ssh client with the
-  // same contract ({ok, dispose, write, resize}) as the built-in path.
-  if (opts && opts.ssh_driver === 'system') {
+  const sd = _systemDriver(opts);
+  if (sd) {
     try {
       _log(`attach via system-ssh ${opts.user}@${opts.host}:${opts.port || 22}: ${String(opts.command || '').slice(0, 60)}`);
-      const r = await _systemSsh.openViaSystemSsh(opts, hooks);
+      const r = await sd.open(opts, hooks);
       _log(`attach via system-ssh ${opts.host}:${opts.port || 22} ${r.ok ? 'ok' : `failed: ${r.error}`}`);
       return r;
     } catch (e) {
