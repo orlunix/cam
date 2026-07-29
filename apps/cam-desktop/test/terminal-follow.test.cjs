@@ -271,6 +271,13 @@ ok("System OpenSSH attach: same contract via openViaSystemSsh (stty size + respa
   transport.includes("openViaSystemSsh")
     && fs.readFileSync(path.join(__dirname, "..", "electron", "system-ssh.cjs"), "utf8").includes("stty rows")
     && fs.readFileSync(path.join(__dirname, "..", "electron", "system-ssh.cjs"), "utf8").includes("spawnAttach"));
+ok("driver map routes all five methods; system driver implements write/list/read",
+  transport.includes("const DRIVERS = {")
+    && transport.includes("_systemDriver(opts)")
+    && transport.includes("sd.write(opts)") && transport.includes("sd.list(opts)") && transport.includes("sd.read(opts)")
+    && fs.readFileSync(path.join(__dirname, "..", "electron", "system-ssh.cjs"), "utf8").includes("writeViaScp")
+    && fs.readFileSync(path.join(__dirname, "..", "electron", "system-ssh.cjs"), "utf8").includes("listViaLs")
+    && fs.readFileSync(path.join(__dirname, "..", "electron", "system-ssh.cjs"), "utf8").includes("readViaCat"));
 ok("tmux discovery queue wait is bounded (15s) with self-release of abandoned links",
   main.includes("Promise.race([") && main.includes("tmux discovery queue wait exceeded 15s")
     && main.includes("void discoveryBeginP.then((releaseFn)"));
