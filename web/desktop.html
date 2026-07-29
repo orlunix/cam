@@ -847,7 +847,7 @@
                   <option value="ssh2">Built-in (fast, pooled)</option>
                   <option value="system">System OpenSSH (ProxyJump / certificates / GSSAPI)</option>
                 </select>
-                <span class="form-hint">System OpenSSH runs each command through the OS ssh client — slower (no pooling) but supports everything in ~/.ssh/config. Terminal attach stays built-in either way.</span>
+                <span class="form-hint">System OpenSSH runs each command through the OS ssh client — slower (no pooling) but supports everything in ~/.ssh/config (ProxyJump, certificates, GSSAPI). Key/agent auth only.</span>
               </label>
 
               <div class="nodes-auth-section" id="nodes-auth-key" data-auth="key" data-ctx-edit-hide="1" data-add-ctx-hide="1">
