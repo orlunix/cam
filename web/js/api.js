@@ -276,6 +276,13 @@ export class CamApi {
     const headers = { 'Content-Type': 'application/json' };
     if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
 
+    // Slow ops (sync/heal/uploads) can legitimately outlast a read
+    // request — backend budgets there are 30s..120s, so the frontend
+    // must not abort them at the read-side 15s. Mirror the relay
+    // path's split (120s slow / 15s normal).
+    const slowOp = /\/(sync|heal|upload)(\/|$|\?)/.test(path);
+    const reqTimeoutMs = slowOp ? 120000 : 15000;
+
     let resp;
     try {
       resp = await fetch(url, {
@@ -284,11 +291,11 @@ export class CamApi {
         body: body != null ? JSON.stringify(body) : undefined,
         // Never let a request hang forever: an accepted-but-unanswered
         // connection would otherwise spin the loading state indefinitely.
-        signal: AbortSignal.timeout(15000),
+        signal: AbortSignal.timeout(reqTimeoutMs),
       });
     } catch (e) {
       const raw = e && (e.name === 'AbortError' || e.name === 'TimeoutError')
-        ? `request timed out after 15s (${this.serverUrl})`
+        ? `request timed out after ${Math.round(reqTimeoutMs / 1000)}s (${this.serverUrl})`
         : (e?.message || String(e));
       if (/failed to fetch|networkerror|network error|load failed/i.test(raw)) {
         const err = new Error(
