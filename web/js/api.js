@@ -708,6 +708,10 @@ export class CamApi {
   healContext(nameOrId, ops) {
     return this.request('POST', `/api/contexts/${encodeURIComponent(nameOrId)}/heal`, { ops });
   }
+  // Live sync step progress (poll while a sync is in flight).
+  syncStatus(nameOrId) {
+    return this.request('GET', `/api/contexts/${encodeURIComponent(nameOrId)}/sync-status`);
+  }
   listFiles(contextId, path = '') { return this.request('GET', `/api/contexts/${contextId}/files?path=${encodeURIComponent(path)}`); }
   readFile(contextId, path) { return this.request('GET', `/api/contexts/${contextId}/files/read?path=${encodeURIComponent(path)}`); }
 
