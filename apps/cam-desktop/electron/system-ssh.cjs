@@ -96,6 +96,110 @@ function _classifySystemSshError(r) {
 
 /** Execute opts.command on opts.host via the OS ssh client.
  *  Returns the same shape as ssh-transport's execRemote plus `via`. */
+
+/** PTY attach via the OS ssh client (spawn `ssh -tt`).
+ *
+ *  Size model: the remote pty starts at 80x24 because our child has no
+ *  local tty, so the command is prefixed with `stty rows R cols C` to
+ *  set the correct winsize before the attach starts. Live resize is
+ *  not possible through a child process (no window-change API), so
+ *  resize() kills and respawns the child with the new size — debounced
+ *  and silent: the tmux session survives, only the attach view
+ *  reconnects.
+ */
+async function openViaSystemSsh(opts, hooks = {}) {
+  const probe = await probeSsh();
+  if (!probe.available) {
+    return { ok: false, error: 'system_ssh_unavailable', detail: _missingDetail(), via: 'system-ssh' };
+  }
+  if (opts.auth_method === 'password') {
+    return { ok: false, error: 'system_ssh_password_unsupported', detail: 'System OpenSSH driver cannot do password auth non-interactively (BatchMode). Use key auth, or switch this node back to the built-in driver.', via: 'system-ssh' };
+  }
+  const onData  = typeof hooks.onData === 'function' ? hooks.onData : () => {};
+  const onClose = typeof hooks.onClose === 'function' ? hooks.onClose : () => {};
+  let cols = Math.max(2, Math.min(500, Number(hooks.cols) || 80));
+  let rows = Math.max(2, Math.min(500, Number(hooks.rows) || 24));
+
+  let child = null;
+  let disposed = false;
+  let suppressClose = false;
+  let opened = false;
+  let resizeTimer = null;
+
+  const args = (c, r) => {
+    const a = [
+      '-tt',
+      '-o', 'BatchMode=yes',
+      '-o', `ConnectTimeout=${Math.ceil(Math.min(Number(opts.timeout_ms) || 15000, 20000) / 1000)}`,
+      '-p', String(opts.port || 22),
+    ];
+    if ((opts.auth_method === 'key' || (!opts.auth_method && opts.key_file)) && opts.key_file) {
+      a.push('-i', String(opts.key_file));
+    }
+    a.push(`${opts.user}@${opts.host}`, `stty rows ${r} cols ${c}; exec ${opts.command}`);
+    return a;
+  };
+
+  const spawnAttach = (c, r) => new Promise((resolve) => {
+    const ch = spawn(probe.path, args(c, r), { windowsHide: true });
+    child = ch;
+    let openedHere = false;
+    const openTimer = setTimeout(() => {
+      if (!openedHere) {
+        try { ch.kill('SIGKILL'); } catch { /* noop */ }
+        resolve({ ok: false, error: 'connect_timeout', detail: 'system ssh attach open timed out', via: 'system-ssh' });
+      }
+    }, Math.max(5000, Math.min(60000, Number(opts.timeout_ms) || 15000)));
+    if (openTimer.unref) openTimer.unref();
+    ch.stdout.on('data', (d) => {
+      if (disposed) return;
+      if (!openedHere) { openedHere = true; opened = true; clearTimeout(openTimer); resolve({ ok: true }); }
+      onData(d);
+    });
+    ch.stderr.on('data', (d) => { if (!disposed) onData(d); });
+    ch.on('error', (e) => {
+      if (!openedHere) { clearTimeout(openTimer); resolve({ ok: false, error: 'spawn_failed', detail: e && e.message, via: 'system-ssh' }); }
+      else if (!disposed) onClose({ code: null, signal: null, error: e && e.message });
+    });
+    ch.on('close', (code, signal) => {
+      if (!openedHere) { clearTimeout(openTimer); resolve({ ok: false, error: 'exec_failed', detail: `ssh exited before attach opened (code ${code})`, via: 'system-ssh' }); return; }
+      if (suppressClose) return; // internal respawn — not a real drop
+      if (!disposed) onClose({ code: typeof code === 'number' ? code : null, signal: signal || null });
+    });
+  });
+
+  const first = await spawnAttach(cols, rows);
+  if (!first.ok) return first;
+
+  return {
+    ok: true,
+    via: 'system-ssh',
+    dispose() {
+      disposed = true;
+      if (resizeTimer) { clearTimeout(resizeTimer); resizeTimer = null; }
+      try { child && child.kill('SIGKILL'); } catch { /* noop */ }
+    },
+    write(buf) {
+      try { return child && child.stdin && child.stdin.write(buf); } catch { return false; }
+    },
+    resize(c, r) {
+      cols = Math.max(2, Math.min(500, c | 0));
+      rows = Math.max(2, Math.min(500, r | 0));
+      if (disposed || !opened) return false;
+      if (resizeTimer) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(async () => {
+        resizeTimer = null;
+        if (disposed) return;
+        suppressClose = true;
+        try { child && child.kill('SIGKILL'); } catch { /* noop */ }
+        suppressClose = false;
+        await spawnAttach(cols, rows);
+      }, 400);
+      return true;
+    },
+  };
+}
+
 async function execViaSystemSsh(opts) {
   const probe = await probeSsh();
   if (!probe.available) {
@@ -131,4 +235,4 @@ async function execViaSystemSsh(opts) {
   return { ok: false, error: classified.error, detail: classified.detail, ...res };
 }
 
-module.exports = { execViaSystemSsh, probeSsh };
+module.exports = { execViaSystemSsh, openViaSystemSsh, probeSsh };

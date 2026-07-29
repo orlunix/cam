@@ -267,6 +267,10 @@ ok("Edit Host repopulates the exec driver + system-ssh execs are logged",
     && transport.includes("exec via system-ssh"));
 ok("built-in exec path logs one line per command (sync visibility on warm pools)",
   transport.includes("_execDone(first)") && transport.includes("exec ${opts.host}:${opts.port || 22} ${r && r.ok ? 'ok'"));
+ok("System OpenSSH attach: same contract via openViaSystemSsh (stty size + respawn resize)",
+  transport.includes("openViaSystemSsh")
+    && fs.readFileSync(path.join(__dirname, "..", "electron", "system-ssh.cjs"), "utf8").includes("stty rows")
+    && fs.readFileSync(path.join(__dirname, "..", "electron", "system-ssh.cjs"), "utf8").includes("spawnAttach"));
 ok("tmux discovery queue wait is bounded (15s) with self-release of abandoned links",
   main.includes("Promise.race([") && main.includes("tmux discovery queue wait exceeded 15s")
     && main.includes("void discoveryBeginP.then((releaseFn)"));
