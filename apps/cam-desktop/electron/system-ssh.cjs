@@ -122,7 +122,6 @@ async function openViaSystemSsh(opts, hooks = {}) {
 
   let child = null;
   let disposed = false;
-  let suppressClose = false;
   let opened = false;
   let resizeTimer = null;
 
@@ -142,6 +141,11 @@ async function openViaSystemSsh(opts, hooks = {}) {
 
   const spawnAttach = (c, r) => new Promise((resolve) => {
     const ch = spawn(probe.path, ['-o', 'ServerAliveInterval=15', '-o', 'ServerAliveCountMax=3', ...args(c, r)], { windowsHide: true });
+    // Per-child close suppression: a shared boolean races with the async
+    // close event (kill() returns before 'close' fires), which made
+    // renderer auto-reconnect fire alongside our own respawn — two
+    // children on one tmux session, seen as instability. Tag the child.
+    ch._camSuppress = false;
     child = ch;
     let openedHere = false;
     const openTimer = setTimeout(() => {
@@ -163,7 +167,7 @@ async function openViaSystemSsh(opts, hooks = {}) {
     });
     ch.on('close', (code, signal) => {
       if (!openedHere) { clearTimeout(openTimer); resolve({ ok: false, error: 'exec_failed', detail: `ssh exited before attach opened (code ${code})`, via: 'system-ssh' }); return; }
-      if (suppressClose) return; // internal respawn — not a real drop
+      if (ch._camSuppress) return; // internal respawn — not a real drop
       if (!disposed) onClose({ code: typeof code === 'number' ? code : null, signal: signal || null });
     });
   });
@@ -199,9 +203,9 @@ async function openViaSystemSsh(opts, hooks = {}) {
       resizeTimer = setTimeout(async () => {
         resizeTimer = null;
         if (disposed) return;
-        suppressClose = true;
-        try { child && child.kill('SIGKILL'); } catch { /* noop */ }
-        suppressClose = false;
+        const old = child;
+        if (old) old._camSuppress = true;
+        try { old && old.kill('SIGKILL'); } catch { /* noop */ }
         await spawnAttach(cols, rows);
       }, 600);
       return true;
