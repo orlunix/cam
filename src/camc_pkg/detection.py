@@ -44,13 +44,16 @@ def _find_cursor_line(lines):
     return None
 
 
-def _active_ui_lines(output, config):
+def _active_ui_lines(output, config, recent_lines=None):
     """Return the small visible UI region where prompts and menus live."""
-    configured = getattr(config, "confirm_recent_lines", _ACTIVE_UI_LINES)
+    configured = (recent_lines if recent_lines is not None
+                  else getattr(config, "confirm_recent_lines", _ACTIVE_UI_LINES))
     try:
-        limit = min(_ACTIVE_UI_LINES, max(1, int(configured)))
+        limit = max(1, int(configured))
+        if recent_lines is None:
+            limit = min(_ACTIVE_UI_LINES, limit)
     except (TypeError, ValueError):
-        limit = _ACTIVE_UI_LINES
+        limit = recent_lines if recent_lines is not None else _ACTIVE_UI_LINES
     return [line for line in output.splitlines() if line.strip()][-limit:]
 
 
@@ -119,7 +122,8 @@ def detect_state(output, config):
         return None
 
 
-def should_auto_confirm(output, config, last_response="", prev_output=""):
+def should_auto_confirm(output, config, last_response="", prev_output="",
+                        recent_lines=None):
     if config.strip_ansi:
         output = strip_ansi(output)
     # Input-box guard. Three conditions in has_input_cursor: bare
@@ -133,7 +137,7 @@ def should_auto_confirm(output, config, last_response="", prev_output=""):
     # appear at the bottom of the screen.  Matching the full output causes
     # false positives when the agent's *response* contains trigger text
     # (e.g. a table mentioning "1. Yes").
-    recent = "\n".join(_active_ui_lines(clean, config))
+    recent = "\n".join(_active_ui_lines(clean, config, recent_lines))
     for pattern, response, send_enter in config.confirm_rules:
         m = pattern.search(recent)
         if m:
@@ -202,12 +206,13 @@ def is_ready_for_input(output, config):
     return bool(config.ready_pattern.search(active))
 
 
-def should_boot_confirm(output, config, last_response="", prev_output=""):
+def should_boot_confirm(output, config, last_response="", prev_output="",
+                        recent_lines=None):
     """Boot-phase confirm rules — no input-cursor guard (onboarding menus)."""
     if config.strip_ansi:
         output = strip_ansi(output)
     clean = clean_for_confirm(output)
-    recent = "\n".join(_active_ui_lines(clean, config))
+    recent = "\n".join(_active_ui_lines(clean, config, recent_lines))
     for pattern, response, send_enter in config.confirm_rules:
         m = pattern.search(recent)
         if m:
@@ -216,11 +221,12 @@ def should_boot_confirm(output, config, last_response="", prev_output=""):
 
 
 def should_confirm_initializing(output, boot_config, tool_config,
-                                last_response="", prev_output=""):
+                                last_response="", prev_output="", recent_lines=None):
     """During initializing: boot.toml first, then tool.toml [[confirm]]."""
     if boot_config:
         hit = should_boot_confirm(
-            output, boot_config, last_response=last_response, prev_output=prev_output)
+            output, boot_config, last_response=last_response, prev_output=prev_output,
+            recent_lines=recent_lines)
         if hit:
             return hit, boot_config
     if tool_config:
@@ -228,7 +234,8 @@ def should_confirm_initializing(output, boot_config, tool_config,
         # changes its active cursor line when rendering `1. Yes`; the normal
         # runtime input guard would mistake that transition for typing.
         hit = should_boot_confirm(
-            output, tool_config, last_response=last_response, prev_output=prev_output)
+            output, tool_config, last_response=last_response, prev_output=prev_output,
+            recent_lines=recent_lines)
         if hit:
             return hit, tool_config
     return None, tool_config

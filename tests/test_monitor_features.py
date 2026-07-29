@@ -18,6 +18,7 @@ if SRC not in sys.path:
     sys.path.insert(0, SRC)
 
 from camc_pkg import monitor_features as mf  # noqa: E402
+from camc_pkg.adapters import AdapterConfig  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -29,7 +30,8 @@ class _Cfg(object):
                  confirm_rules=None, busy_pattern=None, done_pattern=None,
                  ready_pattern=None, state_patterns=None,
                  state_strategy="last", state_recent_chars=2000,
-                 strip_ansi=False, confirm_recent_lines=8):
+                 strip_ansi=False, confirm_recent_lines=8,
+                 confirm_stuck_recent_lines=0):
         self.confirm_cooldown = confirm_cooldown
         self.confirm_sleep = confirm_sleep
         self.confirm_rules = confirm_rules or []
@@ -41,6 +43,7 @@ class _Cfg(object):
         self.state_recent_chars = state_recent_chars
         self.strip_ansi = strip_ansi
         self.confirm_recent_lines = confirm_recent_lines
+        self.confirm_stuck_recent_lines = confirm_stuck_recent_lines
 
 
 def _mk_snap(output="hello\n❯ ", **overrides):
@@ -59,6 +62,16 @@ def _mk_snap(output="hello\n❯ ", **overrides):
 # ---------------------------------------------------------------------------
 # Registry shape
 # ---------------------------------------------------------------------------
+
+def test_adapter_config_caps_primary_confirm_window_at_eight_lines():
+    cfg = AdapterConfig({"monitor": {"confirm_recent_lines": 20}})
+    assert cfg.confirm_recent_lines == 8
+
+
+def test_adapter_config_defaults_stuck_confirm_window_to_forty_lines():
+    cfg = AdapterConfig({"monitor": {}})
+    assert cfg.confirm_stuck_recent_lines == 40
+
 
 def test_registry_includes_state_manager_and_auto_confirmation_and_placeholders():
     """The default v1 set is StateManagerFeature(10) → BootPromptFeature(15) →
@@ -332,6 +345,65 @@ def test_auto_confirmation_requires_screen_stable_for_five_seconds():
 
     assert "send_input" not in kinds
     assert runtime.last_confirm == 0.0
+
+
+def test_auto_confirmation_stuck_fallback_searches_last_40_lines_only_after_15_seconds():
+    confirm_rules = [(re.compile(r"^1\. Yes,", re.MULTILINE), "1", False)]
+    cfg = AdapterConfig({"monitor": {
+        "confirm_recent_lines": 8,
+        "confirm_cooldown": 5.0,
+        "confirm_stuck_recent_lines": 40,
+    }, "confirm": [{"pattern": r"^1\. Yes,", "response": "1", "send_enter": False}]})
+    runtime = mf.MonitorRuntime("aid", cfg, now=100.0)
+    feat = mf.AutoConfirmationFeature()
+    screen = "1. Yes, continue\n2. No, quit\n" + "\n".join(
+        "status line %d" % i for i in range(37)
+    )
+
+    early = feat.confirm(_mk_snap(output=screen, now=100.0, idle_for=14.9), runtime)
+    assert not any(action["kind"] == "send_input" for action in early)
+
+    actions = feat.confirm(_mk_snap(output=screen, now=101.0, idle_for=15.0), runtime)
+    assert any(action["kind"] == "send_input" for action in actions)
+
+
+def test_auto_confirmation_stuck_fallback_skips_a_normal_bottom_input_box():
+    confirm_rules = [(re.compile(r"^1\. Yes,", re.MULTILINE), "1", False)]
+    cfg = _Cfg(confirm_rules=confirm_rules, confirm_recent_lines=8,
+               confirm_stuck_recent_lines=32)
+    runtime = mf.MonitorRuntime("aid", cfg, now=100.0)
+    feat = mf.AutoConfirmationFeature()
+    screen = "1. Yes, continue\n2. No, quit\n" + "\n".join(
+        "status line %d" % i for i in range(8)
+    ) + "\n❯ "
+
+    actions = feat.confirm(_mk_snap(output=screen, now=100.0, idle_for=15.0), runtime)
+    assert not any(action["kind"] == "send_input" for action in actions)
+
+
+def test_boot_trust_stuck_fallback_respects_the_bottom_input_guard():
+    trust_rule = [(re.compile(r"Do you trust the contents"), "1", True)]
+    cfg = _Cfg(confirm_rules=trust_rule, confirm_recent_lines=8,
+               confirm_stuck_recent_lines=32)
+    runtime = mf.MonitorRuntime("aid", cfg, now=100.0)
+    runtime.in_initializing = True
+    runtime.boot_config = cfg
+    feat = mf.AutoConfirmationFeature()
+    screen = "Do you trust the contents of this directory?\n" + "\n".join(
+        "status line %d" % i for i in range(9)
+    )
+
+    actions = feat.confirm(_mk_snap(output=screen, now=100.0, idle_for=15.0), runtime)
+    assert any(action["kind"] == "send_input" for action in actions)
+
+    guarded_runtime = mf.MonitorRuntime("aid-guarded", cfg, now=121.0)
+    guarded_runtime.in_initializing = True
+    guarded_runtime.boot_config = cfg
+    guarded = feat.confirm(_mk_snap(
+        output=screen + "\n❯ ", now=121.0, idle_for=15.0,
+        hash="different-screen",
+    ), guarded_runtime)
+    assert not any(action["kind"] == "send_input" for action in guarded)
 
 
 def test_auto_confirmation_no_1_spam_guard_python_side():

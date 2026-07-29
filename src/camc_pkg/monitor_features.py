@@ -446,7 +446,8 @@ class AutoConfirmationFeature(MonitorFeature):
 
     def confirm(self, snap, runtime):
         from camc_pkg.detection import (
-            should_auto_confirm, should_confirm_initializing, input_residue_count)
+            should_auto_confirm, should_confirm_initializing, input_residue_count,
+            has_input_cursor)
         actions = []
         init_phase = runtime.in_initializing
         cfg = runtime.config
@@ -477,6 +478,30 @@ class AutoConfirmationFeature(MonitorFeature):
                 snap.output, runtime.config,
                 last_response=runtime.last_confirm_response,
                 prev_output=runtime.prev_output or "")
+        if not confirm and snap.idle_for >= 15.0:
+            stuck_lines = max(
+                int(getattr(runtime.config, "confirm_stuck_recent_lines", 0) or 0),
+                int(getattr(runtime.boot_config, "confirm_stuck_recent_lines", 0) or 0),
+            )
+            if stuck_lines > 8:
+                if init_phase:
+                    # A normal composer makes an older boot menu unsafe to
+                    # confirm from the expanded window.
+                    if not has_input_cursor(
+                            snap.output, last_response=runtime.last_confirm_response,
+                            prev_output=runtime.prev_output or ""):
+                        confirm, rule_cfg = should_confirm_initializing(
+                            snap.output, runtime.boot_config, runtime.config,
+                            last_response=runtime.last_confirm_response,
+                            prev_output=runtime.prev_output or "",
+                            recent_lines=stuck_lines)
+                        cfg = rule_cfg
+                else:
+                    confirm = should_auto_confirm(
+                        snap.output, runtime.config,
+                        last_response=runtime.last_confirm_response,
+                        prev_output=runtime.prev_output or "",
+                        recent_lines=stuck_lines)
         if not confirm:
             return actions
         response, send_enter, pat_str, matched = confirm
