@@ -1,3 +1,7 @@
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
 /* system-ssh.cjs — per-node "System OpenSSH" exec driver.
  *
  * Isolation contract:
@@ -248,4 +252,124 @@ async function execViaSystemSsh(opts) {
   return { ok: false, error: classified.error, detail: classified.detail, ...res };
 }
 
-module.exports = { execViaSystemSsh, openViaSystemSsh, probeSsh };
+/* ─────────── scp upload / ls browse / cat read (DRIVER-MAP-002) ─── */
+
+function _scpCandidates() {
+  return process.platform === 'win32'
+    ? ['scp.exe', 'C:\\Windows\\System32\\OpenSSH\\scp.exe']
+    : ['scp', '/usr/bin/scp'];
+}
+
+async function probeScp() {
+  if (_probeScp) return _probeScp;
+  for (const cmd of _scpCandidates()) {
+    const r = await _run(cmd, ['-V'], 5000);
+    // scp has no -V; any response that is not spawn_failed means it exists.
+    if (r.code !== null || r.ok || (r.stderr && !/not found|not recognized/i.test(r.stderr))) {
+      _probeScp = { available: true, path: cmd };
+      return _probeScp;
+    }
+  }
+  _probeScp = { available: false };
+  return _probeScp;
+}
+let _probeScp = null;
+
+/** Upload opts.content (Buffer) to opts.remotePath via scp. Content is
+ *  staged to a local temp file first (scp needs a path). */
+async function writeViaScp(opts) {
+  const probe = await probeScp();
+  if (!probe.available) {
+    return { ok: false, error: 'system_scp_unavailable', detail: _missingDetail(), via: 'system-ssh' };
+  }
+  if (opts.auth_method === 'password') {
+    return { ok: false, error: 'system_ssh_password_unsupported', detail: 'System OpenSSH driver cannot do password auth non-interactively (BatchMode).', via: 'system-ssh' };
+  }
+  const content = Buffer.isBuffer(opts.content) ? opts.content : Buffer.from(String(opts.content), 'utf8');
+  const tmp = path.join(os.tmpdir(), `cam-scp-${process.pid}-${Date.now()}.tmp`);
+  try {
+    fs.writeFileSync(tmp, content);
+  } catch (e) {
+    return { ok: false, error: 'local_tmp_failed', detail: e && e.message, via: 'system-ssh' };
+  }
+  const port = opts.port || 22;
+  const args = ['-P', String(port), '-q'];
+  if ((opts.auth_method === 'key' || (!opts.auth_method && opts.key_file)) && opts.key_file) {
+    args.push('-i', String(opts.key_file));
+  }
+  args.push(tmp, `${opts.user}@${opts.host}:${opts.remotePath}`);
+  const t0 = Date.now();
+  const r = await _run(probe.path, args, Math.max(10000, Math.min(300000, Number(opts.timeout_ms) || 60000)));
+  try { fs.unlinkSync(tmp); } catch { /* noop */ }
+  if (r.ok) {
+    return { ok: true, bytes: content.length, remotePath: opts.remotePath, via: 'system-ssh', ms: Date.now() - t0 };
+  }
+  const classified = _classifySystemSshError(r);
+  return { ok: false, error: classified.error, detail: classified.detail, via: 'system-ssh', ms: Date.now() - t0 };
+}
+
+/** List directory entries via `ls -lA --time-style=long-iso`, parsed
+ *  into the same shape as the sftp readdir path. */
+async function listViaLs(opts) {
+  const cmd = `ls -lA --time-style=long-iso -- ${shellQuote(opts.remotePath)}`;
+  const r = await execViaSystemSsh({ ...opts, command: cmd });
+  if (!r.ok) {
+    if (/No such file or directory|cannot access/i.test(String(r.stderr || r.detail || ''))) {
+      return { ok: false, error: 'not_found', detail: `No such directory: ${opts.remotePath}`, via: 'system-ssh' };
+    }
+    return { ok: false, error: r.error, detail: r.detail, via: 'system-ssh' };
+  }
+  const entries = [];
+  for (const line of String(r.stdout || '').split('\n')) {
+    if (!line || line.startsWith('total ')) continue;
+    // drwxr-xr-x 2 demo demo 4096 2026-07-29 14:47 name [-> target]
+    const m = /^([dl-])[rwxstST-]{9}\s+\S+\s+\S+\s+\S+\s+(\d+)\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2})\s+(.+)$/.exec(line);
+    if (!m) continue;
+    const isDir = m[1] === 'd';
+    let name = m[5];
+    if (name.includes(' -> ')) name = name.slice(0, name.indexOf(' -> '));
+    if (!name || name === '.' || name === '..') continue;
+    const mtime = Date.parse(`${m[3]}T${m[4]}:00`);
+    entries.push({ name, type: isDir ? 'dir' : 'file', size: isDir ? 0 : Number(m[2]) || 0, mtime: Number.isFinite(mtime) ? Math.floor(mtime / 1000) : null });
+  }
+  entries.sort((a, b) => (a.type !== b.type ? (a.type === 'dir' ? -1 : 1) : a.name.localeCompare(b.name)));
+  return { ok: true, entries, via: 'system-ssh' };
+}
+
+/** Read a remote file via `head -c`, size-capped like the sftp path. */
+async function readViaCat(opts) {
+  const maxBytes = Number.isFinite(opts.maxBytes) && opts.maxBytes > 0
+    ? Math.min(opts.maxBytes, 50 * 1024 * 1024)
+    : 5 * 1024 * 1024;
+  // Stat first for the too_large contract + is_directory distinction.
+  // %A (perms, no spaces) + %s (size) — %F expands to "regular file"
+  // (two words) and breaks naive splitting.
+  const st = await execViaSystemSsh({ ...opts, command: `stat -c '%A %s' -- ${shellQuote(opts.remotePath)}` });
+  if (!st.ok) {
+    if (/No such file or directory|cannot stat/i.test(String(st.stderr || st.detail || ''))) {
+      return { ok: false, error: 'not_found', detail: `No such file: ${opts.remotePath}`, via: 'system-ssh' };
+    }
+    return { ok: false, error: st.error, detail: st.detail, via: 'system-ssh' };
+  }
+  const parts = String(st.stdout || '').trim().split(' ');
+  const isDir = (parts[0] || '').startsWith('d');
+  const size = Number(parts[1]) || 0;
+  if (isDir) {
+    return { ok: false, error: 'is_directory', detail: 'path is a directory', via: 'system-ssh' };
+  }
+  if (size > maxBytes) {
+    return { ok: false, error: 'too_large', detail: `file is ${size} bytes (max ${maxBytes})`, size, via: 'system-ssh' };
+  }
+  // Text path: plain cat (fast). Binary-safe fallback: base64 wrap when
+  // the payload is not valid UTF-8.
+  const r = await execViaSystemSsh({ ...opts, command: `head -c ${maxBytes} -- ${shellQuote(opts.remotePath)}` });
+  if (!r.ok) return { ok: false, error: r.error, detail: r.detail, via: 'system-ssh' };
+  const text = String(r.stdout || '');
+  return { ok: true, content: Buffer.from(text, 'utf8'), size, via: 'system-ssh' };
+}
+
+function shellQuote(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+module.exports = { execViaSystemSsh, openViaSystemSsh, probeSsh, writeViaScp, listViaLs, readViaCat };
