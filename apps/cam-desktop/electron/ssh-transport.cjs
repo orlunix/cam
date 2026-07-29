@@ -819,6 +819,18 @@ function poolStats() {
  */
 async function openTerminalChannel(opts, hooks = {}) {
   if (_override) return _override({ ...opts, operation: 'openTerminalChannel' }, hooks);
+  // Per-node driver: 'system' attaches via the OS ssh client with the
+  // same contract ({ok, dispose, write, resize}) as the built-in path.
+  if (opts && opts.ssh_driver === 'system') {
+    try {
+      _log(`attach via system-ssh ${opts.user}@${opts.host}:${opts.port || 22}: ${String(opts.command || '').slice(0, 60)}`);
+      const r = await _systemSsh.openViaSystemSsh(opts, hooks);
+      _log(`attach via system-ssh ${opts.host}:${opts.port || 22} ${r.ok ? 'ok' : `failed: ${r.error}`}`);
+      return r;
+    } catch (e) {
+      return { ok: false, error: 'system_ssh_failed', detail: e && e.message || String(e), via: 'system-ssh' };
+    }
+  }
   if (!opts || !opts.host || !opts.user) {
     return { ok: false, error: 'invalid_args', detail: 'host and user are required' };
   }
