@@ -262,6 +262,9 @@ ok("System OpenSSH driver: isolated module, strict 'system' gate, form dropdown"
     && !transport.includes("opts.ssh_fallback")
     && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "desktop.html"), "utf8").includes('id="nodes-add-ssh-driver"')
     && hub.includes("opts.ssh_driver = 'system'"));
+ok("Edit Host repopulates the exec driver + system-ssh execs are logged",
+  fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "shared", "nodes-mode.js"), "utf8").includes("fSshDriver.value = m.ssh_driver === 'system' ? 'system' : 'ssh2'")
+    && transport.includes("exec via system-ssh"));
 ok("tmux discovery queue wait is bounded (15s) with self-release of abandoned links",
   main.includes("Promise.race([") && main.includes("tmux discovery queue wait exceeded 15s")
     && main.includes("void discoveryBeginP.then((releaseFn)"));
