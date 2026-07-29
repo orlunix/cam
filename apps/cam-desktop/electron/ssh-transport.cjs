@@ -674,7 +674,11 @@ async function writeRemoteFile(opts) {
 async function listRemoteFiles(opts) {
   if (_override) return _override({ ...opts, operation: 'listRemoteFiles' });
   const sd = _systemDriver(opts);
-  if (sd) return sd.list(opts);
+  if (sd) {
+    const r = await sd.list(opts);
+    _log(`list via system-ssh ${opts.host}:${opts.port || 22} ${r.ok ? `ok ${(r.entries || []).length} entries` : `failed: ${r.error}`}: ${opts.remotePath}`);
+    return r;
+  }
   if (!opts || typeof opts.remotePath !== 'string' || !opts.remotePath) {
     return { ok: false, error: 'invalid_args', detail: 'remotePath is required' };
   }
@@ -725,7 +729,11 @@ async function listRemoteFiles(opts) {
 async function readRemoteFile(opts) {
   if (_override) return _override({ ...opts, operation: 'readRemoteFile' });
   const sd = _systemDriver(opts);
-  if (sd) return sd.read(opts);
+  if (sd) {
+    const r = await sd.read(opts);
+    _log(`read via system-ssh ${opts.host}:${opts.port || 22} ${r.ok ? `ok ${(r.content || []).length}B` : `failed: ${r.error}`}: ${opts.remotePath}`);
+    return r;
+  }
   if (!opts || typeof opts.remotePath !== 'string' || !opts.remotePath) {
     return { ok: false, error: 'invalid_args', detail: 'remotePath is required' };
   }
