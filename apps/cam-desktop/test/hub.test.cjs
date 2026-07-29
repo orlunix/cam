@@ -334,6 +334,12 @@ async function main() {
   r = await request('PUT', '/api/contexts/drv01', { ssh_driver: 'ssh2' });
   eq('ssh_driver reset to ssh2 removes field', !(r.body && r.body.machine && r.body.machine.ssh_driver), true);
 
+  // sync-status endpoint: 404 for unknown, shape for known context
+  r = await request('GET', '/api/contexts/drv01/sync-status');
+  eq('sync-status ok shape', r.status === 200 && r.body && r.body.ok === true && 'progress' in r.body, true);
+  r = await request('GET', '/api/contexts/nonexistent-ctx/sync-status');
+  eq('sync-status unknown context 404', r.status, 404);
+
   // ── Heal endpoint: runs selected camc ops sequentially, whitelist ──
   {
     let r0 = await request('POST', '/api/contexts', {

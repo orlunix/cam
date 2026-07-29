@@ -406,6 +406,21 @@ export function mountNodesMode({
     lastSync.set(syncKey, { ts: Date.now(), status: 'running' });
     render();
     let resp = null;
+    // Live step progress while the sync request is in flight — without
+    // this a 30-120s slow-link sync looks frozen ("did it hang?").
+    const statusKey = ctx.id || ctx.name;
+    const pollT0 = Date.now();
+    const stepPoller = setInterval(async () => {
+      try {
+        const r = await api.syncStatus(statusKey);
+        const p = r && r.progress;
+        if (p && p.step) {
+          const elapsed = Math.max(0, Math.round((Date.now() - (p.since || pollT0)) / 1000));
+          lastSync.set(syncKey, { ts: Date.now(), status: 'running', code: p.step, detail: `${p.step}${p.detail ? ` (${p.detail})` : ''} · ${elapsed}s` });
+          render();
+        }
+      } catch (_) {}
+    }, 1500);
     try {
       if (typeof ensureHubForSave === 'function') {
         await ensureHubForSave();
@@ -414,7 +429,9 @@ export function mountNodesMode({
       }
       const hints = contextSyncHints(ctx);
       resp = await api.syncContext(hints.id || ctx.name, hints);
+      clearInterval(stepPoller);
     } catch (err) {
+      clearInterval(stepPoller);
       const msg  = (err && err.message) || String(err);
       let code = err && err.status === 501 ? 'not_implemented' : 'exception';
       if (err && err.status === 404) code = 'not_found';
