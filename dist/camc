@@ -700,8 +700,8 @@ import uuid
 # Constants and logging
 # ===========================================================================
 
-__version__ = "1.2.19"
-__build__ = "e0b52f1-dirty 2026-07-27 01:21"
+__version__ = "1.2.22"
+__build__ = "b2f850b-dirty 2026-07-28 06:17"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1126,7 +1126,7 @@ busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
 # done_pattern: task just finished (e.g. "Crunched for 36s", "Cogitated for 1m 8s")
 done_pattern = "ed\\s+for\\s+\\d+[smh]"
 confirm_cooldown = 5.0        # seconds between auto-confirm attempts
-confirm_recent_lines = 20
+confirm_recent_lines = 8
 confirm_sleep = 0.5           # sleep after sending confirmation
 health_check_interval = 15    # seconds between tmux alive checks
 idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle
@@ -1243,7 +1243,8 @@ send_enter = false
 # Codex shows "• Working (7s • esc to interrupt)" while busy
 busy_pattern = "Working \\(\\d+s"
 confirm_cooldown = 5.0
-confirm_recent_lines = 20
+confirm_recent_lines = 8
+confirm_stuck_recent_lines = 40
 confirm_sleep = 0.5
 health_check_interval = 15
 idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle
@@ -1346,7 +1347,7 @@ send_enter = false
 # false positives (e.g. "promptengineering.org", "testing.py").
 busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
 confirm_cooldown = 5.0
-confirm_recent_lines = 20
+confirm_recent_lines = 8
 confirm_sleep = 0.5
 health_check_interval = 15
 idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle
@@ -1398,7 +1399,7 @@ response = ""
 send_enter = true
 
 [monitor]
-confirm_recent_lines = 20
+confirm_recent_lines = 8
 """,
     "codex.boot.toml": r"""# Codex boot — first-run trust / directory prompts during initializing only.
 
@@ -1430,7 +1431,8 @@ response = ""
 send_enter = true
 
 [monitor]
-confirm_recent_lines = 20
+confirm_recent_lines = 8
+confirm_stuck_recent_lines = 40
 """,
     "cursor.boot.toml": r"""# Cursor Agent boot — workspace trust during initializing only.
 
@@ -1450,7 +1452,7 @@ response = "a"
 send_enter = false
 
 [monitor]
-confirm_recent_lines = 20
+confirm_recent_lines = 8
 """,
 }
 
@@ -1696,7 +1698,13 @@ class AdapterConfig(object):
         dp = mon_cfg.get("done_pattern")
         self.done_pattern = compile_pattern(dp, mon_cfg.get("done_flags")) if dp else None
         self.confirm_cooldown = float(mon_cfg.get("confirm_cooldown", 5.0))
-        self.confirm_recent_lines = int(mon_cfg.get("confirm_recent_lines", 8))
+        self.confirm_recent_lines = min(
+            8, max(1, int(mon_cfg.get("confirm_recent_lines", 8))))
+        # Second-pass window after a screen has remained stable.  Keep the
+        # primary confirmation window small, but search this wider tail for
+        # queued tool dialogs that have scrolled just above it.
+        self.confirm_stuck_recent_lines = int(
+            mon_cfg.get("confirm_stuck_recent_lines", 40))
         self.confirm_sleep = float(mon_cfg.get("confirm_sleep", 0.5))
         self.health_check_interval = float(mon_cfg.get("health_check_interval", 15))
         # Idle stability threshold (hash0 unchanged this long → idle).
@@ -3321,13 +3329,16 @@ def _find_cursor_line(lines):
     return None
 
 
-def _active_ui_lines(output, config):
+def _active_ui_lines(output, config, recent_lines=None):
     """Return the small visible UI region where prompts and menus live."""
-    configured = getattr(config, "confirm_recent_lines", _ACTIVE_UI_LINES)
+    configured = (recent_lines if recent_lines is not None
+                  else getattr(config, "confirm_recent_lines", _ACTIVE_UI_LINES))
     try:
-        limit = min(_ACTIVE_UI_LINES, max(1, int(configured)))
+        limit = max(1, int(configured))
+        if recent_lines is None:
+            limit = min(_ACTIVE_UI_LINES, limit)
     except (TypeError, ValueError):
-        limit = _ACTIVE_UI_LINES
+        limit = recent_lines if recent_lines is not None else _ACTIVE_UI_LINES
     return [line for line in output.splitlines() if line.strip()][-limit:]
 
 
@@ -3396,7 +3407,8 @@ def detect_state(output, config):
         return None
 
 
-def should_auto_confirm(output, config, last_response="", prev_output=""):
+def should_auto_confirm(output, config, last_response="", prev_output="",
+                        recent_lines=None):
     if config.strip_ansi:
         output = strip_ansi(output)
     # Input-box guard. Three conditions in has_input_cursor: bare
@@ -3410,7 +3422,7 @@ def should_auto_confirm(output, config, last_response="", prev_output=""):
     # appear at the bottom of the screen.  Matching the full output causes
     # false positives when the agent's *response* contains trigger text
     # (e.g. a table mentioning "1. Yes").
-    recent = "\n".join(_active_ui_lines(clean, config))
+    recent = "\n".join(_active_ui_lines(clean, config, recent_lines))
     for pattern, response, send_enter in config.confirm_rules:
         m = pattern.search(recent)
         if m:
@@ -3479,12 +3491,13 @@ def is_ready_for_input(output, config):
     return bool(config.ready_pattern.search(active))
 
 
-def should_boot_confirm(output, config, last_response="", prev_output=""):
+def should_boot_confirm(output, config, last_response="", prev_output="",
+                        recent_lines=None):
     """Boot-phase confirm rules — no input-cursor guard (onboarding menus)."""
     if config.strip_ansi:
         output = strip_ansi(output)
     clean = clean_for_confirm(output)
-    recent = "\n".join(_active_ui_lines(clean, config))
+    recent = "\n".join(_active_ui_lines(clean, config, recent_lines))
     for pattern, response, send_enter in config.confirm_rules:
         m = pattern.search(recent)
         if m:
@@ -3493,11 +3506,12 @@ def should_boot_confirm(output, config, last_response="", prev_output=""):
 
 
 def should_confirm_initializing(output, boot_config, tool_config,
-                                last_response="", prev_output=""):
+                                last_response="", prev_output="", recent_lines=None):
     """During initializing: boot.toml first, then tool.toml [[confirm]]."""
     if boot_config:
         hit = should_boot_confirm(
-            output, boot_config, last_response=last_response, prev_output=prev_output)
+            output, boot_config, last_response=last_response, prev_output=prev_output,
+            recent_lines=recent_lines)
         if hit:
             return hit, boot_config
     if tool_config:
@@ -3505,7 +3519,8 @@ def should_confirm_initializing(output, boot_config, tool_config,
         # changes its active cursor line when rendering `1. Yes`; the normal
         # runtime input guard would mistake that transition for typing.
         hit = should_boot_confirm(
-            output, tool_config, last_response=last_response, prev_output=prev_output)
+            output, tool_config, last_response=last_response, prev_output=prev_output,
+            recent_lines=recent_lines)
         if hit:
             return hit, tool_config
     return None, tool_config
@@ -5110,6 +5125,30 @@ class AutoConfirmationFeature(MonitorFeature):
                 snap.output, runtime.config,
                 last_response=runtime.last_confirm_response,
                 prev_output=runtime.prev_output or "")
+        if not confirm and snap.idle_for >= 15.0:
+            stuck_lines = max(
+                int(getattr(runtime.config, "confirm_stuck_recent_lines", 0) or 0),
+                int(getattr(runtime.boot_config, "confirm_stuck_recent_lines", 0) or 0),
+            )
+            if stuck_lines > 8:
+                if init_phase:
+                    # A normal composer makes an older boot menu unsafe to
+                    # confirm from the expanded window.
+                    if not has_input_cursor(
+                            snap.output, last_response=runtime.last_confirm_response,
+                            prev_output=runtime.prev_output or ""):
+                        confirm, rule_cfg = should_confirm_initializing(
+                            snap.output, runtime.boot_config, runtime.config,
+                            last_response=runtime.last_confirm_response,
+                            prev_output=runtime.prev_output or "",
+                            recent_lines=stuck_lines)
+                        cfg = rule_cfg
+                else:
+                    confirm = should_auto_confirm(
+                        snap.output, runtime.config,
+                        last_response=runtime.last_confirm_response,
+                        prev_output=runtime.prev_output or "",
+                        recent_lines=stuck_lines)
         if not confirm:
             return actions
         response, send_enter, pat_str, matched = confirm
