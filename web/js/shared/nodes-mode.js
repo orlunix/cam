@@ -1530,6 +1530,7 @@ function mountNodesActions({
       fPath.dataset.autofill = '';
     }
     if (fAuth) fAuth.value = m.auth_method || (m.key_file ? 'key' : 'agent');
+    if (fSshDriver) fSshDriver.value = m.ssh_driver === 'system' ? 'system' : 'ssh2';
     if (fKey) fKey.value = fAuth && fAuth.value === 'key' ? (m.key_file || '') : '';
     if (fEnv) fEnv.value = m.env_setup || '';
     if (fPassphrase) fPassphrase.value = '';
