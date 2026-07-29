@@ -155,5 +155,9 @@ ok("ssh-config parser strips quotes and resolves relative IdentityFile against ~
       && nodesSrc.includes("hostBody.remember_password = true"));
 }
 
+ok("direct API client gives sync/heal/upload a slow-op timeout (was hardcoded 15s)",
+  fs.readFileSync(path.join(root, "web", "js", "api.js"), "utf8").includes("reqTimeoutMs = slowOp ? 120000 : 15000")
+    && fs.readFileSync(path.join(root, "web", "js", "api.js"), "utf8").includes("request timed out after ${Math.round(reqTimeoutMs / 1000)}s"));
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exitCode = fail ? 1 : 0;
