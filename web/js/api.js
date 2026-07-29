@@ -297,6 +297,16 @@ export class CamApi {
       const raw = e && (e.name === 'AbortError' || e.name === 'TimeoutError')
         ? `request timed out after ${Math.round(reqTimeoutMs / 1000)}s (${this.serverUrl})`
         : (e?.message || String(e));
+      // Surface frontend aborts in the diag log: the backend op may still
+      // complete after the renderer gave up, and without this line the
+      // mismatch (UI error vs hub success) is invisible.
+      if (e && (e.name === 'AbortError' || e.name === 'TimeoutError')) {
+        try {
+          if (window.CamBridge && typeof window.CamBridge.diagLog === 'function') {
+            window.CamBridge.diagLog(`[api] ${method} ${path} aborted by frontend after ${Math.round(reqTimeoutMs / 1000)}s`);
+          }
+        } catch (_) {}
+      }
       if (/failed to fetch|networkerror|network error|load failed/i.test(raw)) {
         const err = new Error(
           `Local Hub unreachable at ${this.serverUrl}. ` +
