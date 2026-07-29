@@ -545,6 +545,12 @@ async function execRemote(opts) {
       return { ok: false, error: 'system_ssh_failed', detail: e && e.message || String(e), via: 'system-ssh' };
     }
   }
+  const _execT0 = Date.now();
+  const _execCmd = String(opts.command || '').slice(0, 80);
+  const _execDone = (r) => {
+    _log(`exec ${opts.host}:${opts.port || 22} ${r && r.ok ? 'ok' : `failed: ${(r && r.error) || '?'}`} ${Date.now() - _execT0}ms: ${_execCmd}`);
+    return r;
+  };
   if (!opts || typeof opts.command !== 'string' || !opts.command) {
     return { ok: false, error: 'invalid_args', detail: 'command is required' };
   }
@@ -597,9 +603,9 @@ async function execRemote(opts) {
   if (!preserveConnectionTimeout && _isRetryableChannelError(first) && first.timings && first.timings.pooled) {
     const second = await _retryOnceAfterPoolDrop(opts, 'exec_retry_after_channel_error', run);
     if (second && second.timings) second.timings.retried = true;
-    return second;
+    return _execDone(second);
   }
-  return first;
+  return _execDone(first);
 }
 
 async function writeRemoteFile(opts) {
