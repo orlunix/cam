@@ -113,6 +113,12 @@ const state = {
   storePath:  null,
   outputCaptureCache: new Map(),
   remoteCamcReadyCache: new Map(),
+  // Live sync step progress per context id — written by _syncContextAgents
+  // / _ensureRemoteCamc, read by GET /api/contexts/:name/sync-status,
+  // cleared when a sync finishes. Lets the UI show real progress
+  // (checking/uploading/listing) during long syncs instead of a frozen
+  // "Syncing…" line.
+  syncProgress: new Map(),
   agentSyncInFlight: false,
   lastAgentSyncAt: 0,
 };
@@ -925,6 +931,10 @@ async function _syncContextAgents(ctx, overrides = {}) {
     key_file:    m.key_file || '',
     timeout_ms:  SYNC_DEFAULT_TIMEOUT_MS,
   };
+  // Per-node exec driver (see _sshBaseOptsForContext): sync builds its
+  // opts inline here, so the field must be carried explicitly — a
+  // system-driver node would otherwise silently sync over ssh2.
+  if (m.ssh_driver === 'system') baseOpts.ssh_driver = 'system';
   // Decrypt the stored credential just before handing it to the
   // transport. Stays main-process-only. One-shot overrides (CLI
   // debug path) take precedence over the persisted credential and
@@ -952,8 +962,11 @@ async function _syncContextAgents(ctx, overrides = {}) {
   // Bootstrap, don't just check: a missing or older remote camc is
   // uploaded here (version rule), so Sync Host works on fresh/cleaned
   // hosts instead of failing with camc_missing.
+  const ctxId = String(ctx.id || '');
+  if (ctxId) { baseOpts.__ctxId = ctxId; _syncStep(ctxId, 'connecting'); }
   const ready = await _ensureRemoteCamc(baseOpts);
   if (!ready.ok) {
+    if (ctxId) _syncStepDone(ctxId);
     pushLog('warn', `sync ${ctx.name} failed: ${ready.error}`);
     return {
       ok:      false,
@@ -963,8 +976,10 @@ async function _syncContextAgents(ctx, overrides = {}) {
     };
   }
 
+  if (ctxId) _syncStep(ctxId, 'listing agents');
   const res = await _sshTransport.execRemote({ ...baseOpts, command: `${REMOTE_CAMC} --json list` });
   if (!res || !res.ok) {
+    if (ctxId) _syncStepDone(ctxId);
     const err = (res || {});
     let code = err.error || 'exec_failed';
     if (code === 'remote_nonzero' && /not found|No such file/i.test(err.detail || err.stderr || '')) {
@@ -1004,6 +1019,7 @@ async function _syncContextAgents(ctx, overrides = {}) {
     .map(r => _normalizeAgent(r, ctx))
     .filter(r => r && r.id);
 
+  if (ctxId) _syncStep(ctxId, 'importing', `${normalized.length} agent(s)`);
   // Remember the previous count so we can report updated/unchanged.
   const prev = (state.store && state.store.agents)
     ? state.store.agents.filter(a => (a.context_name || '') === ctx.name)
@@ -1030,6 +1046,7 @@ async function _syncContextAgents(ctx, overrides = {}) {
   const status = same ? 'unchanged' : 'updated';
 
   pushLog('info', `sync ${ctx.name}: ${status} (${normalized.length} agent(s))`);
+  if (ctxId) _syncStepDone(ctxId);
   return {
     ok:       true,
     imported: normalized.length,
@@ -1611,6 +1628,17 @@ async function _checkRemoteCamc(baseOpts) {
   };
 }
 
+function _syncStep(ctxId, step, detail = '') {
+  try {
+    if (!state.syncProgress) return;
+    const prev = state.syncProgress.get(ctxId);
+    state.syncProgress.set(ctxId, { step, detail, since: (prev && prev.since) || Date.now(), at: Date.now() });
+  } catch (_) {}
+}
+function _syncStepDone(ctxId) {
+  try { state.syncProgress && state.syncProgress.delete(ctxId); } catch (_) {}
+}
+
 async function _ensureRemoteCamc(baseOpts, { force = false } = {}) {
   // Test stubs used by source smokes may not implement uploads. In
   // that case, assume the stub has made camc available and keep the
@@ -1627,6 +1655,8 @@ async function _ensureRemoteCamc(baseOpts, { force = false } = {}) {
     return { ok: true, present: true, cached: true, hash: local.hash };
   }
 
+  const ctxId = baseOpts.__ctxId || null;
+  if (ctxId) _syncStep(ctxId, 'checking camc');
   const remoteHash = await _sshTransport.execRemote({
     ...baseOpts,
     command: `bash -c 'test -x ${REMOTE_CAMC} && ${REMOTE_CAMC} version 2>/dev/null | head -1'`,
@@ -1650,6 +1680,7 @@ async function _ensureRemoteCamc(baseOpts, { force = false } = {}) {
     return { ok: false, error: mkdir && mkdir.error || 'remote_mkdir_failed', detail: mkdir && (mkdir.detail || mkdir.stderr) || 'mkdir -p ~/.cam failed' };
   }
 
+  if (ctxId) _syncStep(ctxId, 'uploading camc', `${Math.round(local.content.length / 1024)}KB`);
   const uploaded = await _sshTransport.writeRemoteFile({
     ...baseOpts,
     remotePath: REMOTE_CAMC_UPLOAD_PATH,
@@ -3866,9 +3897,15 @@ async function handle(req, res) {
       pushLog('info', `context deleted: ${ctxName}`);
       return sendJson(res, 200, { ok: true });
     }
-    if (method === 'POST' && sub === '/sync') {
+    // Live sync step progress (GET while a sync is running): lets the
+    // UI show checking/uploading/listing/importing during long syncs.
+    if (method === 'GET' && sub === '/sync-status') {
       if (!existing) return send404(res);
-      // Optional one-shot credential overrides for debugging via the
+      const p = (state.syncProgress && state.syncProgress.get(String(existing.id))) || null;
+      return sendJson(res, 200, { ok: true, progress: p });
+    }
+    if (method === 'POST' && sub === '/sync') {
+      if (!existing) return send404(res);      // Optional one-shot credential overrides for debugging via the
       // source `camui` CLI (where Electron safeStorage isn't
       // available). Body is optional; renderer never sends one.
       // Overrides are kept in memory only for the duration of the
