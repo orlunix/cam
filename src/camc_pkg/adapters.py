@@ -258,7 +258,13 @@ class AdapterConfig(object):
         dp = mon_cfg.get("done_pattern")
         self.done_pattern = compile_pattern(dp, mon_cfg.get("done_flags")) if dp else None
         self.confirm_cooldown = float(mon_cfg.get("confirm_cooldown", 5.0))
-        self.confirm_recent_lines = int(mon_cfg.get("confirm_recent_lines", 8))
+        self.confirm_recent_lines = min(
+            8, max(1, int(mon_cfg.get("confirm_recent_lines", 8))))
+        # Second-pass window after a screen has remained stable.  Keep the
+        # primary confirmation window small, but search this wider tail for
+        # queued tool dialogs that have scrolled just above it.
+        self.confirm_stuck_recent_lines = int(
+            mon_cfg.get("confirm_stuck_recent_lines", 40))
         self.confirm_sleep = float(mon_cfg.get("confirm_sleep", 0.5))
         self.health_check_interval = float(mon_cfg.get("health_check_interval", 15))
         # Idle stability threshold (hash0 unchanged this long → idle).
