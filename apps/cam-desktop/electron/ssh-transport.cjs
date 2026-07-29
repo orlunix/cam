@@ -537,7 +537,10 @@ async function execRemote(opts) {
   // byte identical to before. Terminal attach is unaffected either way.
   if (opts && opts.ssh_driver === 'system') {
     try {
-      return await _systemSsh.execViaSystemSsh(opts);
+      _log(`exec via system-ssh ${opts.user}@${opts.host}:${opts.port || 22}: ${String(opts.command || '').slice(0, 80)}`);
+      const r = await _systemSsh.execViaSystemSsh(opts);
+      _log(`exec via system-ssh ${opts.host}:${opts.port || 22} ${r.ok ? 'ok' : `failed: ${r.error}`}`);
+      return r;
     } catch (e) {
       return { ok: false, error: 'system_ssh_failed', detail: e && e.message || String(e), via: 'system-ssh' };
     }
