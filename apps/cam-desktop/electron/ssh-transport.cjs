@@ -617,6 +617,11 @@ async function writeRemoteFile(opts) {
     return { ok: false, error: 'invalid_args', detail: 'content is required' };
   }
   const content = Buffer.isBuffer(opts.content) ? opts.content : Buffer.from(String(opts.content), 'utf8');
+  const _upT0 = Date.now();
+  const _upDone = (r) => {
+    _log(`upload ${opts.host}:${opts.port || 22} ${r && r.ok ? `ok ${content.length}B` : `failed: ${(r && r.error) || '?'}`} ${Date.now() - _upT0}ms: ${opts.remotePath}`);
+    return r;
+  };
   const run = () => _withPooledClient(opts, (client, finish) => {
     client.sftp((err, sftp) => {
       if (err) return finish({ ok: false, error: 'sftp_failed', detail: err.message });
@@ -631,10 +636,10 @@ async function writeRemoteFile(opts) {
   if (_isRetryableChannelError(first) && first.timings && first.timings.pooled) {
     const second = await _retryOnceAfterPoolDrop(opts, 'sftp_retry_after_channel_error', run);
     if (second && second.timings) second.timings.retried = true;
-    return second;
+    return _upDone(second);
   }
   if (_isRetryableChannelError(first)) _dropEntryForOpts(opts, 'sftp_channel_error');
-  return first;
+  return _upDone(first);
 }
 
 /* List directory entries via SFTP, returning a sorted (dirs-first
