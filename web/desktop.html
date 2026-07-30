@@ -842,13 +842,6 @@
                   <option value="agent">SSH agent / default</option>
                 </select>
               </label>
-              <label data-ctx-edit-readonly="1" data-add-ctx-hide="1">Exec connection
-                <select id="nodes-add-ssh-driver">
-                  <option value="ssh2">Built-in (fast, pooled)</option>
-                  <option value="system">System OpenSSH (ProxyJump / certificates / GSSAPI)</option>
-                </select>
-                <span class="form-hint">System OpenSSH runs each command through the OS ssh client — slower (no pooling) but supports everything in ~/.ssh/config (ProxyJump, certificates, GSSAPI). Key/agent auth only.</span>
-              </label>
 
               <div class="nodes-auth-section" id="nodes-auth-key" data-auth="key" data-ctx-edit-hide="1" data-add-ctx-hide="1">
                 <label>Private key file
