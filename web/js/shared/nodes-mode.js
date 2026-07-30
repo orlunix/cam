@@ -410,9 +410,17 @@ export function mountNodesMode({
     // this a 30-120s slow-link sync looks frozen ("did it hang?").
     const statusKey = ctx.id || ctx.name;
     const pollT0 = Date.now();
+    // `settled` guards the in-flight-poll race: when the sync request
+    // finishes (success OR the 300s frontend abort), clearInterval only
+    // stops FUTURE polls — a poll already awaiting syncStatus can still
+    // resolve afterwards and would overwrite the final error/success
+    // entry with a stale 'running', leaving the UI stuck at "syncing…"
+    // forever (nothing updates that entry again).
+    let settled = false;
     const stepPoller = setInterval(async () => {
       try {
         const r = await api.syncStatus(statusKey);
+        if (settled) return;
         const p = r && r.progress;
         if (p && p.step) {
           const elapsed = Math.max(0, Math.round((Date.now() - (p.since || pollT0)) / 1000));
@@ -429,8 +437,10 @@ export function mountNodesMode({
       }
       const hints = contextSyncHints(ctx);
       resp = await api.syncContext(hints.id || ctx.name, hints);
+      settled = true;
       clearInterval(stepPoller);
     } catch (err) {
+      settled = true;
       clearInterval(stepPoller);
       const msg  = (err && err.message) || String(err);
       let code = err && err.status === 501 ? 'not_implemented' : 'exception';
@@ -1174,7 +1184,6 @@ function mountNodesActions({
   const fPort       = panel.querySelector('#nodes-add-port');
   const fPath       = panel.querySelector('#nodes-add-path');
   const fAuth       = panel.querySelector('#nodes-add-auth');
-  const fSshDriver  = panel.querySelector('#nodes-add-ssh-driver');
   const fKey        = panel.querySelector('#nodes-add-keyfile');
   const fBrowse     = panel.querySelector('#nodes-add-browse');
   const fPassphrase = panel.querySelector('#nodes-add-passphrase');
@@ -1547,7 +1556,6 @@ function mountNodesActions({
       fPath.dataset.autofill = '';
     }
     if (fAuth) fAuth.value = m.auth_method || (m.key_file ? 'key' : 'agent');
-    if (fSshDriver) fSshDriver.value = m.ssh_driver === 'system' ? 'system' : 'ssh2';
     if (fKey) fKey.value = fAuth && fAuth.value === 'key' ? (m.key_file || '') : '';
     if (fEnv) fEnv.value = m.env_setup || '';
     if (fPassphrase) fPassphrase.value = '';
@@ -1731,7 +1739,6 @@ function mountNodesActions({
     if (fUser) fUser.value = nodeM.user || '';
     if (fPort) fPort.value = String(nodeM.port || 22);
     if (fAuth) fAuth.value = nodeM.auth_method || (nodeM.key_file ? 'key' : 'agent');
-    if (fSshDriver) fSshDriver.value = nodeM.ssh_driver === 'system' ? 'system' : 'ssh2';
     if (fKey)  fKey.value  = fAuth && fAuth.value === 'key' ? (nodeM.key_file || '') : '';
     if (fPassphrase) fPassphrase.value = '';
     if (fPassword)   fPassword.value   = '';
@@ -1874,8 +1881,6 @@ function mountNodesActions({
     }
 
     const hostBody = { host, user, port, auth_method: authMethod };
-    if (fSshDriver && fSshDriver.value === 'system') hostBody.ssh_driver = 'system';
-    else if (isHostEdit) hostBody.ssh_driver = 'ssh2';
     if (authMethod === 'key') {
       hostBody.key_file = fKey ? fKey.value.trim() : '';
       const pass = fPassphrase ? fPassphrase.value : '';
