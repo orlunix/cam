@@ -497,13 +497,6 @@ function buildContextRecord(body) {
     return { error: 'missing_user', detail: 'SSH contexts require host and user' };
   }
   // Per-node exec driver: 'system' (OS OpenSSH) or default built-in ssh2.
-  if (body.ssh_driver != null) {
-    const d = String(body.ssh_driver).trim().toLowerCase();
-    if (d && d !== 'ssh2' && d !== 'system') {
-      return { error: 'invalid_ssh_driver', detail: 'ssh_driver must be "ssh2" or "system"' };
-    }
-    body._ssh_driver = d === 'system' ? 'system' : '';
-  }
   const keyFile  = body.key_file  == null ? '' : String(body.key_file).trim();
   const envSetup = body.env_setup == null ? '' : String(body.env_setup).trim();
   const tags     = Array.isArray(body.tags)
@@ -556,7 +549,6 @@ function buildContextRecord(body) {
     // `password` (or `passphrase`) in the body. Useful for
     // safeStorage-less debug.
     if (allowOneShot) machine.allow_one_shot = true;
-    if (body._ssh_driver === 'system') machine.ssh_driver = 'system';
   }
 
   // Optional Remember support. Raw secret never makes it to the
@@ -656,15 +648,6 @@ function applyContextUpdate(existing, body) {
   m.type = m.host ? 'ssh' : 'local';
   if (m.type === 'ssh' && !m.user) {
     return { error: 'missing_user', detail: 'SSH contexts require host and user' };
-  }
-  // Per-node exec driver: 'system' (OS OpenSSH) or default built-in ssh2.
-  if (body.ssh_driver != null) {
-    const d = String(body.ssh_driver).trim().toLowerCase();
-    if (d && d !== 'ssh2' && d !== 'system') {
-      return { error: 'invalid_ssh_driver', detail: 'ssh_driver must be "ssh2" or "system"' };
-    }
-    if (d === 'system') m.ssh_driver = 'system';
-    else delete m.ssh_driver;
   }
 
   // Auth method change tracking: when auth_method changes, drop the
@@ -931,10 +914,6 @@ async function _syncContextAgents(ctx, overrides = {}) {
     key_file:    m.key_file || '',
     timeout_ms:  SYNC_DEFAULT_TIMEOUT_MS,
   };
-  // Per-node exec driver (see _sshBaseOptsForContext): sync builds its
-  // opts inline here, so the field must be carried explicitly — a
-  // system-driver node would otherwise silently sync over ssh2.
-  if (m.ssh_driver === 'system') baseOpts.ssh_driver = 'system';
   // Decrypt the stored credential just before handing it to the
   // transport. Stays main-process-only. One-shot overrides (CLI
   // debug path) take precedence over the persisted credential and
@@ -997,6 +976,7 @@ async function _syncContextAgents(ctx, overrides = {}) {
   let parsed;
   try { parsed = JSON.parse(res.stdout || '[]'); }
   catch (e) {
+    if (ctxId) _syncStepDone(ctxId);
     pushLog('warn', `sync ${ctx.name}: invalid JSON from remote camc`);
     return {
       ok:      false,
@@ -1006,6 +986,7 @@ async function _syncContextAgents(ctx, overrides = {}) {
     };
   }
   if (!Array.isArray(parsed)) {
+    if (ctxId) _syncStepDone(ctxId);
     return {
       ok:      false,
       error:   'invalid_json',
@@ -2266,10 +2247,6 @@ function _sshBaseOptsForContext(ctx, timeoutMs = SYNC_DEFAULT_TIMEOUT_MS) {
     key_file:    m.key_file || '',
     timeout_ms:  timeoutMs,
   };
-  // Per-node exec driver: 'system' routes this node's exec calls
-  // through the OS OpenSSH client (see electron/system-ssh.cjs).
-  // Absent = built-in ssh2 datapath, unchanged.
-  if (m.ssh_driver === 'system') opts.ssh_driver = 'system';
   if (opts.auth_method === 'password') {
     const pw = _credentialFor(ctx);
     if (pw == null || pw === '') {

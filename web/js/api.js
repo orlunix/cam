@@ -280,8 +280,17 @@ export class CamApi {
     // request — backend budgets there are 30s..120s, so the frontend
     // must not abort them at the read-side 15s. Mirror the relay
     // path's split (120s slow / 15s normal).
-    const slowOp = /\/(sync|heal|upload)(\/|$|\?)/.test(path);
-    const reqTimeoutMs = slowOp ? 120000 : 15000;
+    // Sync gets 300s: the backend sync is a CHAIN of budgeted ops
+    // (version probe + mkdir + 120s-budget upload + install + verify +
+    // list, each up to 30s) whose worst case is ~270s on ~1s-RTT links.
+    // A 120s cap aborted genuinely-progressing syncs mid-flight (and the
+    // abort does NOT cancel the hub-side sync), surfacing a fake
+    // "timed out" error while the backend would have succeeded.
+    // `/sync-status` is deliberately excluded (the char after "sync" is
+    // "-", not one of /,$,?): it stays a 15s read.
+    const isSync = /\/sync(\/|$|\?)/.test(path);
+    const slowOp = isSync || /\/(heal|upload)(\/|$|\?)/.test(path);
+    const reqTimeoutMs = isSync ? 300000 : slowOp ? 120000 : 15000;
 
     let resp;
     try {

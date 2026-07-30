@@ -320,22 +320,8 @@ async function main() {
   eq('local start refused error', r.body && r.body.error, 'local_unsupported');
   ok('local start detail has SSH guidance', /SSH server/.test((r.body && r.body.detail) || '') && /SSH node/.test((r.body && r.body.detail) || ''), r.body && r.body.detail);
 
-  // ── ssh_driver per-node field ──
-  r = await request('POST', '/api/contexts', {
-    name: 'drv01', host: '10.0.0.7', user: 'u', port: 22, auth_method: 'agent', path: '/home/u', ssh_driver: 'system',
-  });
-  eq('create context with ssh_driver=system', r.status, 201);
-  eq('ssh_driver persisted on machine', r.body && r.body.machine && r.body.machine.ssh_driver, 'system');
-  r = await request('POST', '/api/contexts', {
-    name: 'drv02', host: '10.0.0.8', user: 'u', port: 22, auth_method: 'agent', path: '/home/u', ssh_driver: 'bogus',
-  });
-  eq('invalid ssh_driver rejected', r.status, 400);
-  eq('invalid ssh_driver error', r.body && r.body.error, 'invalid_ssh_driver');
-  r = await request('PUT', '/api/contexts/drv01', { ssh_driver: 'ssh2' });
-  eq('ssh_driver reset to ssh2 removes field', !(r.body && r.body.machine && r.body.machine.ssh_driver), true);
-
   // sync-status endpoint: 404 for unknown, shape for known context
-  r = await request('GET', '/api/contexts/drv01/sync-status');
+  r = await request('GET', '/api/contexts/v6box/sync-status');
   eq('sync-status ok shape', r.status === 200 && r.body && r.body.ok === true && 'progress' in r.body, true);
   r = await request('GET', '/api/contexts/nonexistent-ctx/sync-status');
   eq('sync-status unknown context 404', r.status, 404);
