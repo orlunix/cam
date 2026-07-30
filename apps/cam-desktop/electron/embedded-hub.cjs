@@ -1683,6 +1683,12 @@ async function _ensureRemoteCamc(baseOpts, { force = false } = {}) {
   if (ctxId) _syncStep(ctxId, 'uploading camc', `${Math.round(local.content.length / 1024)}KB`);
   const uploaded = await _sshTransport.writeRemoteFile({
     ...baseOpts,
+    // The 770KB upload is the heavy op of a first sync: on NFS-backed
+    // homes over ~1s-RTT links every SFTP packet costs ~1s, so the
+    // generic op budget kills it mid-flight and the watchdog drops the
+    // whole connection (the "connects fine, dies before deploy finishes"
+    // loop). Give the upload its own 4x budget.
+    timeout_ms: 120000,
     remotePath: REMOTE_CAMC_UPLOAD_PATH,
     content: local.content,
   });
@@ -1759,6 +1765,7 @@ async function _ensureRemoteSkillm(baseOpts) {
 
   const uploaded = await _sshTransport.writeRemoteFile({
     ...baseOpts,
+    timeout_ms: 120000, // same NFS/slow-link budget as the camc upload
     remotePath: REMOTE_SKILLM_UPLOAD_PATH,
     content: local.content,
   });
