@@ -40,11 +40,11 @@ export const MOBILE_NODES_HTML = `
           Register a remote SSH node locally. Does not require Connect.
           Connect in Settings when you need agents.
         </p>
-        <label data-add-ctx-hide="1" data-ctx-edit-hide="1">Node name
-          <input type="text" id="nodes-add-nodename" placeholder="Build server" autocomplete="off">
-        </label>
         <label data-ctx-edit-readonly="1" data-add-ctx-hide="1">Host
           <input type="text" id="nodes-add-host" required placeholder="host.example.com" autocomplete="off">
+        </label>
+        <label data-add-ctx-hide="1" data-ctx-edit-hide="1">Node name (optional)
+          <input type="text" id="nodes-add-nodename" placeholder="defaults to short host" autocomplete="off">
         </label>
         <label data-ctx-edit-readonly="1" data-add-ctx-hide="1">User
           <input type="text" id="nodes-add-user" required placeholder="hren" autocomplete="off">
