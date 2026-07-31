@@ -34,7 +34,7 @@ const remotePath = idx("Remote path");
 const envSetup = idx("Env setup (optional)");
 
 ok("mobile Nodes keeps connection fields before defaulted workspace fields",
-  nodeName < host && host < user && user < port && port < auth && auth < contextName && contextName < remotePath && remotePath < envSetup,
+  host < nodeName && nodeName < user && user < port && port < auth && auth < contextName && contextName < remotePath && remotePath < envSetup,
   `order=${[nodeName, host, user, port, auth, contextName, remotePath, envSetup].join(",")}`);
 ok("mobile Nodes context name remains required", /id="nodes-add-name"[^>]*\srequired\b/.test(shell));
 ok("mobile Nodes remote path remains required", /id="nodes-add-path"[^>]*\srequired\b/.test(shell));
@@ -77,7 +77,7 @@ ok("duplicate context names use numeric index",
 // elsewhere in desktop.html.)
 const desktopHtml = fs.readFileSync(path.join(root, "web", "desktop.html"), "utf8");
 const desktopFormHtml = desktopHtml.slice(desktopHtml.indexOf('id="nodes-add-form"'));
-const desktopOrder = ["Node name", ">Host", ">User", ">Port", "Auth method", "Context name", "Remote path", "Env setup (optional)"]
+const desktopOrder = [">Host", "Node name", ">User", ">Port", "Auth method", "Context name", "Remote path", "Env setup (optional)"]
   .map((label) => {
     const i = desktopFormHtml.indexOf(label);
     ok(`desktop Nodes form contains ${label}`, i >= 0);
@@ -156,8 +156,34 @@ ok("ssh-config parser strips quotes and resolves relative IdentityFile against ~
 }
 
 ok("direct API client gives sync/heal/upload a slow-op timeout (was hardcoded 15s)",
-  fs.readFileSync(path.join(root, "web", "js", "api.js"), "utf8").includes("reqTimeoutMs = isSync ? 300000 : slowOp ? 120000 : 15000")
-    && fs.readFileSync(path.join(root, "web", "js", "api.js"), "utf8").includes("request timed out after ${Math.round(reqTimeoutMs / 1000)}s"));
+  fs.readFileSync(path.join(root, "web", "js", "api.js"), "utf8").includes("const reqTimeoutMs = slowOp ? 120000 : 15000;")
+    && fs.readFileSync(path.join(root, "web", "js", "api.js"), "utf8").includes("request timed out after ${Math.round(reqTimeoutMs / 1000)}s")
+    // context sync: 45s IDLE timeout driven by backend progress, not an absolute cap
+    && fs.readFileSync(path.join(root, "web", "js", "api.js"), "utf8").includes("const isSync = /\\/contexts\\/[^/]+\\/sync(\\/|$|\\?)/.test(path)")
+    && fs.readFileSync(path.join(root, "web", "js", "api.js"), "utf8").includes("const SYNC_IDLE_MS = 45000;")
+    && fs.readFileSync(path.join(root, "web", "js", "api.js"), "utf8").includes("_syncIdleWatchers")
+    && fs.readFileSync(path.join(root, "web", "js", "api.js"), "utf8").includes("syncHeartbeat()")
+    // the poller feeds the heartbeat only on real backend progress
+    && fs.readFileSync(path.join(root, "web", "js", "shared", "nodes-mode.js"), "utf8").includes("api.syncHeartbeat()"));
+
+// Auth select vs auth section mismatch: reopening Add Host after a
+// cancelled Edit left the select on the previous host's method while
+// the visible section was stale (mode-off toggles un-hide ALL auth
+// sections). openManage must re-apply sections on every open, and the
+// add toggle must reset the select to the HTML default (draft restore
+// on mobile still wins afterwards).
+ok("openManage always re-syncs auth sections; Add Host resets select to key (draft still wins)",
+  fs.readFileSync(path.join(root, "web", "js", "shared", "nodes-mode.js"), "utf8").includes("if (isAddHostMode()) restoreDraft();\n    // Always re-sync auth section visibility")
+    && fs.readFileSync(path.join(root, "web", "js", "shared", "nodes-mode.js"), "utf8").includes("if (fAuth) fAuth.value = 'key';\n    openManage('manual');"));
+
+// Sync Host is one SSH connection to the host: the live progress
+// (connecting/uploading %) lives on the host header (hostSync map),
+// while final results are mirrored to per-context rows.
+ok("sync live status is node-level (hostSync on host header), results mirrored per context",
+  mode.includes("const hostSync = new Map()")
+    && mode.includes("syncOneContext(primary, { hostKey: node.key })")
+    && mode.includes("hostSync.set(hostKey, entry)")
+    && mode.includes("hostSync.get(node.key)"));
 
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exitCode = fail ? 1 : 0;

@@ -2,7 +2,25 @@
  * CAM API Client — supports direct HTTP, relay HTTP proxy, and legacy relay REST-over-WS modes.
  */
 
+// In-flight context-sync idle watchers. Context sync is the one long
+// request WITH a live progress channel (the Nodes UI polls
+// GET /api/contexts/:id/sync-status every 500ms), so its frontend
+// timeout is IDLE-based, not absolute: any observed backend step
+// change (including uploading-camc percentage advances) resets the
+// timer via syncHeartbeat(); only a sync with NO progress for the
+// whole window is given up on. heal/upload/skillm-sync have no
+// progress channel, so they keep the absolute 120s slowOp budget —
+// an idle timer would kill their healthy-but-silent long ops.
+const _syncIdleWatchers = new Set();
+
 export class CamApi {
+  // Called by the Nodes sync-status poller on every observed backend
+  // progress change; resets the idle timer of every in-flight context
+  // sync (syncs are rare and user-driven, so a shared reset is fine).
+  syncHeartbeat() {
+    for (const w of _syncIdleWatchers) w.reset();
+  }
+
   constructor() {
     this.mode = 'disconnected'; // 'direct' | 'relay' | 'disconnected'
     this.serverUrl = '';
@@ -276,21 +294,41 @@ export class CamApi {
     const headers = { 'Content-Type': 'application/json' };
     if (this.token) headers['Authorization'] = `Bearer ${this.token}`;
 
-    // Slow ops (sync/heal/uploads) can legitimately outlast a read
-    // request — backend budgets there are 30s..120s, so the frontend
-    // must not abort them at the read-side 15s. Mirror the relay
-    // path's split (120s slow / 15s normal).
-    // Sync gets 300s: the backend sync is a CHAIN of budgeted ops
-    // (version probe + mkdir + 120s-budget upload + install + verify +
-    // list, each up to 30s) whose worst case is ~270s on ~1s-RTT links.
-    // A 120s cap aborted genuinely-progressing syncs mid-flight (and the
-    // abort does NOT cancel the hub-side sync), surfacing a fake
-    // "timed out" error while the backend would have succeeded.
-    // `/sync-status` is deliberately excluded (the char after "sync" is
-    // "-", not one of /,$,?): it stays a 15s read.
-    const isSync = /\/sync(\/|$|\?)/.test(path);
-    const slowOp = isSync || /\/(heal|upload)(\/|$|\?)/.test(path);
-    const reqTimeoutMs = isSync ? 300000 : slowOp ? 120000 : 15000;
+    // Slow ops (heal/uploads) can legitimately outlast a read request —
+    // backend budgets there are 30s..120s, so the frontend must not
+    // abort them at the read-side 15s. Mirror the relay path's split
+    // (120s slow / 15s normal).
+    // Context sync is different: it has a live progress channel, so it
+    // uses a 45s IDLE timeout (see _syncIdleWatchers above) instead of
+    // an absolute one. 45s comfortably covers the backend's own 30s
+    // per-op budget — any single stuck op errors out before the idle
+    // timer fires, while a progressing sync never gets aborted.
+    // `/sync-status` itself stays a 15s read (after "sync" comes "-").
+    const isSync = /\/contexts\/[^/]+\/sync(\/|$|\?)/.test(path);
+    const slowOp = isSync || /\/(sync|heal|upload)(\/|$|\?)/.test(path);
+    const SYNC_IDLE_MS = 45000;
+    const reqTimeoutMs = slowOp ? 120000 : 15000;
+
+    let syncController = null;
+    let syncWatcher = null;
+    let signal;
+    if (isSync) {
+      syncController = new AbortController();
+      syncWatcher = {
+        tm: null,
+        reset() {
+          clearTimeout(this.tm);
+          this.tm = setTimeout(() => syncController.abort(), SYNC_IDLE_MS);
+        },
+      };
+      syncWatcher.reset();
+      _syncIdleWatchers.add(syncWatcher);
+      signal = syncController.signal;
+    } else {
+      // Never let a request hang forever: an accepted-but-unanswered
+      // connection would otherwise spin the loading state indefinitely.
+      signal = AbortSignal.timeout(reqTimeoutMs);
+    }
 
     let resp;
     try {
@@ -298,21 +336,22 @@ export class CamApi {
         method,
         headers,
         body: body != null ? JSON.stringify(body) : undefined,
-        // Never let a request hang forever: an accepted-but-unanswered
-        // connection would otherwise spin the loading state indefinitely.
-        signal: AbortSignal.timeout(reqTimeoutMs),
+        signal,
       });
     } catch (e) {
-      const raw = e && (e.name === 'AbortError' || e.name === 'TimeoutError')
-        ? `request timed out after ${Math.round(reqTimeoutMs / 1000)}s (${this.serverUrl})`
+      const aborted = e && (e.name === 'AbortError' || e.name === 'TimeoutError');
+      const raw = aborted
+        ? (isSync
+            ? `sync stalled — no backend progress for ${Math.round(SYNC_IDLE_MS / 1000)}s (${this.serverUrl}). The hub may still finish in the background; check Diagnostics.`
+            : `request timed out after ${Math.round(reqTimeoutMs / 1000)}s (${this.serverUrl})`)
         : (e?.message || String(e));
       // Surface frontend aborts in the diag log: the backend op may still
       // complete after the renderer gave up, and without this line the
       // mismatch (UI error vs hub success) is invisible.
-      if (e && (e.name === 'AbortError' || e.name === 'TimeoutError')) {
+      if (aborted) {
         try {
           if (window.CamBridge && typeof window.CamBridge.diagLog === 'function') {
-            window.CamBridge.diagLog(`[api] ${method} ${path} aborted by frontend after ${Math.round(reqTimeoutMs / 1000)}s`);
+            window.CamBridge.diagLog(`[api] ${method} ${path} ${isSync ? 'idle-aborted (no progress)' : 'aborted'} by frontend after ${Math.round((isSync ? SYNC_IDLE_MS : reqTimeoutMs) / 1000)}s`);
           }
         } catch (_) {}
       }
@@ -328,6 +367,11 @@ export class CamApi {
       const err = new Error(raw);
       err.cause = e;
       throw err;
+    } finally {
+      if (syncWatcher) {
+        clearTimeout(syncWatcher.tm);
+        _syncIdleWatchers.delete(syncWatcher);
+      }
     }
 
     const text = await resp.text();

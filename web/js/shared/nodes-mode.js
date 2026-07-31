@@ -167,6 +167,13 @@ export function mountNodesMode({
   // toast disappeared.
   const lastSync = new Map();
 
+  // Per-NODE live sync status (keyed by node.key). Sync Host is one
+  // SSH connection to the host, so the live "connecting / uploading
+  // camc (x%)" progress belongs on the host header, not on any single
+  // context row. Final results are mirrored here AND into lastSync
+  // (per-context rows keep their result markers).
+  const hostSync = new Map();
+
   // Per-host heal panel state (Nodes → Heal…): {open, busy, ops:Set,
   // results:[{op,ok,code,ms,error,tail}], last:{ts, ok, text}}.
   const healState = new Map();
@@ -219,7 +226,12 @@ export function mountNodesMode({
     if (!e) return `<span class="ctx-last-sync state-never">never synced</span>`;
     const ago = fmtAgo(e.ts);
     if (e.status === 'running') {
-      return `<span class="ctx-last-sync state-checking">syncing…</span>`;
+      // Show the live step (polled from sync-status): "checking camc",
+      // "uploading camc (45% of 753KB) · 12s" — previously hardcoded to
+      // a bare "syncing…", which made the whole progress feature
+      // invisible.
+      const step = (e.detail || '').trim();
+      return `<span class="ctx-last-sync state-checking">${step ? esc(step) : 'syncing…'}</span>`;
     }
     if (e.status === 'success') {
       const imp = (typeof e.imported === 'number') ? `${e.imported} imported` : 'updated';
@@ -240,7 +252,10 @@ export function mountNodesMode({
     const e = lastSync.get(key);
     if (!e) return 'never synced';
     const ago = fmtAgo(e.ts);
-    if (e.status === 'running') return 'syncing…';
+    if (e.status === 'running') {
+      const step = (e.detail || '').replace(/\s+/g, ' ').trim();
+      return step || 'syncing…';
+    }
     if (e.status === 'success') {
       const imp = (typeof e.imported === 'number') ? `${e.imported} imported` : 'updated';
       return `${imp}, ${ago}`;
@@ -391,19 +406,30 @@ export function mountNodesMode({
     };
   }
 
-  /** Sync one context. Updates lastSync entry and re-renders. */
-  async function syncOneContext(ctx) {
+  /** Sync one context. Updates lastSync/hostSync entries and re-renders.
+   *  Live "running" states go to hostSync (node header) when hostKey is
+   *  given — Sync Host is one SSH connection, so progress is node-level;
+   *  final results are mirrored to both maps. */
+  async function syncOneContext(ctx, { hostKey = '' } = {}) {
     const syncKey = contextSyncKey(ctx);
+    const setSync = (entry) => {
+      if (entry.status === 'running' && hostKey) {
+        hostSync.set(hostKey, entry);
+        return;
+      }
+      lastSync.set(syncKey, entry);
+      if (hostKey) hostSync.set(hostKey, entry);
+    };
     if (!isContextEnabled(ctx)) {
       const name = ctx?.name || 'context';
-      lastSync.set(syncKey, {
+      setSync({
         ts: Date.now(), status: 'error', code: 'host_disabled',
         detail: 'Node is disabled — enable it in Nodes to sync',
       });
       render();
       return { ok: false, error: 'host_disabled', detail: 'Node is disabled' };
     }
-    lastSync.set(syncKey, { ts: Date.now(), status: 'running' });
+    setSync({ ts: Date.now(), status: 'running' });
     render();
     let resp = null;
     // Live step progress while the sync request is in flight — without
@@ -417,18 +443,31 @@ export function mountNodesMode({
     // entry with a stale 'running', leaving the UI stuck at "syncing…"
     // forever (nothing updates that entry again).
     let settled = false;
+    // Heartbeat signature: the BACKEND's own progress timestamp + step
+    // + detail. Only a real change counts as progress — the locally
+    // computed elapsed text always changes, so it must not feed the
+    // heartbeat (a frozen backend step would look alive forever).
+    let lastBeatKey = '';
     const stepPoller = setInterval(async () => {
       try {
         const r = await api.syncStatus(statusKey);
         if (settled) return;
         const p = r && r.progress;
         if (p && p.step) {
+          const beatKey = `${p.at || ''}|${p.step}|${p.detail || ''}`;
+          if (beatKey !== lastBeatKey) {
+            lastBeatKey = beatKey;
+            // Reset the sync request's 45s idle timer (api.js): any
+            // observed backend progress — including uploading-camc
+            // percentage advances — keeps the request alive.
+            if (typeof api.syncHeartbeat === 'function') api.syncHeartbeat();
+          }
           const elapsed = Math.max(0, Math.round((Date.now() - (p.since || pollT0)) / 1000));
-          lastSync.set(syncKey, { ts: Date.now(), status: 'running', code: p.step, detail: `${p.step}${p.detail ? ` (${p.detail})` : ''} · ${elapsed}s` });
+          setSync({ ts: Date.now(), status: 'running', code: p.step, detail: `${p.step}${p.detail ? ` (${p.detail})` : ''} · ${elapsed}s` });
           render();
         }
       } catch (_) {}
-    }, 1500);
+    }, 500); // 500ms: steps like 'listing agents' live ~1s on fast links — a 1.5s poll skipped them entirely, making the sync look like it jumped from 'connecting' straight to done.
     try {
       if (typeof ensureHubForSave === 'function') {
         await ensureHubForSave();
@@ -449,6 +488,9 @@ export function mountNodesMode({
       lastSync.set(syncKey, {
         ts: Date.now(), status: 'error', code, detail: msg, exception: msg,
       });
+      if (hostKey) hostSync.set(hostKey, {
+        ts: Date.now(), status: 'error', code, detail: msg, exception: msg,
+      });
       render();
       return { ok: false, error: code, detail: msg };
     }
@@ -460,13 +502,13 @@ export function mountNodesMode({
     const fileUnchanged = values.filter(s => s === 'unchanged').length;
 
     if (resp && resp.ok === false) {
-      lastSync.set(syncKey, {
+      setSync({
         ts: Date.now(), status: 'error',
         code: resp.error || 'failed', detail: resp.detail || '',
         imported: 0, total: resp.total || 0,
       });
     } else if (fileFailed > 0) {
-      lastSync.set(syncKey, {
+      setSync({
         ts: Date.now(), status: 'warning', code: 'partial_failed',
         detail: `${fileFailed} file(s) failed: ` + Object.entries(results)
                   .filter(([, s]) => s === 'failed').map(([k]) => k).join(', '),
@@ -474,7 +516,7 @@ export function mountNodesMode({
         total:    resp && resp.total || 0,
       });
     } else {
-      lastSync.set(syncKey, {
+      setSync({
         ts: Date.now(), status: 'success',
         code:   values.length ? (values[0] || 'updated') : 'updated',
         detail: '',
@@ -509,6 +551,24 @@ export function mountNodesMode({
     const stateChip = node.enabled === false
       ? `<span class="host-state-chip is-disabled">Disabled</span>`
       : `<span class="host-state-chip is-enabled">Enabled</span>`;
+    // Node-level sync status: live step while running, final result
+    // with age afterwards (mirrors per-context rows, but Sync Host is
+    // one connection — the progress belongs on the host header).
+    const hs = hostSync.get(node.key);
+    let syncChip = '';
+    if (hs) {
+      const ago = fmtAgo(hs.ts);
+      if (hs.status === 'running') {
+        const step = (hs.detail || '').trim();
+        syncChip = `<span class="ctx-last-sync state-checking">${step ? esc(step) : 'syncing…'}</span>`;
+      } else if (hs.status === 'success') {
+        const imp = (typeof hs.imported === 'number') ? `${hs.imported} imported` : 'updated';
+        syncChip = `<span class="ctx-last-sync state-running">${esc(imp)}, ${esc(ago)}</span>`;
+      } else {
+        const code = hs.code || 'failed';
+        syncChip = `<span class="ctx-last-sync state-error">${esc(code)}, ${esc(ago)}</span>`;
+      }
+    }
     return `
       <div class="host-card-header" data-key="${esc(node.key)}">
         <span class="host-chevron">&#9656;</span>
@@ -520,6 +580,7 @@ export function mountNodesMode({
         ${stateChip}
         ${ctxCount}
         ${agentBadge}
+        ${syncChip}
       </div>`;
   }
 
@@ -862,7 +923,7 @@ export function mountNodesMode({
         const epLabel = `${node.user}@${node.host}:${node.port}`;
         setStatus(`Syncing host ${epLabel} (representative: ${primary.name})…`);
 
-        const resp = await syncOneContext(primary);
+        const resp = await syncOneContext(primary, { hostKey: node.key });
 
         if (resp && resp.ok === false) {
           for (const ctx of others) {
@@ -1471,6 +1532,15 @@ function mountNodesActions({
       addSubmitBtn.textContent = labelAddHost;
     }
     if (isAddHostMode()) restoreDraft();
+    // Always re-sync auth section visibility with the select's current
+    // value on open. Without this, reopening Add Host after a cancelled
+    // Edit (closeManage resetForm:false) leaves a stale select value
+    // AND stale sections: setContextEditMode(false)/setAddContextMode
+    // (false) blindly un-hide every data-*-hide element (all three auth
+    // sections), so the select could show "password" while the key-file
+    // inputs are visible. Desktop has no draft (DRAFT_KEY is
+    // mobile-only), so restoreDraft alone cannot cover this.
+    applyAuthSection();
     // User defaults to the local OS account (desktop only — CamBridge).
     // Path follows the same /home/<user> rule as manual user input.
     if (isAddHostMode() && fUser && !fUser.value.trim()) {
@@ -1753,6 +1823,12 @@ function mountNodesActions({
     // Reviewer fix: reset any active edit/add-ctx mode before
     // reopening Add Host, so the form starts as a clean Add.
     closeManage({ resetForm: false });
+    // Clean Add also means the auth method itself starts at the HTML
+    // default — a previous Edit/duplicate leaves the select on the last
+    // host's method (e.g. 'password'), which is surprising on a fresh
+    // Add. Mobile's restoreDraft (inside openManage) still overrides
+    // this with the saved draft, preserving draft semantics.
+    if (fAuth) fAuth.value = 'key';
     openManage('manual');
   });
   addCancel   && addCancel.addEventListener('click', () => {
