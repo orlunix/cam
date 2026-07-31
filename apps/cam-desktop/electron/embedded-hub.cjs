@@ -938,31 +938,126 @@ async function _syncContextAgents(ctx, overrides = {}) {
     if (pp != null) baseOpts.passphrase = pp;
   }
 
-  // Bootstrap, don't just check: a missing or older remote camc is
-  // uploaded here (version rule), so Sync Host works on fresh/cleaned
-  // hosts instead of failing with camc_missing.
+  // Fast path (mirrors the attach path): if a usable remote camc
+  // exists, list agents immediately and refresh camc in the
+  // background — Sync Host stays a seconds-class op even on
+  // ~1s-RTT links where the 770KB upload alone can take 60-120s.
+  // Only a MISSING camc blocks inline (first deploy is unavoidable).
+  // A present-but-broken camc fails the list below with a clear
+  // error; the background refresh repairs it for the next sync.
   const ctxId = String(ctx.id || '');
   if (ctxId) { baseOpts.__ctxId = ctxId; _syncStep(ctxId, 'connecting'); }
-  const ready = await _ensureRemoteCamc(baseOpts);
-  if (!ready.ok) {
-    if (ctxId) _syncStepDone(ctxId);
-    pushLog('warn', `sync ${ctx.name} failed: ${ready.error}`);
-    return {
-      ok:      false,
-      error:   ready.error || 'camc_missing',
-      detail:  ready.detail || 'remote ~/.cam/camc is not available',
-      results: { camc: 'failed' },
-    };
+  // Probe by RUNNING camc, not just test -x: an executable camc whose
+  // interpreter is missing (no python3 on the host — the polyglot
+  // prelude ends in `exec python3`) passes test -x but fails at run
+  // time. Three outcomes:
+  //   version prints            → fast path (background refresh)
+  //   test -x fails             → genuinely missing → inline upload
+  //   exists but cannot run     → camc_unrunnable (python3/file broken)
+  //                               — re-uploading would not help
+  const probe = await _sshTransport.execRemote({
+    ...baseOpts,
+    command: `bash -c 'test -x ${REMOTE_CAMC} && ${REMOTE_CAMC} version | head -1'`,
+    timeout_ms: 15000,
+  });
+  if (probe && probe.ok) {
+    // Manual Sync Host is the moment of truth: decide from the probe's
+    // FRESH version output, never from the ready-cache (which can be
+    // stale within this app run — e.g. the remote camc was replaced by
+    // an older build after an earlier sync marked the cache).
+    const local = _readBundledCamc();
+    const probeV = _parseCamcVersion(String(probe.stdout || '').trim());
+    const bundledV = local.error ? null : _camcBundledVersion(local.content);
+    if (!local.error && probeV && bundledV && _versionCmp(probeV, bundledV) >= 0) {
+      // Remote is current: refresh the cache and skip the ensure
+      // entirely — the probe just did its job, seconds-class sync.
+      _markRemoteCamcReady(baseOpts, local.hash);
+    } else if (!local.error) {
+      // Remote is older (or its version is unparsable): upgrade inline
+      // so a manual sync actually brings the host current. force
+      // bypasses the (possibly stale) ready-cache; the version rule
+      // inside would upload anyway since we know the remote is older.
+      const ready = await _ensureRemoteCamc(baseOpts, { force: true });
+      if (!ready.ok) {
+        if (ctxId) _syncStepDone(ctxId);
+        pushLog('warn', `sync ${ctx.name} failed: ${ready.error}`);
+        return {
+          ok:      false,
+          error:   ready.error || 'camc_missing',
+          detail:  ready.detail || 'remote ~/.cam/camc is not available',
+          results: { camc: 'failed' },
+        };
+      }
+    } else {
+      // Bundled camc unreadable locally — keep the old detached-refresh
+      // behavior rather than failing the whole sync.
+      const bgOpts = { ...baseOpts };
+      delete bgOpts.__ctxId;
+      void _ensureRemoteCamc(bgOpts).catch(() => {});
+    }
+  } else {
+    const probeDetail = String((probe && (probe.detail || probe.stderr)) || '');
+    // Only a missing interpreter is unrunnable-by-upload: anything else
+    // (corrupt/partial camc file, ancient camc) is healed by the inline
+    // upload below. python3-missing is the one case where re-uploading
+    // is pointless — the polyglot prelude ends in `exec python3`.
+    const unrunnable = /python3|command not found/i.test(probeDetail);
+    if (unrunnable) {
+      if (ctxId) _syncStepDone(ctxId);
+      pushLog('warn', `sync ${ctx.name} failed: camc_unrunnable`);
+      return {
+        ok:      false,
+        error:   'camc_unrunnable',
+        detail:  `~/.cam/camc exists on the host but cannot run — camc needs python3 (3.6+) on the remote host. Install python3 there (or remove ~/.cam/camc and Sync again to redeploy). Probe said: ${probeDetail.slice(0, 200)}`,
+        results: { camc: 'failed' },
+      };
+    }
+    // The probe just proved the remote camc is gone/broken, so any
+    // ready-cache entry from an earlier sync in this app run is stale
+    // evidence. Drop it BEFORE the inline ensure — _ensureRemoteCamc
+    // checks the cache first and would otherwise return cached=true
+    // without uploading (delete-remote-camc-then-sync-again loop).
+    const bundledProbe = _readBundledCamc();
+    if (!bundledProbe.error) _clearRemoteCamcReady(baseOpts, bundledProbe.hash);
+    const ready = await _ensureRemoteCamc(baseOpts);
+    if (!ready.ok) {
+      if (ctxId) _syncStepDone(ctxId);
+      pushLog('warn', `sync ${ctx.name} failed: ${ready.error}`);
+      return {
+        ok:      false,
+        error:   ready.error || 'camc_missing',
+        detail:  ready.detail || 'remote ~/.cam/camc is not available',
+        results: { camc: 'failed' },
+      };
+    }
   }
 
   if (ctxId) _syncStep(ctxId, 'listing agents');
   const res = await _sshTransport.execRemote({ ...baseOpts, command: `${REMOTE_CAMC} --json list` });
   if (!res || !res.ok) {
     if (ctxId) _syncStepDone(ctxId);
+    // The list failing right after the probe/ensure said "camc ok"
+    // proves the ready-cache is stale (remote camc deleted mid-session,
+    // or a cached "ready" from an earlier sync in this app run). Clear
+    // it so the NEXT sync re-probes and re-uploads instead of looping
+    // on the same phantom cache hit.
+    const bundledList = _readBundledCamc();
+    if (!bundledList.error) _clearRemoteCamcReady(baseOpts, bundledList.hash);
     const err = (res || {});
     let code = err.error || 'exec_failed';
-    if (code === 'remote_nonzero' && /not found|No such file/i.test(err.detail || err.stderr || '')) {
-      code = 'camc_missing';
+    // Classify remote_nonzero by content — "not found" is ambiguous:
+    // camc itself missing (upload path should have covered it), a
+    // missing interpreter (python3), or a missing camc DEPENDENCY
+    // (tmux and friends — camc is fine, the host lacks a tool).
+    if (code === 'remote_nonzero') {
+      const errText = `${err.detail || ''} ${err.stderr || ''}`;
+      if (/python3.*(not found|command not found)|command not found.*python3/i.test(errText)) {
+        code = 'python3_missing';
+      } else if (/camc/i.test(errText) && /not found|No such file/i.test(errText)) {
+        code = 'camc_missing';
+      } else if (/command not found/i.test(errText)) {
+        code = 'remote_dependency_missing';
+      }
     }
     pushLog('warn', `sync ${ctx.name} failed: ${code}`);
     return {
@@ -1656,12 +1751,25 @@ async function _ensureRemoteCamc(baseOpts, { force = false } = {}) {
     return { ok: true, present: true, remote_version: rv.join('.'), hash: local.hash };
   }
 
+  // python3 is the hard runtime requirement (the polyglot prelude ends
+  // in `exec python3`). Uploading 770KB to a host without it can never
+  // work — check first, so a python3-less host gets a clear actionable
+  // error instead of a successful upload followed by a confusing
+  // "camc_missing" when the freshly-installed camc cannot run.
+  const py = await _sshTransport.execRemote({ ...baseOpts, command: 'command -v python3', timeout_ms: 15000 });
+  if (!py || !py.ok) {
+    return { ok: false, error: 'python3_missing', detail: 'camc requires python3 (3.6+) on the remote host, but `command -v python3` found none. Install python3 on the host, then Sync again.' };
+  }
+
   const mkdir = await _sshTransport.execRemote({ ...baseOpts, command: 'mkdir -p ~/.cam' });
   if (!mkdir || !mkdir.ok) {
     return { ok: false, error: mkdir && mkdir.error || 'remote_mkdir_failed', detail: mkdir && (mkdir.detail || mkdir.stderr) || 'mkdir -p ~/.cam failed' };
   }
 
-  if (ctxId) _syncStep(ctxId, 'uploading camc', `${Math.round(local.content.length / 1024)}KB`);
+  if (ctxId) _syncStep(ctxId, 'uploading camc', `0% of ${Math.round(local.content.length / 1024)}KB`);
+  // Chunk-level progress → sync-status, so the UI shows a real
+  // percentage during the transfer instead of a frozen step label.
+  let lastPct = 0;
   const uploaded = await _sshTransport.writeRemoteFile({
     ...baseOpts,
     // The 770KB upload is the heavy op of a first sync: on NFS-backed
@@ -1672,12 +1780,28 @@ async function _ensureRemoteCamc(baseOpts, { force = false } = {}) {
     timeout_ms: 120000,
     remotePath: REMOTE_CAMC_UPLOAD_PATH,
     content: local.content,
+    onProgress: ctxId
+      ? (sent, total) => {
+          const pct = Math.floor((sent / total) * 100);
+          if (pct !== lastPct) {
+            lastPct = pct;
+            _syncStep(ctxId, 'uploading camc', `${pct}% of ${Math.round(total / 1024)}KB`);
+          }
+        }
+      : undefined,
   });
   if (!uploaded || !uploaded.ok) {
     return { ok: false, error: uploaded && uploaded.error || 'remote_camc_upload_failed', detail: uploaded && uploaded.detail || 'failed to upload bundled camc' };
   }
 
-  const install = await _sshTransport.execRemote({ ...baseOpts, command: `chmod 700 ${REMOTE_CAMC_UPLOAD_PATH} && mv ${REMOTE_CAMC_UPLOAD_PATH} ${REMOTE_CAMC}` });
+  // Install via $HOME, not the relative REMOTE_CAMC_UPLOAD_PATH: the
+  // SFTP upload resolves the relative path against the sftp-server's
+  // start dir (= user home), but the exec channel runs through the
+  // user's shell — and bash sources ~/.bashrc for non-interactive ssh
+  // commands, so an rc `cd` (venv activation, project dirs) moves the
+  // cwd away from home and `chmod .cam/camc.tmp` misses the file the
+  // upload just wrote. $HOME is set by sshd and immune to rc cd.
+  const install = await _sshTransport.execRemote({ ...baseOpts, command: `chmod 700 "$HOME/${REMOTE_CAMC_UPLOAD_PATH}" && mv "$HOME/${REMOTE_CAMC_UPLOAD_PATH}" ${REMOTE_CAMC}` });
   if (!install || !install.ok) {
     return { ok: false, error: install && install.error || 'remote_camc_install_failed', detail: install && (install.detail || install.stderr) || 'failed to install ~/.cam/camc' };
   }
@@ -1754,7 +1878,9 @@ async function _ensureRemoteSkillm(baseOpts) {
     return { ok: false, error: uploaded && uploaded.error || 'remote_skillm_upload_failed', detail: uploaded && uploaded.detail || 'failed to upload bundled skillm' };
   }
 
-  const install = await _sshTransport.execRemote({ ...baseOpts, command: `chmod 700 ${REMOTE_SKILLM_UPLOAD_PATH} && mv ${REMOTE_SKILLM_UPLOAD_PATH} ${REMOTE_SKILLM}` });
+  // Same $HOME reasoning as the camc install above (rc `cd` moves the
+  // exec cwd away from the sftp-server's home-relative upload target).
+  const install = await _sshTransport.execRemote({ ...baseOpts, command: `chmod 700 "$HOME/${REMOTE_SKILLM_UPLOAD_PATH}" && mv "$HOME/${REMOTE_SKILLM_UPLOAD_PATH}" ${REMOTE_SKILLM}` });
   if (!install || !install.ok) {
     return { ok: false, error: install && install.error || 'remote_skillm_install_failed', detail: install && (install.detail || install.stderr) || 'failed to install ~/.cam/skillm' };
   }

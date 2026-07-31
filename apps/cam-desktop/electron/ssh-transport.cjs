@@ -603,6 +603,11 @@ async function writeRemoteFile(opts) {
   }
   const content = Buffer.isBuffer(opts.content) ? opts.content : Buffer.from(String(opts.content), 'utf8');
   const _upT0 = Date.now();
+  // Start line: the completion line below only fires at the END, so a
+  // 60-120s slow-link upload (NFS homes, ~1s RTT) used to leave the
+  // diag log silent for the whole transfer — indistinguishable from a
+  // hang. start + ok/failed brackets the transfer.
+  _log(`upload ${opts.host}:${opts.port || 22} start ${content.length}B: ${opts.remotePath}`);
   const _upDone = (r) => {
     _log(`upload ${opts.host}:${opts.port || 22} ${r && r.ok ? `ok ${content.length}B` : `failed: ${(r && r.error) || '?'}`} ${Date.now() - _upT0}ms: ${opts.remotePath}`);
     return r;
@@ -610,10 +615,43 @@ async function writeRemoteFile(opts) {
   const run = () => _withPooledClient(opts, (client, finish) => {
     client.sftp((err, sftp) => {
       if (err) return finish({ ok: false, error: 'sftp_failed', detail: err.message });
-      sftp.writeFile(opts.remotePath, content, (writeErr) => {
-        try { sftp.end(); } catch { /* noop */ }
-        if (writeErr) return finish({ ok: false, error: 'sftp_write_failed', detail: writeErr.message });
-        finish({ ok: true, bytes: content.length, remotePath: opts.remotePath });
+      // Chunked write instead of one-shot sftp.writeFile: each chunk
+      // completion reports real progress (opts.onProgress) so the sync
+      // UI can show an uploading percentage, and 128KB chunks cost far
+      // fewer round trips than the default stream on high-RTT links
+      // (~1s per round trip: 770KB = 7 RTs instead of ~24). 128KB stays
+      // safely under OpenSSH sftp-server's 256KB MAX_MSG limit (a 256KB
+      // data payload overflows the packet once headers are added).
+      sftp.open(opts.remotePath, 'w', (openErr, handle) => {
+        if (openErr) {
+          try { sftp.end(); } catch { /* noop */ }
+          return finish({ ok: false, error: 'sftp_write_failed', detail: openErr.message });
+        }
+        const CHUNK = 128 * 1024;
+        let pos = 0;
+        const writeNext = () => {
+          if (pos >= content.length) {
+            sftp.close(handle, (closeErr) => {
+              try { sftp.end(); } catch { /* noop */ }
+              if (closeErr) return finish({ ok: false, error: 'sftp_write_failed', detail: closeErr.message });
+              finish({ ok: true, bytes: content.length, remotePath: opts.remotePath });
+            });
+            return;
+          }
+          const end = Math.min(pos + CHUNK, content.length);
+          sftp.write(handle, content, pos, end - pos, pos, (wErr) => {
+            if (wErr) {
+              try { sftp.close(handle, () => {}); sftp.end(); } catch { /* noop */ }
+              return finish({ ok: false, error: 'sftp_write_failed', detail: wErr.message });
+            }
+            pos = end;
+            if (typeof opts.onProgress === 'function') {
+              try { opts.onProgress(pos, content.length); } catch { /* noop */ }
+            }
+            writeNext();
+          });
+        };
+        writeNext();
       });
     });
   });
