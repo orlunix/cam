@@ -62,6 +62,14 @@ fallback_summary_pattern = "·\\s*\\d+(\\.\\d+)?%"
 # rules below. The active cursor marker for Cursor TUI is →.
 
 [[confirm]]
+# Cursor's permission menu offers Auto-run on the following unselected line.
+# BTab is sent as a tmux special key, not literal text.
+pattern = "^\\s*Auto-run everything \\(shift\\+tab\\)"
+flags = ["MULTILINE"]
+response = "BTab"
+send_enter = false
+
+[[confirm]]
 # Generic (y) prompt — anchored to the line start with the → cursor
 # marker (Proceed (y) / Run once (y) / ...).
 pattern = "^\\s*→.*\\(y\\)"
@@ -76,6 +84,7 @@ send_enter = false
 busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
 confirm_cooldown = 5.0
 confirm_recent_lines = 8
+confirm_stuck_recent_lines = 200
 confirm_sleep = 0.5
 health_check_interval = 15
 idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle
