@@ -5179,3 +5179,68 @@ e35b22e camc: stabilize monitor and message submit
 dc67bc3 camc: centralize release artifact and version builds
 ```
 
+## v1.2.23  92f8469-dirty 2026-07-30 20:30
+
+- Lines: 20060
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+92f8469 camc: widen stuck confirmation fallback
+5f7635a camc: improve list column rendering
+e35b22e camc: stabilize monitor and message submit
+2bf3e81 camc: refresh managed tmux config
+46c1720 camc: safely migrate legacy agents and fix boot confirms
+```
+
+## v1.2.24  92f8469-dirty 2026-07-30 22:05
+
+- Lines: 20029
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+92f8469 camc: widen stuck confirmation fallback
+5f7635a camc: improve list column rendering
+e35b22e camc: stabilize monitor and message submit
+2bf3e81 camc: refresh managed tmux config
+46c1720 camc: safely migrate legacy agents and fix boot confirms
+```
+
+## v1.2.25  92f8469-dirty 2026-07-30 22:09
+
+- Lines: 20060
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+92f8469 camc: widen stuck confirmation fallback
+5f7635a camc: improve list column rendering
+e35b22e camc: stabilize monitor and message submit
+2bf3e81 camc: refresh managed tmux config
+46c1720 camc: safely migrate legacy agents and fix boot confirms
+```
+
+## v1.2.26  92f8469-dirty 2026-07-30 22:34
+
+- Lines: 20061
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+92f8469 camc: widen stuck confirmation fallback
+5f7635a camc: improve list column rendering
+e35b22e camc: stabilize monitor and message submit
+2bf3e81 camc: refresh managed tmux config
+46c1720 camc: safely migrate legacy agents and fix boot confirms
+```
+
+## v1.2.27  92f8469-dirty 2026-07-31 00:43
+
+- Lines: 20069
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+92f8469 camc: widen stuck confirmation fallback
+5f7635a camc: improve list column rendering
+e35b22e camc: stabilize monitor and message submit
+2bf3e81 camc: refresh managed tmux config
+46c1720 camc: safely migrate legacy agents and fix boot confirms
+```
+

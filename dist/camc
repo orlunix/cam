@@ -700,8 +700,8 @@ import uuid
 # Constants and logging
 # ===========================================================================
 
-__version__ = "1.2.22"
-__build__ = "b2f850b-dirty 2026-07-28 06:17"
+__version__ = "1.2.27"
+__build__ = "92f8469-dirty 2026-07-31 00:43"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1334,6 +1334,14 @@ fallback_summary_pattern = "·\\s*\\d+(\\.\\d+)?%"
 # rules below. The active cursor marker for Cursor TUI is →.
 
 [[confirm]]
+# Cursor's permission menu offers Auto-run on the following unselected line.
+# BTab is sent as a tmux special key, not literal text.
+pattern = "^\\s*Auto-run everything \\(shift\\+tab\\)"
+flags = ["MULTILINE"]
+response = "BTab"
+send_enter = false
+
+[[confirm]]
 # Generic (y) prompt — anchored to the line start with the → cursor
 # marker (Proceed (y) / Run once (y) / ...).
 pattern = "^\\s*→.*\\(y\\)"
@@ -1348,6 +1356,7 @@ send_enter = false
 busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
 confirm_cooldown = 5.0
 confirm_recent_lines = 8
+confirm_stuck_recent_lines = 200
 confirm_sleep = 0.5
 health_check_interval = 15
 idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle
@@ -13174,7 +13183,9 @@ def _agent_tool(agent):
 
 
 def _send_confirm_response(session_id, response, send_enter):
-    if response and len(response) == 1:
+    # Multi-character responses are literal text except explicitly supported
+    # tmux key names used by adapter confirmation rules.
+    if response == "BTab" or (response and len(response) == 1):
         if not tmux_send_key(session_id, response):
             return False
         if send_enter:
@@ -17260,6 +17271,7 @@ def _msg_resolve_session(to_arg):
 
 
 _MSG_SUBMIT_DELAY_DEFAULT = 0.5
+_MSG_FAST_SUBMIT_DELAY = 0.15
 
 
 def _msg_submit_delay(target):
@@ -17475,10 +17487,17 @@ def _msg_inject(session, to_label, text, timeout_s,
     if not tmux_send_input(session, payload, send_enter=False):
         _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
         return (msg_id, False)
-    time.sleep(submit_delay)
+    fast_delay = min(_MSG_FAST_SUBMIT_DELAY, submit_delay)
+    time.sleep(fast_delay)
     if not tmux_send_key(session, "Enter"):
         _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
         return (msg_id, False)
+    fallback_delay = submit_delay - fast_delay
+    if fallback_delay > 0:
+        time.sleep(fallback_delay)
+        if not tmux_send_key(session, "Enter"):
+            _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
+            return (msg_id, False)
     _msg_ledger_append({"msg_id": msg_id, "status": "delivered"})
     return (msg_id, True)
 

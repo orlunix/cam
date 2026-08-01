@@ -529,7 +529,7 @@ class TestMsgSubmitDelay:
                            SimpleNamespace(prompt_submit_delay=0.0))
         assert delay == 0.5
 
-    def test_inject_waits_adapter_delay_before_single_enter(self, monkeypatch, tmp_path):
+    def test_inject_sends_fast_enter_then_adapter_delay_fallback_enter(self, monkeypatch, tmp_path):
         from camc_pkg import cli
 
         events = []
@@ -549,7 +549,11 @@ class TestMsgSubmitDelay:
             "cam-fake", "target", "hello", 5, submit_delay=0.8)
 
         assert ok
-        assert events == [("input", False), ("sleep", 0.8), ("key", "Enter")]
+        assert events == [
+            ("input", False),
+            ("sleep", 0.15), ("key", "Enter"),
+            ("sleep", 0.65), ("key", "Enter"),
+        ]
 
 
 class TestMsgExpectReply:
