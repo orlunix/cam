@@ -228,7 +228,9 @@ def _agent_tool(agent):
 
 
 def _send_confirm_response(session_id, response, send_enter):
-    if response and len(response) == 1:
+    # Multi-character responses are literal text except explicitly supported
+    # tmux key names used by adapter confirmation rules.
+    if response == "BTab" or (response and len(response) == 1):
         if not tmux_send_key(session_id, response):
             return False
         if send_enter:
@@ -4334,6 +4336,7 @@ def _msg_resolve_session(to_arg):
 
 
 _MSG_SUBMIT_DELAY_DEFAULT = 0.5
+_MSG_FAST_SUBMIT_DELAY = 0.15
 
 
 def _msg_submit_delay(target):
@@ -4550,10 +4553,17 @@ def _msg_inject(session, to_label, text, timeout_s,
     if not tmux_send_input(session, payload, send_enter=False):
         _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
         return (msg_id, False)
-    time.sleep(submit_delay)
+    fast_delay = min(_MSG_FAST_SUBMIT_DELAY, submit_delay)
+    time.sleep(fast_delay)
     if not tmux_send_key(session, "Enter"):
         _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
         return (msg_id, False)
+    fallback_delay = submit_delay - fast_delay
+    if fallback_delay > 0:
+        time.sleep(fallback_delay)
+        if not tmux_send_key(session, "Enter"):
+            _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
+            return (msg_id, False)
     _msg_ledger_append({"msg_id": msg_id, "status": "delivered"})
     return (msg_id, True)
 

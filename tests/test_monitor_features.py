@@ -18,7 +18,7 @@ if SRC not in sys.path:
     sys.path.insert(0, SRC)
 
 from camc_pkg import monitor_features as mf  # noqa: E402
-from camc_pkg.adapters import AdapterConfig  # noqa: E402
+from camc_pkg.adapters import AdapterConfig, load_toml  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +71,12 @@ def test_adapter_config_caps_primary_confirm_window_at_eight_lines():
 def test_adapter_config_defaults_stuck_confirm_window_to_forty_lines():
     cfg = AdapterConfig({"monitor": {}})
     assert cfg.confirm_stuck_recent_lines == 40
+
+
+def test_cursor_config_uses_two_hundred_line_stuck_confirm_window():
+    path = os.path.join(ROOT, "src", "cam", "adapters", "configs", "cursor.toml")
+    cfg = AdapterConfig(load_toml(path))
+    assert cfg.confirm_stuck_recent_lines == 200
 
 
 def test_registry_includes_state_manager_and_auto_confirmation_and_placeholders():

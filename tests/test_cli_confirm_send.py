@@ -42,6 +42,21 @@ def test_send_confirm_response_multichar_uses_input(monkeypatch):
     assert calls == [("input", "yes", True)]
 
 
+def test_send_confirm_response_btab_uses_special_key(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        cli, "tmux_send_key",
+        lambda session, key: calls.append(("key", session, key)) or True)
+    monkeypatch.setattr(
+        cli, "tmux_send_input",
+        lambda session, text, send_enter=True:
+        calls.append(("input", session, text, send_enter)) or True)
+
+    assert cli._send_confirm_response("cam-test", "BTab", False) is True
+    assert calls == [("key", "cam-test", "BTab")]
+
+
 def test_cmd_send_does_not_acknowledge_failed_delivery(monkeypatch, capsys):
     class FakeStore:
         def get(self, agent_id):
