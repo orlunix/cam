@@ -15,6 +15,7 @@ const _sh = (() => {
     termSeq: 0,
     dhPending: {},
     termPending: {},
+    filesPending: {},
     termDataHandlers: new Set(),
     termStatusHandlers: new Set(),
   });
@@ -247,6 +248,17 @@ export function installMobileCamBridgeShim() {
     else p.reject(hubErr(data));
   };
 
+  window.__camFilesCb = (id, ok, json) => {
+    const p = _sh.filesPending[id];
+    clearTimeout(p && p.timer);
+    delete _sh.filesPending[id];
+    if (!p) return;
+    let data = null;
+    try { data = typeof json === 'string' ? JSON.parse(json) : json; } catch { data = null; }
+    if (ok) p.resolve(data || { ok: true });
+    else p.reject(new Error((data && data.detail) || 'file operation failed'));
+  };
+
   window.__camOnKeyPicked = (json) => {
     let data = json;
     if (typeof json === 'string') {
@@ -286,6 +298,25 @@ export function installMobileCamBridgeShim() {
         window.CamBridge.files = {
           pickPrivateKey: () => pickPrivateKeyFromAndroid(),
         };
+      } catch {}
+    }
+    // Export helper used by nodes-mode: share text via the Android share sheet.
+    if (typeof window.CamBridge.files_saveText === 'function'
+        && typeof window.CamBridge.files.saveText !== 'function') {
+      try {
+        window.CamBridge.files.saveText = (opts) => new Promise((resolve, reject) => {
+          const id = 'fs' + (++_sh.dhSeq);
+          _sh.filesPending[id] = { resolve, reject };
+          _sh.filesPending[id].timer = _armTimeout(
+            _sh.filesPending, id, 30000, 'files_saveText');
+          try {
+            window.CamBridge.files_saveText(id, JSON.stringify(opts || {}));
+          } catch (err) {
+            clearTimeout(_sh.filesPending[id] && _sh.filesPending[id].timer);
+            delete _sh.filesPending[id];
+            reject(err);
+          }
+        });
       } catch {}
     }
     ok = true;

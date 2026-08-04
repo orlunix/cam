@@ -794,6 +794,11 @@ export class CamApi {
     return this.request('GET', `/api/system/ssh-config${q}`);
   }
 
+  /** Parse pasted ssh_config text into host suggestions (mobile import). */
+  sshConfigParse(text) {
+    return this.request('POST', '/api/system/ssh-config/parse', { text: String(text ?? '') });
+  }
+
   // Skillm library management (CAM-DESK-SKILLM-010..014).
   skillmStatus(contextName) {
     return this.request('GET', `/api/skillm/status?context=${encodeURIComponent(contextName || '')}`);

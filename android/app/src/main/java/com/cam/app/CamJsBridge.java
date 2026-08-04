@@ -38,6 +38,40 @@ public class CamJsBridge {
             "window.__camTermCb(" + JSONObject.quote(cbId) + "," + JSONObject.quote(json) + ")", null));
     }
 
+    private void filesCallback(String cbId, boolean ok, String detail) {
+        if (webView == null) return;
+        try {
+            JSONObject payload = new JSONObject();
+            payload.put("ok", ok);
+            if (detail != null) payload.put(ok ? "path" : "detail", detail);
+            String json = payload.toString();
+            webView.post(() -> webView.evaluateJavascript(
+                "window.__camFilesCb(" + JSONObject.quote(cbId) + "," + ok + ","
+                    + JSONObject.quote(json) + ")", null));
+        } catch (Exception ignored) {}
+    }
+
+    /** Export helper: share text (e.g. ssh_config) via the Android share sheet. */
+    @JavascriptInterface
+    public void files_saveText(String cbId, String payloadJson) {
+        try {
+            JSONObject p = payloadJson != null && !payloadJson.isEmpty()
+                ? new JSONObject(payloadJson) : new JSONObject();
+            String name = p.optString("defaultName", "");
+            if (name.isEmpty()) name = p.optString("filename", "cam-export.txt");
+            String content = p.optString("content", "");
+            Intent send = new Intent(Intent.ACTION_SEND);
+            send.setType("text/plain");
+            send.putExtra(Intent.EXTRA_TEXT, content);
+            send.putExtra(Intent.EXTRA_SUBJECT, name);
+            send.putExtra(Intent.EXTRA_TITLE, name);
+            activity.startActivity(Intent.createChooser(send, name));
+            filesCallback(cbId, true, name);
+        } catch (Exception e) {
+            filesCallback(cbId, false, e.getMessage());
+        }
+    }
+
     @JavascriptInterface
     public void term_open(String cbId, String payloadJson) {
         new Thread(() -> {
