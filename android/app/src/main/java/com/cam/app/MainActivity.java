@@ -306,7 +306,8 @@ public class MainActivity extends Activity {
         try {
             Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
             intent.addCategory(Intent.CATEGORY_OPENABLE);
-            intent.setType("text/*");
+            // text/* would grey out .sshconfig (unregistered MIME type).
+            intent.setType("*/*");
             startActivityForResult(intent, CONFIG_PICK_REQUEST);
         } catch (Exception e) {
             Log.e(TAG, "openConfigFilePicker failed", e);
