@@ -551,6 +551,11 @@ export function mountNodesMode({
     const stateChip = node.enabled === false
       ? `<span class="host-state-chip is-disabled">Disabled</span>`
       : `<span class="host-state-chip is-enabled">Enabled</span>`;
+    // ProxyJump badge: the host tunnels through another node.
+    const primaryM = (node.contexts && node.contexts[0] && node.contexts[0].machine) || {};
+    const jumpChip = primaryM.jump
+      ? `<span class="host-state-chip" title="ProxyJump via ${esc(primaryM.jump)}">via ${esc(primaryM.jump.split('@')[1] || primaryM.jump)}</span>`
+      : '';
     // Node-level sync status: live step while running, final result
     // with age afterwards (mirrors per-context rows, but Sync Host is
     // one connection — the progress belongs on the host header).
@@ -578,6 +583,7 @@ export function mountNodesMode({
         </div>
         ${typeBadge}
         ${stateChip}
+        ${jumpChip}
         ${ctxCount}
         ${agentBadge}
         ${syncChip}
@@ -1199,6 +1205,12 @@ function mountNodesActions({
   const addCancel    = panel.querySelector('#nodes-add-cancel');
   const importList   = panel.querySelector('#nodes-import-list');
   const importSrcEl  = panel.querySelector('#nodes-import-source');
+  const importBrowseBtn = panel.querySelector('#nodes-import-browse');
+  const exportBtn    = panel.querySelector('#nodes-export-btn');
+  // Nodes → Import → Browse…: an explicit ssh_config to read instead of
+  // the default ~/.ssh/config (e.g. a CAM Desktop export from another
+  // machine). '' = hub default.
+  let importConfigPath = '';
   const importStat   = panel.querySelector('#nodes-import-status');
   const addHeadingEl = panel.querySelector('#nodes-add-heading');
   const addSubmitBtn = panel.querySelector('#nodes-add-submit');
@@ -1245,6 +1257,7 @@ function mountNodesActions({
   const fPort       = panel.querySelector('#nodes-add-port');
   const fPath       = panel.querySelector('#nodes-add-path');
   const fAuth       = panel.querySelector('#nodes-add-auth');
+  const fJump       = panel.querySelector('#nodes-add-jump');
   const fKey        = panel.querySelector('#nodes-add-keyfile');
   const fBrowse     = panel.querySelector('#nodes-add-browse');
   const fPassphrase = panel.querySelector('#nodes-add-passphrase');
@@ -1253,6 +1266,29 @@ function mountNodesActions({
   const fRemPasswd  = panel.querySelector('#nodes-add-remember-password');
   const fEnv        = panel.querySelector('#nodes-add-env');
   const authSections = panel.querySelectorAll('.nodes-auth-section[data-auth]');
+
+  /* ProxyJump dropdown: options are the existing SSH nodes (jump is a
+   * reference, not a copy — the jump node's own auth is reused).
+   * Rebuilt on every form open; `selectKey` preselects the stored
+   * jump, `excludeKey` hides the node being edited (no self-jump). */
+  function sshJumpOptions(excludeKey = '') {
+    const seen = new Map();
+    for (const c of (state.get('contexts') || [])) {
+      const m = (c && c.machine) || {};
+      if ((m.type || '') !== 'ssh' || !m.host) continue;
+      const key = hostKeyForMachine({ type: 'ssh', host: m.host, user: m.user, port: m.port });
+      if (!key || key === excludeKey || seen.has(key)) continue;
+      seen.set(key, `${m.user || ''}@${m.host}:${m.port || 22}`);
+    }
+    return [...seen.entries()].map(([key, label]) => ({ key, label }));
+  }
+  function refreshJumpOptions(selectKey = '', excludeKey = '') {
+    if (!fJump) return;
+    const opts = sshJumpOptions(excludeKey);
+    fJump.innerHTML = '<option value="">None (direct)</option>'
+      + opts.map(o => `<option value="${esc(o.key)}"${o.key === selectKey ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+    fJump.value = selectKey || '';
+  }
 
   function setAddStatus(text, cls = '') {
     if (!addStatusEl) return;
@@ -1541,6 +1577,9 @@ function mountNodesActions({
     // inputs are visible. Desktop has no draft (DRAFT_KEY is
     // mobile-only), so restoreDraft alone cannot cover this.
     applyAuthSection();
+    // Jump dropdown reflects the CURRENT node list on every open
+    // (nodes may have been added/removed since the last open).
+    refreshJumpOptions();
     // User defaults to the local OS account (desktop only — CamBridge).
     // Path follows the same /home/<user> rule as manual user input.
     if (isAddHostMode() && fUser && !fUser.value.trim()) {
@@ -1628,6 +1667,7 @@ function mountNodesActions({
     if (fAuth) fAuth.value = m.auth_method || (m.key_file ? 'key' : 'agent');
     if (fKey) fKey.value = fAuth && fAuth.value === 'key' ? (m.key_file || '') : '';
     if (fEnv) fEnv.value = m.env_setup || '';
+    refreshJumpOptions(m.jump || '', node.key);
     if (fPassphrase) fPassphrase.value = '';
     if (fPassword)   fPassword.value   = '';
     if (fRemPassph)  fRemPassph.checked = false;
@@ -1898,6 +1938,9 @@ function mountNodesActions({
         port: m.port || 22,
         auth_method: authMethod,
       };
+      // ProxyJump: a new context inherits the host's tunnel config —
+      // machine.jump describes how to reach the host, not the context.
+      if (m.jump) body.jump = m.jump;
       if (authMethod === 'key') {
         body.key_file = m.key_file || '';
         // Secrets are always remembered (OS keychain) — no opt-out
@@ -1957,6 +2000,9 @@ function mountNodesActions({
     }
 
     const hostBody = { host, user, port, auth_method: authMethod };
+    // ProxyJump: '' means direct — the hub stores machine.jump only
+    // when non-empty and clears it on empty (edit fan-out included).
+    if (fJump) hostBody.jump = fJump.value || '';
     if (authMethod === 'key') {
       hostBody.key_file = fKey ? fKey.value.trim() : '';
       const pass = fPassphrase ? fPassphrase.value : '';
@@ -2094,12 +2140,73 @@ function mountNodesActions({
     return `${base.slice(0, room)}-${tail}`;
   }
 
+  /* Nodes → Export: write the current node set as an ssh_config file.
+   * Round-trips through Nodes → Import → Browse… on another machine.
+   * Only connectivity is exported (host/user/port/key path/jump +
+   * node-name alias) — passwords never leave the OS keychain, and
+   * workspace fields (path/env) have no ssh_config representation. */
+  function buildNodesSshConfig() {
+    const lines = [
+      '# CAM Desktop nodes export',
+      `# ${new Date().toISOString().slice(0, 10)} — import via Nodes → Import → Browse… on the new machine`,
+      '# Passwords are not exported (OS keychain is per-machine); re-enter them on password-auth nodes after import.',
+      '',
+    ];
+    const seenKeys = new Set();
+    const seenAliases = new Set();
+    for (const c of (state.get('contexts') || [])) {
+      const m = (c && c.machine) || {};
+      if ((m.type || '') !== 'ssh' || !m.host || !m.user) continue;
+      const key = hostKeyForMachine({ type: 'ssh', host: m.host, user: m.user, port: m.port });
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      const meta = getHostMeta(key) || {};
+      let alias = String(meta.nodeName || m.host.split('.')[0] || 'node').replace(/[^\w.-]+/g, '-');
+      if (seenAliases.has(alias)) alias = key;
+      seenAliases.add(alias);
+      lines.push(`Host ${alias}`);
+      lines.push(`  HostName ${m.host}`);
+      lines.push(`  User ${m.user}`);
+      if (m.port && Number(m.port) !== 22) lines.push(`  Port ${Number(m.port)}`);
+      if ((m.auth_method || '') === 'key' && m.key_file) lines.push(`  IdentityFile "${m.key_file}"`);
+      if (m.jump) lines.push(`  ProxyJump ${m.jump}`);
+      lines.push('');
+    }
+    return { text: lines.join('\n'), count: seenKeys.size };
+  }
+
+  if (importBrowseBtn) importBrowseBtn.addEventListener('click', async () => {
+    const files = bridgeFiles();
+    if (!files || typeof files.pickFile !== 'function') return;
+    const r = await files.pickFile({ title: 'Select ssh config to import from' });
+    if (r && r.ok && r.path) {
+      importConfigPath = r.path;
+      await refreshImportList();
+    }
+  });
+
+  if (exportBtn) exportBtn.addEventListener('click', async () => {
+    const files = bridgeFiles();
+    if (!files || typeof files.saveText !== 'function') {
+      setImportStatus('Export requires the Desktop file dialog.', 'is-error');
+      return;
+    }
+    const { text, count } = buildNodesSshConfig();
+    if (!count) {
+      setImportStatus('No SSH nodes to export.', 'is-error');
+      return;
+    }
+    const r = await files.saveText({ title: 'Export nodes as ssh config', defaultName: 'cam-nodes.sshconfig', content: text });
+    if (r && r.ok) setImportStatus(`Exported ${count} node(s) to ${r.path}`, 'is-ok');
+    else if (r && r.error) setImportStatus(`Export failed: ${r.detail || r.error}`, 'is-error');
+  });
+
   async function refreshImportList() {
     importList.innerHTML = `<div class="empty-state">Loading…</div>`;
     let resp;
     try {
       await requireNodesConnected('SSH config import');
-      resp = await api.sshConfigHosts();
+      resp = await api.sshConfigHosts(importConfigPath || undefined);
     } catch (err) {
       importList.innerHTML = `<div class="empty-state">SSH config import not available on this Hub.</div>`;
       if (importSrcEl) importSrcEl.textContent = 'This Hub did not return ssh-config suggestions.';
@@ -2142,6 +2249,19 @@ function mountNodesActions({
           key_file:  h.identity_file || '',
           env_setup: '',
         };
+        // ProxyJump from the config: keep it only when it references an
+        // already-registered node (jump is a reference, not a copy) —
+        // otherwise drop it rather than fail validation on a dangling
+        // key (the hub refuses unknown jump targets).
+        if (h.proxyjump) {
+          const jumpKey = String(h.proxyjump).trim();
+          const known = (state.get('contexts') || []).some(c => {
+            const cm = (c && c.machine) || {};
+            return cm.type === 'ssh'
+              && hostKeyForMachine({ type: 'ssh', host: cm.host, user: cm.user, port: cm.port }) === jumpKey;
+          });
+          if (known) body.jump = jumpKey;
+        }
         btn.disabled = true;
         btn.textContent = 'Importing…';
         try {

@@ -185,5 +185,29 @@ ok("sync live status is node-level (hostSync on host header), results mirrored p
     && mode.includes("hostSync.set(hostKey, entry)")
     && mode.includes("hostSync.get(node.key)"));
 
+// ProxyJump: the form exposes a Jump host dropdown on both form
+// variants, submits machine.jump ('' = direct), inherits it into new
+// contexts, and badges tunneled hosts.
+ok("ProxyJump: Jump host dropdown on both forms, submit + inherit + via badge",
+  fs.readFileSync(path.join(root, "web", "desktop.html"), "utf8").includes('id="nodes-add-jump"')
+    && fs.readFileSync(path.join(root, "web", "js", "mobile", "nodes-shell.js"), "utf8").includes('id="nodes-add-jump"')
+    && mode.includes("refreshJumpOptions")
+    && mode.includes("hostBody.jump = fJump.value || ''")
+    && mode.includes("if (m.jump) body.jump = m.jump")
+    && mode.includes("ProxyJump via ${esc(primaryM.jump)}"));
+
+// Nodes Export: ssh_config text built from contexts (alias from node
+// name, ProxyJump carried), saved via the Electron dialog; Import can
+// Browse an explicit config file (hub ?path= passthrough); imported
+// ProxyJump maps to machine.jump only when it matches a known node.
+ok("Nodes export (ssh_config) + import from a chosen file + ProxyJump import mapping",
+  mode.includes("function buildNodesSshConfig")
+    && mode.includes("if (m.jump) lines.push(`  ProxyJump ${m.jump}`);")
+    && mode.includes("files.saveText({ title: 'Export nodes as ssh config'")
+    && mode.includes("api.sshConfigHosts(importConfigPath || undefined)")
+    && mode.includes("if (known) body.jump = jumpKey;")
+    && fs.readFileSync(path.join(root, "web", "desktop.html"), "utf8").includes('id="nodes-export-btn"')
+    && fs.readFileSync(path.join(root, "apps", "cam-desktop", "electron", "embedded-hub.cjs"), "utf8").includes("sshConfigHosts(explicit || null)"));
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exitCode = fail ? 1 : 0;
