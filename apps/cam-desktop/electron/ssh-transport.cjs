@@ -159,7 +159,7 @@ function _poolKey(opts) {
   const port = opts.port ? Number(opts.port) : 22;
   const auth = (opts.auth_method || (opts.key_file ? 'key' : 'agent')).toLowerCase();
   const keyFile = opts.key_file || '';
-  return [
+  const base = [
     String(opts.host || ''),
     String(opts.user || ''),
     String(port),
@@ -167,6 +167,11 @@ function _poolKey(opts) {
     keyFile,
     _secretDigest(opts),
   ].join('|');
+  // ProxyJump: a chained target pools under its chain, not its bare
+  // endpoint — "target via jumpA" and "target direct" are different
+  // connections. The jump itself keys as an ordinary direct entry
+  // (recursion), so it is shared with direct uses of that jump node.
+  return opts.jump ? _poolKey(opts.jump) + '>>' + base : base;
 }
 
 function _buildAuth(opts) {
@@ -283,6 +288,52 @@ function _dropEntry(key, _reason) {
   try { entry.client && entry.client.destroy && entry.client.destroy(); } catch { /* noop */ }
 }
 
+/** ProxyJump: open a TCP stream to opts.host:port THROUGH the jump
+ *  host's SSH connection (ssh2 forwardOut), reusing the jump's own
+ *  pooled entry (which may itself be chained — recursion via
+ *  _getOrCreate). The jump entry is an ordinary pool entry: shared
+ *  with direct uses of that node, same keepalive/watchdog semantics.
+ *  When the jump dies, the stream dies and the target client's own
+ *  close/error handlers drop it from the pool — no extra bookkeeping. */
+async function _chainSock(opts, ssh2) {
+  const jump = opts.jump;
+  const jumpEntry = _getOrCreate(_poolKey(jump), jump, ssh2);
+  try {
+    await jumpEntry.readyPromise;
+  } catch (e) {
+    throw {
+      error:  'jump_unreachable',
+      detail: `jump host ${jump.user}@${jump.host}:${jump.port || 22}: ${(e && (e.detail || e.error)) || e}`,
+    };
+  }
+  if (!jumpEntry.client) {
+    throw { error: 'jump_unreachable', detail: `jump host ${jump.user}@${jump.host}:${jump.port || 22}: no usable connection` };
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const tm = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject({ error: 'jump_forward_timeout', detail: `forwardOut to ${opts.host}:${opts.port || 22} via ${jump.host} timed out` });
+    }, 15000);
+    if (tm && typeof tm.unref === 'function') tm.unref();
+    try {
+      jumpEntry.client.forwardOut('127.0.0.1', 0, String(opts.host), Number(opts.port) || 22, (err, stream) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(tm);
+        if (err) {
+          reject({ error: 'jump_forward_failed', detail: `forwardOut to ${opts.host}:${opts.port || 22} via ${jump.user}@${jump.host}:${jump.port || 22}: ${err.message || err}` });
+          return;
+        }
+        resolve(stream);
+      });
+    } catch (e) {
+      if (!settled) { settled = true; clearTimeout(tm); reject({ error: 'jump_forward_failed', detail: (e && e.message) || String(e) }); }
+    }
+  });
+}
+
 function _getOrCreate(key, opts, ssh2, poolRef) {
   const pool = poolRef || _pool;
   const existing = pool.get(key);
@@ -310,6 +361,10 @@ function _getOrCreate(key, opts, ssh2, poolRef) {
   const port = opts.port ? Number(opts.port) : 22;
   const timeoutMs = opts.timeout_ms ? Number(opts.timeout_ms) : DEFAULT_TIMEOUT_MS;
   const client = new ssh2.Client();
+  // ProxyJump: when opts.jump is set, the target client connects over a
+  // forwardOut stream through the jump instead of a direct TCP socket.
+  // Resolved in parallel with entry setup; connect() waits on it below.
+  const sockPromise = opts.jump ? _chainSock(opts, ssh2) : Promise.resolve(null);
   const entry = {
     key,
     client,
@@ -344,7 +399,7 @@ function _getOrCreate(key, opts, ssh2, poolRef) {
         _dropEntry(key, 'error');
       }
     };
-    _log(`connect start ${opts.user}@${opts.host}:${port} (pool=${pool === _termPool ? 'term' : 'exec'})`);
+    _log(`connect start ${opts.user}@${opts.host}:${port}${opts.jump ? ` via ${opts.jump.user}@${opts.jump.host}:${opts.jump.port || 22}` : ''} (pool=${pool === _termPool ? 'term' : 'exec'})`);
     const onClose = () => {
       // If we never reached ready, treat close as connect failure.
       if (entry.state === 'connecting') failConnect(new Error('Connection lost before handshake'));
@@ -422,8 +477,6 @@ function _getOrCreate(key, opts, ssh2, poolRef) {
     };
 
     const connectOpts = {
-      host:               String(opts.host),
-      port,
       username:           String(opts.user),
       readyTimeout:       Math.min(20000, timeoutMs),
       algorithms,
@@ -441,8 +494,17 @@ function _getOrCreate(key, opts, ssh2, poolRef) {
       tryKeyboard:        authBuilt.auth === 'password',
       ...authBuilt.fields,
     };
-    try { client.connect(connectOpts); }
-    catch (e) { failConnect(e); }
+    // ProxyJump: connect over the forwardOut stream when chained,
+    // direct TCP otherwise. A chain failure (jump unreachable,
+    // forward refused) rejects sockPromise → failConnect with the
+    // hop-attributed error (visible in the diag log).
+    (async () => {
+      try {
+        const sock = await sockPromise;
+        if (sock) client.connect({ ...connectOpts, sock });
+        else client.connect({ ...connectOpts, host: String(opts.host), port });
+      } catch (e) { failConnect(e); }
+    })();
   });
 
   pool.set(key, entry);

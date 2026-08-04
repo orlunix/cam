@@ -89,6 +89,13 @@ export const MOBILE_NODES_HTML = `
           </p>
         </div>
 
+        <label data-ctx-edit-readonly="1" data-add-ctx-hide="1">Jump host (optional)
+          <select id="nodes-add-jump">
+            <option value="">None (direct)</option>
+          </select>
+          <span class="form-hint">Tunnel this host through an existing node (ProxyJump). The jump node's own auth config is reused.</span>
+        </label>
+
         <label data-host-edit-hide="1">Context name
           <input type="text" id="nodes-add-name" required placeholder="defaults to node name" autocomplete="off"
             pattern="[A-Za-z0-9_-]{1,64}" title="Letters, digits, underscore, hyphen (1–64 chars)">

@@ -789,7 +789,10 @@ export class CamApi {
   // Key file values are paths only; key contents are never returned.
   // Hubs that do not implement this (e.g. external CAM server, relay)
   // will 404; the renderer treats that as "import unavailable".
-  sshConfigHosts() { return this.request('GET', '/api/system/ssh-config'); }
+  sshConfigHosts(filePath) {
+    const q = filePath ? `?path=${encodeURIComponent(filePath)}` : '';
+    return this.request('GET', `/api/system/ssh-config${q}`);
+  }
 
   // Skillm library management (CAM-DESK-SKILLM-010..014).
   skillmStatus(contextName) {

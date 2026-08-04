@@ -1006,6 +1006,39 @@ async function filesPickPrivateKey() {
   return { path: r.filePaths[0] };
 }
 
+/** Generic file picker (single file). Used by Nodes → Import to choose
+ *  an ssh_config from disk (default remains ~/.ssh/config). */
+async function filesPickFile(opts = {}) {
+  const wins = BrowserWindow.getAllWindows();
+  const owner = wins.length > 0 ? wins[0] : null;
+  const r = await dialog.showOpenDialog(owner || undefined, {
+    title: String(opts.title || 'Select file'),
+    properties: ['openFile', 'showHiddenFiles'],
+  });
+  if (r.canceled || !r.filePaths || r.filePaths.length === 0) {
+    return { ok: false, canceled: true, path: null };
+  }
+  return { ok: true, path: r.filePaths[0] };
+}
+
+/** Save-dialog + write text. Used by Nodes → Export (ssh_config format)
+ *  so node sets move between machines. */
+async function filesSaveText(opts = {}) {
+  const wins = BrowserWindow.getAllWindows();
+  const owner = wins.length > 0 ? wins[0] : null;
+  const r = await dialog.showSaveDialog(owner || undefined, {
+    title: String(opts.title || 'Save file'),
+    defaultPath: String(opts.defaultName || 'export.txt'),
+  });
+  if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+  try {
+    fs.writeFileSync(r.filePath, String(opts.content || ''), 'utf8');
+    return { ok: true, path: r.filePath };
+  } catch (e) {
+    return { ok: false, error: 'write_failed', detail: e && e.message || String(e) };
+  }
+}
+
 function filesReadClipboardText() {
   try {
     return { ok: true, text: clipboard.readText() || '' };
@@ -1178,6 +1211,8 @@ app.whenReady().then(() => {
   // Argument-free; main owns the dialog config.
   ipcMain.handle('files:pickPrivateKey', () => filesPickPrivateKey());
   ipcMain.handle('files:pickAttachment',  () => filesPickAttachment());
+  ipcMain.handle('files:pickFile',        (_e, opts) => filesPickFile(opts));
+  ipcMain.handle('files:saveText',        (_e, opts) => filesSaveText(opts));
   ipcMain.handle('files:readClipboardText', () => filesReadClipboardText());
   ipcMain.handle('files:readClipboardAttachments', () => filesReadClipboardAttachments());
   ipcMain.handle('net:probe', (_event, payload) => netProbe(payload && payload.url || '', payload && payload.timeoutMs || 8000));
