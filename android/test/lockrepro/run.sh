@@ -44,3 +44,7 @@ SOURCES=$(find "$HERE/stubs" "$HERE/tests" "$WORK/real" -name "*.java")
 echo "=== TestHubLock ==="
 rm -rf "$WORK/data"   # fresh store per run — the test seeds its own context
 "$JAVA" -cp "$WORK/classes:$JSCH_JAR:$JSON_JAR" TestHubLock "$WORK/data"
+
+echo "=== TestAgentOps ==="
+rm -rf "$WORK/agentops-data"
+"$JAVA" -cp "$WORK/classes:$JSCH_JAR:$JSON_JAR" TestAgentOps "$WORK/agentops-data"
