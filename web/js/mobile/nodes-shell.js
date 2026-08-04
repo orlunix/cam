@@ -146,6 +146,9 @@ export const MOBILE_NODES_HTML = `
         <p class="settings-help" id="nodes-import-source">
           Reading <code>~/.ssh/config</code>&hellip;
         </p>
+        <div class="nodes-import-toolbar" style="margin-bottom:8px;">
+          <button type="button" class="btn-sm btn-secondary" id="nodes-import-browse">Browse&hellip;</button>
+        </div>
         <div id="nodes-import-list" class="nodes-import-list">
           <div class="empty-state">Loading&hellip;</div>
         </div>

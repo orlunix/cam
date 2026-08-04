@@ -38,7 +38,7 @@ public class CamJsBridge {
             "window.__camTermCb(" + JSONObject.quote(cbId) + "," + JSONObject.quote(json) + ")", null));
     }
 
-    private void filesCallback(String cbId, boolean ok, String detail) {
+    void filesCallback(String cbId, boolean ok, String detail) {
         if (webView == null) return;
         try {
             JSONObject payload = new JSONObject();
@@ -49,6 +49,16 @@ public class CamJsBridge {
                 "window.__camFilesCb(" + JSONObject.quote(cbId) + "," + ok + ","
                     + JSONObject.quote(json) + ")", null));
         } catch (Exception ignored) {}
+    }
+
+    /** ssh_config import: open the SAF picker; result lands in app storage. */
+    @JavascriptInterface
+    public void files_pickFile(String cbId, String payloadJson) {
+        try {
+            activity.openConfigFilePicker(cbId);
+        } catch (Exception e) {
+            filesCallback(cbId, false, e.getMessage());
+        }
     }
 
     /** Export helper: share text (e.g. ssh_config) via the Android share sheet. */
