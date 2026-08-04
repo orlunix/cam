@@ -3,6 +3,7 @@ package com.cam.app;
 import com.jcraft.jsch.ChannelExec;
 import com.jcraft.jsch.ChannelSftp;
 import com.jcraft.jsch.SftpException;
+import com.jcraft.jsch.SftpProgressMonitor;
 import com.jcraft.jsch.Session;
 
 import java.nio.charset.StandardCharsets;
@@ -36,6 +37,11 @@ public final class MobileSshExec {
 
     public static String camcCheckCommand() {
         return shellCommand("test -x \"$HOME/.cam/camc\"");
+    }
+
+    /** Probe: camc present AND runnable — prints its version on success. */
+    public static String camcProbeCommand() {
+        return shellCommand("test -x \"$HOME/.cam/camc\" && \"$HOME/.cam/camc\" version | head -1");
     }
 
     public static String camcListCommand() {
@@ -87,10 +93,18 @@ public final class MobileSshExec {
             "\"$HOME/.cam/camc\" stop '" + id.replace("'", "'\\''") + "'");
     }
 
-    public static String camcRemoveCommand(String agentId) {
+    public static String camcKillCommand(String agentId) {
         String id = agentId != null ? agentId.trim() : "";
         return shellCommand(
-            "\"$HOME/.cam/camc\" rm '" + id.replace("'", "'\\''") + "'");
+            "\"$HOME/.cam/camc\" kill '" + id.replace("'", "'\\''") + "'");
+    }
+
+    public static String camcRemoveCommand(String agentId) {
+        String id = agentId != null ? agentId.trim() : "";
+        // --kill matches desktop parity; it is a deprecated no-op in modern
+        // camc (rm always kills tmux).
+        return shellCommand(
+            "\"$HOME/.cam/camc\" rm '" + id.replace("'", "'\\''") + "' --kill");
     }
 
     public static String camcAttachCommand(String agentId) {
@@ -234,6 +248,67 @@ public final class MobileSshExec {
                 channel.connect(Math.max(5000, Math.min(timeoutMs, 120000)));
                 ensureRemoteDirectories(channel, remotePath.substring(0, remotePath.lastIndexOf('/')));
                 channel.put(new ByteArrayInputStream(content != null ? content : new byte[0]), remotePath);
+                out.ok = true;
+                out.exitCode = 0;
+                MobileHubLog.ssh("upload ok " + MobileHubLog.endpoint(opts));
+                return out;
+            } catch (Exception e) {
+                String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+                out.error = msg.toLowerCase().contains("auth") ? "auth_failed" : "upload_failed";
+                out.detail = msg;
+                MobileHubLog.ssh("upload fail " + MobileHubLog.endpoint(opts) + " " + msg);
+                return out;
+            } finally {
+                if (channel != null) try { channel.disconnect(); } catch (Exception ignored) {}
+                if (session != null) try { session.disconnect(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    /** Progress callback for uploadFileProgress (sent bytes so far, total). */
+    public interface UploadProgress {
+        void onProgress(long sent, long total);
+    }
+
+    /** uploadFile with byte-level progress (SFTP monitor), for sync step display. */
+    public static Result uploadFileProgress(MobileSshAuth.Options opts, String remotePath,
+            byte[] content, int timeoutMs, UploadProgress progress) {
+        Result out = new Result();
+        if (opts == null || opts.host == null || opts.host.isEmpty()) {
+            out.error = "invalid_args";
+            out.detail = "host is required";
+            return out;
+        }
+        if (opts.user == null || opts.user.isEmpty()) {
+            out.error = "invalid_args";
+            out.detail = "user is required";
+            return out;
+        }
+        String key = MobileSshPool.poolKey(opts);
+        Object lock = MobileSshPool.lockFor(key);
+        Session session = null;
+        ChannelSftp channel = null;
+        synchronized (lock) {
+            try {
+                MobileHubLog.ssh("upload connect " + MobileHubLog.endpoint(opts));
+                session = connectWithRetry(opts, false, 3);
+                channel = (ChannelSftp) session.openChannel("sftp");
+                channel.connect(Math.max(5000, Math.min(timeoutMs, 120000)));
+                ensureRemoteDirectories(channel, remotePath.substring(0, remotePath.lastIndexOf('/')));
+                final long total = content != null ? content.length : 0;
+                channel.put(new ByteArrayInputStream(content != null ? content : new byte[0]),
+                    remotePath, new SftpProgressMonitor() {
+                        public void init(int op, String src, String dest, long max) {
+                            if (progress != null) progress.onProgress(0, total);
+                        }
+                        public boolean count(long n) {
+                            if (progress != null) progress.onProgress(n, total);
+                            return true;
+                        }
+                        public void end() {
+                            if (progress != null) progress.onProgress(total, total);
+                        }
+                    });
                 out.ok = true;
                 out.exitCode = 0;
                 MobileHubLog.ssh("upload ok " + MobileHubLog.endpoint(opts));
