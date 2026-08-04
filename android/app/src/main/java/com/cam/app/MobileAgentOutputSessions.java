@@ -127,7 +127,7 @@ public final class MobileAgentOutputSessions {
 
     private static void disconnect(Entry ent) {
         if (ent == null || ent.session == null) return;
-        try { ent.session.disconnect(); } catch (Exception ignored) {}
+        try { MobileSshAuth.disconnectFully(ent.session); } catch (Exception ignored) {}
         ent.session = null;
     }
 

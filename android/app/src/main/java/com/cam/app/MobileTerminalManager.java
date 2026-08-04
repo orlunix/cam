@@ -269,7 +269,7 @@ public final class MobileTerminalManager {
             }
         }
         try { if (ent.channel != null) ent.channel.disconnect(); } catch (Exception ignored) {}
-        try { if (ent.session != null) ent.session.disconnect(); } catch (Exception ignored) {}
+        try { if (ent.session != null) MobileSshAuth.disconnectFully(ent.session); } catch (Exception ignored) {}
         ent.session = null;
     }
 
