@@ -20,6 +20,7 @@ export const MOBILE_NODES_HTML = `
 
   <div class="nodes-actions" id="nodes-actions">
     <button type="button" class="btn-primary" id="nodes-add-toggle">Add Host</button>
+    <button type="button" class="btn-secondary" id="nodes-export-btn">Export</button>
   </div>
 
   <div id="nodes-manage-panel" class="nodes-manage-panel" hidden>
