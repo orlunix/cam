@@ -24,8 +24,10 @@ import java.security.SecureRandom;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.TimeZone;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -62,6 +64,34 @@ public final class MobileEmbeddedHub {
     private File storePath;
     private MobileCredentialStore credentialStore;
     private final List<JSONObject> logs = new ArrayList<>();
+
+    /** Live sync step per context id: {step, detail, since, at}. Present = in-flight. */
+    private final Map<String, JSONObject> syncProgress = new HashMap<>();
+
+    private void syncProgressStep(String ctxId, String step, String detail) {
+        if (ctxId == null || ctxId.isEmpty() || step == null) return;
+        synchronized (syncProgress) {
+            try {
+                JSONObject p = syncProgress.get(ctxId);
+                long now = System.currentTimeMillis();
+                if (p == null) {
+                    p = new JSONObject();
+                    p.put("since", now);
+                    syncProgress.put(ctxId, p);
+                }
+                p.put("step", step);
+                p.put("detail", detail != null ? detail : "");
+                p.put("at", now);
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private void syncProgressDone(String ctxId) {
+        if (ctxId == null) return;
+        synchronized (syncProgress) {
+            syncProgress.remove(ctxId);
+        }
+    }
 
     public MobileEmbeddedHub(Context ctx) {
         this.appContext = ctx.getApplicationContext();
@@ -494,6 +524,23 @@ public final class MobileEmbeddedHub {
             return jsonResponse(200, new JSONObject().put("content", new String(file.content, StandardCharsets.UTF_8)));
         }
 
+        // Live sync step for the UI poller (desktop parity: nodes-mode polls
+        // this at 500ms while POST /sync is in flight).
+        if ("/sync-status".equals(sub) && "GET".equals(method)) {
+            JSONObject existing = resolveContext(ctxName, null);
+            if (existing == null) {
+                return jsonResponse(404, new JSONObject().put("error", "not_found")
+                    .put("detail", "context \"" + ctxName + "\" not found"));
+            }
+            JSONObject p;
+            synchronized (syncProgress) {
+                JSONObject live = syncProgress.get(existing.optString("id", ""));
+                p = live != null ? new JSONObject(live.toString()) : null;
+            }
+            return jsonResponse(200, new JSONObject().put("ok", true)
+                .put("progress", p != null ? p : JSONObject.NULL));
+        }
+
         if ("/sync".equals(sub)) {
             if ("POST".equals(method)) {
                 JSONObject body = bodyBytes.length > 0
@@ -610,34 +657,51 @@ public final class MobileEmbeddedHub {
         }
 
         // Stop agent (graceful camc stop; record kept). Desktop parity:
-        // DELETE /api/agents/:id.
+        // DELETE /api/agents/:id — ?force=1 → camc kill; terminal-state
+        // agents short-circuit as no_op without touching the remote.
         if ("DELETE".equals(method) && sub.isEmpty()) {
+            boolean force = query != null && query.matches("(?i).*(^|&)force=(1|true|yes)(&|$).*");
             JSONObject agent = findAgentById(agentId, parseAgentEndpointHints(query, null));
             if (agent == null) {
                 return jsonResponse(404, new JSONObject()
                     .put("error", "agent_not_found")
                     .put("detail", "agent \"" + agentId + "\" not found"));
             }
+            String curStatus = agent.optString("status", "");
+            boolean terminal = "completed".equals(curStatus) || "failed".equals(curStatus)
+                || "timeout".equals(curStatus) || "killed".equals(curStatus)
+                || "stopped".equals(curStatus);
+            if (terminal && !(force && "stopped".equals(curStatus))) {
+                return jsonResponse(200, new JSONObject()
+                    .put("ok", true).put("agent", agent).put("no_op", true));
+            }
             MobileSshAuth.Options auth = sshAuthForAgent(agent);
             if (auth == null || auth.host == null || auth.host.isEmpty()) {
                 return jsonResponse(400, new JSONObject().put("error", "not_ssh")
                     .put("detail", "agent stop requires an SSH node"));
             }
-            MobileSshExec.Result res = MobileSshExec.exec(
-                auth, MobileSshExec.camcStopCommand(agentId), SEND_TIMEOUT_MS);
+            MobileSshExec.Result res = MobileSshExec.exec(auth,
+                force ? MobileSshExec.camcKillCommand(agentId)
+                    : MobileSshExec.camcStopCommand(agentId),
+                SEND_TIMEOUT_MS);
             if (!res.ok) {
                 return jsonResponse(502, new JSONObject()
-                    .put("error", res.error != null && !res.error.isEmpty() ? res.error : "stop_failed")
+                    .put("error", res.error != null && !res.error.isEmpty() ? res.error : (force ? "kill_failed" : "stop_failed"))
                     .put("detail", res.detail != null ? res.detail : ""));
             }
-            // camc stop keeps the record; reflect locally for immediate UI.
-            agent.put("status", "stopped");
+            agent.put("status", force ? "killed" : "stopped");
+            agent.put("state", force ? "killed" : "stopped");
+            agent.put("exit_reason", force ? "Force killed by user" : "Stopped by user");
+            if (!agent.has("completed_at") || agent.isNull("completed_at")) {
+                agent.put("completed_at", nowIso());
+            }
             saveStore();
-            return jsonResponse(200, new JSONObject().put("ok", true).put("agent", agent));
+            return jsonResponse(200, new JSONObject()
+                .put("ok", true).put("agent", agent).put("no_op", false));
         }
 
-        // Remove agent from history (camc rm; record deleted). Desktop parity:
-        // DELETE /api/agents/:id/history.
+        // Remove agent from history (camc rm --kill; record deleted).
+        // Desktop parity: DELETE /api/agents/:id/history.
         if ("DELETE".equals(method) && "/history".equals(sub)) {
             JSONObject agent = findAgentById(agentId, parseAgentEndpointHints(query, null));
             if (agent == null) {
@@ -658,7 +722,8 @@ public final class MobileEmbeddedHub {
                     .put("detail", res.detail != null ? res.detail : ""));
             }
             removeAgentRecord(agentId);
-            return jsonResponse(200, new JSONObject().put("ok", true));
+            return jsonResponse(200, new JSONObject()
+                .put("ok", true).put("removed_id", agentId));
         }
 
         if (("/workspace/files".equals(sub) || "/workspace/files/read".equals(sub)) && "GET".equals(method)) {
@@ -1199,15 +1264,54 @@ public final class MobileEmbeddedHub {
     private static final int SYNC_TIMEOUT_MS = 60000;
     private static final int SEND_TIMEOUT_MS = 30000;
     private static final int RUN_REMOTE_TIMEOUT_MS = 45000;
+    private static final int UPLOAD_TIMEOUT_MS = 120000;
 
     private MobileSshExec.SequenceResult runSyncList(MobileSshAuth.Options sshAuth) {
         return MobileSshExec.execSequence(
             sshAuth,
             new String[] {
-                MobileSshExec.camcCheckCommand(),
+                MobileSshExec.camcProbeCommand(),
                 MobileSshExec.camcListCommand(),
             },
             SYNC_TIMEOUT_MS);
+    }
+
+    // --- camc version probe/upgrade (desktop deploy-robustness parity) ---
+
+    private static final Pattern VERSION_RE = Pattern.compile("v?(\\d+)\\.(\\d+)\\.(\\d+)");
+    private static final Pattern BUNDLED_VERSION_RE =
+        Pattern.compile("__version__\\s*=\\s*\"([0-9]+\\.[0-9]+\\.[0-9]+)\"");
+    private volatile String bundledCamcVersion;
+
+    private static int[] parseVersion(String text) {
+        if (text == null) return null;
+        Matcher m = VERSION_RE.matcher(text);
+        if (!m.find()) return null;
+        try {
+            return new int[] { Integer.parseInt(m.group(1)),
+                Integer.parseInt(m.group(2)), Integer.parseInt(m.group(3)) };
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static int versionCmp(int[] a, int[] b) {
+        for (int i = 0; i < 3; i++) {
+            if (a[i] != b[i]) return a[i] < b[i] ? -1 : 1;
+        }
+        return 0;
+    }
+
+    /** Version of the camc bundled in the APK assets (cached). */
+    private String bundledCamcVersion() {
+        if (bundledCamcVersion != null) return bundledCamcVersion;
+        try {
+            byte[] content = readBundledCamcForSync();
+            String head = new String(content, 0, Math.min(content.length, 8192), StandardCharsets.UTF_8);
+            Matcher m = BUNDLED_VERSION_RE.matcher(head);
+            if (m.find()) bundledCamcVersion = m.group(1);
+        } catch (Exception ignored) {}
+        return bundledCamcVersion;
     }
 
     private byte[] readBundledCamcForSync() throws Exception {
@@ -1220,7 +1324,7 @@ public final class MobileEmbeddedHub {
         return out.toByteArray();
     }
 
-    private JSONObject deployBundledCamcForSync(MobileSshAuth.Options sshAuth) throws Exception {
+    private JSONObject deployBundledCamcForSync(MobileSshAuth.Options sshAuth, String ctxId) throws Exception {
         byte[] content;
         try {
             content = readBundledCamcForSync();
@@ -1231,9 +1335,28 @@ public final class MobileEmbeddedHub {
                 .put("decision", "upload_failed")
                 .put("detail", "APK does not contain assets/camc/camc: " + e.getMessage());
         }
+        // python3 gate first — uploading 600KB to a host without python3 is
+        // pointless (desktop deploy-robustness parity).
+        MobileSshExec.Result py = MobileSshExec.exec(sshAuth,
+            MobileSshExec.shellCommand("command -v python3"), SEND_TIMEOUT_MS);
+        if (py == null || !py.ok) {
+            return new JSONObject()
+                .put("ok", false)
+                .put("error", "python3_missing")
+                .put("decision", "upload_failed")
+                .put("detail", "remote host has no python3 on PATH; camc cannot run there");
+        }
+        final String fCtxId = ctxId;
+        final int totalKb = (content.length + 1023) / 1024;
         String tmp = "/tmp/camc-mobile-sync-" + System.currentTimeMillis() + ".tmp";
         MobileHubLog.ssh("sync upload bundled camc " + MobileHubLog.endpoint(sshAuth));
-        MobileSshExec.Result uploaded = MobileSshExec.uploadFile(sshAuth, tmp, content, SYNC_TIMEOUT_MS);
+        MobileSshExec.Result uploaded = MobileSshExec.uploadFileProgress(sshAuth, tmp, content,
+            UPLOAD_TIMEOUT_MS, (sent, total) -> {
+                if (fCtxId != null && total > 0) {
+                    int pct = (int) Math.min(100, (sent * 100) / total);
+                    syncProgressStep(fCtxId, "uploading camc", pct + "% of " + totalKb + "KB");
+                }
+            });
         if (uploaded == null || !uploaded.ok) {
             return new JSONObject()
                 .put("ok", false)
@@ -1983,8 +2106,18 @@ public final class MobileEmbeddedHub {
         return ctxName.equals(agent.optString("context_name", ""));
     }
 
-    /** SSH check camc + `camc --json list` → import agents (no deploy). */
+    /** Sync wrapper: guarantees the live-step marker is cleared on every exit. */
     private JSONObject syncContextAgents(JSONObject ctx) throws Exception {
+        String ctxId = ctx != null ? ctx.optString("id", "") : "";
+        try {
+            return syncContextAgentsInner(ctx);
+        } finally {
+            syncProgressDone(ctxId);
+        }
+    }
+
+    /** SSH check camc + `camc --json list` → import agents (no deploy). */
+    private JSONObject syncContextAgentsInner(JSONObject ctx) throws Exception {
         JSONObject m = ctx.optJSONObject("machine");
         if (m == null || !"ssh".equals(m.optString("type", ""))) {
             return new JSONObject()
@@ -2026,13 +2159,43 @@ public final class MobileEmbeddedHub {
         long uploadMs = 0L;
         long importMs = 0L;
         String uploadDecision = "skipped_present";
+        String ctxId = ctx.optString("id", "");
+        syncProgressStep(ctxId, "connecting", "");
         MobileSshExec.SequenceResult syncRun = runSyncList(sshAuth);
+        syncProgressStep(ctxId, "checking camc", "");
         MobileSshExec.Result check = syncStep(syncRun, 0);
         if (check == null && syncRun != null) check = syncRun.first();
-        if ((syncRun == null || !syncRun.ok || syncRun.steps == null || syncRun.steps.length < 2)
-                && isCamcMissing(check)) {
+
+        // camc unrunnable (no python3 / broken install): fail clearly instead
+        // of attempting a pointless upload (desktop parity).
+        if (isCamcMissing(check) && check != null) {
+            String blob = ((check.stderr != null ? check.stderr : "") + " "
+                + (check.detail != null ? check.detail : "")).toLowerCase();
+            if (blob.contains("python3") || blob.contains("command not found")) {
+                return new JSONObject()
+                    .put("ok", false)
+                    .put("error", "camc_unrunnable")
+                    .put("detail", "remote camc exists but cannot run: "
+                        + (check.detail != null ? check.detail : check.stderr))
+                    .put("sync", syncTiming(syncStartedAt, syncRun, uploadMs, uploadDecision, importMs))
+                    .put("results", new JSONObject().put("camc", "failed"));
+            }
+        }
+
+        // Deploy when camc is missing OR older than the bundled version.
+        boolean needDeploy = (syncRun == null || !syncRun.ok || syncRun.steps == null
+                || syncRun.steps.length < 2) && isCamcMissing(check);
+        if (!needDeploy && check != null && check.ok) {
+            int[] remote = parseVersion(check.stdout);
+            int[] bundled = parseVersion(bundledCamcVersion());
+            if (remote != null && bundled != null && versionCmp(remote, bundled) < 0) {
+                needDeploy = true;
+                log("info", "sync " + ctx.optString("name") + ": remote camc older than bundled, upgrading");
+            }
+        }
+        if (needDeploy) {
             long uploadStartedAt = System.currentTimeMillis();
-            JSONObject deployed = deployBundledCamcForSync(sshAuth);
+            JSONObject deployed = deployBundledCamcForSync(sshAuth, ctxId);
             uploadMs = System.currentTimeMillis() - uploadStartedAt;
             uploadDecision = deployed.optString("decision", "upload_failed");
             if (!deployed.optBoolean("ok", false)) {
@@ -2045,6 +2208,7 @@ public final class MobileEmbeddedHub {
             }
             syncRun = runSyncList(sshAuth);
         }
+        syncProgressStep(ctxId, "listing agents", "");
         if (!syncRun.ok || syncRun.steps == null || syncRun.steps.length < 2) {
             check = syncRun.first();
             MobileHubLog.ssh("sync fail ctx=" + ctx.optString("name") + " "
@@ -2096,6 +2260,7 @@ public final class MobileEmbeddedHub {
         }
 
         int prevCount = countAgentsForContext(ctx);
+        syncProgressStep(ctxId, "importing", normalized.length() + " agent(s)");
         upsertAgentsForContext(ctx, normalized);
         markContextUsed(ctx);
         importMs = System.currentTimeMillis() - importStartedAt;

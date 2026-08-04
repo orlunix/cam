@@ -40,7 +40,9 @@ public class TestAgentOps {
                 .put(new JSONObject().put("id", "a1").put("name", "ssh-agent")
                     .put("status", "running").put("context_name", "bh"))
                 .put(new JSONObject().put("id", "a2").put("name", "local-agent")
-                    .put("status", "running").put("context_name", "").put("context_path", "/tmp")));
+                    .put("status", "running").put("context_name", "").put("context_path", "/tmp"))
+                .put(new JSONObject().put("id", "a3").put("name", "done-agent")
+                    .put("status", "completed").put("context_name", "bh")));
         Files.write(new File(hubDir, "embedded-hub.json").toPath(),
             store.toString(2).getBytes("UTF-8"));
 
@@ -80,6 +82,23 @@ public class TestAgentOps {
         JSONObject r5 = hub.apiRequest("GET", "/api/agents", bearer, "");
         String body = r5.opt("data") != null ? r5.opt("data").toString() : "";
         failures += check("store untouched after failed ops", body.contains("a1") && body.contains("a2"));
+
+        // 6. Terminal-state agent stop → 200 no_op without any SSH attempt
+        JSONObject r6 = hub.apiRequest("DELETE", "/api/agents/a3", bearer, "");
+        failures += check("completed agent stop → 200 no_op", r6.optInt("status") == 200
+            && r6.optJSONObject("data") != null
+            && r6.optJSONObject("data").optBoolean("no_op", false));
+
+        // 7. sync-status idle → 200 {ok, progress:null}
+        JSONObject r7 = hub.apiRequest("GET", "/api/contexts/bh/sync-status", bearer, "");
+        failures += check("sync-status idle → 200 progress:null", r7.optInt("status") == 200
+            && r7.optJSONObject("data") != null
+            && r7.optJSONObject("data").optBoolean("ok", false)
+            && r7.optJSONObject("data").isNull("progress"));
+
+        // 8. sync-status unknown context → 404
+        JSONObject r8 = hub.apiRequest("GET", "/api/contexts/nope/sync-status", bearer, "");
+        failures += check("sync-status unknown context → 404", r8.optInt("status") == 404);
 
         hub.stop();
         System.out.println(failures == 0
