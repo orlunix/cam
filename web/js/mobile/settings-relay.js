@@ -104,9 +104,10 @@ export function renderRelaySettings(container) {
     </div>
 
     <div class="relay-hint">
-      <strong>CamUI V2</strong> connects via Relay to a workstation running
-      <code>camui start --profile … --relay-url … --relay-token …</code>.
-      The phone stores only Relay URL and Relay token.
+      <strong>Relay is deprecated</strong> and will be removed in a future
+      release. Use <strong>Direct</strong> (phone-hosted hub) instead — Relay
+      still works in this version but gets no new features. Existing Relay
+      profiles keep working until removal.
     </div>
 
     <div class="connection-status">
