@@ -2212,6 +2212,10 @@ function mountNodesActions({
       if (importSrcEl) importSrcEl.textContent = 'This Hub did not return ssh-config suggestions.';
       return;
     }
+    renderImportResp(resp);
+  }
+
+  function renderImportResp(resp) {
     if (importSrcEl) {
       importSrcEl.innerHTML = resp.available && resp.source
         ? `Reading <code>${esc(resp.source)}</code>.`
@@ -2219,6 +2223,30 @@ function mountNodesActions({
     }
     const hosts = (resp && resp.hosts) || [];
     if (hosts.length === 0) {
+      // Hubs without a user ~/.ssh/config (mobile): offer a paste fallback.
+      if (resp && resp.available === false) {
+        importList.innerHTML = `
+          <div class="empty-state">No SSH config on this hub. Paste a config below (from <strong>Nodes → Export</strong> on another device):</div>
+          <textarea id="ssh-config-paste" rows="8" spellcheck="false" style="width:100%;box-sizing:border-box;font-family:monospace;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:8px;" placeholder="Host gpu&#10;  HostName 10.0.0.1&#10;  User hren"></textarea>
+          <div style="margin-top:6px;text-align:right;"><button type="button" class="btn-sm btn-secondary" id="ssh-config-parse-btn">Parse</button></div>`;
+        const parseBtn = importList.querySelector('#ssh-config-parse-btn');
+        parseBtn.addEventListener('click', async () => {
+          const ta = importList.querySelector('#ssh-config-paste');
+          const text = (ta?.value || '').trim();
+          if (!text) { setImportStatus('Paste an ssh_config first.', 'is-error'); return; }
+          parseBtn.disabled = true;
+          parseBtn.textContent = 'Parsing…';
+          try {
+            const parsed = await api.sshConfigParse(text);
+            renderImportResp(parsed);
+          } catch (err) {
+            setImportStatus(`Parse failed: ${err.message}`, 'is-error');
+            parseBtn.disabled = false;
+            parseBtn.textContent = 'Parse';
+          }
+        });
+        return;
+      }
       importList.innerHTML = `<div class="empty-state">No host entries found. Add hosts manually with <strong>Add Host</strong>.</div>`;
       return;
     }

@@ -1,11 +1,16 @@
 package com.cam.app;
 
+import com.jcraft.jsch.ChannelDirectTCPIP;
 import com.jcraft.jsch.JSch;
 import com.jcraft.jsch.Session;
+import com.jcraft.jsch.SocketFactory;
 
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.Socket;
 import java.util.Properties;
 
 /** Resolve SSH auth from context machine records + credential store. */
@@ -19,7 +24,16 @@ public final class MobileSshAuth {
         public String keyFile = "";
         public String password = "";
         public String passphrase = "";
+        /** ProxyJump chain (desktop parity): next hop; resolved by the hub. */
+        public Options jump;
     }
+
+    /** Max ProxyJump chain depth (desktop JUMP_MAX_DEPTH parity). */
+    public static final int JUMP_MAX_DEPTH = 3;
+
+    /** Jump sessions backing chained target sessions, for disconnectFully(). */
+    private static final java.util.Map<Session, Session> JUMP_SESSIONS =
+        new java.util.concurrent.ConcurrentHashMap<>();
 
     private MobileSshAuth() {}
 
@@ -95,7 +109,11 @@ public final class MobileSshAuth {
         long t0 = System.currentTimeMillis();
         MobileHubLog.ssh("connect start " + MobileHubLog.endpoint(opts) + " budget=" + budget + "ms");
         try {
-            session.connect(budget);
+            if (opts.jump != null) {
+                connectViaJump(session, opts, budget);
+            } else {
+                session.connect(budget);
+            }
             MobileHubLog.ssh("connect ok " + (System.currentTimeMillis() - t0) + "ms "
                 + MobileHubLog.endpoint(opts));
         } catch (Exception e) {
@@ -112,5 +130,44 @@ public final class MobileSshAuth {
         // Short exec (sync/capture): no keepalive — setServerAliveInterval() sets Session
         // timeout and is pointless when we disconnect within seconds anyway.
         return session;
+    }
+
+    /** Chain: connect the jump host, then tunnel the target through direct-tcpip. */
+    private static void connectViaJump(Session session, Options opts, int budgetMs) throws Exception {
+        MobileHubLog.ssh("jump connect " + MobileHubLog.endpoint(opts.jump)
+            + " -> " + MobileHubLog.endpoint(opts));
+        Session jump = connect(opts.jump, budgetMs, false);
+        try {
+            ChannelDirectTCPIP ch = (ChannelDirectTCPIP) jump.openChannel("direct-tcpip");
+            ch.setHost(opts.host);
+            ch.setPort(opts.port > 0 ? opts.port : 22);
+            ch.connect(budgetMs);
+            session.setSocketFactory(new SocketFactory() {
+                public Socket createSocket(String host, int port) {
+                    return null; // JSch falls back to the streams below
+                }
+                public InputStream getInputStream(Socket socket) throws java.io.IOException {
+                    return ch.getInputStream();
+                }
+                public OutputStream getOutputStream(Socket socket) throws java.io.IOException {
+                    return ch.getOutputStream();
+                }
+            });
+            session.connect(budgetMs);
+            JUMP_SESSIONS.put(session, jump);
+        } catch (Exception e) {
+            try { jump.disconnect(); } catch (Exception ignored) {}
+            throw e;
+        }
+    }
+
+    /** Disconnect a session and, when chained, its jump session too. */
+    public static void disconnectFully(Session session) {
+        if (session == null) return;
+        Session jump = JUMP_SESSIONS.remove(session);
+        try { session.disconnect(); } catch (Exception ignored) {}
+        if (jump != null) {
+            try { jump.disconnect(); } catch (Exception ignored) {}
+        }
     }
 }
