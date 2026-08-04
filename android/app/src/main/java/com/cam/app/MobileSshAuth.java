@@ -142,15 +142,31 @@ public final class MobileSshAuth {
             ch.setHost(opts.host);
             ch.setPort(opts.port > 0 ? opts.port : 22);
             ch.connect(budgetMs);
-            session.setSocketFactory(new SocketFactory() {
-                public Socket createSocket(String host, int port) {
-                    return null; // JSch falls back to the streams below
-                }
-                public InputStream getInputStream(Socket socket) throws java.io.IOException {
+            // JSch calls socket.setTcpNoDelay() on the factory socket — a null
+            // or plain dummy Socket NPEs. Wrap the channel in a Socket subclass.
+            Socket tunneled = new Socket() {
+                @Override public void setTcpNoDelay(boolean on) { /* tunneled */ }
+                @Override public InputStream getInputStream() throws java.io.IOException {
                     return ch.getInputStream();
                 }
-                public OutputStream getOutputStream(Socket socket) throws java.io.IOException {
+                @Override public OutputStream getOutputStream() throws java.io.IOException {
                     return ch.getOutputStream();
+                }
+                @Override public synchronized void close() {
+                    try { ch.disconnect(); } catch (Exception ignored) {}
+                }
+                @Override public boolean isConnected() { return ch.isConnected(); }
+                @Override public boolean isClosed() { return !ch.isConnected(); }
+            };
+            session.setSocketFactory(new SocketFactory() {
+                public Socket createSocket(String host, int port) {
+                    return tunneled;
+                }
+                public InputStream getInputStream(Socket socket) throws java.io.IOException {
+                    return socket.getInputStream();
+                }
+                public OutputStream getOutputStream(Socket socket) throws java.io.IOException {
+                    return socket.getOutputStream();
                 }
             });
             session.connect(budgetMs);
