@@ -352,6 +352,66 @@ async function main() {
     setRemoteHandler(null);
   }
 
+  // ── ProxyJump: machine.jump validation + resolution ──
+  {
+    // Baseline jump node (ordinary SSH context).
+    let r0 = await request('POST', '/api/contexts', {
+      name: 'jumphost', host: '10.9.0.1', user: 'ju', port: 2200,
+      auth_method: 'agent', path: '/home/ju',
+    });
+    eq('jump: seed jump node', r0.status, 201);
+
+    // Valid jump reference is persisted.
+    r0 = await request('POST', '/api/contexts', {
+      name: 'viabox', host: '10.9.9.9', user: 'u', port: 22,
+      auth_method: 'agent', path: '/home/u', jump: 'ju@10.9.0.1:2200',
+    });
+    eq('jump: create via jump accepted', r0.status, 201, JSON.stringify(r0.body));
+    eq('jump: machine.jump persisted', r0.body && r0.body.machine && r0.body.machine.jump, 'ju@10.9.0.1:2200');
+
+    // Unknown jump node → invalid_jump.
+    r0 = await request('POST', '/api/contexts', {
+      name: 'badbox', host: '10.9.9.8', user: 'u', port: 22,
+      auth_method: 'agent', path: '/home/u', jump: 'ghost@10.0.0.66:22',
+    });
+    eq('jump: unknown jump node rejected', r0.status, 400);
+    eq('jump: unknown jump node error', r0.body && r0.body.error, 'invalid_jump');
+
+    // Self jump → invalid_jump.
+    r0 = await request('POST', '/api/contexts', {
+      name: 'selfbox', host: '10.9.0.1', user: 'ju', port: 2200,
+      auth_method: 'agent', path: '/home/ju', jump: 'ju@10.9.0.1:2200',
+    });
+    eq('jump: self jump rejected', r0.status, 400);
+    eq('jump: self jump error', r0.body && r0.body.error, 'invalid_jump');
+
+    // Update: set then clear.
+    r0 = await request('POST', '/api/contexts', {
+      name: 'directbox', host: '10.9.9.7', user: 'u', port: 22,
+      auth_method: 'agent', path: '/home/u',
+    });
+    eq('jump: seed direct node', r0.status, 201);
+    r0 = await request('PUT', '/api/contexts/directbox', { jump: 'ju@10.9.0.1:2200' });
+    eq('jump: update sets jump', r0.status === 200 && r0.body && r0.body.machine && r0.body.machine.jump, 'ju@10.9.0.1:2200');
+    r0 = await request('PUT', '/api/contexts/directbox', { jump: '' });
+    eq('jump: update clears jump', r0.status === 200 && !(r0.body && r0.body.machine && r0.body.machine.jump), true);
+
+    // Loop: loopa.jump=loopb, then loopb.jump=loopa must fail.
+    await request('POST', '/api/contexts', { name: 'loopb', host: '10.9.1.2', user: 'u', port: 22, auth_method: 'agent', path: '/home/u' });
+    await request('POST', '/api/contexts', { name: 'loopa', host: '10.9.1.1', user: 'u', port: 22, auth_method: 'agent', path: '/home/u', jump: 'u@10.9.1.2:22' });
+    r0 = await request('PUT', '/api/contexts/loopb', { jump: 'u@10.9.1.1:22' });
+    eq('jump: two-node loop rejected', r0.status, 400);
+    eq('jump: loop error', r0.body && r0.body.error, 'invalid_jump', JSON.stringify(r0.body));
+
+    // Depth: chain 4 deep (d4→d3→d2→d1→jumphost) exceeds the 3-hop cap.
+    await request('POST', '/api/contexts', { name: 'd1', host: '10.9.2.1', user: 'u', port: 22, auth_method: 'agent', path: '/home/u', jump: 'ju@10.9.0.1:2200' });
+    await request('POST', '/api/contexts', { name: 'd2', host: '10.9.2.2', user: 'u', port: 22, auth_method: 'agent', path: '/home/u', jump: 'u@10.9.2.1:22' });
+    await request('POST', '/api/contexts', { name: 'd3', host: '10.9.2.3', user: 'u', port: 22, auth_method: 'agent', path: '/home/u', jump: 'u@10.9.2.2:22' });
+    r0 = await request('POST', '/api/contexts', { name: 'd4', host: '10.9.2.4', user: 'u', port: 22, auth_method: 'agent', path: '/home/u', jump: 'u@10.9.2.3:22' });
+    eq('jump: chain deeper than 3 rejected', r0.status, 400);
+    eq('jump: depth error', r0.body && r0.body.error, 'invalid_jump');
+  }
+
   await stopHub();
 
   // ── Hub restart (resetApp path): stop must not hang on open

@@ -550,6 +550,14 @@ function buildContextRecord(body) {
     // safeStorage-less debug.
     if (allowOneShot) machine.allow_one_shot = true;
   }
+  // ProxyJump: machine.jump is the node key of another SSH node. Validated
+  // here (must resolve, no self-ref, chain acyclic + depth-capped) so a
+  // broken chain can never be saved.
+  if (isSSH && typeof body.jump === 'string' && body.jump.trim()) {
+    machine.jump = body.jump.trim();
+    const jErr = _validateJumpChain(machine);
+    if (jErr) return jErr;
+  }
 
   // Optional Remember support. Raw secret never makes it to the
   // record we return / persist — it goes to the credential store
@@ -648,6 +656,17 @@ function applyContextUpdate(existing, body) {
   m.type = m.host ? 'ssh' : 'local';
   if (m.type === 'ssh' && !m.user) {
     return { error: 'missing_user', detail: 'SSH contexts require host and user' };
+  }
+  // ProxyJump: set or clear machine.jump (empty string clears). The
+  // merged record is chain-validated before it can be persisted.
+  if (body.jump !== undefined) {
+    const j = String(body.jump || '').trim();
+    if (j) m.jump = j;
+    else delete m.jump;
+  }
+  if (m.jump) {
+    const jErr = _validateJumpChain(m);
+    if (jErr) return jErr;
   }
 
   // Auth method change tracking: when auth_method changes, drop the
@@ -937,6 +956,11 @@ async function _syncContextAgents(ctx, overrides = {}) {
       : _credentialFor(ctx);
     if (pp != null) baseOpts.passphrase = pp;
   }
+  const jump = _resolveJumpChain(ctx);
+  if (jump && jump.error) {
+    return { ok: false, error: jump.error, detail: jump.detail, results: { camc: 'failed' } };
+  }
+  if (jump) baseOpts.jump = jump;
 
   // Fast path (mirrors the attach path): if a usable remote camc
   // exists, list agents immediately and refresh camc in the
@@ -1334,6 +1358,9 @@ function _resolveStartTarget(body) {
       } else if (baseOpts.auth_method === 'key' && cred != null) {
         baseOpts.passphrase = cred;
       }
+      const jump = _resolveJumpChain(ctx);
+      if (jump && jump.error) return { ok: false, error: jump.error, detail: jump.detail };
+      if (jump) baseOpts.jump = jump;
       return { ok: true, ctx, baseOpts };
     }
     // local-type context (legacy store row): resolve ok with no
@@ -1396,6 +1423,9 @@ function _resolveStartTarget(body) {
   } else if (baseOpts.auth_method === 'key' && cred != null) {
     baseOpts.passphrase = cred;
   }
+  const jump = _resolveJumpChain(donor);
+  if (jump && jump.error) return { ok: false, error: jump.error, detail: jump.detail };
+  if (jump) baseOpts.jump = jump;
   // Throwaway context shell — machine only, never stored.
   const throwaway = {
     id: crypto.randomUUID(),
@@ -2357,6 +2387,87 @@ async function _browseContextRead(ctxNameOrId, rawPath) {
   };
 }
 
+/* ────────── ProxyJump (machine.jump) ──────────
+ * A context's machine.jump is the NODE KEY ("user@host:port", IPv6
+ * bracketed) of another SSH node to tunnel through. Resolution walks
+ * the store: find a context on that endpoint, build its opts (with its
+ * own credentials), recurse if the jump itself has a jump. Depth is
+ * capped and cycles refused, both here (runtime) and at create/update
+ * (validation), so bad chains can neither be saved nor executed. */
+const JUMP_MAX_DEPTH = 3;
+
+function _machineHostKey(m) {
+  const host = (m && m.host) || 'local';
+  const isSSH = !!(m && (m.type === 'ssh' || (host && host !== 'local')));
+  if (!isSSH) return 'local';
+  const hostPart = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+  const port = Number.isFinite(Number(m.port)) && Number(m.port) > 0 ? Number(m.port) : 22;
+  return `${m.user || ''}@${hostPart}:${port}`;
+}
+
+function _findContextByHostKey(hostKey) {
+  const contexts = (state.store && state.store.contexts) || [];
+  return contexts.find(c => c && c.machine && c.machine.type === 'ssh' && _machineHostKey(c.machine) === hostKey) || null;
+}
+
+/** Build the transport `jump` object for a context, or null when the
+ *  context connects directly. `seen` holds the node keys already on
+ *  the chain — a jump target appearing in it means the chain loops.
+ *  Returns { error, detail } on a broken chain (unknown node, loop,
+ *  too deep, missing jump credentials). */
+function _resolveJumpChain(ctx, { depth = 0, seen = new Set() } = {}) {
+  const m = (ctx && ctx.machine) || {};
+  if (!m.jump) return null;
+  const jumpKey = String(m.jump);
+  if (seen.has(jumpKey)) {
+    return { error: 'jump_loop', detail: `jump chain loops back to ${jumpKey}` };
+  }
+  if (depth >= JUMP_MAX_DEPTH) {
+    return { error: 'jump_too_deep', detail: `jump chain exceeds ${JUMP_MAX_DEPTH} hops` };
+  }
+  const jumpCtx = _findContextByHostKey(jumpKey);
+  if (!jumpCtx) {
+    return { error: 'jump_unreachable', detail: `jump node "${m.jump}" not found — edit the host to pick an existing node or clear the jump` };
+  }
+  const jm = jumpCtx.machine;
+  const jumpOpts = {
+    host:        jm.host,
+    user:        jm.user,
+    port:        jm.port || 22,
+    auth_method: jm.auth_method || (jm.key_file ? 'key' : 'agent'),
+    key_file:    jm.key_file || '',
+  };
+  if (jumpOpts.auth_method === 'password') {
+    const pw = _credentialFor(jumpCtx);
+    if (pw == null || pw === '') {
+      return { error: 'jump_credential_missing', detail: `jump node "${m.jump}" uses password auth but has no remembered password` };
+    }
+    jumpOpts.password = pw;
+  } else if (jumpOpts.auth_method === 'key') {
+    const pp = _credentialFor(jumpCtx);
+    if (pp != null) jumpOpts.passphrase = pp;
+  }
+  const nestedSeen = new Set(seen);
+  nestedSeen.add(jumpKey);
+  const nested = _resolveJumpChain(jumpCtx, { depth: depth + 1, seen: nestedSeen });
+  if (nested && nested.error) return nested;
+  if (nested) jumpOpts.jump = nested;
+  return jumpOpts;
+}
+
+function _validateJumpChain(machine) {
+  if (!machine || !machine.jump) return null;
+  const ownKey = _machineHostKey(machine);
+  if (String(machine.jump) === ownKey) {
+    return { error: 'invalid_jump', detail: 'a node cannot use itself as its jump host' };
+  }
+  // Seed the seen-set with the record's own key: the chain must not
+  // find its way back to the node being saved (loop across records).
+  const r = _resolveJumpChain({ machine }, { seen: new Set([ownKey]) });
+  if (r && r.error) return { error: 'invalid_jump', detail: r.detail };
+  return null;
+}
+
 function _sshBaseOptsForContext(ctx, timeoutMs = SYNC_DEFAULT_TIMEOUT_MS) {
   if (!ctx || !ctx.machine || ctx.machine.type !== 'ssh') {
     return { error: 'not_ssh', detail: `context "${(ctx && ctx.name) || '?'}" is not an SSH context` };
@@ -2383,6 +2494,9 @@ function _sshBaseOptsForContext(ctx, timeoutMs = SYNC_DEFAULT_TIMEOUT_MS) {
     const pp = _credentialFor(ctx);
     if (pp != null) opts.passphrase = pp;
   }
+  const jump = _resolveJumpChain(ctx);
+  if (jump && jump.error) return { error: jump.error, detail: jump.detail };
+  if (jump) opts.jump = jump;
   return { opts };
 }
 
@@ -3701,14 +3815,23 @@ function parseSshConfig(text) {
         val = _normalizeIdentityFile(value);
         for (const blk of active) blk.identityFile = val;
         break;
+      case 'proxyjump':
+        // Raw "user@host:port" (or comma chain — first hop wins for our
+        // single-jump model). Matched against existing nodes at import.
+        val = _unquote(value).split(',')[0].trim();
+        for (const blk of active) blk.proxyjump = val;
+        break;
       default: break;
     }
   }
   return blocks;
 }
 
-function sshConfigHosts() {
-  const paths = sshConfigPaths();
+function sshConfigHosts(explicitPath) {
+  // explicitPath: Nodes → Import → Browse… lets the user point at any
+  // ssh_config (e.g. a CAM Desktop export from another machine). The
+  // default stays the well-known ~/.ssh/config.
+  const paths = explicitPath ? [String(explicitPath)] : sshConfigPaths();
   const out = {
     source:    null,
     available: false,
@@ -3746,6 +3869,7 @@ function sshConfigHosts() {
           port:          b.port || 22,
           identity_file: identityFile,
           key_exists:    keyExists,
+          proxyjump:     b.proxyjump || '',
         };
       })
       .filter((h) => h.host && h.user); // skip entries without enough info
@@ -3825,11 +3949,14 @@ async function handle(req, res) {
 
   // /api/system/ssh-config — read-only suggestion list for the Nodes
   // import UI. Returns parsed entries from the user's `~/.ssh/config`
-  // (CAM-DESK-DIRECT-017). Never reads private-key contents — key
+  // (CAM-DESK-DIRECT-017), or from an explicit file when `?path=` is
+  // given (Nodes → Import → Browse…, e.g. a CAM Desktop export from
+  // another machine). Never reads private-key contents — key
   // file values are returned as paths only.
   if (method === 'GET' && p === '/api/system/ssh-config') {
     try {
-      return sendJson(res, 200, sshConfigHosts());
+      const explicit = (url.searchParams.get('path') || '').trim();
+      return sendJson(res, 200, sshConfigHosts(explicit || null));
     } catch (e) {
       pushLog('warn', `ssh-config read failed: ${e.message}`);
       return sendJson(res, 200, { available: false, source: null, hosts: [], note: 'ssh config not readable' });
