@@ -81,6 +81,18 @@ public final class MobileSshExec {
                 + k.replace("'", "'\\''") + "'");
     }
 
+    public static String camcStopCommand(String agentId) {
+        String id = agentId != null ? agentId.trim() : "";
+        return shellCommand(
+            "\"$HOME/.cam/camc\" stop '" + id.replace("'", "'\\''") + "'");
+    }
+
+    public static String camcRemoveCommand(String agentId) {
+        String id = agentId != null ? agentId.trim() : "";
+        return shellCommand(
+            "\"$HOME/.cam/camc\" rm '" + id.replace("'", "'\\''") + "'");
+    }
+
     public static String camcAttachCommand(String agentId) {
         String id = agentId != null ? agentId.trim() : "";
         // Mobile: keep SSH exec channel alive — re-attach when tmux client exits
