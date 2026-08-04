@@ -1,13 +1,13 @@
 # Mobile V2 — Stability Status & Roadmap
 
 **Living document.** Current line: branch `camui-desktop-v2`, version
-2.4.68 (2026-08-04). This file supersedes the older `docs/mobile/*`
+2.4.71 (2026-08-04). This file supersedes the older `docs/mobile/*`
 plans, which are stale (last touched 2026-06-28) — see §6 for what to
 trust where.
 
 ## 1. Fixed recently (2.4.52–2.4.68)
 
-- **Desktop-parity batch** (2.4.66–2.4.68): agent stop/remove routes
+- **Desktop-parity batch** (2.4.66–2.4.71): agent stop/remove routes
   (DELETE `/api/agents/:id[/history]`, force kill, terminal-state
   no_op, local mirror); **sync live steps** (`syncProgress` map +
   `/sync-status`, steps connecting → checking camc → uploading camc
@@ -16,8 +16,13 @@ trust where.
   `camc_unrunnable`, 120s upload budget); **ProxyJump** (machine.jump
   validation/resolution, JSch ChannelDirectTCPIP chain, pool lock
   prefixes); **ssh_config import/export** (parse endpoint + paste
-  fallback UI, export via Android share sheet). **Relay deprecation
-  step 1** (2.4.67): Direct is the default Settings tab, Relay labeled
+  fallback UI, Export via Android share sheet, Import via SAF
+  Browse… → app-storage `?path=` — the desktop flow working unchanged;
+  picker MIME `*/*` so `.sshconfig` is selectable). Discoverability
+  fixes (2.4.69): Nodes Export button, unhidden Import tab, slimmed
+  agent overflow menu (dropped Scroll mode / Text ± / Scroll to
+  bottom), Delete for running agents. **Relay deprecation step 1**
+  (2.4.67): Direct is the default Settings tab, Relay labeled
   deprecated — code untouched, removal comes later.
 - **Hub global lock** (2.4.54): `MobileEmbeddedHub.apiRequest` was globally
   `synchronized` — one blackhole host's SSH attempt stalled every Direct
