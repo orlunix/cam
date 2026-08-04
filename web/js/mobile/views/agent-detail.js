@@ -521,7 +521,6 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     if (!canUseTerminalMode(api)) return '';
     return `
               <hr>
-              <button class="overflow-menu-item" id="term-scroll-bottom">Scroll to bottom</button>
               <button class="overflow-menu-item" id="term-reattach">Reattach terminal</button>
               <button class="overflow-menu-item" id="term-detach">Detach session</button>
 `;
@@ -529,21 +528,13 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
 
   function updateFontSizeLabel() {
     const el = container.querySelector('#font-size-label');
-    if (el) el.textContent = `Font: ${_fontSize}px · pinch or A±`;
-  }
-
-  function bumpFontSize(delta) {
-    _fontSize = Math.min(FONT_MAX, Math.max(FONT_MIN, Math.round((_fontSize + delta) * 2) / 2));
-    applyFontSize();
-    state.toast(`Font ${_fontSize}px`, 'success', 1200);
+    if (el) el.textContent = `Font: ${_fontSize}px · pinch to zoom`;
   }
 
   function fontMenuItemsHTML() {
     return `
-              <button class="overflow-menu-item" id="font-larger">Text larger (A+)</button>
-              <button class="overflow-menu-item" id="font-smaller">Text smaller (A−)</button>
               <button class="overflow-menu-item" id="reset-zoom">Reset font (${MOBILE_TERMINAL_FONT_DEFAULT}px)</button>
-              <div class="overflow-menu-hint" id="font-size-label">Font: ${_fontSize}px · pinch or A±</div>`;
+              <div class="overflow-menu-hint" id="font-size-label">Font: ${_fontSize}px · pinch to zoom</div>`;
   }
 
   function _applyFontSize() {
@@ -1027,12 +1018,12 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
               ${outputCaptureSupported() ? `<button class="overflow-menu-item ${outputMode === 'rich' ? 'active' : ''}" id="toggle-rich">Rich output</button>` : ''}
               <button class="overflow-menu-item" id="toggle-browse">Browse</button>
               <button class="overflow-menu-item" id="refresh-output">Refresh</button>
-              <button class="overflow-menu-item" id="toggle-wrap">Scroll mode</button>
               ${fontMenuItemsHTML()}
               ${terminalMenuHTML()}
               <hr>
               <button class="overflow-menu-item" id="agent-settings-btn">Settings</button>
               <button class="overflow-menu-item danger" id="stop-btn">Stop agent</button>
+              <button class="overflow-menu-item danger" id="delete-btn">Delete agent</button>
             </div>
           </div>
         </div>
@@ -1076,7 +1067,6 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
               ${outputCaptureSupported() ? `<button class="overflow-menu-item ${outputMode === 'rich' ? 'active' : ''}" id="toggle-rich">Rich output</button>` : ''}
               <button class="overflow-menu-item" id="toggle-browse">Browse</button>
               <button class="overflow-menu-item" id="refresh-output">Refresh</button>
-              <button class="overflow-menu-item" id="toggle-wrap">Scroll mode</button>
               ${fontMenuItemsHTML()}
               ${terminalMenuHTML()}
               <hr>
@@ -1446,32 +1436,16 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
 
 
 
-    // Scroll mode: toggle between pre-wrap (wraps lines) and pre (horizontal scroll)
+    // Output wrap preference (menu toggle removed; kept for pinch/font resets)
     let _wrapMode = localStorage.getItem('cam_output_wrap') !== 'scroll';
     const _applyWrap = () => {
       document.querySelectorAll('#output-pane, #fs-output-pane').forEach(el => {
         el.style.whiteSpace = _wrapMode ? 'pre-wrap' : 'pre';
         el.style.wordBreak = _wrapMode ? 'break-word' : 'normal';
       });
-      const btn = container.querySelector('#toggle-wrap');
-      if (btn) btn.textContent = _wrapMode ? 'Scroll mode' : 'Wrap mode';
     };
-    container.querySelector('#toggle-wrap')?.addEventListener('click', () => {
-      closeMenu();
-      _wrapMode = !_wrapMode;
-      localStorage.setItem('cam_output_wrap', _wrapMode ? 'wrap' : 'scroll');
-      _applyWrap();
-    });
 
     // Reset font to default
-    container.querySelector('#font-larger')?.addEventListener('click', () => {
-      closeMenu();
-      bumpFontSize(1);
-    });
-    container.querySelector('#font-smaller')?.addEventListener('click', () => {
-      closeMenu();
-      bumpFontSize(-1);
-    });
     container.querySelector('#reset-zoom')?.addEventListener('click', () => {
       closeMenu();
       _fontSize = MOBILE_TERMINAL_FONT_DEFAULT;
@@ -1491,10 +1465,6 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         }
       });
     };
-    wireTermBtn('#term-scroll-bottom', async () => {
-      if (!scrollTerminalToBottom(agentId)) throw new Error('Terminal not open');
-      state.toast('Scrolled to bottom', 'success', 1500);
-    });
     wireTermBtn('#term-reattach', async () => {
       const host = container.querySelector('#terminal-host');
       const res = await reattachTerminalForAgent(api, agent, host);

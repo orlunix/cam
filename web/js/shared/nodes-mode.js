@@ -1398,8 +1398,6 @@ function mountNodesActions({
   subtabBtns.forEach(b => b.addEventListener('click', () => applySubtab(b.dataset.subtab)));
 
   if (mobileForm) {
-    const importTab = panel.querySelector('.nodes-manage-tab[data-subtab="import"]');
-    if (importTab) importTab.hidden = true;
     panel.addEventListener('focusin', (e) => {
       const t = e.target;
       if (!t || !t.matches('input, select, textarea')) return;
