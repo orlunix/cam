@@ -319,6 +319,25 @@ export function installMobileCamBridgeShim() {
         });
       } catch {}
     }
+    // Import helper used by nodes-mode Browse…: SAF pick → app storage path.
+    if (typeof window.CamBridge.files_pickFile === 'function'
+        && typeof window.CamBridge.files.pickFile !== 'function') {
+      try {
+        window.CamBridge.files.pickFile = (opts) => new Promise((resolve, reject) => {
+          const id = 'fs' + (++_sh.dhSeq);
+          _sh.filesPending[id] = { resolve, reject };
+          _sh.filesPending[id].timer = _armTimeout(
+            _sh.filesPending, id, 120000, 'files_pickFile');
+          try {
+            window.CamBridge.files_pickFile(id, JSON.stringify(opts || {}));
+          } catch (err) {
+            clearTimeout(_sh.filesPending[id] && _sh.filesPending[id].timer);
+            delete _sh.filesPending[id];
+            reject(err);
+          }
+        });
+      } catch {}
+    }
     ok = true;
   }
   return ok;
