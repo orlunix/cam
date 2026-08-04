@@ -872,6 +872,13 @@
                 </p>
               </div>
 
+              <label data-ctx-edit-readonly="1" data-add-ctx-hide="1">Jump host (optional)
+                <select id="nodes-add-jump">
+                  <option value="">None (direct)</option>
+                </select>
+                <span class="form-hint">Tunnel this host through an existing node (ProxyJump). The jump node's own auth config is reused — no extra credentials here.</span>
+              </label>
+
               <label data-host-edit-hide="1">Context name
                 <input type="text" id="nodes-add-name" placeholder="defaults to node name" autocomplete="off"
                   pattern="[A-Za-z0-9_-]{1,64}" title="Letters, digits, underscore, hyphen (1–64 chars)">
@@ -919,6 +926,10 @@
               <p class="settings-help" id="nodes-import-source">
                 Reading <code>~/.ssh/config</code>&hellip;
               </p>
+              <div class="nodes-import-toolbar">
+                <button type="button" class="btn-sm btn-secondary" id="nodes-import-browse">Browse&hellip;</button>
+                <button type="button" class="btn-sm btn-secondary" id="nodes-export-btn" title="Export all nodes as an ssh_config file (import it on another machine via Browse)">Export nodes&hellip;</button>
+              </div>
               <div id="nodes-import-list" class="nodes-import-list">
                 <div class="empty-state">Loading&hellip;</div>
               </div>
