@@ -121,6 +121,14 @@ contextBridge.exposeInMainWorld('CamBridge', {
     pickAttachment() {
       return ipcRenderer.invoke('files:pickAttachment');
     },
+    // Generic single-file picker (Nodes → Import: choose ssh_config).
+    pickFile(opts) {
+      return ipcRenderer.invoke('files:pickFile', opts || {});
+    },
+    // Save-dialog + write text (Nodes → Export: ssh_config format).
+    saveText(opts) {
+      return ipcRenderer.invoke('files:saveText', opts || {});
+    },
     readClipboardText() {
       return ipcRenderer.invoke('files:readClipboardText');
     },
