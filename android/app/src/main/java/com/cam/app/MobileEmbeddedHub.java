@@ -474,6 +474,22 @@ public final class MobileEmbeddedHub {
                     .put("data_dir", dataDir != null ? dataDir.getAbsolutePath() : JSONObject.NULL));
             }
 
+            if ("GET".equals(method) && "/api/system/ssh-config".equals(path)) {
+                return routeSystemSshConfig(query);
+            }
+
+            if ("POST".equals(method) && "/api/system/ssh-config/parse".equals(path)) {
+                JSONObject body = bodyBytes.length > 0
+                    ? new JSONObject(new String(bodyBytes, StandardCharsets.UTF_8))
+                    : new JSONObject();
+                JSONArray hosts = parseSshConfig(body.optString("text", ""));
+                return jsonResponse(200, new JSONObject()
+                    .put("source", "paste")
+                    .put("available", hosts.length() > 0)
+                    .put("hosts", hosts)
+                    .put("note", "IdentityFile is a path reference; key existence is not checked on mobile."));
+            }
+
             if (path.startsWith("/api/contexts/")) {
                 return routeContextByName(method, path, query, bodyBytes);
             }
@@ -483,6 +499,14 @@ public final class MobileEmbeddedHub {
             }
 
             return jsonResponse(404, new JSONObject().put("error", "not_found"));
+        } catch (JumpException e) {
+            try {
+                return jsonResponse(502, new JSONObject()
+                    .put("error", e.code)
+                    .put("detail", e.getMessage() != null ? e.getMessage() : ""));
+            } catch (Exception ex) {
+                return "HTTP/1.1 500 Internal Server Error\r\n\r\n".getBytes(StandardCharsets.UTF_8);
+            }
         } catch (Exception e) {
             log("error", "route error: " + e.getMessage());
             try {
@@ -868,7 +892,7 @@ public final class MobileEmbeddedHub {
         if (agent.has("machine_port") && !agent.isNull("machine_port")) {
             auth.port = agent.optInt("machine_port", auth.port);
         }
-        return auth;
+        return applyJumpChain(auth, m);
     }
 
     private JSONObject sendAgentInput(String agentId, String text, boolean sendEnter, JSONObject hints) throws Exception {
@@ -1215,6 +1239,20 @@ public final class MobileEmbeddedHub {
             }
             mNext.put("port", portNum);
         }
+        // ProxyJump (desktop parity): body.jump sets, "" clears, absent keeps.
+        if (body.has("jump")) {
+            String jump = body.optString("jump", "").trim();
+            if (jump.isEmpty()) {
+                mNext.remove("jump");
+            } else {
+                mNext.put("jump", jump);
+            }
+        }
+        if ("ssh".equals(mNext.optString("type", m.optString("type", "")))
+                && !mNext.optString("jump", "").isEmpty()) {
+            JSONObject jumpErr = validateJumpSpec(mNext, mNext.optString("jump", ""));
+            if (jumpErr != null) return jumpErr;
+        }
         String prevMethod = mNext.optString("auth_method", mNext.optString("key_file", "").isEmpty() ? "agent" : "key");
         String nextMethod = prevMethod;
         if (body.has("auth_method")) {
@@ -1274,6 +1312,213 @@ public final class MobileEmbeddedHub {
                 MobileSshExec.camcListCommand(),
             },
             SYNC_TIMEOUT_MS);
+    }
+
+    // --- ssh_config import (desktop parseSshConfig parity) ---
+
+    /**
+     * Parse OpenSSH config text into host suggestions. Keywords: Host
+     * (wildcard blocks skipped), HostName, User, Port, IdentityFile,
+     * ProxyJump (first hop only). `key=value` and `key value` both accepted.
+     */
+    static JSONArray parseSshConfig(String text) throws Exception {
+        JSONArray hosts = new JSONArray();
+        JSONObject cur = null;
+        if (text == null) return hosts;
+        for (String rawLine : text.split("\\R")) {
+            String line = rawLine.trim();
+            if (line.isEmpty() || line.startsWith("#")) continue;
+            String key, value;
+            int eq = line.indexOf('=');
+            if (eq > 0) {
+                key = line.substring(0, eq).trim();
+                value = line.substring(eq + 1).trim();
+            } else {
+                int sp = line.indexOf(' ');
+                if (sp <= 0) continue;
+                key = line.substring(0, sp).trim();
+                value = line.substring(sp + 1).trim();
+            }
+            if ("Host".equalsIgnoreCase(key)) {
+                if (cur != null && !cur.optString("host", "").isEmpty()
+                        && !cur.optString("user", "").isEmpty()) {
+                    hosts.put(cur);
+                }
+                cur = null;
+                String alias = value.split("\\s+")[0];
+                if (alias.contains("*") || alias.contains("?")) continue; // wildcard block
+                cur = new JSONObject().put("alias", alias);
+                continue;
+            }
+            if (cur == null) continue;
+            if ("HostName".equalsIgnoreCase(key)) {
+                cur.put("host", unquoteSsh(value));
+            } else if ("User".equalsIgnoreCase(key)) {
+                cur.put("user", unquoteSsh(value));
+            } else if ("Port".equalsIgnoreCase(key)) {
+                try {
+                    int p = Integer.parseInt(unquoteSsh(value));
+                    if (p >= 1 && p <= 65535) cur.put("port", p);
+                } catch (Exception ignored) {}
+            } else if ("IdentityFile".equalsIgnoreCase(key)) {
+                cur.put("identity_file", unquoteSsh(value));
+            } else if ("ProxyJump".equalsIgnoreCase(key)) {
+                String first = unquoteSsh(value).split(",")[0].trim();
+                if (!first.isEmpty()) cur.put("proxyjump", first);
+            }
+        }
+        if (cur != null && !cur.optString("host", "").isEmpty()
+                && !cur.optString("user", "").isEmpty()) {
+            hosts.put(cur);
+        }
+        return hosts;
+    }
+
+    private static String unquoteSsh(String v) {
+        if (v == null) return "";
+        v = v.trim();
+        if (v.length() >= 2 && v.startsWith("\"") && v.endsWith("\"")) {
+            return v.substring(1, v.length() - 1);
+        }
+        return v;
+    }
+
+    /** GET /api/system/ssh-config — desktop route parity (mobile: no ~/.ssh). */
+    private byte[] routeSystemSshConfig(String query) throws Exception {
+        String path = "";
+        if (query != null) {
+            for (String pair : query.split("&")) {
+                int eq = pair.indexOf('=');
+                if (eq > 0 && "path".equals(URLDecoder.decode(pair.substring(0, eq), "UTF-8"))) {
+                    path = URLDecoder.decode(pair.substring(eq + 1), "UTF-8");
+                }
+            }
+        }
+        JSONObject out = new JSONObject();
+        if (path.isEmpty()) {
+            return jsonResponse(200, out
+                .put("source", JSONObject.NULL)
+                .put("available", false)
+                .put("hosts", new JSONArray())
+                .put("note", "Mobile has no ~/.ssh/config — paste the config text instead "
+                    + "(POST /api/system/ssh-config/parse), or pass ?path= for a file in app storage."));
+        }
+        // Explicit file: confined to the app sandbox (files dir or cache).
+        File base = appContext.getFilesDir();
+        File target = new File(path);
+        String canonicalBase = base.getCanonicalPath();
+        if (!target.getCanonicalPath().startsWith(canonicalBase)) {
+            return jsonResponse(200, out
+                .put("source", path)
+                .put("available", false)
+                .put("hosts", new JSONArray())
+                .put("note", "path must be inside app storage"));
+        }
+        if (!target.isFile()) {
+            return jsonResponse(200, out
+                .put("source", path)
+                .put("available", false)
+                .put("hosts", new JSONArray())
+                .put("note", "file not found"));
+        }
+        JSONArray hosts = parseSshConfig(readFile(target));
+        return jsonResponse(200, out
+            .put("source", target.getAbsolutePath())
+            .put("available", true)
+            .put("hosts", hosts)
+            .put("note", "IdentityFile is a path reference; key existence is not checked on mobile."));
+    }
+
+    // --- ProxyJump (desktop parity) ---
+
+    /** Jump resolution failure; route() maps to 502 with the code as error. */
+    private static final class JumpException extends Exception {
+        final String code;
+        JumpException(String code, String detail) { super(detail); this.code = code; }
+    }
+
+    /** Node key "user@host:port" (IPv6 bracketed) — matches desktop _machineHostKey. */
+    private static String machineHostKey(JSONObject m) {
+        if (m == null) return "";
+        String user = m.optString("user", "").trim();
+        String host = m.optString("host", "").trim();
+        int port = m.optInt("port", 22);
+        if (host.contains(":") && !host.startsWith("[")) host = "[" + host + "]";
+        return user + "@" + host + ":" + (port > 0 ? port : 22);
+    }
+
+    private JSONObject findContextByHostKey(String key) throws Exception {
+        JSONArray arr = store.optJSONArray("contexts");
+        if (arr == null || key == null || key.isEmpty()) return null;
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject c = arr.optJSONObject(i);
+            if (c == null) continue;
+            JSONObject m = c.optJSONObject("machine");
+            if (m == null || !"ssh".equals(m.optString("type", ""))) continue;
+            if (key.equals(machineHostKey(m))) return c;
+        }
+        return null;
+    }
+
+    private MobileSshAuth.Options resolveJumpOptions(String key, java.util.Set<String> seen, int depth)
+            throws Exception {
+        if (depth >= MobileSshAuth.JUMP_MAX_DEPTH) {
+            throw new JumpException("jump_too_deep", "ProxyJump chain exceeds "
+                + MobileSshAuth.JUMP_MAX_DEPTH + " hops");
+        }
+        if (!seen.add(key)) {
+            throw new JumpException("jump_loop", "ProxyJump chain loops through " + key);
+        }
+        JSONObject ctx = findContextByHostKey(key);
+        if (ctx == null) {
+            throw new JumpException("jump_unreachable", "jump host not a registered node: " + key);
+        }
+        JSONObject m = ctx.optJSONObject("machine");
+        MobileSshAuth.Options o = MobileSshAuth.fromMachine(m, credentialStore);
+        if (o == null || o.host == null || o.host.isEmpty()) {
+            throw new JumpException("jump_unreachable", "jump host not a registered node: " + key);
+        }
+        if ("password".equals(o.authMethod) && (o.password == null || o.password.isEmpty())) {
+            throw new JumpException("jump_credential_missing",
+                "jump host " + key + " uses password auth but has no remembered password");
+        }
+        String next = m != null ? m.optString("jump", "").trim() : "";
+        if (!next.isEmpty()) {
+            o.jump = resolveJumpOptions(next, seen, depth + 1);
+        }
+        return o;
+    }
+
+    /** Attach a resolved ProxyJump chain to auth when machine.jump is set. */
+    private MobileSshAuth.Options applyJumpChain(MobileSshAuth.Options auth, JSONObject machine)
+            throws Exception {
+        if (auth == null || machine == null) return auth;
+        String jump = machine.optString("jump", "").trim();
+        if (jump.isEmpty()) return auth;
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        seen.add(machineHostKey(machine));
+        auth.jump = resolveJumpOptions(jump, seen, 0);
+        return auth;
+    }
+
+    /** Validate a jump spec at create/update time; error object or null. */
+    private JSONObject validateJumpSpec(JSONObject machine, String jump) throws Exception {
+        if (!NODE_KEY_RE.matcher(jump).matches()) {
+            return new JSONObject().put("error", "invalid_jump")
+                .put("detail", "jump must be a node key user@host:port of another SSH node");
+        }
+        if (jump.equals(machineHostKey(machine))) {
+            return new JSONObject().put("error", "invalid_jump")
+                .put("detail", "a node cannot use itself as its jump host");
+        }
+        try {
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            seen.add(machineHostKey(machine));
+            resolveJumpOptions(jump, seen, 0);
+        } catch (JumpException e) {
+            return new JSONObject().put("error", "invalid_jump").put("detail", e.getMessage());
+        }
+        return null;
     }
 
     // --- camc version probe/upgrade (desktop deploy-robustness parity) ---
@@ -1948,6 +2193,7 @@ public final class MobileEmbeddedHub {
             plan.auth.host = resolved.optString("host", plan.auth.host);
             plan.auth.port = resolved.optInt("port", plan.auth.port);
             plan.auth.user = resolved.optString("user", plan.auth.user);
+            plan.auth = applyJumpChain(plan.auth, m);
         }
         plan.command = resolved.getString("command");
         return plan;
@@ -2138,6 +2384,7 @@ public final class MobileEmbeddedHub {
                 .put("results", new JSONObject().put("camc", "failed"));
         }
         MobileSshAuth.Options sshAuth = MobileSshAuth.fromMachine(m, credentialStore);
+        sshAuth = applyJumpChain(sshAuth, m);
         MobileHubLog.ssh("sync start ctx=" + ctx.optString("name") + " "
             + MobileHubLog.endpoint(sshAuth));
         if ("password".equals(auth) && (sshAuth.password == null || sshAuth.password.isEmpty())) {
@@ -2419,6 +2666,13 @@ public final class MobileEmbeddedHub {
                 && !body.optBoolean("remember_password", false)) {
                 return new JSONObject().put("error", "missing_credential")
                     .put("detail", "auth_method=password requires remember_password=true");
+            }
+            // ProxyJump (desktop parity): node key of another SSH node.
+            String jump = body.optString("jump", "").trim();
+            if (!jump.isEmpty()) {
+                JSONObject jumpErr = validateJumpSpec(machine, jump);
+                if (jumpErr != null) return jumpErr;
+                machine.put("jump", jump);
             }
         }
 

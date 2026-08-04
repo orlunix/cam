@@ -48,3 +48,11 @@ rm -rf "$WORK/data"   # fresh store per run — the test seeds its own context
 echo "=== TestAgentOps ==="
 rm -rf "$WORK/agentops-data"
 "$JAVA" -cp "$WORK/classes:$JSCH_JAR:$JSON_JAR" TestAgentOps "$WORK/agentops-data"
+
+echo "=== TestProxyJump ==="
+rm -rf "$WORK/jump-data"
+"$JAVA" -cp "$WORK/classes:$JSCH_JAR:$JSON_JAR" TestProxyJump "$WORK/jump-data"
+
+echo "=== TestSshConfig ==="
+rm -rf "$WORK/sshconfig-data"
+"$JAVA" -cp "$WORK/classes:$JSCH_JAR:$JSON_JAR" TestSshConfig "$WORK/sshconfig-data"

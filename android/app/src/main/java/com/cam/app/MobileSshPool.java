@@ -17,7 +17,13 @@ public final class MobileSshPool {
     public static String poolKey(MobileSshAuth.Options opts) {
         if (opts == null) return "";
         int port = opts.port > 0 ? opts.port : 22;
-        return opts.user + "@" + opts.host + ":" + port;
+        String base = opts.user + "@" + opts.host + ":" + port;
+        // ProxyJump: "target via jumpA" and "target direct" are distinct
+        // lock domains (desktop pool-key parity).
+        if (opts.jump != null) {
+            return poolKey(opts.jump) + ">>" + base;
+        }
+        return base;
     }
 
     public static Object lockFor(String key) {
