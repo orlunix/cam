@@ -56,3 +56,40 @@ rm -rf "$WORK/jump-data"
 echo "=== TestSshConfig ==="
 rm -rf "$WORK/sshconfig-data"
 "$JAVA" -cp "$WORK/classes:$JSCH_JAR:$JSON_JAR" TestSshConfig "$WORK/sshconfig-data"
+
+# Real two-hop ProxyJump test: two user-level sshd instances (jump 22221,
+# target 22222), RSA key auth on both hops. Skipped when sshd is missing.
+if [ -x /usr/sbin/sshd ]; then
+  echo "=== TestJumpConnect (real two-hop sshd) ==="
+  JT=/tmp/jumptest
+  rm -rf "$JT"
+  mkdir -p "$JT"/{jump,target}
+  ssh-keygen -t rsa -b 3072 -N '' -f "$JT/id_rsa_test" -q
+  cat "$JT/id_rsa_test.pub" > "$JT/authorized_keys"
+  chmod 600 "$JT/authorized_keys" "$JT/id_rsa_test"
+  ssh-keygen -t rsa -N '' -f "$JT/jump/hostkey" -q
+  ssh-keygen -t rsa -N '' -f "$JT/target/hostkey" -q
+  for inst in jump:22221 target:22222; do
+    name="${inst%%:*}"; port="${inst##*:}"
+    cat > "$JT/$name/sshd_config" <<EOF
+Port $port
+ListenAddress 127.0.0.1
+HostKey $JT/$name/hostkey
+AuthorizedKeysFile $JT/authorized_keys
+PasswordAuthentication no
+PubkeyAuthentication yes
+UsePAM no
+StrictModes no
+PidFile $JT/$name/pid
+AllowTcpForwarding yes
+EOF
+    /usr/sbin/sshd -f "$JT/$name/sshd_config"
+  done
+  sleep 1
+  "$JAVA" -cp "$WORK/classes:$JSCH_JAR:$JSON_JAR" TestJumpConnect
+  RC=$?
+  pkill -f "sshd -f $JT/" 2>/dev/null || true
+  [ "$RC" -eq 0 ] || exit "$RC"
+else
+  echo "=== TestJumpConnect SKIPPED (no /usr/sbin/sshd) ==="
+fi
