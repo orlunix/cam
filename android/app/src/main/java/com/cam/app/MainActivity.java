@@ -41,6 +41,8 @@ public class MainActivity extends Activity {
     private static final String TAG = "CAM";
     private static final int FILE_CHOOSER_REQUEST = 1001;
     private static final int KEY_PICK_REQUEST = 1002;
+    private static final int CONFIG_PICK_REQUEST = 1003;
+    private static final int CONFIG_PICK_MAX_BYTES = 1024 * 1024;
     private static final int KEY_PICK_MAX_BYTES = 256 * 1024;
     private static final int CAM_BG = Color.parseColor("#111111");
     private static final long TERMINAL_BACKGROUND_GRACE_MS = 10 * 60 * 1000L;
@@ -296,6 +298,67 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** ssh_config import: let the user pick a text file into app storage. */
+    private volatile String pendingConfigPickCbId;
+
+    void openConfigFilePicker(String cbId) {
+        pendingConfigPickCbId = cbId;
+        try {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("text/*");
+            startActivityForResult(intent, CONFIG_PICK_REQUEST);
+        } catch (Exception e) {
+            Log.e(TAG, "openConfigFilePicker failed", e);
+            if (camJsBridge != null) camJsBridge.filesCallback(cbId, false, "Could not open file picker");
+            pendingConfigPickCbId = null;
+        }
+    }
+
+    private void handleConfigFilePick(Intent data) {
+        String cbId = pendingConfigPickCbId;
+        pendingConfigPickCbId = null;
+        if (cbId == null || camJsBridge == null) return;
+        if (data == null || data.getData() == null) {
+            camJsBridge.filesCallback(cbId, false, "Import cancelled");
+            return;
+        }
+        Uri uri = data.getData();
+        String label = queryDisplayName(uri);
+        File importsDir = new File(getFilesDir(), "imports");
+        if (!importsDir.exists() && !importsDir.mkdirs()) {
+            camJsBridge.filesCallback(cbId, false, "Could not create import storage");
+            return;
+        }
+        String safeName = label.replaceAll("[^a-zA-Z0-9._-]", "_");
+        if (safeName.isEmpty()) safeName = "ssh-config";
+        File dest = new File(importsDir, safeName);
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            if (in == null) {
+                camJsBridge.filesCallback(cbId, false, "Could not read selected file");
+                return;
+            }
+            byte[] buf = new byte[8192];
+            int total = 0;
+            try (OutputStream out = new FileOutputStream(dest)) {
+                int n;
+                while ((n = in.read(buf)) >= 0) {
+                    total += n;
+                    if (total > CONFIG_PICK_MAX_BYTES) {
+                        dest.delete();
+                        camJsBridge.filesCallback(cbId, false, "Config file too large");
+                        return;
+                    }
+                    if (n > 0) out.write(buf, 0, n);
+                }
+            }
+            camJsBridge.filesCallback(cbId, true, dest.getAbsolutePath());
+        } catch (Exception e) {
+            Log.e(TAG, "handleConfigFilePick failed", e);
+            camJsBridge.filesCallback(cbId, false, e.getMessage() != null ? e.getMessage() : "Import failed");
+        }
+    }
+
     private void resetWebLayout() {
         if (webView == null) return;
         webView.evaluateJavascript(RESET_LAYOUT_JS, null);
@@ -350,6 +413,10 @@ public class MainActivity extends Activity {
             } else {
                 notifyKeyPickError("Import cancelled");
             }
+            return;
+        }
+        if (requestCode == CONFIG_PICK_REQUEST) {
+            handleConfigFilePick(resultCode == RESULT_OK ? data : null);
             return;
         }
         super.onActivityResult(requestCode, resultCode, data);
