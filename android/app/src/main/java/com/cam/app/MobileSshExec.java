@@ -201,7 +201,7 @@ public final class MobileSshExec {
                 return r;
             } finally {
                 if (session != null) {
-                    try { session.disconnect(); } catch (Exception ignored) {}
+                    try { MobileSshAuth.disconnectFully(session); } catch (Exception ignored) {}
                 }
             }
         }
@@ -260,7 +260,7 @@ public final class MobileSshExec {
                 return out;
             } finally {
                 if (channel != null) try { channel.disconnect(); } catch (Exception ignored) {}
-                if (session != null) try { session.disconnect(); } catch (Exception ignored) {}
+                if (session != null) try { MobileSshAuth.disconnectFully(session); } catch (Exception ignored) {}
             }
         }
     }
@@ -321,7 +321,7 @@ public final class MobileSshExec {
                 return out;
             } finally {
                 if (channel != null) try { channel.disconnect(); } catch (Exception ignored) {}
-                if (session != null) try { session.disconnect(); } catch (Exception ignored) {}
+                if (session != null) try { MobileSshAuth.disconnectFully(session); } catch (Exception ignored) {}
             }
         }
     }
@@ -384,7 +384,7 @@ public final class MobileSshExec {
             out.detail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
         } finally {
             if (channel != null) try { channel.disconnect(); } catch (Exception ignored) {}
-            if (session != null) try { session.disconnect(); } catch (Exception ignored) {}
+            if (session != null) try { MobileSshAuth.disconnectFully(session); } catch (Exception ignored) {}
         }
         return out;
     }
@@ -415,7 +415,7 @@ public final class MobileSshExec {
             out.detail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
         } finally {
             if (channel != null) try { channel.disconnect(); } catch (Exception ignored) {}
-            if (session != null) try { session.disconnect(); } catch (Exception ignored) {}
+            if (session != null) try { MobileSshAuth.disconnectFully(session); } catch (Exception ignored) {}
         }
         return out;
     }
@@ -513,7 +513,7 @@ public final class MobileSshExec {
             } finally {
                 seq.totalMs = System.currentTimeMillis() - totalStartedAt;
                 if (session != null) {
-                    try { session.disconnect(); } catch (Exception ignored) {}
+                    try { MobileSshAuth.disconnectFully(session); } catch (Exception ignored) {}
                 }
             }
         }
