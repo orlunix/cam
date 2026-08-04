@@ -609,6 +609,58 @@ public final class MobileEmbeddedHub {
             return jsonResponse(200, agent);
         }
 
+        // Stop agent (graceful camc stop; record kept). Desktop parity:
+        // DELETE /api/agents/:id.
+        if ("DELETE".equals(method) && sub.isEmpty()) {
+            JSONObject agent = findAgentById(agentId, parseAgentEndpointHints(query, null));
+            if (agent == null) {
+                return jsonResponse(404, new JSONObject()
+                    .put("error", "agent_not_found")
+                    .put("detail", "agent \"" + agentId + "\" not found"));
+            }
+            MobileSshAuth.Options auth = sshAuthForAgent(agent);
+            if (auth == null || auth.host == null || auth.host.isEmpty()) {
+                return jsonResponse(400, new JSONObject().put("error", "not_ssh")
+                    .put("detail", "agent stop requires an SSH node"));
+            }
+            MobileSshExec.Result res = MobileSshExec.exec(
+                auth, MobileSshExec.camcStopCommand(agentId), SEND_TIMEOUT_MS);
+            if (!res.ok) {
+                return jsonResponse(502, new JSONObject()
+                    .put("error", res.error != null && !res.error.isEmpty() ? res.error : "stop_failed")
+                    .put("detail", res.detail != null ? res.detail : ""));
+            }
+            // camc stop keeps the record; reflect locally for immediate UI.
+            agent.put("status", "stopped");
+            saveStore();
+            return jsonResponse(200, new JSONObject().put("ok", true).put("agent", agent));
+        }
+
+        // Remove agent from history (camc rm; record deleted). Desktop parity:
+        // DELETE /api/agents/:id/history.
+        if ("DELETE".equals(method) && "/history".equals(sub)) {
+            JSONObject agent = findAgentById(agentId, parseAgentEndpointHints(query, null));
+            if (agent == null) {
+                return jsonResponse(404, new JSONObject()
+                    .put("error", "agent_not_found")
+                    .put("detail", "agent \"" + agentId + "\" not found"));
+            }
+            MobileSshAuth.Options auth = sshAuthForAgent(agent);
+            if (auth == null || auth.host == null || auth.host.isEmpty()) {
+                return jsonResponse(400, new JSONObject().put("error", "not_ssh")
+                    .put("detail", "agent remove requires an SSH node"));
+            }
+            MobileSshExec.Result res = MobileSshExec.exec(
+                auth, MobileSshExec.camcRemoveCommand(agentId), SEND_TIMEOUT_MS);
+            if (!res.ok) {
+                return jsonResponse(502, new JSONObject()
+                    .put("error", res.error != null && !res.error.isEmpty() ? res.error : "remove_failed")
+                    .put("detail", res.detail != null ? res.detail : ""));
+            }
+            removeAgentRecord(agentId);
+            return jsonResponse(200, new JSONObject().put("ok", true));
+        }
+
         if (("/workspace/files".equals(sub) || "/workspace/files/read".equals(sub)) && "GET".equals(method)) {
             JSONObject agent = findAgentById(agentId, parseAgentEndpointHints(query, null));
             if (agent == null) return jsonResponse(404, new JSONObject().put("error", "agent_not_found").put("detail", "agent not found"));
@@ -1445,6 +1497,26 @@ public final class MobileEmbeddedHub {
         keep.put(incoming);
         store.put("agents", keep);
         saveStore();
+    }
+
+    /** Drop an agent record from the local store (after camc rm on the node). */
+    private void removeAgentRecord(String agentId) throws Exception {
+        JSONArray agents = store.optJSONArray("agents");
+        if (agents == null) return;
+        JSONArray keep = new JSONArray();
+        boolean changed = false;
+        for (int i = 0; i < agents.length(); i++) {
+            JSONObject existing = agents.getJSONObject(i);
+            if (agentId != null && agentId.equals(existing.optString("id", ""))) {
+                changed = true;
+                continue;
+            }
+            keep.put(existing);
+        }
+        if (changed) {
+            store.put("agents", keep);
+            saveStore();
+        }
     }
 
     private static boolean sameAgentIdentity(JSONObject a, JSONObject b) {
