@@ -51,6 +51,8 @@ def home(monkeypatch, tmp_path):
     monkeypatch.setattr(_cron, "CRON_HUMAN_LOG", str(cron_dir / "cron.log"))
     # loop paths
     monkeypatch.setattr(_loop, "LOOPS_DIR", str(loops_dir))
+    monkeypatch.setattr(_cli, "ensure_cron_scheduler",
+                        lambda **kwargs: {"status": "starting"})
     return tmp_path
 
 
@@ -61,6 +63,7 @@ def _owner_rec(agent_id="f1a1a661", name="cam-dev"):
         "tmux_session": "cam-" + agent_id,
         "status": "running",
         "state": "idle",
+        "hostname": "local-node",
     }
 
 
@@ -114,6 +117,7 @@ class TestBuildLoop:
         assert loop["executor"] == "monitor"
         assert loop["owner"]["agent_id"] == "f1a1a661"
         assert loop["owner"]["agent_name"] == "cam-dev"
+        assert loop["owner"]["hostname"] == "local-node"
         assert loop["action"]["type"] == "prompt"
         assert loop["action"]["delivery"]["method"] == "camc-msg-send"
         assert loop["action"]["delivery"]["to"] == "f1a1a661"
@@ -129,6 +133,21 @@ class TestBuildLoop:
             _owner_rec(), max_attempts=7,
         )
         assert loop["policy"]["max_attempts"] == 7
+
+    def test_tick_skips_loop_owned_by_another_node(self, home, monkeypatch):
+        owner = _owner_rec()
+        owner["hostname"] = "remote-node"
+        loop = _loop.build_loop("remote", _cron.parse_every("30m"),
+                                "ping", owner)
+        loop["schedule"]["next_due_at"] = "2000-01-01T00:00:00+00:00"
+        _loop.LoopStore(owner["id"]).add(loop)
+        monkeypatch.setattr(_loop, "_hostname", lambda: "local-node",
+                            raising=False)
+        dispatched = []
+
+        assert _loop.tick_loops(dispatch=lambda item: dispatched.append(item) or (True, "m"),
+                                agent_store=_FakeStore([owner])) == 0
+        assert dispatched == []
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +220,8 @@ class TestTickLoops:
         store = _loop.LoopStore(owner_id)
         loop = _loop.build_loop(
             name, _cron.parse_every("30m"), "ping",
-            {"id": owner_id, "task": {"name": owner_id}})
+            {"id": owner_id, "task": {"name": owner_id},
+             "hostname": _loop._hostname()})
         # Force due (push next_due_at into the past).
         loop["schedule"]["next_due_at"] = _cron._iso(
             _cron._now_local() - timedelta(minutes=5))
@@ -215,7 +235,7 @@ class TestTickLoops:
             calls.append(L["id"])
             return True, "msg12345"
         idle = _FakeStore([{"id": "ownerT", "status": "running",
-                            "state": "idle"}])
+                            "state": "idle", "hostname": _loop._hostname()}])
         n = _loop.tick_loops(dispatch=fake_dispatch, agent_store=idle)
         assert n == 1
         assert calls == [loop["id"]]
@@ -250,7 +270,7 @@ class TestTickLoops:
         def bad_dispatch(L):
             return False, "rpc error"
         idle = _FakeStore([{"id": owner, "status": "running",
-                            "state": "idle"}])
+                            "state": "idle", "hostname": _loop._hostname()}])
         cycle(0); _loop.tick_loops(dispatch=bad_dispatch, agent_store=idle)
         cycle(1); _loop.tick_loops(dispatch=bad_dispatch, agent_store=idle)
         final = _loop.LoopStore(owner).find("failer")
@@ -351,7 +371,7 @@ class TestCronTickServicesLoops:
         monkeypatch.setattr(_loop, "dispatch_loop",
                             lambda L: (loop_calls.append(L["id"]), (True, "msgX"))[1])
         idle = _FakeStore([{"id": "ownerJ", "status": "running",
-                            "state": "idle"}])
+                            "state": "idle", "hostname": _loop._hostname()}])
         # Patch the default AgentStore the loop tick consults when no
         # agent_store kwarg is plumbed through cron.tick().
         import camc_pkg.storage as _storage
@@ -415,24 +435,17 @@ class TestCliLoop:
         assert env["loops"][0]["name"] == "loopA"
         assert env["loops"][0]["action"]["text"] == "hello world"
 
-    def test_add_loop_exits_nonzero_when_tick_install_fails(
+    def test_add_loop_does_not_require_crontab(
             self, home, cli_owner, monkeypatch, capsys):
-        """Regression for cam-review-d123 verify finding:
-        loop add must exit 1 when install_tick raises so Desktop /
-        CI cannot mistake a saved-but-uninstalled loop for a live
-        one. The loop file itself stays on disk (parallel to host
-        `cron add` semantics)."""
-        # Make crontab unavailable -> install_tick raises.
+        """Scheduler fallback makes a persisted loop runnable without crontab."""
         def _fail(*a, **kw):
             raise _cron.CrontabUnavailable("crontab intentionally unavailable")
         monkeypatch.setattr(_cron, "install_tick", _fail)
         monkeypatch.setattr(_cli, "install_tick", _fail)
         with pytest.raises(SystemExit) as ei:
             _cli.cmd_cron_add(self._add_args(name="failtick"))
-        assert ei.value.code == 1
-        captured = capsys.readouterr()
-        assert "ERROR: failed to install system cron tick" in captured.err
-        # Loop is still on disk so the user can recover via heal.
+        assert ei.value.code == 0
+        # Loop is persisted and no crontab error is surfaced.
         path = os.path.join(_loop.LOOPS_DIR, "f1a1a661", "agent.loop.json")
         assert os.path.exists(path)
         with open(path) as f:

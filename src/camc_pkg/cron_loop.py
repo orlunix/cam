@@ -13,6 +13,7 @@ Python 3.6+, stdlib only.
 
 import json
 import os
+import socket
 import subprocess
 from datetime import datetime
 from uuid import uuid4
@@ -21,7 +22,7 @@ from camc_pkg import CAM_DIR, log
 from camc_pkg.cron import (
     _acquire_lock, _release_lock, _ensure_dir,
     _iso, _now_local, _parse_iso,
-    _initial_next_due_at, advance_next_due_at,
+    _initial_next_due_at, advance_next_due_at, _same_host,
 )
 
 try:
@@ -38,6 +39,26 @@ LOOPS_DIR = os.path.join(CAM_DIR, "loops")
 LOOP_FILENAME = "agent.loop.json"
 LOOP_SCHEMA_NAME = "camc-agent-loop/1"
 DEFAULT_MAX_ATTEMPTS = 3
+
+
+def _hostname():
+    return socket.gethostname()
+
+
+def _loop_owner_host(loop, owner_id, agent_store=None):
+    host = ((loop.get("owner") or {}).get("hostname") or "").strip()
+    if host:
+        return host
+    # Legacy loop files did not persist a host. Resolve once from the shared
+    # agent record; if that is unavailable, failing closed avoids remote sends.
+    try:
+        if agent_store is None:
+            from camc_pkg.storage import AgentStore
+            agent_store = AgentStore()
+        rec = agent_store.get(owner_id)
+        return (rec or {}).get("hostname") or ""
+    except Exception:
+        return ""
 
 
 def _owner_dir(owner_id):
@@ -348,6 +369,7 @@ def build_loop(name, schedule, prompt, owner_rec, *,
             "agent_id": owner_id,
             "agent_name": owner_name,
             "tmux_session": tmux_session,
+            "hostname": owner_rec.get("hostname") or "",
         },
         "schedule": sched,
         "action": {
@@ -558,6 +580,14 @@ def tick_loops(now=None, dispatch=None, root=None, agent_store=None):
                     "due_at": due_at,
                     "owner": owner_id,
                     "reason": defer_reason or "owner_not_ready",
+                }, _root=root)
+                continue
+            owner_host = _loop_owner_host(loop, owner_id, agent_store)
+            if not owner_host or not _same_host(owner_host, _hostname()):
+                append_loop_run(owner_id, {
+                    "event": "loop_deferred", "loop_id": loop.get("id"),
+                    "loop_name": loop.get("name"), "due_at": due_at,
+                    "owner": owner_id, "reason": "owner_other_host",
                 }, _root=root)
                 continue
             # Append queue event first so it's visible if dispatch crashes.
