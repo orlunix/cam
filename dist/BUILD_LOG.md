@@ -5306,3 +5306,27 @@ fde6f3d camc: stabilize cursor confirmations and message submit
 92f8469 camc: widen stuck confirmation fallback
 5f7635a camc: improve list column rendering
 ```
+## v1.2.42  f77fb9c-dirty 2026-08-05 02:42
+
+- Lines: 20507
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+fde6f3d camc: stabilize cursor confirmations and message submit
+92f8469 camc: widen stuck confirmation fallback
+```
+## v1.2.43  f77fb9c-dirty 2026-08-05 02:44
+
+- Lines: 20346
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+fde6f3d camc: stabilize cursor confirmations and message submit
+92f8469 camc: widen stuck confirmation fallback
+```
