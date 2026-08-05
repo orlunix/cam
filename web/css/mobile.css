@@ -1906,3 +1906,72 @@ body.camui-v2 .input-bar-sticky .btn-direct,
 body.camui-v2 .input-bar-sticky .btn-upload {
   min-width: 44px;
 }
+
+/* --- Nodes → Import pane polish --- */
+body.camui-v2 .nodes-manage-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+body.camui-v2 .nodes-manage-tab {
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid #30363d;
+  background: transparent;
+  color: #8b949e;
+  font-size: 13px;
+  line-height: 1.2;
+}
+body.camui-v2 .nodes-manage-tab[aria-pressed="true"] {
+  background: rgba(88, 166, 255, 0.12);
+  border-color: rgba(88, 166, 255, 0.45);
+  color: #79b8ff;
+}
+body.camui-v2 .nodes-manage-close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: #8b949e;
+  font-size: 13px;
+  padding: 6px 8px;
+}
+body.camui-v2 .nodes-import-toolbar {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0;
+}
+body.camui-v2 .nodes-import-toolbar .btn-sm,
+body.camui-v2 .nodes-import-actions .btn-primary {
+  padding: 8px 16px;
+  min-height: 36px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+body.camui-v2 .nodes-import-toolbar .btn-sm {
+  border: 1px solid #30363d;
+  background: #21262d;
+  color: #c9d1d9;
+}
+body.camui-v2 #ssh-config-paste {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  background: #0d1117;
+  color: #c9d1d9;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  padding: 10px;
+}
+body.camui-v2 #ssh-config-paste:focus {
+  outline: none;
+  border-color: rgba(88, 166, 255, 0.5);
+}
+body.camui-v2 .nodes-import-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
