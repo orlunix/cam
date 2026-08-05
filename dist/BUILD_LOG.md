@@ -5244,3 +5244,29 @@ e35b22e camc: stabilize monitor and message submit
 46c1720 camc: safely migrate legacy agents and fix boot confirms
 ```
 
+## v1.2.35  0b134b7-dirty 2026-08-04 03:05
+
+- Lines: 20301
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+fde6f3d camc: stabilize cursor confirmations and message submit
+92f8469 camc: widen stuck confirmation fallback
+5f7635a camc: improve list column rendering
+e35b22e camc: stabilize monitor and message submit
+2bf3e81 camc: refresh managed tmux config
+```
+
+## v1.2.36  0b134b7-dirty 2026-08-04 03:06
+
+- Lines: 20299
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+fde6f3d camc: stabilize cursor confirmations and message submit
+92f8469 camc: widen stuck confirmation fallback
+5f7635a camc: improve list column rendering
+e35b22e camc: stabilize monitor and message submit
+2bf3e81 camc: refresh managed tmux config
+```
+

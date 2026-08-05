@@ -355,6 +355,24 @@ class TestStep1HealthCheck:
         assert store.last_status == "completed"
 
 
+def test_monitor_records_custom_tool_exit_without_killing_tmux(tmp_path):
+    status_path = tmp_path / "tool-exit.status"
+    status_path.write_text("7\n")
+    store = MockStore()
+    store.agent["runtime"] = {
+        "custom_launch": {"exit_status_path": str(status_path)},
+    }
+
+    store, events = run_monitor_steps(
+        [screen_planning()], store=store, session_alive=True, max_cycles=1)
+
+    assert store.last_status == "failed"
+    assert store.last_state == "failed"
+    assert "code 7" in store.agent["exit_reason"]
+    assert not status_path.exists()
+    assert events.of_type("tool_exit")
+
+
 class TestStep3EmptySkip:
     """Step 3: Empty output skipped."""
 
