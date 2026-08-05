@@ -81,6 +81,45 @@ def test_embedded_skill_install_writes_non_ascii_content(tmp_path, monkeypatch):
     assert "中文说明" in (tmp_path / ".codex/skills/demo/SKILL.md").read_text(encoding="utf-8")
 
 
+def test_codex_skill_install_does_not_modify_agents_md(
+    tmp_path, one_embedded_skill
+):
+    agents_md = tmp_path / "AGENTS.md"
+    agents_md.write_text("# User instructions\n\nKeep this text.\n", encoding="utf-8")
+    original = agents_md.read_text(encoding="utf-8")
+
+    skills.install_manifest_skills(str(tmp_path), config_dir=".codex")
+    skills.install_manifest_skills(str(tmp_path), config_dir=".codex")
+
+    assert agents_md.read_text(encoding="utf-8") == original
+
+
+def test_codex_skill_install_respects_equivalent_user_guidance(
+    tmp_path, one_embedded_skill
+):
+    agents_md = tmp_path / "AGENTS.md"
+    original = (
+        "# Existing policy\n\n"
+        "When a sandbox command fails with Operation not permitted, retry it "
+        "once using sandbox_permissions: require_escalated.\n"
+    )
+    agents_md.write_text(original, encoding="utf-8")
+
+    skills.install_manifest_skills(str(tmp_path), config_dir=".codex")
+
+    assert agents_md.read_text(encoding="utf-8") == original
+    assert "camc:codex-host-escalation" not in original
+
+
+@pytest.mark.parametrize("config_dir", [".claude", ".cursor", ".agents"])
+def test_non_codex_skill_install_does_not_add_host_escalation_guidance(
+    tmp_path, one_embedded_skill, config_dir
+):
+    skills.install_manifest_skills(str(tmp_path), config_dir=config_dir)
+
+    assert not (tmp_path / "AGENTS.md").exists()
+
+
 def test_heal_refreshes_embedded_skills_for_each_local_agent(monkeypatch, tmp_path):
     from camc_pkg import cli
 

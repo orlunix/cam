@@ -404,9 +404,23 @@ def _tmux_paste_startup_command(tmux, socket, target, text):
         return False
 
 
+def _startup_status_command(command, status_path):
+    """Run a tool, record its rc, and retain the interactive tmux shell."""
+    inner_cmd = " ".join(shlex.quote(arg) for arg in command)
+    quoted_status = shlex.quote(status_path)
+    body = (
+        "(_camc_status=%s; (exec %s); _camc_rc=$?; "
+        "printf '%%s\\n' \"$_camc_rc\" > \"$_camc_status.tmp.$$\" && "
+        "mv -f \"$_camc_status.tmp.$$\" \"$_camc_status\"; "
+        "if [ \"$_camc_rc\" -ne 0 ]; then "
+        "printf 'camc: tool exited with code %%s; tmux shell retained\\n' \"$_camc_rc\"; fi)"
+        % (quoted_status, inner_cmd))
+    return "/bin/sh -c %s" % shlex.quote(body)
+
+
 def create_tmux_session(session_id, command, workdir, env_setup=None,
                         inherit_env=True, env=None, tmux_bin=None,
-                        tmux_config=None):
+                        tmux_config=None, exit_status_path=None):
     """Create a detached tmux session named `session_id`.
 
     F-08: `env` and `tmux_bin` are optional. When provided (the new
@@ -426,6 +440,11 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
     except OSError:
         pass
     socket = "%s/%s.sock" % (SOCKETS_DIR, session_id)
+    if exit_status_path:
+        try:
+            os.unlink(exit_status_path)
+        except OSError:
+            pass
 
     # Source env: explicit arg wins; else current process env.
     env = dict(env) if env is not None else os.environ.copy()
@@ -512,7 +531,9 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
             # Paste the command through a tmux buffer instead of
             # send-keys -l. On some PDX tmux builds, literal send-keys
             # can drop the whole server before Enter is sent.
-            inner_cmd = " ".join(shlex.quote(arg) for arg in command)
+            inner_cmd = (_startup_status_command(command, exit_status_path)
+                         if exit_status_path else
+                         " ".join(shlex.quote(arg) for arg in command))
             target = "%s:0.0" % session_id
             if not _tmux_paste_startup_command(tmux, socket, target,
                                                inner_cmd):
@@ -529,7 +550,9 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
             log.error("Failed to create shell session %s: %s", session_id, e)
             return False
 
-    inner_cmd = " ".join(shlex.quote(arg) for arg in command)
+    inner_cmd = (_startup_status_command(command, exit_status_path)
+                 if exit_status_path else
+                 " ".join(shlex.quote(arg) for arg in command))
     if not env_setup:
         # Pull PATH from the explicit env if provided, otherwise from
         # the calling process. Either way we land an explicit `export
@@ -539,7 +562,11 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
     # Non-login bash: env_setup is the sole source of Anthropic/proxy
     # overrides. `bash -l` would re-source ~/.bashrc and re-inject login
     # session / ANTHROPIC_* exports before env_setup can win.
-    command_str = "env -u CLAUDECODE bash -c %s" % shlex.quote(env_setup + " && exec " + inner_cmd)
+    if exit_status_path:
+        launch_body = env_setup + " && " + inner_cmd + "; exec \"${SHELL:-/bin/sh}\" -i"
+    else:
+        launch_body = env_setup + " && exec " + inner_cmd
+    command_str = "env -u CLAUDECODE bash -c %s" % shlex.quote(launch_body)
 
     try:
         proc = subprocess.Popen(
