@@ -18,6 +18,16 @@ _TOOL_FILES = {
     "cursor": "AGENTS.md",
 }
 
+_CODEX_HOST_ESCALATION_ID = "codex-host-escalation"
+_CODEX_HOST_ESCALATION_GUIDANCE = """## CAMC host execution
+
+When an important shell tool call fails specifically because the sandbox
+denied host access (for example `Operation not permitted` or `Read-only file
+system`), retry the exact same command once using
+`sandbox_permissions: require_escalated` with a concise justification. Do not
+change the command, use `sudo`, or escalate ordinary command failures. If the
+elevated retry fails, report that failure instead of retrying again."""
+
 
 def target_file(tool, workdir):
     """Resolve the tool-specific system-prompt file. Returns the
@@ -67,6 +77,43 @@ def write_block(file_path, agent_id, prompt):
         pass
     with open(file_path, "w") as f:
         f.write(new_text)
+
+
+def ensure_codex_host_escalation_guidance(workdir):
+    """Ensure one CAMC-owned host-escalation block in workspace AGENTS.md.
+
+    Equivalent user-authored guidance wins. A CAMC-managed block is updated
+    in place when its canonical text changes and is byte-idempotent otherwise.
+    """
+    file_path = target_file("codex", workdir)
+    existing = ""
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                existing = f.read()
+        except (IOError, OSError):
+            existing = ""
+
+    begin, end = _markers(_CODEX_HOST_ESCALATION_ID)
+    canonical = "%s\n%s\n%s\n" % (
+        begin, _CODEX_HOST_ESCALATION_GUIDANCE.rstrip("\n"), end)
+    if begin in existing:
+        if canonical in existing:
+            return "existing"
+        write_block(file_path, _CODEX_HOST_ESCALATION_ID,
+                    _CODEX_HOST_ESCALATION_GUIDANCE)
+        return "updated"
+
+    lowered = existing.lower()
+    if ("require_escalated" in lowered
+            and ("operation not permitted" in lowered
+                 or "read-only file system" in lowered
+                 or "sandbox" in lowered)):
+        return "user_defined"
+
+    write_block(file_path, _CODEX_HOST_ESCALATION_ID,
+                _CODEX_HOST_ESCALATION_GUIDANCE)
+    return "created"
 
 
 def strip_block(file_path, agent_id):
