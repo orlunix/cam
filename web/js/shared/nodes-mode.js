@@ -2223,10 +2223,14 @@ function mountNodesActions({
     if (hosts.length === 0) {
       // Hubs without a user ~/.ssh/config (mobile): offer a paste fallback.
       if (resp && resp.available === false) {
+        if (importSrcEl) {
+          importSrcEl.innerHTML = 'No SSH config on this device — paste below or tap <strong>Browse…</strong>.';
+        }
         importList.innerHTML = `
-          <div class="empty-state">No SSH config on this hub. Paste a config below (from <strong>Nodes → Export</strong> on another device):</div>
-          <textarea id="ssh-config-paste" rows="8" spellcheck="false" style="width:100%;box-sizing:border-box;font-family:monospace;background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:8px;" placeholder="Host gpu&#10;  HostName 10.0.0.1&#10;  User hren"></textarea>
-          <div style="margin-top:6px;text-align:right;"><button type="button" class="btn-sm btn-secondary" id="ssh-config-parse-btn">Parse</button></div>`;
+          <textarea id="ssh-config-paste" rows="7" spellcheck="false" placeholder="Host gpu&#10;  HostName 10.0.0.1&#10;  User hren"></textarea>
+          <div class="nodes-import-actions">
+            <button type="button" class="btn-primary" id="ssh-config-parse-btn">Parse</button>
+          </div>`;
         const parseBtn = importList.querySelector('#ssh-config-parse-btn');
         parseBtn.addEventListener('click', async () => {
           const ta = importList.querySelector('#ssh-config-paste');
@@ -2265,6 +2269,18 @@ function mountNodesActions({
         // Import honors the config as written (key auth). A missing
         // IdentityFile is surfaced at sync precheck with guidance, not
         // silently rerouted.
+        let keyFile = h.identity_file || '';
+        // Mobile: the imported IdentityFile always refers to ANOTHER
+        // device. Pick the key here via SAF (stored into app storage)
+        // and import with the stored path instead.
+        const files = bridgeFiles();
+        if (keyFile && files && typeof files.pickPrivateKey === 'function') {
+          setImportStatus(`Pick the private key for "${h.alias}" (stored on this device)…`, '');
+          try {
+            const picked = await files.pickPrivateKey();
+            keyFile = picked && picked.path ? picked.path : '';
+          } catch { keyFile = ''; }
+        }
         const body = {
           name,
           path:      user ? `/home/${user}` : '/home',
@@ -2272,7 +2288,7 @@ function mountNodesActions({
           user,
           port:      h.port || 22,
           auth_method: 'key',
-          key_file:  h.identity_file || '',
+          key_file:  keyFile,
           env_setup: '',
         };
         // ProxyJump from the config: keep it only when it references an
@@ -2295,10 +2311,10 @@ function mountNodesActions({
           await api.createContext(body);
           btn.textContent = 'Imported';
           setImportStatus(
-            h.identity_file && h.key_exists === false
-              ? `Imported "${name}" — WARNING: key file not found locally. Edit the host to select a valid key file or use password auth.`
+            h.identity_file && (h.key_exists === false || !keyFile)
+              ? `Imported "${name}" — WARNING: no usable key file on this device. Edit the host to pick a valid key file or use password auth.`
               : `Imported "${name}".`,
-            h.identity_file && h.key_exists === false ? 'is-error' : 'is-ok');
+            h.identity_file && (h.key_exists === false || !keyFile) ? 'is-error' : 'is-ok');
           showToast(`Host imported as "${name}"`, 'success');
           try { await loadContextsAndAdapters(); } catch (_) {}
         } catch (err) {

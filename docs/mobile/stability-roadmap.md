@@ -1,7 +1,7 @@
 # Mobile V2 — Stability Status & Roadmap
 
 **Living document.** Current line: branch `camui-desktop-v2`, version
-2.4.71 (2026-08-04). This file supersedes the older `docs/mobile/*`
+2.4.75 (2026-08-04). This file supersedes the older `docs/mobile/*`
 plans, which are stale (last touched 2026-06-28) — see §6 for what to
 trust where.
 
