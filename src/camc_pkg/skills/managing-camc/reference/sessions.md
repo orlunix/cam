@@ -1,4 +1,25 @@
-# Finding the Claude session for an agent
+# Finding the tool session for an agent
+
+`camc --json status <agent-id>` exposes `session_id`, `session_path`, and
+`session_binding`. For Codex, wait for `session_binding` to become `bound`
+before cleanup. `pending` means the detached binder is still working;
+`unavailable` means no exact PID-owned rollout could be proven.
+
+## Durable cleanup order
+
+For both manual automation and Camflow, archive is the durability gate:
+
+```bash
+camc archive <agent-id>
+camc stop <agent-id>
+camc rm <agent-id>
+```
+
+Never remove the agent record when `camc archive` fails. For an unbound Codex
+agent, archive retries the bounded binder while the tmux process is alive and
+returns non-zero rather than silently creating a transcript-less archive.
+
+## Claude sessions
 
 Each agent's conversation history lives in a Claude session JSONL at:
 
@@ -55,6 +76,23 @@ Or extract the conversation in Q/A order via:
 ```bash
 camc archive show <archive-name> | less
 ```
+
+## Codex sessions
+
+Camc binds a newly launched Codex process to the exact rollout it has open
+under `$CODEX_HOME/sessions` (default `~/.codex/sessions`). It validates the
+process ownership, filename UUID, `session_meta.session_id`, canonical cwd,
+and launch boundary before persisting the binding.
+
+The archive stores the validated rollout as `codex/session.jsonl`. Raw records
+can be streamed without extracting the tarball:
+
+```bash
+camc archive show --json <archive-name>
+```
+
+Pretty `archive show` and `archive summary` remain Claude-only; Codex commands
+return an explicit error directing callers to the raw JSONL form.
 
 ## Resume a session in a fresh agent
 

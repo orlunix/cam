@@ -106,7 +106,7 @@ def read_module(name):
         path = os.path.join(PKG_DIR, name.replace(".", os.sep) + ".py")
     else:
         path = os.path.join(PKG_DIR, "%s.py" % name)
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         src = f.read()
     if name == "adapters":
         src = _inject_embedded_configs(src)
@@ -122,7 +122,7 @@ def _inject_embedded_configs(src):
     for fname in sorted(os.listdir(TOML_DIR)):
         if not fname.endswith(".toml"):
             continue
-        with open(os.path.join(TOML_DIR, fname), "r") as f:
+        with open(os.path.join(TOML_DIR, fname), "r", encoding="utf-8") as f:
             content = f.read()
         if fname.endswith(".boot.toml"):
             boot_entries.append('    "%s": r"""%s"""' % (fname, content))
@@ -188,13 +188,13 @@ def _inject_embedded_skills(src):
 
 def read_init():
     path = os.path.join(PKG_DIR, "__init__.py")
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
 
 def read_fast_capture():
     path = os.path.join(PKG_DIR, "fast_capture.py")
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
 
@@ -453,9 +453,17 @@ def main():
             cwd=repo_root, stderr=subprocess.DEVNULL).decode().strip()
     except Exception:
         git_log = "(no git)"
-    entry = "## v%s  %s\n\n- Lines: %d\n- Output: %s\n- Recent changes:\n```\n%s\n```\n\n" % (
+    prefix = ""
+    try:
+        with open(log_path, "rb") as f:
+            existing = f.read()
+        if existing and not existing.endswith(b"\n\n"):
+            prefix = "\n" if existing.endswith(b"\n") else "\n\n"
+    except OSError:
+        pass
+    entry = prefix + "## v%s  %s\n\n- Lines: %d\n- Output: %s\n- Recent changes:\n```\n%s\n```\n" % (
         ver, stamp, lines, args.output, git_log)
-    with open(log_path, "a", encoding="utf-8") as f:
+    with open(log_path, "a", encoding="utf-8", newline="\n") as f:
         f.write(entry)
 
     if args.verify:
