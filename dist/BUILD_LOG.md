@@ -5270,3 +5270,15 @@ e35b22e camc: stabilize monitor and message submit
 2bf3e81 camc: refresh managed tmux config
 ```
 
+## v1.2.39  8a04f7f-dirty 2026-08-05 00:04
+
+- Lines: 20492
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+8a04f7f camc: add custom tool launch controls
+fde6f3d camc: stabilize cursor confirmations and message submit
+92f8469 camc: widen stuck confirmation fallback
+5f7635a camc: improve list column rendering
+e35b22e camc: stabilize monitor and message submit
+```
