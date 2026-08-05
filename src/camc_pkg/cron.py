@@ -41,6 +41,7 @@ import shutil
 import socket as _socket
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -69,10 +70,46 @@ CRON_ARCHIVE_DIR = os.path.join(CRON_DIR, "archive")
 CRON_LOGS_DIR = os.path.join(CRON_DIR, "logs")
 CRON_HUMAN_LOG = os.path.join(CRON_DIR, "cron.log")
 
+
+def _cron_runtime_dir():
+    """Node-local scheduler coordination; job data remains under CAM_DIR."""
+    return os.path.join(tempfile.gettempdir(), "camc-%d" % os.getuid(), "cron")
+
+
+def _ensure_runtime_dir():
+    path = _cron_runtime_dir()
+    try:
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        st = os.stat(path)
+        if st.st_uid != os.getuid():
+            raise OSError("runtime directory is not owned by this user")
+        if st.st_mode & 0o077:
+            os.chmod(path, 0o700)
+    except OSError as e:
+        raise RuntimeError("cron runtime directory unavailable: %s" % e)
+    return path
+
+
+def _scheduler_state_path():
+    return os.path.join(_cron_runtime_dir(), "state.json")
+
+
+def _scheduler_start_lock_path():
+    return os.path.join(_cron_runtime_dir(), "start.lock")
+
+
+def _cron_tick_lock_path():
+    # Existing focused tests override CRON_LOCK_FILE. Production uses local
+    # runtime state so shared NFS homes never serialize different nodes.
+    if CRON_LOCK_FILE != _DEFAULT_CRON_LOCK_FILE:
+        return CRON_LOCK_FILE
+    return os.path.join(_cron_runtime_dir(), "tick.lock")
+
 # Legacy single-file registry — only consulted at migration time.
 CRON_LEGACY_FILE = os.path.join(CRON_DIR, "jobs.json")
 # Back-compat alias for test fixtures that monkeypatched `_cron.CRON_FILE`.
 CRON_FILE = CRON_LEGACY_FILE
+_DEFAULT_CRON_LOCK_FILE = CRON_LOCK_FILE
 
 CRON_BEGIN = "# camc cron begin"
 CRON_END = "# camc cron end"
@@ -1042,6 +1079,169 @@ def _release_lock(handle):
             _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
     except OSError:
         pass
+
+
+def _read_scheduler_state():
+    try:
+        with open(_scheduler_state_path(), "r") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_scheduler_state(data):
+    _ensure_runtime_dir()
+    path = _scheduler_state_path()
+    tmp = path + ".tmp-%d" % os.getpid()
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, path)
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (TypeError, ValueError, ProcessLookupError):
+        return False
+    except PermissionError:
+        return True
+
+
+def _scheduler_binary():
+    deployed = os.path.expanduser("~/.cam/camc")
+    if os.path.isfile(deployed) and os.access(deployed, os.X_OK):
+        return deployed
+    return _camc_path()
+
+
+def _scheduler_pid_matches(state):
+    pid = state.get("pid")
+    generation = state.get("generation") or ""
+    if not pid or not generation or not _pid_alive(pid):
+        return False
+    try:
+        with open("/proc/%s/cmdline" % int(pid), "rb") as f:
+            cmdline = f.read().decode("utf-8", "replace").replace("\x00", " ")
+    except OSError:
+        try:
+            result = subprocess.run(["ps", "-p", str(int(pid)), "-o", "command="],
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                    universal_newlines=True, timeout=2)
+            cmdline = result.stdout if result.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            return False
+    return "_cron_scheduler" in cmdline and generation in cmdline
+
+
+def cron_scheduler_present():
+    return _scheduler_pid_matches(_read_scheduler_state())
+
+
+def _stop_scheduler(state):
+    if not _scheduler_pid_matches(state):
+        return False
+    pid = int(state["pid"])
+    try:
+        os.kill(pid, 15)
+    except OSError:
+        return False
+    deadline = time.time() + 2.0
+    while _pid_alive(pid) and time.time() < deadline:
+        time.sleep(0.05)
+    if _pid_alive(pid):
+        try:
+            os.kill(pid, 9)
+        except OSError:
+            pass
+    return not _pid_alive(pid)
+
+
+def ensure_cron_scheduler(wait=False, restart=False):
+    """Start one node-local scheduler if its recorded PID is absent."""
+    _ensure_runtime_dir()
+    lock = _acquire_lock(_scheduler_start_lock_path())
+    if lock is None:
+        return {"status": "starting"}
+    try:
+        state = _read_scheduler_state()
+        if restart and state:
+            if not _stop_scheduler(state):
+                return {"status": "restart_unverified"}
+            state = {}
+            try:
+                os.unlink(_scheduler_state_path())
+            except OSError:
+                pass
+        if state and _scheduler_pid_matches(state):
+            return {"status": "running", "pid": state["pid"],
+                    "generation": state.get("generation", "")}
+        generation = uuid4().hex
+        # Publish generation before spawning: the child can safely see its
+        # identity even if it wins the scheduling race against this parent.
+        _write_scheduler_state({"pid": None, "generation": generation,
+                                "started_at": _iso(_now_local())})
+        proc = subprocess.Popen(
+            [_scheduler_binary(), "_cron_scheduler", generation],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, close_fds=True,
+            start_new_session=True)
+        state = {"pid": proc.pid, "generation": generation,
+                 "started_at": _iso(_now_local())}
+        _write_scheduler_state(state)
+        if wait and not _pid_alive(proc.pid):
+            return {"status": "failed"}
+        return {"status": "starting", "pid": proc.pid,
+                "generation": generation}
+    except (OSError, RuntimeError) as e:
+        return {"status": "failed", "error": str(e)}
+    finally:
+        _release_lock(lock)
+
+
+def has_local_cron_work():
+    """Whether this node owns enabled jobs or loops worth scheduling."""
+    mine = _hostname()
+    try:
+        for job in CronJobStore().jobs():
+            if job.get("enabled", True) and job.get("host") \
+                    and _same_host(job.get("host"), mine):
+                return True
+    except Exception:
+        return False
+    try:
+        from camc_pkg.cron_loop import _scan_owner_ids, LoopStore
+        for owner_id in _scan_owner_ids():
+            for loop in LoopStore(owner_id).list_loops():
+                host = (loop.get("owner") or {}).get("hostname") or ""
+                if not host:
+                    try:
+                        from camc_pkg.storage import AgentStore
+                        host = (AgentStore().get(owner_id) or {}).get("hostname") or ""
+                    except Exception:
+                        host = ""
+                if loop.get("enabled", True) and host and _same_host(host, mine):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def run_cron_scheduler(generation):
+    """Hidden long-lived scheduler; each tick runs the latest deployed CAMC."""
+    while True:
+        state = _read_scheduler_state()
+        if state.get("generation") != generation:
+            return 0
+        try:
+            subprocess.run([_scheduler_binary(), "cron", "tick"],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=55)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        delay = 60 - (int(time.time()) % 60)
+        time.sleep(delay)
     try:
         handle.close()
     except OSError:
@@ -1090,7 +1290,7 @@ def tick(now=None, runner=None, spawn=None):
     """Scheduler entrypoint. ``spawn`` overridable for tests."""
     spawn_fn = spawn or _spawn_worker
     started_at = _iso(_now_local())
-    lock = _acquire_lock(CRON_LOCK_FILE)
+    lock = _acquire_lock(_cron_tick_lock_path())
     if lock is None:
         _append_runs({"event": "tick_skipped_locked",
                       "host": _hostname(), "pid": os.getpid()})
@@ -1147,7 +1347,12 @@ def tick(now=None, runner=None, spawn=None):
                 break
             if not j.get("enabled", True):
                 continue
-            jhost = j.get("host") or my_host
+            jhost = j.get("host")
+            if not jhost:
+                _append_runs({"event": "job_skipped_host",
+                              "job_id": j.get("id"), "job_name": j.get("name"),
+                              "reason": "missing_host", "current_host": my_host})
+                continue
             if not _same_host(jhost, my_host):
                 _append_runs({"event": "job_skipped_host",
                               "job_id": j.get("id"), "job_name": j.get("name"),

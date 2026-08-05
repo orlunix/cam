@@ -244,6 +244,8 @@ from camc_pkg.cron import (
     DuplicateJobName, CorruptCronJSON, CorruptCronConfig,
     AmbiguousJobKey, CrontabUnavailable,
     install_tick, remove_tick, ensure_tick_if_needed, tick, cron_run,
+    ensure_cron_scheduler, run_cron_scheduler, has_local_cron_work,
+    cron_scheduler_present,
     parse_every, parse_daily, parse_at, parse_in,
     build_job, DEFAULT_TIMEOUT_SECONDS,
     _archive_job, _append_runs, _emit_event, _hostname, _same_host,
@@ -3461,7 +3463,7 @@ def _restart_local_monitors():
     return restarted, failed, skipped
 
 
-def _do_heal():
+def _do_heal(restart_cron=False):
     """Shared heal body: resume, restart monitors, orphan adopt, maintenance."""
     my_hostname = _sock.gethostname()
     store = AgentStore()
@@ -3923,25 +3925,14 @@ def _do_heal():
     except OSError:
         pass
 
-    # Cron tick block: install/repair iff enabled jobs exist; remove if none.
+    # Node scheduler repair is intentionally independent of system crontab.
     try:
-        result = ensure_tick_if_needed()
-        if isinstance(result, tuple) and result[0] == "crontab_unavailable":
-            print("Cron: repair failed: %s" % result[1])
-        elif isinstance(result, tuple) and result[0] == "cron_json_corrupt":
-            print("Cron: registry is corrupt at %s — refused to touch crontab;"
-                  " inspect manually." % result[1])
-        elif result in ("installed", "repaired"):
-            enabled = [j for j in CronJobStore().jobs()
-                       if j.get("enabled", True)]
-            print("Cron: %s tick entry (%d enabled job(s))"
-                  % ("installed missing" if result == "installed"
-                     else "repaired", len(enabled)))
-        elif result == "removed":
-            print("Cron: removed stale tick entry (no enabled jobs)")
-        # "ok" / "noop" → quiet
+        if has_local_cron_work() or (restart_cron and cron_scheduler_present()):
+            result = ensure_cron_scheduler(wait=True, restart=restart_cron)
+            if result.get("status") == "failed":
+                print("Cron: scheduler repair failed: %s" % result.get("error", "unknown"))
     except Exception as e:
-        log.warning("cron: heal hook failed: %s", e)
+        log.warning("cron: scheduler heal hook failed: %s", e)
 
 
 def _refresh_embedded_skills_for_local_agents(agents):
@@ -4139,7 +4130,7 @@ def cmd_heal(args):
         restarted, failed, skipped = _restart_local_monitors()
         print("Monitor restart: %d restarted, %d failed, %d skipped" %
               (restarted, failed, skipped))
-        _do_heal()
+        _do_heal(restart_cron=True)
         _refresh_embedded_skills_after_heal()
         return
     if getattr(args, "upgrade", False):
@@ -5544,21 +5535,8 @@ def _cmd_cron_add_loop(args):
     sys.stdout.write(
         "added agent loop %s (%s)\nowner: %s (%s)\nexecutor: host-tick\n"
         % (loop["name"], loop["id"], owner_name or "(unnamed)", owner_id))
-    # Ensure the host scheduler tick block exists — without it the
-    # loop is persisted but cannot fire. Match host `cron add`
-    # semantics: if the crontab install fails, the loop file stays
-    # on disk but `cron add` exits 1 so callers (Desktop / CI) can
-    # surface a clear "saved but not runnable, run `camc heal`" state
-    # rather than mistakenly trusting the loop is live.
-    try:
-        install_tick()
-        sys.stdout.write("tick: installed\n")
-    except CrontabUnavailable as e:
-        sys.stderr.write(
-            "ERROR: failed to install system cron tick: %s\n"
-            "Loop is saved but will not fire until the tick block is "
-            "installed.\nRun `camc heal` after fixing crontab access.\n" % e)
-        sys.exit(1)
+    if _same_host(owner.get("hostname") or "", _hostname()):
+        ensure_cron_scheduler(wait=False)
     sys.exit(0)
 
 
@@ -5592,6 +5570,8 @@ def _cmd_cron_list_loop(args):
             "camc cron list --loop: loop file corrupt: %s\n" % e)
         sys.exit(1)
     loops = envelope.get("loops", [])
+    if loops and _same_host(owner.get("hostname") or "", _hostname()):
+        ensure_cron_scheduler(wait=False)
     if getattr(args, "json_out", False):
         # Project the stored schema into the Desktop-stable shape:
         # top-level id/name/owner/enabled/schedule/prompt/next_due_at/
@@ -6099,16 +6079,8 @@ def cmd_cron_add(args):
 
     sys.stdout.write("added cron job %s (%s)\n" % (job["name"], job["id"]))
 
-    # Ensure tick crontab block (best-effort; warn on failure but keep
-    # the job saved per spec).
-    try:
-        install_tick()
-        sys.stdout.write("tick: installed\n")
-    except CrontabUnavailable as e:
-        sys.stderr.write(
-            "ERROR: failed to install system cron tick: %s\n"
-            "Run `camc heal` after fixing crontab access.\n" % e)
-        sys.exit(1)
+    if _same_host(job.get("host") or "", _hostname()):
+        ensure_cron_scheduler(wait=False)
     sys.exit(0)
 
 
@@ -6142,19 +6114,6 @@ def cmd_cron_rm(args):
                      reason="manual_remove")
     sys.stdout.write(
         "removed cron job %s (%s)\n" % (removed.get("name"), removed.get("id")))
-    # If no enabled jobs remain for this host, take down this host's
-    # tick block. Shared-NFS homes may still contain jobs for other hosts.
-    my_host = _hostname()
-    enabled = [j for j in CronJobStore().jobs()
-               if j.get("enabled", True)
-               and _same_host(j.get("host") or my_host, my_host)]
-    if not enabled:
-        try:
-            if remove_tick():
-                sys.stdout.write("tick: removed (no enabled jobs remain)\n")
-        except CrontabUnavailable as e:
-            sys.stderr.write(
-                "WARN: failed to remove cron tick block: %s\n" % e)
     sys.exit(0)
 
 
@@ -6208,6 +6167,9 @@ def cmd_cron_list(args):
         sys.exit(1)
 
     jobs = list(store.jobs())
+    if any(j.get("enabled", True) and j.get("host")
+           and _same_host(j.get("host"), _hostname()) for j in jobs):
+        ensure_cron_scheduler(wait=False)
 
     def _sched_str(j):
         s = j.get("schedule") or {}
@@ -7065,7 +7027,7 @@ examples:
     ap_px_stop.add_argument("route", nargs="?", default=None)
 
     # cron — scheduled jobs (P0)
-    cron_p = sub.add_parser("cron", help="Scheduled jobs (add/rm/tick)")
+    cron_p = sub.add_parser("cron", help="Scheduled jobs and agent loops")
     cron_sub = cron_p.add_subparsers(dest="cron_cmd", parser_class=CamArgumentParser)
     cadd = cron_sub.add_parser("add", help="Add a scheduled job")
     cadd.add_argument("--name", required=True, help="Unique job name")
@@ -7118,7 +7080,7 @@ examples:
     crm.add_argument("--owner", default=None,
                      help="Owner agent id/name (required with --loop)")
     clist = cron_sub.add_parser("list",
-                                help="Read-only listing of active cron jobs")
+                                help="List active cron jobs (repairs local scheduler if needed)")
     clist.add_argument("--json", dest="json_out", action="store_true",
                        help="Emit machine-readable JSON instead of a table")
     clist.add_argument("--loop", action="store_true",
@@ -7126,7 +7088,7 @@ examples:
     clist.add_argument("--owner", default=None,
                        help="Owner agent id/name (required with --loop)")
     cron_sub.add_parser("tick",
-                        help="(system) scheduler entrypoint — called by crontab")
+                        help="(internal) execute one scheduler pass")
     crun = cron_sub.add_parser(
         "run", help="(internal) execute one previously queued run by id")
     crun.add_argument("run_id", help="run id from runs.jsonl (e.g. r9f31a2c0)")
@@ -7196,6 +7158,9 @@ examples:
     if len(sys.argv) >= 3 and sys.argv[1] == "_monitor":
         _run_monitor(sys.argv[2])
         return
+
+    if len(sys.argv) >= 3 and sys.argv[1] == "_cron_scheduler":
+        sys.exit(run_cron_scheduler(sys.argv[2]))
 
     # Hidden _proxy subcommand (protocol proxy worker)
     if len(sys.argv) >= 3 and sys.argv[1] == "_proxy":
