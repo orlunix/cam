@@ -51,6 +51,8 @@ def home(monkeypatch, tmp_path):
     try:
         from camc_pkg import cli as _cli
         monkeypatch.setattr(_cli, "_emit_event", lambda *args, **kwargs: None)
+        monkeypatch.setattr(_cli, "ensure_cron_scheduler",
+                            lambda **kwargs: {"status": "starting"})
     except Exception:
         pass
     return cron_dir
@@ -58,6 +60,106 @@ def home(monkeypatch, tmp_path):
 
 def _make_argv_cmd():
     return {"argv": ["true"], "cwd": ".", "timeout_seconds": 60}
+
+
+class _FakeProcess(object):
+    def __init__(self, pid):
+        self.pid = pid
+
+
+class TestNodeCronScheduler:
+    """The scheduler is one local process, never a system-crontab entry."""
+
+    def test_dead_pid_is_replaced_without_waiting(self, home, monkeypatch, tmp_path):
+        runtime = tmp_path / "runtime"
+        monkeypatch.setattr(_cron, "_cron_runtime_dir", lambda: str(runtime),
+                            raising=False)
+        runtime.mkdir()
+        with open(runtime / "state.json", "w") as f:
+            json.dump({"pid": 99999999, "generation": "old"}, f)
+        launched = []
+        def _spawn(argv, **kw):
+            launched.append(argv)
+            with open(runtime / "state.json") as f:
+                assert json.load(f)["generation"]
+            return _FakeProcess(4242)
+        monkeypatch.setattr(_cron.subprocess, "Popen", _spawn)
+        monkeypatch.setattr(_cron, "_pid_alive", lambda pid: False,
+                            raising=False)
+
+        result = _cron.ensure_cron_scheduler(wait=False)
+
+        assert result["status"] == "starting"
+        assert launched and launched[0][-2:] == ["_cron_scheduler", result["generation"]]
+        with open(runtime / "state.json") as f:
+            assert json.load(f)["pid"] == 4242
+
+    def test_live_pid_is_reused_without_starting_second_scheduler(
+            self, home, monkeypatch, tmp_path):
+        runtime = tmp_path / "runtime"
+        monkeypatch.setattr(_cron, "_cron_runtime_dir", lambda: str(runtime),
+                            raising=False)
+        runtime.mkdir()
+        with open(runtime / "state.json", "w") as f:
+            json.dump({"pid": 4242, "generation": "live"}, f)
+        monkeypatch.setattr(_cron, "_pid_alive", lambda pid: pid == 4242,
+                            raising=False)
+        monkeypatch.setattr(_cron, "_scheduler_pid_matches", lambda state: True,
+                            raising=False)
+        monkeypatch.setattr(_cron.subprocess, "Popen",
+                            lambda *a, **kw: pytest.fail("must not start a second scheduler"))
+
+        assert _cron.ensure_cron_scheduler(wait=False) == {
+            "status": "running", "pid": 4242, "generation": "live"}
+
+    def test_reused_pid_without_matching_generation_is_replaced(
+            self, home, monkeypatch, tmp_path):
+        runtime = tmp_path / "runtime"
+        monkeypatch.setattr(_cron, "_cron_runtime_dir", lambda: str(runtime),
+                            raising=False)
+        runtime.mkdir()
+        with open(runtime / "state.json", "w") as f:
+            json.dump({"pid": 4242, "generation": "old"}, f)
+        monkeypatch.setattr(_cron, "_pid_alive", lambda pid: True,
+                            raising=False)
+        monkeypatch.setattr(_cron, "_scheduler_pid_matches", lambda state: False,
+                            raising=False)
+        monkeypatch.setattr(_cron.subprocess, "Popen",
+                            lambda argv, **kw: _FakeProcess(5252))
+
+        result = _cron.ensure_cron_scheduler(wait=False)
+
+        assert result["status"] == "starting"
+        assert result["pid"] == 5252
+
+    def test_restart_replaces_only_a_verified_scheduler(self, home, monkeypatch, tmp_path):
+        runtime = tmp_path / "runtime"
+        monkeypatch.setattr(_cron, "_cron_runtime_dir", lambda: str(runtime),
+                            raising=False)
+        runtime.mkdir()
+        with open(runtime / "state.json", "w") as f:
+            json.dump({"pid": 4242, "generation": "old"}, f)
+        stopped = []
+        monkeypatch.setattr(_cron, "_stop_scheduler",
+                            lambda state: stopped.append(state) or True,
+                            raising=False)
+        monkeypatch.setattr(_cron.subprocess, "Popen",
+                            lambda argv, **kw: _FakeProcess(5252))
+
+        result = _cron.ensure_cron_scheduler(wait=False, restart=True)
+
+        assert stopped == [{"pid": 4242, "generation": "old"}]
+        assert result["status"] == "starting"
+        with open(runtime / "state.json") as f:
+            assert json.load(f)["pid"] == 5252
+
+    def test_tick_lock_is_node_local(self, home, monkeypatch, tmp_path):
+        runtime = tmp_path / "runtime"
+        monkeypatch.setattr(_cron, "_DEFAULT_CRON_LOCK_FILE", _cron.CRON_LOCK_FILE)
+        monkeypatch.setattr(_cron, "_cron_runtime_dir", lambda: str(runtime),
+                            raising=False)
+
+        assert _cron._cron_tick_lock_path() == str(runtime / "tick.lock")
 
 
 # ---------------------------------------------------------------------------
@@ -487,6 +589,18 @@ class TestTick:
         assert any(e.get("event") == "job_skipped_host"
                    and e.get("job_id") == j["id"] for e in events)
 
+    def test_legacy_job_without_host_is_not_executed_on_shared_nfs(self, home):
+        store = _cron.CronJobStore()
+        j = _seed_due_job(store, "legacy")
+        j.pop("host")
+        store.save(j)
+        spawned = []
+
+        result = _cron.tick(spawn=lambda rid: spawned.append(rid))
+
+        assert result["queued"] == 0
+        assert spawned == []
+
     def test_tick_writes_state_heartbeat(self, home):
         _cron.tick(spawn=lambda rid: None)
         assert os.path.exists(_cron.CRON_STATE_FILE)
@@ -667,7 +781,7 @@ class TestCmdCron:
         defaults.update(kw)
         return argparse.Namespace(**defaults)
 
-    def test_add_writes_job_and_installs_block(self, home, monkeypatch):
+    def test_add_writes_job_without_touching_crontab(self, home, monkeypatch):
         from camc_pkg import cli
         ct = _FakeCrontab("")
         monkeypatch.setattr(_cron, "_read_user_crontab",
@@ -679,7 +793,7 @@ class TestCmdCron:
         assert ei.value.code == 0
         files = os.listdir(_cron.CRON_JOBS_DIR)
         assert len(files) == 1
-        assert _cron.CRON_BEGIN in ct.current
+        assert ct.current == ""
 
     def test_add_duplicate_name_rejected(self, home, monkeypatch):
         from camc_pkg import cli
@@ -771,7 +885,7 @@ class TestCmdCron:
             cli.cmd_cron_list(argparse.Namespace(json_out=False))
         assert ei.value.code == 1
 
-    def test_rm_archives_and_removes_block_when_last(self, home, monkeypatch):
+    def test_rm_archives_without_touching_legacy_crontab(self, home, monkeypatch):
         from camc_pkg import cli
         ct = _FakeCrontab("")
         monkeypatch.setattr(_cron, "_read_user_crontab",
@@ -780,18 +894,17 @@ class TestCmdCron:
                             lambda text, runner=None: ct(["crontab", "-"], input=text))
         with pytest.raises(SystemExit):
             cli.cmd_cron_add(self._add(name="bye"))
-        assert _cron.CRON_BEGIN in ct.current
+        assert ct.current == ""
         with pytest.raises(SystemExit) as ei:
             cli.cmd_cron_rm(argparse.Namespace(id_or_name="bye"))
         assert ei.value.code == 0
         assert _cron.CronJobStore().jobs() == []
-        assert _cron.CRON_BEGIN not in ct.current
         assert os.listdir(_cron.CRON_ARCHIVE_DIR)
         with open(_cron.CRON_RUNS_FILE) as f:
             events = [json.loads(l) for l in f if l.strip()]
         assert any(e.get("event") == "job_removed" for e in events)
 
-    def test_rm_removes_block_when_only_other_host_jobs_remain(self, home, monkeypatch):
+    def test_rm_leaves_existing_legacy_crontab_untouched(self, home, monkeypatch):
         from camc_pkg import cli
         ct = _FakeCrontab("")
         monkeypatch.setattr(_cron, "_hostname", lambda: "thishost")
@@ -813,7 +926,7 @@ class TestCmdCron:
         assert ei.value.code == 0
         remaining = _cron.CronJobStore().jobs()
         assert [j["name"] for j in remaining] == ["other"]
-        assert _cron.CRON_BEGIN not in ct.current
+        assert _cron.CRON_BEGIN in ct.current
 
 
 # ---------------------------------------------------------------------------
