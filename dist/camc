@@ -700,8 +700,8 @@ import uuid
 # Constants and logging
 # ===========================================================================
 
-__version__ = "1.2.39"
-__build__ = "8a04f7f-dirty 2026-08-05 00:04"
+__version__ = "1.2.41"
+__build__ = "7eae072-dirty 2026-08-05 01:35"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -14338,6 +14338,7 @@ def cmd_run(args):
     transport = "ssh" if ctx_host and ctx_host not in ("localhost", "127.0.0.1") else "local"
     tags = getattr(args, "tag", None) or []
     store = AgentStore()
+    started_at = _now_iso()
     agent_rec = {
         "id": agent_id,
         "session_id": session_uuid,
@@ -14361,9 +14362,11 @@ def cmd_run(args):
         "tmux_version": tmux_ver_used,
         "pid": None,
         "hostname": _sock.gethostname(),
-        "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
+        "started_at": started_at, "completed_at": None, "exit_reason": None,
         "retry_count": 0, "cost_estimate": None, "files_changed": [],
     }
+    if tool == "codex":
+        agent_rec["session_binding"] = "pending"
     if not known_tool:
         agent_rec["task"]["requested_tool"] = tool
     if api_plan:
@@ -14415,6 +14418,8 @@ def cmd_run(args):
         },
     }
     store.save(agent_rec)
+    if tool == "codex":
+        _spawn_codex_session_binder(agent_id, session, workdir, started_at)
 
     if exit_status_path:
         time.sleep(_CUSTOM_LAUNCH_EXIT_GRACE)
@@ -15032,6 +15037,7 @@ def cmd_archive(args):
         capture.txt           — best-effort tmux capture-pane (only if alive)
         claude/session.jsonl  — authoritative transcript from ~/.claude/projects/
         claude/session-dir/   — per-session subdir (subagents, tool-results)
+        codex/session.jsonl   — validated Codex rollout transcript
 
     For older agents whose session_id was never tracked (or is the synthetic
     <aid>-0000-… placeholder), we run the same 4-layer extractor `camc heal`
@@ -15053,6 +15059,7 @@ def cmd_archive(args):
 
     aid = a["id"]
     name = _tf(a, "name") or aid
+    tool = _tf(a.get("task", {}), "tool")
     session = _sf(a, "tmux_session", "")
     workdir = _sf(a, "context_path", "")
 
@@ -15063,7 +15070,7 @@ def cmd_archive(args):
     if override_sid:
         sid = override_sid
         log.info("Archive %s: using --session-id override %s", aid, sid)
-    elif not sid or sid == synthetic_form:
+    elif tool == "claude" and (not sid or sid == synthetic_form):
         # Live Claude pid if the tmux session is still around
         claude_pid = _find_claude_pid(session) if session and tmux_session_exists(session) else None
         found = _find_session_id(aid, claude_pid, workdir=workdir, tmux_session=session)
@@ -15074,6 +15081,8 @@ def cmd_archive(args):
                 log.info("Archive %s: backfilled session_id = %s", aid, sid)
         else:
             print_warning("Could not determine session_id; archive will omit Claude transcript")
+    elif tool == "codex" and (not sid or not _sf(a, "session_path")):
+        print_warning("Codex session is not bound; archive will omit Codex transcript")
 
     # --- Pick output location ------------------------------------------------
     out_dir = getattr(args, "output", None) or os.path.join(CAM_DIR, "archives")
@@ -15150,10 +15159,10 @@ def cmd_archive(args):
         except Exception as e:
             log.warning("capture failed: %s", e)
 
-    # Claude transcript — the main prize
+    # Tool transcript — the main prize
     jsonl_bytes = None
     jsonl_source_path = None
-    if sid and workdir:
+    if tool == "claude" and sid and workdir:
         claude_dir = None
         for proj in _project_dirs_for_workdir(workdir):
             if os.path.isdir(proj):
@@ -15186,9 +15195,25 @@ def cmd_archive(args):
                         except OSError:
                             pass
 
+    elif tool == "codex" and sid and workdir:
+        codex_path = _sf(a, "session_path")
+        validated = _codex_rollout_metadata(
+            codex_path, workdir, expected_id=sid,
+        ) if codex_path else None
+        if not validated:
+            print_warning("Codex rollout binding is invalid; skipping Codex transcript")
+        else:
+            try:
+                with open(codex_path, "rb") as f:
+                    jsonl_bytes = f.read()
+                jsonl_source_path = codex_path
+                _add("codex/session.jsonl", jsonl_bytes)
+            except OSError as e:
+                log.warning("read %s: %s", codex_path, e)
+
     # summary.json — pre-computed per-prompt view for fast `archive summary`
     # (avoids re-parsing the full jsonl every time the user lists turns).
-    if jsonl_bytes:
+    if jsonl_bytes and tool == "claude":
         try:
             summary = _jsonl_summary(jsonl_bytes)
             # Record the live source path for `archive paths` / `info` later.
@@ -15978,6 +16003,251 @@ def _find_session_in_use(session_id):
 
 
 _UUID_RE_STR = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_CODEX_ROLLOUT_RE = re.compile(
+    r"^rollout-.+-(%s)\.jsonl$" % _UUID_RE_STR,
+)
+_CODEX_BIND_ATTEMPTS = 120  # 30 seconds at the fixed 250 ms poll interval
+
+
+def _proc_env(pid):
+    """Return a process environment mapping, or an empty mapping on failure."""
+    if not pid:
+        return {}
+    try:
+        with open("/proc/%s/environ" % pid, "rb") as f:
+            entries = f.read().split(b"\0")
+    except OSError:
+        return {}
+    env = {}
+    for entry in entries:
+        try:
+            key, value = entry.decode("utf-8", errors="surrogateescape").split("=", 1)
+        except ValueError:
+            continue
+        env[key] = value
+    return env
+
+
+def _parse_iso_timestamp(value):
+    """Parse an ISO-8601 timestamp to UTC, returning None for malformed input."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        from datetime import datetime, timezone
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            return None
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _codex_rollout_metadata(path, expected_workdir, expected_id=None,
+                            started_at=None):
+    """Return a validated Codex rollout UUID, or None without guessing.
+
+    The caller is responsible for proving process ownership of ``path``.  This
+    helper only validates the filename and first ``session_meta`` record.
+    """
+    match = _CODEX_ROLLOUT_RE.match(os.path.basename(path))
+    if not match:
+        return None
+    file_id = match.group(1)
+    if expected_id and file_id != expected_id:
+        return None
+    try:
+        with open(path, "rb") as f:
+            first = f.readline()
+        record = json.loads(first.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, TypeError):
+        return None
+    payload = record.get("payload") if isinstance(record, dict) else None
+    if record.get("type") != "session_meta" or not isinstance(payload, dict):
+        return None
+    if payload.get("session_id") != file_id:
+        return None
+    cwd = payload.get("cwd")
+    if not isinstance(cwd, str) or os.path.realpath(cwd) != os.path.realpath(expected_workdir):
+        return None
+    if started_at:
+        created = _parse_iso_timestamp(payload.get("timestamp") or record.get("timestamp"))
+        started = _parse_iso_timestamp(started_at)
+        if not created or not started or created < started:
+            return None
+    return file_id
+
+
+def _validated_codex_rollout(pid, workdir, started_at):
+    """Return ``(session_id, path)`` for one rollout opened by this PID.
+
+    This deliberately does not search Codex's session directory: an open file
+    descriptor is the process-level evidence that prevents same-workdir or
+    concurrent-launch sessions from being confused with this agent.
+    """
+    if not pid or not workdir:
+        return None
+    env = _proc_env(pid)
+    home = env.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
+    sessions_root = os.path.realpath(os.path.join(home, "sessions"))
+    fd_dir = "/proc/%s/fd" % pid
+    candidates = set()
+    try:
+        fds = os.listdir(fd_dir)
+    except OSError:
+        return None
+    for fd in fds:
+        try:
+            target = os.readlink(os.path.join(fd_dir, fd))
+        except OSError:
+            continue
+        if target.endswith(" (deleted)"):
+            continue
+        path = os.path.realpath(target)
+        try:
+            if os.path.commonpath((sessions_root, path)) != sessions_root:
+                continue
+        except ValueError:
+            continue
+        session_id = _codex_rollout_metadata(path, workdir, started_at=started_at)
+        if session_id:
+            candidates.add((session_id, path))
+    if len(candidates) != 1:
+        return None
+    return next(iter(candidates))
+
+
+def _proc_children(pid):
+    """Return direct child PIDs using the host's process table."""
+    try:
+        proc = subprocess.run(
+            ["pgrep", "-P", str(pid)], stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode not in (0, 1):
+        return []
+    out = []
+    for value in proc.stdout.decode("ascii", errors="ignore").split():
+        try:
+            out.append(int(value))
+        except ValueError:
+            pass
+    return out
+
+
+def _is_codex_process(pid):
+    """Return whether the executable/wrapper argv identifies Codex."""
+    try:
+        with open("/proc/%s/cmdline" % pid, "rb") as f:
+            argv = [part.decode("utf-8", errors="replace")
+                    for part in f.read().split(b"\0") if part]
+    except OSError:
+        return False
+    return any("codex" in os.path.basename(part).lower() for part in argv[:3])
+
+
+def _find_codex_pids_for_session(session):
+    """Return Codex PIDs descended from this exact tmux pane, if any."""
+    if not session:
+        return []
+    socket = _find_tmux_socket(session)
+    if not socket:
+        return []
+    try:
+        tmux = _tmux_bin_for_session(session) or "tmux"
+        rc, out = _run(
+            [tmux, "-u", "-S", socket, "list-panes", "-t", session,
+             "-F", "#{pane_pid}"],
+            timeout=5,
+        )
+    except Exception:
+        return []
+    if rc != 0:
+        return []
+    pending = []
+    for value in (out or "").split():
+        try:
+            pending.append((int(value), 0))
+        except ValueError:
+            pass
+    seen, codex_pids = set(), []
+    while pending and len(seen) < 64:
+        pid, depth = pending.pop(0)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        if _is_codex_process(pid):
+            codex_pids.append(pid)
+        if depth < 8:
+            pending.extend((child, depth + 1) for child in _proc_children(pid))
+    return codex_pids
+
+
+def _bind_codex_session_once(agent_id, tmux_session, workdir, started_at,
+                              store=None):
+    """Bind one Codex agent only when PID-level evidence is unique.
+
+    The second record read makes a delayed binder harmless if the agent was
+    removed or replaced while its process tree was being inspected.
+    """
+    store = store or AgentStore()
+    agent = store.get(agent_id)
+    if not agent or _tf(agent.get("task", {}), "tool") != "codex":
+        return False
+    if (_sf(agent, "tmux_session") != tmux_session
+            or _sf(agent, "context_path") != workdir
+            or _sf(agent, "started_at") != started_at):
+        return False
+    candidates = set()
+    for pid in _find_codex_pids_for_session(tmux_session):
+        found = _validated_codex_rollout(pid, workdir, started_at)
+        if found:
+            candidates.add(found)
+    if len(candidates) != 1:
+        return False
+    session_id, session_path = next(iter(candidates))
+    current = store.get(agent_id)
+    if (not current or _tf(current.get("task", {}), "tool") != "codex"
+            or _sf(current, "tmux_session") != tmux_session
+            or _sf(current, "context_path") != workdir
+            or _sf(current, "started_at") != started_at):
+        return False
+    store.update(agent_id, session_id=session_id, session_path=session_path,
+                 session_binding="bound")
+    return True
+
+
+def _run_codex_session_binder(agent_id, tmux_session, workdir, started_at):
+    """Bounded detached worker for a newly created Codex agent."""
+    store = AgentStore()
+    for attempt in range(_CODEX_BIND_ATTEMPTS):
+        if _bind_codex_session_once(agent_id, tmux_session, workdir,
+                                    started_at, store=store):
+            return 0
+        if attempt < _CODEX_BIND_ATTEMPTS - 1:
+            time.sleep(0.25)
+    current = store.get(agent_id)
+    if (current and _tf(current.get("task", {}), "tool") == "codex"
+            and _sf(current, "tmux_session") == tmux_session
+            and _sf(current, "context_path") == workdir
+            and _sf(current, "started_at") == started_at
+            and not current.get("session_id")):
+        store.update(agent_id, session_binding="unavailable")
+    return 1
+
+
+def _spawn_codex_session_binder(agent_id, tmux_session, workdir, started_at):
+    """Start a one-shot binder without adding launch-path latency."""
+    try:
+        subprocess.Popen(
+            [sys.argv[0], "_bind_codex_session", agent_id, tmux_session,
+             workdir, started_at],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
+        )
+    except OSError as e:
+        log.warning("Codex session binder could not start for %s: %s", agent_id, e)
 
 
 def _extract_session_from_cmdline(claude_pid):
@@ -20408,6 +20678,9 @@ examples:
 
     if len(sys.argv) >= 3 and sys.argv[1] == "_cron_scheduler":
         sys.exit(run_cron_scheduler(sys.argv[2]))
+
+    if len(sys.argv) == 6 and sys.argv[1] == "_bind_codex_session":
+        sys.exit(_run_codex_session_binder(*sys.argv[2:]))
 
     # Hidden _proxy subcommand (protocol proxy worker)
     if len(sys.argv) >= 3 and sys.argv[1] == "_proxy":
