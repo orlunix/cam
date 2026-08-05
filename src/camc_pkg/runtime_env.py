@@ -413,7 +413,7 @@ def resolve_tmux_bin(runtime=None):
     return None, "missing"
 
 
-def resolve_tool_with_source(runtime, tool, use_env_tool=False):
+def resolve_tool_with_source(runtime, tool, use_env_tool=False, tool_dir=None):
     """Resolve a tool's absolute binary path with source attribution.
 
     ``tool`` is the user-facing name (claude / codex / cursor). The
@@ -448,6 +448,16 @@ def resolve_tool_with_source(runtime, tool, use_env_tool=False):
         "warnings": [],
     }
     aliases = _PATH_TOOL_ALIASES.get(tool, (tool,))
+    if tool_dir:
+        for alias in aliases:
+            candidate = os.path.join(tool_dir, alias)
+            if _is_executable_file(candidate):
+                result["bin"] = candidate
+                result["source"] = "tool-dir"
+                return result
+        result["warnings"].append(
+            "tool not found in --tool-dir %s; falling back to configured/PATH resolution"
+            % tool_dir)
     if use_env_tool:
         for alias in aliases:
             p = resolve_tool(runtime, alias) if runtime is not None else None
@@ -511,7 +521,7 @@ def _spec_from_readiness(readiness):
 
 
 def check_tool_readiness(runtime, selected_tool, tool_binary=None,
-                          readiness=None, use_env_tool=False):
+                          readiness=None, use_env_tool=False, tool_dir=None):
     """Return a dict shaped:
 
         {
@@ -605,8 +615,18 @@ def check_tool_readiness(runtime, selected_tool, tool_binary=None,
         "tool": selected_tool, "bin": None,
         "source": "missing", "warnings": [],
     }
+    if tool_dir:
+        tool_dir_resolution = resolve_tool_with_source(
+            runtime, selected_tool, use_env_tool=use_env_tool,
+            tool_dir=tool_dir)
+        if tool_dir_resolution.get("source") == "tool-dir":
+            tool_path = tool_dir_resolution.get("bin")
+            tool_resolution = tool_dir_resolution
+        else:
+            for warning in tool_dir_resolution.get("warnings", []) or []:
+                issues.append(("warn", warning))
     configured_abs = bin_name if os.path.isabs(bin_name) else ""
-    if configured_abs and not use_env_tool:
+    if not tool_path and configured_abs and not use_env_tool:
         if _is_executable_file(configured_abs):
             tool_path = configured_abs
             tool_resolution = {
