@@ -547,6 +547,7 @@ def test_failed_startup_command_leaves_repairable_tmux_shell(tmp_path, monkeypat
     """
     session_id = "repair-terminal-" + uuid.uuid4().hex[:12]
     sockets_dir = tmp_path / "sockets"
+    exit_status = tmp_path / "tool-exit.status"
     monkeypatch.setattr(transport, "SOCKETS_DIR", str(sockets_dir))
 
     try:
@@ -557,8 +558,10 @@ def test_failed_startup_command_leaves_repairable_tmux_shell(tmp_path, monkeypat
             inherit_env=True,
             tmux_bin=shutil.which("tmux"),
             tmux_config="",
+            exit_status_path=str(exit_status),
         )
         time.sleep(0.25)
+        assert exit_status.read_text().strip() == "7"
         assert transport.tmux_session_exists(session_id)
         assert transport.tmux_send_input(
             session_id, "printf REPAIR_TERMINAL_STILL_USABLE", send_enter=True)

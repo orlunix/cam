@@ -166,6 +166,35 @@ def _refresh_boot_runtime(runtime, store, agent_id, boot_config):
             runtime.boot_deadline = time.time() + boot_wait
 
 
+def _consume_custom_launch_exit(store, agent_id, events_fn):
+    """Persist a custom tool's terminal exit without touching its tmux shell."""
+    rec = store.get(agent_id) or {}
+    runtime = rec.get("runtime") if isinstance(rec, dict) else None
+    custom = runtime.get("custom_launch") if isinstance(runtime, dict) else None
+    status_path = custom.get("exit_status_path") if isinstance(custom, dict) else None
+    if not status_path or not os.path.isfile(status_path):
+        return False
+    try:
+        with open(status_path, "r") as f:
+            code = int(f.read().strip())
+    except (OSError, ValueError):
+        log.warning("Ignoring invalid custom launch status: %s", status_path)
+        return False
+    try:
+        os.unlink(status_path)
+    except OSError:
+        pass
+    failed = code != 0
+    reason = "Tool exited with code %d (tmux retained)" % code
+    store.update(agent_id,
+                 status="failed" if failed else "completed",
+                 state="failed" if failed else "idle",
+                 exit_reason=reason,
+                 completed_at=_now_iso())
+    events_fn("tool_exit", {"code": code, "failed": failed})
+    return True
+
+
 def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=None,
                      boot_config=None):
     if pid_path:
@@ -224,6 +253,9 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
             runtime.cycle += 1
             cycle = runtime.cycle
             _refresh_boot_runtime(runtime, store, agent_id, boot_config)
+            if _consume_custom_launch_exit(store, agent_id, _event):
+                log.info("Custom tool exit recorded; tmux session retained")
+                return
 
             # --- 1. Health check (every 15s) ---
             if now - runtime.last_health >= config.health_check_interval:
