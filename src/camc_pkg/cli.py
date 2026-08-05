@@ -621,6 +621,8 @@ def _agent_to_cam_json(a, _updated_at_override=None):
     return {
         "id": a.get("id", ""),
         "session_id": a.get("session_id", ""),
+        "session_path": a.get("session_path", ""),
+        "session_binding": a.get("session_binding", ""),
         "task": task_out,
         "context_id": a.get("context_id", ""),
         "context_name": ctx_name,
@@ -1006,6 +1008,10 @@ def cmd_run(args):
     except Exception as e:
         log.warning("ensure_camc_tmux_config failed: %s", e)
         camc_tmux_config = ""
+    # Record the launch boundary before Codex can create its rollout.  The
+    # binder rejects rollouts older than this value, so taking the timestamp
+    # after tmux starts would race fast launches across a wall-clock second.
+    started_at = _now_iso()
     if not create_tmux_session(session, launch_cmd, workdir,
                                env_setup=env_setup, inherit_env=inherit_env,
                                env=runtime.env, tmux_bin=resolved_tmux,
@@ -1042,7 +1048,6 @@ def cmd_run(args):
     transport = "ssh" if ctx_host and ctx_host not in ("localhost", "127.0.0.1") else "local"
     tags = getattr(args, "tag", None) or []
     store = AgentStore()
-    started_at = _now_iso()
     agent_rec = {
         "id": agent_id,
         "session_id": session_uuid,
@@ -1785,8 +1790,22 @@ def cmd_archive(args):
                 log.info("Archive %s: backfilled session_id = %s", aid, sid)
         else:
             print_warning("Could not determine session_id; archive will omit Claude transcript")
-    elif tool == "codex" and (not sid or not _sf(a, "session_path")):
-        print_warning("Codex session is not bound; archive will omit Codex transcript")
+    if tool == "codex" and (not sid or not _sf(a, "session_path")):
+        # Archive is the durability gate used before stop/rm.  If the detached
+        # launch-time binder is still pending, finish its bounded work here
+        # while the Codex process still provides PID/FD ownership evidence.
+        if session and tmux_session_exists(session):
+            _run_codex_session_binder(
+                aid, session, workdir, _sf(a, "started_at"),
+            )
+            a = store.get(aid) or a
+            sid = (a.get("session_id") or "").strip()
+        if not sid or not _sf(a, "session_path"):
+            print_error(
+                "Codex session is not bound; refusing an incomplete archive "
+                "(keep the agent record and retry before stop/rm)"
+            )
+            sys.exit(1)
 
     # --- Pick output location ------------------------------------------------
     out_dir = getattr(args, "output", None) or os.path.join(CAM_DIR, "archives")
@@ -1814,6 +1833,7 @@ def cmd_archive(args):
         "schema": "camc-archive/1",
         "agent_id": aid,
         "agent_name": name,
+        "tool": tool,
         "session_id": sid or None,
         "hostname": _sock.gethostname(),
         "camc_version": __version__,
@@ -2188,6 +2208,13 @@ def cmd_archive_summary(args):
         sys.exit(1)
     mf, sm = _load_archive_meta(path)
     if not sm:
+        files = {x.get("path") for x in (mf or {}).get("files", [])}
+        if "codex/session.jsonl" in files:
+            sys.stderr.write(
+                "Error: Codex archives currently expose the raw rollout; "
+                "use 'camc archive show --json %s'\n" % args.ref
+            )
+            sys.exit(1)
         sys.stderr.write("Error: %s has no summary.json (probably built by an older camc)\n"
                          % os.path.basename(path))
         sys.exit(1)
@@ -2262,6 +2289,21 @@ def cmd_archive_show(args):
         sys.stderr.write("Error: archive '%s' not found\n" % args.ref)
         sys.exit(1)
     mf, sm = _load_archive_meta(path)
+    files = {x.get("path") for x in (mf or {}).get("files", [])}
+    if "codex/session.jsonl" in files:
+        jsonl = _read_archive_member(path, "codex/session.jsonl")
+        if jsonl is None:
+            sys.stderr.write("Error: no codex/session.jsonl in %s\n" % path)
+            sys.exit(1)
+        if not getattr(args, "json", False):
+            sys.stderr.write(
+                "Error: pretty Codex rendering is not available; "
+                "use 'camc archive show --json %s'\n" % args.ref
+            )
+            sys.exit(1)
+        for raw in jsonl.splitlines():
+            print(raw.decode("utf-8", errors="replace"))
+        return
     if not sm:
         sys.stderr.write("Error: %s has no summary.json\n" % os.path.basename(path))
         sys.exit(1)
@@ -2947,14 +2989,22 @@ def _run_codex_session_binder(agent_id, tmux_session, workdir, started_at):
 def _spawn_codex_session_binder(agent_id, tmux_session, workdir, started_at):
     """Start a one-shot binder without adding launch-path latency."""
     try:
+        worker = (
+            [sys.executable, _CAMC_SCRIPT]
+            if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg"]
+        )
         subprocess.Popen(
-            [sys.argv[0], "_bind_codex_session", agent_id, tmux_session,
-             workdir, started_at],
+            worker + ["_bind_codex_session", agent_id, tmux_session,
+                      workdir, started_at],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
         )
     except OSError as e:
         log.warning("Codex session binder could not start for %s: %s", agent_id, e)
+        try:
+            AgentStore().update(agent_id, session_binding="unavailable")
+        except Exception:
+            pass
 
 
 def _extract_session_from_cmdline(claude_pid):
