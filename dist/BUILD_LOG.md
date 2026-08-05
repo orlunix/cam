@@ -5282,3 +5282,27 @@ fde6f3d camc: stabilize cursor confirmations and message submit
 5f7635a camc: improve list column rendering
 e35b22e camc: stabilize monitor and message submit
 ```
+## v1.2.40  7eae072-dirty 2026-08-05 01:22
+
+- Lines: 20764
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+fde6f3d camc: stabilize cursor confirmations and message submit
+92f8469 camc: widen stuck confirmation fallback
+5f7635a camc: improve list column rendering
+```
+## v1.2.41  7eae072-dirty 2026-08-05 01:35
+
+- Lines: 20765
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+fde6f3d camc: stabilize cursor confirmations and message submit
+92f8469 camc: widen stuck confirmation fallback
+5f7635a camc: improve list column rendering
+```
