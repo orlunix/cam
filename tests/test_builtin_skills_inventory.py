@@ -52,3 +52,25 @@ def test_publishable_builtin_skill_inventory_and_content():
         assert not BARE_CAMC_COMMAND.search(text), (
             "%s invokes bare camc; skills must use ~/.cam/camc" % path
         )
+
+
+def test_goal_loop_skill_is_a_short_template_router_with_deterministic_checks():
+    """The built-in goal-loop guide must stay operational, not become a DSL."""
+    path = SKILLS_ROOT / "camc-goal-loop" / "SKILL.md"
+    text = path.read_text(encoding="utf-8")
+
+    assert len(text.splitlines()) <= 100
+    assert "reference/prompt.md" in text
+    assert "reference/loop.md" in text
+    assert "~/.cam/camc cron add --loop" in text
+    assert "deterministic project scripts" in text
+    assert "~/.cam/loops/<name>.json" not in text
+    assert "history_updated" not in text
+
+    prompt = (path.parent / "reference" / "prompt.md").read_text(encoding="utf-8")
+    loop = (path.parent / "reference" / "loop.md").read_text(encoding="utf-8")
+    assert "deterministic project script" in prompt
+    assert "deterministic project script" in loop
+    assert "~/.cam/loops/" not in loop
+    assert "history_updated" not in prompt
+    assert "history_updated" not in loop
