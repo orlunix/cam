@@ -8,7 +8,7 @@ import logging
 import os
 import sys
 
-__version__ = "1.2.44"
+__version__ = "1.2.43"
 __build__ = ""  # populated by build_camc.py: "git-hash date"
 
 # ---------------------------------------------------------------------------
