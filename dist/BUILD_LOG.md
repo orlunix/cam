@@ -5330,16 +5330,3 @@ f77fb9c feat(camc): archive validated Codex sessions
 fde6f3d camc: stabilize cursor confirmations and message submit
 92f8469 camc: widen stuck confirmation fallback
 ```
-
-## v1.2.44  1e1f0fa-dirty 2026-08-05 11:31
-
-- Lines: 20434
-- Output: C:\Users\hren\Documents\Codex\2026-08-04\jie\work\camflow-review\cam\dist\camc
-- Recent changes:
-```
-958fc47 docs(camc): simplify built-in goal loop skill
-f77fb9c feat(camc): archive validated Codex sessions
-7eae072 feat(camc): add self-managed cron scheduler
-8a04f7f camc: add custom tool launch controls
-fde6f3d camc: stabilize cursor confirmations and message submit
-```
