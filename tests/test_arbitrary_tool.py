@@ -63,8 +63,46 @@ def test_missing_unknown_tool_is_passed_raw_to_tmux(tmp_path, monkeypatch):
     assert result["resolved"]["tool_resolution"]["source"] == "unresolved"
 
 
+def test_tool_dir_executable_wins_over_runtime_path(tmp_path):
+    tool_dir = tmp_path / "tool-dir"
+    path_dir = tmp_path / "path-dir"
+    tool_dir.mkdir()
+    path_dir.mkdir()
+    preferred = tool_dir / "my-agent"
+    fallback = path_dir / "my-agent"
+    for path in (preferred, fallback):
+        path.write_text("#!/bin/sh\nexit 0\n")
+        path.chmod(0o755)
+
+    result = runtime_env.resolve_tool_with_source(
+        _runtime(path_dir), "my-agent", tool_dir=str(tool_dir))
+
+    assert result["bin"] == str(preferred)
+    assert result["source"] == "tool-dir"
+
+
+def test_custom_tool_env_and_args_expand_without_shell_evaluation(tmp_path):
+    runtime = runtime_env.RuntimeEnv(
+        env={"PATH": "/base/bin", "HOME": str(tmp_path)},
+        source="explicit", shell="", path="/base/bin")
+
+    keys = cli._apply_tool_env(
+        runtime, ["PATH=/custom/bin:${PATH}", "TOOL_MODE=review"])
+    args = cli._parse_tool_args(["--mode 'safe mode'", "--no-network"])
+
+    assert runtime.env["PATH"] == "/custom/bin:/base/bin"
+    assert runtime.env["TOOL_MODE"] == "review"
+    assert keys == ["PATH", "TOOL_MODE"]
+    assert args == ["--mode", "safe mode", "--no-network"]
+
+
 def test_unknown_tool_run_keeps_monitor_but_disables_automation(tmp_path, monkeypatch):
     captured = {}
+    tool_dir = tmp_path / "tool-dir"
+    tool_dir.mkdir()
+    tool = tool_dir / "my-agent"
+    tool.write_text("#!/bin/sh\nexit 0\n")
+    tool.chmod(0o755)
 
     class Store:
         def save(self, record):
@@ -95,6 +133,10 @@ def test_unknown_tool_run_keeps_monitor_but_disables_automation(tmp_path, monkey
         no_api_proxy = False
         proxy_debug = False
 
+    Args.tool_dir = str(tool_dir)
+    Args.tool_env = ["TOOL_MODE=review", "PATH=/custom/bin:${PATH}"]
+    Args.tool_args = ["--mode 'safe mode'"]
+
     monkeypatch.setattr(
         runtime_env,
         "build_runtime_env",
@@ -104,16 +146,24 @@ def test_unknown_tool_run_keeps_monitor_but_disables_automation(tmp_path, monkey
         ),
     )
     monkeypatch.setattr(cli, "_load_default_context", lambda: {})
-    monkeypatch.setattr(
-        cli, "_preflight",
-        lambda *_args, **_kwargs: ([], {
-            "tmux": "/bin/tmux", "tool": "my-agent",
-            "tool_resolution": {"bin": "my-agent", "source": "unresolved"},
-        }),
-    )
+    def _fake_preflight(*_args, **kwargs):
+        captured["preflight_runtime"] = kwargs["runtime"]
+        return ([], {
+            "tmux": "/bin/tmux", "tool": str(tool),
+            "tool_resolution": {"bin": str(tool), "source": "tool-dir"},
+        })
+
+    monkeypatch.setattr(cli, "_preflight", _fake_preflight)
     monkeypatch.setattr(cli, "_gen_agent_id", lambda: "abc12345")
     monkeypatch.setattr(cli, "install_manifest_skills", lambda *_a, **_kw: None)
-    monkeypatch.setattr(cli, "create_tmux_session", lambda *_a, **_kw: True)
+    monkeypatch.setattr(cli, "LOGS_DIR", str(tmp_path / "logs"))
+    monkeypatch.setattr(cli, "PIDS_DIR", str(tmp_path / "pids"))
+
+    def _fake_create(session, command, workdir, **kwargs):
+        captured["launch"] = (session, command, workdir, kwargs)
+        return True
+
+    monkeypatch.setattr(cli, "create_tmux_session", _fake_create)
     monkeypatch.setattr(transport, "ensure_camc_tmux_config", lambda: "")
     monkeypatch.setattr(cli.subprocess, "check_output", lambda *_a, **_kw: b"tmux 3.0")
     monkeypatch.setattr(
@@ -144,3 +194,10 @@ def test_unknown_tool_run_keeps_monitor_but_disables_automation(tmp_path, monkey
     assert captured["send"] == (
         ("cam-abc12345", "do the thing"), {"send_enter": True},
     )
+    assert captured["preflight_runtime"].env["TOOL_MODE"] == "review"
+    assert captured["preflight_runtime"].env["PATH"] == "/custom/bin:/usr/bin"
+    assert captured["launch"][1] == [str(tool), "--mode", "safe mode"]
+    assert captured["launch"][3]["exit_status_path"] == str(
+        tmp_path / "pids" / "abc12345.tool-exit")
+    assert record["runtime"]["custom_launch"]["exit_status_path"] == str(
+        tmp_path / "pids" / "abc12345.tool-exit")

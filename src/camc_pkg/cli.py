@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import signal
 import shutil
 import subprocess
@@ -33,6 +34,44 @@ def _mkdir_p(path):
     except OSError:
         if not os.path.isdir(path):
             raise
+
+
+_TOOL_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_TOOL_ENV_REF_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+
+
+def _apply_tool_env(runtime, entries):
+    """Apply literal repeatable NAME=VALUE overrides to one runtime."""
+    keys = []
+    for entry in entries or []:
+        if "=" not in entry:
+            raise ValueError("--tool-env must use NAME=VALUE: %s" % entry)
+        name, value = entry.split("=", 1)
+        if not _TOOL_ENV_NAME_RE.match(name):
+            raise ValueError("invalid --tool-env name: %s" % name)
+        if "\x00" in value:
+            raise ValueError("--tool-env value may not contain NUL: %s" % name)
+        value = _TOOL_ENV_REF_RE.sub(
+            lambda match: runtime.env.get(match.group(1) or match.group(2), ""),
+            value)
+        runtime.env[name] = value
+        if name == "PATH":
+            runtime.path = value
+        keys.append(name)
+    return keys
+
+
+def _parse_tool_args(entries):
+    """Parse repeatable shell-like argument strings into literal argv."""
+    argv = []
+    for entry in entries or []:
+        try:
+            argv.extend(shlex.split(entry, posix=True))
+        except ValueError as e:
+            raise ValueError("invalid --tool-args: %s" % e)
+    if any("\x00" in arg for arg in argv):
+        raise ValueError("--tool-args may not contain NUL")
+    return argv
 
 
 def _is_writable_dir(path):
@@ -614,7 +653,7 @@ _TOOL_HINTS = {
 
 
 def _preflight(tool, tool_binary, workdir, env_setup=None, runtime=None,
-               adapter_readiness=None, use_env_tool=False):
+               adapter_readiness=None, use_env_tool=False, tool_dir=None):
     """Tool readiness (via runtime_env) + local writable-dir checks.
 
     Returns ``(issues, resolved)`` — a list of (level, message) tuples
@@ -636,9 +675,14 @@ def _preflight(tool, tool_binary, workdir, env_setup=None, runtime=None,
 
     if runtime is None:
         runtime = build_runtime_env(env_setup=env_setup)
+    readiness_kwargs = {
+        "readiness": adapter_readiness,
+        "use_env_tool": use_env_tool,
+    }
+    if tool_dir:
+        readiness_kwargs["tool_dir"] = tool_dir
     readiness = check_tool_readiness(runtime, tool, tool_binary,
-                                     readiness=adapter_readiness,
-                                     use_env_tool=use_env_tool)
+                                     **readiness_kwargs)
     issues = list(readiness["issues"])
 
     # workdir accessible
@@ -672,6 +716,21 @@ def cmd_run(args):
     known_tool = tool in ("claude", "codex", "cursor")
     prompt = getattr(args, "prompt", "") or ""
     workdir = os.path.abspath(args.path)
+    raw_tool_dir = getattr(args, "tool_dir", None)
+    tool_dir = None
+    if raw_tool_dir:
+        if not os.path.isabs(raw_tool_dir):
+            print_error("--tool-dir must be an absolute directory: %s" % raw_tool_dir)
+            sys.exit(1)
+        tool_dir = os.path.abspath(os.path.expanduser(raw_tool_dir))
+        if not os.path.isdir(tool_dir):
+            print_error("--tool-dir is not a directory: %s" % tool_dir)
+            sys.exit(1)
+    try:
+        tool_args = _parse_tool_args(getattr(args, "tool_args", None))
+    except ValueError as e:
+        print_error(str(e))
+        sys.exit(1)
     os.makedirs(workdir, exist_ok=True)
     config = _load_config(tool)
     # Load context for agent metadata only. context.env_setup must not
@@ -768,16 +827,27 @@ def cmd_run(args):
             api_plan.get("translator") or api_plan.get("mode"),
             api_plan.get("upstream_protocol"),
             ", ".join(src_bits) if src_bits else "none"))
+    try:
+        tool_env_keys = _apply_tool_env(runtime, getattr(args, "tool_env", None))
+    except ValueError as e:
+        print_error(str(e))
+        sys.exit(1)
     tool_binary = config.command[0] if config.command else None
     # F-08 (adapter-owned): prefer the adapter's [readiness] block
     # over runtime_env's hardcoded _TOOL_SPECS fallback. None when
     # the adapter doesn't declare [readiness] — fallback kicks in.
     adapter_readiness = getattr(config, "readiness", None)
     use_env_tool = bool(getattr(args, "use_env_tool", False))
+    preflight_kwargs = {
+        "env_setup": env_setup,
+        "runtime": runtime,
+        "adapter_readiness": adapter_readiness,
+        "use_env_tool": use_env_tool,
+    }
+    if tool_dir:
+        preflight_kwargs["tool_dir"] = tool_dir
     issues, resolved = _preflight(tool, tool_binary, workdir,
-                                  env_setup=env_setup, runtime=runtime,
-                                  adapter_readiness=adapter_readiness,
-                                  use_env_tool=use_env_tool)
+                                  **preflight_kwargs)
     has_error = False
     for level, msg in issues:
         if level == "error":
@@ -790,6 +860,9 @@ def cmd_run(args):
 
     agent_id = _gen_agent_id()
     session = "cam-%s" % agent_id
+    custom_launch_enabled = bool(tool_dir or tool_env_keys or tool_args)
+    exit_status_path = (os.path.join(PIDS_DIR, "%s.tool-exit" % agent_id)
+                        if custom_launch_enabled else "")
 
     # Per-agent system prompt: write to CLAUDE.md / AGENTS.md before
     # launch. The tool auto-loads it via its normal mechanism. See
@@ -847,6 +920,7 @@ def cmd_run(args):
             launch_cmd += ["--resume", resume_session]
         elif session_uuid:
             launch_cmd += ["--session-id", session_uuid]
+    launch_cmd += tool_args
 
     inherit_env = not getattr(args, "no_inherit_env", False)
 
@@ -933,7 +1007,8 @@ def cmd_run(args):
     if not create_tmux_session(session, launch_cmd, workdir,
                                env_setup=env_setup, inherit_env=inherit_env,
                                env=runtime.env, tmux_bin=resolved_tmux,
-                               tmux_config=camc_tmux_config):
+                               tmux_config=camc_tmux_config,
+                               exit_status_path=exit_status_path or None):
         print_error("Failed to create tmux session for '%s'" % session)
         print_info("Debug: %s -u -S %s/%s.sock new-session -d -s %s -c %s" %
                    (resolved_tmux, SOCKETS_DIR, session, session, workdir))
@@ -1030,12 +1105,25 @@ def cmd_run(args):
             "source":   _tool_resolution.get("source", "unknown"),
             "warnings": list(_tool_resolution.get("warnings", []) or []),
         },
+        "custom_launch": {
+            "tool_dir": tool_dir or "",
+            "tool_env_keys": tool_env_keys,
+            "tool_args": tool_args,
+            "exit_status_path": exit_status_path,
+        },
         "shell": {
             "mode": "tmux-default-shell",
             "note": "launch argv uses absolute tool path",
         },
     }
     store.save(agent_rec)
+
+    if exit_status_path:
+        time.sleep(_CUSTOM_LAUNCH_EXIT_GRACE)
+        exit_code = _read_custom_launch_exit(exit_status_path)
+        if exit_code is not None and exit_code != 0:
+            print_error("Tool exited with code %d; tmux session retained (attach: camc attach %s)"
+                        % (exit_code, agent_id))
 
     # Spawn background monitor (boot + tool TOML during initializing).
     try:
@@ -4337,6 +4425,7 @@ def _msg_resolve_session(to_arg):
 
 _MSG_SUBMIT_DELAY_DEFAULT = 0.5
 _MSG_FAST_SUBMIT_DELAY = 0.15
+_CUSTOM_LAUNCH_EXIT_GRACE = 0.35
 
 
 def _msg_submit_delay(target):
@@ -4351,6 +4440,16 @@ def _msg_submit_delay(target):
         except (SystemExit, ValueError, TypeError, OSError):
             pass
     return _MSG_SUBMIT_DELAY_DEFAULT
+
+
+def _read_custom_launch_exit(path):
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r") as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
 
 
 def _msg_clean_header_value(value):
@@ -6687,6 +6786,12 @@ examples:
     r.add_argument("--no-inherit-env", action="store_true", help="Legacy mode: wrap command with bash -c and env_setup")
     r.add_argument("--use-env-tool", dest="use_env_tool", action="store_true",
                    help="Advanced: skip golden tool paths (claude/codex/cursor stable+latest) and resolve from runtime PATH only. Useful for testing dev builds.")
+    r.add_argument("--tool-dir", default=None, metavar="DIR",
+                   help="Absolute directory searched first for the requested tool executable")
+    r.add_argument("--tool-env", action="append", default=[], metavar="NAME=VALUE",
+                   help="Per-agent environment override (repeatable; supports $NAME expansion)")
+    r.add_argument("--tool-args", action="append", default=[], metavar="ARGS",
+                   help="Extra shell-like argv string for the tool (repeatable; use --tool-args=... when it starts with '-')")
     r.add_argument("--system-prompt", dest="system_prompt", default=None,
                    help="Inline system prompt; injected into CLAUDE.md/AGENTS.md in workdir before launch")
     r.add_argument("--system-file", dest="system_file", default=None,
