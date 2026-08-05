@@ -241,15 +241,15 @@ camc add my-existing-session --tool claude --name my-agent
 
 ### Heal modes
 
-- `camc heal` and `camc heal --monitor` are the default monitor heal: they
+- `~/.cam/camc heal` and `~/.cam/camc heal --monitor` are the default monitor heal: they
   recover dead monitors without forcing healthy monitors to restart.
-- `camc heal --restart` restarts verified local monitors one at a time, then
+- `~/.cam/camc heal --restart` restarts verified local monitors one at a time, then
   runs the normal monitor heal.
-- `camc heal --tmux` rewrites CAMC's managed `tmux.conf` and sources it in
+- `~/.cam/camc heal --tmux` rewrites CAMC's managed `tmux.conf` and sources it in
   every local agent tmux socket; it does not run monitor or agent migration.
-- `camc heal --agents` migrates only verified legacy agent records; it does
+- `~/.cam/camc heal --agents` migrates only verified legacy agent records; it does
   not touch monitors.
-- `camc heal --upgrade` is hidden and deprecated compatibility only; do not
+- `~/.cam/camc heal --upgrade` is hidden and deprecated compatibility only; do not
   use it for normal maintenance.
 
 For deeper diagnosis (stuck agents, exit reasons, heal details):
