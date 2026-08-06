@@ -412,6 +412,79 @@ async function main() {
     eq('jump: depth error', r0.body && r0.body.error, 'invalid_jump');
   }
 
+  // ── Extensions API: install/list/toggle/remove + remote call ──
+  {
+    const fs = require('fs');
+    const repoRoot = path.join(__dirname, '..', '..', '..');
+    const helloDir = path.join(repoRoot, 'extensions', 'examples', 'hello-ext');
+    let r0 = await request('POST', '/api/extensions/install', { path: helloDir });
+    eq('ext: install hello-ext', r0.status, 201, JSON.stringify(r0.body));
+    eq('ext: install returns manifest', r0.body && r0.body.manifest && r0.body.manifest.name, 'hello-ext');
+
+    r0 = await request('GET', '/api/extensions');
+    const exts = (r0.body && r0.body.extensions) || [];
+    ok('ext: list includes builtin skills/todos + user hello-ext',
+      exts.some(e => e.name === 'skills' && e.source === 'builtin' && e.native === 'skills')
+        && exts.some(e => e.name === 'hello-ext' && e.source === 'user' && e.hasView && e.hasTool));
+
+    // Toggle disable/enable persists via the store flags.
+    r0 = await request('POST', '/api/extensions/hello-ext/disable');
+    eq('ext: disable', r0.status, 200);
+    r0 = await request('GET', '/api/extensions');
+    ok('ext: disabled reflected', (r0.body.extensions.find(e => e.name === 'hello-ext') || {}).enabled === false);
+    await request('POST', '/api/extensions/hello-ext/enable');
+
+    // Remote call: stub the transport so the .hash probe matches the
+    // local main.py (deploy skipped), then answer the method call.
+    const toolContent = fs.readFileSync(path.join(helloDir, 'main.py'));
+    const localHash = crypto.createHash('sha256').update(toolContent).digest('hex').slice(0, 16);
+    const calls = [];
+    setRemoteHandler((opts) => {
+      calls.push(opts.command);
+      if (/cat \$HOME\/.cam\/extensions\/hello-ext\/.hash/.test(opts.command)) {
+        return { ok: true, stdout: localHash + '\n', stderr: '' };
+      }
+      if (/extensions\/hello-ext\/main\.py/.test(opts.command) && /sysinfo/.test(opts.command)) {
+        return { ok: true, stdout: JSON.stringify({ hostname: 'fake-host', python: '3.8.0' }) + '\n', stderr: '' };
+      }
+      return { ok: true, stdout: '', stderr: '' };
+    });
+    r0 = await request('POST', '/api/extensions/hello-ext/call', { context: 'jumphost', method: 'sysinfo', args: {} });
+    ok('ext: call sysinfo ok', r0.status === 200 && r0.body && r0.body.ok === true
+      && r0.body.result && r0.body.result.hostname === 'fake-host', JSON.stringify(r0.body));
+    ok('ext: deploy skipped when hash matches', !calls.some(c => /main\.py\.tmp/.test(c)));
+
+    // Capability gate: remove 'exec' from the manifest → 403.
+    // (hello-ext declares exec; use a bogus method for a 200-with-error path instead.)
+    r0 = await request('POST', '/api/extensions/hello-ext/call', { context: 'jumphost', method: 'no such method!', args: {} });
+    ok('ext: invalid method rejected', r0.body && r0.body.ok === false && r0.body.error === 'invalid_method');
+
+    setRemoteHandler(null);
+
+    // /ext/ view serving: token-in-query auth + path containment.
+    const rawGet = (p) => new Promise((resolve, reject) => {
+      const u = new URL(p, _base);
+      http.get({ hostname: u.hostname, port: u.port, path: u.pathname + u.search }, (res) => {
+        let buf = '';
+        res.on('data', (c) => { buf += c; });
+        res.on('end', () => resolve({ status: res.statusCode, text: buf }));
+      }).on('error', reject);
+    });
+    let ev = await rawGet('/ext/hello-ext/index.html?token=' + encodeURIComponent(_token));
+    ok('ext: view served over hub', ev.status === 200 && /Hello Extension/.test(ev.text));
+    ev = await rawGet('/ext/hello-ext/index.html');
+    eq('ext: view requires token', ev.status, 401);
+    ev = await rawGet('/ext/hello-ext/..%2F..%2Fmanifest.yaml?token=' + encodeURIComponent(_token));
+    ok('ext: path traversal refused', ev.status === 400 || ev.status === 404);
+    ev = await rawGet('/ext/client.js');
+    ok('ext: bridge client is public', ev.status === 200 && /camExt/.test(ev.text));
+
+    r0 = await request('DELETE', '/api/extensions/hello-ext');
+    eq('ext: remove', r0.status, 200);
+    r0 = await request('GET', '/api/extensions');
+    ok('ext: removed from list', !(r0.body.extensions || []).some(e => e.name === 'hello-ext'));
+  }
+
   await stopHub();
 
   // ── Hub restart (resetApp path): stop must not hang on open

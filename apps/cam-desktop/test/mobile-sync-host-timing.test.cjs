@@ -22,7 +22,7 @@ const nodes = fs.readFileSync(path.join(root, "web", "js", "shared", "nodes-mode
 ok("Sync Host returns timing metadata", hub.includes('put("sync", syncTiming('));
 ok("Sync Host timing includes lock/connect/check/list/import/total", ["lockWaitMs", "connectMs", "checkMs", "listMs", "importMs", "totalMs"].every(k => hub.includes(k)));
 ok("Sync Host skips upload when remote camc exists", hub.includes('uploadDecision = "skipped_present"'));
-ok("Sync Host uploads bundled camc only after missing check", hub.includes("isCamcMissing(check)") && hub.includes("deployBundledCamcForSync(sshAuth)"));
+ok("Sync Host uploads bundled camc only after missing check", hub.includes("isCamcMissing(check)") && hub.includes("deployBundledCamcForSync(sshAuth, ctxId)"));
 ok("Sync Host does not use long-held withSession flow", !hub.includes("withSession(sshAuth") && !ssh.includes("SessionWork<T>"));
 
 ok("SSH sequence records lock/connect/command timings", ssh.includes("public long lockWaitMs") && ssh.includes("public long connectMs") && ssh.includes("public long[] commandMs"));
