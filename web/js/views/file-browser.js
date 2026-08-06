@@ -225,39 +225,74 @@ function escapeAttr(s) {
   return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 }
 
-// Render markdown inside iframe using marked.js from CDN
+// Split a YAML front-matter block off the document. Returns simple
+// key/value rows (arrays flattened "a, b"); complex YAML stays raw in
+// the value cell — good enough for a metadata header without a YAML lib.
+function splitFrontMatter(md) {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(md);
+  if (!m) return { metaRows: [], body: md };
+  const rows = [];
+  let cur = null;
+  for (const line of m[1].split(/\r?\n/)) {
+    const kv = /^([A-Za-z0-9_.-]+):\s*(.*)$/.exec(line);
+    if (kv) { cur = { k: kv[1], v: kv[2].trim() }; rows.push(cur); continue; }
+    const item = /^\s+-\s+(.*)$/.exec(line);
+    if (item && cur) { cur.v += (cur.v ? ', ' : '') + item[1].trim(); continue; }
+    if (cur) cur.v += ' ' + line.trim();
+  }
+  return { metaRows: rows, body: md.slice(m[0].length) };
+}
+
+// Render markdown inside an iframe. Vendor scripts are bundled with the
+// app (web/vendor) — no CDN, works offline and inside the MAS sandbox.
+// Front matter renders as a metadata table; output is
+// DOMPurify-sanitized and the md payload is <\/script>-proofed.
 function mdToHtml(md) {
-  // Escape for safe embedding in srcdoc attribute
-  const escaped = md.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+  const { metaRows, body } = splitFrontMatter(md);
+  const metaHtml = metaRows.length
+    ? '<table class="md-meta"><tbody>' + metaRows.map(r =>
+        `<tr><th>${escapeHtml(r.k)}</th><td>${escapeHtml(r.v)}</td></tr>`).join('') + '</tbody></table>'
+    : '';
+  const payload = JSON.stringify(body).replace(/<\//g, '<\\/');
   return `<!DOCTYPE html><html><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 16px; line-height: 1.6; color: #222; max-width: 100%; word-wrap: break-word; }
-h1, h2, h3, h4, h5, h6 { margin: 20px 0 10px; font-weight: 600; }
-h1 { font-size: 1.8em; border-bottom: 1px solid #eee; padding-bottom: 6px; }
-h2 { font-size: 1.5em; border-bottom: 1px solid #eee; padding-bottom: 4px; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 18px 20px; line-height: 1.7; color: #24292f; max-width: 100%; word-wrap: break-word; }
+h1, h2, h3, h4, h5, h6 { margin: 22px 0 10px; font-weight: 600; }
+h1 { font-size: 1.8em; border-bottom: 1px solid #eaecef; padding-bottom: 6px; }
+h2 { font-size: 1.5em; border-bottom: 1px solid #eaecef; padding-bottom: 4px; }
 h3 { font-size: 1.25em; }
-pre { background: #f6f8fa; padding: 12px; border-radius: 6px; overflow-x: auto; font-size: 13px; line-height: 1.45; }
-code { background: #f0f0f0; padding: 2px 5px; border-radius: 3px; font-size: 0.9em; }
+p { margin: 10px 0; }
+pre { background: #f6f8fa; border: 1px solid #e8eaed; padding: 12px 14px; border-radius: 8px; overflow-x: auto; font-size: 13px; line-height: 1.55; }
+code { background: #eff1f3; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
 pre code { background: none; padding: 0; }
-blockquote { border-left: 3px solid #dfe2e5; padding: 0 12px; color: #555; margin: 8px 0; }
-table { border-collapse: collapse; width: 100%; margin: 8px 0; }
-th, td { border: 1px solid #dfe2e5; padding: 6px 12px; text-align: left; }
+blockquote { border-left: 3px solid #d0d7de; padding: 2px 14px; color: #57606a; margin: 10px 0; background: #fafbfc; }
+table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13.5px; }
+th, td { border: 1px solid #e1e4e8; padding: 7px 12px; text-align: left; }
 th { background: #f6f8fa; font-weight: 600; }
+tbody tr:nth-child(even) { background: #fafbfc; }
+table.md-meta { width: auto; margin: 0 0 16px; font-size: 13px; }
+table.md-meta th { white-space: nowrap; vertical-align: top; color: #57606a; }
 img { max-width: 100%; }
-ul, ol { padding-left: 24px; }
-li { margin: 2px 0; }
-hr { border: none; border-top: 1px solid #eee; margin: 20px 0; }
-a { color: #0366d6; }
+ul, ol { padding-left: 24px; margin: 8px 0; }
+li { margin: 3px 0; }
+hr { border: none; border-top: 1px solid #eaecef; margin: 22px 0; }
+a { color: #0969da; }
 .task-list-item { list-style: none; margin-left: -24px; }
 .task-list-item input { margin-right: 6px; }
 </style>
-<script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"><\/script>
+<script src="vendor/marked/marked.min.js"><\/script>
+<script src="vendor/dompurify/purify.min.js"><\/script>
 </head><body>
+${metaHtml}
 <div id="md-content"></div>
 <script>
-const raw = ${JSON.stringify(md)};
-document.getElementById('md-content').innerHTML = marked.parse(raw);
+(async () => {
+  const raw = ${payload};
+  const html = DOMPurify.sanitize(marked.parse(raw));
+  const host = document.getElementById('md-content');
+  host.innerHTML = html;
+})();
 <\/script>
 </body></html>`;
 }

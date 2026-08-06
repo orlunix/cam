@@ -1007,13 +1007,16 @@ async function filesPickPrivateKey() {
 }
 
 /** Generic file picker (single file). Used by Nodes → Import to choose
- *  an ssh_config from disk (default remains ~/.ssh/config). */
+ *  an ssh_config from disk (default remains ~/.ssh/config). Pass
+ *  { directory: true } to pick a folder instead (Extensions install). */
 async function filesPickFile(opts = {}) {
   const wins = BrowserWindow.getAllWindows();
   const owner = wins.length > 0 ? wins[0] : null;
   const r = await dialog.showOpenDialog(owner || undefined, {
     title: String(opts.title || 'Select file'),
-    properties: ['openFile', 'showHiddenFiles'],
+    properties: opts && opts.directory
+      ? ['openDirectory', 'showHiddenFiles']
+      : ['openFile', 'showHiddenFiles'],
   });
   if (r.canceled || !r.filePaths || r.filePaths.length === 0) {
     return { ok: false, canceled: true, path: null };

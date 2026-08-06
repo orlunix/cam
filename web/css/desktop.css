@@ -3265,6 +3265,63 @@ body.desktop[data-theme="light"] .agent-browse-preview-body {
 .agent-browse-preview-md .md-pre .tok-fn      { color: #f0c674; }
 .agent-browse-preview-md .md-pre .tok-tag     { color: #79c0ff; }
 .agent-browse-preview-md .md-pre .tok-attr    { color: #d29922; }
+
+/* marked-based preview (browseMarkdownToHtml): the vendored renderer
+ * emits BARE elements (no md-* classes), so style the elements under
+ * the preview container directly. Soft palette, airier rhythm. */
+.agent-browse-preview-md p { margin: 10px 0; line-height: 1.7; word-wrap: break-word; }
+.agent-browse-preview-md h1,
+.agent-browse-preview-md h2,
+.agent-browse-preview-md h3,
+.agent-browse-preview-md h4,
+.agent-browse-preview-md h5,
+.agent-browse-preview-md h6 { margin: 18px 0 8px; font-weight: 700; color: var(--text); }
+.agent-browse-preview-md h1 { font-size: 1.55em; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+.agent-browse-preview-md h2 { font-size: 1.35em; border-bottom: 1px solid var(--border); padding-bottom: 3px; }
+.agent-browse-preview-md h3 { font-size: 1.15em; }
+.agent-browse-preview-md h4 { font-size: 1.05em; }
+.agent-browse-preview-md h5,
+.agent-browse-preview-md h6 { font-size: 1em; color: var(--text-dim); }
+.agent-browse-preview-md pre {
+  margin: 12px 0;
+  padding: 12px 14px;
+  background: #0d1117;
+  color: #c9d1d9;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: var(--output-font-size, 13px);
+  line-height: 1.55;
+}
+.agent-browse-preview-md code {
+  background: var(--bg-input);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 0.9em;
+}
+.agent-browse-preview-md pre code { background: none; padding: 0; }
+.agent-browse-preview-md table { border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+.agent-browse-preview-md th,
+.agent-browse-preview-md td { border: 1px solid var(--border); padding: 6px 12px; text-align: left; }
+.agent-browse-preview-md th { background: var(--bg-hover); font-weight: 600; }
+.agent-browse-preview-md tbody tr:nth-child(even) { background: var(--bg-input); }
+.agent-browse-preview-md table.md-meta { margin: 0 0 14px; font-size: 12.5px; }
+.agent-browse-preview-md table.md-meta th { white-space: nowrap; color: var(--text-dim); vertical-align: top; }
+.agent-browse-preview-md blockquote {
+  margin: 10px 0;
+  padding: 4px 14px;
+  border-left: 3px solid var(--accent);
+  background: var(--bg-hover);
+  color: var(--text-dim);
+}
+.agent-browse-preview-md ul,
+.agent-browse-preview-md ol { margin: 8px 0; padding-left: 24px; }
+.agent-browse-preview-md li { margin: 3px 0; }
+.agent-browse-preview-md hr { border: none; border-top: 1px solid var(--border); margin: 18px 0; }
+.agent-browse-preview-md a { color: var(--accent); }
+.agent-browse-preview-md img { max-width: 100%; }
 .agent-browse-preview-md .md-link {
   color: var(--accent);
   text-decoration: none;
@@ -5583,3 +5640,31 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
 #mode-settings .settings-tab-panel > .settings-form-pane > * {
   flex: 0 0 auto;
 }
+
+/* ────────── Extensions page + sandboxed view host ────────── */
+.ext-toolbar { margin: 8px 0 14px; }
+.ext-list { display: flex; flex-direction: column; gap: 8px; }
+.ext-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 10px 14px;
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.ext-row.is-disabled { opacity: 0.55; }
+.ext-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ext-title { font-weight: 600; color: var(--text); }
+.ext-meta { font-size: 12px; color: var(--text-dim); }
+.ext-error { font-size: 12px; color: var(--red, #e5534b); }
+.ext-row-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.ext-view-wrap {
+  margin-top: 16px; border: 1px solid var(--border); border-radius: 10px;
+  overflow: hidden; display: flex; flex-direction: column;
+  height: 70vh;
+}
+.ext-view-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 12px; background: var(--bg-hover);
+  border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--text-dim);
+}
+.ext-view-host { flex: 1 1 auto; min-height: 0; }
+.ext-view-frame { width: 100%; height: 100%; border: none; display: block; background: #0f1216; }
