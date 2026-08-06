@@ -1193,87 +1193,38 @@ function _mdInline(text) {
   return s;
 }
 
-export function browseMarkdownToHtml(src) {
-  const lines = String(src == null ? '' : src).split(/\r?\n/);
-  const out = [];
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i];
-    const trimmed = line.replace(/^\s+|\s+$/g, '');
-    // Fenced code block.
-    const fence = /^\s*(```|~~~)\s*([A-Za-z0-9_+.-]*)\s*$/.exec(line);
-    if (fence) {
-      const f = fence[1];
-      const lang = (fence[2] || '').toLowerCase();
-      const buf = [];
-      i++;
-      while (i < lines.length) {
-        if (lines[i].replace(/^\s+|\s+$/g, '') === f) { i++; break; }
-        buf.push(lines[i]); i++;
-      }
-      const body = buf.join('\n');
-      const highlighted = lang && BROWSE_LANG_CONFIG[lang]
-        ? browseHighlight(body, lang)
-        : (lang === 'html' || lang === 'xml' ? browseHighlight(body, lang) : _browseEscapeHtml(body));
-      const langCls = lang ? ` lang-${_browseEscapeHtml(lang)}` : '';
-      out.push(`<pre class="md-pre"><code class="md-codeblock${langCls}">${highlighted}</code></pre>`);
-      continue;
-    }
-    // Horizontal rule.
-    if (/^\s*([-*_])\s*\1\s*\1[\-*_\s]*$/.test(line)) {
-      out.push('<hr class="md-hr">'); i++; continue;
-    }
-    // ATX heading.
-    const heading = /^\s*(#{1,6})\s+(.+?)\s*#*\s*$/.exec(line);
-    if (heading) {
-      const level = heading[1].length;
-      out.push(`<h${level} class="md-h md-h${level}">${_mdInline(heading[2])}</h${level}>`);
-      i++; continue;
-    }
-    // Blockquote.
-    if (/^\s*>/.test(line)) {
-      const buf = [];
-      while (i < lines.length && /^\s*>/.test(lines[i])) {
-        buf.push(lines[i].replace(/^\s*>\s?/, ''));
-        i++;
-      }
-      out.push(`<blockquote class="md-quote">${_mdInline(buf.join(' '))}</blockquote>`);
-      continue;
-    }
-    // List (unordered or ordered, shallow).
-    if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
-      const ordered = /^\s*\d+\./.test(line);
-      const tag = ordered ? 'ol' : 'ul';
-      const items = [];
-      while (i < lines.length && /^\s*(?:[-*+]|\d+\.)\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\s*(?:[-*+]|\d+\.)\s+/, ''));
-        i++;
-      }
-      out.push(`<${tag} class="md-list">` +
-        items.map(it => `<li>${_mdInline(it)}</li>`).join('') +
-        `</${tag}>`);
-      continue;
-    }
-    // Blank line.
-    if (!trimmed) { i++; continue; }
-    // Paragraph — collect until blank/block boundary.
-    const buf = [trimmed];
-    i++;
-    while (i < lines.length) {
-      const next = lines[i];
-      const nt = next.replace(/^\s+|\s+$/g, '');
-      if (!nt) break;
-      if (/^\s*(?:[-*+]|\d+\.)\s+/.test(next)) break;
-      if (/^\s*#{1,6}\s+/.test(next)) break;
-      if (/^\s*>/.test(next)) break;
-      if (/^\s*(```|~~~)/.test(next)) break;
-      if (/^\s*([-*_])\s*\1\s*\1[\-*_\s]*$/.test(next)) break;
-      buf.push(nt);
-      i++;
-    }
-    out.push(`<p class="md-p">${_mdInline(buf.join(' '))}</p>`);
+/** Split a YAML front-matter block off the document (same mini-parser
+ *  as the file-browser preview: key/value rows, arrays flattened). */
+function _browseSplitFrontMatter(md) {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(String(md || ''));
+  if (!m) return { metaRows: [], body: String(md || '') };
+  const rows = [];
+  let cur = null;
+  for (const line of m[1].split(/\r?\n/)) {
+    const kv = /^([A-Za-z0-9_.-]+):\s*(.*)$/.exec(line);
+    if (kv) { cur = { k: kv[1], v: kv[2].trim() }; rows.push(cur); continue; }
+    const item = /^\s+-\s+(.*)$/.exec(line);
+    if (item && cur) { cur.v += (cur.v ? ', ' : '') + item[1].trim(); continue; }
+    if (cur) cur.v += ' ' + line.trim();
   }
-  return out.join('');
+  return { metaRows: rows, body: String(md || '').slice(m[0].length) };
+}
+
+export function browseMarkdownToHtml(src) {
+  // Vendored marked + DOMPurify (loaded in desktop.html): real GFM
+  // tables, front matter as a metadata table. The previous hand-rolled
+  // line parser had no table/front-matter support — pipe tables showed
+  // as raw text. Fallback to an escaped pre if the vendor scripts are
+  // somehow absent, so the viewer never breaks.
+  if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+    return `<pre class="md-pre"><code class="md-codeblock">${_browseEscapeHtml(src)}</code></pre>`;
+  }
+  const { metaRows, body } = _browseSplitFrontMatter(src);
+  const metaHtml = metaRows.length
+    ? '<table class="md-meta"><tbody>' + metaRows.map(r =>
+        `<tr><th>${_browseEscapeHtml(r.k)}</th><td>${_browseEscapeHtml(r.v)}</td></tr>`).join('') + '</tbody></table>'
+    : '';
+  return metaHtml + DOMPurify.sanitize(marked.parse(body));
 }
 
 export function nextOutputHistoryState(lines = OUTPUT_HISTORY_INITIAL_LINES, full = false) {
