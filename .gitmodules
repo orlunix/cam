@@ -1,3 +1,6 @@
 [submodule "teaspirit"]
 	path = teaspirit
 	url = git@gitlab-master.nvidia.com:peregrine/tools/teaspirit.git
+[submodule "components-camflow"]
+	path = components/camflow
+	url = https://github.com/orlunix/camflow.git
