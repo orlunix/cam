@@ -126,7 +126,7 @@ ok("android hub accepts context rename updates",
     .includes("if (body.has(\"name\"))"));
 
 ok("ssh-config import flags missing IdentityFile and guides manual key/password fix",
-  mode.includes("(not found)") && mode.includes("Edit the host to select a valid key file or use password auth"));
+  mode.includes("(not found)") && mode.includes("Edit the host to pick a valid key file or use password auth"));
 ok("hub reports IdentityFile existence for ssh-config import",
   fs.readFileSync(path.join(root, "apps", "cam-desktop", "electron", "embedded-hub.cjs"), "utf8").includes("key_exists:"));
 ok("ssh-config parser strips quotes and resolves relative IdentityFile against ~/.ssh",
