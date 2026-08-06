@@ -71,6 +71,27 @@ const fs     = require('node:fs');
 const os     = require('node:os');
 const path   = require('node:path');
 
+// Extensions (SPEC: <repo>/extensions/SPEC.md). Lazy-required so a
+// missing/moved extensions dir degrades to "no extensions" instead of
+// breaking the hub boot. Two layouts: dev = <repo>/extensions (via
+// __dirname), packaged = <resources>/extensions (extraResources).
+const _extBase = (() => {
+  const repoExt = path.resolve(__dirname, '..', '..', '..', 'extensions');
+  try { if (fs.existsSync(repoExt)) return repoExt; } catch (_) {}
+  if (typeof process !== 'undefined' && process.resourcesPath) {
+    return path.join(process.resourcesPath, 'extensions');
+  }
+  return repoExt;
+})();
+let _extRegistry = null;
+let _extToolProxy = null;
+try {
+  _extRegistry = require(path.join(_extBase, 'host', 'registry.cjs'));
+  _extToolProxy = require(path.join(_extBase, 'host', 'tool-proxy.cjs'));
+} catch (e) {
+  // extensions dir absent (unexpected packaging) — extension APIs 501.
+}
+
 const DEFAULT_PORT       = 8420;
 const PORT_SCAN_RANGE    = 50;
 const LOG_BUFFER_LINES   = 200;
@@ -3878,6 +3899,61 @@ function sshConfigHosts(explicitPath) {
   return out;
 }
 
+function _extDirs() {
+  return {
+    packagesDir: path.join(_extBase, 'packages'),
+    extRoot:     path.join(state.dataDir || os.tmpdir(), 'extensions'),
+  };
+}
+
+const _EXT_MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js':   'text/javascript; charset=utf-8',
+  '.css':  'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.png':  'image/png',
+  '.svg':  'image/svg+xml',
+  '.jpg':  'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+};
+
+function _extSendClientJs(res) {
+  const f = path.join(_extBase, 'host', 'ext-client.js');
+  let body;
+  try { body = fs.readFileSync(f); }
+  catch (e) { return sendJson(res, 404, { error: 'not_found', detail: e && e.message }); }
+  res.writeHead(200, { 'Content-Type': _EXT_MIME['.js'], 'Cache-Control': 'no-store' });
+  res.end(body);
+}
+
+/** Serve /ext/<name>/<file> from the user extRoot (or built-in
+ *  packages dir) with strict path containment. */
+function _extServeFile(res, urlPath) {
+  const rel = decodeURIComponent(urlPath.slice('/ext/'.length));
+  const name = (rel.split('/')[0] || '');
+  if (!/^[a-z0-9-]{1,32}$/.test(name)) return sendJson(res, 400, { error: 'invalid_name' });
+  const file = rel.slice(name.length).replace(/^\//, '') || 'index.html';
+  const { packagesDir, extRoot } = _extDirs();
+  const candidates = [path.join(extRoot, name), path.join(packagesDir, name)];
+  for (const base of candidates) {
+    const resolved = path.resolve(base, file);
+    if (!resolved.startsWith(path.resolve(base) + path.sep) && resolved !== path.resolve(base)) continue;
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) continue;
+    const ext = path.extname(resolved).toLowerCase();
+    res.writeHead(200, {
+      'Content-Type': _EXT_MIME[ext] || 'application/octet-stream',
+      'Cache-Control': 'no-store',
+      // Views are untrusted user content: no scripts from other origins,
+      // no forms, no top navigation (iframe also carries sandbox attr).
+      'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'",
+    });
+    return res.end(fs.readFileSync(resolved));
+  }
+  return sendJson(res, 404, { error: 'not_found', detail: `/ext/${name}/${file}` });
+}
+
 function checkBearer(req) {
   const h = req.headers['authorization'] || req.headers['Authorization'];
   if (!h) return false;
@@ -3928,6 +4004,21 @@ async function handle(req, res) {
     return sendJson(res, 200, healthBody());
   }
 
+  // /ext/client.js — the shared bridge client for extension views.
+  // Static public content (no secrets), no auth by design.
+  if (method === 'GET' && p === '/ext/client.js') {
+    return _extSendClientJs(res);
+  }
+  // /ext/<name>/<file>?token=… — extension view files, served over the
+  // loopback hub so the iframe origin is http://127.0.0.1 (cross-origin
+  // to the file:// app page). Token rides the query because sandboxed
+  // iframes cannot set Authorization headers.
+  if (method === 'GET' && p.startsWith('/ext/')) {
+    const tok = url.searchParams.get('token') || '';
+    if (tok !== state.token) return sendJson(res, 401, { error: 'unauthorized' });
+    return _extServeFile(res, p);
+  }
+
   // Every other /api/* needs bearer auth.
   if (p.startsWith('/api/')) {
     if (!checkBearer(req)) {
@@ -3945,6 +4036,106 @@ async function handle(req, res) {
       version:  HUB_PRODUCT_VERSION,
       data_dir: state.dataDir || null,
     });
+  }
+
+  /* ────────── Extensions API (SPEC: extensions/SPEC.md) ────────── */
+
+  // GET /api/extensions — registry listing (built-in + user).
+  if (method === 'GET' && p === '/api/extensions') {
+    if (!_extRegistry) return sendJson(res, 200, { extensions: [], note: 'extensions runtime not packaged' });
+    const { packagesDir, extRoot } = _extDirs();
+    const exts = _extRegistry.listExtensions({
+      packagesDir, extRoot,
+      storeExts: (state.store && state.store.extensions) || [],
+    });
+    return sendJson(res, 200, { extensions: exts });
+  }
+
+  // POST /api/extensions/install { path } — copy a user-picked folder
+  // into <userData>/extensions/<name>/ (validation inside).
+  if (method === 'POST' && p === '/api/extensions/install') {
+    if (!_extRegistry) return sendJson(res, 501, { error: 'not_implemented', detail: 'extensions runtime not packaged' });
+    let body;
+    try { body = await readJsonBody(req); }
+    catch (e) { return send400(res, e.message); }
+    const src = String((body && body.path) || '').trim();
+    if (!src) return sendJson(res, 400, { error: 'missing_path', detail: 'path is required' });
+    if (!fs.existsSync(src) || !fs.statSync(src).isDirectory()) {
+      return sendJson(res, 400, { error: 'not_a_folder', detail: `${src} is not a folder` });
+    }
+    const { extRoot } = _extDirs();
+    const r = _extRegistry.installExtension(src, extRoot);
+    if (!r.ok) return sendJson(res, 400, r);
+    // Persist enabled flag for the (re)installed user extension.
+    if (state.store) {
+      if (!Array.isArray(state.store.extensions)) state.store.extensions = [];
+      const ex = state.store.extensions.find(e => e.name === r.name);
+      if (ex) ex.enabled = true;
+      else state.store.extensions.push({ name: r.name, enabled: true, installed_at: nowIso() });
+      saveStore();
+    }
+    pushLog('info', `extension installed: ${r.name}@${r.manifest.version}`);
+    return sendJson(res, 201, r);
+  }
+
+  const extMatch = /^\/api\/extensions\/([a-z0-9-]{1,32})(\/enable|\/disable|\/call)?$/.exec(p);
+  if (extMatch && method !== 'GET') {
+    const extName = extMatch[1];
+    const sub = extMatch[2] || '';
+    const { packagesDir, extRoot } = _extDirs();
+    if (method === 'DELETE' && !sub) {
+      const dir = path.join(extRoot, extName);
+      if (!fs.existsSync(dir)) return send404(res);
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {
+        return sendJson(res, 500, { error: 'remove_failed', detail: e && e.message });
+      }
+      if (state.store && Array.isArray(state.store.extensions)) {
+        state.store.extensions = state.store.extensions.filter(e => e.name !== extName);
+        saveStore();
+      }
+      pushLog('info', `extension removed: ${extName}`);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (method === 'POST' && (sub === '/enable' || sub === '/disable')) {
+      if (!state.store) return send500(res, 'store unavailable');
+      if (!Array.isArray(state.store.extensions)) state.store.extensions = [];
+      let ex = state.store.extensions.find(e => e.name === extName);
+      if (!ex) { ex = { name: extName, enabled: true, installed_at: nowIso() }; state.store.extensions.push(ex); }
+      ex.enabled = sub === '/enable';
+      saveStore();
+      return sendJson(res, 200, { ok: true, name: extName, enabled: ex.enabled });
+    }
+    // POST /api/extensions/<name>/call { context, method, args } —
+    // deploy + invoke the extension's main.py on the context's host.
+    // Capability 'exec' must be declared in the extension's manifest.
+    if (method === 'POST' && sub === '/call') {
+      if (!_extRegistry || !_extToolProxy) return sendJson(res, 501, { error: 'not_implemented', detail: 'extensions runtime not packaged' });
+      let body;
+      try { body = await readJsonBody(req); }
+      catch (e) { return send400(res, e.message); }
+      const userDir = path.join(extRoot, extName);
+      const builtinDir = path.join(packagesDir, extName);
+      const extDir = fs.existsSync(userDir) ? userDir : (fs.existsSync(builtinDir) ? builtinDir : null);
+      if (!extDir) return send404(res);
+      const info = _extRegistry.inspectExtension(extDir);
+      if (!info.ok) return sendJson(res, 400, { error: info.error, detail: info.detail });
+      if (!info.manifest.capabilities.includes('exec')) {
+        return sendJson(res, 403, { error: 'capability_denied', detail: `${extName} does not declare the 'exec' capability` });
+      }
+      if (!info.entries.tool) {
+        return sendJson(res, 400, { error: 'no_tool', detail: `${extName} has no remote tool (no main.py)` });
+      }
+      const ctxName = String((body && body.context) || '');
+      const ctx = findContextByNameOrId(ctxName);
+      if (!ctx) return sendJson(res, 404, { error: 'context_not_found', detail: `context "${ctxName}" not found` });
+      const baseBuilt = _sshBaseOptsForContext(ctx, 30000);
+      if (baseBuilt.error) return sendJson(res, 400, { error: baseBuilt.error, detail: baseBuilt.detail });
+      const r = await _extToolProxy.callTool(
+        _sshTransport, baseBuilt.opts, extName, extDir,
+        String((body && body.method) || ''), body && body.args, {});
+      if (!r.ok) return sendJson(res, 200, r);
+      return sendJson(res, 200, r);
+    }
   }
 
   // /api/system/ssh-config — read-only suggestion list for the Nodes
