@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Hello Extension</title>
+<style>
+body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 20px; background: #0f1216; color: #e6e8eb; }
+h1 { font-size: 18px; margin: 0 0 4px; }
+.sub { color: #8b949e; font-size: 12.5px; margin-bottom: 16px; }
+button { background: #1f6feb; color: #fff; border: none; border-radius: 6px; padding: 8px 14px; font-size: 13px; cursor: pointer; margin-right: 8px; }
+button:hover { background: #388bfd; }
+pre { background: #161b22; border: 1px solid #2d333b; border-radius: 8px; padding: 12px; font-size: 12px; overflow: auto; min-height: 60px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>Hello Extension</h1>
+<div class="sub">bridge + remote tool spike — everything below round-trips through the app</div>
+<button id="b-agents">agents.list()</button>
+<button id="b-contexts">contexts.list()</button>
+<button id="b-sysinfo">ext.call(first host, sysinfo)</button>
+<pre id="out">(click a button)</pre>
+<script src="../client.js"></script>
+<script>
+const out = (v) => { document.getElementById('out').textContent = typeof v === 'string' ? v : JSON.stringify(v, null, 2); };
+const showErr = (e) => out('ERROR: ' + (e && e.message || e));
+
+document.getElementById('b-agents').onclick = () =>
+  camExt.call('agents.list').then(r => out(r.map(a => `${a.id} ${a.status} ${a.task_name || ''}`).join('\n') || '(no agents)')).catch(showErr);
+
+document.getElementById('b-contexts').onclick = () =>
+  camExt.call('contexts.list').then(r => out(r.map(c => `${c.name} ${(c.machine || {}).host || 'local'}`).join('\n') || '(no contexts)')).catch(showErr);
+
+document.getElementById('b-sysinfo').onclick = async () => {
+  try {
+    const ctxs = await camExt.call('contexts.list');
+    const ssh = ctxs.find(c => c.machine && c.machine.type === 'ssh');
+    if (!ssh) return out('no SSH context available');
+    const r = await camExt.call('ext.call', { context: ssh.name, method: 'sysinfo' });
+    out(r);
+  } catch (e) { showErr(e); }
+};
+</script>
+</body>
+</html>
