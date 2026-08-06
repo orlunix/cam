@@ -1,6 +1,6 @@
 {
   "name": "cam-desktop",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -73,6 +73,10 @@
       {
         "from": "../../dist/skillm",
         "to": "skillm/skillm"
+      },
+      {
+        "from": "../../extensions",
+        "to": "extensions"
       }
     ],
     "win": {
