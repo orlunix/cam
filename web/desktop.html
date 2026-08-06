@@ -20,6 +20,10 @@
   <script src="vendor/xterm/xterm.js?v=0.64.0"></script>
   <script src="vendor/xterm/addon-fit.js?v=0.64.0"></script>
   <script src="vendor/xterm/addon-serialize.js?v=0.64.0"></script>
+  <!-- Markdown preview pipeline (agent Browse mode): vendored marked +
+       DOMPurify expose window.marked / window.DOMPurify. -->
+  <script src="vendor/marked/marked.min.js?v=0.68.0"></script>
+  <script src="vendor/dompurify/purify.min.js?v=0.68.0"></script>
   <link rel="modulepreload" href="js/api.js?v=0.66.1">
   <link rel="modulepreload" href="js/state.js?v=0.64.0">
   <link rel="modulepreload" href="js/desktop/app.js?v=0.66.1">
@@ -61,6 +65,10 @@
         <button class="mode-nav-btn" data-mode="skills" aria-pressed="false">
           <span class="mode-nav-icon">&#9734;</span>
           <span class="mode-nav-label">Skills</span>
+        </button>
+        <button class="mode-nav-btn" data-mode="extensions" aria-pressed="false">
+          <span class="mode-nav-icon">&#10070;</span>
+          <span class="mode-nav-label">Extensions</span>
         </button>
         <!-- UNFINISHED-HIDDEN(bots): Bots mode hidden pending completion.
              Also blocked in web/js/desktop/app.js (HIDDEN_MODES). See
@@ -946,6 +954,28 @@
 
 
       <!-- Skills workspace (CAM-DESK-SKILLM-010..014) -->
+      <section class="mode-panel" id="mode-extensions" data-mode="extensions" hidden>
+        <div class="settings-header">
+          <h2>Extensions</h2>
+          <p class="settings-help">
+            Install local extension folders (manifest.yaml + optional index.html / main.py).
+            Extensions run sandboxed; remote tools execute only on your own SSH hosts.
+          </p>
+        </div>
+        <div class="ext-toolbar">
+          <button type="button" class="btn-secondary" id="ext-install-btn">Install from folder&hellip;</button>
+        </div>
+        <div id="ext-list" class="ext-list"><div class="empty-state">Loading&hellip;</div></div>
+        <div class="settings-status" id="ext-status" aria-live="polite"></div>
+        <div id="ext-view-wrap" class="ext-view-wrap" hidden>
+          <div class="ext-view-header">
+            <span id="ext-view-title"></span>
+            <button type="button" class="btn-sm btn-secondary" id="ext-view-close">Close</button>
+          </div>
+          <div id="ext-view-host" class="ext-view-host"></div>
+        </div>
+      </section>
+
       <section class="mode-panel" id="mode-skills" data-mode="skills" hidden>
         <div class="settings-header skills-header">
           <h2>Skills</h2>
