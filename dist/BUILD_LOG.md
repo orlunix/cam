@@ -4866,7 +4866,6 @@ a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-deskto
 895c23b camc: have bundled skills use deployed binary
 a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
 ```
-
 ## v1.2.0  39f1438-dirty 2026-07-22 20:23
 
 - Lines: 19737
@@ -5329,4 +5328,16 @@ f77fb9c feat(camc): archive validated Codex sessions
 8a04f7f camc: add custom tool launch controls
 fde6f3d camc: stabilize cursor confirmations and message submit
 92f8469 camc: widen stuck confirmation fallback
+```
+## v1.2.44  b173827-dirty 2026-08-06 05:54
+
+- Lines: 20361
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+fde6f3d camc: stabilize cursor confirmations and message submit
 ```
