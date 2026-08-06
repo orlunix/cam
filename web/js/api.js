@@ -793,6 +793,13 @@ export class CamApi {
     const q = filePath ? `?path=${encodeURIComponent(filePath)}` : '';
     return this.request('GET', `/api/system/ssh-config${q}`);
   }
+  /* Extensions (extensions/SPEC.md) */
+  listExtensions() { return this.request('GET', '/api/extensions'); }
+  async extCall(name, context, method, args) {
+    const r = await this.request('POST', `/api/extensions/${encodeURIComponent(name)}/call`, { context, method, args });
+    if (!r || r.ok === false) throw new Error((r && r.error) || 'ext_call_failed');
+    return r.result;
+  }
 
   /** Parse pasted ssh_config text into host suggestions (mobile import). */
   sshConfigParse(text) {
