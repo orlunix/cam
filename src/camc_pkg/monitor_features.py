@@ -42,6 +42,7 @@ Action protocol is unchanged from the step-pipeline era:
 
     {"kind": "log",          "level": "debug|info|warning|error", "msg": str}
     {"kind": "send_input",   "text": str, "send_enter": bool}
+    {"kind": "submit_input", "text": str, "submit_delay": float}
     {"kind": "send_key",     "key": str}
     {"kind": "store_update", "fields": {<field>: <value>, ...}}
     {"kind": "event",        "name": str, "detail": dict|None}
@@ -49,6 +50,8 @@ Action protocol is unchanged from the step-pipeline era:
 
 Python 3.6+, stdlib only. No dataclasses, no f-strings.
 """
+
+from camc_pkg.transport import DEFAULT_PROMPT_SUBMIT_DELAY
 
 # ---------------------------------------------------------------------------
 # Snapshot + runtime (plain classes; no dataclasses for 3.6 compat)
@@ -393,15 +396,9 @@ class BootPromptFeature(MonitorFeature):
         prompt = (runtime.boot_prompt or "").strip()
         if prompt and runtime.prompt_after_launch:
             cfg = boot_cfg or tool_cfg
-            if cfg.prompt_submit_delay > 0:
-                actions.append({"kind": "send_input",
-                                "text": prompt, "send_enter": False})
-                actions.append({"kind": "sleep",
-                                "seconds": cfg.prompt_submit_delay})
-                actions.append({"kind": "send_key", "key": "Enter"})
-            else:
-                actions.append({"kind": "send_input",
-                                "text": prompt, "send_enter": True})
+            delay = cfg.prompt_submit_delay or DEFAULT_PROMPT_SUBMIT_DELAY
+            actions.append({"kind": "submit_input", "text": prompt,
+                            "submit_delay": delay})
             actions.append({"kind": "log", "level": "info",
                             "msg": "Boot: prompt injected (%d chars)" % len(prompt)})
         else:
