@@ -98,6 +98,19 @@ local fix:
    after 3 failures): dashboard state goes stale until manual refresh.
 3. **Drift risk** — `MobileEmbeddedHub.java` (~2.3k lines) reimplements
    `embedded-hub.cjs`; no shared spec, behavior will drift.
+4. **ed25519 SSH keys unsupported** (found 2026-08-04 during the
+   ProxyJump two-hop test): the bundled mwiede JSch recognizes but
+   cannot *sign* with ed25519 — it needs a crypto provider (JDK 15+
+   EdDSA or BouncyCastle) and the APK ships neither. JSch's own log:
+   `ssh-ed25519 is not available` /
+   `Signature algorithms unavailable for non-agent identities =
+   [ssh-ed25519, ssh-ed448]`. Symptom: nodes with ed25519 keys fail
+   with `auth_failed`; RSA/ECDSA keys and password auth are fine.
+   Desktop is unaffected (ssh2 handles ed25519 natively). **Fix**:
+   bundle `bcprov` (BouncyCastle, ~4MB) in `android/libs/` and add it
+   to the javac/d8 classpath in `build.sh`, then verify ed25519
+   direct + chained connect in the JVM harness. **Workaround until
+   then**: use RSA keys or password auth.
 
 ### 2.3 Web layer
 
@@ -136,6 +149,9 @@ local fix:
 - Quick wins: 10s loop visibility check + in-flight guard; stop output
   polling in terminal state; wire `_inflightAbort`; `term_input`
   single-thread executor (§2.1.3).
+- **Bundle BouncyCastle for ed25519 key auth** (§2.2.4) — add
+  `bcprov` to `android/libs/` + classpath in `build.sh`; verify with
+  ed25519 direct + chained connects in the JVM harness.
 
 **Batch 2 — module specifier unification (kills the P0 cluster)**
 - Consistent import specifiers across all of `web/js/mobile/**` and
