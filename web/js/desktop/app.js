@@ -18,6 +18,7 @@ import { mountNodesMode } from './nodes-mode.js?v=0.64.0';
 import { mountSkillsMode } from './skills-mode.js?v=0.64.0';
 import { mountBotsMode } from './bots-mode.js?v=0.64.0';
 import { mountTodosMode } from './todos-mode.js?v=0.65.0';
+import { mountExtensionsMode } from './extensions-mode.js?v=0.68.0';
 import { mountDiagnosticsMode } from './diagnostics-mode.js?v=0.65.1';
 
 const POLL_INTERVAL_MS = 5000;
@@ -495,6 +496,7 @@ async function init() {
   mountSkillsMode({ api, state, showToast });
   mountBotsMode({ api, state, showToast });
   mountTodosMode({ api, state, showToast });
+  mountExtensionsMode({ api, state, showToast, setMode });
 
   // First connection attempt.
   //
