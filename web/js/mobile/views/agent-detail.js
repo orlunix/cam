@@ -379,6 +379,11 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   function wireTerminalKeyBar() {
     const keybar = container.querySelector('#terminal-keybar');
     if (!keybar) return;
+    // Quick keys are shortcut input — never let taps shift focus (which
+    // would toggle the IME and shake the layout). Click still fires.
+    keybar.addEventListener('pointerdown', (e) => e.preventDefault());
+    const actionBar = container.querySelector('#output-action-bar');
+    if (actionBar) actionBar.addEventListener('pointerdown', (e) => e.preventDefault());
     let ctrlLatch = false;
     let altLatch = false;
 
