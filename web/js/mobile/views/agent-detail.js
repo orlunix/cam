@@ -1582,9 +1582,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
             try {
               // Exit via the verified command path: 'q' is only a copy-mode
               // cancel key in the vi table; camc sessions default to emacs
-              // mode-keys where q does nothing — leaving the pane stuck in
-              // copy mode and breaking the next entry. send-keys -X cancel
-              // is key-table independent.
+              // mode-keys where q does nothing. send-keys -X cancel is
+              // key-table independent.
               await terminalCopyMode(agentId, 'cancel');
             } catch (e) {
               setBottomStatus(e.message || 'Could not exit copy mode', 'error', 3000);
