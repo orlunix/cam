@@ -489,9 +489,9 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       // handlers return immediately, so existing touch behavior (selection,
       // taps, xterm scrolling) is untouched.
       //   vertical drag : distance → line scrolling (natural direction)
-      //   horizontal ←  : cursor to top line of the current screen
-      //   horizontal →  : cursor to bottom line of the current screen
-      // Horizontal jumps never exit copy mode.
+      //   horizontal ←  : page up (older)   — key stream, no hub exec
+      //   horizontal →  : page down (newer) — key stream, no hub exec
+      // Horizontal paging never exits copy mode.
       let swipe = null;
       const swipeGated = () => isTerminalMode() && copyModeActive && terminalSessionReady(agentId);
       const swipeCellH = () => {
@@ -518,10 +518,9 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           } else if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.5) {
             swipe.mode = 'h';
             e.preventDefault();
-            const action = dx < 0 ? 'top' : 'bottom';
-            setBottomStatus(dx < 0 ? 'Cursor to top line…' : 'Cursor to bottom line…', 'info', 1500);
-            void terminalCopyMode(agentId, action)
-              .catch((err) => setBottomStatus(err.message || 'Jump failed', 'error', 2500));
+            // Page via key stream (PPage/NPage) — instant, no SSH roundtrip.
+            const seq = dx < 0 ? '\x1b[5~' : '\x1b[6~';
+            void sendTerminalRaw(agentId, seq).catch(() => {});
             return;
           } else {
             return;                           // let taps / long-press selection through
