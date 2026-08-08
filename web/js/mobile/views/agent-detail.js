@@ -237,20 +237,31 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   function bottomStatusHTML() {
     return `
       <div class="output-status-row" id="output-status-row">
-        <button type="button" class="jump-bottom-btn history-btn hidden" id="term-history" title="Browse tmux history (copy mode)" aria-label="History"><span aria-hidden="true">\u2912</span></button>
         <span class="output-status-text" id="output-status-text" aria-live="polite"></span>
-        <button type="button" class="jump-bottom-btn hidden" id="jump-bottom" title="Jump to bottom and resume auto-follow" aria-label="Jump to bottom"><span aria-hidden="true">&#x2913;</span></button>
+      </div>
+      <div class="output-action-bar" id="output-action-bar">
+        <button type="button" class="action-fab" id="term-attach-fab" title="Attach image" aria-label="Attach image">\u{1F4CE}</button>
+        <button type="button" class="action-fab history-btn hidden" id="term-history" title="Browse tmux history (copy mode)" aria-label="History"><span aria-hidden="true">\u2912</span></button>
+        <button type="button" class="action-fab hidden" id="jump-bottom" title="Jump to bottom and resume auto-follow" aria-label="Jump to bottom"><span aria-hidden="true">&#x2913;</span></button>
+        <button type="button" class="action-fab" id="term-refresh-fab" title="Re-attach terminal" aria-label="Re-attach terminal">\u27F3</button>
+        <input type="file" id="file-input" accept="image/*" class="terminal-file-input" style="display:none">
       </div>`;
   }
 
-  /** Show/refresh the History button (terminal mode + native bridge only). */
+  /** Show/refresh the floating action bar (terminal mode + native bridge only,
+   *  except jump-bottom which is handled by the per-mode scroll logic). */
   function syncHistoryChrome() {
     const btn = container.querySelector('#term-history');
-    if (!btn) return;
     const visible = isTerminalMode() && mobileTerminalInput();
-    btn.classList.toggle('hidden', !visible);
-    btn.classList.toggle('is-active', copyModeActive);
-    btn.title = copyModeActive ? 'Page up (½ screen) — ⤓ exits copy mode' : 'Browse tmux history (copy mode)';
+    if (btn) {
+      btn.classList.toggle('hidden', !visible);
+      btn.classList.toggle('is-active', copyModeActive);
+      btn.title = copyModeActive ? 'Page up — ⤓ exits copy mode' : 'Browse tmux history (copy mode)';
+    }
+    const attachFab = container.querySelector('#term-attach-fab');
+    if (attachFab) attachFab.classList.toggle('hidden', !visible);
+    const refreshFab = container.querySelector('#term-refresh-fab');
+    if (refreshFab) refreshFab.classList.toggle('hidden', !visible);
   }
 
   function setBottomStatus(text = '', tone = '', clearAfter = 0) {
@@ -273,7 +284,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     return `
       <div class="terminal-keybar${visible ? '' : ' hidden'}${keybarExpanded ? ' is-expanded' : ''}" id="terminal-keybar">
         <div class="terminal-keybar-row terminal-keybar-primary">
-          <label class="term-key term-key-attach" title="Attach image" aria-label="Attach image"><input type="file" id="file-input" accept="image/*" class="terminal-file-input">\u{1F4CE}</label>
+          <button type="button" class="term-key" data-term-char="/" title="Slash">/</button>
           <button type="button" class="term-key" data-term-char="y">y</button>
           <button type="button" class="term-key" data-term-char="1">1</button>
           <button type="button" class="term-key" data-term-key="Enter" title="Enter">\u21b5</button>
@@ -521,7 +532,6 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     if (!canUseTerminalMode(api)) return '';
     return `
               <hr>
-              <button class="overflow-menu-item" id="term-reattach">Reattach terminal</button>
               <button class="overflow-menu-item" id="term-detach">Detach session</button>
 `;
   }
@@ -1465,15 +1475,26 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         }
       });
     };
-    wireTermBtn('#term-reattach', async () => {
-      const host = container.querySelector('#terminal-host');
-      const res = await reattachTerminalForAgent(api, agent, host);
-      if (!res?.ok) throw new Error(res?.error || 'Reattach failed');
-      state.toast('Terminal reattached', 'success', 2000);
-    });
     wireTermBtn('#term-detach', async () => {
       if (!await detachTerminalSession(agentId)) throw new Error('No active session');
       state.toast('Session detached', 'success', 2000);
+    });
+
+    const attachFab = container.querySelector('#term-attach-fab');
+    if (attachFab) attachFab.addEventListener('click', () => {
+      const fi = container.querySelector('#file-input');
+      if (fi) fi.click();
+    });
+    const refreshFab = container.querySelector('#term-refresh-fab');
+    if (refreshFab) refreshFab.addEventListener('click', async () => {
+      try {
+        const host = container.querySelector('#terminal-host');
+        const res = await reattachTerminalForAgent(api, agent, host);
+        if (!res?.ok) throw new Error(res?.error || 'Reattach failed');
+        state.toast('Terminal reattached', 'success', 2000);
+      } catch (e) {
+        state.toast(e?.message || String(e), 'error');
+      }
     });
 
 
