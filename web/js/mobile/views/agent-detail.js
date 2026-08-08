@@ -384,6 +384,20 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     keybar.addEventListener('pointerdown', (e) => e.preventDefault());
     const actionBar = container.querySelector('#output-action-bar');
     if (actionBar) actionBar.addEventListener('pointerdown', (e) => e.preventDefault());
+    // Quick keys need no IME: after a tap, drop focus from xterm's hidden
+    // helper textarea (kept by term.focus()) so the soft keyboard closes.
+    // The composer input is left alone — typing there must not be disturbed.
+    const dropTerminalIme = () => {
+      const ae = document.activeElement;
+      if (ae && ae.closest && ae.closest('#terminal-host')) ae.blur();
+    };
+    keybar.addEventListener('click', dropTerminalIme);
+    if (actionBar) {
+      actionBar.addEventListener('click', (e) => {
+        if (e.target && e.target.closest && e.target.closest('#term-attach-fab')) return;
+        dropTerminalIme();
+      });
+    }
     let ctrlLatch = false;
     let altLatch = false;
 
