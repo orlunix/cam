@@ -416,8 +416,9 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           state.toast('Terminal not connected', 'error');
           return;
         }
+        // No focusTerminalForAgent here: quick keys must not focus xterm's
+        // helper textarea — that pops the soft keyboard on every tap.
         await sendTerminalRaw(agentId, data);
-        focusTerminalForAgent(agentId);
         return;
       }
       await sendAgentInput(data, false);
