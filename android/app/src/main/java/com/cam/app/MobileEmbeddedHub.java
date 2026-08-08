@@ -2113,9 +2113,10 @@ public final class MobileEmbeddedHub {
     JSONObject terminalCopyMode(String agentId, JSONObject hints, String action) {
         try {
             if (!"enter".equals(action) && !"up".equals(action) && !"cancel".equals(action)
-                    && !"top".equals(action) && !"bottom".equals(action)) {
+                    && !"top".equals(action) && !"bottom".equals(action)
+                    && !"modekeys".equals(action)) {
                 return new JSONObject().put("ok", false).put("error", "invalid_args")
-                    .put("detail", "action must be enter|up|cancel|top|bottom");
+                    .put("detail", "action must be enter|up|cancel|top|bottom|modekeys");
             }
             AttachPlan plan = resolveAttachPlan(agentId, hints);
             if (!plan.ok()) {
@@ -2143,6 +2144,9 @@ public final class MobileEmbeddedHub {
                 case "bottom":
                     tmuxCmd = "send-keys -X -t '" + qSession + "' bottom-line";
                     break;
+                case "modekeys":
+                    tmuxCmd = "show -gv mode-keys";
+                    break;
                 default:
                     tmuxCmd = "send-keys -X -t '" + qSession + "' cancel";
                     break;
@@ -2164,7 +2168,16 @@ public final class MobileEmbeddedHub {
                     .put("detail", res.detail != null ? res.detail : "");
             }
             boolean inMode = "1".equals(res.stdout != null ? res.stdout.trim() : "");
-            return new JSONObject().put("ok", true).put("copyMode", inMode);
+            if (!"modekeys".equals(action)) {
+                return new JSONObject().put("ok", true).put("copyMode", inMode);
+            }
+            // modekeys query: stdout is "<table>\n<pane_in_mode>" (both lines).
+            String[] outLines = res.stdout != null ? res.stdout.trim().split("\\R") : new String[0];
+            String table = outLines.length > 0 ? outLines[0].trim() : "";
+            boolean inModeQ = outLines.length > 1 && "1".equals(outLines[outLines.length - 1].trim());
+            return new JSONObject().put("ok", true)
+                .put("modeKeys", table)
+                .put("copyMode", inModeQ);
         } catch (Exception e) {
             try {
                 return new JSONObject().put("ok", false)
