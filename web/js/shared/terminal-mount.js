@@ -332,7 +332,14 @@ function fitTerminalEntry(ent, { notifyRemote = true } = {}) {
   if (notifyRemote && globalBridge && ent.sessionId
       && desiredCols >= 20 && desiredRows >= 4
       && terminalEntryCanAutoResize(ent)) {
-    globalBridge.resize({ sessionId: ent.sessionId, cols: desiredCols, rows: desiredRows });
+    // Only notify on an actual grid change. Every remote resize delivers
+    // SIGWINCH and forces a full TUI repaint — same-size refits (button
+    // taps, agent switches, observer noise) must not repaint the remote.
+    if (ent._notifiedCols !== desiredCols || ent._notifiedRows !== desiredRows) {
+      globalBridge.resize({ sessionId: ent.sessionId, cols: desiredCols, rows: desiredRows });
+      ent._notifiedCols = desiredCols;
+      ent._notifiedRows = desiredRows;
+    }
   }
   if (vp.width < TERMINAL_MIN_NOTIFY_WIDTH || desiredCols < 20 || desiredRows < 4) {
     return false;
@@ -950,6 +957,9 @@ export async function openTerminalForAgent(api, agent, hostEl, opts = {}) {
       return { ok: false, error: res && res.error };
     }
     ent.sessionId = res.sessionId;
+    // New PTY: force the next fit to notify the remote size once.
+    ent._notifiedCols = 0;
+    ent._notifiedRows = 0;
     syncMobileTerminalBackgroundKeepAlive();
     for (const msg of earlyData) {
       if (msg && msg.sessionId === ent.sessionId && msg.data) {
