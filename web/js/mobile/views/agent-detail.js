@@ -24,6 +24,7 @@ import {
   setTerminalViewActive,
   terminalSessionReady,
   terminalCopyMode,
+  terminalPaneInCopyMode,
   seedTerminalPreview,
   setTerminalStatus,
 } from '../../shared/terminal-mount.js';
@@ -1604,6 +1605,17 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
                 } catch { copyModeKeyTable = 'emacs'; }
               }
               await sendTerminalRaw(agentId, copyModeKeyTable === 'vi' ? 'q' : '\x1b');
+              // Verify locally via the [line/total] status marker; if still
+              // in copy mode, retry once with the other table's key.
+              await new Promise((r) => setTimeout(r, 200));
+              if (terminalPaneInCopyMode(agentId)) {
+                await sendTerminalRaw(agentId, copyModeKeyTable === 'vi' ? '\x1b' : 'q');
+                await new Promise((r) => setTimeout(r, 200));
+                if (terminalPaneInCopyMode(agentId)) {
+                  setBottomStatus('Still in copy mode — tap ⤓ again', 'warning', 2500);
+                  return; // keep copyModeActive true
+                }
+              }
             } catch (e) {
               setBottomStatus(e.message || 'Could not exit copy mode', 'error', 3000);
               return;
