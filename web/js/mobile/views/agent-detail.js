@@ -489,8 +489,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       // handlers return immediately, so existing touch behavior (selection,
       // taps, xterm scrolling) is untouched.
       //   vertical drag : distance → line scrolling (natural direction)
-      //   horizontal ←  : page up (older)   — key stream, no hub exec
-      //   horizontal →  : page down (newer) — key stream, no hub exec
+      //   horizontal ←  : page forward (newer) — key stream, no hub exec
+      //   horizontal →  : page back (older)   — key stream, no hub exec
       // Horizontal paging never exits copy mode.
       let swipe = null;
       const swipeGated = () => isTerminalMode() && copyModeActive && terminalSessionReady(agentId);
@@ -519,7 +519,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
             swipe.mode = 'h';
             e.preventDefault();
             // Page via key stream (PPage/NPage) — instant, no SSH roundtrip.
-            const seq = dx < 0 ? '\x1b[5~' : '\x1b[6~';
+            // Book/gallery direction: swipe left = forward (newer), right = back (older).
+            const seq = dx < 0 ? '\x1b[6~' : '\x1b[5~';
             void sendTerminalRaw(agentId, seq).catch(() => {});
             return;
           } else {
