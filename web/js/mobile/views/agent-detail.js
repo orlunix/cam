@@ -1557,6 +1557,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         try {
           if (!copyModeActive) {
             await sendTerminalRaw(agentId, '\x02['); // C-b [ → copy mode
+            // Let tmux enter copy mode before paging, or PPage lands in the app.
+            await new Promise((r) => setTimeout(r, 80));
             await sendTerminalRaw(agentId, '\x1b[5~'); // initial page up (desktop's copy-mode -u)
             copyModeActive = true;
             syncHistoryChrome();
@@ -1576,7 +1578,12 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         if (isTerminalMode()) {
           if (copyModeActive) {
             try {
-              await sendTerminalRaw(agentId, 'q'); // copy-mode quit
+              // Exit via the verified command path: 'q' is only a copy-mode
+              // cancel key in the vi table; camc sessions default to emacs
+              // mode-keys where q does nothing — leaving the pane stuck in
+              // copy mode and breaking the next entry. send-keys -X cancel
+              // is key-table independent.
+              await terminalCopyMode(agentId, 'cancel');
             } catch (e) {
               setBottomStatus(e.message || 'Could not exit copy mode', 'error', 3000);
               return;
