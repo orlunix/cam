@@ -1,24 +1,24 @@
 /**
  * CamUI Mobile V2 — Relay entry (v2.2.0) + additive Direct mode hooks.
  */
-import { api } from '../api.js?v=2.4.83';
-import { state } from '../state.js?v=2.4.83';
-import { renderDashboard } from './views/dashboard.js?v=2.4.83';
-import { renderAgentDetail } from './views/agent-detail.js?v=2.4.83';
-import { renderStartAgent } from './views/start-agent.js?v=2.4.83';
-import { renderSettings } from './settings.js?v=2.4.83';
-import { readRelayConfig, hasRelayConfig } from './settings-relay.js?v=2.4.83';
-import { renderFileBrowser, renderAgentFileBrowser } from './views/file-browser.js?v=2.4.83';
-import { renderNodes } from './nodes-page.js?v=2.4.83';
-import { renderSkills } from './skills.js?v=2.4.83';
-import { renderTodos } from './todos.js?v=2.4.83';
-import { renderAgentSettings } from './agent-settings.js?v=2.4.83';
-import { maybeInitDirectMode } from './direct-init.js?v=2.4.83';
-import { installMobileCamBridgeShim } from './mobile-bridge.js?v=2.4.83';
-import { refreshHubCapabilities, setHubCapabilities, HUB_CAP_FULL } from '../shared/hub-capabilities.js?v=2.4.83';
-import { loadAgentFilters } from '../shared/agent-filters.js?v=2.4.83';
-import { applyMobileAppearance } from '../shared/mobile-appearance.js?v=2.4.83';
-import { filterAgentsOnEnabledHosts } from '../shared/node-host-meta.js?v=2.4.83';
+import { api } from '../api.js?v=2.4.84';
+import { state } from '../state.js?v=2.4.84';
+import { renderDashboard } from './views/dashboard.js?v=2.4.84';
+import { renderAgentDetail } from './views/agent-detail.js?v=2.4.84';
+import { renderStartAgent } from './views/start-agent.js?v=2.4.84';
+import { renderSettings } from './settings.js?v=2.4.84';
+import { readRelayConfig, hasRelayConfig } from './settings-relay.js?v=2.4.84';
+import { renderFileBrowser, renderAgentFileBrowser } from './views/file-browser.js?v=2.4.84';
+import { renderNodes } from './nodes-page.js?v=2.4.84';
+import { renderSkills } from './skills.js?v=2.4.84';
+import { renderTodos } from './todos.js?v=2.4.84';
+import { renderAgentSettings } from './agent-settings.js?v=2.4.84';
+import { maybeInitDirectMode } from './direct-init.js?v=2.4.84';
+import { installMobileCamBridgeShim } from './mobile-bridge.js?v=2.4.84';
+import { refreshHubCapabilities, setHubCapabilities, HUB_CAP_FULL } from '../shared/hub-capabilities.js?v=2.4.84';
+import { loadAgentFilters } from '../shared/agent-filters.js?v=2.4.84';
+import { applyMobileAppearance } from '../shared/mobile-appearance.js?v=2.4.84';
+import { filterAgentsOnEnabledHosts } from '../shared/node-host-meta.js?v=2.4.84';
 
 const PROFILE_KIND_KEY = 'cam_profile_kind';
 
