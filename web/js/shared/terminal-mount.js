@@ -1127,6 +1127,24 @@ export async function sendTerminalKey(agentId, key) {
 }
 
 /**
+ * Heuristic copy-mode detection without an SSH roundtrip: tmux shows the
+ * scroll position as [line/total] in the pane status line while in a mode.
+ * Reads the last visible row of the local xterm buffer.
+ */
+export function terminalPaneInCopyMode(agentId) {
+  const ent = terminalSessions.get(agentId);
+  if (!ent?.term) return false;
+  try {
+    const buf = ent.term.buffer.active;
+    const row = buf.getLine(buf.baseY + ent.term.rows - 1);
+    const text = row ? row.translateToString(true) : '';
+    return /\[\d+\/\d+\]/.test(text);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * tmux copy-mode control (Direct native bridge only).
  * action: 'enter' | 'up' | 'cancel'. Returns the bridge result
  * { ok, copyMode } — trust copyMode only when ok is true (verified against
