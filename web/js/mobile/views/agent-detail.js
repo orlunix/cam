@@ -698,7 +698,14 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     const sync = () => {
       if (document.hidden) return;
       const gap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-      const keyboardOpen = gap > 40;
+      // The soft keyboard can only be open while a text field is focused.
+      // visualViewport resize events are unreliable in this WebView, so a
+      // gap alone must not keep the keyboard offset alive — otherwise a
+      // missed close event leaves a keyboard-height black band behind.
+      const ae = document.activeElement;
+      const fieldFocused = !!(ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')
+        && container.contains(ae));
+      const keyboardOpen = gap > 40 && fieldFocused;
       const inp = getInput();
       const bottomControls = container.querySelector('#output-bottom-controls');
       // Active output views keep the composer inside the shared bottom
@@ -723,11 +730,17 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     };
     vv.addEventListener('resize', sync);
     vv.addEventListener('scroll', sync);
+    // Re-evaluate on focus moves too — a missed vv event must not leave a
+    // stale keyboard margin (the keyboard-height black band) behind.
+    document.addEventListener('focusin', sync);
+    document.addEventListener('focusout', sync);
     sync();
     _syncVisualViewport = sync;
     _vvCleanup = () => {
       vv.removeEventListener('resize', sync);
       vv.removeEventListener('scroll', sync);
+      document.removeEventListener('focusin', sync);
+      document.removeEventListener('focusout', sync);
       const inp = getInput();
       if (inp) inp.style.marginBottom = '';
       const bottomControls = container.querySelector('#output-bottom-controls');
