@@ -173,6 +173,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   // tmux copy-mode browsing state (terminal mode only). Only set after the
   // hub verifies the real pane state — mirrors the desktop invariant.
   let copyModeActive = false;
+  // tmux mode-keys table ('vi'|'emacs'), probed lazily on first copy-mode exit.
+  let copyModeKeyTable = null;
   const UPLOAD_RAW_MAX_BYTES = 18 * 1024 * 1024;
 
   // Output font size — pinch-to-zoom; mobile terminal default 12px (readable, more cols).
@@ -1592,11 +1594,16 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         if (isTerminalMode()) {
           if (copyModeActive) {
             try {
-              // Exit via key stream: Escape cancels copy mode in the emacs
-              // table (camc's default mode-keys). Caveat: on hosts whose
-              // tmux uses vi mode-keys this is a no-op — the user can tap
-              // ⤒ to resync and the next entry still works.
-              await sendTerminalRaw(agentId, '\x1b');
+              // Copy-mode cancel keys differ by tmux mode-keys table:
+              // vi → q, emacs → Escape. Probe the table once per session
+              // (single hub exec), then exit via key stream afterwards.
+              if (copyModeKeyTable === null) {
+                try {
+                  const probe = await terminalCopyMode(agentId, 'modekeys');
+                  copyModeKeyTable = (probe && probe.modeKeys) || 'emacs';
+                } catch { copyModeKeyTable = 'emacs'; }
+              }
+              await sendTerminalRaw(agentId, copyModeKeyTable === 'vi' ? 'q' : '\x1b');
             } catch (e) {
               setBottomStatus(e.message || 'Could not exit copy mode', 'error', 3000);
               return;
