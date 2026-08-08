@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.cam.app"
-    android:versionCode="20481"
-    android:versionName="2.4.81">
+    android:versionCode="20482"
+    android:versionName="2.4.82">
 
     <uses-sdk
         android:minSdkVersion="23"
