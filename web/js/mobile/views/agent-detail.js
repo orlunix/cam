@@ -890,8 +890,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         setTerminalViewActive(agentId, true);
         updateTerminalChrome(true);
         await resumeTerminalForAgent(api, agent, terminalHost);
-        // No focusTerminalForAgent: entering an agent must not pop the IME;
-        // the terminal only takes focus on a direct tap.
+        focusTerminalForAgent(agentId);
       }
       updateTerminalMetaBar();
       return { ok: true, reused: true };
@@ -914,7 +913,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       state.toast(`Terminal attach: ${res.error}`, 'error', 6000);
     } else if (res?.ok && isTerminalMode()) {
       scheduleTerminalFit(agentId);
-      // No focusTerminalForAgent: attach must not pop the IME.
+      focusTerminalForAgent(agentId);
     }
     updateTerminalMetaBar();
     return res;
@@ -1593,11 +1592,11 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         if (isTerminalMode()) {
           if (copyModeActive) {
             try {
-              // Exit via the verified command path: 'q' is only a copy-mode
-              // cancel key in the vi table; camc sessions default to emacs
-              // mode-keys where q does nothing. send-keys -X cancel is
-              // key-table independent.
-              await terminalCopyMode(agentId, 'cancel');
+              // Exit via key stream: Escape cancels copy mode in the emacs
+              // table (camc's default mode-keys). Caveat: on hosts whose
+              // tmux uses vi mode-keys this is a no-op — the user can tap
+              // ⤒ to resync and the next entry still works.
+              await sendTerminalRaw(agentId, '\x1b');
             } catch (e) {
               setBottomStatus(e.message || 'Could not exit copy mode', 'error', 3000);
               return;
