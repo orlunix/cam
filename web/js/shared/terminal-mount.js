@@ -434,9 +434,8 @@ function showTerminalEntry(agentId, hostEl, opts = {}) {
     ent.container.style.visibility = '';
   }
   scheduleTerminalFitDeferred(ent, { keepBottom: opts.keepBottom !== false });
-  requestAnimationFrame(() => {
-    try { ent.term?.focus(); } catch { /* noop */ }
-  });
+  // No auto term.focus() — re-attach/show must not pop the soft keyboard;
+  // the terminal only takes focus when the user taps it directly.
   return ent;
 }
 
