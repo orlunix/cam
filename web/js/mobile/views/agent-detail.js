@@ -24,6 +24,7 @@ import {
   setTerminalViewActive,
   terminalSessionReady,
   terminalCopyMode,
+  terminalPaneInCopyMode,
   seedTerminalPreview,
   setTerminalStatus,
 } from '../../shared/terminal-mount.js';
@@ -170,9 +171,11 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   // Keep this per-detail-view so opening the native keyboard never collapses keys.
   let keybarExpanded = false;
   let bottomStatusTimer = null;
-  // tmux copy-mode browsing state (terminal mode only). Set from the hub's
-  // verified pane_in_mode read-back — mirrors the desktop invariant.
+  // tmux copy-mode browsing state (terminal mode only). Only set after the
+  // hub verifies the real pane state — mirrors the desktop invariant.
   let copyModeActive = false;
+  // tmux mode-keys table ('vi'|'emacs'), probed lazily on first copy-mode exit.
+  let copyModeKeyTable = null;
   const UPLOAD_RAW_MAX_BYTES = 18 * 1024 * 1024;
 
   // Output font size — pinch-to-zoom; mobile terminal default 12px (readable, more cols).
@@ -1570,18 +1573,15 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         // the default C-b prefix (camc tmux.conf sets no prefix).
         try {
           if (!copyModeActive) {
-            // Enter via command (copy-mode -u): key-table independent, and
-            // the response carries the verified pane state.
-            const res = await terminalCopyMode(agentId, 'enter');
-            copyModeActive = !!(res && res.copyMode);
-            if (!copyModeActive) {
-              setBottomStatus('Could not enter copy mode', 'error', 2500);
-              return;
-            }
+            await sendTerminalRaw(agentId, '\x02['); // C-b [ → copy mode
+            // Let tmux enter copy mode before paging, or PPage lands in the app.
+            await new Promise((r) => setTimeout(r, 80));
+            await sendTerminalRaw(agentId, '\x1b[5~'); // initial page up (desktop's copy-mode -u)
+            copyModeActive = true;
             syncHistoryChrome();
             setBottomStatus('Copy mode — ⤒ page up · ⤓ exit', 'info');
           } else {
-            await sendTerminalRaw(agentId, '\x1b[5~'); // PPage — key stream, same as desktop
+            await sendTerminalRaw(agentId, '\x1b[5~'); // PPage — same as desktop
           }
         } catch (e) {
           setBottomStatus(e.message || 'History failed', 'error', 3000);
@@ -1595,23 +1595,32 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         if (isTerminalMode()) {
           if (copyModeActive) {
             try {
-              // Exit via command (send-keys -X cancel): key-table independent,
-              // verified pane state comes back in the response.
-              const res = await terminalCopyMode(agentId, 'cancel');
-              copyModeActive = res ? !!res.copyMode : false;
-              if (copyModeActive) {
-                setBottomStatus('Still in copy mode — tap ⤓ again', 'warning', 2500);
-                return;
+              // Copy-mode cancel keys differ by tmux mode-keys table:
+              // vi → q, emacs → Escape. Probe the table once per session
+              // (single hub exec), then exit via key stream afterwards.
+              if (copyModeKeyTable === null) {
+                try {
+                  const probe = await terminalCopyMode(agentId, 'modekeys');
+                  copyModeKeyTable = (probe && probe.modeKeys) || 'emacs';
+                } catch { copyModeKeyTable = 'emacs'; }
+              }
+              await sendTerminalRaw(agentId, copyModeKeyTable === 'vi' ? 'q' : '\x1b');
+              // Verify locally via the [line/total] status marker; if still
+              // in copy mode, retry once with the other table's key.
+              await new Promise((r) => setTimeout(r, 200));
+              if (terminalPaneInCopyMode(agentId)) {
+                await sendTerminalRaw(agentId, copyModeKeyTable === 'vi' ? '\x1b' : 'q');
+                await new Promise((r) => setTimeout(r, 200));
+                if (terminalPaneInCopyMode(agentId)) {
+                  setBottomStatus('Still in copy mode — tap ⤓ again', 'warning', 2500);
+                  return; // keep copyModeActive true
+                }
               }
             } catch (e) {
               setBottomStatus(e.message || 'Could not exit copy mode', 'error', 3000);
               return;
             }
-            syncHistoryChrome();
-            setBottomStatus('', 'info');
-          }
-          scrollTerminalToBottom(agentId);
-          return;
+            copyModeActive = false;
             syncHistoryChrome();
             setBottomStatus('', 'info');
           }
