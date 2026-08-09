@@ -3,6 +3,8 @@ package com.cam.app;
 import android.content.Context;
 import android.util.Base64;
 
+import com.jcraft.jsch.Session;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -2101,6 +2103,56 @@ public final class MobileEmbeddedHub {
             .put("command", command);
     }
 
+    /** Build the remote copy-mode script (tmux against the agent's camc socket). */
+    private String buildCopyModeShell(String agentId, JSONObject hints, String action) throws Exception {
+        JSONObject agent = findAgentById(agentId, hints);
+        String session = agent != null ? agent.optString("tmux_session", "") : "";
+        if (session.isEmpty() && agent != null) session = agent.optString("session", "");
+        if (session.isEmpty()) session = agentId;
+        String qSession = session.replace("'", "'\\''");
+        String tmuxCmd;
+        switch (action) {
+            case "enter":
+                tmuxCmd = "copy-mode -u -t '" + qSession + "'";
+                break;
+            case "up":
+                tmuxCmd = "send-keys -X -t '" + qSession + "' halfpage-up";
+                break;
+            case "top":
+                tmuxCmd = "send-keys -X -t '" + qSession + "' top-line";
+                break;
+            case "bottom":
+                tmuxCmd = "send-keys -X -t '" + qSession + "' bottom-line";
+                break;
+            default:
+                tmuxCmd = "send-keys -X -t '" + qSession + "' cancel";
+                break;
+        }
+        // Probe the same socket dirs camc's _find_tmux_socket checks.
+        return "s=''; "
+            + "for d in /tmp/cam-sockets /tmp/cam-agent-sockets \"$HOME/.local/share/cam/sockets\"; do "
+            + "[ -S \"$d/" + qSession + ".sock\" ] && { s=\"$d/" + qSession + ".sock\"; break; }; "
+            + "done; "
+            + "[ -n \"$s\" ] || { echo 'tmux socket not found for " + qSession + "' >&2; exit 3; }; "
+            + "tmux -S \"$s\" " + tmuxCmd + " || exit 4; "
+            + "tmux -S \"$s\" display-message -p -t '" + qSession + "' '#{pane_in_mode}'";
+    }
+
+    private static JSONObject copyModeResult(MobileSshExec.Result res) throws Exception {
+        if (!res.ok) {
+            return new JSONObject().put("ok", false)
+                .put("error", res.error != null && !res.error.isEmpty() ? res.error : "tmux_failed")
+                .put("detail", res.detail != null ? res.detail : "");
+        }
+        boolean inMode = "1".equals(res.stdout != null ? res.stdout.trim() : "");
+        return new JSONObject().put("ok", true).put("copyMode", inMode);
+    }
+
+    private static boolean validCopyModeAction(String action) {
+        return "enter".equals(action) || "up".equals(action) || "cancel".equals(action)
+            || "top".equals(action) || "bottom".equals(action);
+    }
+
     /**
      * tmux copy-mode control for the mobile terminal (Direct mode).
      * action: "enter" (copy-mode -u), "up" (halfpage-up), "cancel" (-X cancel),
@@ -2112,11 +2164,9 @@ public final class MobileEmbeddedHub {
      */
     JSONObject terminalCopyMode(String agentId, JSONObject hints, String action) {
         try {
-            if (!"enter".equals(action) && !"up".equals(action) && !"cancel".equals(action)
-                    && !"top".equals(action) && !"bottom".equals(action)
-                    && !"modekeys".equals(action)) {
+            if (!validCopyModeAction(action)) {
                 return new JSONObject().put("ok", false).put("error", "invalid_args")
-                    .put("detail", "action must be enter|up|cancel|top|bottom|modekeys");
+                    .put("detail", "action must be enter|up|cancel|top|bottom");
             }
             AttachPlan plan = resolveAttachPlan(agentId, hints);
             if (!plan.ok()) {
@@ -2124,60 +2174,36 @@ public final class MobileEmbeddedHub {
                     .put("error", plan.error != null ? plan.error : "attach_failed")
                     .put("detail", plan.detail != null ? plan.detail : "");
             }
-            JSONObject agent = findAgentById(agentId, hints);
-            String session = agent != null ? agent.optString("tmux_session", "") : "";
-            if (session.isEmpty() && agent != null) session = agent.optString("session", "");
-            if (session.isEmpty()) session = agentId;
-            String qSession = session.replace("'", "'\\''");
-
-            String tmuxCmd;
-            switch (action) {
-                case "enter":
-                    tmuxCmd = "copy-mode -u -t '" + qSession + "'";
-                    break;
-                case "up":
-                    tmuxCmd = "send-keys -X -t '" + qSession + "' halfpage-up";
-                    break;
-                case "top":
-                    tmuxCmd = "send-keys -X -t '" + qSession + "' top-line";
-                    break;
-                case "bottom":
-                    tmuxCmd = "send-keys -X -t '" + qSession + "' bottom-line";
-                    break;
-                case "modekeys":
-                    tmuxCmd = "show -gv mode-keys";
-                    break;
-                default:
-                    tmuxCmd = "send-keys -X -t '" + qSession + "' cancel";
-                    break;
-            }
-            // Probe the same socket dirs camc's _find_tmux_socket checks.
-            String inner =
-                "s=''; "
-                + "for d in /tmp/cam-sockets /tmp/cam-agent-sockets \"$HOME/.local/share/cam/sockets\"; do "
-                + "[ -S \"$d/" + qSession + ".sock\" ] && { s=\"$d/" + qSession + ".sock\"; break; }; "
-                + "done; "
-                + "[ -n \"$s\" ] || { echo 'tmux socket not found for " + qSession + "' >&2; exit 3; }; "
-                + "tmux -S \"$s\" " + tmuxCmd + " || exit 4; "
-                + "tmux -S \"$s\" display-message -p -t '" + qSession + "' '#{pane_in_mode}'";
-            MobileSshExec.Result res = MobileSshExec.exec(
-                plan.auth, MobileSshExec.shellCommand(inner), SEND_TIMEOUT_MS);
-            if (!res.ok) {
+            MobileSshExec.Result res = MobileSshExec.exec(plan.auth,
+                MobileSshExec.shellCommand(buildCopyModeShell(agentId, hints, action)),
+                SEND_TIMEOUT_MS);
+            return copyModeResult(res);
+        } catch (Exception e) {
+            try {
                 return new JSONObject().put("ok", false)
-                    .put("error", res.error != null && !res.error.isEmpty() ? res.error : "tmux_failed")
-                    .put("detail", res.detail != null ? res.detail : "");
+                    .put("error", "internal_error")
+                    .put("detail", e.getMessage() != null ? e.getMessage() : "");
+            } catch (Exception ignored) {
+                return new JSONObject();
             }
-            boolean inMode = "1".equals(res.stdout != null ? res.stdout.trim() : "");
-            if (!"modekeys".equals(action)) {
-                return new JSONObject().put("ok", true).put("copyMode", inMode);
+        }
+    }
+
+    /**
+     * Fast path: run the copy-mode command on the terminal's long-lived SSH
+     * session (channel-level latency, no reconnect). Caller falls back to
+     * terminalCopyMode() when this fails.
+     */
+    JSONObject terminalCopyModeOnSession(Session session, String agentId, String action) {
+        try {
+            if (!validCopyModeAction(action)) {
+                return new JSONObject().put("ok", false).put("error", "invalid_args")
+                    .put("detail", "action must be enter|up|cancel|top|bottom");
             }
-            // modekeys query: stdout is "<table>\n<pane_in_mode>" (both lines).
-            String[] outLines = res.stdout != null ? res.stdout.trim().split("\\R") : new String[0];
-            String table = outLines.length > 0 ? outLines[0].trim() : "";
-            boolean inModeQ = outLines.length > 1 && "1".equals(outLines[outLines.length - 1].trim());
-            return new JSONObject().put("ok", true)
-                .put("modeKeys", table)
-                .put("copyMode", inModeQ);
+            MobileSshExec.Result res = MobileSshExec.execOnSession(session,
+                MobileSshExec.shellCommand(buildCopyModeShell(agentId, null, action)),
+                SEND_TIMEOUT_MS, null);
+            return copyModeResult(res);
         } catch (Exception e) {
             try {
                 return new JSONObject().put("ok", false)
