@@ -24,6 +24,14 @@ modes, boundaries, and known issues are documented in
   (ServerSocket/thread-pool leak until process death).
 - Direct mode native side: `MobileEmbeddedHub.java`, `MobileSshExec.java`
   (phone-hosted hub).
+- **Signing keystore**: `cam-release.keystore` (gitignored) is the release
+  signature — losing it means every install becomes uninstall+reinstall.
+  Cloud backup lives at `WebDev/cam/cam-release.keystore.gpg`
+  (AES256-encrypted). **Rule (user instruction, 2026-08-09): never
+  upload key/secret files in plaintext — ask the user for a password,
+  `gpg -c` encrypt, upload the `.gpg`, then delete any plaintext copy
+  from cloud storage.** Restore: `gpg -d cam-release.keystore.gpg >
+  android/cam-release.keystore`.
 - `probe/` — side-by-side WebView probe APK (`com.cam.probe`, levels
   A/B/C) for viewport-drift debugging; see `docs/mobile/webview-probe.md`.
 - Active branch: `camui-desktop-v2`. The archived native Kotlin UI line
