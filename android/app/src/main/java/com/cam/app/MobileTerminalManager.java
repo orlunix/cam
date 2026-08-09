@@ -166,11 +166,18 @@ public final class MobileTerminalManager {
         }
     }
 
-    /** tmux copy-mode control (enter/up/cancel) — see MobileEmbeddedHub.terminalCopyMode. */
+    /** tmux copy-mode control (enter/up/cancel) — fast path rides the
+     *  terminal's long-lived SSH session; falls back to a fresh connection. */
     public JSONObject copyMode(String sessionId, String action) {
         try {
             Entry ent = sessions.get(sessionId);
             if (ent == null || !ent.active) return err("not_found", "terminal session not found");
+            if (ent.session != null && ent.session.isConnected()) {
+                JSONObject fast = hub.terminalCopyModeOnSession(ent.session, ent.agentId, action);
+                if (fast != null && fast.optBoolean("ok", false)) return fast;
+                MobileHubLog.ssh("copymode fast-path failed, falling back: "
+                    + (fast != null ? fast.optString("detail", "") : "null"));
+            }
             return hub.terminalCopyMode(ent.agentId, null, action);
         } catch (Exception e) {
             return err("internal_error", e.getMessage());
