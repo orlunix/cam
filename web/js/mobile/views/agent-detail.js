@@ -24,7 +24,6 @@ import {
   setTerminalViewActive,
   terminalSessionReady,
   terminalCopyMode,
-  terminalPaneInCopyMode,
   seedTerminalPreview,
   setTerminalStatus,
 } from '../../shared/terminal-mount.js';
@@ -171,11 +170,9 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   // Keep this per-detail-view so opening the native keyboard never collapses keys.
   let keybarExpanded = false;
   let bottomStatusTimer = null;
-  // tmux copy-mode browsing state (terminal mode only). Only set after the
-  // hub verifies the real pane state — mirrors the desktop invariant.
+  // tmux copy-mode browsing state (terminal mode only). Set from the hub's
+  // verified pane_in_mode read-back — mirrors the desktop invariant.
   let copyModeActive = false;
-  // tmux mode-keys table ('vi'|'emacs'), probed lazily on first copy-mode exit.
-  let copyModeKeyTable = null;
   const UPLOAD_RAW_MAX_BYTES = 18 * 1024 * 1024;
 
   // Output font size — pinch-to-zoom; mobile terminal default 12px (readable, more cols).
@@ -1595,32 +1592,19 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         if (isTerminalMode()) {
           if (copyModeActive) {
             try {
-              // Copy-mode cancel keys differ by tmux mode-keys table:
-              // vi → q, emacs → Escape. Probe the table once per session
-              // (single hub exec), then exit via key stream afterwards.
-              if (copyModeKeyTable === null) {
-                try {
-                  const probe = await terminalCopyMode(agentId, 'modekeys');
-                  copyModeKeyTable = (probe && probe.modeKeys) || 'emacs';
-                } catch { copyModeKeyTable = 'emacs'; }
-              }
-              await sendTerminalRaw(agentId, copyModeKeyTable === 'vi' ? 'q' : '\x1b');
-              // Verify locally via the [line/total] status marker; if still
-              // in copy mode, retry once with the other table's key.
-              await new Promise((r) => setTimeout(r, 200));
-              if (terminalPaneInCopyMode(agentId)) {
-                await sendTerminalRaw(agentId, copyModeKeyTable === 'vi' ? '\x1b' : 'q');
-                await new Promise((r) => setTimeout(r, 200));
-                if (terminalPaneInCopyMode(agentId)) {
-                  setBottomStatus('Still in copy mode — tap ⤓ again', 'warning', 2500);
-                  return; // keep copyModeActive true
-                }
+              // Exit via command (send-keys -X cancel): key-table independent
+              // (vi/emacs both), verified pane state in the response.
+              // Rides the terminal's long-lived SSH session when available.
+              const res = await terminalCopyMode(agentId, 'cancel');
+              copyModeActive = res ? !!res.copyMode : false;
+              if (copyModeActive) {
+                setBottomStatus('Still in copy mode — tap ⤓ again', 'warning', 2500);
+                return;
               }
             } catch (e) {
               setBottomStatus(e.message || 'Could not exit copy mode', 'error', 3000);
               return;
             }
-            copyModeActive = false;
             syncHistoryChrome();
             setBottomStatus('', 'info');
           }
