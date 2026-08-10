@@ -71,6 +71,30 @@ sed -i "s/?v=[0-9][^\"']*/?v=${VERSION}/g" "$WEB_DIR/css/mobile.css" 2>/dev/null
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"/{compiled,gen,classes,dex}
 
+# --- JS syntax gate (module parse) — a broken JS file kills the whole
+# module graph at runtime (grey "Connecting" dot); catch it at build time.
+NODE_BIN="${NODE:-$HOME/tools/node/bin/node}"
+if [ -x "$NODE_BIN" ]; then
+  echo "[0.5/6] Checking JS syntax..."
+  JS_FAIL=0
+  CHECK_DIR="$BUILD_DIR/jscheck"
+  mkdir -p "$CHECK_DIR"
+  while IFS= read -r f; do
+    cp "$f" "$CHECK_DIR/check.mjs"
+    if ! "$NODE_BIN" --check "$CHECK_DIR/check.mjs" 2>"$CHECK_DIR/err.txt"; then
+      echo "  JS SYNTAX ERROR: $f"
+      head -5 "$CHECK_DIR/err.txt"
+      JS_FAIL=1
+    fi
+  done < <(find "$WEB_DIR/js" -name '*.js' -not -path '*/vendor/*')
+  if [ "$JS_FAIL" -ne 0 ]; then
+    echo "ERROR: JS syntax check failed — refusing to build"
+    exit 1
+  fi
+else
+  echo "[0.5/6] node not found at $NODE_BIN — skipping JS syntax check"
+fi
+
 echo "  Syncing launcher icon..."
 python3 "$PROJ_DIR/sync-launcher-icon.py"
 
