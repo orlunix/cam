@@ -170,8 +170,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   // Keep this per-detail-view so opening the native keyboard never collapses keys.
   let keybarExpanded = false;
   let bottomStatusTimer = null;
-  // tmux copy-mode browsing state (terminal mode only). Only set after the
-  // hub verifies the real pane state — mirrors the desktop invariant.
+  // tmux copy-mode browsing state (terminal mode only). Set from the hub's
+  // verified pane_in_mode read-back — mirrors the desktop invariant.
   let copyModeActive = false;
   const UPLOAD_RAW_MAX_BYTES = 18 * 1024 * 1024;
 
@@ -237,20 +237,31 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   function bottomStatusHTML() {
     return `
       <div class="output-status-row" id="output-status-row">
-        <button type="button" class="jump-bottom-btn history-btn hidden" id="term-history" title="Browse tmux history (copy mode)" aria-label="History"><span aria-hidden="true">\u2912</span></button>
         <span class="output-status-text" id="output-status-text" aria-live="polite"></span>
-        <button type="button" class="jump-bottom-btn hidden" id="jump-bottom" title="Jump to bottom and resume auto-follow" aria-label="Jump to bottom"><span aria-hidden="true">&#x2913;</span></button>
+      </div>
+      <div class="output-action-bar" id="output-action-bar">
+        <button type="button" class="action-fab" id="term-attach-fab" title="Attach image" aria-label="Attach image">\u{1F4CE}</button>
+        <button type="button" class="action-fab history-btn hidden" id="term-history" title="Browse tmux history (copy mode)" aria-label="History"><span aria-hidden="true">\u2912</span></button>
+        <button type="button" class="action-fab hidden" id="jump-bottom" title="Jump to bottom and resume auto-follow" aria-label="Jump to bottom"><span aria-hidden="true">&#x2913;</span></button>
+        <button type="button" class="action-fab" id="term-refresh-fab" title="Re-attach terminal" aria-label="Re-attach terminal">\u27F3</button>
+        <input type="file" id="file-input" accept="image/*" class="terminal-file-input" style="display:none">
       </div>`;
   }
 
-  /** Show/refresh the History button (terminal mode + native bridge only). */
+  /** Show/refresh the floating action bar (terminal mode + native bridge only,
+   *  except jump-bottom which is handled by the per-mode scroll logic). */
   function syncHistoryChrome() {
     const btn = container.querySelector('#term-history');
-    if (!btn) return;
     const visible = isTerminalMode() && mobileTerminalInput();
-    btn.classList.toggle('hidden', !visible);
-    btn.classList.toggle('is-active', copyModeActive);
-    btn.title = copyModeActive ? 'Page up (½ screen) — ⤓ exits copy mode' : 'Browse tmux history (copy mode)';
+    if (btn) {
+      btn.classList.toggle('hidden', !visible);
+      btn.classList.toggle('is-active', copyModeActive);
+      btn.title = copyModeActive ? 'Page up — ⤓ exits copy mode' : 'Browse tmux history (copy mode)';
+    }
+    const attachFab = container.querySelector('#term-attach-fab');
+    if (attachFab) attachFab.classList.toggle('hidden', !visible);
+    const refreshFab = container.querySelector('#term-refresh-fab');
+    if (refreshFab) refreshFab.classList.toggle('hidden', !visible);
   }
 
   function setBottomStatus(text = '', tone = '', clearAfter = 0) {
@@ -273,7 +284,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     return `
       <div class="terminal-keybar${visible ? '' : ' hidden'}${keybarExpanded ? ' is-expanded' : ''}" id="terminal-keybar">
         <div class="terminal-keybar-row terminal-keybar-primary">
-          <label class="term-key term-key-attach" title="Attach image" aria-label="Attach image"><input type="file" id="file-input" accept="image/*" class="terminal-file-input">\u{1F4CE}</label>
+          <button type="button" class="term-key" data-term-char="/" title="Slash">/</button>
           <button type="button" class="term-key" data-term-char="y">y</button>
           <button type="button" class="term-key" data-term-char="1">1</button>
           <button type="button" class="term-key" data-term-key="Enter" title="Enter">\u21b5</button>
@@ -368,6 +379,25 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   function wireTerminalKeyBar() {
     const keybar = container.querySelector('#terminal-keybar');
     if (!keybar) return;
+    // Quick keys are shortcut input — never let taps shift focus (which
+    // would toggle the IME and shake the layout). Click still fires.
+    keybar.addEventListener('pointerdown', (e) => e.preventDefault());
+    const actionBar = container.querySelector('#output-action-bar');
+    if (actionBar) actionBar.addEventListener('pointerdown', (e) => e.preventDefault());
+    // Quick keys need no IME: after a tap, drop focus from xterm's hidden
+    // helper textarea (kept by term.focus()) so the soft keyboard closes.
+    // The composer input is left alone — typing there must not be disturbed.
+    const dropTerminalIme = () => {
+      const ae = document.activeElement;
+      if (ae && ae.closest && ae.closest('#terminal-host')) ae.blur();
+    };
+    keybar.addEventListener('click', dropTerminalIme);
+    if (actionBar) {
+      actionBar.addEventListener('click', (e) => {
+        if (e.target && e.target.closest && e.target.closest('#term-attach-fab')) return;
+        dropTerminalIme();
+      });
+    }
     let ctrlLatch = false;
     let altLatch = false;
 
@@ -386,8 +416,9 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           state.toast('Terminal not connected', 'error');
           return;
         }
+        // No focusTerminalForAgent here: quick keys must not focus xterm's
+        // helper textarea — that pops the soft keyboard on every tap.
         await sendTerminalRaw(agentId, data);
-        focusTerminalForAgent(agentId);
         return;
       }
       await sendAgentInput(data, false);
@@ -458,9 +489,9 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       // handlers return immediately, so existing touch behavior (selection,
       // taps, xterm scrolling) is untouched.
       //   vertical drag : distance → line scrolling (natural direction)
-      //   horizontal ←  : cursor to top line of the current screen
-      //   horizontal →  : cursor to bottom line of the current screen
-      // Horizontal jumps never exit copy mode.
+      //   horizontal ←  : page forward (newer) — key stream, no hub exec
+      //   horizontal →  : page back (older)   — key stream, no hub exec
+      // Horizontal paging never exits copy mode.
       let swipe = null;
       const swipeGated = () => isTerminalMode() && copyModeActive && terminalSessionReady(agentId);
       const swipeCellH = () => {
@@ -487,10 +518,10 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           } else if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.5) {
             swipe.mode = 'h';
             e.preventDefault();
-            const action = dx < 0 ? 'top' : 'bottom';
-            setBottomStatus(dx < 0 ? 'Cursor to top line…' : 'Cursor to bottom line…', 'info', 1500);
-            void terminalCopyMode(agentId, action)
-              .catch((err) => setBottomStatus(err.message || 'Jump failed', 'error', 2500));
+            // Page via key stream (PPage/NPage) — instant, no SSH roundtrip.
+            // Book/gallery direction: swipe left = forward (newer), right = back (older).
+            const seq = dx < 0 ? '\x1b[6~' : '\x1b[5~';
+            void sendTerminalRaw(agentId, seq).catch(() => {});
             return;
           } else {
             return;                           // let taps / long-press selection through
@@ -521,7 +552,6 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     if (!canUseTerminalMode(api)) return '';
     return `
               <hr>
-              <button class="overflow-menu-item" id="term-reattach">Reattach terminal</button>
               <button class="overflow-menu-item" id="term-detach">Detach session</button>
 `;
   }
@@ -668,7 +698,14 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     const sync = () => {
       if (document.hidden) return;
       const gap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-      const keyboardOpen = gap > 40;
+      // The soft keyboard can only be open while a text field is focused.
+      // visualViewport resize events are unreliable in this WebView, so a
+      // gap alone must not keep the keyboard offset alive — otherwise a
+      // missed close event leaves a keyboard-height black band behind.
+      const ae = document.activeElement;
+      const fieldFocused = !!(ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')
+        && container.contains(ae));
+      const keyboardOpen = gap > 40 && fieldFocused;
       const inp = getInput();
       const bottomControls = container.querySelector('#output-bottom-controls');
       // Active output views keep the composer inside the shared bottom
@@ -693,11 +730,17 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     };
     vv.addEventListener('resize', sync);
     vv.addEventListener('scroll', sync);
+    // Re-evaluate on focus moves too — a missed vv event must not leave a
+    // stale keyboard margin (the keyboard-height black band) behind.
+    document.addEventListener('focusin', sync);
+    document.addEventListener('focusout', sync);
     sync();
     _syncVisualViewport = sync;
     _vvCleanup = () => {
       vv.removeEventListener('resize', sync);
       vv.removeEventListener('scroll', sync);
+      document.removeEventListener('focusin', sync);
+      document.removeEventListener('focusout', sync);
       const inp = getInput();
       if (inp) inp.style.marginBottom = '';
       const bottomControls = container.querySelector('#output-bottom-controls');
@@ -1465,15 +1508,26 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         }
       });
     };
-    wireTermBtn('#term-reattach', async () => {
-      const host = container.querySelector('#terminal-host');
-      const res = await reattachTerminalForAgent(api, agent, host);
-      if (!res?.ok) throw new Error(res?.error || 'Reattach failed');
-      state.toast('Terminal reattached', 'success', 2000);
-    });
     wireTermBtn('#term-detach', async () => {
       if (!await detachTerminalSession(agentId)) throw new Error('No active session');
       state.toast('Session detached', 'success', 2000);
+    });
+
+    const attachFab = container.querySelector('#term-attach-fab');
+    if (attachFab) attachFab.addEventListener('click', () => {
+      const fi = container.querySelector('#file-input');
+      if (fi) fi.click();
+    });
+    const refreshFab = container.querySelector('#term-refresh-fab');
+    if (refreshFab) refreshFab.addEventListener('click', async () => {
+      try {
+        const host = container.querySelector('#terminal-host');
+        const res = await reattachTerminalForAgent(api, agent, host);
+        if (!res?.ok) throw new Error(res?.error || 'Reattach failed');
+        state.toast('Terminal reattached', 'success', 2000);
+      } catch (e) {
+        state.toast(e?.message || String(e), 'error');
+      }
     });
 
 
@@ -1517,6 +1571,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         try {
           if (!copyModeActive) {
             await sendTerminalRaw(agentId, '\x02['); // C-b [ → copy mode
+            // Let tmux enter copy mode before paging, or PPage lands in the app.
+            await new Promise((r) => setTimeout(r, 80));
             await sendTerminalRaw(agentId, '\x1b[5~'); // initial page up (desktop's copy-mode -u)
             copyModeActive = true;
             syncHistoryChrome();
@@ -1536,12 +1592,19 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         if (isTerminalMode()) {
           if (copyModeActive) {
             try {
-              await sendTerminalRaw(agentId, 'q'); // copy-mode quit
+              // Exit via command (send-keys -X cancel): key-table independent
+              // (vi/emacs both), verified pane state in the response.
+              // Rides the terminal's long-lived SSH session when available.
+              const res = await terminalCopyMode(agentId, 'cancel');
+              copyModeActive = res ? !!res.copyMode : false;
+              if (copyModeActive) {
+                setBottomStatus('Still in copy mode — tap ⤓ again', 'warning', 2500);
+                return;
+              }
             } catch (e) {
               setBottomStatus(e.message || 'Could not exit copy mode', 'error', 3000);
               return;
             }
-            copyModeActive = false;
             syncHistoryChrome();
             setBottomStatus('', 'info');
           }
