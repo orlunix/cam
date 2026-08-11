@@ -44,7 +44,7 @@ from camc_pkg.adapters import _load_config, _load_boot_config
 from camc_pkg.storage import AgentStore, EventStore
 from camc_pkg.transport import (
     capture_tmux, tmux_session_exists, tmux_send_input, tmux_send_key,
-    tmux_kill_session, tmux_is_attached,
+    tmux_kill_session, tmux_is_attached, tmux_submit_input,
 )
 from camc_pkg.detection import detect_completion, is_ready_for_input, is_ready_for_boot
 from camc_pkg.monitor_features import (
@@ -135,6 +135,9 @@ def _apply_action(action, *, session, agent_id, store, events_fn):
     elif kind == "send_input":
         tmux_send_input(session, action["text"],
                         send_enter=action.get("send_enter", True))
+    elif kind == "submit_input":
+        tmux_submit_input(session, action["text"],
+                          submit_delay=action.get("submit_delay", 0.5))
     elif kind == "send_key":
         tmux_send_key(session, action["key"])
     elif kind == "sleep":
