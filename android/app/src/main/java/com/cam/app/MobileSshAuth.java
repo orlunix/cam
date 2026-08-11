@@ -138,11 +138,19 @@ public final class MobileSshAuth {
             + " -> " + MobileHubLog.endpoint(opts));
         Session jump = connect(opts.jump, budgetMs, false);
         ChannelDirectTCPIP ch;
+        InputStream chIn;
+        OutputStream chOut;
         long tCh = System.currentTimeMillis();
         try {
             ch = (ChannelDirectTCPIP) jump.openChannel("direct-tcpip");
             ch.setHost(opts.host);
             ch.setPort(opts.port > 0 ? opts.port : 22);
+            // Grab the channel streams BEFORE connect: JSch's getInputStream()
+            // replaces the channel data sink, and on slow links the target's
+            // SSH banner can arrive with the open confirmation — data that
+            // lands before we attach is silently dropped (the 120s hang).
+            chIn = ch.getInputStream();
+            chOut = ch.getOutputStream();
             ch.connect(budgetMs);
             MobileHubLog.ssh("jump channel open ok "
                 + (System.currentTimeMillis() - tCh) + "ms -> " + MobileHubLog.endpoint(opts));
@@ -157,16 +165,19 @@ public final class MobileSshAuth {
                 + " (" + msg + ")", e);
         }
         MobileHubLog.ssh("target handshake start " + MobileHubLog.endpoint(opts));
+        final InputStream chInF = chIn;
+        final OutputStream chOutF = chOut;
         try {
             // JSch calls socket.setTcpNoDelay() on the factory socket — a null
-            // or plain dummy Socket NPEs. Wrap the channel in a Socket subclass.
+            // or plain dummy Socket NPEs. Wrap the channel in a Socket subclass
+            // over the streams captured above (never re-grab them post-connect).
             Socket tunneled = new Socket() {
                 @Override public void setTcpNoDelay(boolean on) { /* tunneled */ }
-                @Override public InputStream getInputStream() throws java.io.IOException {
-                    return ch.getInputStream();
+                @Override public InputStream getInputStream() {
+                    return chInF;
                 }
-                @Override public OutputStream getOutputStream() throws java.io.IOException {
-                    return ch.getOutputStream();
+                @Override public OutputStream getOutputStream() {
+                    return chOutF;
                 }
                 @Override public synchronized void close() {
                     try { ch.disconnect(); } catch (Exception ignored) {}
