@@ -226,7 +226,7 @@ from camc_pkg.storage import AgentStore, EventStore
 from camc_pkg.transport import (
     _find_tmux_socket, capture_tmux, tmux_session_exists,
     tmux_send_input, tmux_send_key, tmux_kill_session, create_tmux_session,
-    tmux_rename_session,
+    tmux_rename_session, tmux_submit_input,
 )
 from camc_pkg.system_prompt import (
     target_file, write_block, strip_block, has_block, load_prompt_text,
@@ -4686,7 +4686,6 @@ def _msg_resolve_session(to_arg):
 
 
 _MSG_SUBMIT_DELAY_DEFAULT = 0.5
-_MSG_FAST_SUBMIT_DELAY = 0.15
 _CUSTOM_LAUNCH_EXIT_GRACE = 0.35
 
 
@@ -4911,20 +4910,11 @@ def _msg_inject(session, to_label, text, timeout_s,
         "to_id": to_id, "to_name": to_name,
     })
 
-    if not tmux_send_input(session, payload, send_enter=False):
+    if not tmux_submit_input(session, payload, submit_delay=submit_delay,
+                             send_input_fn=tmux_send_input,
+                             send_key_fn=tmux_send_key, sleep_fn=time.sleep):
         _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
         return (msg_id, False)
-    fast_delay = min(_MSG_FAST_SUBMIT_DELAY, submit_delay)
-    time.sleep(fast_delay)
-    if not tmux_send_key(session, "Enter"):
-        _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
-        return (msg_id, False)
-    fallback_delay = submit_delay - fast_delay
-    if fallback_delay > 0:
-        time.sleep(fallback_delay)
-        if not tmux_send_key(session, "Enter"):
-            _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
-            return (msg_id, False)
     _msg_ledger_append({"msg_id": msg_id, "status": "delivered"})
     return (msg_id, True)
 
