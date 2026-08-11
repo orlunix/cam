@@ -16,7 +16,9 @@
 'use strict';
 
 const fs   = require('node:fs');
+const os   = require('node:os');
 const path = require('node:path');
+const zlib = require('node:zlib');
 
 const NAME_RE = /^[a-z0-9-]{1,32}$/;
 const KNOWN_CAPS = new Set(['exec', 'files:read', 'files:write']);
@@ -125,12 +127,18 @@ function inspectExtension(dir) {
 
   const topFiles = files.filter(f => !f.includes('/')).map(f => path.basename(f));
   const native = String(manifest.native || '').trim();
-  // Native extensions (built-in aliases for native app pages) carry no
-  // view/tool entries — skip entry resolution entirely.
-  const entries = native ? { view: null, tool: null } : resolveEntries(topFiles);
-  if (entries.error) return entries;
-  if (native && (topFiles.some(f => /\.html?$/i.test(f)) || topFiles.some(f => /\.py$/i.test(f)))) {
-    return { error: 'invalid_native', detail: 'native extensions must not carry view/tool entries' };
+  // Native extensions: no iframe VIEW entry (their page is native app
+  // code like the skills page), but a TOOL entry (main.py remote
+  // collector) is allowed.
+  let entries;
+  if (native) {
+    if (topFiles.some(f => /\.html?$/i.test(f))) {
+      return { error: 'invalid_native', detail: 'native extensions must not carry view (.html) entries' };
+    }
+    entries = { view: null, tool: topFiles.includes('main.py') ? 'main.py' : (topFiles.find(f => /\.py$/i.test(f)) || null) };
+  } else {
+    entries = resolveEntries(topFiles);
+    if (entries.error) return entries;
   }
 
   return {
@@ -139,8 +147,11 @@ function inspectExtension(dir) {
       name:         String(manifest.name),
       version:      String(manifest.version),
       title:        String(manifest.title || manifest.name),
+      description:  String(manifest.description || ''),
       capabilities: caps,
       native,
+      mounts:       Array.isArray(manifest.mounts) ? manifest.mounts.filter(m => typeof m === 'string') : [],
+      kind:         String(manifest.kind || 'tool'),
     },
     entries,
     sizeBytes: total,
@@ -159,23 +170,96 @@ function copyDir(src, dst) {
   }
 }
 
-/** Install (copy) an extension folder into extRoot/<name>/. Existing
- *  same-name extension is replaced (update semantics). */
-function installExtension(srcDir, extRoot) {
-  const info = inspectExtension(srcDir);
-  if (!info.ok) return info;
+/** Minimal tar reader (ustar, 512-byte headers) for .tar.gz install
+ *  packages. Returns [{ name, content:Buffer }] for regular files.
+ *  Rejects path traversal and odd entry types — we only extract plain
+ *  files to a temp dir before validation. */
+function _untar(buf) {
+  const files = [];
+  let off = 0;
+  while (off + 512 <= buf.length) {
+    const header = buf.slice(off, off + 512);
+    if (header.every(b => b === 0)) break; // end-of-archive blocks
+    const name = header.slice(0, 100).toString('utf8').replace(/\0.*$/, '');
+    const prefix = header.slice(345, 500).toString('utf8').replace(/\0.*$/, '');
+    const fullName = prefix ? `${prefix}/${name}` : name;
+    const size = parseInt(header.slice(124, 136).toString('utf8').replace(/\0.*$/, '').trim(), 8) || 0;
+    const type = String.fromCharCode(header[156]);
+    off += 512;
+    const content = buf.slice(off, off + size);
+    off += Math.ceil(size / 512) * 512;
+    if (type !== '0' && type !== '' && type !== '\0') continue; // files only (skip dirs/links)
+    if (!fullName || fullName.includes('..') || path.isAbsolute(fullName) || fullName.startsWith('/')) {
+      throw new Error(`unsafe tar entry: ${fullName}`);
+    }
+    files.push({ name: fullName, content });
+  }
+  return files;
+}
+
+/** Extract a .tar.gz/.tgz/.tar package into a temp dir; returns the dir. */
+function _extractTarToTemp(pkgPath) {
+  let buf = fs.readFileSync(pkgPath);
+  if (!/\.tar$/i.test(pkgPath)) buf = zlib.gunzipSync(buf);
+  const files = _untar(buf);
+  if (!files.length) throw new Error('empty archive');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ext-tgz-'));
+  for (const f of files) {
+    const dst = path.join(tmp, f.name);
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.writeFileSync(dst, f.content);
+  }
+  return tmp;
+}
+
+/** Install from a folder OR a .tar.gz/.tgz/.tar package. When the
+ *  manifest sits in a single top-level subdir (typical archives), that
+ *  subdir is used as the package root. Existing same-name extension is
+ *  replaced (update semantics). */
+function installExtension(srcPath, extRoot) {
+  let dir = srcPath;
+  let tmpToClean = null;
+  if (fs.existsSync(srcPath) && fs.statSync(srcPath).isFile() && /\.(tar\.gz|tgz|tar)$/i.test(srcPath)) {
+    try {
+      tmpToClean = _extractTarToTemp(srcPath);
+      dir = tmpToClean;
+    } catch (e) {
+      return { error: 'package_extract_failed', detail: e && e.message };
+    }
+  }
+  // Unwrap a single top-level folder (archive-style packages).
+  if (dir && !fs.existsSync(path.join(dir, 'manifest.yaml'))) {
+    try {
+      const entries = fs.readdirSync(dir, { withFileTypes: true }).filter(e => e.isDirectory());
+      const files = fs.readdirSync(dir, { withFileTypes: true }).filter(e => e.isFile());
+      if (entries.length === 1 && files.length === 0
+          && fs.existsSync(path.join(dir, entries[0].name, 'manifest.yaml'))) {
+        dir = path.join(dir, entries[0].name);
+      }
+    } catch (_) {}
+  }
+  const info = inspectExtension(dir);
+  if (!info.ok) {
+    if (tmpToClean) { try { fs.rmSync(tmpToClean, { recursive: true, force: true }); } catch (_) {} }
+    return info;
+  }
   const dst = path.join(extRoot, info.manifest.name);
   try {
     fs.rmSync(dst, { recursive: true, force: true });
-    copyDir(srcDir, dst);
+    copyDir(dir, dst);
   } catch (e) {
+    if (tmpToClean) { try { fs.rmSync(tmpToClean, { recursive: true, force: true }); } catch (_) {} }
     return { error: 'install_failed', detail: e && e.message };
   }
+  if (tmpToClean) { try { fs.rmSync(tmpToClean, { recursive: true, force: true }); } catch (_) {} }
   return { ok: true, name: info.manifest.name, manifest: info.manifest, entries: info.entries };
 }
 
 /** List extensions: built-ins from packagesDir + user ones from
- *  extRoot, merged with the store's enabled flags. */
+ *  extRoot, merged with the store's enabled flags. A user-installed
+ *  copy SHADOWS the same-name built-in (single row, source 'user',
+ *  shadowing: true) — reinstall-from-folder is how built-ins get
+ *  updated without an app release. */
 function listExtensions({ packagesDir, extRoot, storeExts }) {
   const flags = new Map((Array.isArray(storeExts) ? storeExts : []).map(e => [e.name, e.enabled !== false]));
   const out = [];
@@ -192,9 +276,13 @@ function listExtensions({ packagesDir, extRoot, storeExts }) {
       out.push({
         name:         info.manifest.name,
         title:        info.manifest.title,
+        description:  info.manifest.description || '',
         version:      info.manifest.version,
         capabilities: info.manifest.capabilities,
         native:       info.manifest.native || '',
+        mounts:       info.manifest.mounts || [],
+        kind:         info.manifest.kind || 'tool',
+        viewFile:     info.entries.view || '',
         hasView:      !!info.entries.view,
         hasTool:      !!info.entries.tool,
         source,
@@ -204,7 +292,13 @@ function listExtensions({ packagesDir, extRoot, storeExts }) {
   };
   scan(packagesDir, 'builtin');
   scan(extRoot, 'user');
-  return out;
+  // Dedupe: a user copy replaces its same-name built-in row.
+  const userNames = new Set(out.filter(e => e.source === 'user').map(e => e.name));
+  return out
+    .filter(e => !(e.source === 'builtin' && userNames.has(e.name)))
+    .map(e => (e.source === 'user' && e.name && out.some(b => b.source === 'builtin' && b.name === e.name))
+      ? { ...e, shadowing: true }
+      : e);
 }
 
 module.exports = {
