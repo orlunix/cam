@@ -4,6 +4,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import time
 
 from camc_pkg import CAM_DIR, SOCKETS_DIR, log
 from camc_pkg.utils import strip_ansi, _run
@@ -263,6 +264,8 @@ def tmux_session_exists(session_id):
 _TMUX_SEND_CHUNK = 8192            # safely below tmux 3.4's ~16-20KB ARG_MAX
 _BRACKET_PASTE_OPEN = "\x1b[200~"
 _BRACKET_PASTE_CLOSE = "\x1b[201~"
+DEFAULT_PROMPT_SUBMIT_DELAY = 0.5
+FAST_PROMPT_SUBMIT_DELAY = 0.15
 
 
 def tmux_send_input(session_id, text, send_enter=True):
@@ -331,6 +334,32 @@ def tmux_send_key(session_id, key):
     except Exception as e:
         log.warning("tmux_send_key failed: %s", e)
         return False
+
+
+def tmux_submit_input(session_id, text,
+                      submit_delay=DEFAULT_PROMPT_SUBMIT_DELAY,
+                      send_input_fn=None, send_key_fn=None, sleep_fn=None):
+    """Send text, then use the reliable fast-Enter/fallback-Enter submit."""
+    send_input_fn = send_input_fn or tmux_send_input
+    send_key_fn = send_key_fn or tmux_send_key
+    sleep_fn = sleep_fn or time.sleep
+    if not send_input_fn(session_id, text, send_enter=False):
+        return False
+    try:
+        delay = max(0.0, float(submit_delay))
+    except (TypeError, ValueError):
+        delay = DEFAULT_PROMPT_SUBMIT_DELAY
+    fast_delay = min(FAST_PROMPT_SUBMIT_DELAY, delay)
+    if fast_delay:
+        sleep_fn(fast_delay)
+    if not send_key_fn(session_id, "Enter"):
+        return False
+    fallback_delay = delay - fast_delay
+    if fallback_delay:
+        sleep_fn(fallback_delay)
+        if not send_key_fn(session_id, "Enter"):
+            return False
+    return True
 
 
 def tmux_is_attached(session_id):
