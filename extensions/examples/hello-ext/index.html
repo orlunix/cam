@@ -18,6 +18,7 @@ pre { background: #161b22; border: 1px solid #2d333b; border-radius: 8px; paddin
 <button id="b-agents">agents.list()</button>
 <button id="b-contexts">contexts.list()</button>
 <button id="b-sysinfo">ext.call(first host, sysinfo)</button>
+<button id="b-context">app.context()</button>
 <pre id="out">(click a button)</pre>
 <script src="../client.js"></script>
 <script>
@@ -39,6 +40,11 @@ document.getElementById('b-sysinfo').onclick = async () => {
     out(r);
   } catch (e) { showErr(e); }
 };
+
+// Per-agent mount: shows the agent this view was opened from (empty
+// when opened from the Extensions page instead).
+document.getElementById('b-context').onclick = () =>
+  camExt.call('app.context').then(r => out(r && r.agentId ? r : '(no agent binding — opened from Extensions page)')).catch(showErr);
 </script>
 </body>
 </html>
