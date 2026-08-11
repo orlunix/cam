@@ -17,6 +17,12 @@ my-ext/
   main.py           # optional remote tool — python3.6 stdlib only
 ```
 
+Manifest extras: `native: <mode>` (first-party built-ins only — view is
+a built-in app page, package must NOT carry `.html` → `invalid_native`)
+and `mounts: [agent]` (surface in the agent page Ext▾ menu; iframe views
+read the binding via `camExt.call('app.context')`, plus per-agent reads
+`agents.cronJobs` / `agents.workspaceList` / `agents.workspaceRead`).
+
 Entry resolution: `index.html` wins → else exactly one `*.html` → else
 `view_ambiguous` error. Same for `main.py` / `*.py`. No entries at all
 = `empty_extension` error.
