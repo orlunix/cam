@@ -138,10 +138,10 @@ def test_build_features_allow_list_only_enables_named():
     assert by_name["cron"].enabled is False
 
 
-def test_boot_prompt_delay_keeps_enter_after_text():
+def test_boot_prompt_uses_message_style_submit_with_default_fallback_delay():
     cfg = _Cfg(ready_pattern=re.compile(r"^›", re.MULTILINE))
     cfg.startup_wait = 20.0
-    cfg.prompt_submit_delay = 0.5
+    cfg.prompt_submit_delay = 0.0
     runtime = mf.MonitorRuntime("aid", cfg, now=0.0)
     runtime.in_initializing = True
     runtime.boot_prompt = "say hi"
@@ -151,9 +151,11 @@ def test_boot_prompt_delay_keeps_enter_after_text():
 
     actions = mf.BootPromptFeature().after_confirm(snap, runtime)
 
-    kinds = [a["kind"] for a in actions]
-    assert kinds[:3] == ["send_input", "sleep", "send_key"]
-    assert actions[2]["key"] == "Enter"
+    assert actions[0] == {
+        "kind": "submit_input",
+        "text": "say hi",
+        "submit_delay": 0.5,
+    }
 
 
 def test_register_feature_is_idempotent_for_repeat_calls():
