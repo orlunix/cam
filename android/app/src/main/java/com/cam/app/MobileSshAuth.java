@@ -137,11 +137,20 @@ public final class MobileSshAuth {
         MobileHubLog.ssh("jump connect " + MobileHubLog.endpoint(opts.jump)
             + " -> " + MobileHubLog.endpoint(opts));
         Session jump = connect(opts.jump, budgetMs, false);
+        ChannelDirectTCPIP ch;
         try {
-            ChannelDirectTCPIP ch = (ChannelDirectTCPIP) jump.openChannel("direct-tcpip");
+            ch = (ChannelDirectTCPIP) jump.openChannel("direct-tcpip");
             ch.setHost(opts.host);
             ch.setPort(opts.port > 0 ? opts.port : 22);
             ch.connect(budgetMs);
+        } catch (Exception e) {
+            try { jump.disconnect(); } catch (Exception ignored) {}
+            String msg = e.getMessage() != null ? e.getMessage() : "";
+            throw new Exception("jump_forward_failed: bastion cannot open a tunnel to "
+                + opts.host + ":" + (opts.port > 0 ? opts.port : 22)
+                + " (" + msg + ")", e);
+        }
+        try {
             // JSch calls socket.setTcpNoDelay() on the factory socket — a null
             // or plain dummy Socket NPEs. Wrap the channel in a Socket subclass.
             Socket tunneled = new Socket() {
@@ -172,8 +181,13 @@ public final class MobileSshAuth {
             session.connect(budgetMs);
             JUMP_SESSIONS.put(session, jump);
         } catch (Exception e) {
+            try { ch.disconnect(); } catch (Exception ignored) {}
             try { jump.disconnect(); } catch (Exception ignored) {}
-            throw e;
+            String msg = e.getMessage() != null ? e.getMessage() : "";
+            // Hop attribution: tunnel opened, but the target's handshake died
+            // (bastion→target unreachable / target sshd dropped us).
+            throw new Exception("target_handshake_failed via "
+                + MobileHubLog.endpoint(opts.jump) + ": " + msg, e);
         }
     }
 
