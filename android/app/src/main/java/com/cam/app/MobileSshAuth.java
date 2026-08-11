@@ -138,18 +138,25 @@ public final class MobileSshAuth {
             + " -> " + MobileHubLog.endpoint(opts));
         Session jump = connect(opts.jump, budgetMs, false);
         ChannelDirectTCPIP ch;
+        long tCh = System.currentTimeMillis();
         try {
             ch = (ChannelDirectTCPIP) jump.openChannel("direct-tcpip");
             ch.setHost(opts.host);
             ch.setPort(opts.port > 0 ? opts.port : 22);
             ch.connect(budgetMs);
+            MobileHubLog.ssh("jump channel open ok "
+                + (System.currentTimeMillis() - tCh) + "ms -> " + MobileHubLog.endpoint(opts));
         } catch (Exception e) {
+            MobileHubLog.ssh("jump channel open FAIL "
+                + (System.currentTimeMillis() - tCh) + "ms -> " + MobileHubLog.endpoint(opts)
+                + " " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
             try { jump.disconnect(); } catch (Exception ignored) {}
             String msg = e.getMessage() != null ? e.getMessage() : "";
             throw new Exception("jump_forward_failed: bastion cannot open a tunnel to "
                 + opts.host + ":" + (opts.port > 0 ? opts.port : 22)
                 + " (" + msg + ")", e);
         }
+        MobileHubLog.ssh("target handshake start " + MobileHubLog.endpoint(opts));
         try {
             // JSch calls socket.setTcpNoDelay() on the factory socket — a null
             // or plain dummy Socket NPEs. Wrap the channel in a Socket subclass.
