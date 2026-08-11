@@ -700,8 +700,8 @@ import uuid
 # Constants and logging
 # ===========================================================================
 
-__version__ = "1.2.43"
-__build__ = "f77fb9c-dirty 2026-08-05 02:44"
+__version__ = "1.2.44"
+__build__ = "b173827-dirty 2026-08-06 05:54"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -3062,6 +3062,8 @@ def tmux_session_exists(session_id):
 _TMUX_SEND_CHUNK = 8192            # safely below tmux 3.4's ~16-20KB ARG_MAX
 _BRACKET_PASTE_OPEN = "\x1b[200~"
 _BRACKET_PASTE_CLOSE = "\x1b[201~"
+DEFAULT_PROMPT_SUBMIT_DELAY = 0.5
+FAST_PROMPT_SUBMIT_DELAY = 0.15
 
 
 def tmux_send_input(session_id, text, send_enter=True):
@@ -3130,6 +3132,32 @@ def tmux_send_key(session_id, key):
     except Exception as e:
         log.warning("tmux_send_key failed: %s", e)
         return False
+
+
+def tmux_submit_input(session_id, text,
+                      submit_delay=DEFAULT_PROMPT_SUBMIT_DELAY,
+                      send_input_fn=None, send_key_fn=None, sleep_fn=None):
+    """Send text, then use the reliable fast-Enter/fallback-Enter submit."""
+    send_input_fn = send_input_fn or tmux_send_input
+    send_key_fn = send_key_fn or tmux_send_key
+    sleep_fn = sleep_fn or time.sleep
+    if not send_input_fn(session_id, text, send_enter=False):
+        return False
+    try:
+        delay = max(0.0, float(submit_delay))
+    except (TypeError, ValueError):
+        delay = DEFAULT_PROMPT_SUBMIT_DELAY
+    fast_delay = min(FAST_PROMPT_SUBMIT_DELAY, delay)
+    if fast_delay:
+        sleep_fn(fast_delay)
+    if not send_key_fn(session_id, "Enter"):
+        return False
+    fallback_delay = delay - fast_delay
+    if fallback_delay:
+        sleep_fn(fallback_delay)
+        if not send_key_fn(session_id, "Enter"):
+            return False
+    return True
 
 
 def tmux_is_attached(session_id):
@@ -5146,15 +5174,9 @@ class BootPromptFeature(MonitorFeature):
         prompt = (runtime.boot_prompt or "").strip()
         if prompt and runtime.prompt_after_launch:
             cfg = boot_cfg or tool_cfg
-            if cfg.prompt_submit_delay > 0:
-                actions.append({"kind": "send_input",
-                                "text": prompt, "send_enter": False})
-                actions.append({"kind": "sleep",
-                                "seconds": cfg.prompt_submit_delay})
-                actions.append({"kind": "send_key", "key": "Enter"})
-            else:
-                actions.append({"kind": "send_input",
-                                "text": prompt, "send_enter": True})
+            delay = cfg.prompt_submit_delay or DEFAULT_PROMPT_SUBMIT_DELAY
+            actions.append({"kind": "submit_input", "text": prompt,
+                            "submit_delay": delay})
             actions.append({"kind": "log", "level": "info",
                             "msg": "Boot: prompt injected (%d chars)" % len(prompt)})
         else:
@@ -5415,6 +5437,9 @@ def _apply_action(action, *, session, agent_id, store, events_fn):
     elif kind == "send_input":
         tmux_send_input(session, action["text"],
                         send_enter=action.get("send_enter", True))
+    elif kind == "submit_input":
+        tmux_submit_input(session, action["text"],
+                          submit_delay=action.get("submit_delay", 0.5))
     elif kind == "send_key":
         tmux_send_key(session, action["key"])
     elif kind == "sleep":
@@ -17554,7 +17579,6 @@ def _msg_resolve_session(to_arg):
 
 
 _MSG_SUBMIT_DELAY_DEFAULT = 0.5
-_MSG_FAST_SUBMIT_DELAY = 0.15
 _CUSTOM_LAUNCH_EXIT_GRACE = 0.35
 
 
@@ -17778,20 +17802,11 @@ def _msg_inject(session, to_label, text, timeout_s,
         "to_id": to_id, "to_name": to_name,
     })
 
-    if not tmux_send_input(session, payload, send_enter=False):
+    if not tmux_submit_input(session, payload, submit_delay=submit_delay,
+                             send_input_fn=tmux_send_input,
+                             send_key_fn=tmux_send_key, sleep_fn=time.sleep):
         _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
         return (msg_id, False)
-    fast_delay = min(_MSG_FAST_SUBMIT_DELAY, submit_delay)
-    time.sleep(fast_delay)
-    if not tmux_send_key(session, "Enter"):
-        _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
-        return (msg_id, False)
-    fallback_delay = submit_delay - fast_delay
-    if fallback_delay > 0:
-        time.sleep(fallback_delay)
-        if not tmux_send_key(session, "Enter"):
-            _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
-            return (msg_id, False)
     _msg_ledger_append({"msg_id": msg_id, "status": "delivered"})
     return (msg_id, True)
 

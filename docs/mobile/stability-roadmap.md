@@ -202,6 +202,7 @@ treat as "dormant, unproven".
 | Doc | Status |
 |---|---|
 | **this file** | **authoritative** |
+| `ios-plan.md` | **authoritative** (iOS port plan, pending decisions) |
 | `web/AGENTS.md`, `android/AGENTS.md` | authoritative (agent onboarding) |
 | `README.md` | stale: "Relay only", resume section |
 | `native-plan.md`, `webview-resume.md` | historical (native line archived) |

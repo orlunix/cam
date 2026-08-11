@@ -3,6 +3,8 @@ package com.cam.app;
 import android.content.Context;
 import android.util.Base64;
 
+import com.jcraft.jsch.Session;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -2148,6 +2150,8 @@ public final class MobileEmbeddedHub {
                     break;
             }
             // Probe the same socket dirs camc's _find_tmux_socket checks.
+            // CMODE= sentinel prefix: profile/motd noise from the login shell
+            // must not break the pane-state parse (2.4.91 lesson).
             String inner =
                 "s=''; "
                 + "for d in /tmp/cam-sockets /tmp/cam-agent-sockets \"$HOME/.local/share/cam/sockets\"; do "
@@ -2155,16 +2159,84 @@ public final class MobileEmbeddedHub {
                 + "done; "
                 + "[ -n \"$s\" ] || { echo 'tmux socket not found for " + qSession + "' >&2; exit 3; }; "
                 + "tmux -S \"$s\" " + tmuxCmd + " || exit 4; "
-                + "tmux -S \"$s\" display-message -p -t '" + qSession + "' '#{pane_in_mode}'";
+                + "tmux -S \"$s\" display-message -p -t '" + qSession + "' 'CMODE=#{pane_in_mode}'";
             MobileSshExec.Result res = MobileSshExec.exec(
                 plan.auth, MobileSshExec.shellCommand(inner), SEND_TIMEOUT_MS);
-            if (!res.ok) {
+            return copyModeResult(res);
+        } catch (Exception e) {
+            try {
                 return new JSONObject().put("ok", false)
-                    .put("error", res.error != null && !res.error.isEmpty() ? res.error : "tmux_failed")
-                    .put("detail", res.detail != null ? res.detail : "");
+                    .put("error", "internal_error")
+                    .put("detail", e.getMessage() != null ? e.getMessage() : "");
+            } catch (Exception ignored) {
+                return new JSONObject();
             }
-            boolean inMode = "1".equals(res.stdout != null ? res.stdout.trim() : "");
-            return new JSONObject().put("ok", true).put("copyMode", inMode);
+        }
+    }
+
+    /** Sentinel-tolerant parse: finds CMODE=0/1 anywhere in noisy stdout. */
+    private static JSONObject copyModeResult(MobileSshExec.Result res) throws Exception {
+        if (!res.ok) {
+            return new JSONObject().put("ok", false)
+                .put("error", res.error != null && !res.error.isEmpty() ? res.error : "tmux_failed")
+                .put("detail", res.detail != null ? res.detail : "");
+        }
+        String out = res.stdout != null ? res.stdout : "";
+        java.util.regex.Matcher m = Pattern.compile("CMODE=([01])").matcher(out);
+        if (!m.find()) {
+            return new JSONObject().put("ok", false)
+                .put("error", "parse_failed")
+                .put("detail", "pane state marker missing from remote output");
+        }
+        return new JSONObject().put("ok", true).put("copyMode", "1".equals(m.group(1)));
+    }
+
+    /**
+     * Fast path: run the copy-mode command on the terminal's long-lived SSH
+     * session (channel-level latency, no reconnect). Caller falls back to
+     * terminalCopyMode() when this fails.
+     */
+    JSONObject terminalCopyModeOnSession(Session session, String agentId, String action) {
+        try {
+            if (!"enter".equals(action) && !"up".equals(action) && !"cancel".equals(action)
+                    && !"top".equals(action) && !"bottom".equals(action)) {
+                return new JSONObject().put("ok", false).put("error", "invalid_args")
+                    .put("detail", "action must be enter|up|cancel|top|bottom");
+            }
+            JSONObject agent = findAgentById(agentId, null);
+            String tmuxSession = agent != null ? agent.optString("tmux_session", "") : "";
+            if (tmuxSession.isEmpty() && agent != null) tmuxSession = agent.optString("session", "");
+            if (tmuxSession.isEmpty()) tmuxSession = agentId;
+            String qSession = tmuxSession.replace("'", "'\\''");
+            String tmuxCmd;
+            switch (action) {
+                case "enter":
+                    tmuxCmd = "copy-mode -u -t '" + qSession + "'";
+                    break;
+                case "up":
+                    tmuxCmd = "send-keys -X -t '" + qSession + "' halfpage-up";
+                    break;
+                case "top":
+                    tmuxCmd = "send-keys -X -t '" + qSession + "' top-line";
+                    break;
+                case "bottom":
+                    tmuxCmd = "send-keys -X -t '" + qSession + "' bottom-line";
+                    break;
+                default:
+                    tmuxCmd = "send-keys -X -t '" + qSession + "' cancel";
+                    break;
+            }
+            String inner =
+                "s=''; "
+                + "for d in /tmp/cam-sockets /tmp/cam-agent-sockets \"$HOME/.local/share/cam/sockets\"; do "
+                + "[ -S \"$d/" + qSession + ".sock\" ] && { s=\"$d/" + qSession + ".sock\"; break; }; "
+                + "done; "
+                + "[ -n \"$s\" ] || { echo 'tmux socket not found for " + qSession + "' >&2; exit 3; }; "
+                + "tmux -S \"$s\" " + tmuxCmd + " || exit 4; "
+                + "tmux -S \"$s\" display-message -p -t '" + qSession + "' 'CMODE=#{pane_in_mode}'";
+            MobileSshExec.Result res = MobileSshExec.execOnSession(session,
+                MobileSshExec.shellCommand(inner), SEND_TIMEOUT_MS, null);
+            return copyModeResult(res);
         } catch (Exception e) {
             try {
                 return new JSONObject().put("ok", false)
