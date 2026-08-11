@@ -12,13 +12,19 @@
  *    every extension; exec/files:* require the manifest capability
  */
 
-/** Registry: contentWindow → { name, capabilities } */
+/** Registry: contentWindow → { name, capabilities, context } */
 const _frames = new Map();
 let _api = null;
 let _listening = false;
 
-export function registerExtFrame(contentWindow, { name, capabilities }) {
-  _frames.set(contentWindow, { name, capabilities: capabilities || [] });
+export function registerExtFrame(contentWindow, { name, capabilities, context }) {
+  _frames.set(contentWindow, {
+    name,
+    capabilities: capabilities || [],
+    // Bound context for per-agent mounts (SPEC v2 mounts: [agent]):
+    // { agentId, contextName } — surfaced via the app.context call.
+    context: context || null,
+  });
 }
 
 export function unregisterExtFrame(contentWindow) {
@@ -44,6 +50,25 @@ async function _dispatch(reg, method, args) {
     case 'agents.capture': {
       const r = await _api.agentOutput(String(args.id || ''), Number(args.lines) || 80);
       return (r && (r.output || r.text)) || '';
+    }
+    // Bound context for per-agent mounts (opened from an agent page).
+    case 'app.context': {
+      return reg.context || {};
+    }
+    // Agent's cron jobs / loops (read-only; needs an agent binding).
+    case 'agents.cronJobs': {
+      if (!reg.context || !reg.context.agentId) throw _err('no_agent_binding');
+      return _api.agentCronJobs(reg.context.agentId);
+    }
+    // Agent-workspace file access for per-agent mounts (e.g. previewing
+    // workflow yaml files). Read-only; requires an agent binding.
+    case 'agents.workspaceList': {
+      if (!reg.context || !reg.context.agentId) throw _err('no_agent_binding');
+      return _api.agentListWorkspaceFiles(reg.context.agentId, String(args.path || ''));
+    }
+    case 'agents.workspaceRead': {
+      if (!reg.context || !reg.context.agentId) throw _err('no_agent_binding');
+      return _api.agentReadWorkspaceFile(reg.context.agentId, String(args.path || ''));
     }
     case 'ext.call': {
       if (!reg.capabilities.includes('exec')) throw _err('capability_denied:exec');

@@ -5661,10 +5661,137 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
   overflow: hidden; display: flex; flex-direction: column;
   height: 70vh;
 }
-.ext-view-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 12px; background: var(--bg-hover);
-  border-bottom: 1px solid var(--border); font-size: 12.5px; color: var(--text-dim);
+/* Dedicated page mode: Open takes over the whole mode area (like
+   Skills), width matches the app's wide content rail (Nodes/Agents),
+   centered — not full-bleed. */
+/* Extensions page content rides the same wide rail as Agents/Nodes
+ * content (1200px centered), not full-bleed. */
+#mode-extensions .settings-header,
+#mode-extensions .ext-toolbar,
+#mode-extensions #ext-list,
+#mode-extensions #ext-status {
+  width: min(100%, var(--desktop-rail-wide));
+  max-width: var(--desktop-rail-wide);
+  margin-left: auto;
+  margin-right: auto;
+  box-sizing: border-box;
 }
+#mode-extensions.ext-viewing .ext-page-header,
+#mode-extensions.ext-viewing .ext-toolbar,
+#mode-extensions.ext-viewing #ext-list,
+#mode-extensions.ext-viewing #ext-status { display: none; }
+#mode-extensions.ext-viewing .ext-view-wrap {
+  margin-top: 0;
+  flex: 1;
+  min-height: 0;
+  height: auto;
+  width: min(100%, var(--desktop-rail-wide));
+  margin-left: auto;
+  margin-right: auto;
+}
+#mode-extensions.ext-viewing { display: flex; flex-direction: column; }
+.ext-view-header {
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 16px; background: var(--bg-hover);
+  border-bottom: 1px solid var(--border);
+}
+.ext-view-header h2 { margin: 0; font-size: 16px; }
+.ext-view-header .settings-help { margin: 2px 0 0; }
 .ext-view-host { flex: 1 1 auto; min-height: 0; }
 .ext-view-frame { width: 100%; height: 100%; border: none; display: block; background: #0f1216; }
+
+/* ────────── per-agent extension menu + overlay ────────── */
+.agent-ext-wrap { position: relative; }
+.agent-ext-menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 60;
+  min-width: 180px; padding: 4px;
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.35);
+  display: flex; flex-direction: column;
+}
+.agent-ext-item {
+  text-align: left; padding: 7px 10px; border: none; border-radius: 6px;
+  background: transparent; color: var(--text); font-size: 12.5px; cursor: pointer;
+}
+.agent-ext-item:hover { background: var(--bg-hover); }
+.agent-ext-empty { padding: 8px 10px; color: var(--text-dim); font-size: 12px; }
+.agent-ext-overlay {
+  position: absolute; inset: 0; z-index: 40;
+  display: flex; flex-direction: column;
+  background: var(--bg);
+  /* default to the wide content rail (same as the Extensions page);
+     width-hungry views (e.g. terminal) may opt into full width */
+  width: min(100%, var(--desktop-rail-wide));
+  margin: 0 auto;
+}
+.agent-ext-overlay[hidden] { display: none; }
+/* overlay anchors to the agents panel */
+#mode-agents { position: relative; }
+.agent-ext-host { flex: 1 1 auto; min-height: 0; }
+.agent-ext-host .ext-view-frame { width: 100%; height: 100%; border: none; display: block; }
+
+/* ────────── Agent Doctor (native extension page) ──────────
+ * Layout mirrors the Skills page: centered 1280px rail, skills-card
+ * sections, ok/warn/bad status rows. All selectors are namespaced under
+ * #mode-agent-doctor so they can never leak onto other pages. */
+#mode-agent-doctor .doctor-header,
+#mode-agent-doctor .doctor-workbench {
+  width: min(1280px, 100%);
+  max-width: 1280px;
+  margin-left: auto;
+  margin-right: auto;
+  box-sizing: border-box;
+}
+#mode-agent-doctor .doctor-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+}
+#mode-agent-doctor .doctor-workbench {
+  padding: 16px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+#mode-agent-doctor .doctor-target-fields label {
+  font-size: 11px;
+  color: var(--text-dim);
+  align-self: center;
+}
+#mode-agent-doctor select {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+}
+#mode-agent-doctor .doctor-report {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+#mode-agent-doctor .doctor-card-title {
+  margin: 0;
+  font-size: 13.5px;
+}
+#mode-agent-doctor .doctor-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 3px 0;
+  font-size: 12.5px;
+}
+#mode-agent-doctor .doctor-row-icon { flex: 0 0 16px; }
+#mode-agent-doctor .doctor-row.is-ok .doctor-row-icon { color: var(--ok, #3fb950); }
+#mode-agent-doctor .doctor-row.is-warn .doctor-row-icon { color: var(--ansi-yellow, #d29922); }
+#mode-agent-doctor .doctor-row.is-bad .doctor-row-icon { color: var(--danger, #f85149); }
+#mode-agent-doctor .doctor-sug {
+  color: #79c0ff;
+  font-size: 12px;
+  margin-left: 24px;
+}
+#mode-agent-doctor .doctor-empty {
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
