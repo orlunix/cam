@@ -3945,9 +3945,10 @@ function _extServeFile(res, urlPath) {
     res.writeHead(200, {
       'Content-Type': _EXT_MIME[ext] || 'application/octet-stream',
       'Cache-Control': 'no-store',
-      // Views are untrusted user content: no scripts from other origins,
-      // no forms, no top navigation (iframe also carries sandbox attr).
-      'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'",
+      // Views are untrusted user content; inline script/style allowed
+      // (small extensions are idiomatically single-file) — the iframe
+      // sandbox + the separate view token are the real boundary.
+      'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'",
     });
     return res.end(fs.readFileSync(resolved));
   }
@@ -4011,11 +4012,11 @@ async function handle(req, res) {
   }
   // /ext/<name>/<file>?token=… — extension view files, served over the
   // loopback hub so the iframe origin is http://127.0.0.1 (cross-origin
-  // to the file:// app page). Token rides the query because sandboxed
-  // iframes cannot set Authorization headers.
+  // to the file:// app page). The query token is the VIEW token
+  // (state.viewToken), never the API token — see start().
   if (method === 'GET' && p.startsWith('/ext/')) {
     const tok = url.searchParams.get('token') || '';
-    if (tok !== state.token) return sendJson(res, 401, { error: 'unauthorized' });
+    if (!state.viewToken || tok !== state.viewToken) return sendJson(res, 401, { error: 'unauthorized' });
     return _extServeFile(res, p);
   }
 
@@ -4040,6 +4041,13 @@ async function handle(req, res) {
 
   /* ────────── Extensions API (SPEC: extensions/SPEC.md) ────────── */
 
+  // GET /api/extensions/view-token — the renderer fetches the per-launch
+  // view-serving token here (bearer-authed). Views only ever see this
+  // token, never the API token.
+  if (method === 'GET' && p === '/api/extensions/view-token') {
+    return sendJson(res, 200, { token: state.viewToken || '' });
+  }
+
   // GET /api/extensions — registry listing (built-in + user).
   if (method === 'GET' && p === '/api/extensions') {
     if (!_extRegistry) return sendJson(res, 200, { extensions: [], note: 'extensions runtime not packaged' });
@@ -4060,8 +4068,10 @@ async function handle(req, res) {
     catch (e) { return send400(res, e.message); }
     const src = String((body && body.path) || '').trim();
     if (!src) return sendJson(res, 400, { error: 'missing_path', detail: 'path is required' });
-    if (!fs.existsSync(src) || !fs.statSync(src).isDirectory()) {
-      return sendJson(res, 400, { error: 'not_a_folder', detail: `${src} is not a folder` });
+    const isPkg = fs.existsSync(src) && fs.statSync(src).isFile() && /\.(tar\.gz|tgz|tar)$/i.test(src);
+    const isDir = fs.existsSync(src) && fs.statSync(src).isDirectory();
+    if (!isPkg && !isDir) {
+      return sendJson(res, 400, { error: 'not_a_package', detail: `${src} is neither a folder nor a .tar/.tar.gz/.tgz package` });
     }
     const { extRoot } = _extDirs();
     const r = _extRegistry.installExtension(src, extRoot);
@@ -4759,6 +4769,12 @@ async function start({ dataDir, apiToken } = {}) {
   }
 
   state.token = apiToken ? String(apiToken) : genToken();
+  // Separate token for extension-view file serving (/ext/...). The view
+  // URL carries it in the query (iframes can't set headers) — if it were
+  // the API token, a hostile extension could read its own location and
+  // call /api/* directly, bypassing the bridge capability gate. Views
+  // never see the API token.
+  state.viewToken = genToken();
   state.port  = null;
 
   const srv = http.createServer(async (req, res) => {
@@ -4786,6 +4802,7 @@ async function start({ dataDir, apiToken } = {}) {
 
   if (!srv.listening) {
     state.token = null;
+    state.viewToken = null;
     state.port  = null;
     return { ok: false, error: state.lastError || 'listen failed', state: publicState() };
   }
@@ -4831,6 +4848,7 @@ async function stop() {
   // reuse a stale credential against a different process listening
   // on the same port later.
   state.token     = null;
+  state.viewToken = null;
   pushLog('info', 'embedded Hub stopped');
   return { ok: true, state: publicState() };
 }
