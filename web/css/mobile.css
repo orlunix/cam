@@ -430,14 +430,58 @@ body.camui-v2 #content.agent-detail-active .output-status-row {
   position: absolute;
   z-index: 4;
   right: 8px;
-  bottom: 8px;
+  bottom: 52px;
   left: 8px;
-  display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) 32px;
-  align-items: center;
+  display: flex;
+  justify-content: center;
   min-height: 32px;
   box-sizing: border-box;
   pointer-events: none;
+}
+
+/* Centered floating action bar (desktop terminal-action-bar parity):
+ * attach / history / to-bottom / re-attach, square translucent chips. */
+body.camui-v2 #content.agent-detail-active .output-action-bar {
+  position: absolute;
+  z-index: 4;
+  bottom: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+body.camui-v2 #content.agent-detail-active .output-action-bar .action-fab {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 8px;
+  background: rgba(22, 27, 34, 0.3);
+  color: rgba(255, 255, 255, 0.85);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 15px;
+  line-height: 1;
+  pointer-events: auto;
+}
+
+body.camui-v2 #content.agent-detail-active .output-action-bar .action-fab:active {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+body.camui-v2 #content.agent-detail-active .output-action-bar .action-fab.hidden {
+  display: none;
+}
+
+body.camui-v2 #content.agent-detail-active .output-action-bar .action-fab.history-btn.is-active {
+  background: rgba(88, 166, 255, 0.2);
+  border-color: rgba(88, 166, 255, 0.55);
+  color: #79b8ff;
 }
 
 /* Same floating treatment as the established Live Output in-flight toast. */
@@ -461,40 +505,6 @@ body.camui-v2 #content.agent-detail-active .output-status-text[data-tone="info"]
 body.camui-v2 #content.agent-detail-active .output-status-text[data-tone="ok"] { color: #7ee787; }
 body.camui-v2 #content.agent-detail-active .output-status-text[data-tone="warning"] { color: #d29922; }
 body.camui-v2 #content.agent-detail-active .output-status-text[data-tone="error"] { color: #f85149; }
-
-body.camui-v2 #content.agent-detail-active .output-status-row .jump-bottom-btn {
-  position: static;
-  justify-self: end;
-  width: 32px;
-  min-width: 32px;
-  height: 32px;
-  min-height: 32px;
-  padding: 0;
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  border-radius: 999px;
-  background: rgba(22, 27, 34, 0.3);
-  color: rgba(255, 255, 255, 0.85);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 16px;
-  line-height: 1;
-  pointer-events: auto;
-}
-
-body.camui-v2 #content.agent-detail-active .output-status-row .jump-bottom-btn:active {
-  background: rgba(255, 255, 255, 0.12);
-}
-
-/* History button — symmetric twin of jump-bottom at the row's left cell. */
-body.camui-v2 #content.agent-detail-active .output-status-row .jump-bottom-btn.history-btn {
-  justify-self: start;
-}
-
-body.camui-v2 #content.agent-detail-active .output-status-row .jump-bottom-btn.history-btn.is-active {
-  background: rgba(88, 166, 255, 0.2);
-  border-color: rgba(88, 166, 255, 0.55);
-  color: #79b8ff;
-}
 
 body.camui-v2 #content.agent-detail-active .terminal-keybar {
   flex-shrink: 0;
@@ -1974,4 +1984,22 @@ body.camui-v2 .nodes-import-actions {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 10px;
+}
+
+/* Legacy jump-bottom button (completed-agent & fullscreen layouts). */
+body.camui-v2 #content.agent-detail-active .jump-bottom-btn {
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  z-index: 4;
+  padding: 6px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  background: rgba(22, 27, 34, 0.3);
+  color: rgba(255, 255, 255, 0.85);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  font-size: 12px;
+}
+body.camui-v2 #content.agent-detail-active .jump-bottom-btn.hidden {
+  display: none;
 }
