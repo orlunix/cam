@@ -72,5 +72,27 @@ ok('list includes builtin skills/todos + user hello-ext',
     && list.some(e => e.name === 'hello-ext' && e.source === 'user'));
 ok('store disabled flag honored', list.find(e => e.name === 'hello-ext').enabled === false);
 
+// install from a .tar.gz package (single top-level dir unwrap).
+const cp = require('node:child_process');
+const tgz = path.join(os.tmpdir(), 'hello-ext-pkg.tar.gz');
+cp.execFileSync('tar', ['-czf', tgz, '-C', path.join(root, 'extensions', 'examples'), 'hello-ext']);
+const instPkg = registry.installExtension(tgz, extRoot);
+ok('install from .tar.gz package', instPkg.ok === true && instPkg.name === 'hello-ext', JSON.stringify(instPkg));
+ok('.tar.gz landed files incl. subdir unwrap', fs.existsSync(path.join(extRoot, 'hello-ext', 'main.py')));
+
+// shadowing: a user copy replaces the same-name built-in row.
+const pkgRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ext-pkg-'));
+fs.mkdirSync(path.join(pkgRoot, 'skills'), { recursive: true });
+fs.writeFileSync(path.join(pkgRoot, 'skills', 'manifest.yaml'), 'name: skills\nversion: 9.9.9\nnative: skills\n');
+const userSkills = path.join(extRoot, 'skills');
+fs.mkdirSync(userSkills, { recursive: true });
+fs.writeFileSync(path.join(userSkills, 'manifest.yaml'), 'name: skills\nversion: 0.3.0\n');
+fs.writeFileSync(path.join(userSkills, 'index.html'), '<html></html>');
+const list2 = registry.listExtensions({ packagesDir: pkgRoot, extRoot, storeExts: [] });
+const skillsRows = list2.filter(e => e.name === 'skills');
+ok('user copy shadows builtin (single row)', skillsRows.length === 1);
+ok('shadowed row is the user copy with flag', skillsRows[0].source === 'user'
+  && skillsRows[0].version === '0.3.0' && skillsRows[0].shadowing === true);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exitCode = fail ? 1 : 0;

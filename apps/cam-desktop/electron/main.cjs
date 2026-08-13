@@ -1042,6 +1042,26 @@ async function filesSaveText(opts = {}) {
   }
 }
 
+/** Save-dialog + write BYTES (base64 in). Used by the Browse workspace
+ *  Download button — content arrives from the remote host as base64
+ *  (binary-safe) and lands on disk untouched. */
+async function filesSaveFile(opts = {}) {
+  const wins = BrowserWindow.getAllWindows();
+  const owner = wins.length > 0 ? wins[0] : null;
+  const r = await dialog.showSaveDialog(owner || undefined, {
+    title: String(opts.title || 'Download file'),
+    defaultPath: String(opts.defaultName || 'download'),
+  });
+  if (r.canceled || !r.filePath) return { ok: false, canceled: true };
+  try {
+    const buf = Buffer.from(String(opts.contentBase64 || ''), 'base64');
+    fs.writeFileSync(r.filePath, buf);
+    return { ok: true, path: r.filePath, bytes: buf.length };
+  } catch (e) {
+    return { ok: false, error: 'write_failed', detail: e && e.message || String(e) };
+  }
+}
+
 function filesReadClipboardText() {
   try {
     return { ok: true, text: clipboard.readText() || '' };
@@ -1216,6 +1236,7 @@ app.whenReady().then(() => {
   ipcMain.handle('files:pickAttachment',  () => filesPickAttachment());
   ipcMain.handle('files:pickFile',        (_e, opts) => filesPickFile(opts));
   ipcMain.handle('files:saveText',        (_e, opts) => filesSaveText(opts));
+  ipcMain.handle('files:saveFile',        (_e, opts) => filesSaveFile(opts));
   ipcMain.handle('files:readClipboardText', () => filesReadClipboardText());
   ipcMain.handle('files:readClipboardAttachments', () => filesReadClipboardAttachments());
   ipcMain.handle('net:probe', (_event, payload) => netProbe(payload && payload.url || '', payload && payload.timeoutMs || 8000));
