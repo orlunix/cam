@@ -185,6 +185,14 @@ ok("sync live status is node-level (hostSync on host header), results mirrored p
     && mode.includes("hostSync.set(hostKey, entry)")
     && mode.includes("hostSync.get(node.key)"));
 
+// The dedicated extension page's Back header must never match the
+// ext-viewing hiding selector (a shared .settings-header class once hid
+// the Back button itself — the "page hang" bug).
+ok("extensions dedicated page keeps its Back header (no CSS self-hiding)",
+  fs.readFileSync(path.join(root, "web", "css", "desktop.css"), "utf8").includes('#mode-extensions.ext-viewing .ext-page-header')
+    && !fs.readFileSync(path.join(root, "web", "css", "desktop.css"), "utf8").includes('#mode-extensions.ext-viewing .settings-header')
+    && fs.readFileSync(path.join(root, "web", "desktop.html"), "utf8").includes('class="settings-header ext-view-header"'));
+
 // ProxyJump: the form exposes a Jump host dropdown on both form
 // variants, submits machine.jump ('' = direct), inherits it into new
 // contexts, and badges tunneled hosts.

@@ -1,165 +1,185 @@
-# CAM Desktop Extensions — SPEC v1
+# CAM Desktop Extensions — SPEC v2
 
-Extensions are the unified "tool" surface of CAM Desktop. Skills and
-Todos become ordinary extensions; third parties can add their own.
+Extensions are the unified "tool" surface of CAM Desktop. v2 adds the
+third extension type (**local agents**) and the evolution discipline.
 
-Design drivers:
+Design drivers (unchanged):
 
-- **python3.6 stdlib-only remote part** (same compatibility bar as
-  camc: the last decade of Linux hosts)
-- **Sandboxed UI** (iframe + narrow postMessage bridge, nothing else)
+- **python3.6 stdlib-only remote part** (camc's compatibility bar)
+- **Sandboxed UI** (iframe + narrow postMessage bridge)
 - **No downloaded code executing locally** (MAS review commitment —
   installs are user-gesture, local-folder only)
-- **The hub never runs Python** (it is Node; the MAS sandbox forbids
-  local shells anyway)
+- **The hub never runs extension code** (no local Python/Node execution
+  of extension logic; the ONLY local execution is the user's own
+  agent binaries in non-MAS builds — see §4 type C)
 
 ## 0. Repository layout
 
 ```
-extensions/                  # the topic's home
-  SPEC.md                    # this file
-  README.md                  # overview + pointers
-  GUIDE.md                   # how to design an extension
+extensions/
+  SPEC.md / README.md / GUIDE.md
   host/
-    registry.cjs             # hub side: manifest parse/validate/install/registry
-    tool-proxy.cjs           # hub side: main.py deploy + remote call
-  packages/                  # built-in extensions (app bundle content)
-    skills/  todos/          # (homes for the iframe-ized versions)
-  examples/
-    hello-ext/               # minimal sample; used by tests
-```
+    registry.cjs          # manifest parse/validate/install/registry
+    tool-proxy.cjs        # remote tool deploy + call
+    ext-client.js         # view bridge client (served at /ext/client.js)
+  packages/               # built-in extensions (app bundle content)
+  examples/hello-ext/     # minimal sample (used by tests)
 
-Renderer-side pieces MUST live under `web/` (the hub serves the pages
-from the web root):
-
-```
-web/js/shared/ext-bridge.js       # postMessage protocol + capability gate
+web/js/shared/ext-bridge.js       # parent-side bridge + capability gate
 web/js/shared/ext-view-host.js    # iframe container
 web/js/desktop/extensions-mode.js # the Extensions page
 ```
 
-## 1. Package format
+## 1. Extension types
 
-An extension is a **folder** — installed as-is (no archive parsing in
-the hub; sharing a single file happens outside the app):
+| type | package carries | runs where | capability |
+|---|---|---|---|
+| **A. view tool** | `index.html` (+assets) | sandboxed iframe in the app | bridge APIs |
+| **B. remote tool** | `main.py` (python3.6 stdlib) | remote SSH hosts via exec pool | `exec` |
+| **C. local agent** | `bin/<platform>/<binary>` | **local process** (non-MAS builds) | `local-exec` |
+| **N. native page** | no view; optional `main.py` | view is a **built-in app mode page** (Skills-style) | per manifest |
+
+A package may combine A+B freely. Type C is standalone (an agent is its
+own UI via the terminal). Type N is for **first-party built-ins**: the
+view ships as app code (a mode page like Skills), so changing it needs
+an app release — the package only registers the extension and may carry
+a remote tool. agent-doctor is the reference: package = `main.py`
+collector + `native: agent-doctor`; view = `mode-agent-doctor` in
+`web/desktop.html` + `web/js/desktop/agent-doctor-mode.js`.
+
+## 2. Package format
 
 ```
 my-ext/
-  manifest.yaml    # required
-  index.html       # UI entry (optional — resolution rules below)
-  main.js / style.css / assets/…   # anything index.html references
-  main.py          # remote entry (optional — python3.6 stdlib only)
+  manifest.yaml
+  index.html        # type A entry (resolution rules below)
+  main.py           # type B entry (also allowed for type N)
+  bin/              # type C: per-platform binaries
+    windows-x64/my-agent.exe
+    darwin-arm64/my-agent
+    linux-x64/my-agent
 ```
 
-### Entry resolution rules
+### Entry resolution
 
 | part | rule |
 |---|---|
-| view | `index.html` wins → else exactly one `*.html` → else `view_ambiguous` error if several → else tool-only |
-| tool | `main.py` wins → else exactly one `*.py` → else `tool_ambiguous` error if several → else UI-only |
+| view | `index.html` wins → else exactly one `*.html` → else `view_ambiguous` error → else no view |
+| tool | `main.py` wins → else exactly one `*.py` → else `tool_ambiguous` error → else no tool |
+| agent | `bin/<current-platform>/<file>` exists → that binary; else `agent_platform_missing` |
 
-## 2. manifest.yaml
+**Native packages (`native:` in the manifest) must not carry a view** —
+any `.html` entry is rejected with `invalid_native`. Their tool entry
+follows the normal rule above.
+
+## 3. manifest.yaml
 
 ```yaml
-name: my-ext            # [a-z0-9-]{1,32}, unique per install
-version: 0.1.0          # semver-ish
-title: My Tool          # display name (optional, defaults to name)
-capabilities:           # empty/absent = pure content extension
-  - exec                # may run main.py on remote hosts
-  - files:read          # may read remote files via the bridge
-  - files:write         # may write remote files via the bridge
+name: my-ext              # [a-z0-9-]{1,32}
+version: 0.1.0
+title: My Tool
+kind: tool | agent        # tool (A/B) default; agent = type C
+native: my-mode           # type N: built-in app mode page name (no .html)
+mounts:
+  - agent                 # also surface in the agent console Ext▾ menu
+capabilities:
+  - exec                  # B: run main.py on remote hosts
+  - files:read            # bridge: read remote files
+  - files:write           # bridge: write remote files
+  - local-exec            # C: spawn a local process (non-MAS only)
+  - agents.start          # bridge: start a camc agent (confirm-gated)
 ```
 
-The hub parses only a flat subset (top-level `key: value`, `key:` +
-`  - item` lists, `#` comments). No nested maps, no anchors.
+Flat YAML subset only (top-level `key: value` and `  - item` lists).
 
-## 3. Execution model
+`mounts: [agent]` marks the extension as per-agent: it appears in the
+agent console Ext▾ menu, and opening it from there binds the selected
+agent (native pages receive it via a module handoff; iframe views read
+it via `app.context`).
 
-1. **The hub never runs Python.** `main.py` runs only on remote SSH
-   hosts, deployed via the existing hardened path (chunked SFTP upload
-   → `$HOME/.cam/extensions/<name>/` → redeploy on content-hash change).
-   Invocation over the exec pool:
-   `python3 $HOME/.cam/extensions/<name>/main.py <method> '<json-args>'`
-   → one JSON object on stdout; errors as `{"error": "...", "detail": "..."}`.
-   Host requirement: python3.6+. Nothing else.
-2. **The view never touches app internals.** `index.html` loads in a
-   sandboxed iframe (`sandbox="allow-scripts"`, no same-origin) served
-   by the loopback hub, and talks to the app over a narrow postMessage
-   bridge only.
+## 4. Execution model
 
-## 4. Bridge API (v1)
+**A. view** — sandboxed iframe (`sandbox="allow-scripts"`), served by the
+loopback hub at `/ext/<name>/<file>?token=…`, postMessage bridge only.
+CSP: `default-src 'self'` — no external network from views.
 
-View → app (postMessage, request/response with ids):
+**B. remote tool** — deployed to `$HOME/.cam/extensions/<name>/` via the
+hardened transport (chunked SFTP, `$HOME`-anchored install, package-hash
+incremental). Invocation: `python3 main.py <method> '<json>'` → one JSON
+object on stdout; 30s op budget default. The hub never runs Python.
 
-- `agents.list()` → agent records (read-only)
-- `agents.capture(id, lines)` → captured text
-- `ext.call(context, method, args)` → run `main.py <method>` on the
-  given context's host (requires `exec`)
-- `files.read(ctx, path)` / `files.write(ctx, path, text)` (require the
-  matching capability)
+**C. local agent** — main process spawns `bin/<platform>/<binary>` under
+**node-pty**; the renderer attaches an xterm view over a dedicated IPC
+channel (separate from the SSH datapath — no hub/transport change).
+Availability:
 
-App → view: bridge responses + `theme` push on init and theme change.
-No app-state mutation, no credential access, no direct network.
+- DMG/MSI builds: yes.
+- MAS build: **no** (`process.mas` gate; sandbox forbids spawning).
+  The Extensions page shows such entries as "requires the non-App-Store
+  build".
+- Binary provenance: shipped in the package (built-in) or downloaded
+  on first use from a pinned release URL (+ SHA256 check), or a
+  user-supplied mirror URL. Never auto-fetched silently.
 
-## 5. Install / manage (Extensions page)
+**N. native page** — no iframe: the Extensions page and the agent
+console Ext▾ menu navigate to the named app mode (`setMode(native)`).
+The page talks to the hub directly (same APIs as the rest of the app,
+including `extCall` for the package's remote tool).
 
-```
-Extensions
-─────────────────────────────────────────────
- [Install from folder…]
- ─────────────────────
- ● skills    built-in   [open]
- ● todos     built-in   [open]
- ○ my-ext    v0.1 user  [open] [disable] [remove]
-```
+## 5. Bridge API (v2)
 
-Install flow (hub side, all local ops):
+View → app (postMessage, capability-gated):
 
-1. Renderer picks the extension folder via the Electron directory dialog.
-2. Hub validates: manifest present, name/version legal, size caps,
-   entry resolution must yield a clear answer (§1).
-3. Copy to `userData/extensions/<name>/`; record in the store.
-4. Listed as a `user` extension; enabled immediately. Same name again =
-   update (replace). Remove deletes folder + record; an open view kicks
-   back to Agents. Disable keeps files, hides the extension; a deployed
-   main.py on remote hosts stays dormant (harmless).
+- `agents.list` / `contexts.list` / `agents.capture` — open (read-only)
+- `app.context` — the bound `{ agentId, contextName }` for per-agent
+  mounts (empty for global opens)
+- `agents.cronJobs` / `agents.workspaceList` / `agents.workspaceRead` —
+  read-only; per-agent mounts only (need an agent binding)
+- `ext.call(context, method, args)` — needs `exec`
+- `files.read` / `files.write` — needs `files:read` / `files:write`
+- `agents.start(context, body)` — needs `agents.start`; **always
+  shows a user confirmation** naming the extension and the agent
 
-Built-in extensions ship inside the app bundle (`extensions/packages/`)
-— they are app content, not downloads. v1 registers **skills** and
-**todos** as built-ins whose `open` navigates to their existing native
-pages; their iframe-ization is a later, separate migration.
+App → view: responses + `theme` push.
 
-## 6. View serving & isolation
+## 6. Install / manage
 
-Extension view files are served by the loopback hub at
-`/ext/<name>/<file>?token=<hub-token>`:
+Extensions page: list (built-in + user), Install from folder…,
+open / disable / remove. Install = validate (manifest, entries, size
+caps) + copy to `userData/extensions/<name>/`. Same name = update.
+Removal while open kicks back to Agents. Disable keeps files.
 
-- Serving over the hub (not file://) gives a consistent
-  `http://127.0.0.1` origin, which is cross-origin to the `file://` app
-  page — combined with `sandbox="allow-scripts"` the view is fully
-  isolated while postMessage keeps working.
-- The token is the per-launch loopback bearer (renderer already holds
-  it; loopback-only, never logged with the path).
-- Path safety: resolved file must stay inside the extension dir.
+Built-ins ship in the app bundle (`extensions/packages/`): they are app
+content, not downloads. A user install with the same `name` shadows the
+built-in (shown as "built-in · updated by user copy") — that is how
+built-in remote tools get updated without an app release.
 
 ## 7. MAS stance
 
-- No in-app store, no auto-download. Installs are explicit user-folder
-  gestures (same pattern as selecting an SSH key file).
-- Review-notes line stays true: "extensions are user-installed local
-  packages; no code is downloaded and executed automatically."
+- No store, no auto-download, installs are user-folder gestures.
+- No extension code executes locally **except** type-C agent binaries
+  in non-MAS builds (explicitly user-installed, explicitly started).
+  The MAS build omits that channel entirely — the review-notes sentence
+  stays literally true for the MAS binary.
 
-## 8. Feasibility checks (validated by the v1 spike)
+## 8. Evolution discipline
 
-- sandboxed iframe served from the loopback hub renders and postMessages
-  the parent (`examples/hello-ext` view)
-- bridge round-trip: view → renderer → hub API → response
-- tool path: `main.py` deployed and invoked on a remote host via the
-  exec pool, JSON in/out
+Every new extension kind = **one new explicit channel/capability**,
+added deliberately and gated in the manifest. Never open a generic
+hole. Queued examples:
 
-## 9. Migration plan
+- `net.connect` — view-side network via hub relay (enables noVNC-style
+  remote-desktop extensions)
+- browser-automation — a local-exec agent driving a bundled browser
+  (heavy; only when a real use case lands)
 
-1. This spec + `examples/hello-ext` end-to-end (the spike).
-2. Registry + Extensions page + bridge + tool proxy.
-3. Register **todos** and **skills** as built-ins (navigation entries).
-4. Later: true iframe-ization of todos (simplest), then skills.
+## 9. Current status
+
+- v1 (shipped in 0.2.4): types A + B, registry, Extensions page,
+  hello-ext sample, bridge read APIs + ext.call.
+- Post-0.2.4 (in tree): native built-in entries (skills / todos /
+  agent-doctor), `mounts: [agent]` + agent console Ext▾ menu,
+  per-agent bridge reads (`app.context`, cron, workspace), tar/tgz
+  package install, built-in shadowing.
+- v2 (this spec): type C channel + `agents.start` — **pending
+  implementation** (next mainline task).
