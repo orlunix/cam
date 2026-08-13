@@ -3454,7 +3454,6 @@ def cmd_status(args):
             return
         prompt = _tf(a, "prompt") or ""
         prompt_display = prompt[:80] + "..." if len(prompt) > 80 else prompt or "(interactive)"
-        alive = tmux_session_exists(_sf(a, "tmux_session"))
         # Session ID info
         sid = a.get("session_id", "")
         session_file_info = None
@@ -3493,7 +3492,6 @@ def cmd_status(args):
             ("Prompt", prompt_display),
             ("System", sp_display),
             ("Auto-exit", "ON" if _tf(a, "auto_exit") else None),
-            ("Alive", _c("alive", "green") if alive else _c("dead", "red")),
         ]
         print_detail(pairs, title="Agent: %s" % a.get("id", "?"), border_style="green")
         return
