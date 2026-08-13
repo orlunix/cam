@@ -19,6 +19,7 @@ import { mountSkillsMode } from './skills-mode.js?v=0.64.0';
 import { mountBotsMode } from './bots-mode.js?v=0.64.0';
 import { mountTodosMode } from './todos-mode.js?v=0.65.0';
 import { mountExtensionsMode } from './extensions-mode.js?v=0.68.0';
+import { mountAgentDoctorMode } from './agent-doctor-mode.js?v=0.68.0';
 import { mountDiagnosticsMode } from './diagnostics-mode.js?v=0.65.1';
 
 const POLL_INTERVAL_MS = 5000;
@@ -32,8 +33,12 @@ const PROFILE_KIND_KEY = 'cam_profile_kind';
 // UNFINISHED-HIDDEN markers). setMode() and cold-start mode restore coerce
 // these to DEFAULT_MODE, so stale localStorage can't activate a hidden mode.
 // Re-enable: delete from HIDDEN_MODES + remove `hidden` on the nav buttons.
-const HIDDEN_MODES = new Set(['bots', 'todos']);
-const MODES = ['agents', 'settings', 'start', 'nodes', 'skills', 'bots', 'todos']
+// todos: reachable via the Extensions built-in entry (native: todos) —
+// its nav button stays hidden; only bots remains fully blocked.
+const HIDDEN_MODES = new Set(['bots']);
+// agent-doctor: no nav button — reached only via the agent console Ext
+// menu or Extensions → Open (native page of the agent-doctor extension).
+const MODES = ['agents', 'settings', 'start', 'nodes', 'skills', 'extensions', 'bots', 'todos', 'agent-doctor']
   .filter(m => !HIDDEN_MODES.has(m));
 const DEFAULT_MODE = 'agents';
 
@@ -317,8 +322,10 @@ function handleEvent(event) {
 /* ────────── Mode host ────────── */
 
 // Modes that survive a page reload. Derived from MODES so hidden unfinished
-// modes (HIDDEN_MODES above) are never persisted or restored.
-const PERSISTENT_MODES = new Set(MODES);
+// modes (HIDDEN_MODES above) are never persisted or restored. agent-doctor
+// is excluded: it is an entry-point page (needs a bound agent), so a reload
+// lands on the default mode instead.
+const PERSISTENT_MODES = new Set(MODES.filter(m => m !== 'agent-doctor'));
 
 function setMode(next) {
   if (!MODES.includes(next)) next = DEFAULT_MODE;
@@ -497,6 +504,7 @@ async function init() {
   mountBotsMode({ api, state, showToast });
   mountTodosMode({ api, state, showToast });
   mountExtensionsMode({ api, state, showToast, setMode });
+  mountAgentDoctorMode({ api, state, showToast, setMode });
 
   // First connection attempt.
   //
