@@ -129,6 +129,10 @@ contextBridge.exposeInMainWorld('CamBridge', {
     saveText(opts) {
       return ipcRenderer.invoke('files:saveText', opts || {});
     },
+    // Save-dialog + write bytes from base64 (Browse workspace download).
+    saveFile(opts) {
+      return ipcRenderer.invoke('files:saveFile', opts || {});
+    },
     readClipboardText() {
       return ipcRenderer.invoke('files:readClipboardText');
     },
