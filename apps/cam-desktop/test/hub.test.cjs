@@ -461,7 +461,8 @@ async function main() {
 
     setRemoteHandler(null);
 
-    // /ext/ view serving: token-in-query auth + path containment.
+    // /ext/ view serving: query token is the VIEW token (separate from
+    // the API token so a hostile view cannot escalate to /api/*).
     const rawGet = (p) => new Promise((resolve, reject) => {
       const u = new URL(p, _base);
       http.get({ hostname: u.hostname, port: u.port, path: u.pathname + u.search }, (res) => {
@@ -470,11 +471,16 @@ async function main() {
         res.on('end', () => resolve({ status: res.statusCode, text: buf }));
       }).on('error', reject);
     });
-    let ev = await rawGet('/ext/hello-ext/index.html?token=' + encodeURIComponent(_token));
+    let vt = await request('GET', '/api/extensions/view-token');
+    const viewToken = vt.body && vt.body.token;
+    ok('ext: view-token endpoint returns a token', !!viewToken && viewToken !== _token);
+    let ev = await rawGet('/ext/hello-ext/index.html?token=' + encodeURIComponent(viewToken));
     ok('ext: view served over hub', ev.status === 200 && /Hello Extension/.test(ev.text));
+    ev = await rawGet('/ext/hello-ext/index.html?token=' + encodeURIComponent(_token));
+    eq('ext: API token refused for views', ev.status, 401);
     ev = await rawGet('/ext/hello-ext/index.html');
     eq('ext: view requires token', ev.status, 401);
-    ev = await rawGet('/ext/hello-ext/..%2F..%2Fmanifest.yaml?token=' + encodeURIComponent(_token));
+    ev = await rawGet('/ext/hello-ext/..%2F..%2Fmanifest.yaml?token=' + encodeURIComponent(viewToken));
     ok('ext: path traversal refused', ev.status === 400 || ev.status === 404);
     ev = await rawGet('/ext/client.js');
     ok('ext: bridge client is public', ev.status === 200 && /camExt/.test(ev.text));

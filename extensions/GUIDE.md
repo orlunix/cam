@@ -22,8 +22,12 @@ Two halves, both optional, each doing what it is best at:
 - **tool** (main.py) — remote work. Runs on the user's SSH hosts, not
   on the machine running the app.
 
-If you need neither heavy UI nor remote work, you probably want a
-native app feature, not an extension.
+First-party built-ins have a third option: declare `native: <mode>` and
+the view is a **built-in app page** (like Skills) instead of an iframe —
+the package then carries no `index.html`, only the remote tool. Use this
+when the UI needs full app integration; the trade-off is that view
+changes need an app release, while the tool (`main.py`) stays updatable
+via a same-name user install.
 
 ## 2. manifest.yaml
 
@@ -31,6 +35,9 @@ native app feature, not an extension.
 name: my-ext          # [a-z0-9-]{1,32} — becomes the install dir name
 version: 0.1.0
 title: My Tool        # shown in the Extensions page
+native: my-mode       # built-ins only: view is a native app page (no .html)
+mounts:
+  - agent             # also list in the agent page Ext▾ menu (per-agent)
 capabilities:
   - exec              # only if you actually call main.py
   - files:read        # only if you read remote files
@@ -42,6 +49,9 @@ Rules of thumb:
   enforced by the bridge; over-declaring erodes trust.
 - Keep `name` stable forever — installs replace by name, and the remote
   deploy dir is `$HOME/.cam/extensions/<name>/`.
+- Add `mounts: [agent]` when the extension works on one agent (read its
+  binding via `camExt.call('app.context')`; native pages receive the
+  agent through their open handoff).
 
 ## 3. The view (index.html)
 
@@ -53,6 +63,9 @@ Rules of thumb:
   const agents   = await camExt.call('agents.list');
   const ctxs     = await camExt.call('contexts.list');
   const text     = await camExt.call('agents.capture', { id, lines: 200 });
+  const ctx      = await camExt.call('app.context');                    // per-agent binding
+  const prompt   = await camExt.call('agents.workspaceRead', { path: 'AGENTS.md' });
+  const cron     = await camExt.call('agents.cronJobs');
   const result   = await camExt.call('ext.call', { context, method, args });   // needs exec
   const listing  = await camExt.call('files.read', { context, path });         // needs files:read
   ```
@@ -94,14 +107,16 @@ JSON contract, and error shapes wired.
 ## 6. Distribution
 
 Zip the folder, share it; the recipient unpacks and installs the
-folder. There is no store and no auto-download (MAS constraint,
-SPEC §7).
+folder (`.tar.gz` / `.tgz` / `.tar` packages install directly). There
+is no store and no auto-download (MAS constraint, SPEC §7).
 
 ## 7. Common pitfalls
 
 - **Multiple .html / .py files** with neither `index.html` nor
   `main.py` → `view_ambiguous` / `tool_ambiguous`. Keep one entry of
   each kind.
+- **`native:` + index.html** → `invalid_native`. A native extension's
+  UI is app code; the package ships no view.
 - **Absolute paths or URLs** in index.html → break under the sandbox.
   Use relative paths.
 - **Thinking the tool runs locally.** It never does. Test on a real

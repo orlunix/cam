@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src *;">
+    content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src *; frame-src http://127.0.0.1:* http://localhost:*;">
   <title>CAM Desktop</title>
   <meta name="cam-version" content="v0.64.0">
   <link rel="icon" href="assets/icon-192.png">
@@ -62,7 +62,9 @@
           <span class="mode-nav-icon">&#9635;</span>
           <span class="mode-nav-label">Nodes</span>
         </button>
-        <button class="mode-nav-btn" data-mode="skills" aria-pressed="false">
+        <!-- Skills 降级为 Extensions 的内置扩展（native: skills）——
+             导航入口隐藏，页面保留，从 Extensions 页 Open 进入。 -->
+        <button class="mode-nav-btn" data-mode="skills" aria-pressed="false" hidden>
           <span class="mode-nav-icon">&#9734;</span>
           <span class="mode-nav-label">Skills</span>
         </button>
@@ -77,9 +79,8 @@
           <span class="mode-nav-icon">&#9670;</span>
           <span class="mode-nav-label">Bots</span>
         </button>
-        <!-- UNFINISHED-HIDDEN(todos): Todos mode hidden pending completion.
-             Also blocked in web/js/desktop/app.js (HIDDEN_MODES). See
-             apps/cam-desktop/FIXES-UNFINISHED-UI.md. -->
+        <!-- Todos 导航入口隐藏（降级为 Extensions 的内置扩展入口），
+             但模式本身已启用 —— Extensions 页 Open 可进入。 -->
         <button class="mode-nav-btn" data-mode="todos" aria-pressed="false" hidden>
           <span class="mode-nav-icon">&#9745;</span>
           <span class="mode-nav-label">Todos</span>
@@ -191,6 +192,11 @@
               <button type="button" class="output-mode-btn" data-mode="rich"  aria-pressed="false">Rich</button>
               <button type="button" class="output-mode-btn" data-mode="terminal" aria-pressed="false" title="Interactive attach via SSH">Terminal</button>
               <button type="button" class="output-mode-btn" data-mode="browse"   aria-pressed="false" title="Browse the agent's workspace (read-only)">Browse</button>
+            </div>
+            <div class="agent-ext-wrap">
+              <button type="button" class="output-mode-btn" id="agent-ext-btn"
+                title="Open an extension for this agent">Ext&#9662;</button>
+              <div class="agent-ext-menu" id="agent-ext-menu" hidden></div>
             </div>
           </div>
         </div>
@@ -420,6 +426,8 @@
               <div class="agent-browse-preview-header">
                 <span class="agent-browse-preview-name" id="agent-browse-preview-name">No file selected</span>
                 <span class="agent-browse-preview-size" id="agent-browse-preview-size"></span>
+                <button type="button" class="output-mode-btn" id="agent-browse-download"
+                        title="Download this file" hidden>Download</button>
                 <div class="agent-browse-preview-mode-toggle"
                      id="agent-browse-preview-mode-toggle"
                      role="group" aria-label="Markdown view mode" hidden>
@@ -955,7 +963,7 @@
 
       <!-- Skills workspace (CAM-DESK-SKILLM-010..014) -->
       <section class="mode-panel" id="mode-extensions" data-mode="extensions" hidden>
-        <div class="settings-header">
+        <div class="settings-header ext-page-header">
           <h2>Extensions</h2>
           <p class="settings-help">
             Install local extension folders (manifest.yaml + optional index.html / main.py).
@@ -964,13 +972,17 @@
         </div>
         <div class="ext-toolbar">
           <button type="button" class="btn-secondary" id="ext-install-btn">Install from folder&hellip;</button>
+          <button type="button" class="btn-secondary" id="ext-install-pkg-btn">Install package&hellip;</button>
         </div>
         <div id="ext-list" class="ext-list"><div class="empty-state">Loading&hellip;</div></div>
         <div class="settings-status" id="ext-status" aria-live="polite"></div>
         <div id="ext-view-wrap" class="ext-view-wrap" hidden>
-          <div class="ext-view-header">
-            <span id="ext-view-title"></span>
-            <button type="button" class="btn-sm btn-secondary" id="ext-view-close">Close</button>
+          <div class="settings-header ext-view-header">
+            <button type="button" class="btn-secondary" id="ext-view-close">&larr; Back</button>
+            <div class="agent-settings-heading">
+              <h2 id="ext-view-title"></h2>
+              <p class="settings-help" id="ext-view-subtitle"></p>
+            </div>
           </div>
           <div id="ext-view-host" class="ext-view-host"></div>
         </div>
@@ -1162,18 +1174,37 @@
         <div class="todos-workbench"><div class="empty-state">Loading Todos&hellip;</div></div>
       </section>
 
+      <!-- Agent Doctor: native page for the agent-doctor extension
+           (extensions/packages/agent-doctor carries only main.py, the
+           remote collector). Reached via the agent console Ext menu or
+           Extensions -> Open; there is intentionally no nav button. -->
+      <section class="mode-panel" id="mode-agent-doctor" data-mode="agent-doctor" hidden>
+        <div class="settings-header doctor-header">
+          <div class="agent-settings-heading">
+            <h2 id="doctor-title">Agent Doctor</h2>
+            <p class="settings-help" id="doctor-subtitle">Harness health check: system prompt, memory, skills, MCP, cron.</p>
+          </div>
+          <button type="button" class="btn-secondary" id="doctor-back">&larr; Back</button>
+        </div>
+        <div class="doctor-workbench">
+          <section class="skills-card">
+            <div class="skills-card-head">
+              <h3>Check target</h3>
+              <button type="button" class="btn-primary" id="doctor-run">Run check</button>
+            </div>
+            <div class="skills-inline-fields doctor-target-fields">
+              <label for="doctor-agent">Agent</label>
+              <select id="doctor-agent"></select>
+            </div>
+            <div class="settings-status" id="doctor-status" aria-live="polite"></div>
+          </section>
+          <div id="doctor-report" class="doctor-report"></div>
+        </div>
+      </section>
+
     </main>
   </div>
 
   <script type="module" src="js/desktop/app.js?v=0.66.1"></script>
 </body>
 </html>
-
-/* A scrolling flex column must not shrink its content cards to avoid
- * overflow. Otherwise Advanced is visually clipped while the outer form
- * never gains scrollable height. Keep direct page blocks at natural size;
- * the page body owns the overflow. */
-#mode-start > #start-form > *,
-#mode-settings .settings-tab-panel > .settings-form-pane > * {
-  flex: 0 0 auto;
-}

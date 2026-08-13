@@ -17,6 +17,10 @@
  */
 
 import { bumpUserActivity } from './shell.js?v=0.64.0';
+import { mountExtView } from '../shared/ext-view-host.js';
+import { installExtBridge } from '../shared/ext-bridge.js';
+import { openExtensionView } from './extensions-mode.js?v=0.68.0';
+import { setDoctorAgent } from './agent-doctor-mode.js?v=0.68.0';
 
 function escapeHtml(s) {
   const d = document.createElement('div');
@@ -1237,7 +1241,7 @@ export function nextOutputHistoryState(lines = OUTPUT_HISTORY_INITIAL_LINES, ful
   return { lines: current, full: true };
 }
 
-export function mountAgentConsole({ api, state, showToast }) {
+export function mountAgentConsole({ api, state, showToast, setMode }) {
   const titleEl = document.getElementById('agent-header-title');
   const metaEl = document.getElementById('agent-header-meta');
   const outputEl = document.getElementById('agent-output');
@@ -1252,6 +1256,63 @@ export function mountAgentConsole({ api, state, showToast }) {
   const browsePreviewBodyEl       = document.getElementById('agent-browse-preview-body');
   const browsePreviewMdEl         = document.getElementById('agent-browse-preview-md');
   const browseMdToggleEl          = document.getElementById('agent-browse-preview-mode-toggle');
+  const browseDownloadBtn         = document.getElementById('agent-browse-download');
+  const extBtn                    = document.getElementById('agent-ext-btn');
+  const extMenu                   = document.getElementById('agent-ext-menu');
+
+  // The bridge listener must live before ANY extension view opens —
+  // not only when the Extensions page mounted. Without it, a view
+  // opened straight from the agent page (Ext▾) posts bridge calls into
+  // the void and the view hangs at "loading…" (idempotent install).
+  installExtBridge(api);
+
+  // Per-agent extensions (mounts: [agent]): the Ext▾ menu lists agent
+  // extensions. Native ones (agent-doctor) open their built-in page with
+  // the agent handed off; view ones go to the unified dedicated
+  // extension page (Extensions mode) with Back returning here.
+  function openAgentExtension(ext) {
+    const a = selectedAgent && selectedAgent();
+    if (!a) return;
+    if (ext.native) {
+      if (ext.native === 'agent-doctor') setDoctorAgent(a, { returnTo: 'agents' });
+      if (typeof setMode === 'function') setMode(ext.native);
+      return;
+    }
+    if (typeof setMode === 'function') setMode('extensions');
+    openExtensionView(ext, {
+      bindContext: { agentId: a.id, contextName: a.context_name || '' },
+      returnTo:    'agents',
+    });
+  }
+  if (extBtn && extMenu) {
+    extBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!extMenu.hidden) { extMenu.hidden = true; return; }
+      let exts = [];
+      try {
+        const r = await api.listExtensions();
+        exts = ((r && r.extensions) || []).filter(x => x.enabled !== false && (x.hasView || x.native) && (x.mounts || []).includes('agent'));
+      } catch (_) {}
+      extMenu.innerHTML = exts.length
+        ? exts.map((x, i) => `<button type="button" class="agent-ext-item" data-i="${i}">${escapeHtml(x.title || x.name)}</button>`).join('')
+        : '<div class="agent-ext-empty">No agent extensions (mounts: agent)</div>';
+      extMenu.querySelectorAll('.agent-ext-item').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const x = exts[Number(btn.dataset.i)];
+          extMenu.hidden = true;
+          if (x) openAgentExtension(x);
+        });
+      });
+      extMenu.hidden = false;
+      const closer = (ev) => {
+        if (!extMenu.contains(ev.target) && ev.target !== extBtn) {
+          extMenu.hidden = true;
+          document.removeEventListener('click', closer);
+        }
+      };
+      setTimeout(() => document.addEventListener('click', closer), 0);
+    });
+  }
   const browseMdToggleBtns        = browseMdToggleEl
     ? browseMdToggleEl.querySelectorAll('.agent-browse-md-btn')
     : [];
@@ -2505,7 +2566,12 @@ export function mountAgentConsole({ api, state, showToast }) {
     return true;
   }
 
-  function setMode(next) {
+  // Output-mode switcher (plain/rich/terminal/browse). MUST NOT be named
+  // `setMode`: mountAgentConsole receives the app-level page-mode setter
+  // as the `setMode` parameter, and a same-named function declaration
+  // would hoist and shadow it — silently breaking every page navigation
+  // from this module (this bug killed the Ext▾ menu for weeks).
+  function setOutputMode(next) {
     if (next !== 'plain' && next !== 'rich' && next !== 'terminal' && next !== 'browse') next = OUTPUT_MODE_DEFAULT;
     // CAM-DESK-TERM-DEFAULT: terminal is always selectable. When not
     // attachable (no Direct bridge), we still switch to the terminal
@@ -2593,7 +2659,7 @@ export function mountAgentConsole({ api, state, showToast }) {
   }
 
   modeBtns.forEach(b => {
-    b.addEventListener('click', () => setMode(b.dataset.mode));
+    b.addEventListener('click', () => setOutputMode(b.dataset.mode));
   });
 
   function selectAgent(agentId) {
@@ -4079,6 +4145,43 @@ export function mountAgentConsole({ api, state, showToast }) {
     browsePreviewBodyEl.dataset.lang = browseLastLang;
   }
 
+  // Download the currently-previewed file to disk (any file type).
+  // Text comes back as utf-8 (encode here), binary as base64 — the
+  // saveFile IPC writes raw bytes either way.
+  if (browseDownloadBtn) {
+    browseDownloadBtn.addEventListener('click', async () => {
+      const agent = selectedAgent();
+      const f = browseLastFile;
+      if (!agent || !f) return;
+      const files = (typeof window !== 'undefined' && window.CamBridge && window.CamBridge.files) || null;
+      if (!files || typeof files.saveFile !== 'function') {
+        browseSetStatus('Download requires the Desktop file dialog', 'error');
+        return;
+      }
+      browseDownloadBtn.disabled = true;
+      browseSetStatus(`Downloading ${f.name}…`);
+      try {
+        const data = await api.agentReadWorkspaceFile(agent.id, f.path);
+        const b64 = data && data.binary
+          ? String(data.content || '')
+          : (() => { const b = new TextEncoder().encode(String((data && data.content) || '')); let s = ''; for (const x of b) s += String.fromCharCode(x); return btoa(s); })();
+        const r = await files.saveFile({ title: 'Download file', defaultName: f.name, contentBase64: b64 });
+        if (r && r.ok) {
+          browseSetStatus(`Downloaded ${f.name} (${browseFormatSize(r.bytes || 0)}) → ${r.path}`, 'ok');
+          showToast(`Downloaded ${f.name}`, 'success');
+        } else if (r && r.error && !r.canceled) {
+          browseSetStatus(`Download failed: ${r.detail || r.error}`, 'error');
+        } else {
+          browseSetStatus('');
+        }
+      } catch (e) {
+        browseSetStatus(`Download failed: ${(e && e.message) || e}`, 'error');
+      } finally {
+        browseDownloadBtn.disabled = false;
+      }
+    });
+  }
+
   async function browseOpenFile(name) {
     const agent = selectedAgent();
     if (!agent) return;
@@ -4086,6 +4189,7 @@ export function mountAgentConsole({ api, state, showToast }) {
     browseLastFile    = { path: full, name };
     browseLastContent = null;
     browseLastLang    = browseLanguageFromName(name);
+    if (browseDownloadBtn) browseDownloadBtn.hidden = false;
     if (browsePreviewNameEl) browsePreviewNameEl.textContent = name;
     if (browsePreviewSizeEl) browsePreviewSizeEl.textContent = '';
     if (browsePreviewBodyEl) {
@@ -4109,7 +4213,7 @@ export function mountAgentConsole({ api, state, showToast }) {
         if (browsePreviewBodyEl) {
           browsePreviewBodyEl.innerHTML = '';
           browsePreviewBodyEl.textContent =
-            `[binary file, ${browseFormatSize(size)}]\n(preview is hidden — Browse is read-only and does not download binaries)`;
+            `[binary file, ${browseFormatSize(size)}]\n(preview hidden — use Download to save it)`;
         }
         return;
       }
