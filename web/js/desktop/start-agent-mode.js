@@ -247,14 +247,19 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   function applyApiSupport() {
     const tool = toolSel.value;
     const support = (apiModelsCache && apiModelsCache.toolSupport) || TOOL_API_SUPPORT_STATIC;
-    const supported = support[tool] !== false;
+    // API selection is Claude-only for now: the api-proxy/profile path
+    // is verified against Anthropic-compatible endpoints; other tools
+    // with a custom API misbehave, so the section is gated off.
+    const supported = tool === 'claude' && support[tool] !== false;
     if (apiSectionEl) apiSectionEl.hidden = !supported;
     if (apiListBtn) apiListBtn.disabled = !supported;
     if (apiInputEl) apiInputEl.disabled = !supported;
     if (apiHintEl && supported) {
       apiHintEl.innerHTML = 'Lists profiles on the selected context/node via <code>camc --json api list --all</code>. Click a result to fill <code>--api</code>.';
     } else if (apiHintEl) {
-      apiHintEl.textContent = `Tool "${tool}" does not support --api selection.`;
+      apiHintEl.textContent = tool !== 'claude'
+        ? 'API selection is currently supported for Claude only.'
+        : `Tool "${tool}" does not support --api selection.`;
     }
   }
 

@@ -1592,7 +1592,9 @@ function mountNodesActions({
     }
     setTimeout(() => {
       if (initialSubtab === 'manual') {
-        if (fNodeName && isAddHostMode()) fNodeName.focus();
+        // Add Host: land the cursor on Host (the required field), not
+        // the optional node name.
+        if (isAddHostMode() && fHost) fHost.focus();
         else if (fName) fName.focus();
       }
     }, 0);
@@ -2102,13 +2104,13 @@ function mountNodesActions({
       setAddStatus(
         mobileForm
           ? `Saved "${name}" locally. Connect in Settings when you need agents.`
-          : `Added "${name}".`,
+          : `Added "${name}" — expand the node card and click Sync Host to import its agents.`,
         'is-ok',
       );
       showToast(
         mobileForm
           ? `Node "${name}" saved (${user}@${host}:${port})`
-          : `Host "${user}@${host}:${port}" added (initial context "${name}")`,
+          : `Host "${user}@${host}:${port}" added — expand the card and Sync Host`,
         'success',
       );
       try { await loadContextsAndAdapters(); } catch (_) {}
