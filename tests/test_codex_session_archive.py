@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import io
+import inspect
 import json
 import os
 import tarfile
@@ -17,6 +18,17 @@ from camc_pkg.storage import AgentStore
 
 UUID = "019f6919-3328-7d53-bc32-71523711d9ae"
 STARTED = "2026-08-05T10:00:00Z"
+
+
+def test_iso_parser_is_python36_compatible():
+    source = inspect.getsource(cli._parse_iso_timestamp)
+    assert "datetime.fromisoformat" not in source
+    assert cli._parse_iso_timestamp(
+        "2026-08-13T23:09:30.975Z").isoformat() == (
+            "2026-08-13T23:09:30.975000+00:00")
+    assert cli._parse_iso_timestamp(
+        "2026-08-13T16:09:30-07:00").isoformat() == (
+            "2026-08-13T23:09:30+00:00")
 
 
 def _make_rollout(tmp_path, *, cwd, session_id=UUID):
