@@ -130,8 +130,6 @@ def test_unknown_tool_run_keeps_monitor_but_disables_automation(tmp_path, monkey
         api = None
         no_default_api = True
         api_token = None
-        no_api_proxy = False
-        proxy_debug = False
 
     Args.tool_dir = str(tool_dir)
     Args.tool_env = ["TOOL_MODE=review", "PATH=/custom/bin:${PATH}"]

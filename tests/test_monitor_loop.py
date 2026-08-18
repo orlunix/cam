@@ -259,7 +259,7 @@ def screen_false_positive():
 # ---------------------------------------------------------------------------
 
 def run_monitor_steps(screens, store=None, config=None, auto_exit=False,
-                      session_alive=True, max_cycles=None):
+                      session_alive=True, max_cycles=None, proxy_stops=None):
     """Run monitor loop with mocked transport. Returns (store, events).
 
     Uses a fake clock so that timer-based logic (health check, confirm cooldown,
@@ -272,6 +272,8 @@ def run_monitor_steps(screens, store=None, config=None, auto_exit=False,
         config = make_config()
     if store is None:
         store = MockStore(auto_exit=auto_exit)
+    if proxy_stops is None:
+        proxy_stops = []
     events = MockEvents()
 
     seq = ScreenSequence(screens)
@@ -322,11 +324,14 @@ def run_monitor_steps(screens, store=None, config=None, auto_exit=False,
          patch("camc_pkg.monitor.time.sleep", side_effect=mock_sleep), \
          patch("camc_pkg.monitor.time.time", side_effect=mock_time), \
          patch("camc_pkg.monitor.signal.signal", side_effect=mock_signal):
-        try:
-            run_monitor_loop("test-session", "test-001", config, store,
-                             events=events)
-        except StopIteration:
-            pass
+        with patch("camc_pkg.monitor.stop_agent_api_proxy",
+                   side_effect=lambda agent: proxy_stops.append(agent),
+                   create=True):
+            try:
+                run_monitor_loop("test-session", "test-001", config, store,
+                                 events=events)
+            except StopIteration:
+                pass
 
     return store, events
 
@@ -353,6 +358,14 @@ class TestStep1HealthCheck:
         screens = [screen_idle()]
         store, events = run_monitor_steps(screens, session_alive=False)
         assert store.last_status == "completed"
+
+    def test_session_gone_reclaims_its_owned_api_proxy(self):
+        stops = []
+        store = MockStore()
+        store.agent["api"] = {"proxy_pid": 123, "proxy_port": 456}
+        run_monitor_steps([screen_empty()], store=store, session_alive=False,
+                          proxy_stops=stops)
+        assert stops == [store.agent]
 
 
 def test_monitor_records_custom_tool_exit_without_killing_tmux(tmp_path):
@@ -532,10 +545,14 @@ class TestStep8AutoExit:
     def test_auto_exit_enabled_when_armed(self):
         screens = [screen_idle()] * 20
         store = MockStore(auto_exit=True, auto_exit_enable=True)
-        store, events = run_monitor_steps(screens, store=store, max_cycles=30)
+        store.agent["api"] = {"proxy_pid": 123, "proxy_port": 456}
+        stops = []
+        store, events = run_monitor_steps(
+            screens, store=store, max_cycles=30, proxy_stops=stops)
         assert store.last_status == "completed"
         completed = events.of_type("completed")
         assert any(e["detail"].get("reason") == "auto-exit" for e in completed)
+        assert stops == [store.agent]
 
     def test_auto_exit_requires_safety_arm(self):
         screens = [screen_idle()] * 80
