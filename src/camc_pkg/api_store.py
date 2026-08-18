@@ -7,72 +7,197 @@ import time
 import urllib.error
 import urllib.request
 
-from camc_pkg import CAM_DIR, LOGS_DIR
-from camc_pkg.api_metadata import sync_metadata_in_data
+from camc_pkg import CAM_DIR
+from camc_pkg.api_metadata import (
+    normalize_available_endpoints,
+    normalize_reasoning_profile,
+    sync_metadata_in_data,
+)
 
 API_MODELS_FILE = os.path.join(CAM_DIR, "api-models.json")
-PROXY_RUNS_FILE = os.path.join(CAM_DIR, "proxy-runs.json")
 TOKEN_ENV_FILE = os.path.join(CAM_DIR, "token.env")
 
 DEFAULT_PROVIDER = "inference-hub"
-IHUB_BASE = "https://inference-api.nvidia.com/v1"
+IHUB_BASE = "https://inference-api.nvidia.com"
+API_SCHEMA_VERSION = "1.0.5"
 
-# Provider templates (copy into providers/apis — not active until referenced).
-PROVIDER_TEMPLATES = {
-    "openai-chat-gateway": {
-        "display_name": "OpenAI Chat Completions gateway",
-        "auth_key": "openai_gateway",
-        "env_names": ["OPENAI_API_KEY", "OPENAI_GATEWAY_API_KEY"],
-        "base_url": "https://llm.example.com/v1",
-        "upstream_protocol": "openai_chat_completions",
-        "translator": "embedded",
-        "catalog_path": "/models",
-        "endpoints": {
-            "openai_chat_completions": "/chat/completions",
-        },
-    },
-    "anthropic-direct": {
-        "display_name": "Native Anthropic Messages API",
-        "auth_key": "anthropic",
-        "env_names": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
-        "base_url": "https://api.anthropic.com",
-        "upstream_protocol": "anthropic_messages",
-        "translator": "direct",
-        "catalog_path": "/v1/models",
-        "endpoints": {
-            "anthropic_messages": "/v1/messages",
-        },
-    },
-    "cc-switch": {
-        "display_name": "CC Switch local routing",
-        "auth_key": "cc_switch",
-        "env_names": ["CC_SWITCH_API_KEY", "OPENAI_API_KEY"],
-        "base_url": "http://127.0.0.1:15721",
-        "client_base_url": "http://127.0.0.1:15721",
-        "upstream_protocol": "anthropic_messages",
-        "translator": "external",
-        "external_translator": True,
-        "catalog_path": "",
-        "endpoints": {
-            "anthropic_messages": "",
-        },
-    },
-}
+# Kimi K3 is now one model/profile.  The phase-specific names remain only as
+# migration aliases so an existing default or explicit command keeps working.
+KIMI_K3_KEY = "kimi-k3"
+LEGACY_KIMI_K3_PROFILES = ("kimi-k3-low", "kimi-k3-high", "kimi-k3-max")
 
 CURATED_APIS = [
-    ("glm-5.2", "nvidia/zai-org/eccn-glm-5.2", ["glm", "glm52", "glm51", "glm-5.1"]),
+    ("glm-5.2", "nvidia/zai-org/eccn-glm-5.2", ["glm", "glm52"]),
+    ("deepseek-v4-flash", "nvidia/deepseek-ai/eccn-deepseek-v4-flash", ["deepseek-flash", "ds-v4-flash"]),
     ("deepseek-v4-pro", "nvidia/deepseek-ai/eccn-deepseek-v4-pro", ["deepseek", "ds-v4"]),
     ("kimi-k2.6", "nvidia/moonshotai/eccn-kimi-k2.6", ["kimi", "k2.6"]),
-    ("minimax-m3", "nvidia/minimaxai/eccn-minimax-m3", ["minimax", "m3", "m2.7", "minimax-m2.7"]),
+    (KIMI_K3_KEY, "nvidia/moonshotai/eccn-kimi-k3", ["k3"]),
+    ("minimax-m3", "nvidia/minimaxai/eccn-minimax-m3", ["minimax", "m3"]),
     ("qwen3-5-397b", "nvidia/qwen/eccn-qwen3-5-397b-a17b", ["qwen397", "qwen3.5"]),
     ("nemotron-3-ultra", "nvidia/nvidia/eccn-nemotron-3-ultra", ["nemotron", "nemo-ultra"]),
 ]
 
-# Superseded curated profile keys → current key (defaults + api check merge).
-CURATED_LEGACY_MIGRATIONS = {
-    "glm-5.1": "glm-5.2",
-    "minimax-m2.7": "minimax-m3",
+# Endpoint probes against the NVIDIA Inference Hub.  Kimi K3 Max exposes the
+# Messages route but returned empty native content in the verification probe,
+# so it intentionally keeps the completion fallback for Claude.
+CURATED_AVAILABLE_ENDPOINTS = {
+    "glm-5.2": ["completions", "messages", "responses"],
+    "deepseek-v4-flash": ["completions", "messages", "responses"],
+    "deepseek-v4-pro": ["completions", "messages", "responses"],
+    "kimi-k2.6": ["completions", "messages", "responses"],
+    KIMI_K3_KEY: ["completions", "responses"],
+    "minimax-m3": ["completions", "messages", "responses"],
+    "qwen3-5-397b": ["completions", "messages", "responses"],
+    "nemotron-3-ultra": ["completions", "messages", "responses"],
 }
+
+CLAUDE_CLIENT_MODELS = {
+    "deepseek-v4-flash": "claude-haiku-5-dsv4f",
+    "deepseek-v4-pro": "claude-opus-5-dsv4p",
+    "glm-5.2": "claude-sonnet-5-glm52",
+    "kimi-k2.6": "claude-sonnet-5-kimi26",
+}
+
+CURATED_CODEX_REASONING = {
+    "glm-5.2": {
+        "mapping": {
+            "none": "none", "low": "high", "medium": "high",
+            "high": "high", "xhigh": "max", "max": "max",
+        },
+        "default": "high",
+    },
+    KIMI_K3_KEY: {
+        "mapping": {
+            "none": "low", "low": "low", "medium": "high",
+            "high": "high", "xhigh": "max", "max": "max",
+        },
+        "default": "high",
+    },
+}
+
+
+TOOL_SUPPORTED_ENDPOINTS = {
+    "claude": ["messages"],
+    "codex": ["responses"],
+}
+
+TOOL_BASE_URL_SUF = {
+    "claude": "",
+    "codex": "/v1",
+}
+
+
+def _curated_aliases(key, aliases):
+    result = list(aliases)
+    client_model = CLAUDE_CLIENT_MODELS.get(key)
+    if client_model:
+        result.append(client_model)
+    return result
+
+
+def _curated_tool_supported_apis():
+    return {
+        "claude": sorted(CLAUDE_CLIENT_MODELS.values()),
+        "codex": [key for key, _model, _aliases in CURATED_APIS],
+    }
+
+
+def _migrate_legacy_kimi_k3(data):
+    """Collapse retired K3 phase profiles without losing user selections."""
+    apis = data.get("apis")
+    if not isinstance(apis, dict):
+        return
+    legacy = {}
+    for name in LEGACY_KIMI_K3_PROFILES:
+        entry = apis.pop(name, None)
+        if isinstance(entry, dict):
+            legacy[name] = entry
+    if not legacy:
+        return
+
+    current = apis.get(KIMI_K3_KEY)
+    if not isinstance(current, dict):
+        # Prefer the former max profile as the closest match to the unified
+        # model, then fall back to high/low when that is the only record.
+        for name in ("kimi-k3-max", "kimi-k3-high", "kimi-k3-low"):
+            if name in legacy:
+                current = dict(legacy[name])
+                break
+        else:
+            current = {}
+    else:
+        current = dict(current)
+
+    # Preserve useful fields from a phase entry when a hand-edited canonical
+    # record did not have them yet.  Enabled is merged as an OR so an enabled
+    # phase cannot silently turn the unified profile off.
+    for name in ("kimi-k3-max", "kimi-k3-high", "kimi-k3-low"):
+        entry = legacy.get(name) or {}
+        if entry.get("enabled") is True:
+            current["enabled"] = True
+        for field in ("provider", "model", "enabled_reason", "metadata"):
+            if current.get(field) is None and entry.get(field) is not None:
+                current[field] = entry[field]
+
+    hidden_aliases = set(current.get("legacy_aliases") or [])
+    hidden_aliases.update(LEGACY_KIMI_K3_PROFILES)
+    hidden_aliases.update(("k3-low", "k3-high", "k3-max",
+                           "kimi-low", "kimi-high", "kimi-max"))
+    for entry in legacy.values():
+        hidden_aliases.update(
+            alias for alias in (entry.get("aliases") or [])
+            if isinstance(alias, str) and alias.strip()
+        )
+        clients = entry.get("client_models")
+        if isinstance(clients, dict):
+            hidden_aliases.update(
+                value for value in clients.values()
+                if isinstance(value, str) and value.strip()
+            )
+    current["legacy_aliases"] = sorted(hidden_aliases)
+    apis[KIMI_K3_KEY] = current
+
+
+def _canonicalize_k3_references(data):
+    """Replace retired profile names in defaults and tool policy lists."""
+    retired = set(LEGACY_KIMI_K3_PROFILES)
+    for field in ("defaults", "tool_supported_apis"):
+        values = data.get(field)
+        if not isinstance(values, dict):
+            continue
+        for tool, names in list(values.items()):
+            if not isinstance(names, list):
+                continue
+            rewritten = []
+            for name in names:
+                name = KIMI_K3_KEY if name in retired else name
+                if name not in rewritten:
+                    rewritten.append(name)
+            values[tool] = rewritten
+
+
+def _curated_client_models(key, model):
+    models = {"codex": model}
+    if key in CLAUDE_CLIENT_MODELS:
+        models["claude"] = CLAUDE_CLIENT_MODELS[key]
+    return models
+
+
+def _curated_tool_capabilities():
+    # NVIDIA Responses profiles do not accept Codex's tool_search type.
+    # This is durable profile data, not catalog-generator behavior.
+    return {"codex": {"supports_search_tool": False}}
+
+
+def _curated_reasoning(key, value=None):
+    profile = normalize_reasoning_profile(value)
+    curated = CURATED_CODEX_REASONING.get(key)
+    if curated:
+        profile.setdefault("mapping", {}).setdefault(
+            "codex", dict(curated["mapping"]))
+        profile.setdefault("default", {}).setdefault(
+            "codex", curated["default"])
+    return profile
 
 # Tools that may have a per-tool default API (empty = normal OAuth/login).
 DEFAULT_API_TOOLS = ("claude", "codex")
@@ -85,12 +210,14 @@ def _default_seed():
             "provider": DEFAULT_PROVIDER,
             "model": model,
             "enabled": False,
-            "aliases": list(aliases),
+            "aliases": _curated_aliases(key, aliases),
+            "available_endpoints": list(CURATED_AVAILABLE_ENDPOINTS.get(key, [])),
+            "client_models": _curated_client_models(key, model),
+            "tool_capabilities": _curated_tool_capabilities(),
+            "reasoning": _curated_reasoning(key),
         }
-    return {
-        "version": 1,
-        "default": "glm-5.2",
-        "default_provider": DEFAULT_PROVIDER,
+    data = {
+        "version": API_SCHEMA_VERSION,
         "providers": {
             DEFAULT_PROVIDER: {
                 "display_name": "NVIDIA Inference Hub",
@@ -100,21 +227,21 @@ def _default_seed():
                     "INFERENCE_HUB_API_KEY",
                     "INFERENCE_API_KEY",
                 ],
+                "token_file": "~/.my_tokens.yaml",
                 "base_url": IHUB_BASE,
-                "upstream_protocol": "openai_chat_completions",
-                "translator": "embedded",
-                "catalog_path": "/models",
-                "endpoints": {
-                    "openai_chat_completions": "/chat/completions",
-                    "anthropic_messages": "/messages",
-                },
+                "catalog_path": "/v1/models",
             },
         },
         "apis": apis,
-        "_templates": dict(PROVIDER_TEMPLATES),
+        "tool_supported_endpoints": dict(TOOL_SUPPORTED_ENDPOINTS),
+        "tool_base_url_suf": dict(TOOL_BASE_URL_SUF),
+        "tool_supported_apis": _curated_tool_supported_apis(),
+        "debug_api_proxy": False,
         "_aliases": {},
         "_catalog": {},
     }
+    rebuild_aliases(data)
+    return data
 
 
 def load_api_models():
@@ -139,30 +266,71 @@ def save_api_models(data):
 
 
 def merge_curated_apis(data):
-    """Refresh curated IHUB profiles (model ids, aliases) and migrate legacy keys."""
+    """Refresh the managed direct profiles and their endpoint capabilities."""
+    for field in ("default", "default_provider", "_templates"):
+        data.pop(field, None)
+    _migrate_legacy_kimi_k3(data)
+    _canonicalize_k3_references(data)
+    providers = data.setdefault("providers", {})
+    provider = providers.get(DEFAULT_PROVIDER)
+    if not isinstance(provider, dict):
+        providers[DEFAULT_PROVIDER] = dict(_default_seed()["providers"][DEFAULT_PROVIDER])
+    else:
+        provider.setdefault("display_name", "NVIDIA Inference Hub")
+        provider.setdefault("auth_key", "inference_hub")
+        provider.setdefault("env_names", ["INFERENCE_HUB_TOKEN"])
+        provider.setdefault("token_file", "~/.my_tokens.yaml")
+        provider.setdefault("base_url", IHUB_BASE)
+        provider.setdefault("catalog_path", "/v1/models")
+        # The direct schema has no provider-level protocol or endpoint map.
+        for field in ("client_base_url", "upstream_protocol", "translator",
+                      "external_translator", "endpoints"):
+            provider.pop(field, None)
+    for configured in providers.values():
+        if not isinstance(configured, dict):
+            continue
+        for field in ("client_base_url", "upstream_protocol", "translator",
+                      "external_translator", "endpoints", "proxy",
+                      "proxy_port"):
+            configured.pop(field, None)
     apis = data.setdefault("apis", {})
-    curated_keys = set()
     for key, model, aliases in CURATED_APIS:
-        curated_keys.add(key)
         entry = apis.get(key)
         if not isinstance(entry, dict):
             entry = {}
             apis[key] = entry
         entry.setdefault("provider", DEFAULT_PROVIDER)
         entry["model"] = model
-        entry["aliases"] = list(aliases)
+        entry["aliases"] = _curated_aliases(key, aliases)
+        entry["client_models"] = _curated_client_models(key, model)
+        entry["tool_capabilities"] = _curated_tool_capabilities()
         entry.setdefault("enabled", False)
-    for old_key in list(apis.keys()):
-        if old_key in CURATED_LEGACY_MIGRATIONS and old_key not in curated_keys:
-            apis.pop(old_key, None)
-    legacy = data.get("default")
-    if legacy in CURATED_LEGACY_MIGRATIONS:
-        data["default"] = CURATED_LEGACY_MIGRATIONS[legacy]
-    defaults = data.get("defaults")
-    if isinstance(defaults, dict):
-        for tool, name in list(defaults.items()):
-            if name in CURATED_LEGACY_MIGRATIONS:
-                defaults[tool] = CURATED_LEGACY_MIGRATIONS[name]
+        if "available_endpoints" not in entry:
+            entry["available_endpoints"] = list(
+                CURATED_AVAILABLE_ENDPOINTS.get(key, []))
+        else:
+            entry["available_endpoints"] = normalize_available_endpoints(
+                entry.get("available_endpoints"))
+        # Keep this independent from synced metadata. User-authored mappings
+        # survive api check; missing/malformed mappings get a safe candidate
+        # profile without changing the selected API/default.
+        entry["reasoning"] = _curated_reasoning(key, entry.get("reasoning"))
+        for field in ("url", "client_url", "upstream_protocol", "translator",
+                      "proxy", "proxy_port"):
+            entry.pop(field, None)
+    for field, default in (
+            ("tool_supported_endpoints", TOOL_SUPPORTED_ENDPOINTS),
+            ("tool_base_url_suf", TOOL_BASE_URL_SUF),
+            ("tool_supported_apis", _curated_tool_supported_apis())):
+        value = data.get(field)
+        if not isinstance(value, dict):
+            data[field] = dict(default)
+            continue
+        for tool, setting in default.items():
+            value.setdefault(tool, setting)
+    _canonicalize_k3_references(data)
+    if not isinstance(data.get("debug_api_proxy"), bool):
+        data["debug_api_proxy"] = False
     rebuild_aliases(data)
 
 
@@ -170,12 +338,35 @@ def ensure_ready():
     """Create seed file if missing; return data dict."""
     if os.path.isfile(API_MODELS_FILE):
         data = load_api_models()
+        if _api_schema_needs_refresh(data.get("version")):
+            data["version"] = API_SCHEMA_VERSION
         merge_curated_apis(data)
-        save_api_models(data)
+        try:
+            save_api_models(data)
+        except OSError:
+            # Read-only hosts may still use normal login runs.  Keep the
+            # in-memory direct profile usable without making startup fail.
+            pass
         return data
     data = _default_seed()
-    save_api_models(data)
+    try:
+        save_api_models(data)
+    except OSError:
+        # A read-only ~/.cam is valid for login-only operation; API check or
+        # an explicit profile will report persistence/network errors later.
+        pass
     return data
+
+
+def _api_schema_needs_refresh(value):
+    """Return whether an API JSON version is older than the current schema."""
+    if not isinstance(value, str):
+        return True
+    try:
+        version = tuple(int(part) for part in value.split("."))
+    except (TypeError, ValueError):
+        return True
+    return version < tuple(int(part) for part in API_SCHEMA_VERSION.split("."))
 
 
 def rebuild_aliases(data):
@@ -188,6 +379,10 @@ def rebuild_aliases(data):
         aliases[key] = key
         aliases[key.lower()] = key
         for alias in entry.get("aliases") or []:
+            if isinstance(alias, str) and alias.strip():
+                aliases[alias] = key
+                aliases[alias.lower()] = key
+        for alias in entry.get("legacy_aliases") or []:
             if isinstance(alias, str) and alias.strip():
                 aliases[alias] = key
                 aliases[alias.lower()] = key
@@ -230,18 +425,26 @@ def resolve_tool_default_api(data, tool):
     defaults = data.get("defaults")
     if not isinstance(defaults, dict) or tool not in defaults:
         return None
-    return _normalize_default_name(defaults.get(tool))
+    names = defaults.get(tool)
+    if not isinstance(names, list) or not names:
+        return None
+    return _normalize_default_name(names[0])
 
 
 def list_tool_default_apis(data):
     """Return per-tool default status rows for display/CLI."""
     rows = []
     for tool in DEFAULT_API_TOOLS:
-        name = resolve_tool_default_api(data, tool)
+        defaults = data.get("defaults") or {}
+        names = defaults.get(tool) if isinstance(defaults, dict) else []
+        if not isinstance(names, list):
+            names = []
+        name = _normalize_default_name(names[0]) if names else None
         if not name:
             rows.append({
                 "tool": tool,
                 "api": None,
+                "apis": names,
                 "mode": "login",
                 "enabled": None,
                 "reason": None,
@@ -252,6 +455,7 @@ def list_tool_default_apis(data):
         rows.append({
             "tool": tool,
             "api": key,
+            "apis": names,
             "mode": "api",
             "enabled": enabled,
             "reason": entry.get("enabled_reason"),
@@ -260,7 +464,7 @@ def list_tool_default_apis(data):
 
 
 def set_tool_default_api(data, tool, api_name):
-    """Set defaults.<tool> to api_name; sync legacy top-level default for Claude."""
+    """Set the first entry in the ordered defaults.<tool> list."""
     if tool not in DEFAULT_API_TOOLS:
         raise ValueError("unsupported tool %r for default API (use: claude, codex)" % tool)
     key = resolve_api_name(data, api_name)
@@ -268,9 +472,7 @@ def set_tool_default_api(data, tool, api_name):
     if not isinstance(defaults, dict):
         defaults = {}
         data["defaults"] = defaults
-    defaults[tool] = key
-    if tool == "claude":
-        data["default"] = key
+    defaults[tool] = [key]
     save_api_models(data)
     return key
 
@@ -282,8 +484,6 @@ def clear_tool_default_api(data, tool):
     defaults = data.get("defaults")
     if isinstance(defaults, dict) and tool in defaults:
         defaults.pop(tool)
-    if tool == "claude":
-        data.pop("default", None)
     save_api_models(data)
 
 
@@ -300,7 +500,7 @@ def resolve_run_api_name(tool, cli_api=None, no_default_api=False, data=None):
     key, entry = get_api_entry(data, name)
     if entry.get("enabled") is False:
         try:
-            check_provider(data, token_resolver=None)
+            check_provider(data)
         except Exception:
             pass
         key, entry = get_api_entry(data, name)
@@ -318,14 +518,6 @@ def get_provider(data, provider_id):
     if provider_id not in providers:
         raise ValueError("unknown provider %r" % provider_id)
     return dict(providers[provider_id])
-
-
-def upstream_chat_url(data, api_entry, provider):
-    """Legacy name: upstream URL for openai_chat_completions."""
-    from camc_pkg.api_routing import PROTO_OPENAI_CHAT, provider_endpoint_url
-    if api_entry.get("url"):
-        return str(api_entry["url"])
-    return provider_endpoint_url(provider, PROTO_OPENAI_CHAT)
 
 
 def catalog_url(provider):
@@ -371,30 +563,73 @@ def list_apis(data, show_all=False):
         rows.append({
             "name": key,
             "model": entry.get("model", ""),
-            "provider": entry.get("provider", data.get("default_provider")),
+            "provider": entry.get("provider", ""),
             "enabled": enabled,
             "aliases": entry.get("aliases") or [],
+            "available_endpoints": normalize_available_endpoints(
+                entry.get("available_endpoints")),
+            "tools": tools_supporting_api(data, key),
         })
     return rows
 
 
-def _fetch_ihub_model_ids(token, timeout=5.0):
-    """Backward-compat wrapper for IHUB catalog."""
-    provider = {
-        "base_url": IHUB_BASE,
-        "catalog_path": "/models",
-    }
-    return fetch_model_catalog(provider, token, timeout=timeout)
+def tool_api_config(data, tool):
+    """Return JSON-owned endpoint and URL rules for one API-capable tool."""
+    endpoints = (data.get("tool_supported_endpoints") or {}).get(tool)
+    suffix = (data.get("tool_base_url_suf") or {}).get(tool)
+    if not isinstance(endpoints, list) or suffix is None:
+        raise ValueError("API tool %r is not configured" % tool)
+    return normalize_available_endpoints(endpoints), str(suffix or "")
 
 
-def check_provider(data, token_resolver):
+def tool_supports_api(data, tool, api_key):
+    """Whether a profile is allowed for a tool by JSON policy and endpoint."""
+    allowed = (data.get("tool_supported_apis") or {}).get(tool)
+    if not isinstance(allowed, list):
+        return False
+    try:
+        permitted = {resolve_api_name(data, name) for name in allowed}
+    except ValueError:
+        return False
+    if api_key not in permitted:
+        return False
+    entry = (data.get("apis") or {}).get(api_key) or {}
+    endpoints, _suffix = tool_api_config(data, tool)
+    return bool(set(normalize_available_endpoints(
+        entry.get("available_endpoints"))).intersection(endpoints))
+
+
+def tools_supporting_api(data, api_key):
+    return [tool for tool in sorted((data.get("tool_supported_apis") or {}))
+            if tool_supports_api(data, tool, api_key)]
+
+
+def check_provider(data):
     """Ping provider catalog, refresh enabled flags and _catalog."""
     from camc_pkg.api_token import resolve_token
 
-    provider_id = data.get("default_provider") or DEFAULT_PROVIDER
+    providers = data.get("providers") or {}
+    provider_id = DEFAULT_PROVIDER if DEFAULT_PROVIDER in providers else next(
+        iter(sorted(providers)), None)
+    if not provider_id:
+        return {
+            "provider": None,
+            "reachable": False,
+            "token_source": "none",
+            "model_count": 0,
+            "apis": [],
+            "error": "no API providers configured",
+            "catalog_skipped": True,
+        }
     provider = get_provider(data, provider_id)
     auth_key = provider.get("auth_key") or "inference_hub"
-    token, source = resolve_token(auth_key, provider.get("env_names") or [], cli_token=None)
+    token, source = resolve_token(
+        auth_key,
+        provider.get("env_names") or [],
+        cli_token=None,
+        token_file=provider.get("token_file"),
+        token_key=provider.get("token_key"),
+    )
 
     result = {
         "provider": provider_id,

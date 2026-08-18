@@ -660,23 +660,27 @@ _fast_capture_exit = early_capture_main()
 if _fast_capture_exit is not None:
     sys.exit(_fast_capture_exit)
 
+from collections import OrderedDict
 from datetime import datetime
 from datetime import datetime, timedelta, timezone
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from socketserver import ThreadingMixIn
-from urllib.parse import urlparse
+from urllib.parse import urlsplit
 from uuid import uuid4
 from uuid import uuid4, uuid5, NAMESPACE_DNS as _UUID_NS
 import argparse
 import hashlib
+import http.client
 import json
 import json, sys
 import json, sys, os
 import logging
 import os
 import pwd
+import random
 import re
 import re as _re
 import shlex
@@ -690,18 +694,18 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unicodedata
 import urllib.error
 import urllib.request
-import uuid
 
 # ===========================================================================
 # Constants and logging
 # ===========================================================================
 
-__version__ = "1.2.44"
-__build__ = "b173827-dirty 2026-08-06 05:54"
+__version__ = "1.2.109"
+__build__ = "0589709-dirty 2026-08-17 21:09"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -3386,7 +3390,7 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
         # PATH=...` inside the bash invocation so the launched command
         # sees the same PATH preflight checked against.
         env_setup = "export PATH=%s" % shlex.quote(env.get("PATH", os.environ.get("PATH", "")))
-    # Non-login bash: env_setup is the sole source of Anthropic/proxy
+    # Non-login bash: env_setup is the sole source of tool API
     # overrides. `bash -l` would re-source ~/.bashrc and re-inject login
     # session / ANTHROPIC_* exports before env_setup can win.
     if exit_status_path:
@@ -5591,6 +5595,9 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                     log.info("Last screen: %s", _screen_tail(prev_output, 5))
                     store.update(agent_id, status=status,
                                  exit_reason=reason, completed_at=_now_iso())
+                    agent_rec = store.get(agent_id)
+                    if agent_rec:
+                        stop_agent_api_proxy(agent_rec)
                     _event("completed", {"status": status, "reason": reason})
                     return
 
@@ -5742,6 +5749,9 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                         store.update(agent_id, status="completed",
                                      exit_reason="Task completed (auto-exit)",
                                      completed_at=_now_iso())
+                        agent_rec = store.get(agent_id)
+                        if agent_rec:
+                            stop_agent_api_proxy(agent_rec)
                         _event("completed", {"status": "completed", "reason": "auto-exit"})
                         return
                     else:
@@ -8316,68 +8326,189 @@ LoopStore.replace_envelope = _replace_envelope
 # ===========================================================================
 
 API_MODELS_FILE = os.path.join(CAM_DIR, "api-models.json")
-PROXY_RUNS_FILE = os.path.join(CAM_DIR, "proxy-runs.json")
 TOKEN_ENV_FILE = os.path.join(CAM_DIR, "token.env")
 
 DEFAULT_PROVIDER = "inference-hub"
-IHUB_BASE = "https://inference-api.nvidia.com/v1"
+IHUB_BASE = "https://inference-api.nvidia.com"
+API_SCHEMA_VERSION = "1.0.5"
 
-# Provider templates (copy into providers/apis — not active until referenced).
-PROVIDER_TEMPLATES = {
-    "openai-chat-gateway": {
-        "display_name": "OpenAI Chat Completions gateway",
-        "auth_key": "openai_gateway",
-        "env_names": ["OPENAI_API_KEY", "OPENAI_GATEWAY_API_KEY"],
-        "base_url": "https://llm.example.com/v1",
-        "upstream_protocol": "openai_chat_completions",
-        "translator": "embedded",
-        "catalog_path": "/models",
-        "endpoints": {
-            "openai_chat_completions": "/chat/completions",
-        },
-    },
-    "anthropic-direct": {
-        "display_name": "Native Anthropic Messages API",
-        "auth_key": "anthropic",
-        "env_names": ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
-        "base_url": "https://api.anthropic.com",
-        "upstream_protocol": "anthropic_messages",
-        "translator": "direct",
-        "catalog_path": "/v1/models",
-        "endpoints": {
-            "anthropic_messages": "/v1/messages",
-        },
-    },
-    "cc-switch": {
-        "display_name": "CC Switch local routing",
-        "auth_key": "cc_switch",
-        "env_names": ["CC_SWITCH_API_KEY", "OPENAI_API_KEY"],
-        "base_url": "http://127.0.0.1:15721",
-        "client_base_url": "http://127.0.0.1:15721",
-        "upstream_protocol": "anthropic_messages",
-        "translator": "external",
-        "external_translator": True,
-        "catalog_path": "",
-        "endpoints": {
-            "anthropic_messages": "",
-        },
-    },
-}
+# Kimi K3 is now one model/profile.  The phase-specific names remain only as
+# migration aliases so an existing default or explicit command keeps working.
+KIMI_K3_KEY = "kimi-k3"
+LEGACY_KIMI_K3_PROFILES = ("kimi-k3-low", "kimi-k3-high", "kimi-k3-max")
 
 CURATED_APIS = [
-    ("glm-5.2", "nvidia/zai-org/eccn-glm-5.2", ["glm", "glm52", "glm51", "glm-5.1"]),
+    ("glm-5.2", "nvidia/zai-org/eccn-glm-5.2", ["glm", "glm52"]),
+    ("deepseek-v4-flash", "nvidia/deepseek-ai/eccn-deepseek-v4-flash", ["deepseek-flash", "ds-v4-flash"]),
     ("deepseek-v4-pro", "nvidia/deepseek-ai/eccn-deepseek-v4-pro", ["deepseek", "ds-v4"]),
     ("kimi-k2.6", "nvidia/moonshotai/eccn-kimi-k2.6", ["kimi", "k2.6"]),
-    ("minimax-m3", "nvidia/minimaxai/eccn-minimax-m3", ["minimax", "m3", "m2.7", "minimax-m2.7"]),
+    (KIMI_K3_KEY, "nvidia/moonshotai/eccn-kimi-k3", ["k3"]),
+    ("minimax-m3", "nvidia/minimaxai/eccn-minimax-m3", ["minimax", "m3"]),
     ("qwen3-5-397b", "nvidia/qwen/eccn-qwen3-5-397b-a17b", ["qwen397", "qwen3.5"]),
     ("nemotron-3-ultra", "nvidia/nvidia/eccn-nemotron-3-ultra", ["nemotron", "nemo-ultra"]),
 ]
 
-# Superseded curated profile keys → current key (defaults + api check merge).
-CURATED_LEGACY_MIGRATIONS = {
-    "glm-5.1": "glm-5.2",
-    "minimax-m2.7": "minimax-m3",
+# Endpoint probes against the NVIDIA Inference Hub.  Kimi K3 Max exposes the
+# Messages route but returned empty native content in the verification probe,
+# so it intentionally keeps the completion fallback for Claude.
+CURATED_AVAILABLE_ENDPOINTS = {
+    "glm-5.2": ["completions", "messages", "responses"],
+    "deepseek-v4-flash": ["completions", "messages", "responses"],
+    "deepseek-v4-pro": ["completions", "messages", "responses"],
+    "kimi-k2.6": ["completions", "messages", "responses"],
+    KIMI_K3_KEY: ["completions", "responses"],
+    "minimax-m3": ["completions", "messages", "responses"],
+    "qwen3-5-397b": ["completions", "messages", "responses"],
+    "nemotron-3-ultra": ["completions", "messages", "responses"],
 }
+
+CLAUDE_CLIENT_MODELS = {
+    "deepseek-v4-flash": "claude-haiku-5-dsv4f",
+    "deepseek-v4-pro": "claude-opus-5-dsv4p",
+    "glm-5.2": "claude-sonnet-5-glm52",
+    "kimi-k2.6": "claude-sonnet-5-kimi26",
+}
+
+CURATED_CODEX_REASONING = {
+    "glm-5.2": {
+        "mapping": {
+            "none": "none", "low": "high", "medium": "high",
+            "high": "high", "xhigh": "max", "max": "max",
+        },
+        "default": "high",
+    },
+    KIMI_K3_KEY: {
+        "mapping": {
+            "none": "low", "low": "low", "medium": "high",
+            "high": "high", "xhigh": "max", "max": "max",
+        },
+        "default": "high",
+    },
+}
+
+
+TOOL_SUPPORTED_ENDPOINTS = {
+    "claude": ["messages"],
+    "codex": ["responses"],
+}
+
+TOOL_BASE_URL_SUF = {
+    "claude": "",
+    "codex": "/v1",
+}
+
+
+def _curated_aliases(key, aliases):
+    result = list(aliases)
+    client_model = CLAUDE_CLIENT_MODELS.get(key)
+    if client_model:
+        result.append(client_model)
+    return result
+
+
+def _curated_tool_supported_apis():
+    return {
+        "claude": sorted(CLAUDE_CLIENT_MODELS.values()),
+        "codex": [key for key, _model, _aliases in CURATED_APIS],
+    }
+
+
+def _migrate_legacy_kimi_k3(data):
+    """Collapse retired K3 phase profiles without losing user selections."""
+    apis = data.get("apis")
+    if not isinstance(apis, dict):
+        return
+    legacy = {}
+    for name in LEGACY_KIMI_K3_PROFILES:
+        entry = apis.pop(name, None)
+        if isinstance(entry, dict):
+            legacy[name] = entry
+    if not legacy:
+        return
+
+    current = apis.get(KIMI_K3_KEY)
+    if not isinstance(current, dict):
+        # Prefer the former max profile as the closest match to the unified
+        # model, then fall back to high/low when that is the only record.
+        for name in ("kimi-k3-max", "kimi-k3-high", "kimi-k3-low"):
+            if name in legacy:
+                current = dict(legacy[name])
+                break
+        else:
+            current = {}
+    else:
+        current = dict(current)
+
+    # Preserve useful fields from a phase entry when a hand-edited canonical
+    # record did not have them yet.  Enabled is merged as an OR so an enabled
+    # phase cannot silently turn the unified profile off.
+    for name in ("kimi-k3-max", "kimi-k3-high", "kimi-k3-low"):
+        entry = legacy.get(name) or {}
+        if entry.get("enabled") is True:
+            current["enabled"] = True
+        for field in ("provider", "model", "enabled_reason", "metadata"):
+            if current.get(field) is None and entry.get(field) is not None:
+                current[field] = entry[field]
+
+    hidden_aliases = set(current.get("legacy_aliases") or [])
+    hidden_aliases.update(LEGACY_KIMI_K3_PROFILES)
+    hidden_aliases.update(("k3-low", "k3-high", "k3-max",
+                           "kimi-low", "kimi-high", "kimi-max"))
+    for entry in legacy.values():
+        hidden_aliases.update(
+            alias for alias in (entry.get("aliases") or [])
+            if isinstance(alias, str) and alias.strip()
+        )
+        clients = entry.get("client_models")
+        if isinstance(clients, dict):
+            hidden_aliases.update(
+                value for value in clients.values()
+                if isinstance(value, str) and value.strip()
+            )
+    current["legacy_aliases"] = sorted(hidden_aliases)
+    apis[KIMI_K3_KEY] = current
+
+
+def _canonicalize_k3_references(data):
+    """Replace retired profile names in defaults and tool policy lists."""
+    retired = set(LEGACY_KIMI_K3_PROFILES)
+    for field in ("defaults", "tool_supported_apis"):
+        values = data.get(field)
+        if not isinstance(values, dict):
+            continue
+        for tool, names in list(values.items()):
+            if not isinstance(names, list):
+                continue
+            rewritten = []
+            for name in names:
+                name = KIMI_K3_KEY if name in retired else name
+                if name not in rewritten:
+                    rewritten.append(name)
+            values[tool] = rewritten
+
+
+def _curated_client_models(key, model):
+    models = {"codex": model}
+    if key in CLAUDE_CLIENT_MODELS:
+        models["claude"] = CLAUDE_CLIENT_MODELS[key]
+    return models
+
+
+def _curated_tool_capabilities():
+    # NVIDIA Responses profiles do not accept Codex's tool_search type.
+    # This is durable profile data, not catalog-generator behavior.
+    return {"codex": {"supports_search_tool": False}}
+
+
+def _curated_reasoning(key, value=None):
+    profile = normalize_reasoning_profile(value)
+    curated = CURATED_CODEX_REASONING.get(key)
+    if curated:
+        profile.setdefault("mapping", {}).setdefault(
+            "codex", dict(curated["mapping"]))
+        profile.setdefault("default", {}).setdefault(
+            "codex", curated["default"])
+    return profile
 
 # Tools that may have a per-tool default API (empty = normal OAuth/login).
 DEFAULT_API_TOOLS = ("claude", "codex")
@@ -8390,12 +8521,14 @@ def _default_seed():
             "provider": DEFAULT_PROVIDER,
             "model": model,
             "enabled": False,
-            "aliases": list(aliases),
+            "aliases": _curated_aliases(key, aliases),
+            "available_endpoints": list(CURATED_AVAILABLE_ENDPOINTS.get(key, [])),
+            "client_models": _curated_client_models(key, model),
+            "tool_capabilities": _curated_tool_capabilities(),
+            "reasoning": _curated_reasoning(key),
         }
-    return {
-        "version": 1,
-        "default": "glm-5.2",
-        "default_provider": DEFAULT_PROVIDER,
+    data = {
+        "version": API_SCHEMA_VERSION,
         "providers": {
             DEFAULT_PROVIDER: {
                 "display_name": "NVIDIA Inference Hub",
@@ -8405,21 +8538,21 @@ def _default_seed():
                     "INFERENCE_HUB_API_KEY",
                     "INFERENCE_API_KEY",
                 ],
+                "token_file": "~/.my_tokens.yaml",
                 "base_url": IHUB_BASE,
-                "upstream_protocol": "openai_chat_completions",
-                "translator": "embedded",
-                "catalog_path": "/models",
-                "endpoints": {
-                    "openai_chat_completions": "/chat/completions",
-                    "anthropic_messages": "/messages",
-                },
+                "catalog_path": "/v1/models",
             },
         },
         "apis": apis,
-        "_templates": dict(PROVIDER_TEMPLATES),
+        "tool_supported_endpoints": dict(TOOL_SUPPORTED_ENDPOINTS),
+        "tool_base_url_suf": dict(TOOL_BASE_URL_SUF),
+        "tool_supported_apis": _curated_tool_supported_apis(),
+        "debug_api_proxy": False,
         "_aliases": {},
         "_catalog": {},
     }
+    rebuild_aliases(data)
+    return data
 
 
 def load_api_models():
@@ -8444,30 +8577,71 @@ def save_api_models(data):
 
 
 def merge_curated_apis(data):
-    """Refresh curated IHUB profiles (model ids, aliases) and migrate legacy keys."""
+    """Refresh the managed direct profiles and their endpoint capabilities."""
+    for field in ("default", "default_provider", "_templates"):
+        data.pop(field, None)
+    _migrate_legacy_kimi_k3(data)
+    _canonicalize_k3_references(data)
+    providers = data.setdefault("providers", {})
+    provider = providers.get(DEFAULT_PROVIDER)
+    if not isinstance(provider, dict):
+        providers[DEFAULT_PROVIDER] = dict(_default_seed()["providers"][DEFAULT_PROVIDER])
+    else:
+        provider.setdefault("display_name", "NVIDIA Inference Hub")
+        provider.setdefault("auth_key", "inference_hub")
+        provider.setdefault("env_names", ["INFERENCE_HUB_TOKEN"])
+        provider.setdefault("token_file", "~/.my_tokens.yaml")
+        provider.setdefault("base_url", IHUB_BASE)
+        provider.setdefault("catalog_path", "/v1/models")
+        # The direct schema has no provider-level protocol or endpoint map.
+        for field in ("client_base_url", "upstream_protocol", "translator",
+                      "external_translator", "endpoints"):
+            provider.pop(field, None)
+    for configured in providers.values():
+        if not isinstance(configured, dict):
+            continue
+        for field in ("client_base_url", "upstream_protocol", "translator",
+                      "external_translator", "endpoints", "proxy",
+                      "proxy_port"):
+            configured.pop(field, None)
     apis = data.setdefault("apis", {})
-    curated_keys = set()
     for key, model, aliases in CURATED_APIS:
-        curated_keys.add(key)
         entry = apis.get(key)
         if not isinstance(entry, dict):
             entry = {}
             apis[key] = entry
         entry.setdefault("provider", DEFAULT_PROVIDER)
         entry["model"] = model
-        entry["aliases"] = list(aliases)
+        entry["aliases"] = _curated_aliases(key, aliases)
+        entry["client_models"] = _curated_client_models(key, model)
+        entry["tool_capabilities"] = _curated_tool_capabilities()
         entry.setdefault("enabled", False)
-    for old_key in list(apis.keys()):
-        if old_key in CURATED_LEGACY_MIGRATIONS and old_key not in curated_keys:
-            apis.pop(old_key, None)
-    legacy = data.get("default")
-    if legacy in CURATED_LEGACY_MIGRATIONS:
-        data["default"] = CURATED_LEGACY_MIGRATIONS[legacy]
-    defaults = data.get("defaults")
-    if isinstance(defaults, dict):
-        for tool, name in list(defaults.items()):
-            if name in CURATED_LEGACY_MIGRATIONS:
-                defaults[tool] = CURATED_LEGACY_MIGRATIONS[name]
+        if "available_endpoints" not in entry:
+            entry["available_endpoints"] = list(
+                CURATED_AVAILABLE_ENDPOINTS.get(key, []))
+        else:
+            entry["available_endpoints"] = normalize_available_endpoints(
+                entry.get("available_endpoints"))
+        # Keep this independent from synced metadata. User-authored mappings
+        # survive api check; missing/malformed mappings get a safe candidate
+        # profile without changing the selected API/default.
+        entry["reasoning"] = _curated_reasoning(key, entry.get("reasoning"))
+        for field in ("url", "client_url", "upstream_protocol", "translator",
+                      "proxy", "proxy_port"):
+            entry.pop(field, None)
+    for field, default in (
+            ("tool_supported_endpoints", TOOL_SUPPORTED_ENDPOINTS),
+            ("tool_base_url_suf", TOOL_BASE_URL_SUF),
+            ("tool_supported_apis", _curated_tool_supported_apis())):
+        value = data.get(field)
+        if not isinstance(value, dict):
+            data[field] = dict(default)
+            continue
+        for tool, setting in default.items():
+            value.setdefault(tool, setting)
+    _canonicalize_k3_references(data)
+    if not isinstance(data.get("debug_api_proxy"), bool):
+        data["debug_api_proxy"] = False
     rebuild_aliases(data)
 
 
@@ -8475,12 +8649,35 @@ def ensure_ready():
     """Create seed file if missing; return data dict."""
     if os.path.isfile(API_MODELS_FILE):
         data = load_api_models()
+        if _api_schema_needs_refresh(data.get("version")):
+            data["version"] = API_SCHEMA_VERSION
         merge_curated_apis(data)
-        save_api_models(data)
+        try:
+            save_api_models(data)
+        except OSError:
+            # Read-only hosts may still use normal login runs.  Keep the
+            # in-memory direct profile usable without making startup fail.
+            pass
         return data
     data = _default_seed()
-    save_api_models(data)
+    try:
+        save_api_models(data)
+    except OSError:
+        # A read-only ~/.cam is valid for login-only operation; API check or
+        # an explicit profile will report persistence/network errors later.
+        pass
     return data
+
+
+def _api_schema_needs_refresh(value):
+    """Return whether an API JSON version is older than the current schema."""
+    if not isinstance(value, str):
+        return True
+    try:
+        version = tuple(int(part) for part in value.split("."))
+    except (TypeError, ValueError):
+        return True
+    return version < tuple(int(part) for part in API_SCHEMA_VERSION.split("."))
 
 
 def rebuild_aliases(data):
@@ -8493,6 +8690,10 @@ def rebuild_aliases(data):
         aliases[key] = key
         aliases[key.lower()] = key
         for alias in entry.get("aliases") or []:
+            if isinstance(alias, str) and alias.strip():
+                aliases[alias] = key
+                aliases[alias.lower()] = key
+        for alias in entry.get("legacy_aliases") or []:
             if isinstance(alias, str) and alias.strip():
                 aliases[alias] = key
                 aliases[alias.lower()] = key
@@ -8535,18 +8736,26 @@ def resolve_tool_default_api(data, tool):
     defaults = data.get("defaults")
     if not isinstance(defaults, dict) or tool not in defaults:
         return None
-    return _normalize_default_name(defaults.get(tool))
+    names = defaults.get(tool)
+    if not isinstance(names, list) or not names:
+        return None
+    return _normalize_default_name(names[0])
 
 
 def list_tool_default_apis(data):
     """Return per-tool default status rows for display/CLI."""
     rows = []
     for tool in DEFAULT_API_TOOLS:
-        name = resolve_tool_default_api(data, tool)
+        defaults = data.get("defaults") or {}
+        names = defaults.get(tool) if isinstance(defaults, dict) else []
+        if not isinstance(names, list):
+            names = []
+        name = _normalize_default_name(names[0]) if names else None
         if not name:
             rows.append({
                 "tool": tool,
                 "api": None,
+                "apis": names,
                 "mode": "login",
                 "enabled": None,
                 "reason": None,
@@ -8557,6 +8766,7 @@ def list_tool_default_apis(data):
         rows.append({
             "tool": tool,
             "api": key,
+            "apis": names,
             "mode": "api",
             "enabled": enabled,
             "reason": entry.get("enabled_reason"),
@@ -8565,7 +8775,7 @@ def list_tool_default_apis(data):
 
 
 def set_tool_default_api(data, tool, api_name):
-    """Set defaults.<tool> to api_name; sync legacy top-level default for Claude."""
+    """Set the first entry in the ordered defaults.<tool> list."""
     if tool not in DEFAULT_API_TOOLS:
         raise ValueError("unsupported tool %r for default API (use: claude, codex)" % tool)
     key = resolve_api_name(data, api_name)
@@ -8573,9 +8783,7 @@ def set_tool_default_api(data, tool, api_name):
     if not isinstance(defaults, dict):
         defaults = {}
         data["defaults"] = defaults
-    defaults[tool] = key
-    if tool == "claude":
-        data["default"] = key
+    defaults[tool] = [key]
     save_api_models(data)
     return key
 
@@ -8587,8 +8795,6 @@ def clear_tool_default_api(data, tool):
     defaults = data.get("defaults")
     if isinstance(defaults, dict) and tool in defaults:
         defaults.pop(tool)
-    if tool == "claude":
-        data.pop("default", None)
     save_api_models(data)
 
 
@@ -8605,7 +8811,7 @@ def resolve_run_api_name(tool, cli_api=None, no_default_api=False, data=None):
     key, entry = get_api_entry(data, name)
     if entry.get("enabled") is False:
         try:
-            check_provider(data, token_resolver=None)
+            check_provider(data)
         except Exception:
             pass
         key, entry = get_api_entry(data, name)
@@ -8623,13 +8829,6 @@ def get_provider(data, provider_id):
     if provider_id not in providers:
         raise ValueError("unknown provider %r" % provider_id)
     return dict(providers[provider_id])
-
-
-def upstream_chat_url(data, api_entry, provider):
-    """Legacy name: upstream URL for openai_chat_completions."""
-    if api_entry.get("url"):
-        return str(api_entry["url"])
-    return provider_endpoint_url(provider, PROTO_OPENAI_CHAT)
 
 
 def catalog_url(provider):
@@ -8675,29 +8874,72 @@ def list_apis(data, show_all=False):
         rows.append({
             "name": key,
             "model": entry.get("model", ""),
-            "provider": entry.get("provider", data.get("default_provider")),
+            "provider": entry.get("provider", ""),
             "enabled": enabled,
             "aliases": entry.get("aliases") or [],
+            "available_endpoints": normalize_available_endpoints(
+                entry.get("available_endpoints")),
+            "tools": tools_supporting_api(data, key),
         })
     return rows
 
 
-def _fetch_ihub_model_ids(token, timeout=5.0):
-    """Backward-compat wrapper for IHUB catalog."""
-    provider = {
-        "base_url": IHUB_BASE,
-        "catalog_path": "/models",
-    }
-    return fetch_model_catalog(provider, token, timeout=timeout)
+def tool_api_config(data, tool):
+    """Return JSON-owned endpoint and URL rules for one API-capable tool."""
+    endpoints = (data.get("tool_supported_endpoints") or {}).get(tool)
+    suffix = (data.get("tool_base_url_suf") or {}).get(tool)
+    if not isinstance(endpoints, list) or suffix is None:
+        raise ValueError("API tool %r is not configured" % tool)
+    return normalize_available_endpoints(endpoints), str(suffix or "")
 
 
-def check_provider(data, token_resolver):
+def tool_supports_api(data, tool, api_key):
+    """Whether a profile is allowed for a tool by JSON policy and endpoint."""
+    allowed = (data.get("tool_supported_apis") or {}).get(tool)
+    if not isinstance(allowed, list):
+        return False
+    try:
+        permitted = {resolve_api_name(data, name) for name in allowed}
+    except ValueError:
+        return False
+    if api_key not in permitted:
+        return False
+    entry = (data.get("apis") or {}).get(api_key) or {}
+    endpoints, _suffix = tool_api_config(data, tool)
+    return bool(set(normalize_available_endpoints(
+        entry.get("available_endpoints"))).intersection(endpoints))
+
+
+def tools_supporting_api(data, api_key):
+    return [tool for tool in sorted((data.get("tool_supported_apis") or {}))
+            if tool_supports_api(data, tool, api_key)]
+
+
+def check_provider(data):
     """Ping provider catalog, refresh enabled flags and _catalog."""
 
-    provider_id = data.get("default_provider") or DEFAULT_PROVIDER
+    providers = data.get("providers") or {}
+    provider_id = DEFAULT_PROVIDER if DEFAULT_PROVIDER in providers else next(
+        iter(sorted(providers)), None)
+    if not provider_id:
+        return {
+            "provider": None,
+            "reachable": False,
+            "token_source": "none",
+            "model_count": 0,
+            "apis": [],
+            "error": "no API providers configured",
+            "catalog_skipped": True,
+        }
     provider = get_provider(data, provider_id)
     auth_key = provider.get("auth_key") or "inference_hub"
-    token, source = resolve_token(auth_key, provider.get("env_names") or [], cli_token=None)
+    token, source = resolve_token(
+        auth_key,
+        provider.get("env_names") or [],
+        cli_token=None,
+        token_file=provider.get("token_file"),
+        token_key=provider.get("token_key"),
+    )
 
     result = {
         "provider": provider_id,
@@ -8792,6 +9034,29 @@ DEFAULT_EFFECTIVE_CONTEXT_PERCENT = 95
 CODEX_CATALOG_TEMPLATE_SLUG = "gpt-5.5"
 CODEX_MODELS_CACHE_FILE = os.path.expanduser("~/.codex/models_cache.json")
 
+# Claude Code's accepted session effort values. Keep this independent from
+# the upstream model metadata: the latter is often absent from IHUB's public
+# cost map. A model profile may later narrow/verify the set, but normalization
+# must never silently drop Claude's highest supported value.
+CLAUDE_EFFORT_OPTIONS = ("low", "medium", "high", "xhigh", "max")
+AGENT_EFFORT_OPTIONS = {"claude": CLAUDE_EFFORT_OPTIONS}
+
+# Protocol names persisted in each API profile.  These are deliberately
+# short, user-facing names; api_routing maps them to wire protocol ids.
+AVAILABLE_ENDPOINTS = ("completions", "messages", "responses")
+
+
+def normalize_available_endpoints(value):
+    """Keep only known endpoint names while preserving configured order."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    result = []
+    for endpoint in value:
+        endpoint = str(endpoint or "").strip().lower()
+        if endpoint in AVAILABLE_ENDPOINTS and endpoint not in result:
+            result.append(endpoint)
+    return result
+
 # Curated fallbacks when IHUB cost map omits fields (see docs/api-model-metadata.md).
 CURATED_METADATA_FALLBACKS = {
     "glm-5.2": {
@@ -8800,13 +9065,13 @@ CURATED_METADATA_FALLBACKS = {
         "supports_tools": True,
         "supports_reasoning": True,
     },
-    "glm-5.1": {
-        "context_window": 202752,
+    "deepseek-v4-pro": {
+        "context_window": 1048576,
         "max_output_tokens": 131072,
         "supports_tools": True,
         "supports_reasoning": True,
     },
-    "deepseek-v4-pro": {
+    "deepseek-v4-flash": {
         "context_window": 1048576,
         "max_output_tokens": 131072,
         "supports_tools": True,
@@ -8824,14 +9089,14 @@ CURATED_METADATA_FALLBACKS = {
         "supports_tools": True,
         "supports_reasoning": True,
     },
-    "minimax-m3": {
+    "kimi-k3": {
         "context_window": 1048576,
         "max_output_tokens": 131072,
         "supports_tools": True,
         "supports_reasoning": True,
     },
-    "minimax-m2.7": {
-        "context_window": 196608,
+    "minimax-m3": {
+        "context_window": 1048576,
         "max_output_tokens": 131072,
         "supports_tools": True,
         "supports_reasoning": True,
@@ -8846,14 +9111,94 @@ CURATED_METADATA_FALLBACKS = {
 
 DISPLAY_NAMES = {
     "glm-5.2": "GLM 5.2",
-    "glm-5.1": "GLM 5.1",
     "deepseek-v4-pro": "DeepSeek V4 Pro",
+    "deepseek-v4-flash": "DeepSeek V4 Flash",
     "qwen3-5-397b": "Qwen3.5 397B",
     "kimi-k2.6": "Kimi K2.6",
+    "kimi-k3": "Kimi K3",
     "minimax-m3": "MiniMax M3",
-    "minimax-m2.7": "MiniMax M2.7",
     "nemotron-3-ultra": "Nemotron 3 Ultra",
 }
+
+
+def _default_reasoning_profile():
+    """Return an independent, unverified Claude effort candidate profile."""
+    return {
+        "supported": list(CLAUDE_EFFORT_OPTIONS),
+        "mapping": {
+            "claude": {level: level for level in CLAUDE_EFFORT_OPTIONS},
+        },
+        "verified": False,
+        "source": "claude_cli_capability_unverified",
+    }
+
+
+def normalize_reasoning_profile(value):
+    """Normalize the durable Claude reasoning profile stored in JSON.
+
+    ``None`` means a new profile and gets the full Claude candidate range.
+    Explicit profiles are not widened: a missing mapping remains missing so
+    callers can report an unsafe request instead of silently downgrading it.
+    """
+    if value is None:
+        return _default_reasoning_profile()
+    raw = value if isinstance(value, dict) else {}
+    supported = []
+    for level in raw.get("supported") or []:
+        level = str(level).strip().lower()
+        if level in CLAUDE_EFFORT_OPTIONS and level not in supported:
+            supported.append(level)
+    mapping = {}
+    raw_mapping = raw.get("mapping")
+    if isinstance(raw_mapping, dict):
+        raw_claude = raw_mapping.get("claude")
+        if isinstance(raw_claude, dict):
+            for requested, mapped in raw_claude.items():
+                requested = str(requested).strip().lower()
+                mapped = str(mapped).strip().lower()
+                if (requested in CLAUDE_EFFORT_OPTIONS
+                        and mapped in CLAUDE_EFFORT_OPTIONS):
+                    mapping[requested] = mapped
+    codex_mapping = {}
+    raw_codex = raw_mapping.get("codex") if isinstance(raw_mapping, dict) else None
+    if isinstance(raw_codex, dict):
+        for requested, mapped in raw_codex.items():
+            requested = str(requested).strip().lower()
+            mapped = str(mapped).strip().lower()
+            if requested and mapped:
+                codex_mapping[requested] = mapped
+    result = {
+        "supported": supported,
+        "mapping": {"claude": mapping},
+        "verified": bool(raw.get("verified", False)),
+    }
+    if codex_mapping:
+        result["mapping"]["codex"] = codex_mapping
+    raw_default = raw.get("default")
+    if isinstance(raw_default, dict) and raw_default.get("codex"):
+        result["default"] = {"codex": str(raw_default["codex"]).strip().lower()}
+    source = raw.get("source")
+    if source:
+        result["source"] = str(source)
+    return result
+
+
+def resolve_claude_effort(profile, requested):
+    """Resolve a requested Claude effort without lossy implicit fallback."""
+    requested = str(requested or "").strip().lower()
+    if requested not in CLAUDE_EFFORT_OPTIONS:
+        raise ValueError(
+            "unknown Claude effort %r (choose: %s)"
+            % (requested, ", ".join(CLAUDE_EFFORT_OPTIONS))
+        )
+    normalized = normalize_reasoning_profile(profile)
+    mapped = normalized.get("mapping", {}).get("claude", {}).get(requested)
+    if not mapped:
+        raise ValueError("no Claude effort mapping for %r" % requested)
+    supported = normalized.get("supported") or []
+    if requested not in supported:
+        raise ValueError("Claude effort %r is not supported by this model" % requested)
+    return mapped
 
 
 def litellm_cost_map_url(provider):
@@ -8966,7 +9311,6 @@ def sync_metadata_in_data(data, provider, cost_map=None, synced_at=None):
     if cost_map:
         data["_metadata_catalog"] = {
             "synced_at": synced_at,
-            "provider": data.get("default_provider"),
             "source_url": litellm_cost_map_url(provider),
             "entry_count": len(cost_map),
         }
@@ -8984,31 +9328,6 @@ def resolve_api_metadata(api_name, data=None):
         return apply_metadata_fallbacks(_key, meta)
     model = entry.get("model")
     return merge_api_metadata(_key, str(model or ""), {})
-
-
-def openai_model_object(model_id, metadata=None):
-    """OpenAI-compatible /v1/models row with optional token limits."""
-    obj = {
-        "id": str(model_id),
-        "object": "model",
-        "created": 1677610602,
-        "owned_by": "camc",
-    }
-    meta = metadata or {}
-    ctx = meta.get("context_window")
-    if ctx is not None:
-        obj["max_input_tokens"] = int(ctx)
-    out = meta.get("max_output_tokens")
-    if out is not None:
-        obj["max_output_tokens"] = int(out)
-    return obj
-
-
-def openai_models_list_response(model_id, metadata=None):
-    return {
-        "object": "list",
-        "data": [openai_model_object(model_id, metadata)],
-    }
 
 
 def claude_context_env_overrides(api_name, metadata=None):
@@ -9041,10 +9360,11 @@ def load_codex_catalog_template(cache_path=None):
     return None
 
 
-def codex_catalog_model(api_name, metadata=None, template=None):
+def codex_catalog_model(api_name, metadata=None, template=None, model_id=None,
+                        tool_capabilities=None, reasoning=None):
     """One Codex model_catalog.json entry (clone official template + overlay)."""
     meta = apply_metadata_fallbacks(api_name, metadata or {})
-    slug = str(api_name)
+    slug = str(model_id or api_name)
     ctx = int(meta.get("context_window") or DEFAULT_MAX_OUTPUT_TOKENS)
     entry = template if template is not None else load_codex_catalog_template()
     if not isinstance(entry, dict):
@@ -9055,27 +9375,108 @@ def codex_catalog_model(api_name, metadata=None, template=None):
         )
     entry = json.loads(json.dumps(entry))
     entry["slug"] = slug
-    entry["display_name"] = DISPLAY_NAMES.get(slug, slug)
-    entry["description"] = "CAM Inference Hub proxy (%s)" % slug
+    entry["display_name"] = DISPLAY_NAMES.get(str(api_name), slug)
+    entry["description"] = "CAM Inference Hub API (%s)" % api_name
     entry["context_window"] = ctx
     entry["max_context_window"] = ctx
     entry["effective_context_window_percent"] = DEFAULT_EFFECTIVE_CONTEXT_PERCENT
     entry["supported_reasoning_levels"] = list(meta.get("reasoning_levels") or [])
     entry["supports_reasoning_summaries"] = bool(meta.get("supports_reasoning_summaries"))
     entry["supports_parallel_tool_calls"] = bool(meta.get("supports_tools", True))
+    capabilities = tool_capabilities if isinstance(tool_capabilities, dict) else {}
+    if "supports_search_tool" in capabilities:
+        entry["supports_search_tool"] = bool(capabilities["supports_search_tool"])
     entry["supported_in_api"] = True
     entry["visibility"] = "list"
     entry["priority"] = 1000
-    if not entry.get("supported_reasoning_levels"):
+    codex_mapping = ((reasoning or {}).get("mapping") or {}).get("codex") or {}
+    if codex_mapping:
+        descriptions = {
+            str(row.get("effort")): str(row.get("description") or "")
+            for row in (entry.get("supported_reasoning_levels") or [])
+            if isinstance(row, dict) and row.get("effort")
+        }
+        entry["supported_reasoning_levels"] = [
+            {"effort": effort,
+             "description": descriptions.get(effort) or
+                            ("Mapped by CAMC to %s" % mapped)}
+            for effort, mapped in codex_mapping.items()
+        ]
+        entry["default_reasoning_level"] = str(
+            ((reasoning or {}).get("default") or {}).get("codex") or
+            next(iter(codex_mapping)))
+        entry["default_reasoning_summary"] = "none"
+    elif not entry.get("supported_reasoning_levels"):
         entry["default_reasoning_level"] = "low"
         entry["default_reasoning_summary"] = "none"
     return entry
 
 
-def write_codex_model_catalog(catalog_path, api_name, metadata=None):
-    """Write ~/.cam/codex-api/camc-model-catalog.json for Codex --api."""
-    model = codex_catalog_model(api_name, metadata)
-    payload = {"models": [model]}
+def codex_catalog_models(default_api_name, data=None, template=None,
+                         require_endpoint=None):
+    """Build a Codex catalog for every enabled, compatible API profile.
+
+    The selected profile is always included first, even when its enabled flag
+    is stale or absent. Direct Responses runs include only profiles that
+    advertise the native ``responses`` endpoint.
+    """
+    if data is None:
+        data = load_api_models()
+    apis = data.get("apis") if isinstance(data, dict) else {}
+    apis = apis if isinstance(apis, dict) else {}
+    default_name = str(default_api_name or "").strip()
+    names = []
+    for name in sorted(apis):
+        entry = apis.get(name)
+        if not isinstance(entry, dict) or entry.get("enabled") is not True:
+            continue
+        if (require_endpoint
+                and require_endpoint not in normalize_available_endpoints(
+                    entry.get("available_endpoints"))):
+            continue
+        names.append(str(name))
+    if default_name in names:
+        names.remove(default_name)
+    if default_name:
+        names.insert(0, default_name)
+
+    rows = []
+    seen_slugs = set()
+    for name in names:
+        if not tool_supports_api(data, "codex", name):
+            continue
+        metadata = resolve_api_metadata(name, data=data)
+        entry = apis.get(name) or {}
+        slug = str(entry.get("model") or name)
+        if slug in seen_slugs:
+            continue
+        seen_slugs.add(slug)
+        rows.append(codex_catalog_model(
+            name, metadata, template=template, model_id=entry.get("model"),
+            tool_capabilities=(entry.get("tool_capabilities") or {}).get("codex"),
+            reasoning=entry.get("reasoning")))
+    return rows
+
+
+def write_codex_model_catalog(catalog_path, api_name, metadata=None, data=None,
+                              require_endpoint=None, model_id=None):
+    """Write ~/.codex-api/camc-model-catalog.json for Codex --api."""
+    if data is None:
+        data = load_api_models()
+    rows = codex_catalog_models(
+        api_name, data=data, require_endpoint=require_endpoint)
+    if metadata and rows:
+        # Keep the caller's freshly resolved metadata for the selected row;
+        # the remaining rows come from the durable api-models.json matrix.
+        selected = ((data or {}).get("apis") or {}).get(api_name) or {}
+        capabilities = (selected.get("tool_capabilities") or {}).get("codex")
+        if capabilities is None and "supports_search_tool" in rows[0]:
+            capabilities = {"supports_search_tool": rows[0]["supports_search_tool"]}
+        rows[0] = codex_catalog_model(
+            api_name, metadata, model_id=model_id,
+            tool_capabilities=capabilities,
+            reasoning=selected.get("reasoning"))
+    payload = {"models": rows}
     os.makedirs(os.path.dirname(catalog_path), exist_ok=True)
     tmp = catalog_path + ".tmp"
     with open(tmp, "w") as f:
@@ -9136,6 +9537,20 @@ def _read_yaml_flat(path):
     return _read_kv_file(path, ":")
 
 
+def _read_provider_token_file(path):
+    """Read a provider-owned token file without ever writing it.
+
+    YAML files use the same intentionally small flat ``KEY: VALUE`` reader as
+    ``~/.my_tokens.yaml``.  Other extensions are treated as dotenv files.
+    """
+    expanded = os.path.expanduser(str(path or ""))
+    if not expanded:
+        return {}
+    if expanded.lower().endswith((".yaml", ".yml")):
+        return _read_yaml_flat(expanded)
+    return _read_token_env(expanded)
+
+
 def _index_by_normalized_key(flat_dict):
     """Map normalized key -> (original_key, value). First entry wins."""
     index = {}
@@ -9185,7 +9600,8 @@ def _lookup_in_environ(env_names, auth_key):
     return "", ""
 
 
-def resolve_token(auth_key, env_names, cli_token=None):
+def resolve_token(auth_key, env_names, cli_token=None, token_file=None,
+                  token_key=None):
     """Return (token, source_label). First hit wins."""
     if cli_token:
         return cli_token.strip(), "cli"
@@ -9202,6 +9618,22 @@ def resolve_token(auth_key, env_names, cli_token=None):
     token, src = _lookup_in_environ(names, auth_key)
     if token:
         return token, src
+
+    # A provider may point at a project/user-owned token file.  ``auth_key``
+    # is the default key; ``token_key`` is only needed when the file uses a
+    # different label, so the common configuration has no duplicated field.
+    if token_file:
+        key_candidates = [token_key or auth_key]
+        if token_key:
+            key_candidates.append(auth_key)
+        key_candidates.extend(names)
+        token, src = _lookup_in_index(
+            _index_by_normalized_key(_read_provider_token_file(token_file)),
+            os.path.basename(os.path.expanduser(str(token_file))),
+            *key_candidates,
+        )
+        if token:
+            return token, src
 
     candidates = []
     seen = set()
@@ -9233,15 +9665,10 @@ def resolve_token(auth_key, env_names, cli_token=None):
 # api_routing
 # ===========================================================================
 
-# Wire protocol ids (keys in providers.*.endpoints)
+# Wire protocol ids used internally by adapter declarations.
 PROTO_ANTHROPIC_MESSAGES = "anthropic_messages"
 PROTO_OPENAI_CHAT = "openai_chat_completions"
 PROTO_OPENAI_RESPONSES = "openai_responses"
-
-# How camc reaches the model
-TRANSLATOR_EMBEDDED = "embedded"
-TRANSLATOR_DIRECT = "direct"
-TRANSLATOR_EXTERNAL = "external"
 
 TOOL_PROTOCOL = {
     "claude": PROTO_ANTHROPIC_MESSAGES,
@@ -9249,143 +9676,600 @@ TOOL_PROTOCOL = {
     "cursor": PROTO_ANTHROPIC_MESSAGES,
 }
 
-# Embedded stdlib proxy routes (tool_proto, upstream_proto) -> route metadata
-PROXY_ROUTES = {
-    (PROTO_ANTHROPIC_MESSAGES, PROTO_OPENAI_CHAT): {
-        "route": "completions_to_messages",
-        "port": 18324,
-    },
-    (PROTO_OPENAI_RESPONSES, PROTO_OPENAI_CHAT): {
-        "route": "completions_to_responses",
-        "port": 18325,
-    },
-}
-
-# Debug proxy CLI: requested embedded route -> tool for resolve_run_plan().
-PROXY_ROUTE_TOOL = {
-    "completions_to_messages": "claude",
-    "completions_to_responses": "codex",
+API_ENDPOINT_ALIASES = {
+    "messages": PROTO_ANTHROPIC_MESSAGES,
+    "anthropic_messages": PROTO_ANTHROPIC_MESSAGES,
+    "completions": PROTO_OPENAI_CHAT,
+    "openai_chat_completions": PROTO_OPENAI_CHAT,
+    "responses": PROTO_OPENAI_RESPONSES,
+    "openai_responses": PROTO_OPENAI_RESPONSES,
 }
 
 
-def provider_endpoint_url(provider, protocol):
-    """Join provider.base_url + providers.endpoints[protocol]."""
-    base = str(provider.get("base_url") or "").rstrip("/")
+def json_tool_api_shape(tool, endpoints, suffix=""):
+    """Choose the first JSON-declared endpoint supported by the tool."""
+    for endpoint in normalize_available_endpoints(endpoints):
+        protocol = API_ENDPOINT_ALIASES.get(endpoint)
+        if protocol:
+            suffix = str(suffix or "").strip()
+            if suffix and not suffix.startswith("/"):
+                suffix = "/" + suffix
+            return protocol, suffix
+    raise ValueError("API tool %r has no supported endpoint" % tool)
+
+
+def apply_base_url_suffix(base_url, suffix):
+    """Append an adapter suffix once, without creating duplicate slashes."""
+    base = str(base_url or "").rstrip("/")
+    suffix = str(suffix or "").strip()
+    if not suffix:
+        return base
+    if not suffix.startswith("/"):
+        suffix = "/" + suffix
+    if base.endswith(suffix):
+        return base
+    return base + suffix
+
+
+def _endpoint_name(protocol):
+    return {
+        PROTO_ANTHROPIC_MESSAGES: "messages",
+        PROTO_OPENAI_CHAT: "completions",
+        PROTO_OPENAI_RESPONSES: "responses",
+    }.get(protocol, str(protocol))
+
+
+def require_native_endpoint(api_entry, tool_proto):
+    """Require the selected tool's native endpoint capability."""
+    protocol = tool_proto or PROTO_OPENAI_CHAT
+    available = normalize_available_endpoints(
+        api_entry.get("available_endpoints"))
+    required = _endpoint_name(protocol)
+    if required not in available:
+        raise ValueError(
+            "API profile does not advertise native %s endpoint" % required)
+    return protocol
+
+
+def resolve_client_base_url(provider):
+    """Return the provider's one canonical base URL."""
+    base = str((provider or {}).get("base_url") or "").strip().rstrip("/")
     if not base:
         raise ValueError("provider missing base_url")
-    endpoints = provider.get("endpoints") or {}
-    path = endpoints.get(protocol)
-    if path is None:
-        raise ValueError(
-            "provider %r has no endpoint for protocol %r"
-            % (provider.get("display_name") or "?", protocol)
-        )
-    path = str(path)
-    if path == "":
-        return base
-    if not path.startswith("/"):
-        path = "/" + path
-    return base + path
+    return base
 
 
-def resolve_upstream_protocol(provider, api_entry):
-    """Which upstream wire format this API uses."""
-    proto = api_entry.get("upstream_protocol") or provider.get("upstream_protocol")
-    if proto:
-        return str(proto)
-    # Backward compat: inference-hub and most gateways default to chat completions.
-    return PROTO_OPENAI_CHAT
-
-
-def resolve_translator(provider, api_entry, tool_proto, upstream_proto):
-    """Pick embedded proxy, direct passthrough, or external translator."""
-    explicit = api_entry.get("translator") or provider.get("translator")
-    if explicit:
-        return str(explicit)
-
-    if tool_proto == upstream_proto:
-        if provider.get("external_translator"):
-            return TRANSLATOR_EXTERNAL
-        return TRANSLATOR_DIRECT
-
-    if PROXY_ROUTES.get((tool_proto, upstream_proto)):
-        return TRANSLATOR_EMBEDDED
-
-    raise ValueError(
-        "no translator for tool protocol %s -> upstream %s "
-        "(set apis.*.translator or providers.*.translator)"
-        % (tool_proto, upstream_proto)
-    )
-
-
-def resolve_upstream_url(provider, api_entry, upstream_proto):
-    """Full upstream URL for embedded proxy or direct Anthropic."""
-    if api_entry.get("url"):
-        return str(api_entry["url"])
-    return provider_endpoint_url(provider, upstream_proto)
-
-
-def resolve_client_base_url(provider, api_entry):
-    """URL Claude/Codex should call (may differ from upstream for external translators)."""
-    if api_entry.get("client_url"):
-        return str(api_entry["client_url"]).rstrip("/")
-    client_base = provider.get("client_base_url") or provider.get("base_url")
-    if not client_base:
-        raise ValueError("provider missing client_base_url / base_url")
-    return str(client_base).rstrip("/")
-
-
-def build_routing_plan(tool, provider, api_entry, api_key):
-    """Compute translator mode, URLs, and proxy route (if any)."""
-    tool_proto = TOOL_PROTOCOL.get(tool, PROTO_ANTHROPIC_MESSAGES)
-    upstream_proto = resolve_upstream_protocol(provider, api_entry)
-    translator = resolve_translator(provider, api_entry, tool_proto, upstream_proto)
-    upstream_url = resolve_upstream_url(provider, api_entry, upstream_proto)
-
-    plan = {
-        "translator": translator,
+def build_routing_plan(tool, provider, api_entry, tool_endpoints=None,
+                       base_url_suffix=""):
+    """Compute an upstream-native plan from JSON tool declarations."""
+    if tool_endpoints is None:
+        tool_endpoints = {
+            "claude": ["messages"], "codex": ["responses"],
+        }.get(tool, [])
+        base_url_suffix = {"claude": "", "codex": "/v1"}.get(tool, "")
+    tool_proto, base_url_suffix = json_tool_api_shape(
+        tool, tool_endpoints, base_url_suffix)
+    require_native_endpoint(api_entry, tool_proto)
+    base_url = resolve_client_base_url(provider)
+    local_base_url = apply_base_url_suffix(base_url, base_url_suffix)
+    return {
         "tool_protocol": tool_proto,
-        "upstream_protocol": upstream_proto,
-        "upstream_url": upstream_url,
-        "mode": translator,
-        "route": None,
-        "proxy_port": None,
-        "local_base_url": upstream_url,
+        "api_endpoint": tool_proto,
+        "base_url_suffix": base_url_suffix,
+        "mode": "proxy",
+        "local_base_url": local_base_url,
     }
 
-    if translator == TRANSLATOR_EMBEDDED:
-        route_info = PROXY_ROUTES.get((tool_proto, upstream_proto))
-        if not route_info:
-            raise ValueError(
-                "embedded translator not configured for %s -> %s"
-                % (tool_proto, upstream_proto)
-            )
-        plan["mode"] = "proxy"  # cli.ProxyManager legacy field
-        plan["route"] = route_info["route"]
-        plan["proxy_port"] = route_info["port"]
-        plan["local_base_url"] = "http://127.0.0.1:%d" % route_info["port"]
-    elif translator == TRANSLATOR_EXTERNAL:
-        plan["local_base_url"] = resolve_client_base_url(provider, api_entry)
-    elif translator == TRANSLATOR_DIRECT:
-        plan["local_base_url"] = upstream_url
-    else:
-        raise ValueError("unknown translator mode %r" % translator)
 
-    return plan
+# ===========================================================================
+# api_proxy
+# ===========================================================================
+
+API_MODELS_FILE = os.path.join(os.path.expanduser("~/.cam"), "api-models.json")
+_DEBUG_CACHE = {"path": None, "signature": None, "enabled": False}
+_MAX_RESPONSE_CAPTURE = 4 * 1024 * 1024
+_MAX_ERROR_INSPECT = 64 * 1024
+
+
+def _is_retryable_internal_400(status, body):
+    """Identify IH's transient generic internal 400, not schema errors."""
+    if int(status or 0) != 400:
+        return False
+    text = bytes(body or b"").decode("utf-8", "replace").lower()
+    return "invalid_argument" in text and "internal error occurred" in text
+
+
+RETRY_STATUS_POLICIES = {
+    429: {"max_elapsed": 300.0, "initial_delay": 1.0,
+          "max_delay": 30.0},
+    400: {"max_elapsed": 8.0, "initial_delay": 1.0,
+          "max_delay": 2.0, "retry_if": _is_retryable_internal_400},
+}
+
+try:
+    from http.server import ThreadingHTTPServer
+except ImportError:
+    # Python 3.6 ships HTTPServer but not ThreadingHTTPServer. CAMC supports
+    # that runtime on older PDX hosts, so provide the identical stdlib mixin.
+    class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+
+
+def upstream_request_path(upstream_url, request_path):
+    """Join a client request to the upstream without duplicating ``/v1``."""
+    upstream = urlsplit(str(upstream_url or ""))
+    request = urlsplit(str(request_path or "/"))
+    base = upstream.path.rstrip("/")
+    path = request.path or "/"
+    if base and (path == base or path.startswith(base + "/")):
+        joined = path
+    else:
+        joined = base + (path if path.startswith("/") else "/" + path)
+    if request.query:
+        joined += "?" + request.query
+    return joined or "/"
+
+
+def upstream_request_headers(headers, body_length):
+    """Build upstream headers while keeping the response cache readable."""
+    result = {key: value for key, value in headers.items()
+              if key.lower() not in ("host", "content-length", "connection",
+                                     "accept-encoding")}
+    result["Accept-Encoding"] = "identity"
+    result["Content-Length"] = str(body_length)
+    return result
+
+
+def _retry_after_seconds(value, now=None):
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        try:
+            dt = parsedate_to_datetime(str(value))
+            return max(0.0, dt.timestamp() - (time.time() if now is None else now))
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+
+def request_upstream_with_retry(connect, method, path, body, headers,
+                                policies=None, sleep=time.sleep,
+                                monotonic=time.monotonic,
+                                jitter=None, on_retry=None):
+    """Open an upstream response, hiding only configured transient statuses."""
+    policies = RETRY_STATUS_POLICIES if policies is None else policies
+    jitter = jitter or (lambda delay: random.uniform(delay * .8, delay * 1.2))
+    started, attempts = monotonic(), 0
+    while True:
+        conn = connect()
+        conn.request(method, path, body, headers)
+        response = conn.getresponse()
+        policy = policies.get(response.status)
+        if not policy:
+            return conn, response
+        retry_if = policy.get("retry_if")
+        if retry_if:
+            try:
+                inspected = response.read(_MAX_ERROR_INSPECT)
+            except (IOError, OSError):
+                inspected = b""
+            response._camc_prefetched_body = inspected
+            if not retry_if(response.status, inspected):
+                return conn, response
+        elapsed = monotonic() - started
+        remaining = float(policy.get("max_elapsed", 0)) - elapsed
+        base = min(float(policy.get("max_delay", 30)),
+                   float(policy.get("initial_delay", 1)) * (2 ** attempts))
+        retry_after = _retry_after_seconds(response.getheader("Retry-After"))
+        delay = max(.25, retry_after if retry_after is not None else jitter(base))
+        if remaining <= 0 or delay > remaining:
+            return conn, response
+        response.read()
+        conn.close()
+        attempts += 1
+        if on_retry:
+            on_retry(response.status, attempts, delay)
+        sleep(delay)
+
+
+def read_upstream_response(response, size=65536):
+    """Read a response while preserving the body inspected for retry."""
+    prefetched = getattr(response, "_camc_prefetched_body", b"")
+    if prefetched:
+        chunk = prefetched[:size]
+        remainder = prefetched[len(chunk):]
+        if remainder:
+            response._camc_prefetched_body = remainder
+        else:
+            try:
+                del response._camc_prefetched_body
+            except AttributeError:
+                pass
+        if len(chunk) < size:
+            chunk += response.read(size - len(chunk))
+        return chunk
+    return response.read(size)
+
+
+def stop_agent_api_proxy(agent):
+    """Terminate only the proxy whose command line names this exact agent."""
+    api = agent.get("api") if isinstance(agent, dict) else None
+    try:
+        pid = int((api or {}).get("proxy_pid") or 0)
+    except (TypeError, ValueError):
+        return
+    if pid <= 0:
+        return
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as handle:
+            cmdline = handle.read().decode("utf-8", "replace")
+        marker = "--owner\x00%s\x00" % agent.get("id", "")
+        if "_api_proxy\x00" not in cmdline or marker not in cmdline:
+            return
+        os.kill(pid, signal.SIGTERM)
+    except (IOError, OSError):
+        pass
+
+
+class ResponseCallCache(object):
+    """Small process-local map of prior Responses output items."""
+
+    def __init__(self, max_entries=128):
+        self.max_entries = max(1, int(max_entries))
+        self._items = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, response_id):
+        with self._lock:
+            calls = self._items.get(str(response_id or ""))
+            return list(calls) if calls else None
+
+    def put(self, response_id, calls):
+        response_id = str(response_id or "")
+        calls = [dict(call) for call in (calls or [])
+                 if isinstance(call, dict)]
+        if not response_id or not calls:
+            return
+        with self._lock:
+            self._items.pop(response_id, None)
+            self._items[response_id] = calls
+            while len(self._items) > self.max_entries:
+                self._items.popitem(last=False)
+
+
+def expand_tool_continuation(payload, cache):
+    """Expand IH's unsupported stateful tool result into stateless input."""
+    if not isinstance(payload, dict):
+        return False
+    previous_id = payload.get("previous_response_id")
+    inputs = payload.get("input")
+    if not previous_id or not isinstance(inputs, list):
+        return False
+    if not any(isinstance(item, dict)
+               and str(item.get("type") or "").endswith("_output")
+               for item in inputs):
+        return False
+    calls = cache.get(previous_id) if hasattr(cache, "get") else None
+    if not calls:
+        return False
+    payload["input"] = list(calls) + inputs
+    payload.pop("previous_response_id", None)
+    return True
+
+
+def normalize_tool_history(payload):
+    """Remove OpenAI-only reasoning state from IH tool continuations."""
+    inputs = payload.get("input") if isinstance(payload, dict) else None
+    if not isinstance(inputs, list) or not any(
+            isinstance(item, dict) and
+            str(item.get("type") or "").endswith("_output")
+            for item in inputs):
+        return False
+    normalized = []
+    pending_calls = set()
+    for item in inputs:
+        item_type = str(item.get("type") or "") if isinstance(item, dict) else ""
+        call_id = str(item.get("call_id") or "") if isinstance(item, dict) else ""
+        if item_type.endswith("_call") and call_id:
+            pending_calls.add(call_id)
+        if item_type == "reasoning" or (item_type == "message" and pending_calls):
+            continue
+        normalized.append(item)
+        if item_type.endswith("_output") and call_id:
+            pending_calls.discard(call_id)
+    if len(normalized) == len(inputs):
+        return False
+    payload["input"] = normalized
+    return True
+
+
+def normalize_response_text_format(payload):
+    """Make the Responses API's default plain-text format explicit."""
+    text = payload.get("text") if isinstance(payload, dict) else None
+    if not isinstance(text, dict) or "format" in text:
+        return False
+    text["format"] = {"type": "text"}
+    return True
+
+
+def normalize_reasoning_effort(payload, mapping):
+    """Map Codex effort names to the upstream model's accepted values."""
+    reasoning = payload.get("reasoning") if isinstance(payload, dict) else None
+    if not isinstance(reasoning, dict) or not isinstance(mapping, dict):
+        return False
+    effort = str(reasoning.get("effort") or "").strip().lower()
+    mapped = str(mapping.get(effort) or "").strip().lower()
+    if not mapped or mapped == effort:
+        return False
+    reasoning["effort"] = mapped
+    return True
+
+
+def extract_response_output(body):
+    """Extract response id/output items from JSON or Responses SSE bytes."""
+    if not body:
+        return "", []
+    objects = []
+    try:
+        objects.append(json.loads(body.decode("utf-8")))
+    except (UnicodeDecodeError, ValueError):
+        for raw in body.splitlines():
+            if not raw.startswith(b"data:"):
+                continue
+            data = raw[5:].strip()
+            if not data or data == b"[DONE]":
+                continue
+            try:
+                objects.append(json.loads(data.decode("utf-8")))
+            except (UnicodeDecodeError, ValueError):
+                continue
+    response_id = ""
+    calls = []
+    seen = set()
+    for obj in objects:
+        if not isinstance(obj, dict):
+            continue
+        response = obj.get("response")
+        if not isinstance(response, dict):
+            response = obj if obj.get("object") == "response" else None
+        if response:
+            response_id = str(response.get("id") or response_id)
+            items = response.get("output") or []
+        elif obj.get("type") == "response.output_item.done":
+            response_id = str(obj.get("response_id") or response_id)
+            items = [obj.get("item")]
+        else:
+            items = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("call_id") or item.get("id") or
+                      json.dumps(item, sort_keys=True))
+            if key not in seen:
+                seen.add(key)
+                calls.append(dict(item))
+    return response_id, calls
+
+
+extract_response_calls = extract_response_output
+
+
+def debug_log_file_for_owner(owner):
+    """Return the fixed owner log path when JSON debug is enabled now."""
+    try:
+        stat = os.stat(API_MODELS_FILE)
+        signature = (API_MODELS_FILE, stat.st_mtime, stat.st_size)
+    except OSError:
+        signature = (API_MODELS_FILE, None, None)
+    if signature != (_DEBUG_CACHE["path"], _DEBUG_CACHE["signature"],
+                     _DEBUG_CACHE.get("size")):
+        enabled = False
+        try:
+            with open(API_MODELS_FILE, "r") as handle:
+                enabled = json.load(handle).get("debug_api_proxy") is True
+        except (IOError, ValueError, AttributeError):
+            pass
+        _DEBUG_CACHE["path"] = API_MODELS_FILE
+        _DEBUG_CACHE["signature"] = signature[1]
+        _DEBUG_CACHE["size"] = signature[2]
+        _DEBUG_CACHE["enabled"] = enabled
+    if not _DEBUG_CACHE["enabled"]:
+        return ""
+    safe_owner = re.sub(r"[^A-Za-z0-9_.-]", "_", str(owner or ""))
+    return os.path.join(os.path.dirname(API_MODELS_FILE), "logs",
+                        "api-proxy-%s.log" % safe_owner)
+
+
+def write_proxy_log(log_file, transaction_id, event, method, request_path,
+                    model, status, duration_ms, error_class, shape=""):
+    """Append a deliberately body/token-free proxy transaction record."""
+    if not log_file:
+        return
+    path = urlsplit(str(request_path or "/")).path or "/"
+    safe_shape = re.sub(r"[^A-Za-z0-9_=,.-]", "_", str(shape or ""))
+    line = ("%s tx=%s event=%s method=%s path=%s model=%s status=%s "
+            "duration_ms=%d error=%s%s\n"
+            % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+               transaction_id, event, method, path, model, status,
+               int(duration_ms), error_class or "-",
+               (" shape=" + safe_shape) if safe_shape else ""))
+    try:
+        directory = os.path.dirname(log_file)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        with open(log_file, "a") as handle:
+            handle.write(line)
+    except IOError:
+        pass
+
+
+class _Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *_args):
+        return
+
+    def do_GET(self):
+        self._forward()
+
+    def do_POST(self):
+        self._forward()
+
+    def _forward(self):
+        started = time.time()
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        log_file = debug_log_file_for_owner(self.server.owner)
+        with self.server.transaction_lock:
+            self.server.transaction_count += 1
+            transaction_id = str(self.server.transaction_count)
+        write_proxy_log(log_file, transaction_id, "request",
+                        self.command, self.path, self.server.upstream_model,
+                        "-", 0, "")
+        body = self.rfile.read(length) if length else b""
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            input_types = [str(item.get("type") or "-")
+                           for item in (payload.get("input") or [])
+                           if isinstance(item, dict)]
+            had_previous = bool(payload.get("previous_response_id"))
+            expanded = expand_tool_continuation(
+                payload, self.server.response_call_cache)
+            normalized = normalize_tool_history(payload)
+            text_normalized = normalize_response_text_format(payload)
+            reasoning_normalized = normalize_reasoning_effort(
+                payload, self.server.reasoning_mapping)
+            write_proxy_log(
+                log_file, transaction_id, "request_shape", self.command,
+                self.path, self.server.upstream_model, "-", 0, "",
+                "previous=%d,expanded=%d,normalized=%d,input=%s" %
+                (had_previous, expanded, normalized,
+                 ",".join(input_types) or "-"))
+            model = str(payload.get("model") or "")
+            if model == self.server.alias or model.startswith(self.server.alias + "["):
+                payload["model"] = self.server.upstream_model
+            if (text_normalized or reasoning_normalized or
+                    model == self.server.alias or model.startswith(
+                    self.server.alias + "[")):
+                body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        target = urlsplit(self.server.upstream_url)
+        conn_type = (http.client.HTTPSConnection if target.scheme == "https"
+                     else http.client.HTTPConnection)
+        connect = lambda: conn_type(target.hostname, target.port, timeout=90)
+        headers = upstream_request_headers(self.headers, len(body))
+        conn = None
+        try:
+            request_path = upstream_request_path(
+                self.server.upstream_url, self.path)
+            def on_retry(status, attempt, delay):
+                write_proxy_log(
+                    log_file, transaction_id, "retry", self.command,
+                    self.path, self.server.upstream_model, status,
+                    (time.time() - started) * 1000, "",
+                    "attempt=%d,delay_ms=%d" % (attempt, delay * 1000))
+            conn, response = request_upstream_with_retry(
+                connect, self.command, request_path, body, headers,
+                on_retry=on_retry)
+            write_proxy_log(log_file, transaction_id, "response",
+                            self.command, self.path,
+                            self.server.upstream_model, response.status,
+                            (time.time() - started) * 1000, "")
+            self.send_response(response.status)
+            for key, value in response.getheaders():
+                if key.lower() in ("content-length", "transfer-encoding",
+                                   "connection", "server", "date"):
+                    continue
+                self.send_header(key, value)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            captured = bytearray()
+            while True:
+                chunk = read_upstream_response(response, 65536)
+                if not chunk:
+                    break
+                captured.extend(chunk)
+                if len(captured) > _MAX_RESPONSE_CAPTURE:
+                    del captured[:-_MAX_RESPONSE_CAPTURE]
+                self.wfile.write(chunk)
+                self.wfile.flush()
+            if response.status == 200:
+                response_id, calls = extract_response_output(bytes(captured))
+                self.server.response_call_cache.put(response_id, calls)
+                write_proxy_log(
+                    log_file, transaction_id, "response_shape", self.command,
+                    self.path, self.server.upstream_model, response.status,
+                    (time.time() - started) * 1000, "",
+                    "id=%d,output=%s" %
+                    (bool(response_id), ",".join(str(item.get("type") or "-")
+                                                for item in calls) or "-"))
+        except Exception as exc:
+            write_proxy_log(log_file, transaction_id, "error",
+                            self.command, self.path,
+                            self.server.upstream_model, "-",
+                            (time.time() - started) * 1000,
+                            exc.__class__.__name__)
+            raise
+        finally:
+            if conn:
+                conn.close()
+
+
+def bind_server(port, upstream_url="", upstream_model="", alias="", owner="",
+                reasoning_mapping=None):
+    server = ThreadingHTTPServer(("127.0.0.1", int(port)), _Handler)
+    actual = int(server.server_address[1])
+    if actual <= 0:
+        server.server_close()
+        raise RuntimeError("API proxy did not receive a port")
+    server.upstream_url = str(upstream_url).rstrip("/")
+    server.upstream_model = str(upstream_model)
+    server.alias = str(alias)
+    server.owner = str(owner or "")
+    server.reasoning_mapping = dict(reasoning_mapping or {})
+    server.transaction_count = 0
+    server.transaction_lock = threading.Lock()
+    server.response_call_cache = ResponseCallCache()
+    return server
+
+
+def run_api_proxy(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--upstream-url", required=True)
+    parser.add_argument("--upstream-model", required=True)
+    parser.add_argument("--alias", required=True)
+    parser.add_argument("--owner", default="")
+    parser.add_argument("--reasoning-map", default="{}")
+    args = parser.parse_args(argv)
+    try:
+        reasoning_mapping = json.loads(args.reasoning_map)
+    except ValueError:
+        reasoning_mapping = {}
+    server = bind_server(args.port, args.upstream_url, args.upstream_model,
+                         args.alias, args.owner, reasoning_mapping)
+    print(server.server_address[1], flush=True)
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
 
 
 # ===========================================================================
 # api_resolver
 # ===========================================================================
 
-# Supported today: Claude + Codex with curated Inference Hub models.
+# API profiles are supported for Claude and Codex. Cursor remains login-only.
 API_SUPPORTED_TOOLS = frozenset(["claude", "codex"])
 CURATED_API_KEYS = frozenset(key for key, _model, _aliases in CURATED_APIS)
 
 # One shared Claude Code config for all --api runs (onboarding once).
 CLAUDE_API_CONFIG_DIR = os.path.join(CAM_DIR, "claude-api")
-# Isolated Codex home — does not touch ~/.codex/ OAuth login.
-CODEX_API_CONFIG_DIR = os.path.join(CAM_DIR, "codex-api")
+# Isolated Codex home — does not touch ~/.codex/ OAuth login or ~/.cam state.
+CODEX_API_CONFIG_DIR = os.path.expanduser("~/.codex-api")
+CODEX_LOGIN_SKILLS_DIR = os.path.expanduser("~/.codex/skills")
 CODEX_API_PROVIDER = "camc-ihub"
 CODEX_API_ENV_KEY = "CAMC_CODEX_API_KEY"
 
@@ -9406,9 +10290,8 @@ def validate_api_run(tool, api_key, api_entry=None):
     """Raise ValueError if tool/model is not supported for --api today."""
     if tool not in API_SUPPORTED_TOOLS:
         raise ValueError(
-            "--api is not supported for tool %r. "
-            "Supported today: camc run -t claude|codex --api NAME. "
-            "Cursor: use normal login without --api (not implemented). "
+            "--api is currently only supported for Claude and Codex; tool %r is not "
+            "supported for API profiles. "
             "Supported models: %s."
             % (tool, supported_api_models_text())
         )
@@ -9480,17 +10363,49 @@ def ensure_claude_api_config_dir():
     return CLAUDE_API_CONFIG_DIR
 
 
-def ensure_codex_api_config_dir(base_url, api_name):
-    """Seed ~/.cam/codex-api/ for Codex --api (isolated from ~/.codex/)."""
+def _ensure_codex_skills_link():
+    """Reuse normal Codex skills from the isolated API home, idempotently."""
+    source = CODEX_LOGIN_SKILLS_DIR
+    target = os.path.join(CODEX_API_CONFIG_DIR, "skills")
+    if not os.path.isdir(source):
+        return "missing_source"
+    if os.path.islink(target):
+        if os.path.realpath(target) == os.path.realpath(source):
+            return "linked"
+        try:
+            os.unlink(target)
+        except OSError:
+            return "error"
+    elif os.path.lexists(target):
+        # Never delete a non-empty API-home skills directory owned by a user.
+        if not os.path.isdir(target) or os.listdir(target):
+            return "preserved"
+        try:
+            os.rmdir(target)
+        except OSError:
+            return "preserved"
+    try:
+        os.makedirs(CODEX_API_CONFIG_DIR, exist_ok=True)
+        os.symlink(source, target, target_is_directory=True)
+        return "linked"
+    except OSError:
+        return "error"
+
+
+def ensure_codex_api_config_dir(base_url, api_name, require_endpoint="responses",
+                                model_id=None):
+    """Seed ~/.codex-api/ for Codex --api (isolated from ~/.codex/)."""
 
     os.makedirs(CODEX_API_CONFIG_DIR, exist_ok=True)
+    _ensure_codex_skills_link()
     base_url = str(base_url or "").rstrip("/")
-    if base_url and not base_url.endswith("/v1"):
-        base_url = base_url + "/v1"
     api_name = str(api_name or "api")
+    model_id = str(model_id or api_name)
     catalog_path = os.path.join(CODEX_API_CONFIG_DIR, "camc-model-catalog.json")
     metadata = resolve_api_metadata(api_name)
-    write_codex_model_catalog(catalog_path, api_name, metadata)
+    write_codex_model_catalog(
+        catalog_path, api_name, metadata, require_endpoint=require_endpoint,
+        model_id=model_id)
     config_path = os.path.join(CODEX_API_CONFIG_DIR, "config.toml")
     content = (
         'model = "%s"\n'
@@ -9498,12 +10413,12 @@ def ensure_codex_api_config_dir(base_url, api_name):
         'model_catalog_json = "%s"\n'
         '\n'
         '[model_providers.%s]\n'
-        'name = "CAM Inference Hub Proxy"\n'
+        'name = "CAM Inference Hub"\n'
         'base_url = "%s"\n'
         'env_key = "%s"\n'
         'wire_api = "responses"\n'
     ) % (
-        api_name,
+        model_id,
         CODEX_API_PROVIDER,
         catalog_path,
         CODEX_API_PROVIDER,
@@ -9523,15 +10438,19 @@ def ensure_codex_api_config_dir(base_url, api_name):
     return CODEX_API_CONFIG_DIR
 
 
-def resolve_run_plan(tool, api_name, no_api_proxy=False, proxy_debug=False):
-    """Return plan dict for camc run --api."""
+def resolve_run_plan(tool, api_name):
+    """Return a direct native plan for ``camc run --api``."""
     data = ensure_ready()
     key = resolve_api_name(data, api_name)
     api_entry = dict((data.get("apis") or {}).get(key) or {})
+    for alias_tool, alias in (api_entry.get("client_models") or {}).items():
+        if api_name == alias and alias_tool != tool:
+            raise ValueError("API %r is not supported for tool %r" %
+                             (api_name, tool))
     validate_api_run(tool, key, api_entry)
     if api_entry.get("enabled") is False:
         try:
-            check_provider(data, token_resolver=None)
+            check_provider(data)
         except Exception:
             pass
         api_entry = dict((data.get("apis") or {}).get(key) or {})
@@ -9539,34 +10458,39 @@ def resolve_run_plan(tool, api_name, no_api_proxy=False, proxy_debug=False):
             reason = api_entry.get("enabled_reason") or "disabled"
             raise ValueError("API %r is disabled (%s)" % (key, reason))
 
-    provider_id = api_entry.get("provider") or data.get("default_provider")
+    provider_id = api_entry.get("provider")
+    if not provider_id:
+        raise ValueError("API %r has no provider" % key)
     provider = get_provider(data, provider_id)
-    routing = build_routing_plan(tool, provider, api_entry, key)
-    client_model = key
-
-    if routing["translator"] == TRANSLATOR_EMBEDDED and no_api_proxy:
-        raise ValueError(
-            "API %r requires embedded proxy route %s but --no-api-proxy was set"
-            % (key, routing.get("route"))
-        )
+    if not tool_supports_api(data, tool, key):
+        raise ValueError("API %r is not supported for tool %r" % (key, tool))
+    tool_endpoints, base_url_suffix = tool_api_config(data, tool)
+    routing = build_routing_plan(
+        tool, provider, api_entry, tool_endpoints=tool_endpoints,
+        base_url_suffix=base_url_suffix)
+    upstream_model = str(api_entry.get("model") or key)
+    client_model = str((api_entry.get("client_models") or {}).get(tool)
+                       or upstream_model)
 
     plan = {
         "name": key,
         "tool": tool,
         "provider": provider_id,
         "model": api_entry.get("model"),
+        "client_model": client_model,
+        "proxy_required": True,
         "mode": routing["mode"],
-        "translator": routing["translator"],
-        "route": routing.get("route"),
-        "upstream_url": routing["upstream_url"],
         "local_base_url": routing["local_base_url"],
-        "upstream_protocol": routing["upstream_protocol"],
         "tool_protocol": routing["tool_protocol"],
-        "upstream_proto": routing["upstream_protocol"],
+        "api_endpoint": routing.get("api_endpoint"),
+        "base_url_suffix": routing.get("base_url_suffix") or "",
+        "upstream_base_url": str(provider.get("base_url") or "").rstrip("/"),
         "auth_key": provider.get("auth_key") or "inference_hub",
         "env_names": provider.get("env_names") or [],
-        "proxy_debug": proxy_debug,
-        "proxy_port": routing.get("proxy_port"),
+        "token_file": provider.get("token_file"),
+        "token_key": provider.get("token_key"),
+        "reasoning_mapping": ((api_entry.get("reasoning") or {}).get(
+            "mapping") or {}).get("codex") or {},
         "env": {},
     }
 
@@ -9577,1638 +10501,37 @@ def resolve_run_plan(tool, api_name, no_api_proxy=False, proxy_debug=False):
 def _build_env_overrides(tool, plan, provider, api_entry, client_model):
     env = {}
     base = plan["local_base_url"].rstrip("/")
-    translator = plan.get("translator") or plan.get("mode")
 
     if tool == "claude":
         env["ANTHROPIC_BASE_URL"] = base
         env["ANTHROPIC_MODEL"] = client_model
         env["CLAUDE_CONFIG_DIR"] = ensure_claude_api_config_dir()
-        if translator == TRANSLATOR_EMBEDDED:
-            env["ANTHROPIC_API_KEY"] = str(
-                api_entry.get("client_api_key")
-                or provider.get("client_api_key")
-                or "sk-camc-local"
-            )
-            env["ANTHROPIC_AUTH_TOKEN"] = ""
-        elif translator == TRANSLATOR_EXTERNAL:
-            env["ANTHROPIC_API_KEY"] = str(
-                api_entry.get("client_api_key")
-                or provider.get("client_api_key")
-                or "sk-camc-local"
-            )
-            env["ANTHROPIC_AUTH_TOKEN"] = ""
-        elif translator == TRANSLATOR_DIRECT:
-            env["ANTHROPIC_AUTH_TOKEN"] = ""
-            env["_API_USE_RESOLVED_TOKEN"] = "1"
-        env.update(claude_context_env_overrides(client_model, api_entry.get("metadata")))
+        env["ANTHROPIC_AUTH_TOKEN"] = ""
+        env["_API_USE_RESOLVED_TOKEN"] = "1"
+        env.update(claude_context_env_overrides(plan.get("name") or client_model,
+                                                api_entry.get("metadata")))
         return env
 
     if tool == "codex":
-        if translator == TRANSLATOR_EMBEDDED:
-            env[CODEX_API_ENV_KEY] = str(
-                api_entry.get("client_api_key")
-                or provider.get("client_api_key")
-                or "sk-camc-local"
-            )
-        elif translator == TRANSLATOR_DIRECT:
-            env["_API_USE_RESOLVED_TOKEN"] = "1"
-            env[CODEX_API_ENV_KEY] = ""
-        # CODEX_HOME + config.toml finalized after proxy port is known (cmd_run).
+        env["_API_USE_RESOLVED_TOKEN"] = "1"
+        env[CODEX_API_ENV_KEY] = ""
         return env
 
     return env
 
 
-# ===========================================================================
-# proxy.common
-# ===========================================================================
-
-DROP_ANTHROPIC_KEYS = frozenset({
-    "output_config",
-    "context_management",
-    "metadata",
-})
-
-
-def json_dumps(value):
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-
-def json_loads(data):
-    return json.loads(data.decode("utf-8"))
-
-
-def resolve_upstream_model(model, default):
-    """Map camc API profile names to Inference Hub model ids."""
-    value = str(model or default or "").strip()
-    default = str(default or "").strip()
-    if value.endswith("[1m]"):
-        value = value[:-4]
-    if not value and default:
-        value = default
-    if not value:
-        return default
-
-    # Already a full IHUB model id (vendor/org/...).
-    if "/" in value:
-        return value
-
-    mapped = _ihub_model_for_api_name(value)
-    if mapped:
-        return mapped
-
-    # Proxy started with --upstream-model; use when client model is the alias.
-    if default and "/" in default:
-        return default
-
-    return value
-
-
-def _ihub_model_for_api_name(name):
-    """Resolve short API name via ~/.cam/api-models.json."""
-    if not name:
-        return None
-    try:
-        data = ensure_ready()
-        key = resolve_api_name(data, name)
-        entry = (data.get("apis") or {}).get(key) or {}
-        model = entry.get("model")
-        if isinstance(model, str) and model.strip():
-            return model.strip()
-    except (ValueError, IOError, OSError):
-        pass
-    return None
-
-
-def text_from_content(content):
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return "" if content is None else str(content)
-    parts = []
-    for part in content:
-        if isinstance(part, dict):
-            typ = part.get("type")
-            if typ in ("text", "input_text", "output_text"):
-                text = part.get("text")
-                if isinstance(text, str):
-                    parts.append(text)
-        elif isinstance(part, str):
-            parts.append(part)
-    return "\n".join(x for x in parts if x)
-
-
-def call_chat_completions(payload, api_key, timeout, url=None):
-    body = json_dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        body,
-        method="POST",
-        headers={
-            "Authorization": "Bearer %s" % api_key,
-            "Content-Type": "application/json",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json_loads(resp.read())
-
-
-def upstream_error_detail(exc):
-    return exc.read().decode("utf-8", "replace")
-
-
-class ProxyLogger(object):
-    def __init__(self, route, enabled, path):
-        self.route = route
-        self.enabled = bool(enabled)
-        self.path = path
-
-    def log(self, event, **fields):
-        if not self.enabled:
-            return
-        row = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "event": event}
-        row.update(fields)
-        try:
-            d = os.path.dirname(self.path)
-            if d:
-                os.makedirs(d, exist_ok=True)
-            with open(self.path, "a") as f:
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
-        except OSError:
-            pass
-
-
-class RequestTimer(object):
-    def __init__(self):
-        self._start = time.time()
-
-    @property
-    def elapsed_ms(self):
-        return int((time.time() - self._start) * 1000)
-
-
-def last_user_preview_messages(req, limit=120):
-    for msg in reversed(req.get("messages") or []):
-        if isinstance(msg, dict) and msg.get("role") == "user":
-            text = text_from_content(msg.get("content"))
-            if text:
-                return text[:limit]
-    return ""
-
-
-def summarize_chat_response(raw):
-    choices = raw.get("choices") or []
-    msg = ((choices[0] or {}).get("message") or {}) if choices else {}
-    return {
-        "finish_reason": (choices[0] or {}).get("finish_reason") if choices else None,
-        "has_tool_calls": bool(msg.get("tool_calls")),
-        "content_len": len(str(msg.get("content") or "")),
-    }
-
-
-def last_user_preview_responses(req, limit=120):
-    """Best-effort user text preview from a Responses API request."""
-    instructions = str(req.get("instructions") or "").strip()
-    if instructions:
-        return instructions[:limit]
-    inp = req.get("input")
-    if isinstance(inp, str) and inp.strip():
-        return inp.strip()[:limit]
-    if isinstance(inp, list):
-        for item in reversed(inp):
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") == "message" and item.get("role") == "user":
-                text = text_from_content(item.get("content"))
-                if text:
-                    return text[:limit]
-    return ""
-
-
-# ===========================================================================
-# proxy.textual_tools
-# ===========================================================================
-
-TOOL_CALL_RE = re.compile(
-    r"<tool_call>\s*(?P<name>[^<\s]+)(?P<body>.*?)</\s*tool_call\s*>",
-    re.DOTALL,
-)
-ARG_RE = re.compile(
-    r"<arg_key>\s*(?P<key>.*?)\s*</\s*arg_key\s*>\s*"
-    r"<arg_value>\s*(?P<value>.*?)\s*</\s*arg_value\s*>",
-    re.DOTALL,
-)
-
-# DeepSeek DSML markers use fullwidth vertical bar (U+FF5C).
-_DSML = "\uFF5C"
-DSML_INVOKE_RE = re.compile(
-    r"<" + _DSML + r"DSML" + _DSML
-    + r"invoke\s+name=\"(?P<name>[^\"]+)\"\s*>(?P<body>.*?)</"
-    + _DSML + r"DSML" + _DSML + r"invoke>",
-    re.DOTALL,
-)
-DSML_PARAM_RE = re.compile(
-    r"<" + _DSML + r"DSML" + _DSML
-    + r"parameter\s+name=\"(?P<key>[^\"]+)\"[^>]*>(?P<value>.*?)</"
-    + _DSML + r"DSML" + _DSML + r"parameter>",
-    re.DOTALL,
-)
-DSML_STRAY_RE = re.compile(
-    r"</?" + _DSML + r"DSML" + _DSML + r"(?:tool_calls|function_calls|invoke|parameter)[^>]*>",
-    re.DOTALL,
-)
-
-
-def tool_names(req):
-    names = set()
-    for tool in req.get("tools") or []:
-        if isinstance(tool, dict) and isinstance(tool.get("name"), str):
-            names.add(tool["name"])
-    return names
-
-
-def normalize_tool_name(raw_name, valid_names):
-    name = raw_name.strip()
-    if name in valid_names:
-        return name
-    underscored = name.replace("-", "_")
-    if underscored in valid_names:
-        return underscored
-    return name
-
-
-def _tool_block(name, args, idx):
-    return {
-        "type": "tool_use",
-        "id": "toolu_ihub_%d_%d" % (int(time.time() * 1000), idx),
-        "name": name,
-        "input": args,
-    }
-
-
-def parse_textual_tool_calls(text, valid_names):
-    blocks = []
-    for idx, match in enumerate(TOOL_CALL_RE.finditer(text), start=1):
-        args = {}
-        for arg in ARG_RE.finditer(match.group("body")):
-            key = arg.group("key").strip()
-            if key:
-                args[key] = arg.group("value").strip()
-        blocks.append(_tool_block(
-            normalize_tool_name(match.group("name"), valid_names), args, idx))
-    return blocks, TOOL_CALL_RE.sub("", text).strip()
-
-
-def parse_dsml_tool_calls(text, valid_names):
-    blocks = []
-    for idx, match in enumerate(DSML_INVOKE_RE.finditer(text), start=1):
-        args = {}
-        for arg in DSML_PARAM_RE.finditer(match.group("body")):
-            key = arg.group("key").strip()
-            if key:
-                args[key] = arg.group("value").strip()
-        blocks.append(_tool_block(
-            normalize_tool_name(match.group("name"), valid_names), args, idx))
-    if not blocks:
-        return [], text
-    cleaned = DSML_INVOKE_RE.sub("", text)
-    cleaned = DSML_STRAY_RE.sub("", cleaned).strip()
-    return blocks, cleaned
-
-
-def parse_dsml_fragment(text, valid_names):
-    """Handle truncated DSML (closing tags only) from DeepSeek."""
-    marker = "</" + _DSML + "DSML" + _DSML + "invoke>"
-    if marker not in text and (_DSML + "DSML" + _DSML) not in text:
-        return [], text
-    if DSML_INVOKE_RE.search(text):
-        return [], text
-    body = text.split(marker)[0]
-    body = DSML_STRAY_RE.sub("", body).strip()
-    if not body:
-        return [], text
-    name = "Task" if "Task" in valid_names else None
-    if not name:
-        for candidate in ("Bash", "Write", "Edit", "Read"):
-            if candidate in valid_names:
-                name = candidate
-                break
-    if not name:
-        return [], text
-    inp = {"prompt": body} if name == "Task" else {"command": "true"}
-    if name != "Task":
-        inp = {"description": body[:2000]}
-    return [_tool_block(name, inp, 1)], ""
-
-
-def _extract_json_objects(text):
-    """Yield top-level {...} substrings with balanced braces."""
-    i = 0
-    while i < len(text):
-        if text[i] != "{":
-            i += 1
-            continue
-        depth = 0
-        for j in range(i, len(text)):
-            ch = text[j]
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    yield text[i:j + 1]
-                    i = j + 1
-                    break
-        else:
-            break
-
-
-def _infer_tool_from_args(args):
-    if not isinstance(args, dict) or not args:
-        return None
-    keys = set(args.keys())
-    if "file_path" in keys or "path" in keys and "pattern" not in keys and "command" not in keys:
-        if "old_string" in keys or "new_string" in keys or "replace_all" in keys:
-            return "Edit"
-        return "Read"
-    if "pattern" in keys and ("path" in keys or "glob_pattern" in keys):
-        return "Glob"
-    if "command" in keys:
-        return "Bash"
-    if "prompt" in keys or "description" in keys:
-        return "Task"
-    return None
-
-
-def parse_json_tool_calls(text, valid_names):
-    """GPT-OSS sometimes emits tool JSON as plain text."""
-    blocks = []
-    remaining = text
-    for chunk in list(_extract_json_objects(text)):
-        try:
-            obj = json.loads(chunk)
-        except (ValueError, TypeError):
-            continue
-        name = obj.get("tool") or obj.get("name")
-        args = obj.get("arguments") or obj.get("input")
-        if not isinstance(name, str) or not name.strip():
-            name = _infer_tool_from_args(obj if isinstance(args, dict) else obj)
-            args = obj if isinstance(args, dict) else {}
-        if not isinstance(name, str) or not name.strip():
-            continue
-        if not isinstance(args, dict):
-            args = obj if isinstance(obj, dict) else {"value": args}
-        blocks.append(_tool_block(normalize_tool_name(name, valid_names), args, len(blocks) + 1))
-        remaining = remaining.replace(chunk, "", 1)
-    return blocks, remaining.strip()
-
-
-def parse_all_textual_tool_calls(text, valid_names):
-    cleaned = text.split("<|call|>")[0].split("</|call|>")[0]
-    blocks, remaining = parse_textual_tool_calls(cleaned, valid_names)
-    if blocks:
-        return blocks, remaining
-    blocks, remaining = parse_dsml_tool_calls(remaining, valid_names)
-    if blocks:
-        return blocks, remaining
-    blocks, remaining = parse_json_tool_calls(remaining, valid_names)
-    if blocks:
-        return blocks, remaining
-    return parse_dsml_fragment(remaining, valid_names)
-
-
-def rewrite_anthropic_response(req, resp):
-    text_parts = []
-    passthrough = []
-    for part in resp.get("content") or []:
-        if isinstance(part, dict) and part.get("type") == "text":
-            text = part.get("text")
-            if isinstance(text, str):
-                text_parts.append(text)
-        elif isinstance(part, dict):
-            passthrough.append(part)
-    text = "\n".join(text_parts)
-    tool_blocks, remaining = parse_all_textual_tool_calls(text, tool_names(req))
-    if not tool_blocks:
-        return resp
-    rewritten = dict(resp)
-    content = []
-    if remaining:
-        content.append({"type": "text", "text": remaining})
-    content.extend(passthrough)
-    content.extend(tool_blocks)
-    rewritten["content"] = content
-    rewritten["stop_reason"] = "tool_use"
-    rewritten.setdefault("stop_sequence", None)
-    return rewritten
-
-
-# ===========================================================================
-# proxy.messages
-# ===========================================================================
-
-MESSAGES_ROUTE = "completions_to_messages"
-
-
-class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
-    daemon_threads = True
-
-
-def anthropic_tools_to_openai(tools):
-    out = []
-    for tool in tools:
-        if not isinstance(tool, dict):
-            continue
-        name = tool.get("name")
-        if not name:
-            continue
-        schema = tool.get("input_schema") or {"type": "object", "properties": {}}
-        out.append({
-            "type": "function",
-            "function": {
-                "name": str(name),
-                "description": str(tool.get("description") or ""),
-                "parameters": schema,
-            },
-        })
-    return out
-
-
-def _append_system(messages, text):
-    text = str(text or "").strip()
-    if not text:
-        return
-    if messages and messages[0].get("role") == "system":
-        prev = str(messages[0].get("content") or "").strip()
-        messages[0]["content"] = (prev + "\n\n" + text).strip() if prev else text
-    else:
-        messages.insert(0, {"role": "system", "content": text})
-
-
-def anthropic_messages_to_chat(req, upstream_model):
-    messages = []
-
-    system = req.get("system")
-    if isinstance(system, str) and system.strip():
-        _append_system(messages, system)
-    elif isinstance(system, list):
-        parts = []
-        for block in system:
-            if isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text")
-                if isinstance(text, str):
-                    parts.append(text)
-        if parts:
-            _append_system(messages, "\n\n".join(parts))
-
-    for msg in req.get("messages") or []:
-        if not isinstance(msg, dict):
-            continue
-        role = str(msg.get("role") or "user")
-        content = msg.get("content")
-
-        # IHUB/Qwen reject system messages after the first turn — fold into user text.
-        if role == "system":
-            if isinstance(content, str):
-                _append_system(messages, content)
-            elif isinstance(content, list):
-                parts = []
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        text = block.get("text")
-                        if isinstance(text, str):
-                            parts.append(text)
-                if parts:
-                    _append_system(messages, "\n\n".join(parts))
-            continue
-
-        if isinstance(content, str):
-            messages.append({"role": role, "content": content})
-            continue
-        if not isinstance(content, list):
-            continue
-
-        if role == "assistant":
-            text_parts = []
-            tool_calls = []
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                if part.get("type") == "text":
-                    text_parts.append(str(part.get("text") or ""))
-                elif part.get("type") == "tool_use":
-                    tool_calls.append({
-                        "id": str(part.get("id") or "call_%s" % uuid.uuid4().hex[:8]),
-                        "type": "function",
-                        "function": {
-                            "name": str(part.get("name") or "tool"),
-                            "arguments": json_dumps(part.get("input") or {}),
-                        },
-                    })
-            assistant = {"role": "assistant", "content": "\n".join(text_parts) if text_parts else ""}
-            if tool_calls:
-                assistant["tool_calls"] = tool_calls
-            messages.append(assistant)
-            continue
-
-        if role == "user":
-            text_parts = []
-            for part in content:
-                if not isinstance(part, dict):
-                    continue
-                if part.get("type") == "text":
-                    text_parts.append(str(part.get("text") or ""))
-                elif part.get("type") == "tool_result":
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": str(part.get("tool_use_id") or ""),
-                        "content": text_from_content(part.get("content")) or "",
-                    })
-            if text_parts:
-                messages.append({"role": "user", "content": "\n".join(text_parts)})
-            continue
-
-        messages.append({"role": role, "content": text_from_content(content)})
-
-    payload = {
-        "model": upstream_model,
-        "messages": messages,
-        "max_tokens": int(req.get("max_tokens") or 4096),
-    }
-    if "temperature" in req:
-        payload["temperature"] = req["temperature"]
-    if "top_p" in req:
-        payload["top_p"] = req["top_p"]
-    tools = anthropic_tools_to_openai(req.get("tools") or [])
-    if tools:
-        payload["tools"] = tools
-        payload["tool_choice"] = "auto"
-    return payload
-
-
-def _assistant_blocks_from_chat_message(msg):
-    """Map OpenAI chat message -> Anthropic content blocks."""
-    content = []
-    text = msg.get("content")
-    reasoning = msg.get("reasoning_content")
-    tool_calls = msg.get("tool_calls") or []
-
-    # Proxied reasoning models often leave content empty. Claude Code expects
-    # text/tool_use blocks — not thinking blocks with null signatures.
-    if not isinstance(text, str) or not text.strip():
-        if isinstance(reasoning, str) and reasoning.strip():
-            text = reasoning
-
-    if isinstance(text, str) and text.strip():
-        content.append({"type": "text", "text": text})
-
-    for call in tool_calls:
-        fn = call.get("function") or {}
-        args_raw = fn.get("arguments") or "{}"
-        try:
-            args = json_loads(str(args_raw).encode("utf-8"))
-        except (ValueError, TypeError):
-            args = {"raw": str(args_raw)}
-        content.append({
-            "type": "tool_use",
-            "id": str(call.get("id") or "toolu_%s" % uuid.uuid4().hex[:12]),
-            "name": str(fn.get("name") or "tool"),
-            "input": args if isinstance(args, dict) else {"value": args},
-        })
-    return content, bool(tool_calls)
-
-
-def chat_to_anthropic_message(req, chat_raw):
-    choices = chat_raw.get("choices") or []
-    msg = ((choices[0] or {}).get("message") or {}) if choices else {}
-    content, has_tools = _assistant_blocks_from_chat_message(msg)
-
-    usage = chat_raw.get("usage") or {}
-    stop_reason = "tool_use" if has_tools else "end_turn"
-    return {
-        "id": str(chat_raw.get("id") or "msg_%s" % uuid.uuid4().hex[:12]),
-        "type": "message",
-        "role": "assistant",
-        "model": req.get("model"),
-        "stop_reason": stop_reason,
-        "stop_sequence": None,
-        "usage": {
-            "input_tokens": int(usage.get("prompt_tokens") or 0),
-            "output_tokens": int(usage.get("completion_tokens") or 0),
-        },
-        "content": content or [{"type": "text", "text": ""}],
-    }
-
-
-def messages_sse_events(message):
-    start = dict(message)
-    start["content"] = []
-    start["stop_reason"] = None
-    start["stop_sequence"] = None
-    chunks = [
-        "event: message_start\n"
-        "data: %s\n\n" % json_dumps({"type": "message_start", "message": start})
-    ]
-    for idx, block in enumerate(message.get("content") or []):
-        start_block = block
-        if block.get("type") == "text":
-            start_block = {"type": "text", "text": ""}
-        elif block.get("type") == "tool_use":
-            start_block = {
-                "type": "tool_use",
-                "id": block.get("id"),
-                "name": block.get("name"),
-                "input": {},
-            }
-        chunks.append(
-            "event: content_block_start\n"
-            "data: %s\n\n" % json_dumps({
-                "type": "content_block_start",
-                "index": idx,
-                "content_block": start_block,
-            })
-        )
-        if block.get("type") == "text" and block.get("text"):
-            chunks.append(
-                "event: content_block_delta\n"
-                "data: %s\n\n" % json_dumps({
-                    "type": "content_block_delta",
-                    "index": idx,
-                    "delta": {"type": "text_delta", "text": block.get("text")},
-                })
-            )
-        elif block.get("type") == "tool_use":
-            chunks.append(
-                "event: content_block_delta\n"
-                "data: %s\n\n" % json_dumps({
-                    "type": "content_block_delta",
-                    "index": idx,
-                    "delta": {
-                        "type": "input_json_delta",
-                        "partial_json": json_dumps(block.get("input") or {}),
-                    },
-                })
-            )
-        chunks.append(
-            "event: content_block_stop\n"
-            "data: %s\n\n" % json_dumps({"type": "content_block_stop", "index": idx})
-        )
-    chunks.append(
-        "event: message_delta\n"
-        "data: %s\n\n" % json_dumps({
-            "type": "message_delta",
-            "delta": {
-                "stop_reason": message.get("stop_reason"),
-                "stop_sequence": message.get("stop_sequence"),
-            },
-            "usage": message.get("usage") or {},
-        })
-    )
-    chunks.append("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
-    return "".join(chunks).encode("utf-8")
-
-
-class MessagesHandler(BaseHTTPRequestHandler):
-    def _path(self):
-        return urlparse(self.path).path.rstrip("/") or "/"
-
-    def do_GET(self):
-        path = self._path()
-        if path in ("/", "/health", "/v1"):
-            self._send_json({"ok": True, "route": MESSAGES_ROUTE})
-            return
-        if path == "/v1/models":
-            meta = getattr(self.server, "model_metadata", None) or {}
-            if openai_models_list_response:
-                self._send_json(openai_models_list_response(self.server.model_alias, meta))
-            else:
-                self._send_json({
-                    "object": "list",
-                    "data": [{"id": self.server.model_alias, "object": "model"}],
-                })
-            return
-        self.send_error(404)
-
-    def do_POST(self):
-        if self._path() != "/v1/messages":
-            self.send_error(404)
-            return
-        timer = RequestTimer()
-        client_model = ""
-        upstream_model = ""
-        stream = False
-        try:
-            length = int(self.headers.get("Content-Length") or "0")
-            req = json_loads(self.rfile.read(length))
-            dropped_keys = [k for k in list(req.keys()) if k in DROP_ANTHROPIC_KEYS]
-            for key in dropped_keys:
-                req.pop(key, None)
-            stream = bool(req.get("stream"))
-            client_model = str(req.get("model") or "")
-            upstream_model = resolve_upstream_model(req.get("model"), self.server.upstream_model)
-            self.server.debug.log(
-                "request_start",
-                path=self.path,
-                client_model=client_model,
-                upstream_model=upstream_model,
-                stream=stream,
-                max_tokens=req.get("max_tokens"),
-                message_count=len(req.get("messages") or []),
-                tool_count=len(req.get("tools") or []),
-                user_preview=last_user_preview_messages(req),
-                dropped_keys=dropped_keys or None,
-            )
-            chat_payload = anthropic_messages_to_chat(req, upstream_model)
-            raw = call_chat_completions(
-                chat_payload, self.server.api_key, self.server.timeout,
-                url=self.server.upstream_url,
-            )
-            msg = rewrite_anthropic_response(req, chat_to_anthropic_message(req, raw))
-            self.server.debug.log(
-                "request_done",
-                path=self.path,
-                client_model=client_model,
-                upstream_model=upstream_model,
-                stream=stream,
-                latency_ms=timer.elapsed_ms,
-                stop_reason=msg.get("stop_reason"),
-                usage=msg.get("usage") or {},
-                **summarize_chat_response(raw)
-            )
-            if stream:
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Cache-Control", "no-cache")
-                self.end_headers()
-                self.wfile.write(messages_sse_events(msg))
-                self.wfile.flush()
-            else:
-                self._send_json(msg)
-        except urllib.error.HTTPError as exc:
-            detail = upstream_error_detail(exc)[:500]
-            self.server.debug.log(
-                "request_error",
-                path=self.path,
-                client_model=client_model,
-                upstream_model=upstream_model,
-                stream=stream,
-                latency_ms=timer.elapsed_ms,
-                status=exc.code,
-                error=detail,
-            )
-            self._send_json(
-                {"type": "error", "error": {"type": "upstream_error", "message": detail}},
-                status=exc.code,
-            )
-        except Exception as exc:
-            detail = str(exc)
-            status = 500
-            self.server.debug.log(
-                "request_error",
-                path=self.path,
-                client_model=client_model,
-                upstream_model=upstream_model,
-                stream=stream,
-                latency_ms=timer.elapsed_ms,
-                status=status,
-                error=detail,
-            )
-            self._send_json(
-                {"type": "error", "error": {"type": "proxy_error", "message": detail}},
-                status=status,
-            )
-
-    def _send_json(self, obj, status=200):
-        self._send_bytes(json_dumps(obj).encode("utf-8"), "application/json", status)
-
-    def _send_bytes(self, body, content_type, status=200):
-        self._headers_sent = True
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, fmt, *args):
-        sys.stdout.write("[%s] %s - %s\n" % (MESSAGES_ROUTE, self.address_string(), fmt % args))
-        sys.stdout.flush()
-
-
-class MessagesServer(ThreadingHTTPServer):
-    def __init__(self, addr, handler, api_key, model_alias, upstream_model,
-                 upstream_url, timeout, debug, model_metadata=None):
-        ThreadingHTTPServer.__init__(self, addr, handler)
-        self.api_key = api_key
-        self.model_alias = model_alias
-        self.upstream_model = upstream_model
-        self.upstream_url = upstream_url
-        self.timeout = timeout
-        self.debug = debug
-        self.model_metadata = model_metadata or {}
-
-
-def run_messages_proxy(argv=None):
-    p = argparse.ArgumentParser(description="Route: chat/completions -> anthropic/messages")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=18324)
-    p.add_argument("--model-alias", default="glm-5.1")
-    p.add_argument("--upstream-model", default="")
-    p.add_argument("--upstream-url", required=True)
-    p.add_argument("--ready-file", default="")
-    p.add_argument("--timeout", type=float, default=600.0)
-    p.add_argument("--debug", action="store_true")
-    p.add_argument("--debug-log", default="")
-    p.add_argument("--api-name", default="", help="API profile for model metadata")
-    args = p.parse_args(argv)
-
-    api_key = os.environ.get("INFERENCE_HUB_API_KEY", "").strip()
-    if not api_key:
-        api_key = os.environ.get("INFERENCE_HUB_TOKEN", "").strip()
-    if not api_key:
-        raise SystemExit("INFERENCE_HUB_API_KEY is required for proxy")
-
-    upstream = resolve_upstream_model(args.upstream_model or args.model_alias, args.model_alias)
-    model_metadata = {}
-    if args.api_name and resolve_api_metadata:
-        try:
-            model_metadata = resolve_api_metadata(args.api_name)
-        except (ValueError, IOError, OSError):
-            model_metadata = {}
-    debug_log = args.debug_log or os.path.join(LOGS_DIR, "proxy-messages-llm.jsonl")
-    debug = ProxyLogger(MESSAGES_ROUTE, args.debug, debug_log)
-    httpd = MessagesServer(
-        (args.host, args.port),
-        MessagesHandler,
-        api_key=api_key,
-        model_alias=args.model_alias,
-        upstream_model=upstream,
-        upstream_url=args.upstream_url,
-        timeout=args.timeout,
-        debug=debug,
-        model_metadata=model_metadata,
-    )
-    host, port = httpd.server_address[:2]
-    if args.ready_file:
-        with open(args.ready_file, "w") as handle:
-            handle.write("%s:%s" % (host, port))
-    sys.stdout.write(
-        "[%s] http://%s:%s/v1/messages -> %s model=%s\n" % (
-            MESSAGES_ROUTE, host, port, args.upstream_url, upstream)
-    )
-    sys.stdout.flush()
-    httpd.serve_forever()
-    return 0
-
-
-# ===========================================================================
-# proxy.responses
-# ===========================================================================
-
-RESPONSES_ROUTE = "completions_to_responses"
-NAME_RE = re.compile(r"[^A-Za-z0-9_]+")
-
-SKIP_CHAT_FUNCTIONS = frozenset({
-    "shell_command",
-    "list_mcp_resources",
-    "list_mcp_resource_templates",
-    "read_mcp_resource",
-})
-
-PROXY_TOOL_HINT = (
-    "MCP tools are exposed as chat functions named mcp__<server>__<tool>. "
-    "Call the concrete mcp__... function directly instead of shell_command "
-    "or MCP resource-list/read helpers."
-)
-
-
-class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
-    daemon_threads = True
-
-
-def clean_ident(value):
-    return NAME_RE.sub("_", str(value or "")).strip("_")
-
-
-def namespace_ident(namespace):
-    raw = clean_ident(namespace)
-    if not raw:
-        return ""
-    if raw.startswith("mcp__"):
-        return raw
-    return "mcp__%s" % raw
-
-
-def flatten_name(namespace, name):
-    right = clean_ident(name) or "tool"
-    left = namespace_ident(namespace)
-    if not left:
-        return right[:64]
-    return ("%s__%s" % (left, right))[:64]
-
-
-def schema_for_chat(schema):
-    if isinstance(schema, dict) and schema:
-        return schema
-    return {"type": "object", "properties": {}}
-
-
-def translate_tools(tools):
-    chat_tools = []
-    reverse = {}
-    used = set()
-
-    def add_tool(namespace, tool):
-        name = str(tool.get("name") or "").strip()
-        if not name:
-            return
-        if namespace is None and name in SKIP_CHAT_FUNCTIONS:
-            return
-        flat = flatten_name(namespace, name)
-        base = flat
-        idx = 2
-        while flat in used:
-            suffix = "_%d" % idx
-            flat = "%s%s" % (base[:64 - len(suffix)], suffix)
-            idx += 1
-        used.add(flat)
-        reverse[flat] = (namespace, name)
-        desc = str(tool.get("description") or "")
-        if namespace:
-            flat_hint = flatten_name(namespace, name)
-            desc = (
-                "Tool name: %s\nOriginal namespace: %s.%s\n%s"
-                % (flat_hint, namespace, name, desc)
-            ).strip()
-        chat_tools.append({
-            "type": "function",
-            "function": {
-                "name": flat,
-                "description": desc,
-                "parameters": schema_for_chat(tool.get("parameters")),
-            },
-        })
-
-    for tool in tools or []:
-        if not isinstance(tool, dict):
-            continue
-        typ = tool.get("type")
-        if typ == "function":
-            add_tool(None, tool)
-        elif typ == "namespace":
-            ns = str(tool.get("name") or "").strip() or None
-            for child in tool.get("tools") or []:
-                if isinstance(child, dict) and child.get("type") == "function":
-                    add_tool(ns, child)
-    return chat_tools, reverse
-
-
-def content_item_text(content):
-    if isinstance(content, list):
-        return text_from_content(content)
-    return "" if content is None else str(content)
-
-
-def translate_input(input_items, instructions, reverse):
-    messages = []
-    system_parts = [x for x in (instructions, PROXY_TOOL_HINT) if x]
-    if system_parts:
-        messages.append({"role": "system", "content": "\n\n".join(system_parts)})
-    if isinstance(input_items, str):
-        messages.append({"role": "user", "content": input_items})
-        return messages
-    if not isinstance(input_items, list):
-        return messages
-
-    for item in input_items:
-        if not isinstance(item, dict):
-            continue
-        typ = item.get("type")
-        if typ == "message":
-            role = str(item.get("role") or "user")
-            if role == "developer":
-                role = "system"
-            if role not in ("system", "user", "assistant", "tool"):
-                role = "user"
-            messages.append({
-                "role": role,
-                "content": content_item_text(item.get("content")),
-            })
-        elif typ == "function_call":
-            name = str(item.get("name") or "")
-            namespace = item.get("namespace")
-            if namespace:
-                flat = flatten_name(str(namespace), name)
-            else:
-                flat = flatten_name(None, name)
-            call_id = str(item.get("call_id") or item.get("id") or "call_%d" % (len(messages) + 1))
-            messages.append({
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [{
-                    "id": call_id,
-                    "type": "function",
-                    "function": {
-                        "name": flat,
-                        "arguments": str(item.get("arguments") or "{}"),
-                    },
-                }],
-            })
-        elif typ == "function_call_output":
-            messages.append({
-                "role": "tool",
-                "tool_call_id": str(item.get("call_id") or ""),
-                "content": content_item_text(item.get("output")),
-            })
-    return messages
-
-
-def build_chat_payload(req, upstream_model):
-    chat_tools, reverse = translate_tools(req.get("tools") or [])
-    payload = {
-        "model": upstream_model,
-        "messages": translate_input(
-            req.get("input"),
-            str(req.get("instructions") or ""),
-            reverse,
-        ),
-    }
-    if chat_tools:
-        payload["tools"] = chat_tools
-        payload["tool_choice"] = (
-            "auto" if req.get("tool_choice") in (None, "auto") else req.get("tool_choice")
-        )
-        payload["parallel_tool_calls"] = bool(req.get("parallel_tool_calls", False))
-    max_tokens = req.get("max_output_tokens") or req.get("max_tokens")
-    if max_tokens:
-        payload["max_tokens"] = int(max_tokens)
-    return payload, reverse
-
-
-def split_flat_mcp_name(flat):
-    if flat.startswith("mcp__"):
-        parts = flat.split("__", 2)
-        if len(parts) == 3 and parts[1] and parts[2]:
-            return "mcp__%s" % parts[1], parts[2]
-    return None, flat
-
-
-def textual_tool_call_items(content, reverse):
-    text = "" if content is None else str(content)
-    output = []
-    for idx, match in enumerate(TOOL_CALL_RE.finditer(text), start=1):
-        raw_name = match.group("name").strip()
-        flat = clean_ident(raw_name) or raw_name
-        namespace, name = reverse.get(flat, split_flat_mcp_name(flat))
-        args = {}
-        for arg in ARG_RE.finditer(match.group("body")):
-            key = arg.group("key").strip()
-            if key:
-                args[key] = arg.group("value").strip()
-        item = {
-            "id": "call_%d" % idx,
-            "type": "function_call",
-            "status": "completed",
-            "call_id": "call_%d" % idx,
-            "name": name,
-            "arguments": json_dumps(args),
-        }
-        if namespace:
-            item["namespace"] = namespace
-        output.append(item)
-    return output, TOOL_CALL_RE.sub("", text).strip()
-
-
-def responses_output_from_chat(raw, reverse):
-    choices = raw.get("choices") or []
-    msg = ((choices[0] or {}).get("message") or {}) if choices else {}
-    output = []
-    for idx, call in enumerate(msg.get("tool_calls") or []):
-        fn = call.get("function") or {}
-        flat = str(fn.get("name") or "")
-        namespace, name = reverse.get(flat, split_flat_mcp_name(flat))
-        item = {
-            "id": str(call.get("id") or "call_%d" % (idx + 1)),
-            "type": "function_call",
-            "status": "completed",
-            "call_id": str(call.get("id") or "call_%d" % (idx + 1)),
-            "name": name,
-            "arguments": str(fn.get("arguments") or "{}"),
-        }
-        if namespace:
-            item["namespace"] = namespace
-        output.append(item)
-    content = msg.get("content")
-    if content:
-        text_calls, remaining = textual_tool_call_items(content, reverse)
-        output.extend(text_calls)
-        if remaining:
-            output.append({
-                "id": "msg_1",
-                "type": "message",
-                "status": "completed",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": remaining}],
-            })
-    return output
-
-
-def responses_payload(req, chat_raw, reverse):
-    usage = chat_raw.get("usage") or {}
-    output = responses_output_from_chat(chat_raw, reverse)
-    return {
-        "id": str(chat_raw.get("id") or "resp_%d" % int(time.time() * 1000)),
-        "object": "response",
-        "created_at": int(time.time()),
-        "status": "completed",
-        "model": req.get("model"),
-        "output": output,
-        "usage": {
-            "input_tokens": int(usage.get("prompt_tokens") or 0),
-            "output_tokens": int(usage.get("completion_tokens") or 0),
-            "total_tokens": int(usage.get("total_tokens") or 0),
-        },
-    }
-
-
-def responses_sse_events(resp):
-    events = [
-        {"type": "response.created", "response": dict(resp, status="in_progress", output=[])},
-    ]
-    for idx, item in enumerate(resp.get("output") or []):
-        events.append({
-            "type": "response.output_item.added",
-            "output_index": idx,
-            "item": item,
-        })
-        if item.get("type") == "message":
-            text = text_from_content(item.get("content"))
-            events.append({
-                "type": "response.content_part.added",
-                "output_index": idx,
-                "item_id": item.get("id"),
-                "content_index": 0,
-                "part": {"type": "output_text", "text": ""},
-            })
-            if text:
-                events.append({
-                    "type": "response.output_text.delta",
-                    "output_index": idx,
-                    "item_id": item.get("id"),
-                    "content_index": 0,
-                    "delta": text,
-                })
-            events.append({
-                "type": "response.output_text.done",
-                "output_index": idx,
-                "item_id": item.get("id"),
-                "content_index": 0,
-                "text": text,
-            })
-            events.append({
-                "type": "response.content_part.done",
-                "output_index": idx,
-                "item_id": item.get("id"),
-                "content_index": 0,
-                "part": {"type": "output_text", "text": text},
-            })
-        events.append({
-            "type": "response.output_item.done",
-            "output_index": idx,
-            "item": item,
-        })
-    events.append({"type": "response.completed", "response": resp})
-    return "".join(
-        "event: %s\ndata: %s\n\n" % (e["type"], json_dumps(e)) for e in events
-    ).encode("utf-8")
-
-
-class ResponsesHandler(BaseHTTPRequestHandler):
-    def _path(self):
-        return urlparse(self.path).path.rstrip("/") or "/"
-
-    def do_GET(self):
-        path = self._path()
-        if path in ("/", "/health", "/v1"):
-            self._send_json({"ok": True, "route": RESPONSES_ROUTE})
-            return
-        if path == "/v1/models":
-            meta = getattr(self.server, "model_metadata", None) or {}
-            if openai_models_list_response:
-                self._send_json(openai_models_list_response(self.server.model_alias, meta))
-            else:
-                self._send_json({
-                    "object": "list",
-                    "data": [{"id": self.server.model_alias, "object": "model"}],
-                })
-            return
-        self.send_error(404)
-
-    def do_POST(self):
-        if self._path() != "/v1/responses":
-            self.send_error(404)
-            return
-        timer = RequestTimer()
-        client_model = ""
-        upstream_model = ""
-        stream = False
-        try:
-            length = int(self.headers.get("Content-Length") or "0")
-            req = json_loads(self.rfile.read(length))
-            client_model = str(req.get("model") or "")
-            upstream_model = resolve_upstream_model(req.get("model"), self.server.upstream_model)
-            stream = bool(req.get("stream"))
-            self.server.debug.log(
-                "request_start",
-                path=self.path,
-                client_model=client_model,
-                upstream_model=upstream_model,
-                stream=stream,
-                max_tokens=req.get("max_output_tokens") or req.get("max_tokens"),
-                input_items=len(req.get("input") or []) if isinstance(req.get("input"), list) else 1,
-                tool_count=len(req.get("tools") or []),
-                user_preview=last_user_preview_responses(req),
-            )
-            chat_payload, reverse = build_chat_payload(req, upstream_model)
-            raw = call_chat_completions(
-                chat_payload, self.server.api_key, self.server.timeout,
-                url=self.server.upstream_url,
-            )
-            resp = responses_payload(req, raw, reverse)
-            self.server.debug.log(
-                "request_done",
-                path=self.path,
-                client_model=client_model,
-                upstream_model=upstream_model,
-                stream=stream,
-                latency_ms=timer.elapsed_ms,
-                response_id=resp.get("id"),
-                output_items=len(resp.get("output") or []),
-                usage=resp.get("usage") or {},
-                **summarize_chat_response(raw)
-            )
-            if stream:
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Cache-Control", "no-cache")
-                self.end_headers()
-                self.wfile.write(responses_sse_events(resp))
-                self.wfile.flush()
-            else:
-                self._send_json(resp)
-        except urllib.error.HTTPError as exc:
-            detail = upstream_error_detail(exc)[:500]
-            self.server.debug.log(
-                "request_error",
-                path=self.path,
-                client_model=client_model,
-                upstream_model=upstream_model,
-                stream=stream,
-                latency_ms=timer.elapsed_ms,
-                status=exc.code,
-                error=detail,
-            )
-            self._send_json({"error": {"message": detail}}, status=exc.code)
-        except Exception as exc:
-            detail = str(exc)
-            self.server.debug.log(
-                "request_error",
-                path=self.path,
-                client_model=client_model,
-                upstream_model=upstream_model,
-                stream=stream,
-                latency_ms=timer.elapsed_ms,
-                status=500,
-                error=detail,
-            )
-            self._send_json({"error": {"message": detail}}, status=500)
-
-    def _send_json(self, obj, status=200):
-        self._send_bytes(json_dumps(obj).encode("utf-8"), "application/json", status)
-
-    def _send_bytes(self, body, content_type, status=200):
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, fmt, *args):
-        sys.stdout.write("[%s] %s - %s\n" % (RESPONSES_ROUTE, self.address_string(), fmt % args))
-        sys.stdout.flush()
-
-
-class ResponsesServer(ThreadingHTTPServer):
-    def __init__(self, addr, handler, api_key, model_alias, upstream_model,
-                 upstream_url, timeout, debug, model_metadata=None):
-        ThreadingHTTPServer.__init__(self, addr, handler)
-        self.api_key = api_key
-        self.model_alias = model_alias
-        self.upstream_model = upstream_model
-        self.upstream_url = upstream_url
-        self.timeout = timeout
-        self.debug = debug
-        self.model_metadata = model_metadata or {}
-
-
-def run_responses_proxy(argv=None):
-    p = argparse.ArgumentParser(description="Route: chat/completions -> openai/responses")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=18325)
-    p.add_argument("--model-alias", default="glm-5.1")
-    p.add_argument("--upstream-model", default="")
-    p.add_argument("--upstream-url", required=True)
-    p.add_argument("--ready-file", default="")
-    p.add_argument("--timeout", type=float, default=600.0)
-    p.add_argument("--debug", action="store_true")
-    p.add_argument("--debug-log", default="")
-    p.add_argument("--api-name", default="", help="API profile for model metadata")
-    args = p.parse_args(argv)
-
-    api_key = os.environ.get("INFERENCE_HUB_API_KEY", "").strip()
-    if not api_key:
-        api_key = os.environ.get("INFERENCE_HUB_TOKEN", "").strip()
-    if not api_key:
-        raise SystemExit("INFERENCE_HUB_API_KEY is required for proxy")
-
-    upstream = resolve_upstream_model(args.upstream_model or args.model_alias, args.model_alias)
-    model_metadata = {}
-    if args.api_name and resolve_api_metadata:
-        try:
-            model_metadata = resolve_api_metadata(args.api_name)
-        except (ValueError, IOError, OSError):
-            model_metadata = {}
-    debug_log = args.debug_log or os.path.join(LOGS_DIR, "proxy-responses-llm.jsonl")
-    debug = ProxyLogger(RESPONSES_ROUTE, args.debug, debug_log)
-    httpd = ResponsesServer(
-        (args.host, args.port),
-        ResponsesHandler,
-        api_key=api_key,
-        model_alias=args.model_alias,
-        upstream_model=upstream,
-        upstream_url=args.upstream_url,
-        timeout=args.timeout,
-        debug=debug,
-        model_metadata=model_metadata,
-    )
-    host, port = httpd.server_address[:2]
-    if args.ready_file:
-        with open(args.ready_file, "w") as handle:
-            handle.write("%s:%s" % (host, port))
-    sys.stdout.write(
-        "[%s] http://%s:%s/v1/responses -> %s model=%s\n" % (
-            RESPONSES_ROUTE, host, port, args.upstream_url, upstream)
-    )
-    sys.stdout.flush()
-    httpd.serve_forever()
-    return 0
-
-
-# ===========================================================================
-# proxy.manager
-# ===========================================================================
-
-ROUTE_DEFAULTS = {
-    "completions_to_messages": {
-        "port": 18324,
-        "from_proto": "anthropic_messages",
-        "to_proto": "openai_chat_completions",
-    },
-    "completions_to_responses": {
-        "port": 18325,
-        "from_proto": "openai_responses",
-        "to_proto": "openai_chat_completions",
-    },
-}
-
-
-def _load_runs():
-    if not os.path.isfile(PROXY_RUNS_FILE):
-        return {}
-    try:
-        with open(PROXY_RUNS_FILE, "r") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except (IOError, ValueError):
-        return {}
-
-
-def _save_runs(data):
-    os.makedirs(CAM_DIR, exist_ok=True)
-    tmp = PROXY_RUNS_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2, sort_keys=True)
-        f.write("\n")
-    os.replace(tmp, PROXY_RUNS_FILE)
-
-
-def _run_key(route, upstream_url):
-    raw = "%s|%s" % (route, upstream_url or "")
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
-
-
-def _pid_alive(pid):
-    if not pid:
-        return False
-    try:
-        os.kill(int(pid), 0)
-        return True
-    except (OSError, ValueError):
-        return False
-
-
-def _health_ok(port, timeout=1.0):
-    return _health_route(port, timeout) is not None
-
-
-def _health_route(port, timeout=1.0):
-    url = "http://127.0.0.1:%d/health" % int(port)
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:
-            if resp.status != 200:
-                return None
-            raw = resp.read().decode("utf-8", errors="replace")
-            data = json.loads(raw) if raw else {}
-            if not isinstance(data, dict) or not data.get("ok"):
-                return None
-            route = data.get("route")
-            return route if route else None
-    except (urllib.error.URLError, urllib.error.HTTPError, ValueError, TypeError):
-        return None
-
-
-def _camc_argv():
-    script = os.path.abspath(sys.argv[0])
-    if os.path.isfile(script):
-        return [sys.executable, script, "_proxy"]
-    return [sys.executable, "-m", "camc_pkg", "_proxy"]
-
-
-def _start_proxy(route, port, model_alias, upstream_model, upstream_url,
-                 proxy_debug=False, token="", api_name=""):
-    os.makedirs(LOGS_DIR, exist_ok=True)
-    ready_file = os.path.join(CAM_DIR, "proxy-ready-%s.tmp" % route)
-    log_path = os.path.join(LOGS_DIR, "proxy-%s.log" % route)
-    argv = _camc_argv() + [
-        route,
-        "--port", str(port),
-        "--model-alias", model_alias,
-        "--upstream-model", upstream_model or model_alias,
-        "--upstream-url", upstream_url,
-        "--ready-file", ready_file,
-    ]
-    if api_name:
-        argv.extend(["--api-name", api_name])
-    if proxy_debug:
-        argv.append("--debug")
-
-    env = os.environ.copy()
-    if token:
-        env["INFERENCE_HUB_API_KEY"] = token
-        env["INFERENCE_HUB_TOKEN"] = token
-
-    with open(log_path, "a") as logf:
-        proc = subprocess.Popen(
-            argv,
-            stdout=logf,
-            stderr=subprocess.STDOUT,
-            env=env,
-            start_new_session=True,
-        )
-
-    deadline = time.time() + 15.0
-    while time.time() < deadline:
-        if os.path.isfile(ready_file):
-            break
-        if proc.poll() is not None:
-            raise RuntimeError("proxy %s exited early (see %s)" % (route, log_path))
-        time.sleep(0.2)
-
-    if not _health_ok(port, timeout=0.5):
-        time.sleep(0.5)
-    if not _health_ok(port):
-        try:
-            proc.terminate()
-        except OSError:
-            pass
-        raise RuntimeError("proxy %s failed health check on port %d" % (route, port))
-
-    try:
-        os.remove(ready_file)
-    except OSError:
-        pass
-
-    return proc.pid, log_path
-
-
-def ensure_proxy(plan, token):
-    """Start or reuse proxy for plan; return (port, run_record)."""
-    if plan.get("mode") != "proxy":
-        return None, None
-
-    route = plan.get("route")
-    port = int(plan.get("proxy_port") or ROUTE_DEFAULTS.get(route, {}).get("port") or 18324)
-    upstream_url = plan.get("upstream_url") or ""
-    key = _run_key(route, upstream_url)
-    runs = _load_runs()
-    rec = runs.get(key)
-
-    if rec and rec.get("pid") and not _pid_alive(rec.get("pid")):
-        runs.pop(key, None)
-
-    # Reuse only when run record matches this route+upstream (never blind port reuse).
-    if rec and rec.get("upstream_url") == upstream_url and rec.get("route") == route:
-        if _pid_alive(rec.get("pid")) and _health_ok(rec.get("port") or port):
-            return int(rec.get("port") or port), rec
-        if not rec.get("pid") and _health_ok(rec.get("port") or port):
-            return int(rec.get("port") or port), rec
-
-    # Reuse an already-listening proxy on this port when health reports the same
-    # route and no other upstream is registered for that port+route.
-    if _health_route(port) == route:
-        conflict = any(
-            r.get("port") == port
-            and r.get("route") == route
-            and r.get("upstream_url") not in ("", upstream_url)
-            for r in runs.values()
-        )
-        if not conflict:
-            rec = {
-                "route": route,
-                "port": port,
-                "pid": None,
-                "upstream_url": upstream_url,
-                "model": plan.get("model"),
-                "api": plan.get("name"),
-                "log": os.path.join(LOGS_DIR, "proxy-%s.log" % route),
-                "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "reused": True,
-            }
-            runs[key] = rec
-            _save_runs(runs)
-            return port, rec
-
-    pid, log_path = _start_proxy(
-        route=route,
-        port=port,
-        model_alias=plan.get("name") or "api",
-        upstream_model=plan.get("model") or "",
-        upstream_url=upstream_url,
-        proxy_debug=bool(plan.get("proxy_debug")),
-        token=token,
-        api_name=plan.get("name") or "",
-    )
-    rec = {
-        "route": route,
-        "port": port,
-        "pid": pid,
-        "upstream_url": upstream_url,
-        "model": plan.get("model"),
-        "api": plan.get("name"),
-        "log": log_path,
-        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
-    runs[key] = rec
-    _save_runs(runs)
-    return port, rec
-
-
-def proxy_status():
-    runs = _load_runs()
-    rows = []
-    for key, rec in sorted(runs.items()):
-        alive = _pid_alive(rec.get("pid"))
-        healthy = _health_ok(rec.get("port") or 0) if alive else False
-        rows.append({
-            "key": key,
-            "route": rec.get("route"),
-            "port": rec.get("port"),
-            "pid": rec.get("pid"),
-            "alive": alive,
-            "healthy": healthy,
-            "api": rec.get("api"),
-            "model": rec.get("model"),
-            "upstream_url": rec.get("upstream_url"),
-            "log": rec.get("log"),
-        })
-    return rows
-
-
-def proxy_stop(route=None):
-    runs = _load_runs()
-    stopped = []
-    for key, rec in list(runs.items()):
-        if route and rec.get("route") != route:
-            continue
-        pid = rec.get("pid")
-        if pid and _pid_alive(pid):
-            try:
-                os.kill(int(pid), signal.SIGTERM)
-            except OSError:
-                pass
-        stopped.append(rec)
-        runs.pop(key, None)
-    _save_runs(runs)
-    return stopped
+def apply_resolved_token(tool, env, token):
+    """Apply a resolved provider token using the adapter's auth variable."""
+    overrides = dict(env or {})
+    overrides.pop("_API_USE_RESOLVED_TOKEN", None)
+    if tool == "claude":
+        # NVIDIA Inference Hub expects the bearer token header used by
+        # ANTHROPIC_AUTH_TOKEN; ANTHROPIC_API_KEY selects x-api-key instead.
+        overrides.pop("ANTHROPIC_API_KEY", None)
+        overrides["ANTHROPIC_AUTH_TOKEN"] = token
+    elif tool == "codex":
+        overrides[CODEX_API_ENV_KEY] = token
+    return overrides
 
 
 # ===========================================================================
@@ -12423,6 +11746,12 @@ Agents are addressable by name, ID prefix, or `#N` (1-based from `~/.cam/camc li
 | Remove | `~/.cam/camc rm <agent>` (always kills tmux; `--archive` to save first) |
 | Bulk cleanup | `camc prune --orphans` |
 | Start with system prompt | `~/.cam/camc run "task" -n name --system-prompt "..."` or `--system-file <path>` |
+| Run with an API profile | `~/.cam/camc run -t codex --api <name> -n <name> "task"` |
+| Check/list API profiles | `~/.cam/camc api check` / `~/.cam/camc api list` |
+| Show API defaults | `~/.cam/camc api default show` |
+| Set a per-tool API default | `~/.cam/camc api default set -t codex <name>` |
+| Clear a default (login) | `~/.cam/camc api default clear -t codex` |
+| Use login for one run | `~/.cam/camc run -t codex --no-default-api -n <name>` |
 
 **Other skill areas:**
 
@@ -12431,6 +11760,19 @@ Agents are addressable by name, ID prefix, or `#N` (1-based from `~/.cam/camc li
 | Inter-agent messaging (delegation) | camc-messaging |
 | Cron jobs & prompt loops | camc-cron-loop |
 | Diagnose stuck/failed agents | camc-diagnose |
+
+## API profiles and login
+
+`--api NAME` explicitly selects a profile from `~/.cam/api-models.json` for
+Claude or Codex. Run `~/.cam/camc api check` before relying on a profile.
+API defaults are per-tool and opt-in: `api default set` makes ordinary runs
+use that profile; `api default show` displays the selection.
+
+When a default is configured, use `--no-default-api` for one normal login
+run. This skips the default without changing configuration. To permanently
+return a tool to login, run `api default clear --tool <tool>`; an explicit
+`--api NAME` still wins for a single run. Codex API runs use the isolated
+`~/.codex-api` home; normal login uses the tool's regular login home.
 
 ## 1. Starting an agent
 
@@ -13624,6 +12966,72 @@ def _preflight(tool, tool_binary, workdir, env_setup=None, runtime=None,
     return issues, readiness.get("resolved", {})
 
 
+def _stop_api_proxy(proc):
+    if not proc:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=2)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _start_api_proxy(api_plan, owner_id, port=0):
+    """Start one loopback API proxy and return its process and port."""
+    command = ([ _CAMC_SCRIPT, "_api_proxy"]
+               if _CAMC_SCRIPT and os.access(_CAMC_SCRIPT, os.X_OK)
+               else [sys.executable, "-m", "camc_pkg", "_api_proxy"])
+    command += [
+        "--port", str(int(port or 0)),
+        "--upstream-url", api_plan.get("upstream_base_url") or "",
+        "--upstream-model", api_plan.get("model") or "",
+        "--alias", api_plan.get("client_model") or "",
+        "--owner", owner_id,
+        "--reasoning-map", json.dumps(
+            api_plan.get("reasoning_mapping") or {}, separators=(",", ":")),
+    ]
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, universal_newlines=True,
+                            bufsize=1)
+    line = proc.stdout.readline() if proc.stdout else ""
+    try:
+        port = int((line or "").strip())
+    except (TypeError, ValueError):
+        _stop_api_proxy(proc)
+        raise RuntimeError("API proxy failed to report a port")
+    if port <= 0:
+        _stop_api_proxy(proc)
+        raise RuntimeError("API proxy returned an invalid port")
+    api_plan["proxy_port"] = port
+    api_plan["proxy_pid"] = proc.pid
+    api_plan["proxy_base_url"] = "http://127.0.0.1:%d" % port
+    return proc, port
+
+
+def _codex_api_model_override(api_plan):
+    """Keep an API run's selected model above project-local Codex config."""
+    model = str((api_plan or {}).get("model") or "").strip()
+    return ["-c", "model=%s" % json.dumps(model)] if model else []
+
+
+def _codex_api_proxy_override(api_plan):
+    """Pin one resumed Codex process to its own per-agent proxy."""
+    port = int((api_plan or {}).get("proxy_port") or 0)
+    if port <= 0:
+        return []
+    url = "http://127.0.0.1:%d%s" % (
+        port, (api_plan or {}).get("base_url_suffix") or "")
+    return ["-c", "model_providers.%s.base_url=%s" %
+            (CODEX_API_PROVIDER, json.dumps(url))]
+
+
+def _stop_agent_api_proxy(agent):
+    stop_agent_api_proxy(agent)
+
+
 def cmd_run(args):
     tool = getattr(args, "tool", None) or "codex"
     known_tool = tool in ("claude", "codex", "cursor")
@@ -13657,6 +13065,7 @@ def cmd_run(args):
     # preflight and then fail in tmux (or vice versa).
     runtime = build_runtime_env(env_setup=env_setup)
     api_plan = None
+    api_proxy_proc = None
     cli_api = getattr(args, "api", None)
     api_name = None
     api_source = "login"
@@ -13672,12 +13081,7 @@ def cmd_run(args):
             sys.exit(1)
     if api_name:
         try:
-            api_plan = resolve_run_plan(
-                tool,
-                api_name,
-                no_api_proxy=bool(getattr(args, "no_api_proxy", False)),
-                proxy_debug=bool(getattr(args, "proxy_debug", False)),
-            )
+            api_plan = resolve_run_plan(tool, api_name)
         except ValueError as e:
             print_error(str(e))
             sys.exit(1)
@@ -13685,39 +13089,19 @@ def cmd_run(args):
             api_plan.get("auth_key"),
             api_plan.get("env_names") or [],
             cli_token=getattr(args, "api_token", None),
+            token_file=api_plan.get("token_file"),
+            token_key=api_plan.get("token_key"),
         )
-        translator = api_plan.get("translator") or api_plan.get("mode")
-        if not token and translator != "external":
+        if not token:
             env_names = api_plan.get("env_names") or ["INFERENCE_HUB_TOKEN"]
             print_error(
                 "No API token for provider %s (set %s in ~/.cam/token.env)"
                 % (api_plan.get("provider"), " or ".join(env_names[:3]))
             )
             sys.exit(1)
-        if api_plan.get("mode") == "proxy":
-            try:
-                port, _proxy_rec = ensure_proxy(api_plan, token)
-            except RuntimeError as e:
-                print_error(str(e))
-                sys.exit(1)
-            if port:
-                base = "http://127.0.0.1:%d" % int(port)
-                api_plan["local_base_url"] = base
-                overrides = api_plan.get("env") or {}
-                if tool == "claude":
-                    overrides["ANTHROPIC_BASE_URL"] = base
-                elif tool == "codex":
-                    overrides["CODEX_HOME"] = ensure_codex_api_config_dir(
-                        base + "/v1", api_plan.get("name") or "api")
-                api_plan["env"] = overrides
-        elif api_plan.get("env", {}).get("_API_USE_RESOLVED_TOKEN") == "1":
-            overrides = dict(api_plan.get("env") or {})
-            overrides.pop("_API_USE_RESOLVED_TOKEN", None)
-            if tool == "claude":
-                overrides["ANTHROPIC_API_KEY"] = token
-            elif tool == "codex":
-                overrides[CODEX_API_ENV_KEY] = token
-            api_plan["env"] = overrides
+        if api_plan.get("env", {}).get("_API_USE_RESOLVED_TOKEN") == "1":
+            api_plan["env"] = apply_resolved_token(
+                tool, api_plan.get("env") or {}, token)
         for key, val in (api_plan.get("env") or {}).items():
             if val == "":
                 runtime.env.pop(key, None)
@@ -13728,10 +13112,9 @@ def cmd_run(args):
             src_bits.append("default")
         if token:
             src_bits.append("token: %s" % token_src)
-        print_info("API %s via %s/%s (%s)" % (
+        print_info("API %s via %s (%s)" % (
             api_plan.get("name"),
-            api_plan.get("translator") or api_plan.get("mode"),
-            api_plan.get("upstream_protocol"),
+            api_plan.get("mode"),
             ", ".join(src_bits) if src_bits else "none"))
     try:
         tool_env_keys = _apply_tool_env(runtime, getattr(args, "tool_env", None))
@@ -13819,6 +13202,9 @@ def cmd_run(args):
             session_uuid = "%s-0000-0000-0000-000000000000" % agent_id
 
     launch_cmd = _build_command(config, prompt, workdir)
+
+    if tool == "codex" and api_plan:
+        launch_cmd += _codex_api_model_override(api_plan)
 
     # Inject --session-id or --resume into Claude launch command
     if tool == "claude":
@@ -13908,11 +13294,28 @@ def cmd_run(args):
     except Exception as e:
         log.warning("ensure_camc_tmux_config failed: %s", e)
         camc_tmux_config = ""
+    if api_plan and api_plan.get("proxy_required"):
+        try:
+            api_proxy_proc, proxy_port = _start_api_proxy(api_plan, agent_id)
+            proxy_base = api_plan.get("proxy_base_url") or ""
+            proxy_url = proxy_base + (api_plan.get("base_url_suffix") or "")
+            if tool == "claude":
+                runtime.env["ANTHROPIC_BASE_URL"] = proxy_url
+            elif tool == "codex":
+                runtime.env["CODEX_HOME"] = ensure_codex_api_config_dir(
+                    proxy_url, api_plan.get("name") or "api",
+                    require_endpoint="responses",
+                    model_id=api_plan.get("model"))
+            print_info("API proxy listening on %d" % proxy_port)
+        except Exception as e:
+            print_error("API proxy failed: %s" % e)
+            sys.exit(1)
     if not create_tmux_session(session, launch_cmd, workdir,
                                env_setup=env_setup, inherit_env=inherit_env,
                                env=runtime.env, tmux_bin=resolved_tmux,
                                tmux_config=camc_tmux_config,
                                exit_status_path=exit_status_path or None):
+        _stop_api_proxy(api_proxy_proc)
         print_error("Failed to create tmux session for '%s'" % session)
         print_info("Debug: %s -u -S %s/%s.sock new-session -d -s %s -c %s" %
                    (resolved_tmux, SOCKETS_DIR, session, session, workdir))
@@ -13983,6 +13386,9 @@ def cmd_run(args):
             "mode": api_plan.get("mode"),
             "route": api_plan.get("route"),
             "base_url": api_plan.get("local_base_url"),
+            "client_model": api_plan.get("client_model"),
+            "proxy_port": api_plan.get("proxy_port"),
+            "proxy_pid": api_plan.get("proxy_pid"),
         }
 
     # 2026-06-23 PDX hardening: stash a structured runtime manifest
@@ -14234,6 +13640,7 @@ def cmd_stop(args):
     else:
         print_warning("tmux session not found; marking agent stopped anyway")
     _kill_monitor(a)
+    _stop_agent_api_proxy(a)
     store.update(a["id"], status="stopped", exit_reason="Stopped by user", completed_at=_now_iso())
     if killed_pid:
         print("Stopped agent %s (killed PID %d, tmux session still alive)" % (a["id"], killed_pid))
@@ -14254,6 +13661,7 @@ def cmd_exit(args):
     print_info("Sending graceful exit to agent %s..." % a["id"])
     clean = graceful_exit(session)
     _kill_monitor(a)
+    _stop_agent_api_proxy(a)
     store.update(a["id"], status="stopped",
                  exit_reason="Exited cleanly" if clean else "Exited (process killed)",
                  completed_at=_now_iso())
@@ -14270,6 +13678,7 @@ def cmd_kill(args):
     if not a:
         sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
     _kill_monitor(a)
+    _stop_agent_api_proxy(a)
     tmux_kill_session(_sf(a, "tmux_session"))
     store.update(a["id"], status="killed", exit_reason="Force killed by user", completed_at=_now_iso())
     print("Killed agent %s" % a["id"])
@@ -15394,6 +14803,7 @@ def cmd_rm(args):
         except Exception as e:
             print_warning("Archive step raised %s; proceeding with rm anyway." % e)
     _kill_monitor(a)
+    _stop_agent_api_proxy(a)
     # Strip the system_prompt block we injected at run-time, if any.
     task_rec = a.get("task") or {}
     sp_file_path = task_rec.get("system_prompt_file") or ""
@@ -15640,10 +15050,18 @@ def _parse_iso_timestamp(value):
         return None
     try:
         from datetime import datetime, timezone
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            return None
-        return parsed.astimezone(timezone.utc)
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+0000"
+        else:
+            text = re.sub(r"([+-]\d\d):(\d\d)$", r"\1\2", text)
+        text = re.sub(r"(\.\d{6})\d+(?=[+-]\d{4}$)", r"\1", text)
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
+            try:
+                return datetime.strptime(text, fmt).astimezone(timezone.utc)
+            except ValueError:
+                pass
+        return None
     except (TypeError, ValueError):
         return None
 
@@ -16113,8 +15531,8 @@ def _find_claude_pid(session):
     return None
 
 
-def graceful_exit(session, timeout=15):
-    """Safely exit Claude Code in a tmux session.
+def graceful_exit(session, timeout=15, tool="claude"):
+    """Safely exit a supported coding agent in a tmux session.
 
     Sequence:
       1. Esc x3 (interrupt sub-agents / tool calls)
@@ -16142,22 +15560,29 @@ def graceful_exit(session, timeout=15):
         # Not idle yet, wait a bit more
         time.sleep(3)
 
+    def agent_pids():
+        if tool == "codex":
+            return _find_codex_pids_for_session(session)
+        pid = _find_claude_pid(session)
+        return [pid] if pid else []
+
     # Step 4: /exit
     tmux_send_input(session, "/exit", send_enter=True)
     for _ in range(10):
         time.sleep(1)
-        if not _find_claude_pid(session):
+        if not agent_pids():
             return True
 
-    # Step 5: Kill Claude process (not tmux)
-    pid = _find_claude_pid(session)
-    if pid:
+    # Step 5: Kill agent processes (not tmux)
+    pids = agent_pids()
+    if pids:
         try:
-            os.kill(pid, 9)
+            for pid in pids:
+                os.kill(pid, 9)
             time.sleep(1)
         except Exception:
             pass
-        if not _find_claude_pid(session):
+        if not agent_pids():
             return False  # killed, not clean exit
 
     return False
@@ -16172,8 +15597,8 @@ def cmd_migrate(args):
         sys.exit(1)
 
     tool = _tf(a, "tool", "claude")
-    if tool != "claude":
-        print_error("Reboot with session resume only works with Claude agents (got: %s)" % tool)
+    if tool not in ("claude", "codex"):
+        print_error("Reboot with session resume only works with Claude/Codex agents (got: %s)" % tool)
         sys.exit(1)
 
     old_id = a["id"]
@@ -16181,6 +15606,38 @@ def cmd_migrate(args):
     name = _tf(a, "name") or old_id
     workdir = _sf(a, "context_path", os.getcwd())
     old_session_id = a.get("session_id", "")
+    api_plan = None
+    old_api = a.get("api") if isinstance(a.get("api"), dict) else None
+    if tool == "codex":
+        if not old_session_id or a.get("session_binding") != "bound":
+            print_error("Cannot reboot Codex: a bound session_id is required")
+            sys.exit(1)
+        if old_api:
+            try:
+                api_plan = resolve_run_plan(tool, old_api.get("name"))
+            except ValueError as e:
+                print_error("Cannot restore API: %s" % e)
+                sys.exit(1)
+            if api_plan.get("provider") != old_api.get("provider"):
+                print_error("Cannot restore API: saved provider no longer matches")
+                sys.exit(1)
+            if api_plan.get("model") != old_api.get("model"):
+                log.info("Migrating saved API model %s -> %s",
+                         old_api.get("model"), api_plan.get("model"))
+            # Curated profiles can move a retired model alias to a replacement
+            # while retaining the API name. Persist that migration when the
+            # resumed agent record is saved below.
+            old_api["model"] = api_plan.get("model")
+            old_api["provider"] = api_plan.get("provider")
+            if api_plan.get("client_model"):
+                old_api["client_model"] = api_plan.get("client_model")
+            try:
+                old_proxy_port = int(old_api.get("proxy_port") or 0)
+            except (TypeError, ValueError):
+                old_proxy_port = 0
+            if old_proxy_port <= 0:
+                print_error("Cannot restore API: saved proxy port is missing")
+                sys.exit(1)
     # If session_id is the synthetic deterministic form, treat it as absent so
     # the 4-layer extractor can try to find the real Claude session UUID.
     synthetic = old_session_id == "%s-0000-0000-0000-000000000000" % old_id
@@ -16218,7 +15675,7 @@ def cmd_migrate(args):
         print_error("No tmux session found for agent")
         sys.exit(1)
     print_info("Sending graceful exit sequence...")
-    clean = graceful_exit(old_session)
+    clean = graceful_exit(old_session, tool=tool)
     print_info("Agent exited cleanly" if clean else "Agent killed (exit not clean)")
     # Let the shell prompt settle before typing into it.
     time.sleep(2)
@@ -16226,7 +15683,7 @@ def cmd_migrate(args):
     # 2. Guard against the session file still being held. graceful_exit kills
     # the process, but if anything else somehow is still writing that .jsonl,
     # two writers will corrupt it. Same invariant as `camc run --resume`.
-    if old_session_id:
+    if old_session_id and tool == "claude":
         in_use = _find_session_in_use(old_session_id)
         if in_use:
             print_error("Cannot resume: session %s still in use by PID(s) %s" %
@@ -16236,11 +15693,46 @@ def cmd_migrate(args):
     # 3. Kill old monitor (new one will be spawned after relaunch).
     _kill_monitor(a)
 
+    if api_plan:
+        _stop_agent_api_proxy(a)
+        try:
+            old_proxy_pid = int(old_api.get("proxy_pid") or 0)
+        except (TypeError, ValueError):
+            old_proxy_pid = 0
+        for _ in range(40):
+            if old_proxy_pid <= 0 or not os.path.exists(
+                    "/proc/%d" % old_proxy_pid):
+                break
+            time.sleep(.05)
+        try:
+            proxy_proc, proxy_port = _start_api_proxy(
+                api_plan, old_id, port=old_proxy_port)
+        except Exception as e:
+            print_error("API proxy failed to restart: %s" % e)
+            sys.exit(1)
+        api_plan["proxy_port"] = proxy_port
+        old_api["proxy_pid"] = proxy_proc.pid
+        old_api["proxy_port"] = proxy_port
+        if tool == "codex":
+            proxy_url = "http://127.0.0.1:%d%s" % (
+                proxy_port, api_plan.get("base_url_suffix") or "")
+            try:
+                ensure_codex_api_config_dir(
+                    proxy_url, api_plan.get("name") or "api",
+                    require_endpoint="responses",
+                    model_id=api_plan.get("model"))
+            except OSError as e:
+                print_warning("Codex API catalog refresh skipped: %s" % e)
+
     # 4. Relaunch Claude in the SAME tmux session: cd + claude --resume.
     new_session_uuid = "%s-0000-0000-0000-000000000000" % old_id
     config = _load_config(tool)
     launch_cmd = _build_command(config, "", workdir)
-    if old_session_id:
+    if tool == "codex":
+        launch_cmd += _codex_api_model_override(api_plan)
+        launch_cmd += _codex_api_proxy_override(api_plan)
+        launch_cmd += ["resume", old_session_id]
+    elif old_session_id:
         launch_cmd += ["--resume", old_session_id]
     else:
         launch_cmd += ["--session-id", new_session_uuid]
@@ -16271,7 +15763,7 @@ def cmd_migrate(args):
     print_success("Agent rebooted: %s (%s)" % (name, old_id))
     if old_session_id:
         print("  Resumed from: %s" % old_session_id)
-    print("  Session ID: %s" % new_session_uuid)
+    print("  Session ID: %s" % (old_session_id or new_session_uuid))
     print()
     print("  Attach: camc attach %s" % old_id)
 
@@ -16352,7 +15844,6 @@ def cmd_status(args):
             return
         prompt = _tf(a, "prompt") or ""
         prompt_display = prompt[:80] + "..." if len(prompt) > 80 else prompt or "(interactive)"
-        alive = tmux_session_exists(_sf(a, "tmux_session"))
         # Session ID info
         sid = a.get("session_id", "")
         session_file_info = None
@@ -16391,7 +15882,6 @@ def cmd_status(args):
             ("Prompt", prompt_display),
             ("System", sp_display),
             ("Auto-exit", "ON" if _tf(a, "auto_exit") else None),
-            ("Alive", _c("alive", "green") if alive else _c("dead", "red")),
         ]
         print_detail(pairs, title="Agent: %s" % a.get("id", "?"), border_style="green")
         return
@@ -18831,7 +18321,7 @@ def _cmd_cron_rm_loop(args):
 
 
 def cmd_api(args):
-    """API profile dispatch: list / check / default / proxy."""
+    """API profile dispatch: list / check / default."""
     sub = getattr(args, "api_cmd", None)
     if sub == "list":
         cmd_api_list(args)
@@ -18839,15 +18329,12 @@ def cmd_api(args):
         cmd_api_check(args)
     elif sub == "default":
         cmd_api_default(args)
-    elif sub == "proxy":
-        cmd_api_proxy(args)
     else:
         sys.stderr.write(
-            "usage: camc api {list,check,default,proxy} ...\n"
+            "usage: camc api {list,check,default} ...\n"
             "  list [--all]              list configured APIs\n"
             "  check                     ping provider and refresh enabled flags\n"
             "  default {set,clear,show}  per-tool default API (empty = login)\n"
-            "  proxy {start,status,logs,stop} ...   debug proxy controls\n"
         )
         sys.exit(1)
 
@@ -18864,14 +18351,18 @@ def cmd_api_list(args):
     for row in rows:
         aliases = row.get("aliases") or []
         alias_s = (" aliases=%s" % ",".join(aliases)) if aliases else ""
+        endpoints = row.get("available_endpoints") or []
+        endpoint_s = (" endpoints=%s" % ",".join(endpoints)) if endpoints else ""
+        tools = row.get("tools") or []
+        tool_s = (" tools=%s" % ",".join(tools)) if tools else ""
         en = "enabled" if row.get("enabled") is not False else "disabled"
-        print("%-18s %-40s %s%s" % (
-            row.get("name"), row.get("model"), en, alias_s))
+        print("%-18s %-40s %s%s%s%s" % (
+            row.get("name"), row.get("model"), en, alias_s, endpoint_s, tool_s))
 
 
 def cmd_api_check(args):
     data = ensure_ready()
-    result = check_provider(data, token_resolver=None)
+    result = check_provider(data)
     if _want_json(args):
         print(json.dumps(result, indent=2))
         if result.get("error") and not result.get("reachable"):
@@ -18948,144 +18439,11 @@ def cmd_api_default_show(args):
             print("%-8s (login)" % row.get("tool"))
             continue
         flag = "enabled" if row.get("enabled") else "disabled"
+        choices = row.get("apis") or []
+        choice_text = " choices=%s" % ",".join(choices[1:]) if len(choices) > 1 else ""
         print("%-8s %s (%s, %s)" % (
-            row.get("tool"), row.get("api"), flag, row.get("reason") or "unknown"))
-
-
-def cmd_api_proxy(args):
-    proxy_sub = getattr(args, "proxy_cmd", None)
-    if proxy_sub == "start":
-        cmd_api_proxy_start(args)
-    elif proxy_sub == "status":
-        cmd_api_proxy_status(args)
-    elif proxy_sub == "logs":
-        cmd_api_proxy_logs(args)
-    elif proxy_sub == "stop":
-        cmd_api_proxy_stop(args)
-    else:
-        sys.stderr.write(
-            "usage: camc api proxy {start,status,logs,stop} ...\n"
-            "  start ROUTE [--port N] [--upstream-url URL] [--upstream-model M]\n"
-            "              [--model-alias A] [--api NAME] [--debug]\n"
-            "  status\n"
-            "  logs [--follow] [ROUTE]\n"
-            "  stop [ROUTE]\n"
-        )
-        sys.exit(1)
-
-
-def cmd_api_proxy_start(args):
-
-    route = args.route
-    if route not in ROUTE_DEFAULTS:
-        print_error("unknown proxy route %r" % route)
-        sys.exit(1)
-    defaults = ROUTE_DEFAULTS[route]
-    port = int(args.port or defaults.get("port") or 18324)
-    api_name = getattr(args, "api_name", None)
-    upstream_url = getattr(args, "upstream_url", None)
-    upstream_model = getattr(args, "upstream_model", None) or ""
-    model_alias = getattr(args, "model_alias", None)
-
-    if api_name:
-        tool = PROXY_ROUTE_TOOL.get(route)
-        if not tool:
-            print_error("no tool mapping for proxy route %r" % route)
-            sys.exit(1)
-        plan = resolve_run_plan(tool, api_name, proxy_debug=bool(args.debug))
-        upstream_url = upstream_url or plan.get("upstream_url")
-        upstream_model = upstream_model or plan.get("model") or api_name
-        model_alias = model_alias or plan.get("name") or api_name
-        plan["route"] = route
-        plan["proxy_port"] = port
-        plan["proxy_debug"] = bool(args.debug)
-    else:
-        if not upstream_url:
-            print_error("--upstream-url is required (or use --api NAME)")
-            sys.exit(1)
-        if not model_alias:
-            model_alias = "glm-5.1"
-        plan = {
-            "mode": "proxy",
-            "route": route,
-            "name": model_alias,
-            "model": upstream_model or model_alias,
-            "upstream_url": upstream_url,
-            "proxy_port": port,
-            "proxy_debug": bool(args.debug),
-            "auth_key": "inference_hub",
-            "env_names": ["INFERENCE_HUB_TOKEN", "INFERENCE_HUB_API_KEY"],
-        }
-
-    token, src = resolve_token(plan.get("auth_key"), plan.get("env_names") or [])
-    if not token:
-        print_error("no API token found")
-        sys.exit(1)
-    try:
-        used_port, rec = ensure_proxy(plan, token)
-    except RuntimeError as e:
-        print_error(str(e))
-        sys.exit(1)
-    print("proxy %s listening on :%s (pid=%s, token=%s)" % (
-        route, used_port, (rec or {}).get("pid"), src))
-
-
-def cmd_api_proxy_status(args):
-    rows = proxy_status()
-    if _want_json(args):
-        print(json.dumps(rows, indent=2))
-        return
-    if not rows:
-        print("No proxy runs recorded")
-        return
-    for row in rows:
-        health = "healthy" if row.get("healthy") else ("dead" if not row.get("alive") else "unhealthy")
-        print("%s :%s pid=%s %s api=%s" % (
-            row.get("route"), row.get("port"), row.get("pid"), health, row.get("api")))
-
-
-def cmd_api_proxy_logs(args):
-    route = getattr(args, "route", None)
-    rows = proxy_status()
-    if route:
-        rows = [r for r in rows if r.get("route") == route]
-    if not rows:
-        print_error("no proxy log found%s" % (" for route %s" % route if route else ""))
-        sys.exit(1)
-    log_path = rows[0].get("log")
-    if not log_path or not os.path.isfile(log_path):
-        print_error("log file missing: %s" % log_path)
-        sys.exit(1)
-    if getattr(args, "follow", False):
-        subprocess.call(["tail", "-f", log_path])
-    else:
-        subprocess.call(["tail", "-n", "80", log_path])
-
-
-def cmd_api_proxy_stop(args):
-    route = getattr(args, "route", None)
-    stopped = proxy_stop(route=route)
-    if not stopped:
-        print("No matching proxy to stop")
-        return
-    for rec in stopped:
-        print("stopped %s (pid=%s)" % (rec.get("route"), rec.get("pid")))
-
-
-def _run_proxy(argv):
-    """Hidden entry: camc _proxy ROUTE [args...]"""
-    if len(argv) < 2:
-        sys.stderr.write("usage: camc _proxy ROUTE [options]\n")
-        sys.exit(2)
-    route = argv[1]
-    rest = argv[2:]
-    if route == "completions_to_messages":
-        run_messages_proxy(rest)
-    elif route == "completions_to_responses":
-        run_responses_proxy(rest)
-        return
-    sys.stderr.write("unknown proxy route: %s\n" % route)
-    sys.exit(2)
+            row.get("tool"), row.get("api"), flag,
+            (row.get("reason") or "unknown") + choice_text))
 
 
 def cmd_cron(args):
@@ -19872,15 +19230,11 @@ examples:
     r.add_argument("--system-file", dest="system_file", default=None,
                    help="Path to a file whose contents become the system prompt (overrides --system-prompt)")
     r.add_argument("--api", default=None, metavar="NAME",
-                   help="API profile from ~/.cam/api-models.json (e.g. glm-5.1)")
+                   help="API profile from ~/.cam/api-models.json (e.g. deepseek-v4-flash)")
     r.add_argument("--no-default-api", dest="no_default_api", action="store_true",
                    help="Skip per-tool default API; use normal OAuth/login")
     r.add_argument("--api-token", dest="api_token", default=None,
                    help="One-off bearer token (default: ~/.cam/token.env)")
-    r.add_argument("--no-api-proxy", action="store_true",
-                   help="Fail if the API requires a local protocol proxy")
-    r.add_argument("--proxy-debug", action="store_true",
-                   help="Enable JSONL debug logs for the API proxy")
 
     # list
     ls = sub.add_parser("list", aliases=["ls"], help="List agents")
@@ -20115,30 +19469,13 @@ examples:
     ap_def = api_sub.add_parser("default", help="Per-tool default API profile")
     ap_def_sub = ap_def.add_subparsers(dest="default_cmd", parser_class=CamArgumentParser)
     ap_def_set = ap_def_sub.add_parser("set", help="Set default API for a tool")
-    ap_def_set.add_argument("name", help="API profile name (e.g. glm-5.1)")
+    ap_def_set.add_argument("name", help="API profile name (e.g. deepseek-v4-flash)")
     ap_def_set.add_argument("--tool", "-t", required=True, choices=["claude", "codex"],
                             help="Tool to configure (codex empty = login)")
     ap_def_clear = ap_def_sub.add_parser("clear", help="Clear default API (use login)")
     ap_def_clear.add_argument("--tool", "-t", required=True, choices=["claude", "codex"])
     ap_def_show = ap_def_sub.add_parser("show", help="Show per-tool default API settings")
     ap_def_show.add_argument("--json", action="store_true", help="Output as JSON")
-    ap_px = api_sub.add_parser("proxy", help=argparse.SUPPRESS)
-    ap_px_sub = ap_px.add_subparsers(dest="proxy_cmd", parser_class=CamArgumentParser)
-    ap_px_start = ap_px_sub.add_parser("start", help=argparse.SUPPRESS)
-    ap_px_start.add_argument("route", help=argparse.SUPPRESS)
-    ap_px_start.add_argument("--port", type=int, default=None)
-    ap_px_start.add_argument("--upstream-url", dest="upstream_url", default=None)
-    ap_px_start.add_argument("--upstream-model", dest="upstream_model", default=None)
-    ap_px_start.add_argument("--model-alias", dest="model_alias", default=None)
-    ap_px_start.add_argument("--api", dest="api_name", default=None, metavar="NAME")
-    ap_px_start.add_argument("--debug", action="store_true")
-    ap_px_sub.add_parser("status", help=argparse.SUPPRESS)
-    ap_px_logs = ap_px_sub.add_parser("logs", help=argparse.SUPPRESS)
-    ap_px_logs.add_argument("route", nargs="?", default=None)
-    ap_px_logs.add_argument("-f", "--follow", action="store_true")
-    ap_px_stop = ap_px_sub.add_parser("stop", help=argparse.SUPPRESS)
-    ap_px_stop.add_argument("route", nargs="?", default=None)
-
     # cron — scheduled jobs (P0)
     cron_p = sub.add_parser("cron", help="Scheduled jobs and agent loops")
     cron_sub = cron_p.add_subparsers(dest="cron_cmd", parser_class=CamArgumentParser)
@@ -20267,6 +19604,9 @@ examples:
     sk_rm = sk_sub.add_parser("rm", help="Remove skill from manifest")
     sk_rm.add_argument("name", help="Skill name")
 
+    if len(sys.argv) >= 2 and sys.argv[1] == "_api_proxy":
+        sys.exit(run_api_proxy(sys.argv[2:]))
+
     # Hidden _monitor subcommand
     if len(sys.argv) >= 3 and sys.argv[1] == "_monitor":
         _run_monitor(sys.argv[2])
@@ -20277,11 +19617,6 @@ examples:
 
     if len(sys.argv) == 6 and sys.argv[1] == "_bind_codex_session":
         sys.exit(_run_codex_session_binder(*sys.argv[2:]))
-
-    # Hidden _proxy subcommand (protocol proxy worker)
-    if len(sys.argv) >= 3 and sys.argv[1] == "_proxy":
-        _run_proxy(sys.argv[1:])
-        return
 
     # Command aliases (expand before argparse sees them)
     _aliases = {"a": "attach", "ls": "list"}

@@ -1,83 +1,28 @@
-# Code layout — production vs test vs dev
+# Code layout
 
-Date: 2026-06-16
-
-Top-level directories are **physically separated**. Do not mix concerns across trees.
+CAMC is a stdlib-only package that is concatenated into `dist/camc` by
+`build_camc.py`. The API path is direct-only: provider profiles live in
+`api_store.py`, endpoint selection in `api_routing.py`, and tool-specific URL
+shape in `src/cam/adapters/configs/*.toml`.
 
 ```text
 cam/
-├── src/camc_pkg/proxy/     # production IHUB proxy (embedded in dist/camc)
-├── dev/ihub_proxy/         # dev/reference standalone proxies (NOT shipped)
-├── benchmarks/             # E2E harnesses (NOT imported by camc)
-├── tests/proxy/            # automated tests for src/camc_pkg/proxy/
-└── docs/debug-notes/       # post-mortems
+├── src/camc_pkg/          # CAMC source modules
+├── src/cam/adapters/      # tool adapter TOML and runtime config
+├── tests/                 # unit and integration tests
+├── docs/                  # design and operator documentation
+└── dist/camc              # generated single-file deployment artifact
 ```
 
-## Production (shipped)
+`camc run --api NAME` resolves one provider `base_url`, reads the provider
+token, verifies the profile advertises the adapter's native endpoint, and
+passes the resulting URL/model directly to Claude or Codex. There is no
+production proxy package, proxy worker, or protocol-conversion test suite.
 
-| Path | Role |
-|------|------|
-| `src/cam/` | Full cam server |
-| `src/camc_pkg/` | Standalone camc core (cli, monitor, api_store, …) |
-| `src/camc_pkg/proxy/` | **IHUB proxy** — `common.py`, `messages.py`, `textual_tools.py`, `manager.py` |
-| `src/camc_pkg/api_routing.py` | Translator mode selection (embedded / direct / external) |
-| `src/cam/adapters/configs/*.toml` | Adapter configs (embedded by `build_camc.py`) |
-| `dist/camc` | Built single-file deploy |
-
-Fix proxy bugs in `src/camc_pkg/proxy/`, then:
+Build and verify the bundle with:
 
 ```bash
-python3 build_camc.py && cp dist/camc ~/.cam/camc
+PYTHONPATH=src python3 build_camc.py
+./dist/camc version
+./dist/camc api list --all
 ```
-
-## Tests (automated)
-
-| Path | Role |
-|------|------|
-| `tests/` | Unit tests (CLI, adapters, storage, …) |
-| `tests/proxy/` | Proxy translator + model resolution tests |
-
-```bash
-pytest
-pytest tests/proxy
-```
-
-Tests import **`camc_pkg.proxy.*` only**, never `dev/ihub_proxy/`.
-
-## Benchmarks (manual)
-
-| Path | Role |
-|------|------|
-| `benchmarks/api-model-compare/` | Agent E2E compare harness |
-| `benchmarks/api-model-compare/runs/` | **Generated** — gitignored |
-
-See `benchmarks/README.md`.
-
-## Dev / reference (not production)
-
-| Path | Role |
-|------|------|
-| `dev/ihub_proxy/` | Standalone proxy scripts for manual curl / CC Switch comparison |
-| `dev/ihub_proxy/litellm-glm-proxy.yaml` | LiteLLM reference config |
-
-**Do not edit `dev/ihub_proxy/` for production fixes.** It may drift from `src/camc_pkg/proxy/`.
-
-## Docs
-
-| Path | Role |
-|------|------|
-| `docs/camc-api-proxy-plan.md` | Product plan |
-| `docs/api-routing.md` | Three translator modes + api-models.json schema |
-| `docs/api-model-metadata.md` | IHUB metadata sync, Codex catalog, proxy `/v1/models` |
-| `docs/inference-hub.md` | Operator guide |
-| `docs/debug-notes/` | Debug session logs |
-
-## Decision rule
-
-| Change | Where |
-|--------|--------|
-| Proxy bug | `src/camc_pkg/proxy/` → rebuild camc |
-| Regression test | `tests/proxy/` |
-| Benchmark task | `benchmarks/…/` |
-| Manual experiment | `dev/ihub_proxy/` |
-| Debug write-up | `docs/debug-notes/` |
