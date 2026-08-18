@@ -17,6 +17,7 @@ from uuid import uuid4, uuid5, NAMESPACE_DNS as _UUID_NS
 from pathlib import Path
 
 from camc_pkg import __build__
+from camc_pkg.api_proxy import run_api_proxy
 from camc_pkg.skills import list_skills, install_manifest_skills
 
 
@@ -713,6 +714,74 @@ def _preflight(tool, tool_binary, workdir, env_setup=None, runtime=None,
     return issues, readiness.get("resolved", {})
 
 
+def _stop_api_proxy(proc):
+    if not proc:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=2)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _start_api_proxy(api_plan, owner_id, port=0):
+    """Start one loopback API proxy and return its process and port."""
+    command = ([ _CAMC_SCRIPT, "_api_proxy"]
+               if _CAMC_SCRIPT and os.access(_CAMC_SCRIPT, os.X_OK)
+               else [sys.executable, "-m", "camc_pkg", "_api_proxy"])
+    command += [
+        "--port", str(int(port or 0)),
+        "--upstream-url", api_plan.get("upstream_base_url") or "",
+        "--upstream-model", api_plan.get("model") or "",
+        "--alias", api_plan.get("client_model") or "",
+        "--owner", owner_id,
+        "--reasoning-map", json.dumps(
+            api_plan.get("reasoning_mapping") or {}, separators=(",", ":")),
+    ]
+    proc = subprocess.Popen(command, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, universal_newlines=True,
+                            bufsize=1)
+    line = proc.stdout.readline() if proc.stdout else ""
+    try:
+        port = int((line or "").strip())
+    except (TypeError, ValueError):
+        _stop_api_proxy(proc)
+        raise RuntimeError("API proxy failed to report a port")
+    if port <= 0:
+        _stop_api_proxy(proc)
+        raise RuntimeError("API proxy returned an invalid port")
+    api_plan["proxy_port"] = port
+    api_plan["proxy_pid"] = proc.pid
+    api_plan["proxy_base_url"] = "http://127.0.0.1:%d" % port
+    return proc, port
+
+
+def _codex_api_model_override(api_plan):
+    """Keep an API run's selected model above project-local Codex config."""
+    model = str((api_plan or {}).get("model") or "").strip()
+    return ["-c", "model=%s" % json.dumps(model)] if model else []
+
+
+def _codex_api_proxy_override(api_plan):
+    """Pin one resumed Codex process to its own per-agent proxy."""
+    port = int((api_plan or {}).get("proxy_port") or 0)
+    if port <= 0:
+        return []
+    from camc_pkg.api_resolver import CODEX_API_PROVIDER
+    url = "http://127.0.0.1:%d%s" % (
+        port, (api_plan or {}).get("base_url_suffix") or "")
+    return ["-c", "model_providers.%s.base_url=%s" %
+            (CODEX_API_PROVIDER, json.dumps(url))]
+
+
+def _stop_agent_api_proxy(agent):
+    from camc_pkg.api_proxy import stop_agent_api_proxy
+    stop_agent_api_proxy(agent)
+
+
 def cmd_run(args):
     tool = getattr(args, "tool", None) or "codex"
     known_tool = tool in ("claude", "codex", "cursor")
@@ -747,6 +816,7 @@ def cmd_run(args):
     from camc_pkg.runtime_env import build_runtime_env
     runtime = build_runtime_env(env_setup=env_setup)
     api_plan = None
+    api_proxy_proc = None
     cli_api = getattr(args, "api", None)
     api_name = None
     api_source = "login"
@@ -762,16 +832,10 @@ def cmd_run(args):
             print_error(str(e))
             sys.exit(1)
     if api_name:
-        from camc_pkg.api_resolver import resolve_run_plan
+        from camc_pkg.api_resolver import apply_resolved_token, resolve_run_plan
         from camc_pkg.api_token import resolve_token
-        from camc_pkg.proxy.manager import ensure_proxy
         try:
-            api_plan = resolve_run_plan(
-                tool,
-                api_name,
-                no_api_proxy=bool(getattr(args, "no_api_proxy", False)),
-                proxy_debug=bool(getattr(args, "proxy_debug", False)),
-            )
+            api_plan = resolve_run_plan(tool, api_name)
         except ValueError as e:
             print_error(str(e))
             sys.exit(1)
@@ -779,41 +843,19 @@ def cmd_run(args):
             api_plan.get("auth_key"),
             api_plan.get("env_names") or [],
             cli_token=getattr(args, "api_token", None),
+            token_file=api_plan.get("token_file"),
+            token_key=api_plan.get("token_key"),
         )
-        translator = api_plan.get("translator") or api_plan.get("mode")
-        if not token and translator != "external":
+        if not token:
             env_names = api_plan.get("env_names") or ["INFERENCE_HUB_TOKEN"]
             print_error(
                 "No API token for provider %s (set %s in ~/.cam/token.env)"
                 % (api_plan.get("provider"), " or ".join(env_names[:3]))
             )
             sys.exit(1)
-        if api_plan.get("mode") == "proxy":
-            try:
-                port, _proxy_rec = ensure_proxy(api_plan, token)
-            except RuntimeError as e:
-                print_error(str(e))
-                sys.exit(1)
-            if port:
-                base = "http://127.0.0.1:%d" % int(port)
-                api_plan["local_base_url"] = base
-                overrides = api_plan.get("env") or {}
-                if tool == "claude":
-                    overrides["ANTHROPIC_BASE_URL"] = base
-                elif tool == "codex":
-                    from camc_pkg.api_resolver import ensure_codex_api_config_dir
-                    overrides["CODEX_HOME"] = ensure_codex_api_config_dir(
-                        base + "/v1", api_plan.get("name") or "api")
-                api_plan["env"] = overrides
-        elif api_plan.get("env", {}).get("_API_USE_RESOLVED_TOKEN") == "1":
-            overrides = dict(api_plan.get("env") or {})
-            overrides.pop("_API_USE_RESOLVED_TOKEN", None)
-            if tool == "claude":
-                overrides["ANTHROPIC_API_KEY"] = token
-            elif tool == "codex":
-                from camc_pkg.api_resolver import CODEX_API_ENV_KEY
-                overrides[CODEX_API_ENV_KEY] = token
-            api_plan["env"] = overrides
+        if api_plan.get("env", {}).get("_API_USE_RESOLVED_TOKEN") == "1":
+            api_plan["env"] = apply_resolved_token(
+                tool, api_plan.get("env") or {}, token)
         for key, val in (api_plan.get("env") or {}).items():
             if val == "":
                 runtime.env.pop(key, None)
@@ -824,10 +866,9 @@ def cmd_run(args):
             src_bits.append("default")
         if token:
             src_bits.append("token: %s" % token_src)
-        print_info("API %s via %s/%s (%s)" % (
+        print_info("API %s via %s (%s)" % (
             api_plan.get("name"),
-            api_plan.get("translator") or api_plan.get("mode"),
-            api_plan.get("upstream_protocol"),
+            api_plan.get("mode"),
             ", ".join(src_bits) if src_bits else "none"))
     try:
         tool_env_keys = _apply_tool_env(runtime, getattr(args, "tool_env", None))
@@ -915,6 +956,9 @@ def cmd_run(args):
             session_uuid = "%s-0000-0000-0000-000000000000" % agent_id
 
     launch_cmd = _build_command(config, prompt, workdir)
+
+    if tool == "codex" and api_plan:
+        launch_cmd += _codex_api_model_override(api_plan)
 
     # Inject --session-id or --resume into Claude launch command
     if tool == "claude":
@@ -1006,11 +1050,29 @@ def cmd_run(args):
     except Exception as e:
         log.warning("ensure_camc_tmux_config failed: %s", e)
         camc_tmux_config = ""
+    if api_plan and api_plan.get("proxy_required"):
+        try:
+            api_proxy_proc, proxy_port = _start_api_proxy(api_plan, agent_id)
+            proxy_base = api_plan.get("proxy_base_url") or ""
+            proxy_url = proxy_base + (api_plan.get("base_url_suffix") or "")
+            if tool == "claude":
+                runtime.env["ANTHROPIC_BASE_URL"] = proxy_url
+            elif tool == "codex":
+                from camc_pkg.api_resolver import ensure_codex_api_config_dir
+                runtime.env["CODEX_HOME"] = ensure_codex_api_config_dir(
+                    proxy_url, api_plan.get("name") or "api",
+                    require_endpoint="responses",
+                    model_id=api_plan.get("model"))
+            print_info("API proxy listening on %d" % proxy_port)
+        except Exception as e:
+            print_error("API proxy failed: %s" % e)
+            sys.exit(1)
     if not create_tmux_session(session, launch_cmd, workdir,
                                env_setup=env_setup, inherit_env=inherit_env,
                                env=runtime.env, tmux_bin=resolved_tmux,
                                tmux_config=camc_tmux_config,
                                exit_status_path=exit_status_path or None):
+        _stop_api_proxy(api_proxy_proc)
         print_error("Failed to create tmux session for '%s'" % session)
         print_info("Debug: %s -u -S %s/%s.sock new-session -d -s %s -c %s" %
                    (resolved_tmux, SOCKETS_DIR, session, session, workdir))
@@ -1081,6 +1143,9 @@ def cmd_run(args):
             "mode": api_plan.get("mode"),
             "route": api_plan.get("route"),
             "base_url": api_plan.get("local_base_url"),
+            "client_model": api_plan.get("client_model"),
+            "proxy_port": api_plan.get("proxy_port"),
+            "proxy_pid": api_plan.get("proxy_pid"),
         }
 
     # 2026-06-23 PDX hardening: stash a structured runtime manifest
@@ -1332,6 +1397,7 @@ def cmd_stop(args):
     else:
         print_warning("tmux session not found; marking agent stopped anyway")
     _kill_monitor(a)
+    _stop_agent_api_proxy(a)
     store.update(a["id"], status="stopped", exit_reason="Stopped by user", completed_at=_now_iso())
     if killed_pid:
         print("Stopped agent %s (killed PID %d, tmux session still alive)" % (a["id"], killed_pid))
@@ -1352,6 +1418,7 @@ def cmd_exit(args):
     print_info("Sending graceful exit to agent %s..." % a["id"])
     clean = graceful_exit(session)
     _kill_monitor(a)
+    _stop_agent_api_proxy(a)
     store.update(a["id"], status="stopped",
                  exit_reason="Exited cleanly" if clean else "Exited (process killed)",
                  completed_at=_now_iso())
@@ -1368,6 +1435,7 @@ def cmd_kill(args):
     if not a:
         sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
     _kill_monitor(a)
+    _stop_agent_api_proxy(a)
     tmux_kill_session(_sf(a, "tmux_session"))
     store.update(a["id"], status="killed", exit_reason="Force killed by user", completed_at=_now_iso())
     print("Killed agent %s" % a["id"])
@@ -2492,6 +2560,7 @@ def cmd_rm(args):
         except Exception as e:
             print_warning("Archive step raised %s; proceeding with rm anyway." % e)
     _kill_monitor(a)
+    _stop_agent_api_proxy(a)
     # Strip the system_prompt block we injected at run-time, if any.
     task_rec = a.get("task") or {}
     sp_file_path = task_rec.get("system_prompt_file") or ""
@@ -2740,10 +2809,18 @@ def _parse_iso_timestamp(value):
         return None
     try:
         from datetime import datetime, timezone
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            return None
-        return parsed.astimezone(timezone.utc)
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+0000"
+        else:
+            text = re.sub(r"([+-]\d\d):(\d\d)$", r"\1\2", text)
+        text = re.sub(r"(\.\d{6})\d+(?=[+-]\d{4}$)", r"\1", text)
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
+            try:
+                return datetime.strptime(text, fmt).astimezone(timezone.utc)
+            except ValueError:
+                pass
+        return None
     except (TypeError, ValueError):
         return None
 
@@ -3214,8 +3291,8 @@ def _find_claude_pid(session):
     return None
 
 
-def graceful_exit(session, timeout=15):
-    """Safely exit Claude Code in a tmux session.
+def graceful_exit(session, timeout=15, tool="claude"):
+    """Safely exit a supported coding agent in a tmux session.
 
     Sequence:
       1. Esc x3 (interrupt sub-agents / tool calls)
@@ -3243,22 +3320,29 @@ def graceful_exit(session, timeout=15):
         # Not idle yet, wait a bit more
         time.sleep(3)
 
+    def agent_pids():
+        if tool == "codex":
+            return _find_codex_pids_for_session(session)
+        pid = _find_claude_pid(session)
+        return [pid] if pid else []
+
     # Step 4: /exit
     tmux_send_input(session, "/exit", send_enter=True)
     for _ in range(10):
         time.sleep(1)
-        if not _find_claude_pid(session):
+        if not agent_pids():
             return True
 
-    # Step 5: Kill Claude process (not tmux)
-    pid = _find_claude_pid(session)
-    if pid:
+    # Step 5: Kill agent processes (not tmux)
+    pids = agent_pids()
+    if pids:
         try:
-            os.kill(pid, 9)
+            for pid in pids:
+                os.kill(pid, 9)
             time.sleep(1)
         except Exception:
             pass
-        if not _find_claude_pid(session):
+        if not agent_pids():
             return False  # killed, not clean exit
 
     return False
@@ -3273,8 +3357,8 @@ def cmd_migrate(args):
         sys.exit(1)
 
     tool = _tf(a, "tool", "claude")
-    if tool != "claude":
-        print_error("Reboot with session resume only works with Claude agents (got: %s)" % tool)
+    if tool not in ("claude", "codex"):
+        print_error("Reboot with session resume only works with Claude/Codex agents (got: %s)" % tool)
         sys.exit(1)
 
     old_id = a["id"]
@@ -3282,6 +3366,39 @@ def cmd_migrate(args):
     name = _tf(a, "name") or old_id
     workdir = _sf(a, "context_path", os.getcwd())
     old_session_id = a.get("session_id", "")
+    api_plan = None
+    old_api = a.get("api") if isinstance(a.get("api"), dict) else None
+    if tool == "codex":
+        if not old_session_id or a.get("session_binding") != "bound":
+            print_error("Cannot reboot Codex: a bound session_id is required")
+            sys.exit(1)
+        if old_api:
+            from camc_pkg.api_resolver import resolve_run_plan
+            try:
+                api_plan = resolve_run_plan(tool, old_api.get("name"))
+            except ValueError as e:
+                print_error("Cannot restore API: %s" % e)
+                sys.exit(1)
+            if api_plan.get("provider") != old_api.get("provider"):
+                print_error("Cannot restore API: saved provider no longer matches")
+                sys.exit(1)
+            if api_plan.get("model") != old_api.get("model"):
+                log.info("Migrating saved API model %s -> %s",
+                         old_api.get("model"), api_plan.get("model"))
+            # Curated profiles can move a retired model alias to a replacement
+            # while retaining the API name. Persist that migration when the
+            # resumed agent record is saved below.
+            old_api["model"] = api_plan.get("model")
+            old_api["provider"] = api_plan.get("provider")
+            if api_plan.get("client_model"):
+                old_api["client_model"] = api_plan.get("client_model")
+            try:
+                old_proxy_port = int(old_api.get("proxy_port") or 0)
+            except (TypeError, ValueError):
+                old_proxy_port = 0
+            if old_proxy_port <= 0:
+                print_error("Cannot restore API: saved proxy port is missing")
+                sys.exit(1)
     # If session_id is the synthetic deterministic form, treat it as absent so
     # the 4-layer extractor can try to find the real Claude session UUID.
     synthetic = old_session_id == "%s-0000-0000-0000-000000000000" % old_id
@@ -3319,7 +3436,7 @@ def cmd_migrate(args):
         print_error("No tmux session found for agent")
         sys.exit(1)
     print_info("Sending graceful exit sequence...")
-    clean = graceful_exit(old_session)
+    clean = graceful_exit(old_session, tool=tool)
     print_info("Agent exited cleanly" if clean else "Agent killed (exit not clean)")
     # Let the shell prompt settle before typing into it.
     time.sleep(2)
@@ -3327,7 +3444,7 @@ def cmd_migrate(args):
     # 2. Guard against the session file still being held. graceful_exit kills
     # the process, but if anything else somehow is still writing that .jsonl,
     # two writers will corrupt it. Same invariant as `camc run --resume`.
-    if old_session_id:
+    if old_session_id and tool == "claude":
         in_use = _find_session_in_use(old_session_id)
         if in_use:
             print_error("Cannot resume: session %s still in use by PID(s) %s" %
@@ -3337,11 +3454,47 @@ def cmd_migrate(args):
     # 3. Kill old monitor (new one will be spawned after relaunch).
     _kill_monitor(a)
 
+    if api_plan:
+        _stop_agent_api_proxy(a)
+        try:
+            old_proxy_pid = int(old_api.get("proxy_pid") or 0)
+        except (TypeError, ValueError):
+            old_proxy_pid = 0
+        for _ in range(40):
+            if old_proxy_pid <= 0 or not os.path.exists(
+                    "/proc/%d" % old_proxy_pid):
+                break
+            time.sleep(.05)
+        try:
+            proxy_proc, proxy_port = _start_api_proxy(
+                api_plan, old_id, port=old_proxy_port)
+        except Exception as e:
+            print_error("API proxy failed to restart: %s" % e)
+            sys.exit(1)
+        api_plan["proxy_port"] = proxy_port
+        old_api["proxy_pid"] = proxy_proc.pid
+        old_api["proxy_port"] = proxy_port
+        if tool == "codex":
+            from camc_pkg.api_resolver import ensure_codex_api_config_dir
+            proxy_url = "http://127.0.0.1:%d%s" % (
+                proxy_port, api_plan.get("base_url_suffix") or "")
+            try:
+                ensure_codex_api_config_dir(
+                    proxy_url, api_plan.get("name") or "api",
+                    require_endpoint="responses",
+                    model_id=api_plan.get("model"))
+            except OSError as e:
+                print_warning("Codex API catalog refresh skipped: %s" % e)
+
     # 4. Relaunch Claude in the SAME tmux session: cd + claude --resume.
     new_session_uuid = "%s-0000-0000-0000-000000000000" % old_id
     config = _load_config(tool)
     launch_cmd = _build_command(config, "", workdir)
-    if old_session_id:
+    if tool == "codex":
+        launch_cmd += _codex_api_model_override(api_plan)
+        launch_cmd += _codex_api_proxy_override(api_plan)
+        launch_cmd += ["resume", old_session_id]
+    elif old_session_id:
         launch_cmd += ["--resume", old_session_id]
     else:
         launch_cmd += ["--session-id", new_session_uuid]
@@ -3372,7 +3525,7 @@ def cmd_migrate(args):
     print_success("Agent rebooted: %s (%s)" % (name, old_id))
     if old_session_id:
         print("  Resumed from: %s" % old_session_id)
-    print("  Session ID: %s" % new_session_uuid)
+    print("  Session ID: %s" % (old_session_id or new_session_uuid))
     print()
     print("  Attach: camc attach %s" % old_id)
 
@@ -5950,7 +6103,7 @@ def _cmd_cron_rm_loop(args):
 
 
 def cmd_api(args):
-    """API profile dispatch: list / check / default / proxy."""
+    """API profile dispatch: list / check / default."""
     sub = getattr(args, "api_cmd", None)
     if sub == "list":
         cmd_api_list(args)
@@ -5958,15 +6111,12 @@ def cmd_api(args):
         cmd_api_check(args)
     elif sub == "default":
         cmd_api_default(args)
-    elif sub == "proxy":
-        cmd_api_proxy(args)
     else:
         sys.stderr.write(
-            "usage: camc api {list,check,default,proxy} ...\n"
+            "usage: camc api {list,check,default} ...\n"
             "  list [--all]              list configured APIs\n"
             "  check                     ping provider and refresh enabled flags\n"
             "  default {set,clear,show}  per-tool default API (empty = login)\n"
-            "  proxy {start,status,logs,stop} ...   debug proxy controls\n"
         )
         sys.exit(1)
 
@@ -5984,15 +6134,19 @@ def cmd_api_list(args):
     for row in rows:
         aliases = row.get("aliases") or []
         alias_s = (" aliases=%s" % ",".join(aliases)) if aliases else ""
+        endpoints = row.get("available_endpoints") or []
+        endpoint_s = (" endpoints=%s" % ",".join(endpoints)) if endpoints else ""
+        tools = row.get("tools") or []
+        tool_s = (" tools=%s" % ",".join(tools)) if tools else ""
         en = "enabled" if row.get("enabled") is not False else "disabled"
-        print("%-18s %-40s %s%s" % (
-            row.get("name"), row.get("model"), en, alias_s))
+        print("%-18s %-40s %s%s%s%s" % (
+            row.get("name"), row.get("model"), en, alias_s, endpoint_s, tool_s))
 
 
 def cmd_api_check(args):
     from camc_pkg.api_store import check_provider, ensure_ready
     data = ensure_ready()
-    result = check_provider(data, token_resolver=None)
+    result = check_provider(data)
     if _want_json(args):
         print(json.dumps(result, indent=2))
         if result.get("error") and not result.get("reachable"):
@@ -6072,153 +6226,11 @@ def cmd_api_default_show(args):
             print("%-8s (login)" % row.get("tool"))
             continue
         flag = "enabled" if row.get("enabled") else "disabled"
+        choices = row.get("apis") or []
+        choice_text = " choices=%s" % ",".join(choices[1:]) if len(choices) > 1 else ""
         print("%-8s %s (%s, %s)" % (
-            row.get("tool"), row.get("api"), flag, row.get("reason") or "unknown"))
-
-
-def cmd_api_proxy(args):
-    proxy_sub = getattr(args, "proxy_cmd", None)
-    if proxy_sub == "start":
-        cmd_api_proxy_start(args)
-    elif proxy_sub == "status":
-        cmd_api_proxy_status(args)
-    elif proxy_sub == "logs":
-        cmd_api_proxy_logs(args)
-    elif proxy_sub == "stop":
-        cmd_api_proxy_stop(args)
-    else:
-        sys.stderr.write(
-            "usage: camc api proxy {start,status,logs,stop} ...\n"
-            "  start ROUTE [--port N] [--upstream-url URL] [--upstream-model M]\n"
-            "              [--model-alias A] [--api NAME] [--debug]\n"
-            "  status\n"
-            "  logs [--follow] [ROUTE]\n"
-            "  stop [ROUTE]\n"
-        )
-        sys.exit(1)
-
-
-def cmd_api_proxy_start(args):
-    from camc_pkg.api_resolver import resolve_run_plan
-    from camc_pkg.api_token import resolve_token
-    from camc_pkg.proxy.manager import ROUTE_DEFAULTS, ensure_proxy
-
-    route = args.route
-    if route not in ROUTE_DEFAULTS:
-        print_error("unknown proxy route %r" % route)
-        sys.exit(1)
-    defaults = ROUTE_DEFAULTS[route]
-    port = int(args.port or defaults.get("port") or 18324)
-    api_name = getattr(args, "api_name", None)
-    upstream_url = getattr(args, "upstream_url", None)
-    upstream_model = getattr(args, "upstream_model", None) or ""
-    model_alias = getattr(args, "model_alias", None)
-
-    if api_name:
-        from camc_pkg.api_routing import PROXY_ROUTE_TOOL
-        tool = PROXY_ROUTE_TOOL.get(route)
-        if not tool:
-            print_error("no tool mapping for proxy route %r" % route)
-            sys.exit(1)
-        plan = resolve_run_plan(tool, api_name, proxy_debug=bool(args.debug))
-        upstream_url = upstream_url or plan.get("upstream_url")
-        upstream_model = upstream_model or plan.get("model") or api_name
-        model_alias = model_alias or plan.get("name") or api_name
-        plan["route"] = route
-        plan["proxy_port"] = port
-        plan["proxy_debug"] = bool(args.debug)
-    else:
-        if not upstream_url:
-            print_error("--upstream-url is required (or use --api NAME)")
-            sys.exit(1)
-        if not model_alias:
-            model_alias = "glm-5.1"
-        plan = {
-            "mode": "proxy",
-            "route": route,
-            "name": model_alias,
-            "model": upstream_model or model_alias,
-            "upstream_url": upstream_url,
-            "proxy_port": port,
-            "proxy_debug": bool(args.debug),
-            "auth_key": "inference_hub",
-            "env_names": ["INFERENCE_HUB_TOKEN", "INFERENCE_HUB_API_KEY"],
-        }
-
-    token, src = resolve_token(plan.get("auth_key"), plan.get("env_names") or [])
-    if not token:
-        print_error("no API token found")
-        sys.exit(1)
-    try:
-        used_port, rec = ensure_proxy(plan, token)
-    except RuntimeError as e:
-        print_error(str(e))
-        sys.exit(1)
-    print("proxy %s listening on :%s (pid=%s, token=%s)" % (
-        route, used_port, (rec or {}).get("pid"), src))
-
-
-def cmd_api_proxy_status(args):
-    from camc_pkg.proxy.manager import proxy_status
-    rows = proxy_status()
-    if _want_json(args):
-        print(json.dumps(rows, indent=2))
-        return
-    if not rows:
-        print("No proxy runs recorded")
-        return
-    for row in rows:
-        health = "healthy" if row.get("healthy") else ("dead" if not row.get("alive") else "unhealthy")
-        print("%s :%s pid=%s %s api=%s" % (
-            row.get("route"), row.get("port"), row.get("pid"), health, row.get("api")))
-
-
-def cmd_api_proxy_logs(args):
-    from camc_pkg.proxy.manager import proxy_status
-    route = getattr(args, "route", None)
-    rows = proxy_status()
-    if route:
-        rows = [r for r in rows if r.get("route") == route]
-    if not rows:
-        print_error("no proxy log found%s" % (" for route %s" % route if route else ""))
-        sys.exit(1)
-    log_path = rows[0].get("log")
-    if not log_path or not os.path.isfile(log_path):
-        print_error("log file missing: %s" % log_path)
-        sys.exit(1)
-    if getattr(args, "follow", False):
-        subprocess.call(["tail", "-f", log_path])
-    else:
-        subprocess.call(["tail", "-n", "80", log_path])
-
-
-def cmd_api_proxy_stop(args):
-    from camc_pkg.proxy.manager import proxy_stop
-    route = getattr(args, "route", None)
-    stopped = proxy_stop(route=route)
-    if not stopped:
-        print("No matching proxy to stop")
-        return
-    for rec in stopped:
-        print("stopped %s (pid=%s)" % (rec.get("route"), rec.get("pid")))
-
-
-def _run_proxy(argv):
-    """Hidden entry: camc _proxy ROUTE [args...]"""
-    if len(argv) < 2:
-        sys.stderr.write("usage: camc _proxy ROUTE [options]\n")
-        sys.exit(2)
-    route = argv[1]
-    rest = argv[2:]
-    if route == "completions_to_messages":
-        from camc_pkg.proxy.messages import run_messages_proxy
-        run_messages_proxy(rest)
-    elif route == "completions_to_responses":
-        from camc_pkg.proxy.responses import run_responses_proxy
-        run_responses_proxy(rest)
-        return
-    sys.stderr.write("unknown proxy route: %s\n" % route)
-    sys.exit(2)
+            row.get("tool"), row.get("api"), flag,
+            (row.get("reason") or "unknown") + choice_text))
 
 
 def cmd_cron(args):
@@ -7018,15 +7030,11 @@ examples:
     r.add_argument("--system-file", dest="system_file", default=None,
                    help="Path to a file whose contents become the system prompt (overrides --system-prompt)")
     r.add_argument("--api", default=None, metavar="NAME",
-                   help="API profile from ~/.cam/api-models.json (e.g. glm-5.1)")
+                   help="API profile from ~/.cam/api-models.json (e.g. deepseek-v4-flash)")
     r.add_argument("--no-default-api", dest="no_default_api", action="store_true",
                    help="Skip per-tool default API; use normal OAuth/login")
     r.add_argument("--api-token", dest="api_token", default=None,
                    help="One-off bearer token (default: ~/.cam/token.env)")
-    r.add_argument("--no-api-proxy", action="store_true",
-                   help="Fail if the API requires a local protocol proxy")
-    r.add_argument("--proxy-debug", action="store_true",
-                   help="Enable JSONL debug logs for the API proxy")
 
     # list
     ls = sub.add_parser("list", aliases=["ls"], help="List agents")
@@ -7261,30 +7269,13 @@ examples:
     ap_def = api_sub.add_parser("default", help="Per-tool default API profile")
     ap_def_sub = ap_def.add_subparsers(dest="default_cmd", parser_class=CamArgumentParser)
     ap_def_set = ap_def_sub.add_parser("set", help="Set default API for a tool")
-    ap_def_set.add_argument("name", help="API profile name (e.g. glm-5.1)")
+    ap_def_set.add_argument("name", help="API profile name (e.g. deepseek-v4-flash)")
     ap_def_set.add_argument("--tool", "-t", required=True, choices=["claude", "codex"],
                             help="Tool to configure (codex empty = login)")
     ap_def_clear = ap_def_sub.add_parser("clear", help="Clear default API (use login)")
     ap_def_clear.add_argument("--tool", "-t", required=True, choices=["claude", "codex"])
     ap_def_show = ap_def_sub.add_parser("show", help="Show per-tool default API settings")
     ap_def_show.add_argument("--json", action="store_true", help="Output as JSON")
-    ap_px = api_sub.add_parser("proxy", help=argparse.SUPPRESS)
-    ap_px_sub = ap_px.add_subparsers(dest="proxy_cmd", parser_class=CamArgumentParser)
-    ap_px_start = ap_px_sub.add_parser("start", help=argparse.SUPPRESS)
-    ap_px_start.add_argument("route", help=argparse.SUPPRESS)
-    ap_px_start.add_argument("--port", type=int, default=None)
-    ap_px_start.add_argument("--upstream-url", dest="upstream_url", default=None)
-    ap_px_start.add_argument("--upstream-model", dest="upstream_model", default=None)
-    ap_px_start.add_argument("--model-alias", dest="model_alias", default=None)
-    ap_px_start.add_argument("--api", dest="api_name", default=None, metavar="NAME")
-    ap_px_start.add_argument("--debug", action="store_true")
-    ap_px_sub.add_parser("status", help=argparse.SUPPRESS)
-    ap_px_logs = ap_px_sub.add_parser("logs", help=argparse.SUPPRESS)
-    ap_px_logs.add_argument("route", nargs="?", default=None)
-    ap_px_logs.add_argument("-f", "--follow", action="store_true")
-    ap_px_stop = ap_px_sub.add_parser("stop", help=argparse.SUPPRESS)
-    ap_px_stop.add_argument("route", nargs="?", default=None)
-
     # cron — scheduled jobs (P0)
     cron_p = sub.add_parser("cron", help="Scheduled jobs and agent loops")
     cron_sub = cron_p.add_subparsers(dest="cron_cmd", parser_class=CamArgumentParser)
@@ -7413,6 +7404,9 @@ examples:
     sk_rm = sk_sub.add_parser("rm", help="Remove skill from manifest")
     sk_rm.add_argument("name", help="Skill name")
 
+    if len(sys.argv) >= 2 and sys.argv[1] == "_api_proxy":
+        sys.exit(run_api_proxy(sys.argv[2:]))
+
     # Hidden _monitor subcommand
     if len(sys.argv) >= 3 and sys.argv[1] == "_monitor":
         _run_monitor(sys.argv[2])
@@ -7423,11 +7417,6 @@ examples:
 
     if len(sys.argv) == 6 and sys.argv[1] == "_bind_codex_session":
         sys.exit(_run_codex_session_binder(*sys.argv[2:]))
-
-    # Hidden _proxy subcommand (protocol proxy worker)
-    if len(sys.argv) >= 3 and sys.argv[1] == "_proxy":
-        _run_proxy(sys.argv[1:])
-        return
 
     # Command aliases (expand before argparse sees them)
     _aliases = {"a": "attach", "ls": "list"}

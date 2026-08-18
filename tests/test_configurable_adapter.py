@@ -563,6 +563,26 @@ class TestAdapterConfigDefaults:
         assert ac.health_check_interval == 30
         assert ac.empty_threshold == 5
 
+    def test_does_not_parse_api_endpoint_or_base_url_suffix(self):
+        """API URL shape is JSON-owned, not adapter-owned."""
+        from camc_pkg.adapters import AdapterConfig as CamcAdapterConfig
+        ac = CamcAdapterConfig({
+            "api": {
+                "endpoint": "openai_responses",
+                "base_url_suffix": "/v1",
+            },
+        })
+        assert not hasattr(ac, "api_endpoint")
+        assert not hasattr(ac, "api_base_url_suffix")
+
+    def test_builtin_adapters_have_no_api_url_shapes(self):
+        from camc_pkg.adapters import _load_config
+
+        claude = _load_config("claude")
+        codex = _load_config("codex")
+        assert not hasattr(claude, "api_endpoint")
+        assert not hasattr(codex, "api_endpoint")
+
 
 class TestTimingGetters:
     """Test that ConfigurableAdapter timing getters return config values."""
