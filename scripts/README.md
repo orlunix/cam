@@ -8,5 +8,6 @@ explicitly copied by an operator.
 | `ihub_ping_curated.py` | Direct IHUB ping for enabled curated APIs |
 | `release.sh`, `cam-serve-daemon.sh`, … | Release / ops helpers |
 
-IHUB proxy dev scripts moved to **`dev/ihub_proxy/`**. Production proxy:
-**`src/camc_pkg/proxy/`** → `python3 build_camc.py`. See `docs/code-layout.md`.
+API routing is implemented by **`src/camc_pkg/api_*.py`** and embedded with
+`python3 build_camc.py`. There is no production proxy. See
+`docs/code-layout.md`.
