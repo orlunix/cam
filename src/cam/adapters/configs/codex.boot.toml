@@ -12,6 +12,15 @@ ready_flags = ["MULTILINE"]
 prompt_submit_delay = 0.5
 
 [[confirm]]
+# Codex may render the workspace trust menu without the explanatory text
+# in the active capture tail. Keep this numbered menu in boot/trust phase;
+# selecting it requires the trailing Enter to submit the choice.
+pattern = "^\\s*(?:›\\s*)?1\\.\\s*Yes,\\s*continue\\b.*$"
+flags = ["IGNORECASE", "MULTILINE"]
+response = "1"
+send_enter = true
+
+[[confirm]]
 pattern = "Yes, allow Codex to work in this folder"
 response = "1"
 send_enter = true
