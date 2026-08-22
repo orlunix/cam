@@ -33,6 +33,11 @@ Registered features:
       mailbox into the monitor. Does NOT read / write the ledger, does
       NOT inject into tmux, does NOT call store.
 
+    * FinalStaticFallbackFeature (order 35) — a strict, bounded
+      last-resort retry for a previously selected confirmation or a
+      CAMC-owned pending message. It requires both screen hashes to be
+      stable for a long interval and stops after three no-feedback tries.
+
     * CronFeature (order 40) — PLACEHOLDER, disabled by default,
       no-op. Reserved for a future slice that wires camc cron checks
       into the monitor. Does NOT consult jobs.json, does NOT spawn
@@ -115,6 +120,13 @@ class MonitorRuntime(object):
         self.idle_confirmed = False
         self.cycle = 0
         self.feature_state = {}
+        # A previously selected action awaiting long-static feedback.
+        # The monitor driver may attach the AgentStore so this feature can
+        # discover CAMC-owned pending messages without polling on the hot
+        # path; direct unit tests can set this field themselves.
+        self.final_fallback = None
+        self.final_fallback_last_store_check = 0.0
+        self.store = None
         # Boot / initializing: monitor uses <tool>.boot.toml + <tool>.toml.
         self.boot_config = None
         self.in_initializing = False
@@ -391,7 +403,8 @@ class BootPromptFeature(MonitorFeature):
             runtime.in_initializing = False
             runtime.left_initializing = True
             return actions
-        if not is_ready_for_boot(snap.output, boot_cfg, tool_cfg):
+        if not is_ready_for_boot(snap.output, boot_cfg, tool_cfg,
+                                 stable_for=snap.idle_for):
             return actions
         prompt = (runtime.boot_prompt or "").strip()
         if prompt and runtime.prompt_after_launch:
@@ -454,7 +467,7 @@ class AutoConfirmationFeature(MonitorFeature):
                             "msg": "[%d] Confirm cooldown (%.1fs remaining)"
                                    % (snap.cycle, cfg.confirm_cooldown - confirm_cd)})
             return actions
-        if snap.idle_for < 5.0:
+        if not init_phase and snap.idle_for < 5.0:
             return actions
         residue = input_residue_count(snap.output, runtime.last_confirm_response)
         if residue > 0 and not init_phase:
@@ -520,7 +533,9 @@ class AutoConfirmationFeature(MonitorFeature):
         actions.append({"kind": "log", "level": "debug",
                         "msg": "[%d] Confirm screen: %s"
                                % (snap.cycle, _screen_tail_str(snap.output, 5))})
-        if response:
+        if response == "BTab":
+            actions.append({"kind": "send_key", "key": response})
+        elif response:
             actions.append({"kind": "send_input",
                             "text": response, "send_enter": send_enter})
         elif send_enter:
@@ -530,6 +545,18 @@ class AutoConfirmationFeature(MonitorFeature):
         runtime.last_confirm_response = response
         runtime.last_change = snap.now
         runtime.idle_confirmed = False
+        runtime.final_fallback = {
+            "kind": "confirm",
+            "text": response,
+            # The action itself can visibly paste text into the input box.
+            # Start the strict feedback baseline on the first post-action
+            # frame instead of mistaking that paste for acknowledgement.
+            "baseline_hash0": None,
+            "baseline_hash1": None,
+            "baseline_at": None,
+            "attempts": 0,
+            "next_at": snap.now + FinalStaticFallbackFeature._WAITS[0],
+        }
         if not init_phase:
             runtime.has_worked = True
         actions.append({"kind": "event", "name": "auto_confirm",
@@ -558,6 +585,69 @@ class MailboxFeature(MonitorFeature):
     name = "mailbox"
     order = 30
     enabled = False
+
+
+@register_feature
+class FinalStaticFallbackFeature(MonitorFeature):
+    name = "final_static_fallback"
+    order = 35
+    enabled = True
+    _WAITS = (60.0, 120.0, 300.0)
+
+    def after_confirm(self, snap, runtime):
+        state = runtime.final_fallback
+        store = getattr(runtime, "store", None)
+        if (state is None and store is not None and snap.idle_for >= self._WAITS[0]
+                and snap.now - runtime.final_fallback_last_store_check >= 30.0):
+            runtime.final_fallback_last_store_check = snap.now
+            try:
+                state = (store.get(runtime.agent_id) or {}).get("screen_fallback")
+            except Exception:
+                state = None
+            if isinstance(state, dict):
+                runtime.final_fallback = state
+        if not isinstance(state, dict):
+            return []
+        base = (state.get("baseline_hash0"), state.get("baseline_hash1"))
+        if base == (None, None):
+            state.update(baseline_hash0=snap.hash0, baseline_hash1=snap.hash1,
+                         baseline_at=snap.now, attempts=0,
+                         next_at=snap.now + self._WAITS[0])
+            return []
+        if (base != (snap.hash0, snap.hash1)
+                or (state.get("kind") == "message" and not snap.prompt_visible)
+                or (state.get("kind") == "confirm" and snap.prompt_visible)):
+            runtime.final_fallback = None
+            if store and state.get("kind") == "message":
+                try:
+                    store.update(runtime.agent_id, screen_fallback=None)
+                except Exception:
+                    pass
+            return []
+        attempt = int(state.get("attempts", 0))
+        wait = self._WAITS[min(attempt, len(self._WAITS) - 1)]
+        if (attempt >= len(self._WAITS) or snap.now < state.get("next_at", 0)
+                or snap.idle_for < wait or snap.idle_for_hash1 < wait):
+            return []
+        actions = [{"kind": "send_key",
+                    "key": "BTab" if state.get("text") == "BTab" else "Enter"},
+                   {"kind": "halt_cycle",
+                    "sleep": getattr(runtime.config, "confirm_sleep", 0.5)}]
+        attempt += 1
+        if attempt >= len(self._WAITS):
+            runtime.final_fallback = None
+        else:
+            state.update(attempts=attempt, next_at=snap.now + self._WAITS[attempt],
+                         baseline_hash0=snap.hash0, baseline_hash1=snap.hash1,
+                         baseline_at=snap.now)
+            runtime.final_fallback = state
+        if store and state.get("kind") == "message":
+            try:
+                store.update(runtime.agent_id,
+                             screen_fallback=runtime.final_fallback)
+            except Exception:
+                pass
+        return actions
 
 
 @register_feature

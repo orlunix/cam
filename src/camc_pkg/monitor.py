@@ -222,6 +222,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
     # (currently MailboxFeature + CronFeature) are still in the list
     # so test code can introspect them, but the driver skips them.
     runtime = MonitorRuntime(agent_id, config, now=time.time())
+    runtime.store = store
     runtime.boot_config = boot_config
     runtime.prompt_after_launch = bool(config.prompt_after_launch)
     boot_wait = (boot_config.startup_wait if boot_config else config.startup_wait)
