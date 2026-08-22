@@ -232,7 +232,9 @@ from camc_pkg.transport import (
 from camc_pkg.system_prompt import (
     target_file, write_block, strip_block, has_block, load_prompt_text,
 )
-from camc_pkg.monitor import _run_monitor
+from camc_pkg.monitor import (
+    _run_monitor, _normalize_screen, _content_hash, _strip_ascii_digits,
+)
 # Cron module: bare names (no `as` aliases). build_camc.py strips this
 # import line during bundling; the names then live at the top level of
 # the single-file build because the bundler inlines cron.py before
@@ -5066,6 +5068,30 @@ def _msg_inject(session, to_label, text, timeout_s,
                              send_key_fn=tmux_send_key, sleep_fn=time.sleep):
         _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
         return (msg_id, False)
+    # The monitor may make one long-static, input-guarded Enter retry if the
+    # TUI accepted the paste but did not consume the submit key.  Keep this
+    # tiny pending record on the target agent only; raw tmux session sends do
+    # not have an owning monitor and therefore never get a blind fallback.
+    if target and target.get("target_id"):
+        try:
+            post_output = capture_tmux(session)
+            post_normalized = _normalize_screen(post_output or "")
+            post_hash0 = _content_hash(post_normalized)
+            post_hash1 = _content_hash(_strip_ascii_digits(post_normalized))
+            submitted_at = time.time()
+            AgentStore().update(
+                target.get("target_id"),
+                screen_fallback={
+                    "kind": "message", "msg_id": msg_id,
+                    "session": session, "created_at": submitted_at,
+                    "baseline_at": submitted_at,
+                    "baseline_hash0": post_hash0,
+                    "baseline_hash1": post_hash1,
+                    "attempts": 0,
+                },
+            )
+        except Exception:
+            pass
     _msg_ledger_append({"msg_id": msg_id, "status": "delivered"})
     return (msg_id, True)
 
