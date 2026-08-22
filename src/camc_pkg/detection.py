@@ -34,6 +34,8 @@ _CURSOR_LINE_RE = re.compile(r"^\s*[❯›→>](\s|$)")
 _BARE_CURSOR_RE = re.compile(r"^\s*[❯›→>]\s*$")
 _CURSOR_PREFIX_RE = re.compile(r"^\s*[❯›→>]\s+(.*?)\s*$")
 _ACTIVE_UI_LINES = 8
+_READY_UI_LINES = 4
+_READY_STABLE_SECONDS = 10.0
 
 
 def _find_cursor_line(lines):
@@ -188,20 +190,30 @@ def _detect_prompt_count(output, config):
     return None
 
 
-def is_ready_for_input(output, config):
+def is_ready_for_input(output, config, stable_for=None):
     if not config.ready_pattern:
         return True
     clean = strip_ansi(output) if config.strip_ansi else output
-    active_lines = _active_ui_lines(clean, config)
-    active = "\n".join(active_lines)
     # A visible selection menu is not an input-ready prompt, even when an
     # older prompt line remains in scrollback or the selection uses the same
     # cursor glyph. Keep the menu text for classification; do not strip it.
+    # Confirmation retains the normal 8-line search window; only the ready
+    # cursor itself is restricted to the final four non-empty lines.
+    confirm_lines = _active_ui_lines(clean, config)
+    confirm_active = "\n".join(confirm_lines)
     for pattern, _response, _send_enter in config.confirm_rules:
-        if pattern.search(active):
+        if pattern.search(confirm_active):
             return False
+    active_lines = _active_ui_lines(clean, config, recent_lines=_READY_UI_LINES)
+    active = "\n".join(active_lines)
     cursor_line = _find_cursor_line(active_lines)
     if cursor_line is not None:
+        # A lone cursor can be rendered before Codex finishes its startup
+        # trust screen.  Boot callers pass the existing hash-stability age;
+        # require a short stable window before treating it as input-ready.
+        if (stable_for is not None
+                and stable_for < _READY_STABLE_SECONDS):
+            return False
         return bool(config.ready_pattern.search(cursor_line))
     return bool(config.ready_pattern.search(active))
 
@@ -241,10 +253,12 @@ def should_confirm_initializing(output, boot_config, tool_config,
     return None, tool_config
 
 
-def is_ready_for_boot(output, boot_config, tool_config):
+def is_ready_for_boot(output, boot_config, tool_config, stable_for=None):
     """Ready if either boot or tool ready_pattern matches."""
-    if boot_config and is_ready_for_input(output, boot_config):
+    if (boot_config
+            and is_ready_for_input(output, boot_config, stable_for=stable_for)):
         return True
-    if tool_config and is_ready_for_input(output, tool_config):
+    if (tool_config
+            and is_ready_for_input(output, tool_config, stable_for=stable_for)):
         return True
     return False

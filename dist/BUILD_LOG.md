@@ -6110,3 +6110,51 @@ a379b67 fix(camc): remove misleading live status probe
 f77fb9c feat(camc): archive validated Codex sessions
 7eae072 feat(camc): add self-managed cron scheduler
 ```
+## v1.2.113  be0e296-dirty 2026-08-22 00:28
+
+- Lines: 19973
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+```
+## v1.2.114  be0e296-dirty 2026-08-22 01:31
+
+- Lines: 19978
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+```
+## v1.2.115  be0e296-dirty 2026-08-22 02:36
+
+- Lines: 19978
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+```
+## v1.2.116  be0e296-dirty 2026-08-22 03:31
+
+- Lines: 19829
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+```
