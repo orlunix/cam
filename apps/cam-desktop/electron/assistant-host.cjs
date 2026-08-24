@@ -369,7 +369,7 @@ function _shellBridgePair() {
 }
 
 function _pushEvent(ev) {
-  const withSeq = { seq: ++state.seq, ...ev };
+  const withSeq = { seq: ++state.seq, ts: Date.now(), ...ev };
   state.events.push(withSeq);
   if (state.events.length > MAX_EVENTS) {
     state.events.splice(0, state.events.length - MAX_EVENTS);
@@ -585,6 +585,7 @@ function status() {
     seq: state.seq,
     defaults: { apiUrl: DEFAULT_API_URL, model: DEFAULT_MODEL },
     camPiPath: _camPiPath(),
+    electronPath: process.execPath,
   };
 }
 

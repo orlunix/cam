@@ -11,14 +11,14 @@
 import { api } from '../api.js?v=0.66.1';
 import { state } from '../state.js?v=0.64.0';
 import { mountShell } from './shell.js?v=0.65.1';
-import { mountAgentConsole } from './agent-console.js?v=0.67.5';
+import { mountAgentConsole } from './agent-console.js?v=0.68.1';
 import { mountSettingsMode } from './settings-mode.js?v=0.64.2';
 import { mountStartAgentMode } from './start-agent-mode.js?v=0.64.1';
 import { mountNodesMode } from './nodes-mode.js?v=0.64.0';
 import { mountSkillsMode } from './skills-mode.js?v=0.64.0';
 import { mountBotsMode } from './bots-mode.js?v=0.64.0';
 import { mountTodosMode } from './todos-mode.js?v=0.65.0';
-import { mountExtensionsMode } from './extensions-mode.js?v=0.68.0';
+import { mountExtensionsMode } from './extensions-mode.js?v=0.68.1';
 import { mountAgentDoctorMode } from './agent-doctor-mode.js?v=0.68.0';
 import { mountDiagnosticsMode } from './diagnostics-mode.js?v=0.65.1';
 

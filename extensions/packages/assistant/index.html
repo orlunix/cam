@@ -140,6 +140,7 @@ button.ghost:hover { border-color: var(--accent); }
     <div class="row" style="margin-top:6px">
       <button class="ghost" id="btn-copy-pi">Copy launch command</button>
       <code class="hint" id="cam-pi-cmd" style="user-select:all">node cam-pi.js</code>
+      <span class="hint" id="cam-pi-note" style="margin-left:8px;opacity:.7"></span>
     </div>
     <div class="hint" id="copy-pi-status"></div>
   </div>
@@ -180,7 +181,7 @@ const pendingUser = [];    // locally-rendered user texts awaiting their
                            // echoed 'user' event (dedupe on replay/push)
 const toolLines = new Map(); // toolCallId → tool .msg element (start/end collapse)
 
-function addMsg(kind, text) {
+function addMsg(kind, text, ts) {
   const el = document.createElement('div');
   el.className = 'msg ' + kind;
   const who = { user: 'you', assistant: 'assistant', tool: 'tool', sys: 'system', error: 'error' }[kind] || kind;
@@ -188,8 +189,9 @@ function addMsg(kind, text) {
   el.querySelector('.who').textContent = who;
   const t = document.createElement('span');
   t.className = 'time';
-  const d = new Date();
-  t.textContent = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  const d = ts ? new Date(ts) : new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  t.textContent = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   el.querySelector('.who').appendChild(t);
   el.querySelector('.body').textContent = text || '';
   $('transcript').appendChild(el);
@@ -246,9 +248,9 @@ function applyEvent(ev) {
     if (currentBubble) {
       if (ev.text) setBubble(currentBubble, ev.text);
     } else if (ev.text) {
-      addMsg('assistant', ev.text);
+      addMsg('assistant', ev.text, ev.ts);
     }
-    if (ev.errorMessage) addMsg('error', ev.errorMessage);
+    if (ev.errorMessage) addMsg('error', ev.errorMessage, ev.ts);
     currentBubble = null;
     currentThink = null;
     streaming = false;
@@ -259,15 +261,15 @@ function applyEvent(ev) {
     // restore after page navigation / app restart).
     const i = pendingUser.indexOf(ev.text);
     if (i >= 0) pendingUser.splice(i, 1);
-    else addMsg('user', ev.text);
+    else addMsg('user', ev.text, ev.ts);
   } else if (ev.type === 'queued') {
-    addMsg('sys', 'queued — will be answered after the current reply');
+    addMsg('sys', 'queued — will be answered after the current reply', ev.ts);
   } else if (ev.type === 'tool') {
     // One line per call: start writes "⟳ cam GET /api/…", end flips the
     // marker to ✓/✗ in place — no start/end pairs piling up.
     const label = `${ev.name || 'tool'}${ev.summary ? ' ' + ev.summary : ''}`;
     if (ev.phase === 'start') {
-      const el = addMsg('tool', `⟳ ${label}`);
+      const el = addMsg('tool', `⟳ ${label}`, ev.ts);
       toolLines.set(ev.id || label, el);
     } else {
       const key = ev.id || label;
@@ -277,12 +279,12 @@ function applyEvent(ev) {
         b.textContent = b.textContent.replace(/^⟳/, ev.isError ? '✗' : '✓') + (ev.isError ? ' (error)' : '');
         toolLines.delete(key);
       } else {
-        addMsg('tool', `${ev.isError ? '✗' : '✓'} ${label}${ev.isError ? ' (error)' : ''}`);
+        addMsg('tool', `${ev.isError ? '✗' : '✓'} ${label}${ev.isError ? ' (error)' : ''}`, ev.ts);
       }
       $('transcript').scrollTop = $('transcript').scrollHeight;
     }
   } else if (ev.type === 'error') {
-    addMsg('error', ev.error + (ev.detail ? ': ' + ev.detail : ''));
+    addMsg('error', ev.error + (ev.detail ? ': ' + ev.detail : ''), ev.ts);
     currentBubble = null;
     currentThink = null;
     streaming = false;
@@ -378,7 +380,8 @@ async function sendCurrent() {
       return;
     }
   }
-  addMsg('user', text);
+  const sentAt = Date.now();
+  addMsg('user', text, sentAt);
   pendingUser.push(text);
   $('input').value = '';
   streaming = true; // optimistic; the status events correct it
@@ -561,6 +564,30 @@ function schedulePoll() {
   setTimeout(async () => { await poll(); schedulePoll(); }, streaming ? 300 : 1200);
 }
 
+function setCamPiCommand(st) {
+  const camPiPath = st && st.camPiPath;
+  const electronPath = st && st.electronPath;
+  if (!camPiPath) return;
+  const ua = navigator.userAgent || '';
+  const isWin = /Windows/i.test(ua);
+  const isMac = /Mac/i.test(ua);
+  if (electronPath) {
+    if (isWin) {
+      // PowerShell one-liner: use Electron's bundled Node runtime so the
+      // user does not need a separate Node.js install on PATH.
+      $('cam-pi-cmd').textContent = `$env:ELECTRON_RUN_AS_NODE=1; & "${electronPath}" "${camPiPath}"`;
+    } else if (isMac) {
+      $('cam-pi-cmd').textContent = `ELECTRON_RUN_AS_NODE=1 "${electronPath}" "${camPiPath}"`;
+    } else {
+      $('cam-pi-cmd').textContent = `ELECTRON_RUN_AS_NODE=1 "${electronPath}" "${camPiPath}"`;
+    }
+    $("cam-pi-note").textContent = "(uses Electron's bundled Node — no separate node install needed)";
+  } else {
+    $('cam-pi-cmd').textContent = `node "${camPiPath}"`;
+    $('cam-pi-note').textContent = '(needs node in PATH)';
+  }
+}
+
 /* ── boot ── */
 (async function boot() {
   try {
@@ -576,7 +603,7 @@ function schedulePoll() {
     // Bridge row: show the saved URL (token never comes back; a bare URL
     // on save keeps the stored token).
     $('f-shell-url').value = (st && st.shellUrl) || '';
-    if (st && st.camPiPath) $('cam-pi-cmd').textContent = `node "${st.camPiPath}"`;
+    setCamPiCommand(st);
     $('token-hint').textContent = (st && st.hasToken) ? 'token saved (encrypted) — leave blank to keep it' : 'no token saved yet';
     setStatus((st && st.status) || 'stopped', lastModel);
     if (configured) {
