@@ -750,8 +750,6 @@ def test_cmd_run_ignores_context_env_setup(tmp_path, monkeypatch):
         api = None
         no_default_api = True
         api_token = None
-        no_api_proxy = False
-        proxy_debug = False
 
     with pytest.raises(SystemExit):
         camc_cli.cmd_run(_Args())
@@ -822,8 +820,6 @@ def test_cmd_run_loads_context_for_metadata_only_after_launch(tmp_path, monkeypa
         api = None
         no_default_api = True
         api_token = None
-        no_api_proxy = False
-        proxy_debug = False
 
     monkeypatch.setattr(re_mod, "build_runtime_env", _fake_build_runtime_env)
     monkeypatch.setattr(camc_cli, "_preflight", _fake_preflight)

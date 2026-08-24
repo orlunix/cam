@@ -67,6 +67,22 @@ class TestResolveToken:
         assert token == "yaml-hyphen"
         assert src == "my_tokens.yaml:inference-hub"
 
+    def test_provider_token_file_uses_auth_key_by_default(self, tmp_path):
+        path = tmp_path / "provider.yaml"
+        path.write_text("INFERENCE_HUB: provider-token\n")
+        token, src = tok.resolve_token(
+            "inference_hub", [], token_file=str(path))
+        assert token == "provider-token"
+        assert src == "provider.yaml:INFERENCE_HUB"
+
+    def test_provider_token_key_can_override_auth_key(self, tmp_path):
+        path = tmp_path / "provider.yaml"
+        path.write_text("CUSTOM_KEY: provider-token\n")
+        token, src = tok.resolve_token(
+            "inference_hub", [], token_file=str(path), token_key="CUSTOM_KEY")
+        assert token == "provider-token"
+        assert src == "provider.yaml:CUSTOM_KEY"
+
     def test_precedence_env_before_yaml(self, token_paths, monkeypatch):
         monkeypatch.setenv("INFERENCE_HUB_TOKEN", "env-wins")
         token_paths["yaml"].write_text("inference_hub: yaml-loses\n")

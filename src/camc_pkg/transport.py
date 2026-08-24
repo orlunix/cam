@@ -588,7 +588,7 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
         # PATH=...` inside the bash invocation so the launched command
         # sees the same PATH preflight checked against.
         env_setup = "export PATH=%s" % shlex.quote(env.get("PATH", os.environ.get("PATH", "")))
-    # Non-login bash: env_setup is the sole source of Anthropic/proxy
+    # Non-login bash: env_setup is the sole source of tool API
     # overrides. `bash -l` would re-source ~/.bashrc and re-inject login
     # session / ANTHROPIC_* exports before env_setup can win.
     if exit_status_path:

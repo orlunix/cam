@@ -48,6 +48,20 @@ def _read_yaml_flat(path):
     return _read_kv_file(path, ":")
 
 
+def _read_provider_token_file(path):
+    """Read a provider-owned token file without ever writing it.
+
+    YAML files use the same intentionally small flat ``KEY: VALUE`` reader as
+    ``~/.my_tokens.yaml``.  Other extensions are treated as dotenv files.
+    """
+    expanded = os.path.expanduser(str(path or ""))
+    if not expanded:
+        return {}
+    if expanded.lower().endswith((".yaml", ".yml")):
+        return _read_yaml_flat(expanded)
+    return _read_token_env(expanded)
+
+
 def _index_by_normalized_key(flat_dict):
     """Map normalized key -> (original_key, value). First entry wins."""
     index = {}
@@ -97,7 +111,8 @@ def _lookup_in_environ(env_names, auth_key):
     return "", ""
 
 
-def resolve_token(auth_key, env_names, cli_token=None):
+def resolve_token(auth_key, env_names, cli_token=None, token_file=None,
+                  token_key=None):
     """Return (token, source_label). First hit wins."""
     if cli_token:
         return cli_token.strip(), "cli"
@@ -114,6 +129,22 @@ def resolve_token(auth_key, env_names, cli_token=None):
     token, src = _lookup_in_environ(names, auth_key)
     if token:
         return token, src
+
+    # A provider may point at a project/user-owned token file.  ``auth_key``
+    # is the default key; ``token_key`` is only needed when the file uses a
+    # different label, so the common configuration has no duplicated field.
+    if token_file:
+        key_candidates = [token_key or auth_key]
+        if token_key:
+            key_candidates.append(auth_key)
+        key_candidates.extend(names)
+        token, src = _lookup_in_index(
+            _index_by_normalized_key(_read_provider_token_file(token_file)),
+            os.path.basename(os.path.expanduser(str(token_file))),
+            *key_candidates,
+        )
+        if token:
+            return token, src
 
     candidates = []
     seen = set()

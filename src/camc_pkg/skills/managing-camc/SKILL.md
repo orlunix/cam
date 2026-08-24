@@ -59,6 +59,12 @@ Agents are addressable by name, ID prefix, or `#N` (1-based from `~/.cam/camc li
 | Remove | `~/.cam/camc rm <agent>` (always kills tmux; `--archive` to save first) |
 | Bulk cleanup | `camc prune --orphans` |
 | Start with system prompt | `~/.cam/camc run "task" -n name --system-prompt "..."` or `--system-file <path>` |
+| Run with an API profile | `~/.cam/camc run -t codex --api <name> -n <name> "task"` |
+| Check/list API profiles | `~/.cam/camc api check` / `~/.cam/camc api list` |
+| Show API defaults | `~/.cam/camc api default show` |
+| Set a per-tool API default | `~/.cam/camc api default set -t codex <name>` |
+| Clear a default (login) | `~/.cam/camc api default clear -t codex` |
+| Use login for one run | `~/.cam/camc run -t codex --no-default-api -n <name>` |
 
 **Other skill areas:**
 
@@ -67,6 +73,19 @@ Agents are addressable by name, ID prefix, or `#N` (1-based from `~/.cam/camc li
 | Inter-agent messaging (delegation) | camc-messaging |
 | Cron jobs & prompt loops | camc-cron-loop |
 | Diagnose stuck/failed agents | camc-diagnose |
+
+## API profiles and login
+
+`--api NAME` explicitly selects a profile from `~/.cam/api-models.json` for
+Claude or Codex. Run `~/.cam/camc api check` before relying on a profile.
+API defaults are per-tool and opt-in: `api default set` makes ordinary runs
+use that profile; `api default show` displays the selection.
+
+When a default is configured, use `--no-default-api` for one normal login
+run. This skips the default without changing configuration. To permanently
+return a tool to login, run `api default clear --tool <tool>`; an explicit
+`--api NAME` still wins for a single run. Codex API runs use the isolated
+`~/.codex-api` home; normal login uses the tool's regular login home.
 
 ## 1. Starting an agent
 
