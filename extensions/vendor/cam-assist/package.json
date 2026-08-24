@@ -1,0 +1,17 @@
+{
+  "name": "cam-assist",
+  "private": true,
+  "version": "0.1.0",
+  "description": "CAM Desktop assistant child process — pi-coding-agent SDK bundled into one CJS file. Design: docs/desktop/assistant-design.md. Build: npm install && npm run build → dist/cam-assist.js (committed; ships via extraResources).",
+  "main": "entry.js",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "0.73.1"
+  },
+  "devDependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "esbuild": "^0.25.0"
+  }
+}
