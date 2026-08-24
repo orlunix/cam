@@ -4878,7 +4878,6 @@ a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-deskto
 a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
 4658fb1 camc: bundle skills and refresh them during heal
 ```
-
 ## v1.2.0  39f1438-dirty 2026-07-22 20:39
 
 - Lines: 19744
@@ -4891,7 +4890,6 @@ a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-deskto
 a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
 4658fb1 camc: bundle skills and refresh them during heal
 ```
-
 ## v1.2.1  2d3c2d3-dirty 2026-07-22 23:26
 
 - Lines: 19744
@@ -4904,7 +4902,6 @@ a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-deskto
 21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
 895c23b camc: have bundled skills use deployed binary
 ```
-
 ## v1.2.2  2d3c2d3-dirty 2026-07-23 00:09
 
 - Lines: 19745
@@ -4917,7 +4914,6 @@ a7c0dd7 Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-deskto
 21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
 895c23b camc: have bundled skills use deployed binary
 ```
-
 ## v1.2.3  dc67bc3-dirty 2026-07-23 02:07
 
 - Lines: 19864
@@ -4930,7 +4926,6 @@ dc67bc3 camc: centralize release artifact and version builds
 39f1438 camc: make skill installs locale-safe and never launch-blocking
 21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
 ```
-
 ## v1.2.4  dc67bc3-dirty 2026-07-23 20:18
 
 - Lines: 19878
@@ -4943,7 +4938,6 @@ dc67bc3 camc: centralize release artifact and version builds
 39f1438 camc: make skill installs locale-safe and never launch-blocking
 21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
 ```
-
 ## v1.2.5  dc67bc3-dirty 2026-07-23 20:19
 
 - Lines: 19887
@@ -4956,7 +4950,6 @@ dc67bc3 camc: centralize release artifact and version builds
 39f1438 camc: make skill installs locale-safe and never launch-blocking
 21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
 ```
-
 ## v1.2.6  dc67bc3-dirty 2026-07-23 20:21
 
 - Lines: 19889
@@ -4969,7 +4962,6 @@ dc67bc3 camc: centralize release artifact and version builds
 39f1438 camc: make skill installs locale-safe and never launch-blocking
 21ba8df Merge remote-tracking branch 'origin/camui-desktop-v2' into camui-desktop-v2
 ```
-
 ## v1.2.7  e6e0228-dirty 2026-07-26 19:59
 
 - Lines: 19789
@@ -4982,7 +4974,6 @@ dc67bc3 camc: centralize release artifact and version builds
 51c64e5 build: camc artifacts stay Linux-correct when built on Windows
 39f1438 camc: make skill installs locale-safe and never launch-blocking
 ```
-
 ## v1.2.8  2bf3e81-dirty 2026-07-26 20:17
 
 - Lines: 19812
@@ -4995,7 +4986,6 @@ dc67bc3 camc: centralize release artifact and version builds
 2d3c2d3 camc v1.2.1 + desktop: Sync Host forces bundled camc (forceCamc)
 51c64e5 build: camc artifacts stay Linux-correct when built on Windows
 ```
-
 ## v1.2.9  2bf3e81-dirty 2026-07-26 20:20
 
 - Lines: 19813
@@ -5008,7 +4998,6 @@ dc67bc3 camc: centralize release artifact and version builds
 2d3c2d3 camc v1.2.1 + desktop: Sync Host forces bundled camc (forceCamc)
 51c64e5 build: camc artifacts stay Linux-correct when built on Windows
 ```
-
 ## v1.2.10  2bf3e81-dirty 2026-07-26 20:31
 
 - Lines: 19896
@@ -5340,4 +5329,832 @@ f77fb9c feat(camc): archive validated Codex sessions
 7eae072 feat(camc): add self-managed cron scheduler
 8a04f7f camc: add custom tool launch controls
 fde6f3d camc: stabilize cursor confirmations and message submit
+```
+## v1.2.45  71481f3-dirty 2026-08-10 03:32
+
+- Lines: 20442
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.46  71481f3-dirty 2026-08-10 09:04
+
+- Lines: 20450
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.47  71481f3-dirty 2026-08-10 09:50
+
+- Lines: 20458
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.48  71481f3-dirty 2026-08-10 10:39
+
+- Lines: 20458
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.49  71481f3-dirty 2026-08-10 11:27
+
+- Lines: 20522
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.50  71481f3-dirty 2026-08-10 11:37
+
+- Lines: 20525
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.51  71481f3-dirty 2026-08-10 11:49
+
+- Lines: 20543
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.52  71481f3-dirty 2026-08-10 11:51
+
+- Lines: 20543
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.53  71481f3-dirty 2026-08-10 11:54
+
+- Lines: 20588
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.54  71481f3-dirty 2026-08-10 12:01
+
+- Lines: 20619
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.55  71481f3-dirty 2026-08-10 20:23
+
+- Lines: 20619
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.56  71481f3-dirty 2026-08-10 20:33
+
+- Lines: 20623
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.57  71481f3-dirty 2026-08-10 21:17
+
+- Lines: 20623
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.58  71481f3-dirty 2026-08-10 21:21
+
+- Lines: 20626
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.59  71481f3-dirty 2026-08-11 02:00
+
+- Lines: 20694
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.60  71481f3-dirty 2026-08-11 03:27
+
+- Lines: 20770
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.61  71481f3-dirty 2026-08-11 03:28
+
+- Lines: 20773
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.62  71481f3-dirty 2026-08-11 08:48
+
+- Lines: 18735
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.63  71481f3-dirty 2026-08-11 08:51
+
+- Lines: 18725
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.64  71481f3-dirty 2026-08-11 08:55
+
+- Lines: 18735
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.65  71481f3-dirty 2026-08-11 08:56
+
+- Lines: 18732
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.66  71481f3-dirty 2026-08-11 08:59
+
+- Lines: 18718
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.67  71481f3-dirty 2026-08-11 11:01
+
+- Lines: 18727
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.68  71481f3-dirty 2026-08-11 18:41
+
+- Lines: 18919
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.69  71481f3-dirty 2026-08-11 18:42
+
+- Lines: 18915
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.70  71481f3-dirty 2026-08-11 18:42
+
+- Lines: 18915
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.71  71481f3-dirty 2026-08-11 18:44
+
+- Lines: 18918
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.72  71481f3-dirty 2026-08-11 20:58
+
+- Lines: 18930
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.73  71481f3-dirty 2026-08-11 21:34
+
+- Lines: 18904
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.74  71481f3-dirty 2026-08-11 22:04
+
+- Lines: 18918
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.75  71481f3-dirty 2026-08-12 01:41
+
+- Lines: 19001
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.76  71481f3-dirty 2026-08-12 01:44
+
+- Lines: 19019
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.77  71481f3-dirty 2026-08-12 01:46
+
+- Lines: 19019
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.78  71481f3-dirty 2026-08-12 01:54
+
+- Lines: 19029
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.79  71481f3-dirty 2026-08-12 04:15
+
+- Lines: 19030
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.80  71481f3-dirty 2026-08-12 04:25
+
+- Lines: 19039
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.81  71481f3-dirty 2026-08-12 04:28
+
+- Lines: 19055
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.82  71481f3-dirty 2026-08-12 04:52
+
+- Lines: 19091
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.83  71481f3-dirty 2026-08-12 05:26
+
+- Lines: 19104
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.84  71481f3-dirty 2026-08-12 05:37
+
+- Lines: 19135
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.85  71481f3-dirty 2026-08-12 05:39
+
+- Lines: 19131
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.86  71481f3-dirty 2026-08-12 06:47
+
+- Lines: 19235
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.87  71481f3-dirty 2026-08-12 07:02
+
+- Lines: 19237
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.88  71481f3-dirty 2026-08-12 07:07
+
+- Lines: 19245
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.89  71481f3-dirty 2026-08-12 07:09
+
+- Lines: 19264
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.90  71481f3-dirty 2026-08-12 07:11
+
+- Lines: 19283
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.91  71481f3-dirty 2026-08-12 07:14
+
+- Lines: 19292
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.92  71481f3-dirty 2026-08-12 21:42
+
+- Lines: 19311
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.93  71481f3-dirty 2026-08-13 00:50
+
+- Lines: 19309
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+8a04f7f camc: add custom tool launch controls
+```
+## v1.2.94  0589709-dirty 2026-08-13 08:01
+
+- Lines: 19321
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+```
+## v1.2.95  0589709-dirty 2026-08-13 08:43
+
+- Lines: 19400
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+```
+## v1.2.96  0589709-dirty 2026-08-13 16:06
+
+- Lines: 19523
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+```
+## v1.2.97  0589709-dirty 2026-08-13 16:07
+
+- Lines: 19526
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+```
+## v1.2.98  0589709-dirty 2026-08-13 16:12
+
+- Lines: 19534
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+```
+## v1.2.99  0589709-dirty 2026-08-13 17:44
+
+- Lines: 19547
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+```
+## v1.2.100  0589709-dirty 2026-08-15 06:51
+
+- Lines: 19588
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+```
+## v1.2.101  0589709-dirty 2026-08-15 10:00
+
+- Lines: 19588
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+```
+## v1.2.102  0589709-dirty 2026-08-15 10:01
+
+- Lines: 19597
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+```
+## v1.2.103  0589709-dirty 2026-08-15 10:04
+
+- Lines: 19607
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+```
+## v1.2.104  0589709-dirty 2026-08-15 10:05
+
+- Lines: 19612
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+```
+## v1.2.105  0589709-dirty 2026-08-15 10:20
+
+- Lines: 19626
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+```
+## v1.2.106  0589709-dirty 2026-08-15 10:23
+
+- Lines: 19628
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+```
+## v1.2.107  0589709-dirty 2026-08-16 23:02
+
+- Lines: 19697
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+```
+## v1.2.108  0589709-dirty 2026-08-16 23:06
+
+- Lines: 19696
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+```
+## v1.2.109  0589709-dirty 2026-08-17 21:09
+
+- Lines: 19696
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+7eae072 feat(camc): add self-managed cron scheduler
+```
+## v1.2.113  be0e296-dirty 2026-08-22 00:28
+
+- Lines: 19973
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+```
+## v1.2.114  be0e296-dirty 2026-08-22 01:31
+
+- Lines: 19978
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+```
+## v1.2.115  be0e296-dirty 2026-08-22 02:36
+
+- Lines: 19978
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
+```
+## v1.2.116  be0e296-dirty 2026-08-22 03:31
+
+- Lines: 19829
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+f77fb9c feat(camc): archive validated Codex sessions
 ```

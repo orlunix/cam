@@ -50,6 +50,7 @@ from camc_pkg.detection import detect_completion, is_ready_for_input, is_ready_f
 from camc_pkg.monitor_features import (
     MonitorSnapshot, MonitorRuntime, build_features,
 )
+from camc_pkg.api_proxy import stop_agent_api_proxy
 
 
 def _screen_tail(output, n=3):
@@ -221,6 +222,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
     # (currently MailboxFeature + CronFeature) are still in the list
     # so test code can introspect them, but the driver skips them.
     runtime = MonitorRuntime(agent_id, config, now=time.time())
+    runtime.store = store
     runtime.boot_config = boot_config
     runtime.prompt_after_launch = bool(config.prompt_after_launch)
     boot_wait = (boot_config.startup_wait if boot_config else config.startup_wait)
@@ -289,6 +291,9 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                     log.info("Last screen: %s", _screen_tail(prev_output, 5))
                     store.update(agent_id, status=status,
                                  exit_reason=reason, completed_at=_now_iso())
+                    agent_rec = store.get(agent_id)
+                    if agent_rec:
+                        stop_agent_api_proxy(agent_rec)
                     _event("completed", {"status": status, "reason": reason})
                     return
 
@@ -440,6 +445,9 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                         store.update(agent_id, status="completed",
                                      exit_reason="Task completed (auto-exit)",
                                      completed_at=_now_iso())
+                        agent_rec = store.get(agent_id)
+                        if agent_rec:
+                            stop_agent_api_proxy(agent_rec)
                         _event("completed", {"status": "completed", "reason": "auto-exit"})
                         return
                     else:
