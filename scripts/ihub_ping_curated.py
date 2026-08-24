@@ -25,11 +25,6 @@ import urllib.request
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_ROOT, "src"))
 
-from camc_pkg.api_routing import (  # noqa: E402
-    PROTO_OPENAI_CHAT,
-    provider_endpoint_url,
-    resolve_upstream_protocol,
-)
 from camc_pkg.api_store import (  # noqa: E402
     CURATED_APIS,
     DEFAULT_PROVIDER,
@@ -92,7 +87,7 @@ def _classify(http_code, body_text, elapsed_s, timed_out=False):
 
 def _hub_catalog(token, timeout):
     """Quick GET /v1/models — returns (ok, model_count, elapsed_s, detail)."""
-    url = IHUB_BASE.rstrip("/") + "/models"
+    url = IHUB_BASE.rstrip("/") + "/v1/models"
     req = urllib.request.Request(
         url,
         headers={"Authorization": "Bearer %s" % token},
@@ -151,11 +146,9 @@ def _curated_targets(enabled_only=True):
     if not provider:
         provider = {
             "base_url": IHUB_BASE,
-            "upstream_protocol": PROTO_OPENAI_CHAT,
-            "endpoints": {"openai_chat_completions": "/chat/completions"},
         }
-    upstream_proto = PROTO_OPENAI_CHAT
-    url = provider_endpoint_url(provider, upstream_proto)
+    url = str(provider.get("base_url") or IHUB_BASE).rstrip("/")
+    url += "/v1/chat/completions"
 
     if enabled_only:
         for key, entry in sorted(apis.items()):

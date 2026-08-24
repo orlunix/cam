@@ -82,15 +82,18 @@ def test_cursor_config_uses_two_hundred_line_stuck_confirm_window():
 def test_registry_includes_state_manager_and_auto_confirmation_and_placeholders():
     """The default v1 set is StateManagerFeature(10) → BootPromptFeature(15) →
     AutoConfirmationFeature(20) → MailboxFeature(30, disabled) →
-    CronFeature(40, disabled). build_features() returns DISABLED
+    FinalStaticFallbackFeature(35) → CronFeature(40, disabled).
+    build_features() returns DISABLED
     features too so the driver / introspection code can see them."""
     feats = mf.build_features()
     by_name = {f.name: f for f in feats}
-    assert {"state_manager", "boot_prompt", "auto_confirm", "mailbox", "cron"} <= set(by_name)
+    assert {"state_manager", "boot_prompt", "auto_confirm", "mailbox",
+            "final_static_fallback", "cron"} <= set(by_name)
     # Order ascending.
     names = [f.name for f in feats]
-    assert names == ["state_manager", "boot_prompt", "auto_confirm", "mailbox", "cron"]
-    assert [f.order for f in feats] == [10, 15, 20, 30, 40]
+    assert names == ["state_manager", "boot_prompt", "auto_confirm", "mailbox",
+                     "final_static_fallback", "cron"]
+    assert [f.order for f in feats] == [10, 15, 20, 30, 35, 40]
 
 
 def test_placeholders_are_disabled_by_default():
@@ -147,7 +150,7 @@ def test_boot_prompt_uses_message_style_submit_with_default_fallback_delay():
     runtime.boot_prompt = "say hi"
     runtime.prompt_after_launch = True
     runtime.boot_deadline = 20.0
-    snap = _mk_snap(output="› ready", now=1.0)
+    snap = _mk_snap(output="› ready", now=1.0, idle_for=10.0)
 
     actions = mf.BootPromptFeature().after_confirm(snap, runtime)
 
@@ -156,6 +159,27 @@ def test_boot_prompt_uses_message_style_submit_with_default_fallback_delay():
         "text": "say hi",
         "submit_delay": 0.5,
     }
+
+
+def test_boot_prompt_waits_for_stable_ready_cursor():
+    cfg = _Cfg(ready_pattern=re.compile(r"^›", re.MULTILINE))
+    cfg.startup_wait = 20.0
+    cfg.prompt_submit_delay = 0.0
+    runtime = mf.MonitorRuntime("aid", cfg, now=0.0)
+    runtime.in_initializing = True
+    runtime.boot_prompt = "say hi"
+    runtime.prompt_after_launch = True
+    runtime.boot_deadline = 20.0
+    feature = mf.BootPromptFeature()
+
+    early = feature.after_confirm(
+        _mk_snap(output="›", now=9.9, idle_for=9.9), runtime)
+    assert early == []
+    assert runtime.boot_prompt_sent is False
+
+    ready = feature.after_confirm(
+        _mk_snap(output="›", now=10.0, idle_for=10.0), runtime)
+    assert ready[0]["kind"] == "submit_input"
 
 
 def test_register_feature_is_idempotent_for_repeat_calls():
@@ -353,6 +377,27 @@ def test_auto_confirmation_requires_screen_stable_for_five_seconds():
 
     assert "send_input" not in kinds
     assert runtime.last_confirm == 0.0
+
+
+def test_boot_confirmation_does_not_wait_for_screen_stability():
+    """Boot trust menus may redraw continuously, so confirm them immediately."""
+    trust_rules = [(re.compile(r"Do you trust the contents"), "1", True)]
+    cfg = _Cfg(confirm_rules=trust_rules)
+    runtime = mf.MonitorRuntime("boot-trust", cfg, now=100.0)
+    runtime.in_initializing = True
+    runtime.boot_config = cfg
+    feat = mf.AutoConfirmationFeature()
+    snap = _mk_snap(
+        output="Do you trust the contents of this directory?\n"
+               "› 1. Yes, continue\n2. No, quit\n",
+        now=100.0,
+        idle_for=0.1,
+        prompt_visible=False,
+    )
+
+    actions = feat.confirm(snap, runtime)
+
+    assert any(action["kind"] == "send_input" for action in actions)
 
 
 def test_auto_confirmation_stuck_fallback_searches_last_40_lines_only_after_15_seconds():
