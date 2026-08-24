@@ -4,7 +4,7 @@
  * for package views). */
 
 import { installExtBridge } from '../shared/ext-bridge.js';
-import { mountExtView } from '../shared/ext-view-host.js';
+import { mountExtView } from '../shared/ext-view-host.js?v=0.68.1';
 import { setDoctorAgent } from './agent-doctor-mode.js?v=0.68.0';
 
 // Cross-mode entry point: other pages (the agent console Ext▾ menu)
