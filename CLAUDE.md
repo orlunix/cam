@@ -10,9 +10,8 @@ CAM (Coding Agent Manager) is "PM2 for AI coding agents." It manages Claude Code
 
 | Tree | Purpose |
 |------|---------|
-| `src/camc_pkg/proxy/` | **Production** IHUB proxy (embedded in `dist/camc`) |
-| `tests/proxy/` | Proxy translator tests |
-| `dev/ihub_proxy/` | Dev/reference proxies only |
+| `src/camc_pkg/api_*.py` | Direct API profiles, routing, tokens, and metadata |
+| `tests/test_api_*.py` | Direct API profile and routing tests |
 | `benchmarks/` | Manual E2E harnesses (not imported by camc) |
 
 Full rules: `docs/code-layout.md`. **Three routing examples:** `docs/api-routing.md`.

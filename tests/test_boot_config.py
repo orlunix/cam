@@ -52,6 +52,25 @@ def test_ready_accepts_boot_or_tool_pattern():
     assert is_ready_for_boot("Choose the text style\n ❯ 2. Dark\n", boot, tool) is False
 
 
+def test_ready_only_checks_the_last_four_nonempty_lines():
+    tool = _boot_config("codex.toml")
+    screen = "\n".join([
+        "›", "older line 1", "older line 2", "older line 3",
+        "older line 4", "older line 5", "older line 6", "older line 7",
+    ])
+
+    assert is_ready_for_input(screen, tool) is False
+
+
+def test_boot_ready_cursor_requires_ten_seconds_of_stability():
+    boot = _boot_config("codex.boot.toml")
+    tool = _boot_config("codex.toml")
+    screen = "›\n"
+
+    assert is_ready_for_boot(screen, boot, tool, stable_for=9.9) is False
+    assert is_ready_for_boot(screen, boot, tool, stable_for=10.0) is True
+
+
 def test_cursor_boot_trust_rule():
     boot = _boot_config("cursor.boot.toml")
     screen = "[a] Trust this workspace\n"
@@ -71,6 +90,22 @@ def test_codex_current_menu_beats_stale_prompt_during_boot():
     assert hit is not None
     assert cfg is tool
     assert is_ready_for_input(screen, tool) is False
+
+
+def test_codex_workspace_trust_menu_stays_boot_and_submits():
+    boot = _boot_config("codex.boot.toml")
+    tool = _boot_config("codex.toml")
+    screen = (
+        "› 1. Yes, continue\n"
+        "  2. No, quit\n"
+    )
+
+    assert is_ready_for_boot(screen, boot, tool) is False
+    hit, cfg = should_confirm_initializing(screen, boot, tool)
+    assert cfg is boot
+    assert hit is not None
+    assert hit[0] == "1"
+    assert hit[1] is True
 
 
 def test_cursor_ready_prompt_survives_footer_lines():
