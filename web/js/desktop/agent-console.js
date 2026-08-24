@@ -17,7 +17,7 @@
  */
 
 import { bumpUserActivity } from './shell.js?v=0.64.0';
-import { mountExtView } from '../shared/ext-view-host.js';
+import { mountExtView } from '../shared/ext-view-host.js?v=0.68.1';
 import { installExtBridge } from '../shared/ext-bridge.js';
 import { openExtensionView } from './extensions-mode.js?v=0.68.0';
 import { setDoctorAgent } from './agent-doctor-mode.js?v=0.68.0';

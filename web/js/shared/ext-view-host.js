@@ -31,7 +31,11 @@ export function mountExtView(container, api, ext, bindContext = null) {
   container.appendChild(iframe);
   const view = ext.viewFile || 'index.html';
   _viewToken(api).then((tok) => {
-    iframe.src = `${api.serverUrl}/ext/${encodeURIComponent(ext.name)}/${view}?token=${encodeURIComponent(tok)}`;
+    // Cache-bust the view so updates to extension files are picked up on
+    // the next mount (extension views are served by the loopback hub with
+    // Cache-Control: no-store, but Chromium's iframe cache can still serve
+    // a stale entry across app restarts).
+    iframe.src = `${api.serverUrl}/ext/${encodeURIComponent(ext.name)}/${view}?token=${encodeURIComponent(tok)}&_=${Date.now()}`;
   });
   iframe.addEventListener('load', () => {
     if (iframe.contentWindow) {
