@@ -58,12 +58,8 @@ MODULE_ORDER = [
     "api_metadata",
     "api_token",
     "api_routing",
+    "api_proxy",
     "api_resolver",
-    "proxy.common",
-    "proxy.textual_tools",
-    "proxy.messages",
-    "proxy.responses",
-    "proxy.manager",
     "skills",
     "cli",
 ]
