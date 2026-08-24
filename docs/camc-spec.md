@@ -117,7 +117,7 @@ and should not be treated as a correctness metric; the generated `src/camc` /
 |---|---:|---|---|
 | `cli.py` | 6,840 | Main argparse parser + most `cmd_*` handlers | Biggest maintainability target; feature command adapters should move out |
 | `cron.py` + `cron_loop.py` | 2,005 | Host cron, cron workers, per-agent loop records | Core/service logic is already partly modular; CLI shims still live in `cli.py` |
-| `api_*` + `proxy/*` | ~2,800 | API profiles, routing, Claude/Codex protocol proxy | Keep while custom API support is active |
+| `api_*` | ~1,500 | Direct API profiles, routing, tokens, metadata, and Codex catalog | Keep native endpoint contract small |
 | `monitor.py` + `monitor_features.py` | ~1,030 | Long-running pane observer, auto-confirm, state management | Core monitor path; do not remove for size |
 | `transport.py` + `runtime_env.py` | ~1,300 | tmux operations, tool/path/env hardening | Critical for PDX/DC stability |
 | `fast_capture.py` + `prelude/*` | ~600 | Data-plane fast path for capture and simple send text using `agents.json`, `--no-fast-path` rollback, and build-time hook registry | Release-sensitive; see `docs/camc-refactor-development-plan.md` |

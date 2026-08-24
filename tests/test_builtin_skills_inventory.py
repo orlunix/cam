@@ -13,11 +13,9 @@ EXPECTED_SKILLS = {
     "managing-camc",
 }
 
-# The API/profile/proxy feature is not publishable yet.  Keep this guard
-# narrow so ordinary software-engineering advice about public APIs remains
-# valid in the goal-loop skill.
+# API routing is publishable as a CAMC user feature, but must remain scoped to
+# the managing-camc reference rather than leaking provider advice elsewhere.
 FORBIDDEN_RELEASE_GUIDANCE = (
-    "--api",
     "api-models",
     "api-token",
     "api default",
@@ -44,11 +42,12 @@ def test_publishable_builtin_skill_inventory_and_content():
         if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8").lower()
-        for marker in FORBIDDEN_RELEASE_GUIDANCE:
-            assert marker not in text, "%s contains unpublished guidance %r" % (
-                path,
-                marker,
-            )
+        if path.parent.name != "managing-camc":
+            for marker in FORBIDDEN_RELEASE_GUIDANCE:
+                assert marker not in text, "%s contains unpublished guidance %r" % (
+                    path,
+                    marker,
+                )
         assert not BARE_CAMC_COMMAND.search(text), (
             "%s invokes bare camc; skills must use ~/.cam/camc" % path
         )
@@ -74,3 +73,14 @@ def test_goal_loop_skill_is_a_short_template_router_with_deterministic_checks():
     assert "~/.cam/loops/" not in loop
     assert "history_updated" not in prompt
     assert "history_updated" not in loop
+
+
+def test_managing_camc_documents_api_defaults_and_login_override():
+    text = (SKILLS_ROOT / "managing-camc" / "SKILL.md").read_text(
+        encoding="utf-8").lower()
+    assert "--api name" in text
+    assert "--no-default-api" in text
+    assert "api default set" in text
+    assert "api default clear" in text
+    assert "temporary" in text or "one run" in text
+    assert "login" in text

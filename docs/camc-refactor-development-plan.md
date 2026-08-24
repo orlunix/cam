@@ -6,7 +6,7 @@
 
 ## 1. Problem Statement
 
-`camc` has grown into a single-file deployment artifact of roughly 18k lines. That size is not itself the bug: `src/camc` and `dist/camc` are generated bundles, and most of the lines come from real source modules plus embedded adapter/proxy/runtime logic.
+`camc` has grown into a single-file deployment artifact of roughly 18k lines. That size is not itself the bug: `src/camc` and `dist/camc` are generated bundles, and most of the lines come from real source modules plus embedded adapter/runtime logic.
 
 The real architectural issue is that `camc` currently mixes three different roles behind one process entrypoint:
 
@@ -14,7 +14,7 @@ The real architectural issue is that `camc` currently mixes three different role
 |---|---|---|---|
 | Control plane | `run`, `rm`, `heal`, `cron add`, `api`, `machine`, `context` | Full Python CLI is acceptable | `cli.py` still owns too much feature logic |
 | Data plane / hot path | `capture`, simple `send --text`, possible future status-lite/mailbox-lite | Should be near raw tmux / file-index cost | Full Python startup is too expensive for tiny repeated operations |
-| Long-running agents | monitor loop, cron tick/run workers, API proxy | Should run in-process or as owned subprocesses | Lifecycle and ownership need clear boundaries |
+| Long-running agents | monitor loop, cron tick/run workers | Should run in-process or as owned subprocesses | Lifecycle and ownership need clear boundaries |
 
 The current fast-path work is correct in direction: `capture <exact-id>` and simple `send <exact-id> --text ...` are tiny data-plane operations and should not pay the full Python startup/import cost when the tmux metadata is already available in `agents.json`.
 
@@ -27,12 +27,12 @@ Approximate current source/build size from the working tree:
 | `src/camc` / `dist/camc` | 17,491 each | Generated single-file artifact; do not edit directly |
 | `src/camc_pkg/cli.py` | 6,840 | Main command handlers + parser; biggest maintainability issue |
 | `src/camc_pkg/cron.py` + `cron_loop.py` | 2,005 | Host cron + per-agent loop support |
-| `src/camc_pkg/proxy/*` + API modules | ~2,800 | Custom API/proxy support for Claude/Codex |
+| API modules | ~1,500 | Direct API profiles and native endpoint support for Claude/Codex |
 | `src/camc_pkg/monitor.py` + `monitor_features.py` | ~1,030 | Long-running observer loop |
 | `transport.py` + `runtime_env.py` | ~1,300 | tmux/tool/env hardening; important for PDX/DC stability |
 | `fast_capture.py` + prelude hooks | ~600 | Data-plane fast path; reads `agents.json` directly; new and release-sensitive |
 
-Important distinction: feature/core modules have already been partially split (`cron.py`, `cron_loop.py`, `proxy/*`, `monitor*`, `transport.py`, `runtime_env.py`). The CLI adapter layer is not split yet: `cli.py` still contains many feature command implementations (`cmd_msg_*`, `cmd_cron_*`, `cmd_api_*`, `cmd_archive_*`, etc.) plus all parser registration.
+Important distinction: feature/core modules have already been partially split (`cron.py`, `cron_loop.py`, `monitor*`, `transport.py`, `runtime_env.py`). The CLI adapter layer is not split yet: `cli.py` still contains many feature command implementations (`cmd_msg_*`, `cmd_cron_*`, `cmd_api_*`, `cmd_archive_*`, etc.) plus all parser registration.
 
 ## 3. Fast Data-Plane Experiment Update
 
@@ -124,7 +124,7 @@ Data-plane commands may use prelude hooks or small helper entrypoints when they 
 - tiny operation with stable argument shape
 - required metadata available in a small index/cache
 - safe fallback to Python for unsupported forms
-- no complex writes, no adapter/proxy/API semantics
+- no complex writes, no adapter/API semantics
 
 Current approved data-plane candidates:
 
@@ -203,7 +203,7 @@ Do not delete:
 
 - `runtime_env.py`, `transport.py`, tmux config hardening, or tool resolution. These protect PDX/DC stability.
 - `monitor.py` / `monitor_features.py`; monitor is a core long-running subsystem.
-- API/proxy modules while Claude/Codex custom API support is active.
+- API modules while Claude/Codex custom API support is active.
 - Fast data-plane prelude without replacing the latency solution.
 
 ## 7. Phased Implementation Plan
@@ -241,7 +241,7 @@ Suggested order:
 
 1. `commands/msg.py` + `messaging.py` because msg logic is currently dense and protocol-sensitive.
 2. `commands/cron.py` because cron/loop already have service modules.
-3. `commands/api.py` because API proxy logic is already mostly modular.
+3. `commands/api.py` because direct API profile logic is already mostly modular.
 4. `commands/archive.py` because it is bulky and separable.
 5. `commands/machine.py` / `commands/context.py` / `commands/capture.py`.
 
