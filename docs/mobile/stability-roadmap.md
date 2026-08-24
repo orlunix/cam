@@ -7,6 +7,16 @@ trust where.
 
 ## 1. Fixed recently (2.4.52–2.4.68)
 
+- **ProxyJump chain hang root-caused and fixed** (2.4.96): on slow
+  links, the target's SSH banner could arrive with the channel-open
+  confirmation and was silently dropped — JSch's
+  `Channel.getInputStream()` *replaces* the channel data sink when
+  called after `connect()`. Fix: capture in/out streams before
+  connecting. Diagnosed via step-timing logs (2.4.95) that showed
+  `jump channel open ok` followed by a 120s handshake stall; desktop
+  (ssh2 forwardOut) working on the same bastion+target proved the
+  network was fine. Lesson: probe ordering side effects don't show on
+  fast local links — test chains under artificial delay.
 - **Desktop-parity batch** (2.4.66–2.4.71): agent stop/remove routes
   (DELETE `/api/agents/:id[/history]`, force kill, terminal-state
   no_op, local mirror); **sync live steps** (`syncProgress` map +
