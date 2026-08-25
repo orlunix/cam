@@ -1065,6 +1065,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
               ${terminalMenuHTML()}
               <hr>
               <button class="overflow-menu-item" id="agent-settings-btn">Settings</button>
+              <button class="overflow-menu-item" id="agent-ext-btn">Extensions</button>
               <button class="overflow-menu-item danger" id="stop-btn">Stop agent</button>
               <button class="overflow-menu-item danger" id="delete-btn">Delete agent</button>
             </div>
@@ -1114,6 +1115,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
               ${terminalMenuHTML()}
               <hr>
               <button class="overflow-menu-item" id="agent-settings-btn">Settings</button>
+              <button class="overflow-menu-item" id="agent-ext-btn">Extensions</button>
               <button class="overflow-menu-item" id="restart-btn">Restart</button>
               <button class="overflow-menu-item danger" id="delete-btn">Delete agent</button>
             </div>
@@ -1536,6 +1538,11 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     if (settingsBtn) settingsBtn.addEventListener('click', () => {
       closeMenu();
       navigate(`/agent/${agentId}/settings`);
+    });
+    const extBtn = container.querySelector('#agent-ext-btn');
+    if (extBtn) extBtn.addEventListener('click', () => {
+      closeMenu();
+      navigate(`/agent/${agentId}/extensions`);
     });
 
     const outputWrap = container.querySelector('.output-wrap');
