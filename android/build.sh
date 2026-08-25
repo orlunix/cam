@@ -182,6 +182,14 @@ fi
 mkdir -p "$BUILD_DIR/assets_staging/assets/camc"
 cp "$CAMC_DIST" "$BUILD_DIR/assets_staging/assets/camc/camc"
 chmod 700 "$BUILD_DIR/assets_staging/assets/camc/camc"
+
+# Bundle built-in extensions (SPEC v2 type-B packages)
+EXT_SRC="$PROJ_DIR/../extensions/examples"
+if [ -d "$EXT_SRC/agent-doctor" ]; then
+  mkdir -p "$BUILD_DIR/assets_staging/assets/extensions"
+  cp -r "$EXT_SRC/agent-doctor" "$BUILD_DIR/assets_staging/assets/extensions/"
+fi
+
 cd "$BUILD_DIR/assets_staging"
 zip -r -u "$BUILD_DIR/app.tmp.apk" assets/
 cd "$PROJ_DIR"

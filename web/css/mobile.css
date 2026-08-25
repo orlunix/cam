@@ -2003,3 +2003,11 @@ body.camui-v2 #content.agent-detail-active .jump-bottom-btn {
 body.camui-v2 #content.agent-detail-active .jump-bottom-btn.hidden {
   display: none;
 }
+
+/* Agent Extensions view */
+body.camui-v2 .ext-list { padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; }
+body.camui-v2 .ext-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border: 1px solid #30363d; border-radius: 8px; background: #161b22; }
+body.camui-v2 .ext-name { font-weight: 600; color: #c9d1d9; }
+body.camui-v2 .ext-badge { font-size: 11px; font-weight: 400; color: #79b8ff; border: 1px solid rgba(88, 166, 255, 0.4); border-radius: 999px; padding: 1px 8px; margin-left: 6px; }
+body.camui-v2 .ext-meta { font-size: 12px; color: #8b949e; margin-top: 2px; }
+body.camui-v2 .ext-result { margin: 12px; padding: 12px; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: #c9d1d9; max-height: 55vh; overflow: auto; white-space: pre-wrap; word-break: break-word; }
