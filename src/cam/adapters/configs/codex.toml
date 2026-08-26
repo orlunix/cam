@@ -24,6 +24,14 @@ ready_pattern = "^[❯›>]"
 ready_flags = ["MULTILINE"]
 prompt_submit_delay = 0.5
 
+# Auto-run is enabled only for the managed autorun profile and when the
+# requirements file does not explicitly exclude danger-full-access. The
+# condition is fail-closed; syntax/runtime errors keep the old command.
+[launch.auto_run]
+autorun_config = "/etc/codex/requirements.toml"
+autorun_condition = "'autorun' in path_parts and (('allowed_sandbox_modes' not in config and 'allowed_permission_profiles' not in config) or 'danger-full-access' in config.get('allowed_sandbox_modes', []) or config.get('allowed_permission_profiles', {}).get(':danger-full-access') is True)"
+autorun_args = ["--sandbox", "danger-full-access", "--ask-for-approval", "never"]
+
 [state]
 strategy = "first"
 recent_chars = 2000
@@ -91,8 +99,7 @@ send_enter = false
 # Codex shows "• Working (7s • esc to interrupt)" while busy
 busy_pattern = "Working \\(\\d+s"
 confirm_cooldown = 5.0
-confirm_recent_lines = 8
-confirm_stuck_recent_lines = 40
+confirm_recent_lines = 128
 confirm_sleep = 0.5
 health_check_interval = 15
 idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle

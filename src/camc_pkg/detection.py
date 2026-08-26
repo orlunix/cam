@@ -5,37 +5,15 @@ import re
 from camc_pkg.utils import strip_ansi, clean_for_confirm
 
 
-# Global input-box guard (2026-06-11).
-#
-# Detects an INPUT cursor sitting in the user's input box, meaning the
-# agent is waiting for the human to type — auto-confirm MUST NOT fire
-# in that state or it injects keystrokes into the user's input.
-#
-# Cursor markers (line start, optional indent, then char + space):
-#   U+276F ❯  Claude Code TUI
-#   U+203A ›  Codex TUI
-#   U+2192 →  Cursor Agent TUI
-#   >         generic shell / continuation prompt
-#
-# Detects "input box is currently active" in three ways, ANY of which
-# means auto-confirm must skip:
-#
-# (1) Bare cursor line: ``^\s*[❯›→>]\s*$`` — input box empty, idle.
-# (2) Cursor line consists only of repeated last_response chars:
-#     ``^\s*[❯›→>]\s+<response>+\s*$``. Catches the spam-in-input case
-#     where our own ``1`` or ``a`` keystroke landed in the input box
-#     instead of selecting a menu option. NOT triggered by menu lines
-#     like ``❯ 1. Yes`` because of the ``.`` after the digit.
-# (3) Cursor line content changed vs the previous capture — the
-#     input box is being typed into (by user or by codex animating).
-#
-# Search window: last 8 non-empty lines.
+# The native tmux ``cursor_flag`` is the authoritative input-cursor signal.
+# A missing value is intentionally fail-closed in monitor calls.  The
+# sentinel preserves the old direct-call API for offline tests/callers that
+# do not have a tmux pane to query yet.
 _CURSOR_LINE_RE = re.compile(r"^\s*[❯›→>](\s|$)")
-_BARE_CURSOR_RE = re.compile(r"^\s*[❯›→>]\s*$")
-_CURSOR_PREFIX_RE = re.compile(r"^\s*[❯›→>]\s+(.*?)\s*$")
-_ACTIVE_UI_LINES = 8
+_ACTIVE_UI_LINES = 128
 _READY_UI_LINES = 4
 _READY_STABLE_SECONDS = 10.0
+_CURSOR_FLAG_UNSET = object()
 
 
 def _find_cursor_line(lines):
@@ -59,52 +37,6 @@ def _active_ui_lines(output, config, recent_lines=None):
     return [line for line in output.splitlines() if line.strip()][-limit:]
 
 
-def has_input_cursor(output, last_response="", prev_output=""):
-    """True iff the input box is visible / active and auto-confirm
-    must therefore skip. Three conditions documented above."""
-    tail_lines = [l for l in output.splitlines() if l.strip()][-8:]
-    cur_line = _find_cursor_line(tail_lines)
-    if cur_line is None:
-        return False
-    # (1) Bare cursor line
-    if _BARE_CURSOR_RE.match(cur_line):
-        return True
-    # (2) Cursor line is only repeated last_response chars
-    if last_response:
-        m = _CURSOR_PREFIX_RE.match(cur_line)
-        if m:
-            content = m.group(1)
-            if content and all(c == last_response for c in content):
-                return True
-    # (3) Cursor line changed since the previous capture
-    if prev_output:
-        prev_tail = [l for l in prev_output.splitlines() if l.strip()][-8:]
-        prev_cur = _find_cursor_line(prev_tail)
-        if prev_cur is not None and prev_cur != cur_line:
-            return True
-    return False
-
-
-def input_residue_count(output, last_response):
-    """Return how many stray response chars are sitting in the input
-    box's cursor line (condition 2 case). 0 if none. Used by the
-    monitor to send backspaces and clean up after our own keystrokes
-    that leaked into the input box."""
-    if not last_response:
-        return 0
-    tail_lines = [l for l in output.splitlines() if l.strip()][-8:]
-    cur_line = _find_cursor_line(tail_lines)
-    if cur_line is None:
-        return 0
-    m = _CURSOR_PREFIX_RE.match(cur_line)
-    if not m:
-        return 0
-    content = m.group(1)
-    if content and all(c == last_response for c in content):
-        return len(content)
-    return 0
-
-
 def detect_state(output, config):
     recent = output[-config.state_recent_chars:]
     if config.strip_ansi:
@@ -125,18 +57,14 @@ def detect_state(output, config):
 
 
 def should_auto_confirm(output, config, last_response="", prev_output="",
-                        recent_lines=None):
+                        recent_lines=None, cursor_flag=_CURSOR_FLAG_UNSET):
+    if (cursor_flag is not _CURSOR_FLAG_UNSET and cursor_flag != 0):
+        return None
     if config.strip_ansi:
         output = strip_ansi(output)
-    # Input-box guard. Three conditions in has_input_cursor: bare
-    # cursor, cursor + only our last_response chars, or cursor line
-    # content changing since the previous capture. Any → skip.
-    if has_input_cursor(output, last_response=last_response,
-                        prev_output=prev_output):
-        return None
     clean = clean_for_confirm(output)
-    # Only check the last few non-empty lines — real permission dialogs
-    # appear at the bottom of the screen.  Matching the full output causes
+    # Only check the recent pane tail — real permission dialogs appear near
+    # the bottom of the screen. Matching the full output causes
     # false positives when the agent's *response* contains trigger text
     # (e.g. a table mentioning "1. Yes").
     recent = "\n".join(_active_ui_lines(clean, config, recent_lines))
@@ -190,14 +118,17 @@ def _detect_prompt_count(output, config):
     return None
 
 
-def is_ready_for_input(output, config, stable_for=None):
+def is_ready_for_input(output, config, stable_for=None,
+                       cursor_flag=_CURSOR_FLAG_UNSET):
+    if (cursor_flag is not _CURSOR_FLAG_UNSET and cursor_flag != 1):
+        return False
     if not config.ready_pattern:
         return True
     clean = strip_ansi(output) if config.strip_ansi else output
     # A visible selection menu is not an input-ready prompt, even when an
     # older prompt line remains in scrollback or the selection uses the same
     # cursor glyph. Keep the menu text for classification; do not strip it.
-    # Confirmation retains the normal 8-line search window; only the ready
+    # Confirmation uses the configured 128-line search window; only the ready
     # cursor itself is restricted to the final four non-empty lines.
     confirm_lines = _active_ui_lines(clean, config)
     confirm_active = "\n".join(confirm_lines)
@@ -253,12 +184,15 @@ def should_confirm_initializing(output, boot_config, tool_config,
     return None, tool_config
 
 
-def is_ready_for_boot(output, boot_config, tool_config, stable_for=None):
+def is_ready_for_boot(output, boot_config, tool_config, stable_for=None,
+                      cursor_flag=_CURSOR_FLAG_UNSET):
     """Ready if either boot or tool ready_pattern matches."""
     if (boot_config
-            and is_ready_for_input(output, boot_config, stable_for=stable_for)):
+            and is_ready_for_input(output, boot_config, stable_for=stable_for,
+                                   cursor_flag=cursor_flag)):
         return True
     if (tool_config
-            and is_ready_for_input(output, tool_config, stable_for=stable_for)):
+            and is_ready_for_input(output, tool_config, stable_for=stable_for,
+                                  cursor_flag=cursor_flag)):
         return True
     return False

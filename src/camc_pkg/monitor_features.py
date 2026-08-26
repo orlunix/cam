@@ -77,7 +77,7 @@ class MonitorSnapshot(object):
         # or test can distinguish "numbers-only churn" from real
         # screen content change. ``idle_for_hash1`` is the parallel
         # seconds-stable counter for hash1.
-        "hash0", "hash1", "idle_for_hash1",
+        "hash0", "hash1", "idle_for_hash1", "cursor_flag",
     )
 
     def __init__(self, **kwargs):
@@ -106,7 +106,7 @@ class MonitorRuntime(object):
         self.last_health = now
         self.last_confirm = 0.0
         self.last_confirm_hash = ""   # screen hash at last fire (dedup)
-        self.last_confirm_response = ""  # response sent at last fire (input-box guard)
+        self.last_confirm_response = ""  # response sent at last fire
         self.current_state = None
         self.has_worked = False
         # 2026-06-10 addendum: "initialize" is a one-shot pre-busy
@@ -456,8 +456,7 @@ class AutoConfirmationFeature(MonitorFeature):
 
     def confirm(self, snap, runtime):
         from camc_pkg.detection import (
-            should_auto_confirm, should_confirm_initializing, input_residue_count,
-            has_input_cursor)
+            should_auto_confirm, should_confirm_initializing)
         actions = []
         init_phase = runtime.in_initializing
         cfg = runtime.config
@@ -467,15 +466,9 @@ class AutoConfirmationFeature(MonitorFeature):
                             "msg": "[%d] Confirm cooldown (%.1fs remaining)"
                                    % (snap.cycle, cfg.confirm_cooldown - confirm_cd)})
             return actions
-        if not init_phase and snap.idle_for < 5.0:
-            return actions
-        residue = input_residue_count(snap.output, runtime.last_confirm_response)
-        if residue > 0 and not init_phase:
-            actions.append({"kind": "log", "level": "info",
-                            "msg": "[%d] Backspace to clean input residue (%d chars)"
-                                   % (snap.cycle, residue)})
-            actions.append({"kind": "send_key", "key": "BSpace"})
-            actions.append({"kind": "halt_cycle", "sleep": cfg.confirm_sleep})
+        # tmux's native cursor flag is the only input-box safety gate.  A
+        # missing flag is fail-closed: never inject a key we cannot classify.
+        if snap.cursor_flag != 0:
             return actions
         if init_phase:
             confirm, rule_cfg = should_confirm_initializing(
@@ -488,30 +481,6 @@ class AutoConfirmationFeature(MonitorFeature):
                 snap.output, runtime.config,
                 last_response=runtime.last_confirm_response,
                 prev_output=runtime.prev_output or "")
-        if not confirm and snap.idle_for >= 15.0:
-            stuck_lines = max(
-                int(getattr(runtime.config, "confirm_stuck_recent_lines", 0) or 0),
-                int(getattr(runtime.boot_config, "confirm_stuck_recent_lines", 0) or 0),
-            )
-            if stuck_lines > 8:
-                if init_phase:
-                    # A normal composer makes an older boot menu unsafe to
-                    # confirm from the expanded window.
-                    if not has_input_cursor(
-                            snap.output, last_response=runtime.last_confirm_response,
-                            prev_output=runtime.prev_output or ""):
-                        confirm, rule_cfg = should_confirm_initializing(
-                            snap.output, runtime.boot_config, runtime.config,
-                            last_response=runtime.last_confirm_response,
-                            prev_output=runtime.prev_output or "",
-                            recent_lines=stuck_lines)
-                        cfg = rule_cfg
-                else:
-                    confirm = should_auto_confirm(
-                        snap.output, runtime.config,
-                        last_response=runtime.last_confirm_response,
-                        prev_output=runtime.prev_output or "",
-                        recent_lines=stuck_lines)
         if not confirm:
             return actions
         response, send_enter, pat_str, matched = confirm
@@ -595,6 +564,10 @@ class FinalStaticFallbackFeature(MonitorFeature):
     _WAITS = (60.0, 120.0, 300.0)
 
     def after_confirm(self, snap, runtime):
+        # The last-resort Enter is still a keystroke; only use it when the
+        # native tmux flag confirms that no input cursor is active.
+        if snap.cursor_flag != 0:
+            return []
         state = runtime.final_fallback
         store = getattr(runtime, "store", None)
         if (state is None and store is not None and snap.idle_for >= self._WAITS[0]

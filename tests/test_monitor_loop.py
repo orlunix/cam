@@ -14,6 +14,7 @@ import hashlib
 import threading
 import time
 import random
+from types import SimpleNamespace
 import pytest
 
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -282,12 +283,21 @@ def run_monitor_steps(screens, store=None, config=None, auto_exit=False,
 
     # Fake clock — advances on each sleep call
     fake_time = [time.time()]
+    current_screen = [""]
 
     def mock_time():
         return fake_time[0]
 
-    def mock_capture(session):
-        return seq.capture(session)
+    def mock_capture(session, lines=128):
+        current_screen[0] = seq.capture(session)
+        return current_screen[0]
+
+    def mock_cursor_flag(session):
+        # Menus hide the native cursor; ordinary input-ready/idle screens
+        # show it. This mirrors the tmux format query used by the driver.
+        menu_markers = ("1. Yes", "Allow", "Do you want to proceed",
+                        "Permission rule", "trust")
+        return 0 if any(m in current_screen[0] for m in menu_markers) else 1
 
     def mock_session_exists(session):
         if not session_alive:
@@ -316,6 +326,7 @@ def run_monitor_steps(screens, store=None, config=None, auto_exit=False,
         pass  # no-op — signal.signal() only works in main thread
 
     with patch("camc_pkg.monitor.capture_tmux", side_effect=mock_capture), \
+         patch("camc_pkg.monitor.tmux_cursor_flag", side_effect=mock_cursor_flag), \
          patch("camc_pkg.monitor.tmux_session_exists", side_effect=mock_session_exists), \
          patch("camc_pkg.monitor.tmux_send_input", side_effect=mock_send_input), \
          patch("camc_pkg.monitor.tmux_send_key", side_effect=mock_send_key), \
@@ -334,6 +345,61 @@ def run_monitor_steps(screens, store=None, config=None, auto_exit=False,
                 pass
 
     return store, events
+
+
+def test_monitor_reloads_auto_confirm_after_ten_second_mtime_check(tmp_path):
+    """A changed agents.json flag takes effect at the 10-second check.
+
+    The screen remains on a confirmation menu while the persisted flag is
+    initially false.  The fake mtime changes at t=10, at which point the
+    monitor should reload the record and send exactly one confirmation.
+    """
+    from camc_pkg import monitor
+    from camc_pkg.monitor import run_monitor_loop
+
+    cfg = make_config()
+    cfg.confirm_cooldown = 100.0
+    cfg.confirm_sleep = 1.0
+    store = MockStore()
+    store._path = str(tmp_path / "agents.json")
+    (tmp_path / "agents.json").write_text("[]")
+    store.agent["task"]["auto_confirm"] = False
+    now = [100.0]
+    sends = []
+    stat_calls = []
+
+    def fake_stat(path):
+        stat_calls.append(now[0])
+        if now[0] >= 110.0:
+            store.agent["task"]["auto_confirm"] = True
+            return SimpleNamespace(st_mtime=2.0)
+        return SimpleNamespace(st_mtime=1.0)
+
+    def fake_sleep(seconds):
+        now[0] += float(seconds)
+        if sends:
+            raise StopIteration("one confirmation is enough")
+
+    with patch.object(monitor.os, "stat", side_effect=fake_stat), \
+         patch.object(monitor, "capture_tmux", return_value=screen_confirm_yes()), \
+         patch.object(monitor, "tmux_cursor_flag", return_value=0), \
+         patch.object(monitor, "tmux_session_exists", return_value=True), \
+         patch.object(monitor, "tmux_send_input",
+                      side_effect=lambda session, text, send_enter=False:
+                      sends.append(now[0])), \
+         patch.object(monitor, "tmux_send_key", return_value=True), \
+         patch.object(monitor, "tmux_is_attached", return_value=False), \
+         patch.object(monitor, "tmux_kill_session", return_value=None), \
+         patch.object(monitor.time, "time", side_effect=lambda: now[0]), \
+         patch.object(monitor.time, "sleep", side_effect=fake_sleep), \
+         patch.object(monitor.signal, "signal", return_value=None):
+        try:
+            run_monitor_loop("test-session", "test-001", cfg, store)
+        except StopIteration:
+            pass
+
+    assert sends == [110.0]
+    assert stat_calls == [100.0, 110.0]
 
 
 # ===========================================================================
