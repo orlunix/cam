@@ -5010,7 +5010,6 @@ dc67bc3 camc: centralize release artifact and version builds
 2d3c2d3 camc v1.2.1 + desktop: Sync Host forces bundled camc (forceCamc)
 51c64e5 build: camc artifacts stay Linux-correct when built on Windows
 ```
-
 ## v1.2.11  2bf3e81-dirty 2026-07-26 20:32
 
 - Lines: 19898
@@ -6157,4 +6156,52 @@ a379b67 fix(camc): remove misleading live status probe
 0940540 fix(camc): share reliable prompt submission
 958fc47 docs(camc): simplify built-in goal loop skill
 f77fb9c feat(camc): archive validated Codex sessions
+```
+## v1.2.123  86a2a76-dirty 2026-08-23 21:35
+
+- Lines: 19937
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+86a2a76 fix(camc): harden readiness and static input fallback
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+```
+## v1.2.124  833cd16-dirty 2026-08-25 21:02
+
+- Lines: 19965
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+86a2a76 fix(camc): harden readiness and static input fallback
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+```
+## v1.2.125  833cd16-dirty 2026-08-26 00:39
+
+- Lines: 19901
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+86a2a76 fix(camc): harden readiness and static input fallback
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+958fc47 docs(camc): simplify built-in goal loop skill
+```
+## v1.2.126  d8f3e27-dirty 2026-08-26 00:42
+
+- Lines: 19901
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+d8f3e27 fix(camc): gate auto-confirm on tmux cursor state
+86a2a76 fix(camc): harden readiness and static input fallback
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
 ```

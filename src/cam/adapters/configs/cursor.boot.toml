@@ -16,4 +16,4 @@ response = "a"
 send_enter = false
 
 [monitor]
-confirm_recent_lines = 8
+confirm_recent_lines = 128

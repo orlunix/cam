@@ -83,8 +83,7 @@ send_enter = false
 # false positives (e.g. "promptengineering.org", "testing.py").
 busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
 confirm_cooldown = 5.0
-confirm_recent_lines = 8
-confirm_stuck_recent_lines = 200
+confirm_recent_lines = 128
 confirm_sleep = 0.5
 health_check_interval = 15
 idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle

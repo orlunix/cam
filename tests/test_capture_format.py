@@ -90,6 +90,38 @@ def test_capture_tmux_default_unchanged(tmux_capture_args):
     assert out1 == out2
 
 
+def test_tmux_cursor_flag_reads_target_pane_format(monkeypatch):
+    """The monitor can read tmux's native cursor visibility flag."""
+    from camc_pkg import transport
+
+    recorded = {}
+    monkeypatch.setattr(transport, "_find_tmux_socket",
+                        lambda sid: "/tmp/cam-sockets/" + sid + ".sock")
+    monkeypatch.setattr(transport, "_tmux_bin_for_session", lambda sid: "tmux")
+
+    def fake_run(args, timeout=5):
+        recorded["args"] = list(args)
+        return 0, "0\n"
+
+    monkeypatch.setattr(transport, "_run", fake_run)
+
+    assert transport.tmux_cursor_flag("cam-aaa") == 0
+    assert recorded["args"] == [
+        "tmux", "-u", "-S", "/tmp/cam-sockets/cam-aaa.sock",
+        "display-message", "-p", "-t", "cam-aaa:0.0", "#{cursor_flag}",
+    ]
+
+
+def test_tmux_cursor_flag_unknown_output_is_fail_closed(monkeypatch):
+    from camc_pkg import transport
+
+    monkeypatch.setattr(transport, "_find_tmux_socket", lambda sid: None)
+    monkeypatch.setattr(transport, "_tmux_bin_for_session", lambda sid: "tmux")
+    monkeypatch.setattr(transport, "_run", lambda args, timeout=5: (0, ""))
+
+    assert transport.tmux_cursor_flag("cam-missing") is None
+
+
 # ---------------------------------------------------------------------------
 # CamcDelegate
 # ---------------------------------------------------------------------------

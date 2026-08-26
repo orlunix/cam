@@ -1,6 +1,7 @@
 """Adapter configuration: TOML parser, embedded configs, AdapterConfig class."""
 
 import os
+import json
 import re
 import sys
 
@@ -184,6 +185,20 @@ def load_toml(path):
         return _parse_toml(f.read())
 
 
+def load_json(path):
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def load_config(path):
+    suffix = os.path.splitext(str(path))[1].lower()
+    if suffix == ".toml":
+        return load_toml(path)
+    if suffix == ".json":
+        return load_json(path)
+    raise ValueError("unsupported config format: %s" % (suffix or "<none>"))
+
+
 # ===========================================================================
 # Adapter config parser
 # ===========================================================================
@@ -197,6 +212,30 @@ class AdapterConfig(object):
         self.strip_ansi = launch.get("strip_ansi", False)
         self.command = launch.get("command", [])
         self.auto_permission_mode = launch.get("auto_permission_mode", False)
+        auto_run = launch.get("auto_run")
+        if isinstance(auto_run, dict):
+            autorun_config = (auto_run.get("autorun_config") or
+                              auto_run.get("config_path") or "")
+            autorun_args = (auto_run.get("autorun_args") or
+                            auto_run.get("args") or [])
+            enabled_keys = auto_run.get("enabled_keys") or []
+            if not enabled_keys and auto_run.get("enabled_key"):
+                enabled_keys = [auto_run.get("enabled_key")]
+            self.auto_run = {
+                "autorun_config": str(autorun_config),
+                "autorun_condition": str(
+                    auto_run.get("autorun_condition") or ""),
+                "autorun_args": [str(v) for v in autorun_args],
+                # Keep the old keys available to external adapters while
+                # they migrate to the explicit autorun_* names.
+                "config_path": str(autorun_config),
+                "enabled_keys": [str(v) for v in enabled_keys],
+                "enabled_values": [str(v) for v in
+                                   (auto_run.get("enabled_values") or [])],
+                "args": [str(v) for v in autorun_args],
+            }
+        else:
+            self.auto_run = None
 
         rp = launch.get("ready_pattern")
         self.ready_pattern = compile_pattern(rp, launch.get("ready_flags")) if rp else None
@@ -258,13 +297,11 @@ class AdapterConfig(object):
         dp = mon_cfg.get("done_pattern")
         self.done_pattern = compile_pattern(dp, mon_cfg.get("done_flags")) if dp else None
         self.confirm_cooldown = float(mon_cfg.get("confirm_cooldown", 5.0))
+        # Primary confirmation search covers the recent pane tail.  The
+        # native tmux cursor flag is the safety gate; no second text-window
+        # fallback is needed.
         self.confirm_recent_lines = min(
-            8, max(1, int(mon_cfg.get("confirm_recent_lines", 8))))
-        # Second-pass window after a screen has remained stable.  Keep the
-        # primary confirmation window small, but search this wider tail for
-        # queued tool dialogs that have scrolled just above it.
-        self.confirm_stuck_recent_lines = int(
-            mon_cfg.get("confirm_stuck_recent_lines", 40))
+            128, max(1, int(mon_cfg.get("confirm_recent_lines", 128))))
         self.confirm_sleep = float(mon_cfg.get("confirm_sleep", 0.5))
         self.health_check_interval = float(mon_cfg.get("health_check_interval", 15))
         # Idle stability threshold (hash0 unchanged this long → idle).

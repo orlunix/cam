@@ -704,8 +704,8 @@ import urllib.request
 # Constants and logging
 # ===========================================================================
 
-__version__ = "1.2.116"
-__build__ = "be0e296-dirty 2026-08-22 03:31"
+__version__ = "1.2.126"
+__build__ = "d8f3e27-dirty 2026-08-26 00:42"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1177,7 +1177,7 @@ busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
 # done_pattern: task just finished (e.g. "Crunched for 36s", "Cogitated for 1m 8s")
 done_pattern = "ed\\s+for\\s+\\d+[smh]"
 confirm_cooldown = 5.0        # seconds between auto-confirm attempts
-confirm_recent_lines = 8
+confirm_recent_lines = 128
 confirm_sleep = 0.5           # sleep after sending confirmation
 health_check_interval = 15    # seconds between tmux alive checks
 idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle
@@ -1226,6 +1226,14 @@ startup_wait = 20.0
 ready_pattern = "^[❯›>]"
 ready_flags = ["MULTILINE"]
 prompt_submit_delay = 0.5
+
+# Auto-run is enabled only for the managed autorun profile and when the
+# requirements file does not explicitly exclude danger-full-access. The
+# condition is fail-closed; syntax/runtime errors keep the old command.
+[launch.auto_run]
+autorun_config = "/etc/codex/requirements.toml"
+autorun_condition = "'autorun' in path_parts and (('allowed_sandbox_modes' not in config and 'allowed_permission_profiles' not in config) or 'danger-full-access' in config.get('allowed_sandbox_modes', []) or config.get('allowed_permission_profiles', {}).get(':danger-full-access') is True)"
+autorun_args = ["--sandbox", "danger-full-access", "--ask-for-approval", "never"]
 
 [state]
 strategy = "first"
@@ -1294,8 +1302,7 @@ send_enter = false
 # Codex shows "• Working (7s • esc to interrupt)" while busy
 busy_pattern = "Working \\(\\d+s"
 confirm_cooldown = 5.0
-confirm_recent_lines = 8
-confirm_stuck_recent_lines = 40
+confirm_recent_lines = 128
 confirm_sleep = 0.5
 health_check_interval = 15
 idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle
@@ -1406,8 +1413,7 @@ send_enter = false
 # false positives (e.g. "promptengineering.org", "testing.py").
 busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
 confirm_cooldown = 5.0
-confirm_recent_lines = 8
-confirm_stuck_recent_lines = 200
+confirm_recent_lines = 128
 confirm_sleep = 0.5
 health_check_interval = 15
 idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle
@@ -1459,7 +1465,7 @@ response = ""
 send_enter = true
 
 [monitor]
-confirm_recent_lines = 8
+confirm_recent_lines = 128
 """,
     "codex.boot.toml": r"""# Codex boot — first-run trust / directory prompts during initializing only.
 
@@ -1500,8 +1506,7 @@ response = ""
 send_enter = true
 
 [monitor]
-confirm_recent_lines = 8
-confirm_stuck_recent_lines = 40
+confirm_recent_lines = 128
 """,
     "cursor.boot.toml": r"""# Cursor Agent boot — workspace trust during initializing only.
 
@@ -1521,7 +1526,7 @@ response = "a"
 send_enter = false
 
 [monitor]
-confirm_recent_lines = 8
+confirm_recent_lines = 128
 """,
 }
 
@@ -1693,6 +1698,20 @@ def load_toml(path):
         return _parse_toml(f.read())
 
 
+def load_json(path):
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+def load_config(path):
+    suffix = os.path.splitext(str(path))[1].lower()
+    if suffix == ".toml":
+        return load_toml(path)
+    if suffix == ".json":
+        return load_json(path)
+    raise ValueError("unsupported config format: %s" % (suffix or "<none>"))
+
+
 # ===========================================================================
 # Adapter config parser
 # ===========================================================================
@@ -1706,6 +1725,30 @@ class AdapterConfig(object):
         self.strip_ansi = launch.get("strip_ansi", False)
         self.command = launch.get("command", [])
         self.auto_permission_mode = launch.get("auto_permission_mode", False)
+        auto_run = launch.get("auto_run")
+        if isinstance(auto_run, dict):
+            autorun_config = (auto_run.get("autorun_config") or
+                              auto_run.get("config_path") or "")
+            autorun_args = (auto_run.get("autorun_args") or
+                            auto_run.get("args") or [])
+            enabled_keys = auto_run.get("enabled_keys") or []
+            if not enabled_keys and auto_run.get("enabled_key"):
+                enabled_keys = [auto_run.get("enabled_key")]
+            self.auto_run = {
+                "autorun_config": str(autorun_config),
+                "autorun_condition": str(
+                    auto_run.get("autorun_condition") or ""),
+                "autorun_args": [str(v) for v in autorun_args],
+                # Keep the old keys available to external adapters while
+                # they migrate to the explicit autorun_* names.
+                "config_path": str(autorun_config),
+                "enabled_keys": [str(v) for v in enabled_keys],
+                "enabled_values": [str(v) for v in
+                                   (auto_run.get("enabled_values") or [])],
+                "args": [str(v) for v in autorun_args],
+            }
+        else:
+            self.auto_run = None
 
         rp = launch.get("ready_pattern")
         self.ready_pattern = compile_pattern(rp, launch.get("ready_flags")) if rp else None
@@ -1767,13 +1810,11 @@ class AdapterConfig(object):
         dp = mon_cfg.get("done_pattern")
         self.done_pattern = compile_pattern(dp, mon_cfg.get("done_flags")) if dp else None
         self.confirm_cooldown = float(mon_cfg.get("confirm_cooldown", 5.0))
+        # Primary confirmation search covers the recent pane tail.  The
+        # native tmux cursor flag is the safety gate; no second text-window
+        # fallback is needed.
         self.confirm_recent_lines = min(
-            8, max(1, int(mon_cfg.get("confirm_recent_lines", 8))))
-        # Second-pass window after a screen has remained stable.  Keep the
-        # primary confirmation window small, but search this wider tail for
-        # queued tool dialogs that have scrolled just above it.
-        self.confirm_stuck_recent_lines = int(
-            mon_cfg.get("confirm_stuck_recent_lines", 40))
+            128, max(1, int(mon_cfg.get("confirm_recent_lines", 128))))
         self.confirm_sleep = float(mon_cfg.get("confirm_sleep", 0.5))
         self.health_check_interval = float(mon_cfg.get("health_check_interval", 15))
         # Idle stability threshold (hash0 unchanged this long → idle).
@@ -3052,6 +3093,31 @@ def capture_tmux(session_id, lines=100, preserve_ansi=False):
         return ""
 
 
+def tmux_cursor_flag(session_id):
+    """Return tmux's native pane cursor flag (0/1), or None if unknown.
+
+    The monitor fails closed when tmux cannot answer: an unknown cursor
+    state must never authorize an automatic keystroke.
+    """
+    socket = _find_tmux_socket(session_id)
+    target = "%s:0.0" % session_id
+    tmux = _tmux_bin_for_session(session_id)
+    if socket:
+        args = [tmux, "-u", "-S", socket, "display-message", "-p",
+                "-t", target, "#{cursor_flag}"]
+    else:
+        args = [tmux, "-u", "display-message", "-p", "-t", target,
+                "#{cursor_flag}"]
+    try:
+        rc, output = _run(args, timeout=3)
+        value = output.strip()
+        if rc == 0 and value in ("0", "1"):
+            return int(value)
+    except Exception as e:
+        log.debug("tmux_cursor_flag failed for %s: %s", session_id, e)
+    return None
+
+
 def _tmux_cmd():
     """Backwards-compat alias; returns the already-resolved TMUX_BIN."""
     return TMUX_BIN
@@ -3434,37 +3500,15 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
 # detection
 # ===========================================================================
 
-# Global input-box guard (2026-06-11).
-#
-# Detects an INPUT cursor sitting in the user's input box, meaning the
-# agent is waiting for the human to type — auto-confirm MUST NOT fire
-# in that state or it injects keystrokes into the user's input.
-#
-# Cursor markers (line start, optional indent, then char + space):
-#   U+276F ❯  Claude Code TUI
-#   U+203A ›  Codex TUI
-#   U+2192 →  Cursor Agent TUI
-#   >         generic shell / continuation prompt
-#
-# Detects "input box is currently active" in three ways, ANY of which
-# means auto-confirm must skip:
-#
-# (1) Bare cursor line: ``^\s*[❯›→>]\s*$`` — input box empty, idle.
-# (2) Cursor line consists only of repeated last_response chars:
-#     ``^\s*[❯›→>]\s+<response>+\s*$``. Catches the spam-in-input case
-#     where our own ``1`` or ``a`` keystroke landed in the input box
-#     instead of selecting a menu option. NOT triggered by menu lines
-#     like ``❯ 1. Yes`` because of the ``.`` after the digit.
-# (3) Cursor line content changed vs the previous capture — the
-#     input box is being typed into (by user or by codex animating).
-#
-# Search window: last 8 non-empty lines.
+# The native tmux ``cursor_flag`` is the authoritative input-cursor signal.
+# A missing value is intentionally fail-closed in monitor calls.  The
+# sentinel preserves the old direct-call API for offline tests/callers that
+# do not have a tmux pane to query yet.
 _CURSOR_LINE_RE = re.compile(r"^\s*[❯›→>](\s|$)")
-_BARE_CURSOR_RE = re.compile(r"^\s*[❯›→>]\s*$")
-_CURSOR_PREFIX_RE = re.compile(r"^\s*[❯›→>]\s+(.*?)\s*$")
-_ACTIVE_UI_LINES = 8
+_ACTIVE_UI_LINES = 128
 _READY_UI_LINES = 4
 _READY_STABLE_SECONDS = 10.0
+_CURSOR_FLAG_UNSET = object()
 
 
 def _find_cursor_line(lines):
@@ -3488,52 +3532,6 @@ def _active_ui_lines(output, config, recent_lines=None):
     return [line for line in output.splitlines() if line.strip()][-limit:]
 
 
-def has_input_cursor(output, last_response="", prev_output=""):
-    """True iff the input box is visible / active and auto-confirm
-    must therefore skip. Three conditions documented above."""
-    tail_lines = [l for l in output.splitlines() if l.strip()][-8:]
-    cur_line = _find_cursor_line(tail_lines)
-    if cur_line is None:
-        return False
-    # (1) Bare cursor line
-    if _BARE_CURSOR_RE.match(cur_line):
-        return True
-    # (2) Cursor line is only repeated last_response chars
-    if last_response:
-        m = _CURSOR_PREFIX_RE.match(cur_line)
-        if m:
-            content = m.group(1)
-            if content and all(c == last_response for c in content):
-                return True
-    # (3) Cursor line changed since the previous capture
-    if prev_output:
-        prev_tail = [l for l in prev_output.splitlines() if l.strip()][-8:]
-        prev_cur = _find_cursor_line(prev_tail)
-        if prev_cur is not None and prev_cur != cur_line:
-            return True
-    return False
-
-
-def input_residue_count(output, last_response):
-    """Return how many stray response chars are sitting in the input
-    box's cursor line (condition 2 case). 0 if none. Used by the
-    monitor to send backspaces and clean up after our own keystrokes
-    that leaked into the input box."""
-    if not last_response:
-        return 0
-    tail_lines = [l for l in output.splitlines() if l.strip()][-8:]
-    cur_line = _find_cursor_line(tail_lines)
-    if cur_line is None:
-        return 0
-    m = _CURSOR_PREFIX_RE.match(cur_line)
-    if not m:
-        return 0
-    content = m.group(1)
-    if content and all(c == last_response for c in content):
-        return len(content)
-    return 0
-
-
 def detect_state(output, config):
     recent = output[-config.state_recent_chars:]
     if config.strip_ansi:
@@ -3554,18 +3552,14 @@ def detect_state(output, config):
 
 
 def should_auto_confirm(output, config, last_response="", prev_output="",
-                        recent_lines=None):
+                        recent_lines=None, cursor_flag=_CURSOR_FLAG_UNSET):
+    if (cursor_flag is not _CURSOR_FLAG_UNSET and cursor_flag != 0):
+        return None
     if config.strip_ansi:
         output = strip_ansi(output)
-    # Input-box guard. Three conditions in has_input_cursor: bare
-    # cursor, cursor + only our last_response chars, or cursor line
-    # content changing since the previous capture. Any → skip.
-    if has_input_cursor(output, last_response=last_response,
-                        prev_output=prev_output):
-        return None
     clean = clean_for_confirm(output)
-    # Only check the last few non-empty lines — real permission dialogs
-    # appear at the bottom of the screen.  Matching the full output causes
+    # Only check the recent pane tail — real permission dialogs appear near
+    # the bottom of the screen. Matching the full output causes
     # false positives when the agent's *response* contains trigger text
     # (e.g. a table mentioning "1. Yes").
     recent = "\n".join(_active_ui_lines(clean, config, recent_lines))
@@ -3619,14 +3613,17 @@ def _detect_prompt_count(output, config):
     return None
 
 
-def is_ready_for_input(output, config, stable_for=None):
+def is_ready_for_input(output, config, stable_for=None,
+                       cursor_flag=_CURSOR_FLAG_UNSET):
+    if (cursor_flag is not _CURSOR_FLAG_UNSET and cursor_flag != 1):
+        return False
     if not config.ready_pattern:
         return True
     clean = strip_ansi(output) if config.strip_ansi else output
     # A visible selection menu is not an input-ready prompt, even when an
     # older prompt line remains in scrollback or the selection uses the same
     # cursor glyph. Keep the menu text for classification; do not strip it.
-    # Confirmation retains the normal 8-line search window; only the ready
+    # Confirmation uses the configured 128-line search window; only the ready
     # cursor itself is restricted to the final four non-empty lines.
     confirm_lines = _active_ui_lines(clean, config)
     confirm_active = "\n".join(confirm_lines)
@@ -3682,13 +3679,16 @@ def should_confirm_initializing(output, boot_config, tool_config,
     return None, tool_config
 
 
-def is_ready_for_boot(output, boot_config, tool_config, stable_for=None):
+def is_ready_for_boot(output, boot_config, tool_config, stable_for=None,
+                      cursor_flag=_CURSOR_FLAG_UNSET):
     """Ready if either boot or tool ready_pattern matches."""
     if (boot_config
-            and is_ready_for_input(output, boot_config, stable_for=stable_for)):
+            and is_ready_for_input(output, boot_config, stable_for=stable_for,
+                                   cursor_flag=cursor_flag)):
         return True
     if (tool_config
-            and is_ready_for_input(output, tool_config, stable_for=stable_for)):
+            and is_ready_for_input(output, tool_config, stable_for=stable_for,
+                                  cursor_flag=cursor_flag)):
         return True
     return False
 
@@ -4879,7 +4879,7 @@ class MonitorSnapshot(object):
         # or test can distinguish "numbers-only churn" from real
         # screen content change. ``idle_for_hash1`` is the parallel
         # seconds-stable counter for hash1.
-        "hash0", "hash1", "idle_for_hash1",
+        "hash0", "hash1", "idle_for_hash1", "cursor_flag",
     )
 
     def __init__(self, **kwargs):
@@ -4908,7 +4908,7 @@ class MonitorRuntime(object):
         self.last_health = now
         self.last_confirm = 0.0
         self.last_confirm_hash = ""   # screen hash at last fire (dedup)
-        self.last_confirm_response = ""  # response sent at last fire (input-box guard)
+        self.last_confirm_response = ""  # response sent at last fire
         self.current_state = None
         self.has_worked = False
         # 2026-06-10 addendum: "initialize" is a one-shot pre-busy
@@ -5264,15 +5264,9 @@ class AutoConfirmationFeature(MonitorFeature):
                             "msg": "[%d] Confirm cooldown (%.1fs remaining)"
                                    % (snap.cycle, cfg.confirm_cooldown - confirm_cd)})
             return actions
-        if not init_phase and snap.idle_for < 5.0:
-            return actions
-        residue = input_residue_count(snap.output, runtime.last_confirm_response)
-        if residue > 0 and not init_phase:
-            actions.append({"kind": "log", "level": "info",
-                            "msg": "[%d] Backspace to clean input residue (%d chars)"
-                                   % (snap.cycle, residue)})
-            actions.append({"kind": "send_key", "key": "BSpace"})
-            actions.append({"kind": "halt_cycle", "sleep": cfg.confirm_sleep})
+        # tmux's native cursor flag is the only input-box safety gate.  A
+        # missing flag is fail-closed: never inject a key we cannot classify.
+        if snap.cursor_flag != 0:
             return actions
         if init_phase:
             confirm, rule_cfg = should_confirm_initializing(
@@ -5285,30 +5279,6 @@ class AutoConfirmationFeature(MonitorFeature):
                 snap.output, runtime.config,
                 last_response=runtime.last_confirm_response,
                 prev_output=runtime.prev_output or "")
-        if not confirm and snap.idle_for >= 15.0:
-            stuck_lines = max(
-                int(getattr(runtime.config, "confirm_stuck_recent_lines", 0) or 0),
-                int(getattr(runtime.boot_config, "confirm_stuck_recent_lines", 0) or 0),
-            )
-            if stuck_lines > 8:
-                if init_phase:
-                    # A normal composer makes an older boot menu unsafe to
-                    # confirm from the expanded window.
-                    if not has_input_cursor(
-                            snap.output, last_response=runtime.last_confirm_response,
-                            prev_output=runtime.prev_output or ""):
-                        confirm, rule_cfg = should_confirm_initializing(
-                            snap.output, runtime.boot_config, runtime.config,
-                            last_response=runtime.last_confirm_response,
-                            prev_output=runtime.prev_output or "",
-                            recent_lines=stuck_lines)
-                        cfg = rule_cfg
-                else:
-                    confirm = should_auto_confirm(
-                        snap.output, runtime.config,
-                        last_response=runtime.last_confirm_response,
-                        prev_output=runtime.prev_output or "",
-                        recent_lines=stuck_lines)
         if not confirm:
             return actions
         response, send_enter, pat_str, matched = confirm
@@ -5392,6 +5362,10 @@ class FinalStaticFallbackFeature(MonitorFeature):
     _WAITS = (60.0, 120.0, 300.0)
 
     def after_confirm(self, snap, runtime):
+        # The last-resort Enter is still a keystroke; only use it when the
+        # native tmux flag confirms that no input cursor is active.
+        if snap.cursor_flag != 0:
+            return []
         state = runtime.final_fallback
         store = getattr(runtime, "store", None)
         if (state is None and store is not None and snap.idle_for >= self._WAITS[0]
@@ -5466,6 +5440,9 @@ class CronFeature(MonitorFeature):
 # ===========================================================================
 # monitor
 # ===========================================================================
+
+_AUTO_CONFIRM_REFRESH_SECONDS = 10.0
+
 
 def _screen_tail(output, n=3):
     """Last n non-empty lines of screen output, for logging."""
@@ -5583,6 +5560,28 @@ def _refresh_boot_runtime(runtime, store, agent_id, boot_config):
             runtime.boot_deadline = time.time() + boot_wait
 
 
+def _refresh_auto_confirm(features, store, agent_id, state, now):
+    if now < state["next_check"]:
+        return
+    state["next_check"] = now + _AUTO_CONFIRM_REFRESH_SECONDS
+    path = getattr(store, "_path", None)
+    try:
+        mtime = os.stat(path).st_mtime if path else None
+    except OSError:
+        mtime = None
+    if state["loaded"] and state["mtime"] == mtime:
+        return
+    record = store.get(agent_id) or {}
+    task = record.get("task") if isinstance(record, dict) else None
+    value = (task.get("auto_confirm") if isinstance(task, dict)
+             else record.get("auto_confirm"))
+    enabled = value if isinstance(value, bool) else True
+    for feature in features:
+        if feature.name == "auto_confirm":
+            feature.enabled = enabled
+    state.update(mtime=mtime, loaded=True)
+
+
 def _consume_custom_launch_exit(store, agent_id, events_fn):
     """Persist a custom tool's terminal exit without touching its tmux shell."""
     rec = store.get(agent_id) or {}
@@ -5642,6 +5641,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
     runtime.boot_deadline = time.time() + boot_wait
     runtime.last_health = runtime.last_change
     features = build_features()
+    auto_confirm_state = {"next_check": 0.0, "mtime": None, "loaded": False}
     prev_output = ""
     _refresh_boot_runtime(runtime, store, agent_id, boot_config)
 
@@ -5670,6 +5670,8 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
             now = time.time()
             runtime.cycle += 1
             cycle = runtime.cycle
+            _refresh_auto_confirm(features, store, agent_id,
+                                  auto_confirm_state, now)
             _refresh_boot_runtime(runtime, store, agent_id, boot_config)
             if _consume_custom_launch_exit(store, agent_id, _event):
                 log.info("Custom tool exit recorded; tmux session retained")
@@ -5711,7 +5713,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                     return
 
             # --- 2. Capture screen ---
-            output = capture_tmux(session)
+            output = capture_tmux(session, lines=128)
             if output.strip():
                 prev_output = output
 
@@ -5744,6 +5746,11 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 time.sleep(1)
                 continue
 
+            # Native tmux cursor state is separate from captured text.  A
+            # failed/unsupported query returns None and all key injection
+            # paths fail closed until the next cycle can classify it.
+            cursor_flag = tmux_cursor_flag(session)
+
             # Compute auxiliary screen signals + tail_lines for the snapshot.
             tail_lines = [l for l in output.rstrip("\n").split("\n") if l.strip()][-5:]
             tail_text = "\n".join(tail_lines)
@@ -5756,9 +5763,11 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 for l in tail_lines
             )
             prompt_visible = (
-                is_ready_for_boot(output, boot_config, config)
+                is_ready_for_boot(output, boot_config, config,
+                                  cursor_flag=cursor_flag)
                 if runtime.in_initializing
-                else is_ready_for_input(output, config))
+                else is_ready_for_input(output, config,
+                                        cursor_flag=cursor_flag))
             idle_for = now - runtime.last_change
             runtime.prev_output = prev_output
 
@@ -5772,6 +5781,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 tail_lines=tail_lines, idle_for=idle_for,
                 hash0=h0, hash1=h1,
                 idle_for_hash1=idle_for_hash1,
+                cursor_flag=cursor_flag,
             )
 
             # Periodic debug summary (every 30 cycles ≈ 30s)
@@ -13017,6 +13027,63 @@ _TOOL_HINTS = {
 }
 
 
+def _auto_run_args(config, env=None):
+    """Return adapter-declared autorun argv when its condition is true.
+
+    ``autorun_condition`` is an adapter-owned Python expression evaluated
+    against parsed config data. It is fail-closed: missing files,
+    syntax/runtime errors, false results, or malformed adapter data all
+    return the historical launch argv unchanged.
+    """
+    policy = getattr(config, "auto_run", None)
+    if not isinstance(policy, dict):
+        return []
+    config_path = str(policy.get("autorun_config") or
+                      policy.get("config_path") or "").strip()
+    condition = str(policy.get("autorun_condition") or "").strip()
+    args = policy.get("autorun_args") or policy.get("args") or []
+    if not config_path or not condition or not args:
+        return []
+
+    effective_env = dict(os.environ)
+    if env:
+        effective_env.update(env)
+    for name, value in effective_env.items():
+        config_path = config_path.replace("${%s}" % name, str(value))
+        config_path = config_path.replace("$%s" % name, str(value))
+    if config_path == "~" or config_path.startswith("~/"):
+        config_path = os.path.join(
+            effective_env.get("HOME") or os.path.expanduser("~"),
+            config_path[2:] if config_path.startswith("~/") else "",
+        )
+    config_path = os.path.abspath(os.path.expanduser(config_path))
+    if not os.path.isfile(config_path):
+        return []
+    try:
+        global_config = load_config(config_path)
+    except Exception:
+        return []
+    realpath = os.path.realpath(config_path)
+    path_parts = tuple(part for part in realpath.split(os.sep) if part)
+    try:
+        enabled = eval(
+            condition,
+            {"__builtins__": {}},
+            {
+                "config": global_config,
+                "config_path": config_path,
+                "realpath": realpath,
+                "path_parts": path_parts,
+            },
+        )
+        if not bool(enabled):
+            return []
+    except BaseException:
+        # A bad adapter condition must never make camc run fail.
+        return []
+    return [str(value) for value in args]
+
+
 def _preflight(tool, tool_binary, workdir, env_setup=None, runtime=None,
                adapter_readiness=None, use_env_tool=False, tool_dir=None):
     """Tool readiness (via runtime_env) + local writable-dir checks.
@@ -13311,6 +13378,11 @@ def cmd_run(args):
             session_uuid = "%s-0000-0000-0000-000000000000" % agent_id
 
     launch_cmd = _build_command(config, prompt, workdir)
+
+    # Auto-run is opt-in through the adapter's three-gate policy.  Keep
+    # user-supplied --tool-args last so the legacy/default command remains
+    # authoritative whenever the policy does not fully match.
+    launch_cmd += _auto_run_args(config, runtime.env)
 
     if tool == "codex" and api_plan:
         launch_cmd += _codex_api_model_override(api_plan)
