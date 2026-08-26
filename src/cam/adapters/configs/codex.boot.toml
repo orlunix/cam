@@ -37,5 +37,4 @@ response = ""
 send_enter = true
 
 [monitor]
-confirm_recent_lines = 8
-confirm_stuck_recent_lines = 40
+confirm_recent_lines = 128

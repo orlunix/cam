@@ -222,7 +222,8 @@ def _gen_agent_id():
 
 from camc_pkg import __version__, CAM_DIR, CONFIGS_DIR, CONTEXT_FILE, LOGS_DIR, PIDS_DIR, SOCKETS_DIR, log
 from camc_pkg.utils import _now_iso, _time_ago, _load_default_context, _build_command, _kill_monitor, _run
-from camc_pkg.adapters import _EMBEDDED_CONFIGS, _load_config, install_default_configs, install_default_boot_configs
+from camc_pkg.adapters import (_EMBEDDED_CONFIGS, _load_config, load_config,
+                               install_default_configs, install_default_boot_configs)
 from camc_pkg.storage import AgentStore, EventStore
 from camc_pkg.transport import (
     _find_tmux_socket, capture_tmux, tmux_session_exists,
@@ -657,6 +658,63 @@ _TOOL_HINTS = {
 }
 
 
+def _auto_run_args(config, env=None):
+    """Return adapter-declared autorun argv when its condition is true.
+
+    ``autorun_condition`` is an adapter-owned Python expression evaluated
+    against parsed config data. It is fail-closed: missing files,
+    syntax/runtime errors, false results, or malformed adapter data all
+    return the historical launch argv unchanged.
+    """
+    policy = getattr(config, "auto_run", None)
+    if not isinstance(policy, dict):
+        return []
+    config_path = str(policy.get("autorun_config") or
+                      policy.get("config_path") or "").strip()
+    condition = str(policy.get("autorun_condition") or "").strip()
+    args = policy.get("autorun_args") or policy.get("args") or []
+    if not config_path or not condition or not args:
+        return []
+
+    effective_env = dict(os.environ)
+    if env:
+        effective_env.update(env)
+    for name, value in effective_env.items():
+        config_path = config_path.replace("${%s}" % name, str(value))
+        config_path = config_path.replace("$%s" % name, str(value))
+    if config_path == "~" or config_path.startswith("~/"):
+        config_path = os.path.join(
+            effective_env.get("HOME") or os.path.expanduser("~"),
+            config_path[2:] if config_path.startswith("~/") else "",
+        )
+    config_path = os.path.abspath(os.path.expanduser(config_path))
+    if not os.path.isfile(config_path):
+        return []
+    try:
+        global_config = load_config(config_path)
+    except Exception:
+        return []
+    realpath = os.path.realpath(config_path)
+    path_parts = tuple(part for part in realpath.split(os.sep) if part)
+    try:
+        enabled = eval(
+            condition,
+            {"__builtins__": {}},
+            {
+                "config": global_config,
+                "config_path": config_path,
+                "realpath": realpath,
+                "path_parts": path_parts,
+            },
+        )
+        if not bool(enabled):
+            return []
+    except BaseException:
+        # A bad adapter condition must never make camc run fail.
+        return []
+    return [str(value) for value in args]
+
+
 def _preflight(tool, tool_binary, workdir, env_setup=None, runtime=None,
                adapter_readiness=None, use_env_tool=False, tool_dir=None):
     """Tool readiness (via runtime_env) + local writable-dir checks.
@@ -958,6 +1016,11 @@ def cmd_run(args):
             session_uuid = "%s-0000-0000-0000-000000000000" % agent_id
 
     launch_cmd = _build_command(config, prompt, workdir)
+
+    # Auto-run is opt-in through the adapter's three-gate policy.  Keep
+    # user-supplied --tool-args last so the legacy/default command remains
+    # authoritative whenever the policy does not fully match.
+    launch_cmd += _auto_run_args(config, runtime.env)
 
     if tool == "codex" and api_plan:
         launch_cmd += _codex_api_model_override(api_plan)

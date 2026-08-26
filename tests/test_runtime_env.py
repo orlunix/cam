@@ -36,7 +36,107 @@ if SRC not in sys.path:
 
 from camc_pkg import runtime_env as re_mod  # noqa: E402
 from camc_pkg import cli as camc_cli        # noqa: E402
+from camc_pkg.adapters import load_config  # noqa: E402
 from camc_pkg import transport               # noqa: E402
+
+
+def test_codex_autorun_condition_eval_enables_declared_args(tmp_path):
+    config_path = tmp_path / "autorun" / "requirements.toml"
+    config_path.parent.mkdir()
+    config_path.write_text("[features]\nhooks = true\n")
+    config = camc_cli._load_config("codex")
+    config.auto_run.update({
+        "autorun_config": str(config_path),
+        "autorun_condition": (
+            "'autorun' in path_parts and "
+            "config.get('features', {}).get('hooks') is True"
+        ),
+        "autorun_args": [
+            "--sandbox", "workspace-write", "--ask-for-approval", "never"
+        ],
+    })
+
+    assert camc_cli._auto_run_args(config) == config.auto_run["autorun_args"]
+
+
+def test_codex_builtin_autorun_uses_danger_full_access_args():
+    config = camc_cli._load_config("codex")
+    assert config.auto_run["autorun_args"] == [
+        "--sandbox", "danger-full-access", "--ask-for-approval", "never",
+    ]
+
+
+def test_codex_auto_run_falls_back_when_global_config_missing(tmp_path):
+    config = camc_cli._load_config("codex")
+    config.auto_run["autorun_config"] = str(tmp_path / "missing.toml")
+
+    assert camc_cli._auto_run_args(config) == []
+
+
+def test_codex_auto_run_falls_back_when_danger_full_access_is_not_enabled(tmp_path):
+    config_path = tmp_path / "codex.toml"
+    config_path.write_text('allowed_sandbox_modes = ["workspace-write"]\n')
+    config = camc_cli._load_config("codex")
+    config.auto_run.update({
+        "autorun_config": str(config_path),
+        "autorun_condition": (
+            "'danger-full-access' in "
+            "config.get('allowed_sandbox_modes', [])"
+        ),
+        "autorun_args": ["--autorun"],
+    })
+
+    assert camc_cli._auto_run_args(config) == []
+
+
+def test_codex_auto_run_accepts_modern_permission_profile_allowlist(tmp_path):
+    config_path = tmp_path / "requirements.toml"
+    config_path.write_text(
+        '[allowed_permission_profiles]\n":danger-full-access" = true\n')
+    config = camc_cli._load_config("codex")
+    config.auto_run.update({
+        "autorun_config": str(config_path),
+        "autorun_condition": (
+            "config.get('allowed_permission_profiles', {}).get("
+            "':danger-full-access') is True"
+        ),
+        "autorun_args": ["--autorun"],
+    })
+
+    assert camc_cli._auto_run_args(config) == ["--autorun"]
+
+
+def test_codex_autorun_condition_errors_fallback(tmp_path):
+    config_path = tmp_path / "requirements.toml"
+    config_path.write_text("[features]\nhooks = true\n")
+    config = camc_cli._load_config("codex")
+    config.auto_run.update({
+        "autorun_config": str(config_path),
+        "autorun_condition": "1 / 0",
+        "autorun_args": ["--autorun"],
+    })
+
+    assert camc_cli._auto_run_args(config) == []
+
+
+def test_codex_builtin_autorun_condition_denies_empty_allowlist(tmp_path):
+    config_path = tmp_path / "autorun" / "requirements.toml"
+    config_path.parent.mkdir()
+    config_path.write_text("allowed_sandbox_modes = []\n")
+    config = camc_cli._load_config("codex")
+    config.auto_run["autorun_config"] = str(config_path)
+
+    assert camc_cli._auto_run_args(config) == []
+
+
+def test_load_config_dispatches_toml_and_json(tmp_path):
+    toml_path = tmp_path / "policy.toml"
+    json_path = tmp_path / "policy.json"
+    toml_path.write_text("enabled = true\n")
+    json_path.write_text('{"enabled": true}')
+
+    assert load_config(toml_path)["enabled"] is True
+    assert load_config(json_path)["enabled"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -790,6 +890,7 @@ def test_cmd_run_loads_context_for_metadata_only_after_launch(tmp_path, monkeypa
         }
 
     def _fake_create(session, launch_cmd, workdir, **kwargs):
+        captured["launch_cmd"] = list(launch_cmd)
         captured["create_env_setup"] = kwargs.get("env_setup")
         captured["create_env"] = kwargs.get("env")
         return True
@@ -826,6 +927,8 @@ def test_cmd_run_loads_context_for_metadata_only_after_launch(tmp_path, monkeypa
     monkeypatch.setattr(camc_cli, "_gen_agent_id", lambda: "abc12345")
     monkeypatch.setattr(camc_cli, "_build_command",
                         lambda config, prompt, workdir: ["claude", prompt])
+    monkeypatch.setattr(camc_cli, "_auto_run_args",
+                        lambda config, env: ["--adapter-auto-run"])
     monkeypatch.setattr(camc_cli, "create_tmux_session", _fake_create)
     monkeypatch.setattr(transport, "ensure_camc_tmux_config",
                         lambda: str(tmp_path / "tmux.conf"))
@@ -843,6 +946,7 @@ def test_cmd_run_loads_context_for_metadata_only_after_launch(tmp_path, monkeypa
     assert rec["context_name"] == "ctx-pdx"
     assert rec["transport_type"] == "ssh"
     assert rec["id"] == "abc12345"
+    assert captured["launch_cmd"] == ["claude", "hello", "--adapter-auto-run"]
 
 
 def test_scheduler_launch_ignores_context_env_setup(tmp_path, monkeypatch):

@@ -45,12 +45,16 @@ from camc_pkg.storage import AgentStore, EventStore
 from camc_pkg.transport import (
     capture_tmux, tmux_session_exists, tmux_send_input, tmux_send_key,
     tmux_kill_session, tmux_is_attached, tmux_submit_input,
+    tmux_cursor_flag,
 )
 from camc_pkg.detection import detect_completion, is_ready_for_input, is_ready_for_boot
 from camc_pkg.monitor_features import (
     MonitorSnapshot, MonitorRuntime, build_features,
 )
 from camc_pkg.api_proxy import stop_agent_api_proxy
+
+
+_AUTO_CONFIRM_REFRESH_SECONDS = 10.0
 
 
 def _screen_tail(output, n=3):
@@ -170,6 +174,28 @@ def _refresh_boot_runtime(runtime, store, agent_id, boot_config):
             runtime.boot_deadline = time.time() + boot_wait
 
 
+def _refresh_auto_confirm(features, store, agent_id, state, now):
+    if now < state["next_check"]:
+        return
+    state["next_check"] = now + _AUTO_CONFIRM_REFRESH_SECONDS
+    path = getattr(store, "_path", None)
+    try:
+        mtime = os.stat(path).st_mtime if path else None
+    except OSError:
+        mtime = None
+    if state["loaded"] and state["mtime"] == mtime:
+        return
+    record = store.get(agent_id) or {}
+    task = record.get("task") if isinstance(record, dict) else None
+    value = (task.get("auto_confirm") if isinstance(task, dict)
+             else record.get("auto_confirm"))
+    enabled = value if isinstance(value, bool) else True
+    for feature in features:
+        if feature.name == "auto_confirm":
+            feature.enabled = enabled
+    state.update(mtime=mtime, loaded=True)
+
+
 def _consume_custom_launch_exit(store, agent_id, events_fn):
     """Persist a custom tool's terminal exit without touching its tmux shell."""
     rec = store.get(agent_id) or {}
@@ -229,6 +255,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
     runtime.boot_deadline = time.time() + boot_wait
     runtime.last_health = runtime.last_change
     features = build_features()
+    auto_confirm_state = {"next_check": 0.0, "mtime": None, "loaded": False}
     prev_output = ""
     _refresh_boot_runtime(runtime, store, agent_id, boot_config)
 
@@ -257,6 +284,8 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
             now = time.time()
             runtime.cycle += 1
             cycle = runtime.cycle
+            _refresh_auto_confirm(features, store, agent_id,
+                                  auto_confirm_state, now)
             _refresh_boot_runtime(runtime, store, agent_id, boot_config)
             if _consume_custom_launch_exit(store, agent_id, _event):
                 log.info("Custom tool exit recorded; tmux session retained")
@@ -298,7 +327,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                     return
 
             # --- 2. Capture screen ---
-            output = capture_tmux(session)
+            output = capture_tmux(session, lines=128)
             if output.strip():
                 prev_output = output
 
@@ -331,6 +360,11 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 time.sleep(1)
                 continue
 
+            # Native tmux cursor state is separate from captured text.  A
+            # failed/unsupported query returns None and all key injection
+            # paths fail closed until the next cycle can classify it.
+            cursor_flag = tmux_cursor_flag(session)
+
             # Compute auxiliary screen signals + tail_lines for the snapshot.
             tail_lines = [l for l in output.rstrip("\n").split("\n") if l.strip()][-5:]
             tail_text = "\n".join(tail_lines)
@@ -343,9 +377,11 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 for l in tail_lines
             )
             prompt_visible = (
-                is_ready_for_boot(output, boot_config, config)
+                is_ready_for_boot(output, boot_config, config,
+                                  cursor_flag=cursor_flag)
                 if runtime.in_initializing
-                else is_ready_for_input(output, config))
+                else is_ready_for_input(output, config,
+                                        cursor_flag=cursor_flag))
             idle_for = now - runtime.last_change
             runtime.prev_output = prev_output
 
@@ -359,6 +395,7 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 tail_lines=tail_lines, idle_for=idle_for,
                 hash0=h0, hash1=h1,
                 idle_for_hash1=idle_for_hash1,
+                cursor_flag=cursor_flag,
             )
 
             # Periodic debug summary (every 30 cycles ≈ 30s)

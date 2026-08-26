@@ -106,7 +106,7 @@ busy_pattern = "(?:^|\\n)\\S.*ing(?:…|\\.{3})"
 # done_pattern: task just finished (e.g. "Crunched for 36s", "Cogitated for 1m 8s")
 done_pattern = "ed\\s+for\\s+\\d+[smh]"
 confirm_cooldown = 5.0        # seconds between auto-confirm attempts
-confirm_recent_lines = 8
+confirm_recent_lines = 128
 confirm_sleep = 0.5           # sleep after sending confirmation
 health_check_interval = 15    # seconds between tmux alive checks
 idle_stable_seconds = 60      # normalized-content hash0 stable this long -> idle

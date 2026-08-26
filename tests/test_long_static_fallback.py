@@ -37,6 +37,7 @@ def _snap(now, h0="same", h1="same", idle0=0.0, idle1=0.0,
         tail_lines=[line for line in output.splitlines() if line],
         idle_for=idle0, hash0=h0, hash1=h1,
         idle_for_hash1=idle1,
+        cursor_flag=0,
     )
 
 
@@ -117,6 +118,20 @@ class LongStaticFallbackTests(unittest.TestCase):
             _snap(61.0, idle0=61.0, idle1=61.0,
                   output="1. Yes\n❯ ", prompt_visible=True), self.runtime)
         self.assertFalse(any(a.get("kind") == "send_input" for a in actions))
+
+    def test_confirm_fallback_requires_hidden_tmux_cursor(self):
+        self.runtime.final_fallback = {
+            "kind": "confirm", "text": "1", "send_enter": False,
+            "pattern": r"1\. Yes", "recent_lines": 8,
+            "baseline_hash0": "same", "baseline_hash1": "same",
+            "baseline_at": 0.0, "attempts": 0, "next_at": 0.0,
+        }
+        snap = _snap(61.0, idle0=61.0, idle1=61.0)
+        snap.cursor_flag = 1
+
+        actions = self.feature.after_confirm(snap, self.runtime)
+
+        assert not any(a.get("kind") == "send_key" for a in actions)
 
     def test_message_fallback_is_enter_only(self):
         self.runtime.final_fallback = {

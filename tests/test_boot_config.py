@@ -71,6 +71,16 @@ def test_boot_ready_cursor_requires_ten_seconds_of_stability():
     assert is_ready_for_boot(screen, boot, tool, stable_for=10.0) is True
 
 
+def test_ready_requires_input_marker_and_visible_tmux_cursor():
+    tool = _boot_config("codex.toml")
+    screen = "›\n"
+
+    assert is_ready_for_input(screen, tool, stable_for=0.0,
+                              cursor_flag=0) is False
+    assert is_ready_for_input(screen, tool, stable_for=10.0,
+                              cursor_flag=1) is True
+
+
 def test_cursor_boot_trust_rule():
     boot = _boot_config("cursor.boot.toml")
     screen = "[a] Trust this workspace\n"

@@ -191,7 +191,7 @@ class _Cfg(object):
         self.state_strategy = "first"
         self.state_patterns = []
         self.strip_ansi = False
-        self.confirm_recent_lines = 8
+        self.confirm_recent_lines = 128
         self.idle_stable_seconds = float(idle_stable_seconds)
 
 
@@ -201,7 +201,7 @@ def _mk_snap(**kw):
         now=0.0, cycle=1, prompt_visible=True,
         screen_busy=False, screen_done=False, bare_prompt=False,
         tail_lines=[], idle_for=0.0,
-        hash0="x", hash1="x", idle_for_hash1=0.0,
+        hash0="x", hash1="x", idle_for_hash1=0.0, cursor_flag=0,
     )
     defaults.update(kw)
     return _mf.MonitorSnapshot(**defaults)

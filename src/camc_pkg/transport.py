@@ -241,6 +241,31 @@ def capture_tmux(session_id, lines=100, preserve_ansi=False):
         return ""
 
 
+def tmux_cursor_flag(session_id):
+    """Return tmux's native pane cursor flag (0/1), or None if unknown.
+
+    The monitor fails closed when tmux cannot answer: an unknown cursor
+    state must never authorize an automatic keystroke.
+    """
+    socket = _find_tmux_socket(session_id)
+    target = "%s:0.0" % session_id
+    tmux = _tmux_bin_for_session(session_id)
+    if socket:
+        args = [tmux, "-u", "-S", socket, "display-message", "-p",
+                "-t", target, "#{cursor_flag}"]
+    else:
+        args = [tmux, "-u", "display-message", "-p", "-t", target,
+                "#{cursor_flag}"]
+    try:
+        rc, output = _run(args, timeout=3)
+        value = output.strip()
+        if rc == 0 and value in ("0", "1"):
+            return int(value)
+    except Exception as e:
+        log.debug("tmux_cursor_flag failed for %s: %s", session_id, e)
+    return None
+
+
 def _tmux_cmd():
     """Backwards-compat alias; returns the already-resolved TMUX_BIN."""
     return TMUX_BIN

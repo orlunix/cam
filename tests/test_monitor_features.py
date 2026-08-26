@@ -54,6 +54,7 @@ def _mk_snap(output="hello\n❯ ", **overrides):
         prompt_visible=True, screen_busy=False,
         screen_done=False, bare_prompt=False,
         tail_lines=tail_lines, idle_for=0.0,
+        cursor_flag=0,
     )
     fields.update(overrides)
     return mf.MonitorSnapshot(**fields)
@@ -63,20 +64,22 @@ def _mk_snap(output="hello\n❯ ", **overrides):
 # Registry shape
 # ---------------------------------------------------------------------------
 
-def test_adapter_config_caps_primary_confirm_window_at_eight_lines():
+def test_adapter_config_caps_primary_confirm_window_at_128_lines():
     cfg = AdapterConfig({"monitor": {"confirm_recent_lines": 20}})
-    assert cfg.confirm_recent_lines == 8
+    assert cfg.confirm_recent_lines == 20
+    cfg = AdapterConfig({"monitor": {"confirm_recent_lines": 200}})
+    assert cfg.confirm_recent_lines == 128
 
 
-def test_adapter_config_defaults_stuck_confirm_window_to_forty_lines():
+def test_adapter_config_defaults_primary_confirm_window_to_128_lines():
     cfg = AdapterConfig({"monitor": {}})
-    assert cfg.confirm_stuck_recent_lines == 40
+    assert cfg.confirm_recent_lines == 128
 
 
-def test_cursor_config_uses_two_hundred_line_stuck_confirm_window():
+def test_cursor_config_uses_128_line_primary_confirm_window():
     path = os.path.join(ROOT, "src", "cam", "adapters", "configs", "cursor.toml")
     cfg = AdapterConfig(load_toml(path))
-    assert cfg.confirm_stuck_recent_lines == 200
+    assert cfg.confirm_recent_lines == 128
 
 
 def test_registry_includes_state_manager_and_auto_confirmation_and_placeholders():
@@ -349,6 +352,51 @@ def test_auto_confirmation_returns_send_input_and_halt_cycle():
     assert halt["sleep"] == pytest.approx(cfg.confirm_sleep)
 
 
+def test_auto_confirmation_requires_hidden_tmux_cursor():
+    confirm_rules = [(re.compile(r"1\. Yes"), "1", False)]
+    cfg = _Cfg(confirm_rules=confirm_rules)
+    runtime = mf.MonitorRuntime("aid", cfg, now=1000.0)
+    feat = mf.AutoConfirmationFeature()
+    snap = _mk_snap(
+        output="Do you want to proceed?\n1. Yes\n2. No\n",
+        now=1000.0, idle_for=5.0, cursor_flag=1,
+    )
+
+    actions = feat.confirm(snap, runtime)
+
+    assert not any(a["kind"] == "send_input" for a in actions)
+    assert not any(a["kind"] == "send_key" for a in actions)
+
+
+def test_auto_confirmation_unknown_tmux_cursor_fails_closed():
+    cfg = _Cfg(confirm_rules=[(re.compile(r"1\. Yes"), "1", False)])
+    runtime = mf.MonitorRuntime("aid", cfg, now=1000.0)
+    actions = mf.AutoConfirmationFeature().confirm(
+        _mk_snap(output="1. Yes\n", now=1000.0, cursor_flag=None), runtime)
+    assert not any(a["kind"] in ("send_input", "send_key") for a in actions)
+
+
+def test_primary_confirmation_searches_128_lines_without_stuck_phase():
+    cfg = _Cfg(
+        confirm_recent_lines=128,
+        confirm_rules=[(re.compile(r"^1\. Yes,", re.MULTILINE), "1", False)],
+    )
+    runtime = mf.MonitorRuntime("aid", cfg, now=100.0)
+    feat = mf.AutoConfirmationFeature()
+    screen = "\n".join(
+        ["status line %d" % i for i in range(100)]
+        + ["1. Yes, continue"]
+        + ["status tail %d" % i for i in range(28)]
+    )
+
+    actions = feat.confirm(
+        _mk_snap(output=screen, now=105.0, idle_for=5.0, cursor_flag=0),
+        runtime,
+    )
+
+    assert any(a["kind"] == "send_input" for a in actions)
+
+
 def test_auto_confirmation_cooldown_window_suppresses_fire():
     confirm_rules = [(re.compile(r"1\. Yes"), "1", False)]
     cfg = _Cfg(confirm_cooldown=10.0, confirm_rules=confirm_rules)
@@ -362,21 +410,21 @@ def test_auto_confirmation_cooldown_window_suppresses_fire():
     assert runtime.last_confirm == 95.0
 
 
-def test_auto_confirmation_requires_screen_stable_for_five_seconds():
+def test_auto_confirmation_does_not_require_extra_idle_gate():
     confirm_rules = [(re.compile(r"1\. Yes"), "1", False)]
     cfg = _Cfg(confirm_rules=confirm_rules)
     runtime = mf.MonitorRuntime("aid", cfg, now=100.0)
     feat = mf.AutoConfirmationFeature()
     snap = _mk_snap(
         output="Do you want to proceed?\n1. Yes\n2. No\n",
-        idle_for=4.9,
+        idle_for=0.0,
         now=100.0,
     )
 
     kinds = [a["kind"] for a in feat.confirm(snap, runtime)]
 
-    assert "send_input" not in kinds
-    assert runtime.last_confirm == 0.0
+    assert "send_input" in kinds
+    assert runtime.last_confirm == 100.0
 
 
 def test_boot_confirmation_does_not_wait_for_screen_stability():
@@ -400,12 +448,11 @@ def test_boot_confirmation_does_not_wait_for_screen_stability():
     assert any(action["kind"] == "send_input" for action in actions)
 
 
-def test_auto_confirmation_stuck_fallback_searches_last_40_lines_only_after_15_seconds():
+def test_auto_confirmation_primary_window_replaces_stuck_second_pass():
     confirm_rules = [(re.compile(r"^1\. Yes,", re.MULTILINE), "1", False)]
     cfg = AdapterConfig({"monitor": {
-        "confirm_recent_lines": 8,
+        "confirm_recent_lines": 128,
         "confirm_cooldown": 5.0,
-        "confirm_stuck_recent_lines": 40,
     }, "confirm": [{"pattern": r"^1\. Yes,", "response": "1", "send_enter": False}]})
     runtime = mf.MonitorRuntime("aid", cfg, now=100.0)
     feat = mf.AutoConfirmationFeature()
@@ -413,14 +460,11 @@ def test_auto_confirmation_stuck_fallback_searches_last_40_lines_only_after_15_s
         "status line %d" % i for i in range(37)
     )
 
-    early = feat.confirm(_mk_snap(output=screen, now=100.0, idle_for=14.9), runtime)
-    assert not any(action["kind"] == "send_input" for action in early)
-
-    actions = feat.confirm(_mk_snap(output=screen, now=101.0, idle_for=15.0), runtime)
+    actions = feat.confirm(_mk_snap(output=screen, now=100.0, idle_for=0.0), runtime)
     assert any(action["kind"] == "send_input" for action in actions)
 
 
-def test_auto_confirmation_stuck_fallback_skips_a_normal_bottom_input_box():
+def test_auto_confirmation_cursor_flag_skips_a_normal_bottom_input_box():
     confirm_rules = [(re.compile(r"^1\. Yes,", re.MULTILINE), "1", False)]
     cfg = _Cfg(confirm_rules=confirm_rules, confirm_recent_lines=8,
                confirm_stuck_recent_lines=32)
@@ -430,13 +474,14 @@ def test_auto_confirmation_stuck_fallback_skips_a_normal_bottom_input_box():
         "status line %d" % i for i in range(8)
     ) + "\n❯ "
 
-    actions = feat.confirm(_mk_snap(output=screen, now=100.0, idle_for=15.0), runtime)
+    actions = feat.confirm(_mk_snap(output=screen, now=100.0, idle_for=0.0,
+                                    cursor_flag=1), runtime)
     assert not any(action["kind"] == "send_input" for action in actions)
 
 
-def test_boot_trust_stuck_fallback_respects_the_bottom_input_guard():
+def test_boot_trust_respects_native_cursor_flag():
     trust_rule = [(re.compile(r"Do you trust the contents"), "1", True)]
-    cfg = _Cfg(confirm_rules=trust_rule, confirm_recent_lines=8,
+    cfg = _Cfg(confirm_rules=trust_rule, confirm_recent_lines=128,
                confirm_stuck_recent_lines=32)
     runtime = mf.MonitorRuntime("aid", cfg, now=100.0)
     runtime.in_initializing = True
@@ -446,15 +491,16 @@ def test_boot_trust_stuck_fallback_respects_the_bottom_input_guard():
         "status line %d" % i for i in range(9)
     )
 
-    actions = feat.confirm(_mk_snap(output=screen, now=100.0, idle_for=15.0), runtime)
+    actions = feat.confirm(_mk_snap(output=screen, now=100.0, idle_for=0.0), runtime)
     assert any(action["kind"] == "send_input" for action in actions)
 
     guarded_runtime = mf.MonitorRuntime("aid-guarded", cfg, now=121.0)
     guarded_runtime.in_initializing = True
     guarded_runtime.boot_config = cfg
     guarded = feat.confirm(_mk_snap(
-        output=screen + "\n❯ ", now=121.0, idle_for=15.0,
+        output=screen + "\n❯ ", now=121.0, idle_for=0.0,
         hash="different-screen",
+        cursor_flag=1,
     ), guarded_runtime)
     assert not any(action["kind"] == "send_input" for action in guarded)
 
@@ -486,15 +532,15 @@ def test_auto_confirmation_no_1_spam_guard_python_side():
     assert runtime.last_confirm == 200.0
 
 
-def test_auto_confirmation_bare_input_cursor_blocks_python_side():
-    """Bare input cursor at the bottom blocks confirm — keystrokes would
-    land in the user's input box instead of the menu."""
+def test_auto_confirmation_native_cursor_flag_blocks_input_box():
+    """A visible native cursor blocks confirm; text heuristics are gone."""
     confirm_rules = [(re.compile(r"1\. Yes"), "1", False)]
     cfg = _Cfg(confirm_rules=confirm_rules)
     runtime = mf.MonitorRuntime("aid", cfg, now=500.0)
     runtime.last_confirm = 0.0
     feat = mf.AutoConfirmationFeature()
-    snap = _mk_snap(output="\n1. Yes\n❯ ", bare_prompt=True, now=500.0)
+    snap = _mk_snap(output="\n1. Yes\n❯ ", bare_prompt=True, now=500.0,
+                    cursor_flag=1)
     kinds = [a["kind"] for a in feat.confirm(snap, runtime)]
     assert "send_input" not in kinds
     assert "halt_cycle" not in kinds
