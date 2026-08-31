@@ -812,6 +812,15 @@ export class CamApi {
     return this.request('POST', '/api/system/ssh-config/parse', { text: String(text ?? '') });
   }
 
+  // Extensions (SPEC v2): list installed, invoke a type-B remote tool.
+  extList() {
+    return this.request('GET', '/api/ext/list');
+  }
+
+  extCall(name, method, args, agentId) {
+    return this.request('POST', '/api/ext/call', { name, method, args, agentId });
+  }
+
   // Skillm library management (CAM-DESK-SKILLM-010..014).
   skillmStatus(contextName) {
     return this.request('GET', `/api/skillm/status?context=${encodeURIComponent(contextName || '')}`);
