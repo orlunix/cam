@@ -88,6 +88,10 @@ Rules of thumb:
   means your manifest is missing the capability.
 - Do not try to reach the parent page, cookies, localStorage, or the
   network — the sandbox blocks all of it by design.
+- Durable local state: `camExt.storageGet()` / `camExt.storageSet(obj)` —
+  your own `ext-data/<name>/storage.json` (≤512KB), surviving reinstalls
+  and updates, deleted only on full Remove. Never write files anywhere
+  else. Per-OS locations of `ext-data/`: SPEC §6 "Data locations".
 
 ## 4. The tool (main.py)
 
