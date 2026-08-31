@@ -800,6 +800,12 @@ export class CamApi {
     if (!r || r.ok === false) throw new Error((r && r.error) || 'ext_call_failed');
     return r.result;
   }
+  // Per-extension attributes (SPEC §3): a plain JSON object stored
+  // outside the package dir; survives reinstall/update of the package.
+  extConfigGet(name) { return this.request('GET', `/api/extensions/${encodeURIComponent(name)}/config`); }
+  extConfigSet(name, config) { return this.request('PUT', `/api/extensions/${encodeURIComponent(name)}/config`, { config }); }
+  extStorageGet(name) { return this.request('GET', `/api/extensions/${encodeURIComponent(name)}/storage`); }
+  extStorageSet(name, storage) { return this.request('PUT', `/api/extensions/${encodeURIComponent(name)}/storage`, { storage }); }
 
   /** Parse pasted ssh_config text into host suggestions (mobile import). */
   sshConfigParse(text) {

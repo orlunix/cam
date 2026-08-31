@@ -17,6 +17,7 @@ export function mountDiagnosticsMode({ panel }) {
   let lastLines = [];
 
   const FILTERS = {
+    exec:    [/\[ssh\] exec /],
     connect: [/\[ssh\] connect /],
     channel: [/\[ssh\] channel /],
     attach:  [/\[attach\]/],
@@ -46,7 +47,9 @@ export function mountDiagnosticsMode({ panel }) {
     }
     refreshBtn.disabled = true;
     try {
-      const r = await b.diagTail(400);
+      // 400-line tails drowned discrete events (camc run, sync) in the
+      // continuous tmux polling chatter — pull the handler's max window.
+      const r = await b.diagTail(2000);
       lastLines = (r && r.lines) || [];
       const shown = applyFilter(lastLines.filter(l => l.trim()));
       logEl.textContent = shown.length ? shown.join('\n') : '(no matching log lines)';
