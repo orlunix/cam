@@ -13,13 +13,21 @@
  * upstream: SessionManager (full JSONL history per thread), auto
  * compaction, Agent-Skills loading (progressive disclosure via a
  * skills-scoped `read` tool). Ours unchanged: the stdio contract below,
- * the `cam` hub-backoffice tool, the opt-in cam-pi `bash` bridge, and
- * the durable `memory` tool (memory.md injected as a context file).
+ * the `cam` hub-backoffice tool, and the durable `memory` tool
+ * (memory.md injected as a context file).
+ *
+ * 0.6.0: local shell goes DIRECT (non-MAS flavor). The bash tool spawns
+ * the platform shell right here in this child process — it is already a
+ * full Node runtime, so the cam-pi bridge (the MAS-safe consent path) is
+ * no longer needed on direct builds. MAS flavors build with
+ * CAM_LOCAL_SHELL=false: the bash tool is never registered there.
  *
  * Protocol: JSON-lines over stdio. We own this contract no matter how
  * upstream pi evolves.
  *
- *   in:  {type:"configure", apiUrl, apiKey, model, shellBridge?}
+ *   in:  {type:"configure", apiUrl, apiKey, model}  — a legacy bridge-pair
+ *                                          field is accepted and IGNORED
+ *                                          (direct flavor runs shell itself)
  *        {type:"send", text}             — while a turn is running the
  *                                          text is QUEUED (followUp) and
  *                                          answered right after
@@ -61,6 +69,7 @@ import readline from 'node:readline';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 
 import {
   createAgentSession,
@@ -75,7 +84,13 @@ import {
 // other vendor SDK — out of the bundle.
 import { Type } from 'typebox';
 
-const VERSION = '0.5.0';
+const VERSION = '0.6.2';
+
+/* Run the whole child in the user's home dir. The app launches us with an
+ * inherited cwd (System32 for Start-Menu launches on Windows) — harmless
+ * for our explicit absolute paths, but bash commands and any stray
+ * relative access should land somewhere sane and predictable. */
+try { process.chdir(os.homedir()); } catch (_) {}
 
 /* Data root: owned by the child, home-relative so the host needs no new
  * field. Sessions (pi JSONL, full history), skills (discovered by the
@@ -193,7 +208,6 @@ const emit = (obj) => {
 let session = null;      // AgentSession (SDK)
 let cfg = null;          // { apiUrl, apiKey, model }
 let hub = null;          // { url, token } — injected by the host, rotates on hub restart
-let shellBridge = null;  // { url, token } — from configure; null = no shell
 let unsubscribe = null;  // session event subscription
 let lastText = '';       // cumulative answer text of the in-flight assistant message
 let lastThinking = '';   // cumulative reasoning text of the in-flight turn
@@ -241,48 +255,70 @@ const camTool = {
   },
 };
 
-/* Optional local shell tool — a CLIENT of the user-started cam-pi
- * bridge (extensions/packages/assistant/cam-pi.js). The app itself never
- * spawns a shell: the user runs cam-pi in their own terminal and pastes
- * its cam-pi://<addr>/<token> line into the assistant Settings. Only then
- * is this tool registered — and only then does the model ever see it.
- * Every invocation is audit-logged host-side via the shell_call event. */
-const bashTool = {
+/* Local shell — DIRECT execution (non-MAS flavor, 0.6.0). This child is
+ * already a full Node process, so the bash tool spawns the platform shell
+ * itself: no cam-pi bridge, no setup. Every invocation is audit-logged
+ * host-side via the shell_call event. execLocal is kept in sync with the
+ * (now legacy) cam-pi.js bridge command runner. */
+const LOCAL_SHELL = (typeof CAM_LOCAL_SHELL === 'undefined') ? true : CAM_LOCAL_SHELL;
+const LOCAL_SHELL_CWD = os.homedir(); // predictable landing dir — never System32/app-dir
+
+function execLocal(command, timeoutS, cwd = LOCAL_SHELL_CWD) {
+  return new Promise((resolve) => {
+    const isWin = process.platform === 'win32';
+    const shell = isWin ? (process.env.COMSPEC || 'cmd.exe') : '/bin/sh';
+    const args = isWin ? ['/d', '/s', '/c', command] : ['-c', command];
+    let child;
+    try {
+      child = spawn(shell, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        cwd,
+        env: { ...process.env, NO_COLOR: '1', TERM: 'dumb' },
+      });
+    } catch (e) {
+      resolve({ code: -1, out: String((e && e.message) || e), killed: false });
+      return;
+    }
+    let buf = '';
+    let killed = false;
+    const timer = setTimeout(() => {
+      killed = true;
+      try { child.kill(); } catch (_) {}
+    }, Math.max(1, Math.min(300, timeoutS || 60)) * 1000);
+    const cap = (c) => { buf += c; if (buf.length > 20000) buf = buf.slice(-20000); };
+    child.stdout.on('data', cap);
+    child.stderr.on('data', cap);
+    child.on('error', (e) => { clearTimeout(timer); resolve({ code: -1, out: String((e && e.message) || e), killed }); });
+    child.on('close', (code) => { clearTimeout(timer); resolve({ code, out: buf, killed }); });
+  });
+}
+
+const bashTool = LOCAL_SHELL ? {
   name: 'bash',
   label: 'Local shell',
-  description: 'Run a shell command on the user\'s machine via their cam-pi bridge. Use for local inspection or operations the cam tool cannot do. Prefer read-only commands unless the user explicitly asked for a change.',
+  description: 'Run a shell command directly on the user\'s machine: cmd.exe on Windows (dir, not ls; no POSIX tools), /bin/sh on macOS/Linux. Commands run in the user\'s home directory unless you pass the cwd parameter (absolute path — use it when the user names a project directory); every result is prefixed with [platform · cwd]. To use PowerShell on Windows, call it as a program and do NOT wrap the command in double quotes: powershell.exe -NoProfile -Command Get-Date (quoted "-Command" args echo back literally; pwsh.exe works the same). Calls return when the command exits (timeout default 60s, max 300s); for long-running tasks, background them OS-natively and poll a log file — Windows: start /b cmd /c "build > C:\\path\\build.log 2>&1" then poll with type; POSIX: nohup build > /tmp/build.log 2>&1 & echo $!. Use for local inspection or operations the cam tool cannot do. Prefer read-only commands unless the user explicitly asked for a change.',
   parameters: Type.Object({
-    command: Type.String({ description: 'the shell command line to run' }),
+    command: Type.String({ description: 'the shell command line to run (cmd.exe syntax on Windows, sh syntax elsewhere)' }),
+    cwd: Type.Optional(Type.String({ description: 'absolute working directory for this command — default: the user\'s home. Use it when the user names a project directory instead of cd-chaining.' })),
     timeout: Type.Optional(Type.Number({ description: 'seconds (default 60, max 300)' })),
   }),
   execute: async (_toolCallId, params) => {
-    if (!shellBridge) throw new Error('shell_bridge_unavailable');
     const command = String(params.command || '');
     if (!command.trim()) throw new Error('empty_command');
+    const cwd = params.cwd ? String(params.cwd) : LOCAL_SHELL_CWD;
+    if (!/^([a-zA-Z]:[\\/]|\\\\|\/)/.test(cwd)) throw new Error('invalid_cwd: must be an absolute path');
     emit({ type: 'shell_call', command });
     dlog(`shell $ ${command.slice(0, 120)}`);
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), Math.max(5, Math.min(300, Number(params.timeout) || 60) + 5) * 1000);
-    try {
-      const res = await fetch(`${shellBridge.url}/exec`, {
-        method: 'POST',
-        headers: { authorization: `Bearer ${shellBridge.token}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ command, timeout: params.timeout }),
-        signal: ctrl.signal,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(`bridge_${res.status}${data && data.error ? '_' + data.error : ''}`);
-      let text = String(data.out || '');
-      if (text.length > 12000) text = text.slice(-12000) + '\n…(truncated)';
-      return {
-        content: [{ type: 'text', text: `${data.killed ? '(killed: timeout)\n' : ''}exit ${data.code}\n${text}` }],
-        details: { exitCode: data.code, timeout: !!data.killed },
-      };
-    } finally {
-      clearTimeout(timer);
-    }
+    const data = await execLocal(command, Number(params.timeout) || 60, cwd);
+    let text = String(data.out || '');
+    if (text.length > 12000) text = text.slice(-12000) + '\n…(truncated)';
+    const where = `[${process.platform} · ${cwd}] `;
+    return {
+      content: [{ type: 'text', text: `${data.killed ? '(killed: timeout)\n' : ''}${where}exit ${data.code}\n${text}` }],
+      details: { exitCode: data.code, timeout: !!data.killed, platform: process.platform, cwd },
+    };
   },
-};
+} : null;
 
 /* Skills-scoped `read`: the SDK only advertises the skills section in
  * the system prompt when a tool named "read" is active, and skills are
@@ -490,10 +526,10 @@ async function _startSession(sessionManager) {
   // tools overwrite same-name registry entries — agent-session.js
   // _refreshToolRegistry), which also satisfies the system-prompt
   // skills gate (skills are only advertised when a "read" tool exists).
-  const toolNames = shellBridge
+  const toolNames = LOCAL_SHELL
     ? ['cam', 'read', 'bash', 'memory']
     : ['cam', 'read', 'memory'];
-  const tools = shellBridge
+  const tools = LOCAL_SHELL
     ? [camTool, bashTool, skillReadTool, memoryTool]
     : [camTool, skillReadTool, memoryTool];
   const result = await createAgentSession({
@@ -519,12 +555,6 @@ async function onConfigure(msg) {
   const model = String(msg.model || '').trim();
   if (!apiUrl || !model) { emit({ type: 'error', error: 'missing_config', detail: 'apiUrl and model are required' }); return; }
   cfg = { apiUrl, apiKey, model };
-  // Local shell via the user-started cam-pi bridge: only when a bridge
-  // {url, token} pair is configured does the agent ever see the bash
-  // tool. (configure shellBridge: {url, token} | null)
-  shellBridge = (msg.shellBridge && msg.shellBridge.url && msg.shellBridge.token)
-    ? { url: String(msg.shellBridge.url).replace(/\/+$/, ''), token: String(msg.shellBridge.token) }
-    : null;
   try {
     _ensureDirs();
     await _startSession(SessionManager.create(DATA_ROOT, SESSIONS_DIR));
@@ -532,7 +562,7 @@ async function onConfigure(msg) {
     emit({ type: 'error', error: 'configure_failed', detail: String((e && e.message) || e) });
     return;
   }
-  dlog(`configured model=${model} shell=${shellBridge ? 'bridge' : 'off'} root=${DATA_ROOT}`);
+  dlog(`configured model=${model} shell=${LOCAL_SHELL ? 'direct' : 'off'} root=${DATA_ROOT}`);
   emit({ type: 'configured' });
 }
 

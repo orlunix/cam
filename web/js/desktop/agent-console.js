@@ -16,11 +16,10 @@
  * we fall back to plain so input/key sending stays intact.
  */
 
-import { bumpUserActivity } from './shell.js?v=0.64.0';
+import { bumpUserActivity } from './shell.js?v=0.65.1';
 import { mountExtView } from '../shared/ext-view-host.js?v=0.68.1';
 import { installExtBridge } from '../shared/ext-bridge.js';
-import { openExtensionView } from './extensions-mode.js?v=0.68.0';
-import { setDoctorAgent } from './agent-doctor-mode.js?v=0.68.0';
+import { openExtensionView, applyExtChrome } from './extensions-mode.js?v=0.68.3';
 
 function escapeHtml(s) {
   const d = document.createElement('div');
@@ -1266,15 +1265,16 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
   // the void and the view hangs at "loading…" (idempotent install).
   installExtBridge(api);
 
-  // Per-agent extensions (mounts: [agent]): the Ext▾ menu lists agent
-  // extensions. Native ones (agent-doctor) open their built-in page with
-  // the agent handed off; view ones go to the unified dedicated
-  // extension page (Extensions mode) with Back returning here.
+  // Per-agent extensions: the Ext▾ menu lists extensions whose manifest
+  // declares mounts: [agent] OR whose platform attribute show_in_agent_menu
+  // is set to true in Extensions → Settings. Native ones open their built-in
+  // page (wrapped in the uniform chrome); view ones go to the unified
+  // dedicated extension page (Extensions mode) with Back returning here.
   function openAgentExtension(ext) {
     const a = selectedAgent && selectedAgent();
     if (!a) return;
     if (ext.native) {
-      if (ext.native === 'agent-doctor') setDoctorAgent(a, { returnTo: 'agents' });
+      applyExtChrome({ nativeName: ext.native, ext, returnTo: 'agents', setMode });
       if (typeof setMode === 'function') setMode(ext.native);
       return;
     }
@@ -1291,7 +1291,18 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
       let exts = [];
       try {
         const r = await api.listExtensions();
-        exts = ((r && r.extensions) || []).filter(x => x.enabled !== false && (x.hasView || x.native) && (x.mounts || []).includes('agent'));
+        const all = ((r && r.extensions) || []).filter(x => x.enabled !== false && (x.hasView || x.native));
+        // Honor the show_in_agent_menu platform attribute (default false).
+        const withCfg = await Promise.all(all.map(async (x) => {
+          if ((x.mounts || []).includes('agent')) return { x, show: true };
+          try {
+            const cr = await api.extConfigGet(x.name);
+            return { x, show: !!(cr && cr.config && cr.config.show_in_agent_menu) };
+          } catch (_) {
+            return { x, show: false };
+          }
+        }));
+        exts = withCfg.filter(({ show }) => show).map(({ x }) => x);
       } catch (_) {}
       extMenu.innerHTML = exts.length
         ? exts.map((x, i) => `<button type="button" class="agent-ext-item" data-i="${i}">${escapeHtml(x.title || x.name)}</button>`).join('')

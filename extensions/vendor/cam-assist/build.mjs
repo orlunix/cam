@@ -64,6 +64,10 @@ const patchPiCompaction = {
 
 const entry = process.argv[2] || 'entry.js';
 const outfile = process.argv[3] || path.join('dist', 'cam-assist.js');
+// Flavor switch: CAM_ASSIST_MAS=1 strips the local shell (the bash tool is
+// never registered) for store-compliant (MAS-style) builds. Direct builds
+// keep direct spawn — see entry.js LOCAL_SHELL.
+const mas = process.env.CAM_ASSIST_MAS === '1';
 
 const result = await esbuild.build({
   entryPoints: [entry],
@@ -75,7 +79,10 @@ const result = await esbuild.build({
   logLevel: 'warning',
   minify: true,
   plugins: [patchPiConfig, patchPiCompaction],
-  define: { 'import.meta.url': '"file:///C:/fake/cam-assist.js"' },
+  define: {
+    'import.meta.url': '"file:///C:/fake/cam-assist.js"',
+    'CAM_LOCAL_SHELL': mas ? 'false' : 'true',
+  },
 });
 
 for (const warn of result.warnings) console.warn('esbuild:', warn.text);

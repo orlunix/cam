@@ -29,6 +29,21 @@ export function mountExtView(container, api, ext, bindContext = null) {
   iframe.className = 'ext-view-frame';
   iframe.setAttribute('sandbox', 'allow-scripts');
   container.appendChild(iframe);
+  // Register BEFORE the view starts loading: the view's boot() posts its
+  // first bridge call while its document is still parsing, and that
+  // message task reaches the parent BEFORE the iframe 'load' task — a
+  // load-time registration would silently drop the boot call and the
+  // view's await would hang forever (e.g. the assistant settings page
+  // stuck on the default 'node cam-pi.js' placeholder). contentWindow is
+  // the frame's stable WindowProxy, valid across the about:blank → view
+  // navigation, so early registration binds the same key e.source carries.
+  if (iframe.contentWindow) {
+    registerExtFrame(iframe.contentWindow, {
+      name: ext.name,
+      capabilities: ext.capabilities || [],
+      context: bindContext,
+    });
+  }
   const view = ext.viewFile || 'index.html';
   _viewToken(api).then((tok) => {
     // Cache-bust the view so updates to extension files are picked up on
@@ -38,6 +53,8 @@ export function mountExtView(container, api, ext, bindContext = null) {
     iframe.src = `${api.serverUrl}/ext/${encodeURIComponent(ext.name)}/${view}?token=${encodeURIComponent(tok)}&_=${Date.now()}`;
   });
   iframe.addEventListener('load', () => {
+    // Belt-and-braces re-register (no-op while the WindowProxy identity is
+    // stable; covers a cross-process navigation handing us a new proxy).
     if (iframe.contentWindow) {
       registerExtFrame(iframe.contentWindow, {
         name: ext.name,

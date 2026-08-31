@@ -153,6 +153,10 @@ Usage:
                             [--passphrase-prompt | --passphrase-env VAR]
   camui agent list          [--json]
   camui logs                [--json]
+  camui api METHOD /api/path [--data JSON] [--json]
+                            generic passthrough — covers every hub
+                            endpoint (agents, contexts, extensions, …)
+                            without per-command CLI work
 
 Notes:
   - --json may be placed before the command, matching 'cam --json ...',
@@ -719,6 +723,28 @@ async function cmdLogs(flags) {
   emit(logs, !!flags.json);
 }
 
+/* Generic passthrough: one command covers EVERY present and future hub
+ * endpoint — the same philosophy as the assistant extension's `cam`
+ * tool (no per-endpoint CLI work, no drift). */
+async function cmdApi(positional, flags) {
+  const method = String(positional[0] || '').toUpperCase();
+  const apiPath = String(positional[1] || '');
+  if (!/^(GET|POST|PUT|PATCH|DELETE)$/.test(method) || !apiPath.startsWith('/api/')) {
+    fail('usage: camui api <GET|POST|PUT|PATCH|DELETE> </api/path> [--data JSON]');
+  }
+  let body;
+  if (flags.data !== undefined && flags.data !== true) {
+    try { body = JSON.parse(String(flags.data)); }
+    catch (e) { fail(`--data is not valid JSON: ${e.message}`); }
+  }
+  await ensureHub(flags);
+  const opts = { method };
+  if (body !== undefined && method !== 'GET' && method !== 'DELETE') opts.body = body;
+  const r = await hubFetch(apiPath, opts);
+  emit(r.data == null ? { status: r.status } : r.data, !!flags.json);
+  if (r.status >= 400) process.exitCode = 2;
+}
+
 /* ─────────────── dispatcher ─────────────── */
 
 async function main() {
@@ -757,6 +783,7 @@ async function main() {
         else fail(`unknown agent subcommand: ${sub || '(none)'}`);
         break;
       case 'logs': await cmdLogs(flags); break;
+      case 'api': await cmdApi(pos.slice(1), flags); break;
       default: fail(`unknown command: ${verb}`); break;
     }
   } finally {

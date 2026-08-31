@@ -234,7 +234,7 @@ ok("refresh stays clickable while an attach is opening",
 ok("app exposes a full in-app reset (hub restart, window stays)",
   preload.includes("resetApp") && main.includes("ipcMain.handle('app:reset'")
     && main.includes("sshTransport.closeAll()")
-    && main.includes("await embeddedHub.restart({ dataDir: userDataDir() })"));
+    && main.includes("await embeddedHub.restart({ dataDir: userDataDir(), appVersion: app.getVersion() })"));
 ok("resetApp force-releases wedged tmux discovery gates (reload-stuck root fix)",
   main.includes("function _resetTmuxDiscovery()")
     && main.includes("const nGates = _resetTmuxDiscovery()")

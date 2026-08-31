@@ -22,8 +22,9 @@ extensions/
     registry.cjs          # manifest parse/validate/install/registry
     tool-proxy.cjs        # remote tool deploy + call
     ext-client.js         # view bridge client (served at /ext/client.js)
-  packages/               # built-in extensions (app bundle content)
-  examples/hello-ext/     # minimal sample (used by tests)
+  packages/               # built-in extensions (app bundle content):
+                          #   skills / todos / assistant (minimal sample, used by tests)
+  examples/agent-doctor/  # demo A+B extension (installable via dist/ext/ tar.gz)
 
 web/js/shared/ext-bridge.js       # parent-side bridge + capability gate
 web/js/shared/ext-view-host.js    # iframe container
@@ -43,9 +44,11 @@ A package may combine A+B freely. Type C is standalone (an agent is its
 own UI via the terminal). Type N is for **first-party built-ins**: the
 view ships as app code (a mode page like Skills), so changing it needs
 an app release — the package only registers the extension and may carry
-a remote tool. agent-doctor is the reference: package = `main.py`
-collector + `native: agent-doctor`; view = `mode-agent-doctor` in
-`web/desktop.html` + `web/js/desktop/agent-doctor-mode.js`.
+a remote tool. skills / todos are the references (`native: skills`,
+`native: todos`). Prefer A+B whenever the bridge APIs suffice — an A+B
+extension updates by installing a same-name package, no app release:
+agent-doctor is that reference (package = `index.html` review browser +
+`main.py` collector, bridge-only data; ships as the `examples/` demo).
 
 ## 2. Package format
 
@@ -81,21 +84,24 @@ title: My Tool
 kind: tool | agent        # tool (A/B) default; agent = type C
 native: my-mode           # type N: built-in app mode page name (no .html)
 mounts:
-  - agent                 # also surface in the agent console Ext▾ menu
+  - agent                 # per-agent ext: openable with an agent binding
 capabilities:
   - exec                  # B: run main.py on remote hosts
   - files:read            # bridge: read remote files
   - files:write           # bridge: write remote files
+  - hub:api               # bridge: ext.hubCall — full /api/* passthrough
   - local-exec            # C: spawn a local process (non-MAS only)
   - agents.start          # bridge: start a camc agent (confirm-gated)
 ```
 
 Flat YAML subset only (top-level `key: value` and `  - item` lists).
 
-`mounts: [agent]` marks the extension as per-agent: it appears in the
-agent console Ext▾ menu, and opening it from there binds the selected
-agent (native pages receive it via a module handoff; iframe views read
-it via `app.context`).
+`mounts: [agent]` marks the extension as per-agent: opening it from the
+agent console binds the selected agent (native pages receive it via a
+module handoff; iframe views read it via `app.context`). Visibility in
+the agent console Ext▾ menu is NOT gated by mounts — it is purely
+config-driven via the platform attribute `show_in_agent_menu` (default
+false; see Per-extension attributes below).
 
 ## 4. Execution model
 
@@ -126,6 +132,16 @@ console Ext▾ menu navigate to the named app mode (`setMode(native)`).
 The page talks to the hub directly (same APIs as the rest of the app,
 including `extCall` for the package's remote tool).
 
+**App-managed chrome (all types).** Every extension open — iframe view
+or native page — renders under one uniform app header: line 1
+`title@version`, line 2 the manifest `description`, a Back button
+top-right, then a divider; below the divider is the extension's own
+scope, width-capped to the app's content rail. Native pages get the
+chrome injected (`applyExtChrome`) and their own baked-in header is
+hidden. Consequences for authors: **set a manifest `description`** (it
+is the chrome's subtitle) and **do not render your own title bar** in a
+view — start with content.
+
 ## 5. Bridge API (v2)
 
 View → app (postMessage, capability-gated):
@@ -136,7 +152,21 @@ View → app (postMessage, capability-gated):
 - `agents.cronJobs` / `agents.workspaceList` / `agents.workspaceRead` —
   read-only; per-agent mounts only (need an agent binding)
 - `ext.call(context, method, args)` — needs `exec`
+- `ext.config` — the calling extension's own attributes object (edited
+  in the app via Extensions → Settings). Always allowed, read-only.
 - `files.read` / `files.write` — needs `files:read` / `files:write`
+- `ext.hubCall(method, path, body)` — needs `hub:api`: generic hub
+  passthrough, any `/api/*` endpoint, verbs GET/POST/PUT/PATCH/DELETE,
+  every call audit-logged `[ext:<name>] METHOD path`. This is the same
+  power the app itself has — the manifest declaration IS the consent
+  surface. It lets built-in pages (skills/todos since 0.2.31) live as
+  self-managed extensions instead of app-shell code.
+- `ext.storageGet` / `ext.storageSet(storage)` — the calling ext's own
+  durable key/value store (hub-side `ext-data/<name>/storage.json`,
+  ≤512KB). Always allowed (its own data only). Sandboxed views run in an
+  opaque origin where `localStorage` throws — this is their local-state
+  channel; shim `window.localStorage` over it if you port code that
+  expects synchronous storage.
 - `agents.start(context, body)` — needs `agents.start`; **always
   shows a user confirmation** naming the extension and the agent
 
@@ -145,14 +175,66 @@ App → view: responses + `theme` push.
 ## 6. Install / manage
 
 Extensions page: list (built-in + user), Install from folder…,
-open / disable / remove. Install = validate (manifest, entries, size
-caps) + copy to `userData/extensions/<name>/`. Same name = update.
-Removal while open kicks back to Agents. Disable keeps files.
+open / settings / disable / remove. Install = validate (manifest,
+entries, size caps) + copy to `userData/extensions/<name>/`. Same name =
+update. Removal while open kicks back to Agents. Disable keeps files.
 
-Built-ins ship in the app bundle (`extensions/packages/`): they are app
-content, not downloads. A user install with the same `name` shadows the
-built-in (shown as "built-in · updated by user copy") — that is how
-built-in remote tools get updated without an app release.
+**Built-ins carry no privileges.** They ship in the app bundle
+(`extensions/packages/`) — app content, not downloads — but the UI and
+store semantics are identical to user extensions: Open / Settings /
+Enable / Disable / Remove on every row, and the store `enabled` flag
+applies to them the same way. The only differences are provenance:
+built-in files live in the read-only bundle, so **Remove on a built-in
+cannot delete files** — it sets a store `removed` flag that hides the
+row; installing a same-name folder/package clears the flag (offline
+restore), and an app reinstall/upgrade clears every `removed` flag on
+startup (bundle content returns to factory state). A user install with
+the same `name` shadows the built-in **only when its version is strictly
+newer** (shown as "built-in · updated by user copy") — that is how
+built-in remote tools get updated without an app release. An equal or
+older user copy LOSES to the built-in: an app reinstall/upgrade repairs
+stale shadows, and the list row annotates the ignored copy
+(`shadowed_user: <version>`).
+
+Per-extension **attributes**: every extension has a JSON-object config
+edited in the app (Extensions → Settings) and stored in
+`userData/extension-config.json` — outside the package dir, so package
+reinstall/update keeps it. Views read it via `ext.config`; native pages
+call `/api/extensions/<name>/config` directly. Writes happen only from
+the app (PUT; validated plain object, ≤16KB per extension, `{}` resets).
+
+**Per-extension data dir.** Extensions that need local state beyond the
+attribute object keep it under `userData/ext-data/<name>/` (e.g. the
+assistant's `config.json` + `events.jsonl` transcript). Like attributes,
+it survives reinstall/update/shadowing. When an extension is removed
+**entirely** (user ext deleted, or built-in hidden via the `removed`
+flag), the app cascades: its attributes entry, its `ext-data/<name>/`
+dir, and its credential-store secrets (refs prefixed `<name>:`) are
+deleted with it. Removing a *shadowing* user copy is not a removal — it
+reverts to the built-in and keeps all config.
+
+**Uniform platform attribute.** The Settings page renders exactly ONE field
+for every extension, declared by the platform (not the manifest):
+
+```
+show_in_agent_menu | boolean | false | Show in agent Ext menu | …
+```
+
+Default is **false**: the agent page Ext menu starts empty, and the user
+pins entries explicitly (saved values persist across reinstalls). The
+menu is purely config-driven — any enabled ext with a view or native
+page whose flag is saved `true` appears there.
+
+Schema-line format (kept for future platform attributes):
+`key | type | default | label | hint` (`hint` optional); type is `text`
+| `number` | `boolean` | `select:a,b,c`. (A raw JSON textarea remains
+in the editor only as a defensive fallback.)
+
+Custom per-ext settings are the extension's own affair: the app does not
+render manifest-declared custom attributes. The ext's view reads its
+config (`ext.config` / `/api/extensions/<name>/config`) and surfaces
+them wherever it likes on its own page — e.g. agent-doctor shows its
+effective `prompt_warn_kb` reference next to its review controls.
 
 ## 7. MAS stance
 
@@ -161,6 +243,13 @@ built-in remote tools get updated without an app release.
   in non-MAS builds (explicitly user-installed, explicitly started).
   The MAS build omits that channel entirely — the review-notes sentence
   stays literally true for the MAS binary.
+- Assistant specifics (0.2.36): on non-MAS builds the assistant child
+  (itself a full Node process) runs local shell commands **directly** —
+  no companion bridge, no setup. MAS builds compile with
+  `CAM_LOCAL_SHELL=false`: the `bash` tool is never registered there.
+  The one remaining MAS gate: **bundle shadowing is disabled** on MAS —
+  the child only ever runs the signed, in-bundle `cam-assist.js` (Apple
+  2.5.2: no executable code from outside the app bundle).
 
 ## 8. Evolution discipline
 
@@ -177,9 +266,44 @@ hole. Queued examples:
 
 - v1 (shipped in 0.2.4): types A + B, registry, Extensions page,
   hello-ext sample, bridge read APIs + ext.call.
-- Post-0.2.4 (in tree): native built-in entries (skills / todos /
-  agent-doctor), `mounts: [agent]` + agent console Ext▾ menu,
-  per-agent bridge reads (`app.context`, cron, workspace), tar/tgz
-  package install, built-in shadowing.
+- Post-0.2.4 (in tree): native built-in entries (skills / todos),
+  agent console Ext▾ menu (opt-in per ext via the
+  `show_in_agent_menu` platform attribute; `mounts: [agent]` only marks
+  agent-bindable), per-agent bridge reads (`app.context`, cron,
+  workspace), tar/tgz package install, built-in shadowing.
+- 0.2.21: hello-ext renamed to **assistant** and promoted to a built-in
+  (`packages/assistant`); agent-doctor moved to `examples/` as the
+  installable demo.
+- 0.2.24: built-ins are fully uniform again (Open / Settings / Enable /
+  Remove on every row — the 0.2.21 "disable-only" detour is reverted).
+  Built-in Remove hides via the store `removed` flag; a full removal
+  cascades to the ext's attributes, `ext-data/<name>/` dir, and
+  credential secrets; deleting a shadowing user copy reverts to the
+  built-in and keeps config. Added the per-extension `ext-data/<name>/`
+  data dir convention.
+- 0.2.26: **bundle shadowing** — an ext package may carry the local
+  agent bundle its host executes (`<userData>/extensions/assistant/
+  cam-assist.js` wins over the bundled copy). The ext tar.gz now ships
+  view + agent logic together; assistant iterations (prompt, tools,
+  agent behavior) no longer need an app release. The execution
+  privilege (spawn, secrets, disk) stays in the main process — only the
+  file's origin changes. The bundle is minified to fit the 4MB
+  per-file package cap.
+- 0.2.30: **shadowing is version-gated** (`registry.resolvePackageDir`,
+  same rule for the assistant bundle in assistant-host):
+  when both copies of a name exist, the higher manifest version serves
+  and a TIE goes to the built-in — reinstalling/upgrading the app now
+  repairs stale shadows instead of silently running them. User-side
+  updates keep working by bumping the package version in the tar.gz.
+- 0.2.31: **skills/todos de-nativized** — both are now self-contained
+  extension packages (iframe view + vendored modules) instead of
+  app-shell mode pages, powered by the new `hub:api` capability and the
+  `ext.hubCall` bridge passthrough (any `/api/*` endpoint, audit-logged).
+  Their UI/logic iterations now ship as tar.gz like any other extension.
+  The `native:` mechanism stays, but no built-in uses it. Also new:
+  `ext.storageGet/Set` + `GET/PUT /api/extensions/<name>/storage` —
+  the per-ext durable store for sandboxed views (opaque origin ⇒ no
+  localStorage); both migrated views install a `localStorage` shim over
+  it, and in-sandbox `window.confirm` is replaced by armed buttons.
 - v2 (this spec): type C channel + `agents.start` — **pending
   implementation** (next mainline task).
