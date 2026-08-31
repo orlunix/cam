@@ -205,13 +205,48 @@ the app (PUT; validated plain object, ≤16KB per extension, `{}` resets).
 
 **Per-extension data dir.** Extensions that need local state beyond the
 attribute object keep it under `userData/ext-data/<name>/` (e.g. the
-assistant's `config.json` + `events.jsonl` transcript). Like attributes,
+assistant's `config.json` + `threads/<id>.jsonl` transcripts). Like attributes,
 it survives reinstall/update/shadowing. When an extension is removed
 **entirely** (user ext deleted, or built-in hidden via the `removed`
 flag), the app cascades: its attributes entry, its `ext-data/<name>/`
 dir, and its credential-store secrets (refs prefixed `<name>:`) are
 deleted with it. Removing a *shadowing* user copy is not a removal — it
 reverts to the built-in and keeps all config.
+
+**Data locations, pinned per OS (0.2.36).** `userData` is Electron's
+`app.getPath('userData')` for app name `cam-desktop`:
+
+| OS | `userData` root |
+|---|---|
+| Windows | `C:\Users\<user>\AppData\Roaming\cam-desktop` |
+| macOS | `~/Library/Application Support/cam-desktop` |
+| Linux | `~/.config/cam-desktop` |
+
+The layout UNDER `userData` is identical on every OS:
+
+- `ext-data/<name>/storage.json` — the view's KV store (≤512KB)
+- `ext-data/<name>/…` — ext-managed files (assistant: `config.json`,
+  `threads/<id>.jsonl` + `threads.json`)
+- `extension-config.json` — per-ext attributes (app-managed)
+- `extensions/<name>/` — user-installed shadow packages (version-gated)
+- `embedded-hub-credentials.json` — every secret (LLM tokens, SSH
+  passwords/keys); values are `safeStorage` ciphertext — DPAPI on
+  Windows, Keychain on macOS, libsecret on Linux — so the file is useless
+  off the owning OS user account
+- `cam-desktop.log` — the app log / debug rail
+
+Rules: an extension never writes outside its own `ext-data/<name>/`, and
+secrets never land anywhere but the credential store.
+
+The ONE deliberate exception with its own root: the assistant's embedded
+pi child owns `~/.cam/assistant/` on every OS (`C:\Users\<user>\.cam\
+assistant` on Windows) — full session transcripts (`sessions/`),
+discovered skills (`skills/`), durable memory (`memory.md`), and the
+thread→session map. It is home-relative rather than under `userData`
+because the child is a plain Node process that must behave identically
+when spawned outside the app (tests, headless runs) and it shares the
+`~/.cam` namespace with camc. It is intentionally NOT part of the
+removal cascade.
 
 **Uniform platform attribute.** The Settings page renders exactly ONE field
 for every extension, declared by the platform (not the manifest):
