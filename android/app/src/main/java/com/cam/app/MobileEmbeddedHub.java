@@ -476,6 +476,18 @@ public final class MobileEmbeddedHub {
                     .put("data_dir", dataDir != null ? dataDir.getAbsolutePath() : JSONObject.NULL));
             }
 
+            if ("GET".equals(method) && "/api/ext/list".equals(path)) {
+                return jsonResponse(200, new JSONObject().put("extensions", listExtensions()));
+            }
+
+            if ("POST".equals(method) && "/api/ext/call".equals(path)) {
+                JSONObject body = bodyBytes.length > 0
+                    ? new JSONObject(new String(bodyBytes, StandardCharsets.UTF_8))
+                    : new JSONObject();
+                JSONObject res = extCall(body);
+                return jsonResponse(extCallHttpStatus(res), res);
+            }
+
             if ("GET".equals(method) && "/api/system/ssh-config".equals(path)) {
                 return routeSystemSshConfig(query);
             }
@@ -1562,13 +1574,204 @@ public final class MobileEmbeddedHub {
     }
 
     private byte[] readBundledCamcForSync() throws Exception {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        try (InputStream in = appContext.getAssets().open("camc/camc")) {
+        return readAsset("camc/camc");
+    }
+
+    /** Read an APK asset; null when missing (or empty). */
+    private byte[] readAsset(String assetPath) {
+        try (InputStream in = appContext.getAssets().open(assetPath)) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
             byte[] buf = new byte[8192];
             int n;
             while ((n = in.read(buf)) >= 0) if (n > 0) out.write(buf, 0, n);
+            return out.size() > 0 ? out.toByteArray() : null;
+        } catch (Exception e) {
+            return null;
         }
-        return out.toByteArray();
+    }
+
+    // ---- Extensions (SPEC v2 type-B remote tools) ----
+
+    private static final Pattern EXT_METHOD_RE = Pattern.compile("^[A-Za-z_][A-Za-z0-9_]{0,63}$");
+
+    /** Flat-YAML subset parser (manifest.yaml: top-level k:v and "- item" lists). */
+    private static JSONObject parseSimpleYaml(String text) throws Exception {
+        JSONObject out = new JSONObject();
+        JSONArray caps = new JSONArray();
+        JSONArray mounts = new JSONArray();
+        String section = "";
+        for (String raw : text.split("\\R")) {
+            String line = raw.trim();
+            if (line.isEmpty() || line.startsWith("#")) continue;
+            if (line.startsWith("- ")) {
+                String v = line.substring(2).trim();
+                if ("capabilities".equals(section)) caps.put(v);
+                else if ("mounts".equals(section)) mounts.put(v);
+                continue;
+            }
+            int idx = line.indexOf(':');
+            if (idx <= 0) continue;
+            String k = line.substring(0, idx).trim();
+            String v = line.substring(idx + 1).trim();
+            section = k;
+            if ("capabilities".equals(k) || "mounts".equals(k)) continue;
+            if (v.isEmpty()) continue;
+            out.put(k, v);
+        }
+        if (caps.length() > 0) out.put("capabilities", caps);
+        if (mounts.length() > 0) out.put("mounts", mounts);
+        return out;
+    }
+
+    private JSONArray listExtensions() throws Exception {
+        JSONArray out = new JSONArray();
+        String[] names = null;
+        try { names = appContext.getAssets().list("extensions"); } catch (Exception ignored) {}
+        if (names != null) {
+            for (String n : names) {
+                byte[] mf = readAsset("extensions/" + n + "/manifest.yaml");
+                if (mf == null) continue;
+                JSONObject parsed = parseSimpleYaml(new String(mf, StandardCharsets.UTF_8));
+                parsed.put("name", parsed.optString("name", n));
+                parsed.put("builtIn", true);
+                out.put(parsed);
+            }
+        }
+        File userExtDir = new File(appContext.getFilesDir(), "extensions");
+        File[] dirs = userExtDir.listFiles();
+        if (dirs != null) {
+            for (File d : dirs) {
+                if (!d.isDirectory()) continue;
+                File mf = new File(d, "manifest.yaml");
+                if (!mf.isFile()) continue;
+                JSONObject parsed = parseSimpleYaml(readFile(mf));
+                parsed.put("name", parsed.optString("name", d.getName()));
+                parsed.put("builtIn", false);
+                out.put(parsed);
+            }
+        }
+        return out;
+    }
+
+    private static int extCallHttpStatus(JSONObject res) {
+        if (res.optBoolean("ok", false)) return 200;
+        switch (res.optString("error", "")) {
+            case "invalid_args":
+            case "invalid_method":
+            case "not_ssh":
+                return 400;
+            case "ext_not_found":
+            case "agent_not_found":
+                return 404;
+            default:
+                return 502;
+        }
+    }
+
+    private static String sha256Hex(byte[] content) throws Exception {
+        java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+        byte[] dig = md.digest(content);
+        StringBuilder sb = new StringBuilder();
+        for (byte b : dig) sb.append(String.format("%02x", b));
+        return sb.toString();
+    }
+
+    /** Deploy main.py to ~/.cam/extensions/<name>/ on the host (hash-skip). */
+    private JSONObject ensureExtToolDeployed(MobileSshAuth.Options auth, String name, byte[] content) throws Exception {
+        String hash = sha256Hex(content).substring(0, 16);
+        String dir = "$HOME/.cam/extensions/" + name;
+        MobileSshExec.Result probe = MobileSshExec.exec(auth,
+            MobileSshExec.shellCommand("cat " + dir + "/.hash 2>/dev/null || true"), SEND_TIMEOUT_MS);
+        if (probe.ok && probe.stdout != null && probe.stdout.trim().equals(hash)) {
+            return new JSONObject().put("ok", true).put("present", true);
+        }
+        String tmp = "/tmp/cam-ext-" + name + "-" + System.currentTimeMillis() + ".py.tmp";
+        MobileSshExec.Result up = MobileSshExec.uploadFile(auth, tmp, content, SYNC_TIMEOUT_MS);
+        if (!up.ok) {
+            return new JSONObject().put("ok", false).put("error", "tool_upload_failed")
+                .put("detail", up.detail != null ? up.detail : "failed to upload main.py");
+        }
+        MobileSshExec.Result inst = MobileSshExec.exec(auth,
+            MobileSshExec.shellCommand("mkdir -p " + dir
+                + " && mv " + tmp + " \"" + dir + "/main.py\""
+                + " && printf %s " + hash + " > \"" + dir + "/.hash\""),
+            SEND_TIMEOUT_MS);
+        if (!inst.ok) {
+            return new JSONObject().put("ok", false).put("error", "tool_install_failed")
+                .put("detail", inst.detail != null ? inst.detail : "failed to install main.py");
+        }
+        return new JSONObject().put("ok", true).put("deployed", true);
+    }
+
+    private JSONObject extCall(JSONObject body) throws Exception {
+        String name = body.optString("name", "").trim();
+        String method = body.optString("method", "").trim();
+        String agentId = body.optString("agentId", "").trim();
+        if (name.isEmpty() || !name.matches("[a-z0-9-]{1,32}")) {
+            return new JSONObject().put("ok", false).put("error", "invalid_args")
+                .put("detail", "name must match [a-z0-9-]{1,32}");
+        }
+        if (!EXT_METHOD_RE.matcher(method).matches()) {
+            return new JSONObject().put("ok", false).put("error", "invalid_method")
+                .put("detail", "method must be an identifier");
+        }
+        byte[] tool = readAsset("extensions/" + name + "/main.py");
+        if (tool == null) {
+            File userTool = new File(new File(appContext.getFilesDir(), "extensions"),
+                name + "/main.py");
+            if (userTool.isFile()) tool = readFileBytes(userTool);
+        }
+        if (tool == null) {
+            return new JSONObject().put("ok", false).put("error", "ext_not_found")
+                .put("detail", "extension \"" + name + "\" not found");
+        }
+        JSONObject agent = findAgentById(agentId, null);
+        if (agent == null) {
+            return new JSONObject().put("ok", false).put("error", "agent_not_found")
+                .put("detail", "agent \"" + agentId + "\" not found");
+        }
+        MobileSshAuth.Options auth = sshAuthForAgent(agent);
+        if (auth == null || auth.host == null || auth.host.isEmpty()) {
+            return new JSONObject().put("ok", false).put("error", "not_ssh")
+                .put("detail", "extension tools require an SSH node");
+        }
+        JSONObject deployed = ensureExtToolDeployed(auth, name, tool);
+        if (!deployed.optBoolean("ok", false)) return deployed;
+        String argsJson = body.has("args") && !body.isNull("args")
+            ? body.opt("args").toString() : "{}";
+        String qMethod = method.replace("'", "'\\''");
+        String qArgs = argsJson.replace("'", "'\\''");
+        String cmd = "python3 \"$HOME/.cam/extensions/" + name + "/main.py\" '" + qMethod + "' '" + qArgs + "'";
+        MobileSshExec.Result r = MobileSshExec.exec(auth,
+            MobileSshExec.shellCommand(cmd), SEND_TIMEOUT_MS);
+        if (!r.ok) {
+            return new JSONObject().put("ok", false)
+                .put("error", r.error != null && !r.error.isEmpty() ? r.error : "exec_failed")
+                .put("detail", r.detail != null ? r.detail : "remote tool call failed");
+        }
+        String out = r.stdout != null ? r.stdout.trim() : "";
+        String lastLine = out.substring(out.lastIndexOf('\n') + 1).trim();
+        try {
+            JSONObject parsed = new JSONObject(lastLine);
+            if (parsed.has("error")) {
+                return new JSONObject().put("ok", false)
+                    .put("error", parsed.optString("error"))
+                    .put("detail", parsed.optString("detail", ""));
+            }
+            return new JSONObject().put("ok", true).put("result", parsed);
+        } catch (Exception e) {
+            return new JSONObject().put("ok", false).put("error", "tool_bad_output")
+                .put("detail", "tool did not return JSON: "
+                    + out.substring(0, Math.min(200, out.length())));
+        }
+    }
+
+    private static byte[] readFileBytes(File f) {
+        try {
+            return java.nio.file.Files.readAllBytes(f.toPath());
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private JSONObject deployBundledCamcForSync(MobileSshAuth.Options sshAuth, String ctxId) throws Exception {
