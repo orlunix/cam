@@ -593,9 +593,24 @@ async function _withPooledClient(opts, op /* (client, finishWithTimings) */) {
 async function execRemote(opts) {
   if (_override) return _override(opts);
   const _execT0 = Date.now();
-  const _execCmd = String(opts.command || '').slice(0, 80);
+  // Log the FULL command — the old 80-char cut hid the interesting part
+  // (tmux subcommand args, camc run flags for start-agent). Redact
+  // --api-token: the only secret that travels inside a command string
+  // (SSH passwords never do; typed input goes via stdin and is never
+  // logged). 4000 chars bounds pathological cases (huge run prompts).
+  const _execCmd = String(opts.command || '')
+    .replace(/(--api-token(?:=|\s+))('[^']*'|"[^"]*"|\S+)/g, '$1***')
+    .slice(0, 4000);
   const _execDone = (r) => {
-    _log(`exec ${opts.host}:${opts.port || 22} ${r && r.ok ? 'ok' : `failed: ${(r && r.error) || '?'}`} ${Date.now() - _execT0}ms: ${_execCmd}`);
+    let line = `exec ${opts.host}:${opts.port || 22} ${r && r.ok ? 'ok' : `failed: ${(r && r.error) || '?'}`} ${Date.now() - _execT0}ms: ${_execCmd}`;
+    // On failure include the remote's own complaint (first stderr line,
+    // capped) — "remote_nonzero" alone forced guesswork about WHY (e.g.
+    // csh's "Invalid null command." on a heredoc).
+    if (r && !r.ok) {
+      const why = String(r.stderr || r.detail || '').split('\n')[0].trim().slice(0, 200);
+      if (why) line += ` | ${why}`;
+    }
+    _log(line);
     return r;
   };
   if (!opts || typeof opts.command !== 'string' || !opts.command) {

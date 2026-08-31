@@ -9,7 +9,8 @@
  * runtime, so there is no download and no per-platform matrix.
  *
  * Config split:
- *   - apiUrl + model  → <userData>/assistant.json (plaintext, boring)
+ *   - apiUrl + model  → <userData>/ext-data/assistant/config.json
+ *     (plaintext, boring)
  *   - LLM token       → credential store (safeStorage, encrypted at
  *     rest), ref "assistant:llm-token" — never written plaintext
  *
@@ -24,12 +25,10 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const TOKEN_REF   = 'assistant:llm-token';
-const SHELL_TOKEN_REF = 'assistant:shell-token';
 const MAX_EVENTS  = 5000;         // in-memory ring buffer cap
 const EVENTS_KEEP = 2000;         // lines kept when the log is (re)written
 const EVENTS_MAX_BYTES = 10485760; // runtime rewrite threshold (10 MB)
 const MODELS_TIMEOUT_MS = 15000;
-const SHELL_PROBE_TIMEOUT_MS = 8000;
 // Out-of-the-box endpoint: an empty URL/model field (or a bare Tab in
 // the Settings form) means "use the NVIDIA inference API".
 const DEFAULT_API_URL = 'https://inference-api.nvidia.com/v1';
@@ -43,7 +42,7 @@ const state = {
   child: null,
   status: 'stopped',   // stopped | starting | idle | running | error
   lastError: '',
-  config: { apiUrl: '', model: '', shellUrl: '' },
+  config: { apiUrl: '', model: '' },
   hub: null,           // { url, token } — current hub pair, rotates on hub restart
   events: [],          // ring buffer of { seq, ...event }
   seq: 0,
@@ -59,7 +58,16 @@ let _configureReject = null;
 let _configureTimer = null;
 
 function _startConfigureWait(timeoutMs = 15000) {
-  _clearConfigureWait();
+  // A new wait supersedes any pending one — SETTLE the old waiter first;
+  // nulling it without rejecting would leave that IPC invoke (a concurrent
+  // Save) hanging at "validating…" forever.
+  if (_configureReject) {
+    const r = _configureReject;
+    _clearConfigureWait();
+    r(new Error('superseded by a newer configure'));
+  } else {
+    _clearConfigureWait();
+  }
   return new Promise((resolve, reject) => {
     _configureResolve = resolve;
     _configureReject = reject;
@@ -118,30 +126,37 @@ function _cfgPath() {
 
 function _loadConfig() {
   let raw = null;
-  let migrated = false;
+  let fromLegacyFile = false;
   try {
     raw = fs.readFileSync(_cfgPath(), 'utf8');
   } catch (_) {
     // Legacy location (<0.2.24): <userData>/assistant.json — migrate it
     // into the ext-data dir so the token/config story is uniform.
     const legacy = path.join(state.dataDir || '', 'assistant.json');
-    try { raw = fs.readFileSync(legacy, 'utf8'); migrated = true; }
+    try { raw = fs.readFileSync(legacy, 'utf8'); fromLegacyFile = true; }
     catch (_) { return; }
   }
   try {
     const parsed = JSON.parse(raw);
+    let dirty = fromLegacyFile;
     if (parsed && typeof parsed === 'object') {
       state.config = {
         apiUrl: String(parsed.apiUrl || ''),
         model:  String(parsed.model || ''),
-        shellUrl: String(parsed.shellUrl || ''),
       };
+      // 0.2.36 cleanup: the cam-pi shell bridge is gone (the child runs
+      // local shell directly) — strip a legacy bridge pair on first boot.
+      if (parsed.shellUrl) {
+        dirty = true;
+        try { state.credentialStore && state.credentialStore.remove('assistant:shell-token'); } catch (_) {}
+        _log('dropped legacy shell-bridge config (direct local shell now)');
+      }
     }
-    if (migrated) {
-      _saveConfig();
+    if (fromLegacyFile) {
       try { fs.unlinkSync(path.join(state.dataDir || '', 'assistant.json')); } catch (_) {}
       _log('migrated assistant.json → ext-data/assistant/config.json');
     }
+    if (dirty) _saveConfig();
   } catch (_) { /* corrupt → defaults */ }
 }
 
@@ -221,9 +236,10 @@ function _ensureThread() {
 }
 
 /* Transcript persistence (design: "leaving the page and coming back must
- * not clear the chat"). Every event lands in the active thread's JSONL;
- * on thread switch / host boot the whole file rehydrates the ring buffer,
- * capped to MAX_EVENTS in memory, and the view rebuilds by polling from seq 0. */
+ * not clear the chat"). Every DURABLE event lands in the active thread's
+ * JSONL; on thread switch / host boot the whole file rehydrates the ring
+ * buffer, capped to MAX_EVENTS in memory, and the view rebuilds by polling
+ * from seq 0. */
 function _eventsPath() {
   return path.join(_threadsDir(), `${state.threadId || 'pending'}.jsonl`);
 }
@@ -243,19 +259,32 @@ function _touchThread(kind, text) {
   _writeThreadsIndex(idx);
 }
 
+/* Streaming intermediates are live-view only: they ride the in-memory
+ * ring buffer and the push rail but NEVER touch disk. A single reply can
+ * stream hundreds of cumulative snapshots — persisted, they flooded the
+ * thread files (~97% of lines), burned the EVENTS_KEEP/MAX_EVENTS caps
+ * within days, and truncated the visible history. The 'done' event
+ * already carries the final text, so replay loses nothing but the typing
+ * animation. */
+const EPHEMERAL_EVENTS = new Set(['delta', 'thinking']);
+
 function _persistEvent(ev) {
   if (!state.dataDir || !state.threadId) return;
   try {
+    _touchThread(ev.type, ev.text);
+    if (EPHEMERAL_EVENTS.has(ev.type)) return; // live-only — never on disk
     const line = JSON.stringify(ev) + '\n';
     fs.mkdirSync(_threadsDir(), { recursive: true });
     fs.appendFileSync(_eventsPath(), line);
     state.eventsFileBytes += Buffer.byteLength(line);
     if (state.eventsFileBytes > EVENTS_MAX_BYTES) {
-      const keep = state.events.slice(-EVENTS_KEEP).map((e) => JSON.stringify(e) + '\n').join('');
+      const keep = state.events
+        .filter((e) => !EPHEMERAL_EVENTS.has(e.type))
+        .slice(-EVENTS_KEEP)
+        .map((e) => JSON.stringify(e) + '\n').join('');
       fs.writeFileSync(_eventsPath(), keep, { mode: 0o600 });
       state.eventsFileBytes = Buffer.byteLength(keep);
     }
-    _touchThread(ev.type, ev.text);
   } catch (_) { /* best-effort — never break the chat over disk hiccups */ }
 }
 
@@ -265,20 +294,26 @@ function _loadEvents() {
   let raw;
   try { raw = fs.readFileSync(_eventsPath(), 'utf8'); } catch (_) { return; }
   // Load the whole thread file so switching threads shows the full history.
-  // The in-memory cap is enforced by _pushEvent as new events arrive.
+  // Streaming lines (delta/thinking) written by older builds are skipped —
+  // 'done' carries the final text — so legacy files replay their FULL
+  // durable history instead of truncating at the ring-buffer cap.
   const lines = raw.split('\n').filter(Boolean);
   const evs = [];
+  let maxSeq = 0;
   for (const l of lines) {
     try {
       const e = JSON.parse(l);
-      if (e && typeof e.seq === 'number') evs.push(e);
+      if (e && typeof e.seq === 'number') {
+        if (e.seq > maxSeq) maxSeq = e.seq;
+        if (!EPHEMERAL_EVENTS.has(e.type)) evs.push(e);
+      }
     } catch (_) { /* skip corrupt lines */ }
   }
   if (evs.length) {
     state.events = evs.slice(-MAX_EVENTS);
-    state.seq = evs[evs.length - 1].seq;
     state.eventsFileBytes = Buffer.byteLength(lines.join('\n') + '\n');
   }
+  if (maxSeq) state.seq = maxSeq;
 }
 
 function _threadMessages() {
@@ -298,15 +333,58 @@ function _loadChildThread() {
   return true;
 }
 
+/* Version-compare for shadow resolution (kept self-contained so this
+ * module never has to locate the registry): dotted-numeric, missing or
+ * non-numeric sorts LOW. Same rule as registry.compareVersions. */
+function _cmpVer(a, b) {
+  const pa = String(a || '').split('.'), pb = String(b || '').split('.');
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    const xa = /^\d+$/.test(pa[i] || '') ? Number(pa[i]) : -1;
+    const xb = /^\d+$/.test(pb[i] || '') ? Number(pb[i]) : -1;
+    if (xa !== xb) return xa - xb;
+  }
+  return 0;
+}
+
+function _pkgVersion(dir) {
+  try {
+    const m = /^version:\s*(\S+)\s*$/m.exec(fs.readFileSync(path.join(dir, 'manifest.yaml'), 'utf8'));
+    return m ? m[1] : '';
+  } catch (_) { return ''; }
+}
+
+function _builtinPkgDir(name) {
+  const rel = path.join('packages', name);
+  try {
+    const dev = path.join(path.resolve(__dirname, '..', '..', '..', 'extensions'), rel);
+    if (fs.existsSync(dev)) return dev;
+  } catch (_) {}
+  return path.join(process.resourcesPath || '', 'extensions', rel);
+}
+
+/* The user-installed copy of <name> wins ONLY when its manifest version
+ * is strictly newer than the built-in's — a tie or an older copy goes to
+ * the built-in, so reinstalling/upgrading the app repairs stale shadows
+ * (registry.resolvePackageDir implements the same rule for listings and
+ * file serving). tar.gz ext updates keep working by bumping the version. */
+function _userPkgWins(name) {
+  try {
+    const userDir = path.join(state.dataDir || '', 'extensions', name);
+    if (!fs.existsSync(userDir)) return false;
+    return _cmpVer(_pkgVersion(userDir), _pkgVersion(_builtinPkgDir(name))) > 0;
+  } catch (_) { return false; }
+}
+
 function _assistPath() {
-  // Bundle shadowing (0.2.26): a user-installed assistant package may
-  // carry its own cam-assist.js — the ext tar.gz then ships view AND
-  // agent logic together, and assistant iterations stop needing an MSI.
-  // The file comes from the ext; the PRIVILEGE (spawn, token, disk)
-  // stays here in the main process either way.
+  // Bundle shadowing (0.2.26, version-gated 0.2.30): a NEWER user-installed
+  // assistant package may carry its own cam-assist.js — the ext tar.gz
+  // then ships view AND agent logic together, and assistant iterations
+  // stop needing an MSI. The file comes from the ext; the PRIVILEGE
+  // (spawn, token, disk) stays here in the main process either way.
   // MAS builds never load the user copy (Apple 2.5.2: no executable
   // code from outside the signed app bundle).
-  if (!_isMas()) {
+  if (!_isMas() && _userPkgWins('assistant')) {
     try {
       const userCopy = path.join(state.dataDir || '', 'extensions', 'assistant', 'cam-assist.js');
       if (fs.existsSync(userCopy)) return userCopy;
@@ -321,51 +399,6 @@ function _assistPath() {
     if (fs.existsSync(devPath)) return devPath;
   } catch (_) {}
   return path.join(process.resourcesPath || '', 'extensions', rel);
-}
-
-/* The cam-pi companion script the user runs to grant local shell access.
- * Ships inside the assistant package (built-in and/or user copy). */
-function _camPiPath() {
-  try {
-    const userCopy = path.join(state.dataDir || '', 'extensions', 'assistant', 'cam-pi.js');
-    if (fs.existsSync(userCopy)) return userCopy;
-  } catch (_) {}
-  const rel = path.join('packages', 'assistant', 'cam-pi.js');
-  try {
-    const dev = path.join(path.resolve(__dirname, '..', '..', '..', 'extensions'), rel);
-    if (fs.existsSync(dev)) return dev;
-  } catch (_) {}
-  return path.join(process.resourcesPath || '', 'extensions', rel);
-}
-
-/* Loopback-only probe used by setConfig (save = validate) for the
- * cam-pi bridge: GET {url}/health with the bearer token. */
-async function probeShellBridge(url, token) {
-  if (!/^http:\/\/(127\.0\.0\.1|localhost):\d+$/i.test(String(url || ''))) {
-    return { ok: false, error: 'invalid_bridge_url', detail: 'bridge URL must be http://127.0.0.1:<port> (loopback only)' };
-  }
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), SHELL_PROBE_TIMEOUT_MS);
-  try {
-    const res = await fetch(`${url}/health`, { headers: { authorization: `Bearer ${token}` }, signal: ctrl.signal });
-    if (res.status === 401 || res.status === 403) {
-      return { ok: false, error: 'bridge_auth_failed', detail: 'cam-pi rejected the token — check the cam-pi:// line you pasted' };
-    }
-    if (!res.ok) return { ok: false, error: `bridge_http_${res.status}` };
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, error: 'bridge_unreachable', detail: `${String((e && e.message) || e)} — is cam-pi running?` };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/* The {url, token} pair injected into the child (or null = no shell). */
-function _shellBridgePair() {
-  const url = state.config.shellUrl;
-  if (!url) return null;
-  const token = state.credentialStore ? state.credentialStore.get(SHELL_TOKEN_REF) : null;
-  return token ? { url, token } : null;
 }
 
 function _pushEvent(ev) {
@@ -437,7 +470,7 @@ function _onChildLine(line) {
     // pair (the child only enables its `cam` tool once this arrives).
     const token = state.credentialStore ? state.credentialStore.get(TOKEN_REF) : null;
     if (state.config.apiUrl && state.config.model && token) {
-      _write({ type: 'configure', apiUrl: state.config.apiUrl, apiKey: token, model: state.config.model, shellBridge: _shellBridgePair() });
+      _write({ type: 'configure', apiUrl: state.config.apiUrl, apiKey: token, model: state.config.model });
       if (state.hub) _write({ type: 'hub', url: state.hub.url, token: state.hub.token });
     } else {
       state.status = 'idle'; // reachable but unconfigured — sends will error cleanly
@@ -571,21 +604,16 @@ function configure({ dataDir, credentialStore, logger, onEvent } = {}) {
 
 function status() {
   const hasToken = !!(state.credentialStore && state.credentialStore.metadata(TOKEN_REF));
-  const hasShellToken = !!(state.credentialStore && state.credentialStore.metadata(SHELL_TOKEN_REF));
   return {
     ok: true,
     status: state.status,
     apiUrl: state.config.apiUrl,
     model: state.config.model,
-    shellUrl: state.config.shellUrl || '',
-    hasShellToken,
     hasToken,
     configured: !!(state.config.apiUrl && state.config.model && hasToken),
     lastError: state.lastError,
     seq: state.seq,
     defaults: { apiUrl: DEFAULT_API_URL, model: DEFAULT_MODEL },
-    camPiPath: _camPiPath(),
-    electronPath: process.execPath,
   };
 }
 
@@ -600,12 +628,9 @@ function _resolveConfig(payload = {}) {
 
 /** Save = validate: the endpoint must answer GET /models with the token
  *  before anything is persisted. `token` empty-string keeps the stored
- *  one; `token: null` clears it. A non-empty shellUrl is likewise
- *  validated against the cam-pi bridge's /health before persisting;
- *  `shellToken` empty keeps the stored one, `null` clears it. */
+ *  one; `token: null` clears it. */
 async function setConfig(payload = {}) {
   const { apiUrl, model } = _resolveConfig(payload);
-  const shellUrl = String(payload.shellUrl || '').trim().replace(/\/+$/, '');
   let token;
   if (typeof payload.token === 'string' && payload.token) token = payload.token;
   else token = state.credentialStore ? state.credentialStore.get(TOKEN_REF) : null;
@@ -617,17 +642,7 @@ async function setConfig(payload = {}) {
     return { ok: false, error: 'model_not_listed', detail: `"${model}" is not in the endpoint's model list`, models: probe.models };
   }
 
-  // Local shell bridge (cam-pi): optional, loopback-only, save = probe.
-  let shellToken = null;
-  if (shellUrl) {
-    if (typeof payload.shellToken === 'string' && payload.shellToken) shellToken = payload.shellToken;
-    else shellToken = state.credentialStore ? state.credentialStore.get(SHELL_TOKEN_REF) : null;
-    if (!shellToken) return { ok: false, error: 'missing_shell_token', detail: 'paste the full cam-pi://…/<token> line — the token is required' };
-    const bp = await probeShellBridge(shellUrl, shellToken);
-    if (!bp.ok) return bp;
-  }
-
-  state.config = { apiUrl, model, shellUrl };
+  state.config = { apiUrl, model };
   if (!_saveConfig()) return { ok: false, error: 'save_failed' };
   if (typeof payload.token === 'string' && payload.token && state.credentialStore) {
     const put = state.credentialStore.put(TOKEN_REF, 'llm-token', payload.token);
@@ -635,19 +650,11 @@ async function setConfig(payload = {}) {
   } else if (payload.token === null && state.credentialStore) {
     state.credentialStore.remove(TOKEN_REF);
   }
-  if (state.credentialStore) {
-    if (shellUrl && typeof payload.shellToken === 'string' && payload.shellToken) {
-      const put = state.credentialStore.put(SHELL_TOKEN_REF, 'shell-token', payload.shellToken);
-      if (!put.ok) return { ok: false, error: put.error || 'shell_token_save_failed', detail: put.detail };
-    } else if (!shellUrl || payload.shellToken === null) {
-      state.credentialStore.remove(SHELL_TOKEN_REF);
-    }
-  }
-  _log(`config saved: ${apiUrl} model=${model} shell=${shellUrl ? 'bridge ' + shellUrl : 'off'}`);
+  _log(`config saved: ${apiUrl} model=${model}`);
   // Live child: re-apply without a respawn. Wait for the 'configured' ack
   // so the active thread is loaded before any send can race ahead.
   if (state.child) {
-    _write({ type: 'configure', apiUrl, apiKey: token, model, shellBridge: _shellBridgePair() });
+    _write({ type: 'configure', apiUrl, apiKey: token, model });
     try { await _startConfigureWait(); }
     catch (e) {
       _log(`configure wait failed: ${e && e.message}`);
@@ -796,7 +803,7 @@ function _resetForTests() {
   stop();
   state.status = 'stopped';
   state.lastError = '';
-  state.config = { apiUrl: '', model: '', shellUrl: '' };
+  state.config = { apiUrl: '', model: '' };
   state.hub = null;
   state.events = [];
   state.seq = 0;
@@ -828,7 +835,6 @@ module.exports = {
   deleteThread,
   setHub,
   fetchModels,
-  probeShellBridge,
   DEFAULT_API_URL,
   DEFAULT_MODEL,
   _resolveConfig,

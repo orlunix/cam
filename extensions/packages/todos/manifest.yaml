@@ -1,4 +1,6 @@
 name: todos
-version: 1.0.0
+version: 1.1.0
 title: Todos
-native: todos
+description: Tasks, projects, and archived projects in one workspace.
+capabilities:
+  - hub:api

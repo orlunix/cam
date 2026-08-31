@@ -52,9 +52,22 @@ Rules of thumb:
 - Add `mounts: [agent]` when the extension works on one agent (read its
   binding via `camExt.call('app.context')`; native pages receive the
   agent through their open handoff).
+- The app Edit page (Extensions → Settings) renders exactly one uniform
+  platform field per extension: `show_in_agent_menu` (boolean, default
+  false — the agent page Ext menu starts empty; users pin entries
+  explicitly). Custom settings are your own affair: read them with
+  `await camExt.call('ext.config')` and surface them on your own page,
+  like agent-doctor does with its `prompt_warn_kb` reference next to
+  its review controls.
 
 ## 3. The view (index.html)
 
+- **No own title bar.** Every extension opens under the app-managed
+  chrome: `title@version`, your manifest `description`, a Back button,
+  then a divider. Start your view with content — do not repeat the
+  title/description in the page (the built-in assistant models this).
+- Set a manifest `description` — it is the chrome's subtitle (and the
+  list row's summary).
 - Self-contained: relative paths only, **no CDN** (offline + MAS).
 - Include the bridge client: `<script src="../client.js"></script>`.
 - Everything you can ask the app (v1):
@@ -68,6 +81,7 @@ Rules of thumb:
   const cron     = await camExt.call('agents.cronJobs');
   const result   = await camExt.call('ext.call', { context, method, args });   // needs exec
   const listing  = await camExt.call('files.read', { context, path });         // needs files:read
+  const ctxs2    = await camExt.hubCall('GET', '/api/contexts');               // needs hub:api — full /api/* passthrough
   ```
 
 - Errors reject with `Error(<code>)` — e.g. `capability_denied:exec`
@@ -92,7 +106,7 @@ python3 main.py <method> '<json-args>'   →  one JSON object on stdout
 - Stay read-only unless the extension's whole point is mutation — and
   say so in the title/notes.
 
-Template: copy `examples/hello-ext/main.py` — it has the dispatcher,
+Template: copy `packages/assistant/main.py` — it has the dispatcher,
 JSON contract, and error shapes wired.
 
 ## 5. Local development loop

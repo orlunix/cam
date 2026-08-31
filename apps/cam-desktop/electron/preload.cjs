@@ -147,6 +147,35 @@ contextBridge.exposeInMainWorld('CamBridge', {
     },
   },
 
+  // Built-in assistant (docs/desktop/assistant-design.md). Scoped to the
+  // assistant extension's view by the ext-bridge gate — this preload
+  // surface itself stays name-blind like every other group. The LLM
+  // token only ever travels renderer → main (never back): status()
+  // returns hasToken metadata, never the secret.
+  //   status()                → { ok, status, apiUrl, model, hasToken, configured, lastError, seq }
+  //   configure({apiUrl, model, token?}) → save = validate (GET /models)
+  //   models()                → { ok, models: [id…] } from the stored endpoint
+  //   start()/stop()          → child lifecycle
+  //   send({text})            → queue one user message
+  //   poll({since})           → { ok, status, events: [{seq,…}], seq }
+  //   reset()                 → clear transcript + event log
+  //   onEvent(cb)             → push rail: each event the moment it exists
+  assistant: {
+    status()          { return ipcRenderer.invoke('assistant:status'); },
+    configure(payload) { return ipcRenderer.invoke('assistant:configure', payload || {}); },
+    models(payload)   { return ipcRenderer.invoke('assistant:models', payload || {}); },
+    start()           { return ipcRenderer.invoke('assistant:start'); },
+    stop()            { return ipcRenderer.invoke('assistant:stop'); },
+    send(payload)     { return ipcRenderer.invoke('assistant:send', payload || {}); },
+    poll(payload)     { return ipcRenderer.invoke('assistant:poll', payload || {}); },
+    reset()           { return ipcRenderer.invoke('assistant:reset'); },
+    threads()         { return ipcRenderer.invoke('assistant:threads'); },
+    newChat()         { return ipcRenderer.invoke('assistant:thread-new'); },
+    openThread(id)    { return ipcRenderer.invoke('assistant:thread-open', { id }); },
+    deleteThread(id)  { return ipcRenderer.invoke('assistant:thread-delete', { id }); },
+    onEvent(cb)       { if (typeof cb === 'function') ipcRenderer.on('assistant:event', (_e, ev) => { try { cb(ev); } catch (_) {} }); },
+  },
+
   // Terminal mode (CAM-DESK-TERM-001..005). The renderer xterm.js
   // never opens its own SSH — every channel goes through main, which
   // resolves the agent's owning context, decrypts the remembered

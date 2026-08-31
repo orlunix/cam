@@ -1,15 +1,255 @@
-/**
- * Desktop Skills mode (CAM-DESK-SKILLM-010..014).
- *
- * The renderer manages Skillm repositories and install targets only. Repository
- * refresh happens in the embedded Hub before list/install operations; there is
- * no separate Sync tab/action in the UI.
- */
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Skills</title>
+<style>
+/* Self-contained ext view (no app CSS reaches the iframe). Palette mirrors
+ * the assistant view; skills-* styles are ported from desktop.css with the
+ * app's variables mapped onto the local ones. */
+:root { --bg:#0f1216; --panel:#161b22; --card:#11161c; --line:#2d333b; --fg:#e6e8eb; --dim:#8b949e; --muted:#6e7681; --accent:#1f6feb; --accent-hi:#388bfd; --err:#f85149; --ok:#3fb950; }
+* { box-sizing: border-box; }
+body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 12px 16px; background: var(--bg); color: var(--fg); font-size: 13px; }
+[hidden] { display: none !important; }
+.empty-state { color: var(--dim); font-size: 12px; padding: 14px; text-align: center; }
+.form-hint { color: var(--dim); font-size: 11px; margin: 4px 0 0; }
+
+.skills-workbench { width: 100%; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.skills-card { min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+.skills-card h3 { margin: 0; font-size: 13px; font-weight: 650; }
+.skills-card h4 { margin: 0 0 6px; font-size: 12px; font-weight: 650; color: var(--fg); }
+.skills-card label { display: flex; flex-direction: column; gap: 4px; color: var(--dim); font-size: 12px; }
+.skills-card input, .skills-card select { background: var(--card); border: 1px solid var(--line); color: var(--fg); padding: 6px 8px; border-radius: 6px; font: inherit; }
+.skills-card input:focus, .skills-card select:focus { outline: 1px solid var(--accent); outline-offset: -1px; border-color: var(--accent); }
+.skills-card-head, .skills-actions, .skills-mini-actions { display: flex; align-items: center; gap: 8px; }
+.skills-card-head { justify-content: space-between; }
+.skills-actions { flex-wrap: wrap; }
+.skills-inline-fields { display: grid; grid-template-columns: minmax(120px, 180px) minmax(0, 1fr); gap: 8px; }
+
+.btn-primary, .btn-secondary { border: 1px solid var(--line); border-radius: 6px; cursor: pointer; font-size: 12px; padding: 6px 10px; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.btn-primary:hover:not(:disabled) { background: var(--accent-hi); }
+.btn-secondary { background: var(--card); color: var(--fg); }
+.btn-secondary:hover:not(:disabled) { background: var(--line); }
+.btn-primary:disabled, .btn-secondary:disabled { cursor: not-allowed; opacity: 0.55; }
+.btn-danger-lite { border-color: rgba(248,113,113,.45); color: #fecaca; }
+.btn-danger-lite:hover:not(:disabled) { background: rgba(248,113,113,.12); }
+
+.skills-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
+.skills-tab { background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0; color: var(--dim); padding: 6px 12px; font-size: 13px; cursor: pointer; }
+.skills-tab.active { color: var(--fg); border-bottom-color: var(--accent); }
+.skills-tab:hover { color: var(--fg); }
+.skills-tab-panel { margin-top: 10px; }
+.skills-setup-grid { display: grid; grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.2fr); gap: 12px; }
+.skills-subpanel { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--card); }
+.skills-subpanel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.skills-subpanel-head h4 { margin: 0; }
+.skills-install-controls { display: grid; grid-template-columns: minmax(160px, 220px) minmax(0, 1fr); gap: 10px; margin-bottom: 8px; }
+.skills-install-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; margin-top: 10px; }
+.skills-segmented { display: flex; gap: 4px; margin-bottom: 8px; }
+.skills-segmented button { background: var(--card); border: 1px solid var(--line); color: var(--dim); border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.skills-segmented button.active { color: var(--fg); border-color: var(--accent); background: var(--panel); }
+.skills-agent-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 8px 0; }
+.skills-agent-grid label { flex-direction: row !important; align-items: center; gap: 6px; color: var(--fg); padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); }
+.skills-agent-grid input { padding: 0; }
+
+.skillm-repo-list, .skillm-node-list, .skillm-skill-list { border: 1px solid var(--line); border-radius: 6px; background: var(--card); overflow: auto; min-height: 96px; }
+.skillm-repo-list { max-height: 340px; }
+.skillm-node-list { max-height: 240px; }
+.skillm-skill-list { min-height: 260px; max-height: 440px; }
+.skillm-repo-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.skillm-repo-row:last-child, .skillm-node-row:last-child, .skillm-skill-row:last-child { border-bottom: 0; }
+.skillm-repo-row:hover, .skillm-node-row:hover, .skillm-skill-row:hover { background: var(--panel); }
+.skillm-repo-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; min-width: 0; }
+.skillm-repo-name { font-weight: 650; font-size: 13px; }
+.skillm-repo-url { color: var(--muted); font-family: SFMono-Regular, Consolas, monospace; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.skillm-repo-badge { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; padding: 1px 6px; border-radius: 10px; background: rgba(70,149,74,.28); color: #cfead2; border: 1px solid rgba(70,149,74,.6); }
+.skillm-repo-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.skillm-repo-editor { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; display: flex; flex-direction: column; gap: 8px; background: var(--card); }
+
+.skillm-node-row, .skillm-skill-row { display: grid; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.skillm-node-row { grid-template-columns: auto minmax(0, 1fr) minmax(110px, 0.7fr); }
+.skillm-skill-row { grid-template-columns: auto minmax(0, 1.1fr) minmax(80px, 0.8fr) minmax(80px, auto); }
+.skillm-node-row.is-disabled { opacity: 0.55; }
+.skillm-node-main, .skillm-skill-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.skillm-node-name, .skillm-skill-name { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skillm-node-meta, .skillm-node-path, .skillm-skill-full, .skillm-skill-meta { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skillm-node-path, .skillm-skill-meta { text-align: right; font-variant-numeric: tabular-nums; }
+.skillm-skill-tags { display: flex; gap: 4px; flex-wrap: wrap; min-width: 0; }
+.skillm-skill-tags span { padding: 1px 5px; border: 1px solid var(--line); border-radius: 6px; color: var(--dim); background: var(--card); font-size: 11px; }
+
+.skills-status { min-height: 18px; font-size: 12px; padding: 8px 2px 0; color: var(--dim); }
+.skills-status.is-ok { color: var(--ok); }
+.skills-status.is-error { color: var(--err); }
+</style>
+</head>
+<body>
+<!-- Markup ported 1:1 from the retired native #mode-skills section
+     (web/desktop.html); the page header (title/Back) is app chrome. -->
+<div class="skills-workbench">
+  <section class="skills-card skills-card-main">
+    <div class="skills-tabs" role="tablist" aria-label="Skills workspace tabs">
+      <button type="button" class="skills-tab active" data-skillm-tab="repos" role="tab" aria-selected="true">Repositories</button>
+      <button type="button" class="skills-tab" data-skillm-tab="install" role="tab" aria-selected="false">Install</button>
+    </div>
+
+    <div class="skills-tab-panel" id="skillm-tab-repos">
+      <div class="skills-card-head">
+        <h3>Setup and repositories</h3>
+        <button type="button" class="btn-primary" id="skillm-repo-add">Add Repository</button>
+      </div>
+      <div class="skills-setup-grid">
+        <section class="skills-subpanel skills-setup-panel">
+          <div class="skills-subpanel-head">
+            <h4>Setup node</h4>
+            <div class="skills-mini-actions">
+              <button type="button" class="btn-secondary" id="skillm-check">Check</button>
+              <button type="button" class="btn-secondary" id="skillm-refresh">Refresh</button>
+            </div>
+          </div>
+          <label>Node
+            <select id="skillm-setup-context"></select>
+          </label>
+          <p class="form-hint">Choose the node that owns the Skillm repository store. Install can target this node, all SSH nodes, or selected nodes.</p>
+        </section>
+
+        <section class="skills-subpanel skills-repo-panel">
+          <div class="skills-repo-editor" id="skillm-repo-editor" hidden>
+            <div class="skills-inline-fields">
+              <label>Name
+                <input type="text" id="skillm-repo-name" placeholder="main" autocomplete="off">
+              </label>
+              <label>Git repo URL
+                <input type="url" id="skillm-repo-url" placeholder="https://gitlab.example.com/team/skills.git" autocomplete="off">
+              </label>
+            </div>
+            <label>Token
+              <input type="password" id="skillm-repo-token" placeholder="one-shot token, not saved" autocomplete="off">
+            </label>
+            <div class="skills-actions">
+              <button type="button" class="btn-primary" id="skillm-repo-save">Save Repository</button>
+              <button type="button" class="btn-secondary" id="skillm-repo-cancel">Cancel</button>
+            </div>
+          </div>
+          <div class="skillm-repo-list" id="skillm-repo-list"></div>
+        </section>
+      </div>
+    </div>
+
+    <div class="skills-tab-panel" id="skillm-tab-install" hidden>
+      <div class="skills-card-head">
+        <h3>Install skills</h3>
+        <div class="skills-mini-actions">
+          <button type="button" class="btn-secondary" id="skillm-skills-all">Select shown</button>
+          <button type="button" class="btn-secondary" id="skillm-skills-none">Clear</button>
+        </div>
+      </div>
+      <div class="skills-install-controls">
+        <label>Repository
+          <select id="skillm-repo-filter"><option value="all">All repositories</option></select>
+        </label>
+        <label>Search
+          <input type="search" id="skillm-skill-search" placeholder="Search name, tag, repo..." autocomplete="off">
+        </label>
+      </div>
+      <div class="skillm-skill-list" id="skillm-skill-list"></div>
+
+      <div class="skills-install-grid">
+        <section class="skills-subpanel">
+          <h4>Target hosts</h4>
+          <div class="skills-segmented" role="group" aria-label="Node scope">
+            <button type="button" class="active" data-node-scope="setup">This node</button>
+            <button type="button" data-node-scope="all">All SSH</button>
+            <button type="button" data-node-scope="selected">Selected</button>
+          </div>
+          <div class="skillm-node-list" id="skillm-node-list"></div>
+        </section>
+        <section class="skills-subpanel">
+          <h4>Install target</h4>
+          <label>Scope
+            <select id="skillm-install-scope">
+              <option value="global">Global defaults</option>
+              <option value="workspace">Workspace path</option>
+            </select>
+          </label>
+          <label>Workspace path
+            <input type="text" id="skillm-workspace-path" placeholder="/path/to/workspace" autocomplete="off">
+          </label>
+          <div class="skills-agent-grid" aria-label="Agent CLIs">
+            <label><input type="checkbox" id="skillm-agent-claude" checked> Claude</label>
+            <label><input type="checkbox" id="skillm-agent-codex" checked> Codex</label>
+            <label><input type="checkbox" id="skillm-agent-agents" checked> Agents (common)</label>
+            <label><input type="checkbox" id="skillm-agent-cursor" checked> Cursor</label>
+          </div>
+          <div class="skills-actions">
+            <button type="button" class="btn-primary" id="skillm-install">Install selected skills</button>
+          </div>
+        </section>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="settings-status skills-status" id="skillm-status" aria-live="polite"></div>
+
+<script src="../client.js"></script>
+<script>
+/* Sandboxed ext views run in an opaque origin — window.localStorage throws
+ * there. In-memory shim: repo name/url persistence is a form convenience,
+ * not data (the durable state lives in skillm on the node). */
+(() => {
+  const mem = new Map();
+  Object.defineProperty(window, 'localStorage', { get: () => ({
+    getItem: (k) => (mem.has(k) ? mem.get(k) : null),
+    setItem: (k, v) => mem.set(k, String(v)),
+    removeItem: (k) => mem.delete(k),
+  }) });
+})();
+</script>
+<script>
+'use strict';
+/* Logic ported 1:1 from the retired web/js/desktop/skills-mode.js — only
+ * the API layer changed: api.skillm* → camExt.hubCall (hub:api
+ * capability), state.get('contexts') → contexts.list bridge read,
+ * showToast → status line. Repository refresh still happens hub-side
+ * before list/install; there is no separate Sync tab/action. */
 
 const AGENT_TOOLS = ['claude', 'codex', 'agents', 'cursor'];
 const REPO_NAME_KEY = 'cam_desktop_skillm_repo_name';
 const REPO_URL_KEY  = 'cam_desktop_skillm_repo_url';
 
+const enc = encodeURIComponent;
+const api = {
+  skillmStatus: (c) => camExt.hubCall('GET', `/api/skillm/status?context=${enc(c || '')}`),
+  skillmRepos: (c) => camExt.hubCall('GET', `/api/skillm/repos?context=${enc(c || '')}`),
+  skillmList: (c, opts = {}) => {
+    const qs = new URLSearchParams({ context: c || '' });
+    if (opts.repoName) qs.set('repo', opts.repoName);
+    if (opts.sync) qs.set('sync', '1');
+    return camExt.hubCall('GET', `/api/skillm/list?${qs.toString()}`);
+  },
+  skillmRepoAdd: (b) => camExt.hubCall('POST', '/api/skillm/repos', b),
+  skillmRepoUpdate: (b) => camExt.hubCall('PATCH', '/api/skillm/repos', b),
+  skillmRepoRemove: (b) => camExt.hubCall('DELETE', '/api/skillm/repos', b),
+  skillmRepoRefresh: (b) => camExt.hubCall('POST', '/api/skillm/repos/refresh', b),
+  skillmInstall: (b) => camExt.hubCall('POST', '/api/skillm/install', b),
+};
+
+/* state shim: contexts come from the contexts.list bridge read; the view
+ * is reloaded on every open (iframe cache-bust), and Refresh re-reads. */
+let _contexts = [];
+let _connected = false;
+const state = {
+  get: (k) => {
+    if (k === 'contexts') return _contexts;
+    if (k === 'connectionMode') return _connected ? 'direct' : 'disconnected';
+    return undefined;
+  },
+};
+</script>
+<script>
+
+/* ── ported page logic (1:1 from skills-mode.js) ── */
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = String(s == null ? '' : s);
@@ -49,7 +289,7 @@ function dedupeSkills(items) {
   const seen = new Set();
   const out = [];
   for (const s of Array.isArray(items) ? items : []) {
-    const key = [skillRepoName(s), s && s.name, s && s.commit, s && s.updated, s && s.size].join('\u0000');
+    const key = [skillRepoName(s), s && s.name, s && s.commit, s && s.updated, s && s.size].join(' ');
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(s);
@@ -63,9 +303,8 @@ function fmtResultCount(results) {
   return `${ok}/${arr.length} ok`;
 }
 
-export function mountSkillsMode({ api, state, showToast }) {
-  const panel = document.getElementById('mode-skills');
-  if (!panel) return;
+function main() {
+  const panel = document;
 
   const setupSel       = panel.querySelector('#skillm-setup-context');
   const checkBtn       = panel.querySelector('#skillm-check');
@@ -119,6 +358,11 @@ export function mountSkillsMode({ api, state, showToast }) {
     statusEl.textContent = text || '';
     statusEl.classList.remove('is-error', 'is-ok');
     if (cls) statusEl.classList.add(cls);
+  }
+
+  // Toast shim: the iframe has no app toast rail — fold into the status line.
+  function showToast(msg, kind) {
+    setStatus(msg, kind === 'error' ? 'is-error' : 'is-ok');
   }
 
   function setLoading(on) {
@@ -302,9 +546,9 @@ export function mountSkillsMode({ api, state, showToast }) {
       renderRepos();
       setStatus(`Loaded ${repos.length} repository record(s).`, 'is-ok');
     } catch (err) {
-      const msg = err?.message || String(err);
+      const msg = err && err.message || String(err);
       setStatus(`Repository list failed: ${msg}`, 'is-error');
-      showToast(`Repository list failed: ${msg}`, 'error', 5000);
+      showToast(`Repository list failed: ${msg}`, 'error');
     } finally {
       setLoading(false);
     }
@@ -323,9 +567,9 @@ export function mountSkillsMode({ api, state, showToast }) {
       renderSkills();
       setStatus(`Loaded ${skills.length} skill(s) from ${repoName === 'all' ? 'all repositories' : repoName}.`, 'is-ok');
     } catch (err) {
-      const msg = err?.message || String(err);
+      const msg = err && err.message || String(err);
       setStatus(`Skill list failed: ${msg}`, 'is-error');
-      showToast(`Skill list failed: ${msg}`, 'error', 5000);
+      showToast(`Skill list failed: ${msg}`, 'error');
     } finally {
       setLoading(false);
     }
@@ -340,13 +584,22 @@ export function mountSkillsMode({ api, state, showToast }) {
       if (res.installed) setStatus(`Skillm ready on ${setupSel.value}${res.version ? ': ' + res.version : ''}.`, 'is-ok');
       else setStatus(`Skillm missing on ${setupSel.value}: ${res.detail || res.error || 'not found'}`, 'is-error');
     } catch (err) {
-      setStatus(`Check failed: ${err?.message || err}`, 'is-error');
+      setStatus(`Check failed: ${err && err.message || err}`, 'is-error');
     } finally {
       setLoading(false);
     }
   });
 
   refreshBtn.addEventListener('click', async () => {
+    // Also re-read contexts — the iframe view has no live state subscription,
+    // so Refresh is how newly added nodes become visible.
+    await loadContexts();
+    if (!_connected) {
+      setStatus('Not connected — connect the app first, then click Refresh.', 'is-error');
+      renderContextOptions();
+      return;
+    }
+    renderContextOptions();
     if (activeTab === 'repos') await loadRepos();
     else await loadSkills({ sync: true });
   });
@@ -380,9 +633,9 @@ export function mountSkillsMode({ api, state, showToast }) {
       await loadRepos();
       await loadSkills({ sync: false });
     } catch (err) {
-      const msg = err?.message || String(err);
+      const msg = err && err.message || String(err);
       setStatus(`Repository save failed: ${msg}`, 'is-error');
-      showToast(`Repository save failed: ${msg}`, 'error', 5000);
+      showToast(`Repository save failed: ${msg}`, 'error');
     } finally {
       repoTokenEl.value = '';
       setLoading(false);
@@ -397,7 +650,17 @@ export function mountSkillsMode({ api, state, showToast }) {
     if (!repo) return;
     if (btn.dataset.repoAction === 'edit') return showRepoEditor(repo);
     if (btn.dataset.repoAction === 'remove') {
-      if (!confirm(`Remove repository "${repo.name}" from ${setupSel.value}?`)) return;
+      // Sandboxed iframe: no window.confirm (allow-modals is not granted).
+      // Two-step armed button instead.
+      if (btn.dataset.armed !== '1') {
+        btn.dataset.armed = '1';
+        btn.textContent = 'Sure?';
+        setStatus(`Click "Sure?" to confirm removing ${repo.name} from ${setupSel.value}.`);
+        setTimeout(() => { btn.dataset.armed = ''; btn.textContent = 'Remove'; }, 3000);
+        return;
+      }
+      btn.dataset.armed = '';
+      btn.textContent = 'Remove';
       setLoading(true);
       setStatus(`Removing repository ${repo.name}...`);
       try {
@@ -406,7 +669,7 @@ export function mountSkillsMode({ api, state, showToast }) {
         await loadRepos();
         await loadSkills({ sync: false });
       } catch (err) {
-        setStatus(`Remove failed: ${err?.message || err}`, 'is-error');
+        setStatus(`Remove failed: ${err && err.message || err}`, 'is-error');
       } finally {
         setLoading(false);
       }
@@ -421,7 +684,7 @@ export function mountSkillsMode({ api, state, showToast }) {
         setStatus(`Refresh complete: ${summary}.`, res.ok === false ? 'is-error' : 'is-ok');
         await loadSkills({ sync: false });
       } catch (err) {
-        setStatus(`Refresh failed: ${err?.message || err}`, 'is-error');
+        setStatus(`Refresh failed: ${err && err.message || err}`, 'is-error');
       } finally {
         setLoading(false);
       }
@@ -489,38 +752,50 @@ export function mountSkillsMode({ api, state, showToast }) {
       setStatus(`Install complete: ${summary}.`, ok ? 'is-ok' : 'is-error');
       showToast(`Skill install: ${summary}`, ok ? 'success' : 'warning');
     } catch (err) {
-      const msg = err?.message || String(err);
+      const msg = err && err.message || String(err);
       setStatus(`Install failed: ${msg}`, 'is-error');
-      showToast(`Install failed: ${msg}`, 'error', 5000);
+      showToast(`Install failed: ${msg}`, 'error');
     } finally {
       setLoading(false);
     }
   });
 
-  let prevMode = state.get('mode');
-  let prevConn = state.get('connectionMode');
-  let prevContexts = state.get('contexts');
+  // Initial render (empty until boot()'s contexts read lands and re-renders
+  // via the Refresh path).
   renderContextOptions();
   renderRepos();
   renderSkills();
   syncScopeVisibility();
   syncButtons();
-  state.subscribe(() => {
-    const mode = state.get('mode');
-    const conn = state.get('connectionMode');
-    const ctxs = state.get('contexts');
-    if (mode !== prevMode) {
-      prevMode = mode;
-      if (mode === 'skills') {
-        renderContextOptions();
-        void loadRepos();
-        if (activeTab === 'install') void loadSkills({ sync: true });
-      }
-    }
-    if (conn !== prevConn) { prevConn = conn; syncButtons(); }
-    if (ctxs !== prevContexts) {
-      prevContexts = ctxs;
-      renderContextOptions();
-    }
-  });
 }
+
+/* Boot: read contexts via the bridge, then drive the initial load through
+ * the same path as the Refresh button. A failure means the app is not
+ * connected — show the empty state and let Refresh retry. */
+async function loadContexts() {
+  try {
+    const r = await camExt.call('contexts.list');
+    _contexts = Array.isArray(r) ? r : (r && r.contexts) || [];
+    _connected = true;
+  } catch (_) {
+    _contexts = [];
+    _connected = false;
+  }
+}
+
+(async function boot() {
+  main();
+  await loadContexts();
+  if (!_connected) {
+    const statusEl = document.querySelector('#skillm-status');
+    if (statusEl) {
+      statusEl.textContent = 'Not connected — connect the app first, then click Refresh.';
+      statusEl.classList.add('is-error');
+    }
+    return;
+  }
+  document.querySelector('#skillm-refresh').click();
+})();
+</script>
+</body>
+</html>

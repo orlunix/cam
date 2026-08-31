@@ -6,8 +6,8 @@ Extensions are the unified tool surface of CAM Desktop: a folder with a
 
 - **SPEC.md** — the architecture contract (format, bridge, install, MAS stance)
 - **GUIDE.md** — how to design and build an extension
-- **examples/hello-ext** — minimal working sample (used by tests)
-- **packages/** — built-in extensions shipped with the app
+- **examples/agent-doctor** — demo extension (installable tar.gz lives in `dist/ext/`)
+- **packages/** — built-in extensions shipped with the app (skills / todos / assistant; disable-only, never removable)
 - **host/** — hub-side runtime (registry + tool proxy)
 
 Renderer-side pieces live under `web/js/` (the hub serves pages from

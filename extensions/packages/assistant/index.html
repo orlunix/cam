@@ -131,18 +131,10 @@ button.ghost:hover { border-color: var(--accent); }
     <div class="hint">Fetch list validates URL + token and fills the dropdown; you can also type a model id directly.</div>
   </div>
   <div class="field" id="f-shell-row">
-    <label>Local shell bridge (optional) — cam-pi:// line</label>
-    <input id="f-shell-url" type="text" spellcheck="false" placeholder="cam-pi://127.0.0.1:PORT/TOKEN 或 http://127.0.0.1:PORT">
+    <label>Local shell</label>
     <div class="hint">
-      没有本地 shell 需求就留空。要用：点下面的按钮复制启动命令，粘贴到 PowerShell/Terminal 回车，
-      把它打印的 cam-pi:// 行整行粘回这里（token 含在行内）。保存时自动探测连通；每条命令都进审计日志。
+      Enabled — the assistant runs shell commands directly on this machine (every command is audit-logged).
     </div>
-    <div class="row" style="margin-top:6px">
-      <button class="ghost" id="btn-copy-pi">Copy launch command</button>
-      <code class="hint" id="cam-pi-cmd" style="user-select:all">node cam-pi.js</code>
-      <span class="hint" id="cam-pi-note" style="margin-left:8px;opacity:.7"></span>
-    </div>
-    <div class="hint" id="copy-pi-status"></div>
   </div>
   <div class="row">
     <button id="btn-save">Save &amp; validate</button>
@@ -181,6 +173,15 @@ const pendingUser = [];    // locally-rendered user texts awaiting their
                            // echoed 'user' event (dedupe on replay/push)
 const toolLines = new Map(); // toolCallId → tool .msg element (start/end collapse)
 
+function fmtStamp(ts) {
+  const d = ts ? new Date(ts) : new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function stampTime(el, ts) {
+  const t = el && el.querySelector('.time');
+  if (t) t.textContent = fmtStamp(ts);
+}
 function addMsg(kind, text, ts) {
   const el = document.createElement('div');
   el.className = 'msg ' + kind;
@@ -189,9 +190,7 @@ function addMsg(kind, text, ts) {
   el.querySelector('.who').textContent = who;
   const t = document.createElement('span');
   t.className = 'time';
-  const d = ts ? new Date(ts) : new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  t.textContent = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  t.textContent = fmtStamp(ts);
   el.querySelector('.who').appendChild(t);
   el.querySelector('.body').textContent = text || '';
   $('transcript').appendChild(el);
@@ -247,6 +246,10 @@ function applyEvent(ev) {
   } else if (ev.type === 'done') {
     if (currentBubble) {
       if (ev.text) setBubble(currentBubble, ev.text);
+      // Replay path: a persisted stream replays through this same bubble
+      // flow, so without this every past reply shows the REPLAY time after
+      // a restart — pin the bubble to the event's own stamp.
+      if (ev.ts) stampTime(currentBubble, ev.ts);
     } else if (ev.text) {
       addMsg('assistant', ev.text, ev.ts);
     }
@@ -294,6 +297,10 @@ function applyEvent(ev) {
     else { runSince = 0; if (ev.state !== 'running') streaming = false; }
     setStatus(ev.state, lastModel);
     updatePending();
+  } else if (ev.type === 'sys') {
+    // Host-side notices (e.g. bridge lifecycle in legacy bridge flavors)
+    // — informational one-liners in the transcript.
+    addMsg('sys', ev.text || '', ev.ts);
   }
 }
 
@@ -352,9 +359,7 @@ async function saveFromForm() {
   const apiUrl = $('f-url').value.trim();
   const model = $('f-model').value.trim();
   const token = $('f-token').value; // blank = keep the saved token
-  const bridge = parseBridgeInput($('f-shell-url').value);
-  if (!bridge) throw { error: 'bridge line must look like cam-pi://127.0.0.1:PORT/TOKEN' };
-  const r = await call('assistant.configure', { apiUrl, model, token, shellUrl: bridge.url, shellToken: bridge.token });
+  const r = await call('assistant.configure', { apiUrl, model, token });
   if (!r || !r.ok) throw { error: (r && r.error) || 'unknown', detail: (r && r.detail) || '' };
   configured = true;
   fillModels(r.models);
@@ -522,31 +527,6 @@ $('btn-fetch-models').onclick = async () => {
   } catch (e) { setSettingsStatus('fetch failed: ' + (e && e.message || e), 'is-error'); }
 };
 
-/* Accepts the full cam-pi://host:port/token line, a bare http URL (token
- * then falls back to the saved one), or empty (bridge disabled). */
-function parseBridgeInput(raw) {
-  const s = String(raw || '').trim();
-  if (!s) return { url: '', token: '' };
-  const m = /^cam-pi:\/\/([^/\s]+)\/(\S+)$/.exec(s);
-  if (m) return { url: 'http://' + m[1], token: m[2] };
-  if (/^https?:\/\/[^/\s]+\/?$/.test(s)) return { url: s.replace(/\/+$/, ''), token: '' };
-  return null;
-}
-
-/* Copy-launch-command: the app only writes the clipboard; the USER
- * starts cam-pi in their own terminal (the MAS-safe consent gesture). */
-$('btn-copy-pi').onclick = async () => {
-  const cmd = $('cam-pi-cmd').textContent;
-  const st = $('copy-pi-status');
-  try {
-    const r = await call('assistant.copyText', { text: cmd });
-    if (r && r.ok) { st.textContent = 'copied — paste into PowerShell/Terminal and press Enter'; return; }
-    throw new Error((r && r.error) || 'failed');
-  } catch (_) {
-    st.textContent = 'copy failed — select the command above and Ctrl+C manually';
-  }
-};
-
 $('btn-save').onclick = async () => {
   setSettingsStatus('validating…');
   try {
@@ -564,30 +544,6 @@ function schedulePoll() {
   setTimeout(async () => { await poll(); schedulePoll(); }, streaming ? 300 : 1200);
 }
 
-function setCamPiCommand(st) {
-  const camPiPath = st && st.camPiPath;
-  const electronPath = st && st.electronPath;
-  if (!camPiPath) return;
-  const ua = navigator.userAgent || '';
-  const isWin = /Windows/i.test(ua);
-  const isMac = /Mac/i.test(ua);
-  if (electronPath) {
-    if (isWin) {
-      // PowerShell one-liner: use Electron's bundled Node runtime so the
-      // user does not need a separate Node.js install on PATH.
-      $('cam-pi-cmd').textContent = `$env:ELECTRON_RUN_AS_NODE=1; & "${electronPath}" "${camPiPath}"`;
-    } else if (isMac) {
-      $('cam-pi-cmd').textContent = `ELECTRON_RUN_AS_NODE=1 "${electronPath}" "${camPiPath}"`;
-    } else {
-      $('cam-pi-cmd').textContent = `ELECTRON_RUN_AS_NODE=1 "${electronPath}" "${camPiPath}"`;
-    }
-    $("cam-pi-note").textContent = "(uses Electron's bundled Node — no separate node install needed)";
-  } else {
-    $('cam-pi-cmd').textContent = `node "${camPiPath}"`;
-    $('cam-pi-note').textContent = '(needs node in PATH)';
-  }
-}
-
 /* ── boot ── */
 (async function boot() {
   try {
@@ -600,10 +556,6 @@ function setCamPiCommand(st) {
     // just paste a token and save.
     $('f-url').value = (st && st.apiUrl) || defUrl;
     $('f-model').value = lastModel || defModel;
-    // Bridge row: show the saved URL (token never comes back; a bare URL
-    // on save keeps the stored token).
-    $('f-shell-url').value = (st && st.shellUrl) || '';
-    setCamPiCommand(st);
     $('token-hint').textContent = (st && st.hasToken) ? 'token saved (encrypted) — leave blank to keep it' : 'no token saved yet';
     setStatus((st && st.status) || 'stopped', lastModel);
     if (configured) {
