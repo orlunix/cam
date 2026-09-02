@@ -1,0 +1,12 @@
+# Docker context filter for the cam-container image
+# (build: docker build -f apps/cam-container/Dockerfile .)
+.git
+node_modules
+**/node_modules
+**/__pycache__
+.pytest_cache
+apps/cam-desktop/dist
+apps/cam-container/data
+.cam-images
+.tools
+debug.log
