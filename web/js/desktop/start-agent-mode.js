@@ -247,19 +247,18 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   function applyApiSupport() {
     const tool = toolSel.value;
     const support = (apiModelsCache && apiModelsCache.toolSupport) || TOOL_API_SUPPORT_STATIC;
-    // API selection is Claude-only for now: the api-proxy/profile path
-    // is verified against Anthropic-compatible endpoints; other tools
-    // with a custom API misbehave, so the section is gated off.
-    const supported = tool === 'claude' && support[tool] !== false;
+    // Follow the hub's toolSupport map: claude + codex support --api
+    // (camc applies the profile per tool — Anthropic-compatible env for
+    // claude, an isolated ~/.cam/codex-api config dir for codex);
+    // cursor/others do not.
+    const supported = support[tool] === true;
     if (apiSectionEl) apiSectionEl.hidden = !supported;
     if (apiListBtn) apiListBtn.disabled = !supported;
     if (apiInputEl) apiInputEl.disabled = !supported;
     if (apiHintEl && supported) {
       apiHintEl.innerHTML = 'Lists profiles on the selected context/node via <code>camc --json api list --all</code>. Click a result to fill <code>--api</code>.';
     } else if (apiHintEl) {
-      apiHintEl.textContent = tool !== 'claude'
-        ? 'API selection is currently supported for Claude only.'
-        : `Tool "${tool}" does not support --api selection.`;
+      apiHintEl.textContent = `Tool "${tool}" does not support --api selection (Claude and Codex do).`;
     }
   }
 

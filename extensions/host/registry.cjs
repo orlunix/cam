@@ -21,10 +21,60 @@ const path = require('node:path');
 const zlib = require('node:zlib');
 
 const NAME_RE = /^[a-z0-9-]{1,32}$/;
-const KNOWN_CAPS = new Set(['exec', 'files:read', 'files:write']);
+// hub:api — the extension's view may drive the app through ext.hubCall
+// (any /api/* endpoint, all verbs). This is the same power the app itself
+// has, so declaring it in the manifest IS the user-consent surface; every
+// call is audit-logged ([ext:<name>] METHOD path).
+const KNOWN_CAPS = new Set(['exec', 'files:read', 'files:write', 'hub:api']);
 const MAX_FILES = 256;
 const MAX_TOTAL_BYTES = 8 * 1024 * 1024;  // 8 MB per extension package
 const MAX_FILE_BYTES  = 4 * 1024 * 1024;  // 4 MB per single file
+
+/** Dotted-numeric version compare: '0.5.1' > '0.5.0', '0.10' > '0.9',
+ *  '1.0' == '1.0.0' (a missing piece is 0). A PRESENT non-numeric piece
+ *  sorts LOW ('' from an absent manifest never beats a versioned one).
+ *  Returns >0 / 0 / <0. */
+function compareVersions(a, b) {
+  const pa = String(a || '').split('.'), pb = String(b || '').split('.');
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    const xa = pa[i] === undefined ? 0 : (/^\d+$/.test(pa[i]) ? Number(pa[i]) : -1);
+    const xb = pb[i] === undefined ? 0 : (/^\d+$/.test(pb[i]) ? Number(pb[i]) : -1);
+    if (xa !== xb) return xa - xb;
+  }
+  return 0;
+}
+
+/** Read just the `version:` of a package dir's manifest ('' when absent
+ *  or unparseable — sorts low via compareVersions). */
+function manifestVersion(dir) {
+  try {
+    const m = /^version:\s*(\S+)\s*$/m.exec(fs.readFileSync(path.join(dir, 'manifest.yaml'), 'utf8'));
+    return m ? m[1] : '';
+  } catch (_) { return ''; }
+}
+
+/** Which copy of <name> serves when both a built-in and a user copy
+ *  exist: the HIGHER version wins and a TIE GOES TO THE BUILT-IN — an
+ *  app reinstall/upgrade must repair stale shadows (same-version user
+ *  copies are exactly the "old bits behind a new version number" trap).
+ *  A strictly newer user copy still wins, which is how tar.gz updates
+ *  keep working without an app release. Returns null when neither
+ *  exists; otherwise { dir, source, shadowing?, shadowedUserVersion? }. */
+function resolvePackageDir(name, { packagesDir, extRoot }) {
+  const userDir = path.join(extRoot, name);
+  const builtinDir = path.join(packagesDir, name);
+  const hasUser = fs.existsSync(userDir);
+  const hasBuiltin = fs.existsSync(builtinDir);
+  if (!hasUser && !hasBuiltin) return null;
+  if (hasUser && !hasBuiltin) return { dir: userDir, source: 'user' };
+  if (!hasUser) return { dir: builtinDir, source: 'builtin' };
+  const uv = manifestVersion(userDir), bv = manifestVersion(builtinDir);
+  if (compareVersions(uv, bv) > 0) {
+    return { dir: userDir, source: 'user', shadowing: true, shadowedBuiltinVersion: bv };
+  }
+  return { dir: builtinDir, source: 'builtin', shadowedUserVersion: uv };
+}
 
 /** Flat-YAML-subset manifest parser.
  *  Supports: `key: value`, `key:` + `  - item` lists, `#` comments,
@@ -148,6 +198,7 @@ function inspectExtension(dir) {
       version:      String(manifest.version),
       title:        String(manifest.title || manifest.name),
       description:  String(manifest.description || ''),
+      attributes:   Array.isArray(manifest.attributes) ? manifest.attributes.filter(a => typeof a === 'string') : [],
       capabilities: caps,
       native,
       mounts:       Array.isArray(manifest.mounts) ? manifest.mounts.filter(m => typeof m === 'string') : [],
@@ -255,50 +306,76 @@ function installExtension(srcPath, extRoot) {
   return { ok: true, name: info.manifest.name, manifest: info.manifest, entries: info.entries };
 }
 
+/** Platform attribute shown on every extension's Settings page. Uniform and
+ *  the ONLY form field the app renders: per user direction the Ext menu
+ *  starts empty (default false) and the user pins entries explicitly;
+ *  saved values live in the per-ext config store and persist across
+ *  reinstalls. Custom per-ext config is the extension's own affair —
+ *  its view reads ext.config and surfaces it wherever it likes. */
+const PLATFORM_ATTRIBUTES = [
+  'show_in_agent_menu | boolean | false | Show in agent Ext menu | List this extension in the agent page Ext menu.',
+];
+
 /** List extensions: built-ins from packagesDir + user ones from
- *  extRoot, merged with the store's enabled flags. A user-installed
- *  copy SHADOWS the same-name built-in (single row, source 'user',
- *  shadowing: true) — reinstall-from-folder is how built-ins get
- *  updated without an app release. */
+ *  extRoot, merged with the store's flags. Built-ins carry NO
+ *  privileges: the enabled flag applies to them exactly like user
+ *  extensions, and a store entry with removed:true hides the built-in
+ *  row (its files stay in the read-only app bundle; reinstalling a
+ *  same-name folder/package restores it). When BOTH copies exist, the
+ *  higher-version one serves (resolvePackageDir): a newer user copy
+ *  shadows the built-in (single row, source 'user', shadowing: true) —
+ *  reinstall-from-package is how built-ins get updated without an app
+ *  release — while an equal/older user copy loses to the built-in, so
+ *  an app reinstall/upgrade repairs stale shadows (the row then carries
+ *  shadowed_user: <ignored version>). */
 function listExtensions({ packagesDir, extRoot, storeExts }) {
-  const flags = new Map((Array.isArray(storeExts) ? storeExts : []).map(e => [e.name, e.enabled !== false]));
+  const flags = new Map((Array.isArray(storeExts) ? storeExts : []).map(e => [e.name, e]));
   const out = [];
-  const scan = (dir, source) => {
-    let names = [];
-    try { names = fs.readdirSync(dir, { withFileTypes: true }).filter(e => e.isDirectory()).map(e => e.name); }
-    catch (_) { return; }
-    for (const name of names) {
-      const info = inspectExtension(path.join(dir, name));
-      if (!info.ok) {
-        out.push({ name, source, enabled: false, error: info.error, detail: info.detail });
-        continue;
-      }
-      out.push({
-        name:         info.manifest.name,
-        title:        info.manifest.title,
-        description:  info.manifest.description || '',
-        version:      info.manifest.version,
-        capabilities: info.manifest.capabilities,
-        native:       info.manifest.native || '',
-        mounts:       info.manifest.mounts || [],
-        kind:         info.manifest.kind || 'tool',
-        viewFile:     info.entries.view || '',
-        hasView:      !!info.entries.view,
-        hasTool:      !!info.entries.tool,
-        source,
-        enabled:      source === 'builtin' ? true : flags.get(info.manifest.name) !== false,
-      });
+  const names = new Set();
+  for (const dir of [packagesDir, extRoot]) {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { continue; }
+    for (const e of entries) if (e.isDirectory()) names.add(e.name);
+  }
+  for (const dirName of names) {
+    let win = resolvePackageDir(dirName, { packagesDir, extRoot });
+    if (!win) continue;
+    // removed:true hides the built-in; when a user copy exists alongside,
+    // it serves instead (removing the built-in never removes the user's
+    // own install).
+    if (win.source === 'builtin' && (flags.get(dirName) || {}).removed === true
+        && fs.existsSync(path.join(extRoot, dirName))) {
+      win = { dir: path.join(extRoot, dirName), source: 'user' };
     }
-  };
-  scan(packagesDir, 'builtin');
-  scan(extRoot, 'user');
-  // Dedupe: a user copy replaces its same-name built-in row.
-  const userNames = new Set(out.filter(e => e.source === 'user').map(e => e.name));
+    const info = inspectExtension(win.dir);
+    if (!info.ok) {
+      out.push({ name: dirName, source: win.source, enabled: false, error: info.error, detail: info.detail });
+      continue;
+    }
+    const row = {
+      name:         info.manifest.name,
+      title:        info.manifest.title,
+      description:  info.manifest.description || '',
+      version:      info.manifest.version,
+      capabilities: info.manifest.capabilities,
+      native:       info.manifest.native || '',
+      mounts:       info.manifest.mounts || [],
+      attributes:   PLATFORM_ATTRIBUTES.slice(),
+      kind:         info.manifest.kind || 'tool',
+      viewFile:     info.entries.view || '',
+      hasView:      !!info.entries.view,
+      hasTool:      !!info.entries.tool,
+      source:       win.source,
+      enabled:      (flags.get(info.manifest.name) || {}).enabled !== false,
+    };
+    if (win.shadowing) row.shadowing = true;
+    if (win.shadowedUserVersion !== undefined) row.shadowed_user = win.shadowedUserVersion;
+    out.push(row);
+  }
+  // A store entry with removed:true hides the BUILT-IN row (the user-copy
+  // case was already swapped to a user row above).
   return out
-    .filter(e => !(e.source === 'builtin' && userNames.has(e.name)))
-    .map(e => (e.source === 'user' && e.name && out.some(b => b.source === 'builtin' && b.name === e.name))
-      ? { ...e, shadowing: true }
-      : e);
+    .filter(e => !(e.source === 'builtin' && (flags.get(e.name) || {}).removed === true));
 }
 
 module.exports = {
@@ -308,4 +385,6 @@ module.exports = {
   installExtension,
   listExtensions,
   copyDir,
+  compareVersions,
+  resolvePackageDir,
 };

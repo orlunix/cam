@@ -100,6 +100,34 @@ public class TestAgentOps {
         JSONObject r8 = hub.apiRequest("GET", "/api/contexts/nope/sync-status", bearer, "");
         failures += check("sync-status unknown context → 404", r8.optInt("status") == 404);
 
+        // 9. ext list → 200 with bundled agent-doctor
+        JSONObject r9 = hub.apiRequest("GET", "/api/ext/list", bearer, "");
+        String exts = r9.opt("data") != null ? r9.opt("data").toString() : "";
+        failures += check("ext list contains agent-doctor (built-in)",
+            r9.optInt("status") == 200 && exts.contains("agent-doctor") && exts.contains("builtIn\":true"));
+
+        // 10. ext/call validation errors
+        JSONObject r10 = hub.apiRequest("POST", "/api/ext/call", bearer,
+            new JSONObject().put("name", "BAD NAME").put("method", "collect").put("agentId", "a1").toString());
+        failures += check("ext/call bad name → 400 invalid_args", r10.optInt("status") == 400
+            && "invalid_args".equals(errOf(r10)));
+        JSONObject r11 = hub.apiRequest("POST", "/api/ext/call", bearer,
+            new JSONObject().put("name", "agent-doctor").put("method", "bad method").put("agentId", "a1").toString());
+        failures += check("ext/call bad method → 400 invalid_method", r11.optInt("status") == 400
+            && "invalid_method".equals(errOf(r11)));
+
+        // 12. ext/call against blackhole agent → 502 (SSH connect fails on deploy/call)
+        JSONObject r12 = hub.apiRequest("POST", "/api/ext/call", bearer,
+            new JSONObject().put("name", "agent-doctor").put("method", "collect")
+                .put("args", new JSONObject().put("tool", "claude")).put("agentId", "a1").toString());
+        failures += check("ext/call blackhole → 502", r12.optInt("status") == 502);
+
+        // 13. ext/call unknown extension → 404 ext_not_found
+        JSONObject r13 = hub.apiRequest("POST", "/api/ext/call", bearer,
+            new JSONObject().put("name", "no-such-ext").put("method", "collect").put("agentId", "a1").toString());
+        failures += check("ext/call unknown ext → 404 ext_not_found", r13.optInt("status") == 404
+            && "ext_not_found".equals(errOf(r13)));
+
         hub.stop();
         System.out.println(failures == 0
             ? ">>> PASS: agent stop/remove routing verified"

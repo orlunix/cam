@@ -1,11 +1,10 @@
 /* extensions-mode.js — the Extensions page (SPEC §5).
  * Lists built-in + user extensions, installs from a user-picked folder,
  * opens views (native mode navigation for built-ins, sandboxed iframe
- * for package views). */
+ * for package views), and edits per-extension attributes. */
 
 import { installExtBridge } from '../shared/ext-bridge.js';
-import { mountExtView } from '../shared/ext-view-host.js';
-import { setDoctorAgent } from './agent-doctor-mode.js?v=0.68.0';
+import { mountExtView } from '../shared/ext-view-host.js?v=0.68.1';
 
 // Cross-mode entry point: other pages (the agent console Ext▾ menu)
 // open an extension's dedicated page through this. Set by
@@ -21,6 +20,58 @@ function esc(s) {
   return d.innerHTML;
 }
 
+/** Parse a schema-line like `key | boolean | false | Label | hint`. */
+function parseAttrSpec(line) {
+  const parts = String(line).split('|').map(s => s.trim());
+  return {
+    key: parts[0] || '',
+    type: parts[1] || 'text',
+    defaultValue: parts[2] || '',
+    label: parts[3] || parts[0] || '',
+    hint: parts[4] || '',
+  };
+}
+
+function parseAttrDefault(v, type) {
+  if (type === 'boolean') return String(v).toLowerCase() === 'true';
+  if (type === 'number') return Number(v) || 0;
+  return v;
+}
+
+/** Inject the uniform app-managed chrome into a native extension page.
+ *  Replaces the page's baked-in header with a title/description/Back bar
+ *  and returns an unmount function. */
+export function applyExtChrome({ nativeName, ext, returnTo = null, setMode }) {
+  const panel = document.getElementById(`mode-${nativeName}`) || document.getElementById(nativeName);
+  if (!panel) return () => {};
+  panel.classList.add('ext-chromed');
+  let chrome = panel.querySelector(':scope > .ext-chrome');
+  if (!chrome) {
+    chrome = document.createElement('div');
+    chrome.className = 'settings-header ext-chrome';
+    panel.insertBefore(chrome, panel.firstChild);
+  }
+  chrome.innerHTML = `
+    <div class="agent-settings-heading">
+      <h2>${esc(ext.title || ext.name)}@${esc(ext.version || '')}</h2>
+      <p class="settings-help">${esc(ext.description || ext.name)}</p>
+    </div>
+    <button type="button" class="btn-secondary ext-chrome-back">&larr; Back</button>
+  `;
+  const backBtn = chrome.querySelector('.ext-chrome-back');
+  const onBack = () => {
+    panel.classList.remove('ext-chromed');
+    if (chrome && chrome.parentNode) chrome.remove();
+    if (typeof setMode === 'function') setMode(returnTo || 'extensions');
+  };
+  backBtn.addEventListener('click', onBack);
+  return () => {
+    panel.classList.remove('ext-chromed');
+    if (chrome && chrome.parentNode) chrome.remove();
+    backBtn.removeEventListener('click', onBack);
+  };
+}
+
 export function mountExtensionsMode({ api, state, showToast, setMode }) {
   const root = document.getElementById('mode-extensions');
   if (!root) return;
@@ -34,12 +85,23 @@ export function mountExtensionsMode({ api, state, showToast, setMode }) {
   const viewTitle = root.querySelector('#ext-view-title');
   const viewHost = root.querySelector('#ext-view-host');
   const viewClose = root.querySelector('#ext-view-close');
+  const editWrap = root.querySelector('#ext-edit-wrap');
+  const editTitle = root.querySelector('#ext-edit-title');
+  const editSubtitle = root.querySelector('#ext-edit-subtitle');
+  const editForm = root.querySelector('#ext-edit-form');
+  const editRaw = root.querySelector('#ext-edit-raw');
+  const editSave = root.querySelector('#ext-edit-save');
+  const editCancel = root.querySelector('#ext-edit-cancel');
+  const editClose = root.querySelector('#ext-edit-close');
 
   let unmountView = null;
+  let unmountChrome = null;
   // Where Back should return when the view was opened from elsewhere
   // (e.g. the agent page Ext▾ menu). null = opened from the Extensions
   // list → Back returns to the list.
   let returnToMode = null;
+  // Extension currently being edited in the Settings page.
+  let editingExt = null;
 
   function setStatus(text, cls = '') {
     if (!statusEl) return;
@@ -55,6 +117,12 @@ export function mountExtensionsMode({ api, state, showToast, setMode }) {
     returnToMode = null;
   }
 
+  function closeEdit() {
+    editingExt = null;
+    if (editWrap) editWrap.hidden = true;
+    root.classList.remove('ext-editing');
+  }
+
   function onViewBack() {
     const target = returnToMode;
     closeView();
@@ -63,14 +131,16 @@ export function mountExtensionsMode({ api, state, showToast, setMode }) {
 
   function openExt(ext, { bindContext = null, returnTo = null } = {}) {
     if (ext.native) {
-      // Native extension pages live in the app shell. agent-doctor gets
-      // its Back target through the module handoff (no agent bound when
-      // opened from the Extensions list).
-      if (ext.native === 'agent-doctor') setDoctorAgent(null, { returnTo: 'extensions' });
+      // Native extension pages live in the app shell; wrap them in the
+      // uniform app-managed chrome.
+      if (unmountChrome) { try { unmountChrome(); } catch (_) {} unmountChrome = null; }
+      returnToMode = returnTo;
+      unmountChrome = applyExtChrome({ nativeName: ext.native, ext, returnTo, setMode });
       if (typeof setMode === 'function') setMode(ext.native);
       return;
     }
     if (!ext.hasView) return;
+    closeEdit();
     closeView();
     if (viewTitle) viewTitle.textContent = `${ext.title || ext.name}@${ext.version || ''}`;
     const subtitleEl = root.querySelector('#ext-view-subtitle');
@@ -81,6 +151,77 @@ export function mountExtensionsMode({ api, state, showToast, setMode }) {
     root.classList.add('ext-viewing');
     if (viewWrap) viewWrap.hidden = false;
     unmountView = mountExtView(viewHost, api, ext, bindContext);
+  }
+
+  function renderEditForm(ext, cfg) {
+    if (!editForm || !editRaw) return;
+    const attrs = Array.isArray(ext.attributes) ? ext.attributes : [];
+    if (attrs.length) {
+      editForm.innerHTML = attrs.map((line) => {
+        const spec = parseAttrSpec(line);
+        const current = cfg[spec.key] !== undefined
+          ? cfg[spec.key]
+          : parseAttrDefault(spec.defaultValue, spec.type);
+        if (spec.type === 'boolean') {
+          return `
+            <label class="form-checkbox">
+              <input type="checkbox" data-attr-key="${esc(spec.key)}" ${current ? 'checked' : ''}>
+              <span>${esc(spec.label)}</span>
+            </label>
+            ${spec.hint ? `<p class="form-hint">${esc(spec.hint)}</p>` : ''}
+          `;
+        }
+        // Non-boolean types fall back to the raw JSON editor for now.
+        return '';
+      }).join('');
+    } else {
+      editForm.innerHTML = '';
+    }
+    editRaw.value = JSON.stringify(cfg, null, 2);
+  }
+
+  function collectEditConfig() {
+    const cfg = {};
+    if (editForm) {
+      editForm.querySelectorAll('input[type="checkbox"][data-attr-key]').forEach(cb => {
+        cfg[cb.dataset.attrKey] = cb.checked;
+      });
+    }
+    // Merge form values on top of any raw JSON the user may have edited.
+    try {
+      const raw = JSON.parse((editRaw && editRaw.value) || '{}');
+      return { ...raw, ...cfg };
+    } catch (e) {
+      throw new Error('Invalid raw JSON: ' + e.message);
+    }
+  }
+
+  async function openEditor(ext) {
+    closeView();
+    editingExt = ext;
+    if (editTitle) editTitle.textContent = `${ext.title || ext.name}@${ext.version || ''}`;
+    if (editSubtitle) editSubtitle.textContent = ext.description || ext.name;
+    root.classList.add('ext-editing');
+    if (editWrap) editWrap.hidden = false;
+    try {
+      const r = await api.extConfigGet(ext.name);
+      renderEditForm(ext, (r && r.config) || {});
+    } catch (e) {
+      setStatus(`Load config failed: ${e.message}`, 'is-error');
+      renderEditForm(ext, {});
+    }
+  }
+
+  async function onEditSave() {
+    if (!editingExt) return;
+    try {
+      const cfg = collectEditConfig();
+      await api.extConfigSet(editingExt.name, cfg);
+      showToast(`Settings saved for "${editingExt.name}"`, 'success');
+      closeEdit();
+    } catch (e) {
+      setStatus(`Save failed: ${e.message}`, 'is-error');
+    }
   }
 
   // Open an extension view from OUTSIDE the Extensions page (e.g. the
@@ -112,8 +253,9 @@ export function mountExtensionsMode({ api, state, showToast, setMode }) {
         </div>
         <div class="ext-row-actions">
           ${x.enabled !== false && (x.hasView || x.native) ? `<button type="button" class="btn-sm ext-open-btn" data-i="${i}">Open</button>` : ''}
-          ${x.source === 'user' ? `<button type="button" class="btn-sm ext-toggle-btn" data-i="${i}">${x.enabled === false ? 'Enable' : 'Disable'}</button>` : ''}
-          ${x.source === 'user' ? `<button type="button" class="btn-sm btn-danger ext-remove-btn" data-i="${i}">Remove</button>` : ''}
+          <button type="button" class="btn-sm ext-edit-btn" data-i="${i}">Settings</button>
+          <button type="button" class="btn-sm ext-toggle-btn" data-i="${i}">${x.enabled === false ? 'Enable' : 'Disable'}</button>
+          <button type="button" class="btn-sm btn-danger ext-remove-btn" data-i="${i}">Remove</button>
         </div>
       </div>`).join('');
 
@@ -121,6 +263,12 @@ export function mountExtensionsMode({ api, state, showToast, setMode }) {
       btn.addEventListener('click', () => {
         const x = exts[Number(btn.dataset.i)];
         if (x) openExt(x);
+      });
+    });
+    listEl.querySelectorAll('.ext-edit-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const x = exts[Number(btn.dataset.i)];
+        if (x) openEditor(x);
       });
     });
     listEl.querySelectorAll('.ext-toggle-btn').forEach(btn => {
@@ -142,6 +290,7 @@ export function mountExtensionsMode({ api, state, showToast, setMode }) {
         try {
           await api.request('DELETE', `/api/extensions/${x.name}`);
           closeView();
+          closeEdit();
           showToast(`Extension "${x.name}" removed`, 'success');
           await refresh();
         } catch (e) { setStatus(`Remove failed: ${e.message}`, 'is-error'); }
@@ -192,6 +341,30 @@ export function mountExtensionsMode({ api, state, showToast, setMode }) {
   });
 
   if (viewClose) viewClose.addEventListener('click', onViewBack);
+  if (editClose) editClose.addEventListener('click', closeEdit);
+  if (editCancel) editCancel.addEventListener('click', closeEdit);
+  if (editSave) editSave.addEventListener('click', onEditSave);
+
+  // The mount-time refresh races autoStartConnection() (app.js mounts all
+  // modes BEFORE the first connect), so a boot-time 'Not connected' error
+  // would stick for the whole session — setMode only toggles visibility,
+  // nothing re-runs refresh. Re-refresh when the connection comes up and
+  // whenever the page becomes visible. (state.subscribe fires on every
+  // set; track last-seen values so only real transitions trigger.)
+  let lastConn = '';
+  let lastMode = '';
+  state.subscribe(() => {
+    const conn = state.get('connectionMode') || '';
+    const mode = state.get('mode') || '';
+    if (conn !== lastConn) {
+      lastConn = conn;
+      if (conn === 'direct' || conn === 'relay') refresh();
+    }
+    if (mode !== lastMode) {
+      lastMode = mode;
+      if (mode === 'extensions') refresh();
+    }
+  });
 
   refresh();
 }
