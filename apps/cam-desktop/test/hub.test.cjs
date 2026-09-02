@@ -63,6 +63,7 @@ function makeCredentialStore() {
     put(ref, kind, secret) { map.set(ref, { kind, secret }); return { ok: true, ref, saved_at: 'now' }; },
     get(ref) { const e = map.get(ref); return e ? e.secret : null; },
     removeForContext(id) { for (const k of [...map.keys()]) { if (k.startsWith(id + ':')) map.delete(k); } },
+    removeWithPrefix(p) { for (const k of [...map.keys()]) { if (k.startsWith(p)) map.delete(k); } },
     remove(ref) { map.delete(ref); },
   };
 }
@@ -71,8 +72,14 @@ function makeCredentialStore() {
 // per-test stubs; tests register handlers via setRemoteHandler().
 let _remoteHandler = null;
 function setRemoteHandler(fn) { _remoteHandler = fn; }
+// writeRemoteFile is OPT-IN per test: _ensureRemoteCamc probes
+// `typeof … === 'function'` and skips the upload path when absent —
+// most tests rely on that skip. Tests that need the ensure path
+// (python3 probe & friends) enable it via setWriteEnabled(true).
+let _writeEnabled = false;
+function setWriteEnabled(on) { _writeEnabled = !!on; }
 function makeSshTransport() {
-  return {
+  const t = {
     execRemote(opts) {
       if (_remoteHandler) {
         try { return Promise.resolve(_remoteHandler(opts) || { ok: false, error: 'unhandled', detail: 'no handler' }); }
@@ -82,6 +89,11 @@ function makeSshTransport() {
     },
     closeAll() {},
   };
+  Object.defineProperty(t, 'writeRemoteFile', {
+    get() { return _writeEnabled ? (() => Promise.resolve({ ok: true, bytes: 0 })) : undefined; },
+    configurable: true,
+  });
+  return t;
 }
 
 // ── HTTP helpers ──────────────────────────────────────────────────
@@ -326,6 +338,86 @@ async function main() {
   r = await request('GET', '/api/contexts/nonexistent-ctx/sync-status');
   eq('sync-status unknown context 404', r.status, 404);
 
+  // ── python3 probe misclassification guards (sync error reporting) ──
+  // The pre-upload `command -v python3` probe (routed via /bin/sh) must
+  // only report python3_missing when it actually RAN and found nothing.
+  // Connection-level failures used to be misreported as "install python3".
+  {
+    let r0 = await request('POST', '/api/contexts', {
+      name: 'probebox', host: '10.9.3.1', user: 'u', port: 22,
+      auth_method: 'agent', path: '/home/u',
+    });
+    eq('probe: seed context', r0.status, 201);
+    setWriteEnabled(true); // let _ensureRemoteCamc reach the python3 probe
+
+    // auth failure → passes through as auth_failed.
+    setRemoteHandler(() => ({ ok: false, error: 'auth_failed', detail: 'All configured authentication methods failed' }));
+    r0 = await request('POST', '/api/contexts/probebox/sync', {});
+    eq('probe: auth failure passes through', r0.body && r0.body.error, 'auth_failed', JSON.stringify(r0.body));
+
+    // Probe command must be routed through /bin/sh explicitly — the exec
+    // channel is interpreted by the login shell; /bin/sh + `command -v`
+    // are Linux-common and must not gate on the user's login shell.
+    let probeCmd = null;
+    setRemoteHandler((opts) => {
+      if (/command -v python3/.test(opts.command)) {
+        probeCmd = opts.command;
+        return { ok: true, stdout: '/usr/bin/python3\n' };
+      }
+      return { ok: false, error: 'remote_nonzero', detail: '', stderr: '' };
+    });
+    r0 = await request('POST', '/api/contexts/probebox/sync', {});
+    eq('probe: wrapped in /bin/sh', /^\/bin\/sh -c /.test(probeCmd || ''), true, String(probeCmd));
+
+    // Genuine absence: probe ran under /bin/sh, exit 1, no output.
+    setRemoteHandler((opts) => {
+      if (/command -v python3/.test(opts.command)) {
+        return { ok: false, error: 'remote_nonzero', detail: '', stderr: '' };
+      }
+      return { ok: false, error: 'remote_nonzero', detail: '', stderr: '' };
+    });
+    r0 = await request('POST', '/api/contexts/probebox/sync', {});
+    eq('probe: genuine absence stays python3_missing', r0.body && r0.body.error, 'python3_missing', JSON.stringify(r0.body));
+
+    // Duplicate concurrent sync for the same context: one runs, the
+    // other is refused — no double probes / twin SFTP writers on the
+    // same camc.tmp. (Frontend idle-abort cancels only the HTTP
+    // request, never the hub-side sync, so this race was reachable by
+    // reload/retry while a slow sync was still grinding.)
+    setWriteEnabled(false);
+    setRemoteHandler((opts) => new Promise(res => setTimeout(
+      () => res({ ok: false, error: 'remote_nonzero', detail: '', stderr: '' }), 50)));
+    const [s1, s2] = await Promise.all([
+      request('POST', '/api/contexts/probebox/sync', {}),
+      request('POST', '/api/contexts/probebox/sync', {}),
+    ]);
+    ok('sync: concurrent duplicate refused',
+      [s1, s2].filter(s => s.body && s.body.error === 'sync_in_flight').length === 1,
+      JSON.stringify([s1.body && s1.body.error, s2.body && s2.body.error]));
+
+    // Wedged-sync reaper: if a sync's hub-side flow never settles (a step
+    // promise that hangs), the in-flight lock must not lock the context out
+    // until app restart — after syncStaleMs without step activity the next
+    // sync reaps the stale lease. Uses the start() reused-path runtime
+    // tunable: a hub restart here trips a pre-existing socket hang-up quirk
+    // (restart + pending request), unrelated to this change.
+    await HUB.start({ syncStaleMs: 250 });
+    setRemoteHandler(() => new Promise(() => {})); // never settles = wedged
+    const w1 = request('POST', '/api/contexts/probebox/sync', {});
+    w1.catch(() => {}); // wedged hub-side flow; HTTP socket dies at stopHub
+    await new Promise(res => setTimeout(res, 50)); // let w1 get in flight
+    let rw = await request('POST', '/api/contexts/probebox/sync', {});
+    eq('sync: fresh in-flight lock still refuses', rw.body && rw.body.error, 'sync_in_flight', JSON.stringify(rw.body));
+    await new Promise(res => setTimeout(res, 300)); // past the stale window
+    setRemoteHandler(() => ({ ok: false, error: 'remote_nonzero', detail: '', stderr: '' }));
+    rw = await request('POST', '/api/contexts/probebox/sync', {});
+    ok('sync: stale wedged lock reaped, sync allowed',
+      rw.body && rw.body.error !== 'sync_in_flight', JSON.stringify(rw.body));
+    await HUB.start({ syncStaleMs: 180000 });
+    setRemoteHandler(null);
+    setWriteEnabled(false);
+  }
+
   // ── Heal endpoint: runs selected camc ops sequentially, whitelist ──
   {
     let r0 = await request('POST', '/api/contexts', {
@@ -416,47 +508,127 @@ async function main() {
   {
     const fs = require('fs');
     const repoRoot = path.join(__dirname, '..', '..', '..');
-    const helloDir = path.join(repoRoot, 'extensions', 'examples', 'hello-ext');
-    let r0 = await request('POST', '/api/extensions/install', { path: helloDir });
-    eq('ext: install hello-ext', r0.status, 201, JSON.stringify(r0.body));
-    eq('ext: install returns manifest', r0.body && r0.body.manifest && r0.body.manifest.name, 'hello-ext');
+    const sampleDir = path.join(repoRoot, 'extensions', 'packages', 'assistant');
+    let r0 = await request('POST', '/api/extensions/install', { path: sampleDir });
+    eq('ext: install assistant', r0.status, 201, JSON.stringify(r0.body));
+    eq('ext: install returns manifest', r0.body && r0.body.manifest && r0.body.manifest.name, 'assistant');
 
     r0 = await request('GET', '/api/extensions');
     const exts = (r0.body && r0.body.extensions) || [];
-    ok('ext: list includes builtin skills/todos + user hello-ext',
-      exts.some(e => e.name === 'skills' && e.source === 'builtin' && e.native === 'skills')
-        && exts.some(e => e.name === 'hello-ext' && e.source === 'user' && e.hasView && e.hasTool));
+    // The installed copy is the SAME version as the built-in assistant —
+    // a tie goes to the built-in (app reinstall repairs stale shadows);
+    // the row is the built-in, annotated with the ignored user version.
+    ok('ext: list includes builtin skills/todos + builtin assistant (tie → built-in wins)',
+      exts.some(e => e.name === 'skills' && e.source === 'builtin' && e.hasView === true
+          && (e.capabilities || []).includes('hub:api'))
+        && exts.some(e => e.name === 'assistant' && e.source === 'builtin' && e.hasView && e.hasTool
+          && typeof e.shadowed_user === 'string'));
 
     // Toggle disable/enable persists via the store flags.
-    r0 = await request('POST', '/api/extensions/hello-ext/disable');
+    r0 = await request('POST', '/api/extensions/assistant/disable');
     eq('ext: disable', r0.status, 200);
     r0 = await request('GET', '/api/extensions');
-    ok('ext: disabled reflected', (r0.body.extensions.find(e => e.name === 'hello-ext') || {}).enabled === false);
-    await request('POST', '/api/extensions/hello-ext/enable');
+    ok('ext: disabled reflected', (r0.body.extensions.find(e => e.name === 'assistant') || {}).enabled === false);
+    await request('POST', '/api/extensions/assistant/enable');
+
+    // Remove is uniform for built-in and user extensions (product
+    // decision 2026-08-17 v2): a built-in DELETE hides it via the store
+    // `removed` flag and cascades its config (attributes + ext-data dir
+    // + credential secrets); a same-name install or an app version
+    // change restores it. Deleting a SHADOWING user copy merely reverts
+    // to the built-in — config is kept.
+    r0 = await request('PUT', '/api/extensions/todos/config', { config: { cascade_probe: 1 } });
+    eq('ext: seed todos attributes', r0.status, 200, JSON.stringify(r0.body));
+    const todosData = path.join(tmpDir, 'ext-data', 'todos');
+    fs.mkdirSync(todosData, { recursive: true });
+    fs.writeFileSync(path.join(todosData, 'probe.txt'), 'x');
+    r0 = await request('DELETE', '/api/extensions/todos');
+    eq('ext: remove builtin ok', r0.status, 200, JSON.stringify(r0.body));
+    r0 = await request('GET', '/api/extensions');
+    ok('ext: builtin hidden after remove', !r0.body.extensions.some(e => e.name === 'todos'));
+    const cfgAfterRm = JSON.parse(fs.readFileSync(path.join(tmpDir, 'extension-config.json'), 'utf8'));
+    ok('ext: remove cascades attributes', cfgAfterRm.todos === undefined, JSON.stringify(cfgAfterRm));
+    ok('ext: remove cascades ext-data dir', !fs.existsSync(todosData));
+    const tmpT = fs.mkdtempSync(path.join(require('os').tmpdir(), 'todos-restore-'));
+    fs.writeFileSync(path.join(tmpT, 'manifest.yaml'), 'name: todos\nversion: 9.9.9\ntitle: Todos\ndescription: restored copy\n');
+    fs.writeFileSync(path.join(tmpT, 'index.html'), '<html></html>');
+    r0 = await request('POST', '/api/extensions/install', { path: tmpT });
+    eq('ext: same-name install lands as user copy', r0.status, 201, JSON.stringify(r0.body));
+    r0 = await request('GET', '/api/extensions');
+    const todosRow = (r0.body.extensions || []).find(e => e.name === 'todos');
+    ok('ext: same-name row is the shadowing user copy', todosRow && todosRow.source === 'user' && todosRow.shadowing === true);
+    // Config on the shadow copy, then delete the copy → reverts to the
+    // built-in; config KEPT (uninstall-an-update ≠ remove-the-ext).
+    r0 = await request('PUT', '/api/extensions/todos/config', { config: { shadow_probe: 2 } });
+    eq('ext: seed shadow attributes', r0.status, 200, JSON.stringify(r0.body));
+    r0 = await request('DELETE', '/api/extensions/todos');
+    eq('ext: delete the user copy', r0.status, 200);
+    ok('ext: shadow delete reports the revert', r0.body && r0.body.reverted_to_builtin === true, JSON.stringify(r0.body));
+    r0 = await request('GET', '/api/extensions');
+    const todosBack = (r0.body.extensions || []).find(e => e.name === 'todos');
+    ok('ext: builtin reappears after user-copy delete', todosBack && todosBack.source === 'builtin');
+    r0 = await request('GET', '/api/extensions/todos/config');
+    ok('ext: shadow delete keeps attributes', r0.status === 200 && r0.body && r0.body.config && r0.body.config.shadow_probe === 2, JSON.stringify(r0.body));
+    r0 = await request('PUT', '/api/extensions/todos/config', { config: {} });
+
+    // Per-extension storage (view-written local state for sandboxed views):
+    // roundtrip under ext-data/<name>/storage.json, cap + unknown ext.
+    r0 = await request('PUT', '/api/extensions/todos/storage', { storage: { cam_desktop_worklog: '{"items":[]}', theme: 'dark' } });
+    eq('ext: storage PUT', r0.status, 200, JSON.stringify(r0.body));
+    r0 = await request('GET', '/api/extensions/todos/storage');
+    ok('ext: storage GET roundtrip', r0.status === 200 && r0.body && r0.body.storage
+      && r0.body.storage.theme === 'dark' && typeof r0.body.storage.cam_desktop_worklog === 'string', JSON.stringify(r0.body));
+    ok('ext: storage file lives in ext-data', fs.existsSync(path.join(tmpDir, 'ext-data', 'todos', 'storage.json')));
+    r0 = await request('PUT', '/api/extensions/todos/storage', { storage: { big: 'x'.repeat(600000) } });
+    eq('ext: storage cap 512KB', r0.status, 400);
+    r0 = await request('GET', '/api/extensions/no-such-ext/storage');
+    eq('ext: storage unknown ext 404', r0.status, 404);
+    r0 = await request('PUT', '/api/extensions/todos/storage', { storage: {} });
+    eq('ext: storage empty object ok', r0.status, 200);
+
+    // Per-extension attributes (Extensions → Settings): stored outside the
+    // package dir, so reinstalling the package must not wipe them.
+    r0 = await request('PUT', '/api/extensions/assistant/config', { config: { prompt_warn_kb: 12, note: 'x' } });
+    eq('ext cfg: put', r0.status, 200, JSON.stringify(r0.body));
+    r0 = await request('GET', '/api/extensions/assistant/config');
+    ok('ext cfg: get roundtrip', r0.status === 200 && r0.body && r0.body.config
+      && r0.body.config.prompt_warn_kb === 12 && r0.body.config.note === 'x', JSON.stringify(r0.body));
+    r0 = await request('PUT', '/api/extensions/assistant/config', { config: [1, 2] });
+    eq('ext cfg: array rejected', r0.status, 400);
+    r0 = await request('GET', '/api/extensions/no-such-ext/config');
+    eq('ext cfg: unknown extension 404', r0.status, 404);
+    // Reinstall the package (same flow as an update) → config survives.
+    r0 = await request('POST', '/api/extensions/install', { path: sampleDir });
+    eq('ext cfg: reinstall ok', r0.status, 201);
+    r0 = await request('GET', '/api/extensions/assistant/config');
+    ok('ext cfg: survives reinstall', r0.body && r0.body.config && r0.body.config.prompt_warn_kb === 12);
+    r0 = await request('PUT', '/api/extensions/assistant/config', { config: {} });
+    r0 = await request('GET', '/api/extensions/assistant/config');
+    ok('ext cfg: empty object resets', r0.body && r0.body.config && Object.keys(r0.body.config).length === 0);
 
     // Remote call: stub the transport so the .hash probe matches the
     // local main.py (deploy skipped), then answer the method call.
-    const toolContent = fs.readFileSync(path.join(helloDir, 'main.py'));
+    const toolContent = fs.readFileSync(path.join(sampleDir, 'main.py'));
     const localHash = crypto.createHash('sha256').update(toolContent).digest('hex').slice(0, 16);
     const calls = [];
     setRemoteHandler((opts) => {
       calls.push(opts.command);
-      if (/cat \$HOME\/.cam\/extensions\/hello-ext\/.hash/.test(opts.command)) {
+      if (/cat \$HOME\/.cam\/extensions\/assistant\/.hash/.test(opts.command)) {
         return { ok: true, stdout: localHash + '\n', stderr: '' };
       }
-      if (/extensions\/hello-ext\/main\.py/.test(opts.command) && /sysinfo/.test(opts.command)) {
+      if (/extensions\/assistant\/main\.py/.test(opts.command) && /sysinfo/.test(opts.command)) {
         return { ok: true, stdout: JSON.stringify({ hostname: 'fake-host', python: '3.8.0' }) + '\n', stderr: '' };
       }
       return { ok: true, stdout: '', stderr: '' };
     });
-    r0 = await request('POST', '/api/extensions/hello-ext/call', { context: 'jumphost', method: 'sysinfo', args: {} });
+    r0 = await request('POST', '/api/extensions/assistant/call', { context: 'jumphost', method: 'sysinfo', args: {} });
     ok('ext: call sysinfo ok', r0.status === 200 && r0.body && r0.body.ok === true
       && r0.body.result && r0.body.result.hostname === 'fake-host', JSON.stringify(r0.body));
     ok('ext: deploy skipped when hash matches', !calls.some(c => /main\.py\.tmp/.test(c)));
 
     // Capability gate: remove 'exec' from the manifest → 403.
-    // (hello-ext declares exec; use a bogus method for a 200-with-error path instead.)
-    r0 = await request('POST', '/api/extensions/hello-ext/call', { context: 'jumphost', method: 'no such method!', args: {} });
+    // (assistant declares exec; use a bogus method for a 200-with-error path instead.)
+    r0 = await request('POST', '/api/extensions/assistant/call', { context: 'jumphost', method: 'no such method!', args: {} });
     ok('ext: invalid method rejected', r0.body && r0.body.ok === false && r0.body.error === 'invalid_method');
 
     setRemoteHandler(null);
@@ -474,21 +646,24 @@ async function main() {
     let vt = await request('GET', '/api/extensions/view-token');
     const viewToken = vt.body && vt.body.token;
     ok('ext: view-token endpoint returns a token', !!viewToken && viewToken !== _token);
-    let ev = await rawGet('/ext/hello-ext/index.html?token=' + encodeURIComponent(viewToken));
-    ok('ext: view served over hub', ev.status === 200 && /Hello Extension/.test(ev.text));
-    ev = await rawGet('/ext/hello-ext/index.html?token=' + encodeURIComponent(_token));
+    let ev = await rawGet('/ext/assistant/index.html?token=' + encodeURIComponent(viewToken));
+    ok('ext: view served over hub', ev.status === 200 && /Assistant/.test(ev.text));
+    ev = await rawGet('/ext/assistant/index.html?token=' + encodeURIComponent(_token));
     eq('ext: API token refused for views', ev.status, 401);
-    ev = await rawGet('/ext/hello-ext/index.html');
+    ev = await rawGet('/ext/assistant/index.html');
     eq('ext: view requires token', ev.status, 401);
-    ev = await rawGet('/ext/hello-ext/..%2F..%2Fmanifest.yaml?token=' + encodeURIComponent(viewToken));
+    ev = await rawGet('/ext/assistant/..%2F..%2Fmanifest.yaml?token=' + encodeURIComponent(viewToken));
     ok('ext: path traversal refused', ev.status === 400 || ev.status === 404);
     ev = await rawGet('/ext/client.js');
     ok('ext: bridge client is public', ev.status === 200 && /camExt/.test(ev.text));
 
-    r0 = await request('DELETE', '/api/extensions/hello-ext');
+    r0 = await request('DELETE', '/api/extensions/assistant');
     eq('ext: remove', r0.status, 200);
     r0 = await request('GET', '/api/extensions');
-    ok('ext: removed from list', !(r0.body.extensions || []).some(e => e.name === 'hello-ext'));
+    // assistant is a built-in: deleting the user copy re-exposes the
+    // built-in row rather than removing the name altogether.
+    ok('ext: user copy removed, builtin row remains',
+      (r0.body.extensions || []).some(e => e.name === 'assistant' && e.source === 'builtin' && !e.shadowing));
   }
 
   await stopHub();
@@ -512,6 +687,46 @@ async function main() {
       } catch (e) { restartErr = e.message; }
     }
     ok('hub serves requests after in-process restart (retry allowed)', restartOk, restartErr);
+
+    // App reinstall/upgrade (version change) restores removed built-ins:
+    // the store `removed` hide-flag (set by built-in Remove since
+    // 0.2.24) is honored on a same-version start but must not survive a
+    // version change. This process's hub keeps its store in memory
+    // across restarts — so plant the flag in a fresh dataDir and drive a
+    // throwaway hub CHILD process.
+    const fs2 = require('fs');
+    const legacyDir = fs2.mkdtempSync(path.join(require('os').tmpdir(), 'hub-legacy-ext-'));
+    fs2.writeFileSync(path.join(legacyDir, 'embedded-hub.json'), JSON.stringify({
+      version: 1,
+      app_version: '0.0.1-old',
+      contexts: [], agents: [],
+      extensions: [{ name: 'skills', enabled: true, removed: true }],
+    }));
+    const childScript = `
+      const HUB = require(${JSON.stringify(path.join(__dirname, '..', 'electron', 'embedded-hub.cjs'))});
+      const listExts = async (r) => {
+        for (let i = 0; i < 3; i++) {
+          try {
+            const res = await fetch(r.apiUrl + '/api/extensions', { headers: { Authorization: 'Bearer ' + r.apiToken } });
+            return (await res.json()).extensions || [];
+          } catch (e) { if (i === 2) throw e; }
+        }
+      };
+      (async () => {
+        const r1 = await HUB.start({ dataDir: process.env.LEGACY_DIR, appVersion: '0.0.1-old' });
+        const sameVersion = (await listExts(r1)).some(e => e.name === 'skills');
+        const r2 = await HUB.restart({ dataDir: process.env.LEGACY_DIR, appVersion: '9.9.9-test' });
+        const back = (await listExts(r2)).find(e => e.name === 'skills');
+        console.log('LEGACY_RESULT ' + JSON.stringify({ sameVersion, restored: !!(back && back.source === 'builtin') }));
+        await HUB.stop();
+      })().catch((e) => { console.error(e); process.exit(1); });
+    `;
+    const childOut = require('node:child_process').execFileSync(
+      process.execPath, ['-e', childScript],
+      { encoding: 'utf8', timeout: 30000, env: { ...process.env, LEGACY_DIR: legacyDir } });
+    const legacy = JSON.parse((childOut.trim().split('\n').pop() || '').replace(/^LEGACY_RESULT /, '') || '{}');
+    ok('restore: legacy removed flag honored on same version', legacy.sameVersion === false, childOut);
+    ok('restore: removed builtin returns on app version change', legacy.restored === true, childOut);
     await stopHub();
   }
 

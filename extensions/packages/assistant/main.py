@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""hello-ext remote tool — SPEC §3 contract:
+"""assistant remote tool — SPEC §3 contract:
   python3 main.py <method> '<json-args>'  →  one JSON object on stdout
 python3.6 stdlib only; runs on any remote host the app manages.
 """

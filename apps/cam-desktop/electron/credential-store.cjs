@@ -182,6 +182,19 @@ function remove(ref) {
   }
 }
 
+/** Remove every ref with the given prefix (e.g. "assistant:") — used
+ *  when an extension is removed, so its secrets go with it. Returns the
+ *  number of refs removed. */
+function removeWithPrefix(prefix) {
+  if (!prefix || !state.store || !state.store.items) return 0;
+  let n = 0;
+  for (const k of Object.keys(state.store.items)) {
+    if (k.startsWith(prefix)) { delete state.store.items[k]; n++; }
+  }
+  if (n) _save();
+  return n;
+}
+
 /** Cascade-remove the well-known refs for a context id. Embedded Hub
  *  uses `${contextId}:password` and `${contextId}:passphrase` as
  *  refs, so this is enough to clean up on context delete or auth-
@@ -202,5 +215,6 @@ module.exports = {
   get,
   metadata,
   remove,
+  removeWithPrefix,
   removeForContext,
 };

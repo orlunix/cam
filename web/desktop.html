@@ -9,8 +9,7 @@
   <meta name="cam-version" content="v0.64.0">
   <link rel="icon" href="assets/icon-192.png">
   <link rel="stylesheet" href="css/style.css?v=0.64.0">
-  <link rel="stylesheet" href="css/desktop.css?v=0.64.6-tmux-degrade">
-  <link rel="stylesheet" href="css/todos.css?v=2.4.5">
+  <link rel="stylesheet" href="css/desktop.css?v=0.64.7">
   <link rel="stylesheet" href="vendor/xterm/xterm.css?v=0.64.0">
   <!-- CAM-DESK-TERM-002: xterm UMD bundles expose window.Terminal,
        window.FitAddon, and window.SerializeAddon. Loaded before any
@@ -26,13 +25,12 @@
   <script src="vendor/dompurify/purify.min.js?v=0.68.0"></script>
   <link rel="modulepreload" href="js/api.js?v=0.66.1">
   <link rel="modulepreload" href="js/state.js?v=0.64.0">
-  <link rel="modulepreload" href="js/desktop/app.js?v=0.66.1">
+  <link rel="modulepreload" href="js/desktop/app.js?v=0.66.4">
   <link rel="modulepreload" href="js/desktop/shell.js?v=0.65.1">
-  <link rel="modulepreload" href="js/desktop/agent-console.js?v=0.67.5">
+  <link rel="modulepreload" href="js/desktop/agent-console.js?v=0.68.3">
   <link rel="modulepreload" href="js/desktop/settings-mode.js?v=0.64.2">
   <link rel="modulepreload" href="js/desktop/start-agent-mode.js?v=0.64.1">
   <link rel="modulepreload" href="js/desktop/nodes-mode.js?v=0.64.0">
-  <link rel="modulepreload" href="js/desktop/skills-mode.js?v=0.64.0">
   <link rel="modulepreload" href="js/desktop/bots-mode.js?v=0.64.0">
 </head>
 <body class="desktop">
@@ -62,12 +60,8 @@
           <span class="mode-nav-icon">&#9635;</span>
           <span class="mode-nav-label">Nodes</span>
         </button>
-        <!-- Skills 降级为 Extensions 的内置扩展（native: skills）——
-             导航入口隐藏，页面保留，从 Extensions 页 Open 进入。 -->
-        <button class="mode-nav-btn" data-mode="skills" aria-pressed="false" hidden>
-          <span class="mode-nav-icon">&#9734;</span>
-          <span class="mode-nav-label">Skills</span>
-        </button>
+        <!-- Skills 是 Extensions 的内置扩展（iframe view）——不再是
+             app mode，无导航入口，从 Extensions 页 Open 进入。 -->
         <button class="mode-nav-btn" data-mode="extensions" aria-pressed="false">
           <span class="mode-nav-icon">&#10070;</span>
           <span class="mode-nav-label">Extensions</span>
@@ -79,12 +73,8 @@
           <span class="mode-nav-icon">&#9670;</span>
           <span class="mode-nav-label">Bots</span>
         </button>
-        <!-- Todos 导航入口隐藏（降级为 Extensions 的内置扩展入口），
-             但模式本身已启用 —— Extensions 页 Open 可进入。 -->
-        <button class="mode-nav-btn" data-mode="todos" aria-pressed="false" hidden>
-          <span class="mode-nav-icon">&#9745;</span>
-          <span class="mode-nav-label">Todos</span>
-        </button>
+        <!-- Todos 同样是 Extensions 的内置扩展（iframe view）——不再是
+             app mode，无导航入口，从 Extensions 页 Open 进入。 -->
       </nav>
 
       <div class="conn-bar" id="conn-bar"
@@ -978,132 +968,30 @@
         <div class="settings-status" id="ext-status" aria-live="polite"></div>
         <div id="ext-view-wrap" class="ext-view-wrap" hidden>
           <div class="settings-header ext-view-header">
-            <button type="button" class="btn-secondary" id="ext-view-close">&larr; Back</button>
             <div class="agent-settings-heading">
               <h2 id="ext-view-title"></h2>
               <p class="settings-help" id="ext-view-subtitle"></p>
             </div>
+            <button type="button" class="btn-secondary" id="ext-view-close">&larr; Back</button>
           </div>
           <div id="ext-view-host" class="ext-view-host"></div>
         </div>
-      </section>
-
-      <section class="mode-panel" id="mode-skills" data-mode="skills" hidden>
-        <div class="settings-header skills-header">
-          <h2>Skills</h2>
-          <p class="settings-help">
-            Manage node-local <code>skillm</code> repositories and install skills.
-            Repository refresh is handled by the embedded Hub before listing and install.
-          </p>
+        <div id="ext-edit-wrap" class="ext-edit-wrap" hidden>
+          <div class="settings-header ext-edit-head">
+            <div class="agent-settings-heading">
+              <h2 id="ext-edit-title"></h2>
+              <p class="settings-help" id="ext-edit-subtitle"></p>
+            </div>
+            <button type="button" class="btn-secondary" id="ext-edit-close">&larr; Back</button>
+          </div>
+          <div class="ext-edit-form settings-section" id="ext-edit-form"></div>
+          <textarea class="ext-edit-text" id="ext-edit-raw" placeholder="Raw JSON config (fallback)"></textarea>
+          <div class="ext-edit-actions">
+            <button type="button" class="btn-primary" id="ext-edit-save">Save</button>
+            <button type="button" class="btn-secondary" id="ext-edit-cancel">Cancel</button>
+          </div>
         </div>
-
-        <div class="skills-workbench skills-workbench-v2">
-          <section class="skills-card skills-card-main">
-            <div class="skills-tabs" role="tablist" aria-label="Skills workspace tabs">
-              <button type="button" class="skills-tab active" data-skillm-tab="repos" role="tab" aria-selected="true">Repositories</button>
-              <button type="button" class="skills-tab" data-skillm-tab="install" role="tab" aria-selected="false">Install</button>
-            </div>
-
-            <div class="skills-tab-panel" id="skillm-tab-repos">
-              <div class="skills-card-head">
-                <h3>Setup and repositories</h3>
-                <button type="button" class="btn-primary" id="skillm-repo-add">Add Repository</button>
-              </div>
-              <div class="skills-setup-grid">
-                <section class="skills-subpanel skills-setup-panel">
-                  <div class="skills-subpanel-head">
-                    <h4>Setup node</h4>
-                    <div class="skills-mini-actions">
-                      <button type="button" class="btn-secondary" id="skillm-check">Check</button>
-                      <button type="button" class="btn-secondary" id="skillm-refresh">Refresh</button>
-                    </div>
-                  </div>
-                  <label>Node
-                    <select id="skillm-setup-context"></select>
-                  </label>
-                  <p class="form-hint">Choose the node that owns the Skillm repository store. Install can target this node, all SSH nodes, or selected nodes.</p>
-                </section>
-
-                <section class="skills-subpanel skills-repo-panel">
-                  <div class="skills-repo-editor" id="skillm-repo-editor" hidden>
-                    <div class="skills-inline-fields">
-                      <label>Name
-                        <input type="text" id="skillm-repo-name" placeholder="main" autocomplete="off">
-                      </label>
-                      <label>Git repo URL
-                        <input type="url" id="skillm-repo-url" placeholder="https://gitlab.example.com/team/skills.git" autocomplete="off">
-                      </label>
-                    </div>
-                    <label>Token
-                      <input type="password" id="skillm-repo-token" placeholder="one-shot token, not saved" autocomplete="off">
-                    </label>
-                    <div class="skills-actions">
-                      <button type="button" class="btn-primary" id="skillm-repo-save">Save Repository</button>
-                      <button type="button" class="btn-secondary" id="skillm-repo-cancel">Cancel</button>
-                    </div>
-                  </div>
-                  <div class="skillm-repo-list" id="skillm-repo-list"></div>
-                </section>
-              </div>
-            </div>
-
-            <div class="skills-tab-panel" id="skillm-tab-install" hidden>
-              <div class="skills-card-head">
-                <h3>Install skills</h3>
-                <div class="skills-mini-actions">
-                  <button type="button" class="btn-secondary" id="skillm-skills-all">Select shown</button>
-                  <button type="button" class="btn-secondary" id="skillm-skills-none">Clear</button>
-                </div>
-              </div>
-              <div class="skills-install-controls">
-                <label>Repository
-                  <select id="skillm-repo-filter"><option value="all">All repositories</option></select>
-                </label>
-                <label>Search
-                  <input type="search" id="skillm-skill-search" placeholder="Search name, tag, repo..." autocomplete="off">
-                </label>
-              </div>
-              <div class="skillm-skill-list" id="skillm-skill-list"></div>
-
-              <div class="skills-install-grid">
-                <section class="skills-subpanel">
-                  <h4>Target hosts</h4>
-                  <div class="skills-segmented" role="group" aria-label="Node scope">
-                    <button type="button" class="active" data-node-scope="setup">This node</button>
-                    <button type="button" data-node-scope="all">All SSH</button>
-                    <button type="button" data-node-scope="selected">Selected</button>
-                  </div>
-                  <div class="skillm-node-list" id="skillm-node-list"></div>
-                </section>
-                <section class="skills-subpanel">
-                  <h4>Install target</h4>
-                  <label>Scope
-                    <select id="skillm-install-scope">
-                      <option value="global">Global defaults</option>
-                      <option value="workspace">Workspace path</option>
-                    </select>
-                  </label>
-                  <label>Workspace path
-                    <input type="text" id="skillm-workspace-path" placeholder="/path/to/workspace" autocomplete="off">
-                  </label>
-                  <div class="skills-agent-grid" aria-label="Agent CLIs">
-                    <label><input type="checkbox" id="skillm-agent-claude" checked> Claude</label>
-                    <label><input type="checkbox" id="skillm-agent-codex" checked> Codex</label>
-                    <label><input type="checkbox" id="skillm-agent-agents" checked> Agents (common)</label>
-                    <label><input type="checkbox" id="skillm-agent-cursor" checked> Cursor</label>
-                  </div>
-                  <div class="skills-actions">
-                    <button type="button" class="btn-primary" id="skillm-install">Install selected skills</button>
-                  </div>
-                </section>
-              </div>
-            </div>
-          </section>
-        </div>
-
-        <div class="settings-status skills-status" id="skillm-status" aria-live="polite"></div>
       </section>
-
 
       <!-- Bots workspace (CAM-DESK-BOTS-010..015) -->
       <section class="mode-panel" id="mode-bots" data-mode="bots" hidden>
@@ -1165,46 +1053,9 @@
         <div class="settings-status bots-status" id="bots-status" aria-live="polite"></div>
       </section>
 
-      <!-- Shared Todos workspace. JavaScript replaces the loading placeholder. -->
-      <section class="mode-panel" id="mode-todos" data-mode="todos" hidden>
-        <div class="settings-header todos-header">
-          <h2>Todos</h2>
-          <p class="settings-help">Tasks, projects, and archived projects share one responsive workspace.</p>
-        </div>
-        <div class="todos-workbench"><div class="empty-state">Loading Todos&hellip;</div></div>
-      </section>
-
-      <!-- Agent Doctor: native page for the agent-doctor extension
-           (extensions/packages/agent-doctor carries only main.py, the
-           remote collector). Reached via the agent console Ext menu or
-           Extensions -> Open; there is intentionally no nav button. -->
-      <section class="mode-panel" id="mode-agent-doctor" data-mode="agent-doctor" hidden>
-        <div class="settings-header doctor-header">
-          <div class="agent-settings-heading">
-            <h2 id="doctor-title">Agent Doctor</h2>
-            <p class="settings-help" id="doctor-subtitle">Harness health check: system prompt, memory, skills, MCP, cron.</p>
-          </div>
-          <button type="button" class="btn-secondary" id="doctor-back">&larr; Back</button>
-        </div>
-        <div class="doctor-workbench">
-          <section class="skills-card">
-            <div class="skills-card-head">
-              <h3>Check target</h3>
-              <button type="button" class="btn-primary" id="doctor-run">Run check</button>
-            </div>
-            <div class="skills-inline-fields doctor-target-fields">
-              <label for="doctor-agent">Agent</label>
-              <select id="doctor-agent"></select>
-            </div>
-            <div class="settings-status" id="doctor-status" aria-live="polite"></div>
-          </section>
-          <div id="doctor-report" class="doctor-report"></div>
-        </div>
-      </section>
-
     </main>
   </div>
 
-  <script type="module" src="js/desktop/app.js?v=0.66.1"></script>
+  <script type="module" src="js/desktop/app.js?v=0.66.4"></script>
 </body>
 </html>
