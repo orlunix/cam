@@ -75,7 +75,7 @@ Hub capabilities are advertised in `GET /api/system/health` → `capabilities` a
 
 | Area | Desktop | Mobile |
 |------|---------|--------|
-| Hub | `apps/cam-desktop/electron/embedded-hub.cjs` | `android/.../MobileEmbeddedHub.java` |
+| Hub | `apps/cam-desktop/electron/embedded-hub.cjs` | `apps/cam-mobile/.../MobileEmbeddedHub.java` |
 | Capabilities | `healthBody().capabilities` full | `healthBody().capabilities` mobile-embedded |
 | Capability client | `web/js/shared/hub-capabilities.js` | same |
 | Terminal gate | `agent-console.js` + Electron bridge | `term-bridge.js` + `agent-detail.js` |

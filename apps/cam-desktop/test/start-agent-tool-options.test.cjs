@@ -36,8 +36,8 @@ ok("desktop Start custom tool field exists", desktopHtml.includes('id="start-cus
 ok("desktop Start sends custom command for Others", desktop.includes("function selectedToolCommand()") && desktop.includes("tool: selectedToolCommand()") && desktop.includes("Enter a tool command for Others."));
 
 
-const androidHub = fs.readFileSync(path.join(root, "android", "app", "src", "main", "java", "com", "cam", "app", "MobileEmbeddedHub.java"), "utf8");
-const mobileSshExec = fs.readFileSync(path.join(root, "android", "app", "src", "main", "java", "com", "cam", "app", "MobileSshExec.java"), "utf8");
+const androidHub = fs.readFileSync(path.join(root, "apps", "cam-mobile", "app", "src", "main", "java", "com", "cam", "app", "MobileEmbeddedHub.java"), "utf8");
+const mobileSshExec = fs.readFileSync(path.join(root, "apps", "cam-mobile", "app", "src", "main", "java", "com", "cam", "app", "MobileSshExec.java"), "utf8");
 
 ok("Android Hub exposes POST /api/agents", androidHub.includes('"POST".equals(method) && "/api/agents".equals(path)'));
 ok("Android Hub starts agents through existing remote camc", androidHub.includes("startRemoteAgent") && mobileSshExec.includes("camcRunCommand") && mobileSshExec.includes("camcStatusCommand"));

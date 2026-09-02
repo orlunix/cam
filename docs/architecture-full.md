@@ -69,7 +69,7 @@
 | **cam CLI** | Python + Typer + Rich | Direct to cam serve (localhost) | `src/cam/cli/` |
 | **camc CLI** | Python 3.6+ stdlib only | Direct local (no server needed) | `src/camc_pkg/cli.py` |
 | **Web PWA** | Vanilla JS + Service Worker | HTTP direct or WebSocket via Relay | `web/` |
-| **Android APP** | WebView wrapping PWA | Same as Web (CamBridge JS interface) | `android/` |
+| **Android APP** | WebView wrapping PWA | Same as Web (CamBridge JS interface) | `apps/cam-mobile/` |
 | **Teams Bot** | teaspirit (external) | HTTP to cam serve API | external |
 
 ### 2. Servers

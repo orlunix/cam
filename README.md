@@ -196,7 +196,7 @@ The relay is a standalone Python script with zero dependencies (stdlib-only RFC 
 
 ## Mobile App
 
-The `web/` directory contains a PWA that works as both a browser app and an Android WebView wrapper (`android/`).
+The `web/` directory contains a PWA that works as both a browser app and an Android WebView wrapper (`apps/cam-mobile/`).
 
 - **Dashboard** — running/completed agents with live status
 - **Start Agent** — select context, tool, enter prompt, toggle auto-confirm/auto-exit
@@ -234,7 +234,7 @@ cam/
 ├── web/                   # PWA frontend
 │   ├── js/                # API client, app shell, view modules
 │   └── css/               # Styles
-├── android/               # Android WebView wrapper
+├── apps/                  # cam-desktop (Electron), cam-mobile (Android WebView), cam-container (WebUI)
 ├── tests/                 # pytest suite (~450 tests)
 ├── dist/                  # Built artifacts (camc)
 └── docs/                  # Architecture docs, case studies

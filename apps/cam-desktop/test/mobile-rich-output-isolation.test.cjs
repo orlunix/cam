@@ -18,9 +18,9 @@ const detailPath = path.join(root, "web", "js", "mobile", "views", "agent-detail
 const terminalMountPath = path.join(root, "web", "js", "shared", "terminal-mount.js");
 const richPath = path.join(root, "web", "js", "mobile", "rich-output.js");
 const oldRichPath = path.join(root, "web", "js", "mobile", "rich-output", "rich-output.js");
-const embeddedHubPath = path.join(root, "android", "app", "src", "main", "java", "com", "cam", "app", "MobileEmbeddedHub.java");
-const outputSessionsPath = path.join(root, "android", "app", "src", "main", "java", "com", "cam", "app", "MobileAgentOutputSessions.java");
-const buildPath = path.join(root, "android", "build.sh");
+const embeddedHubPath = path.join(root, "apps", "cam-mobile", "app", "src", "main", "java", "com", "cam", "app", "MobileEmbeddedHub.java");
+const outputSessionsPath = path.join(root, "apps", "cam-mobile", "app", "src", "main", "java", "com", "cam", "app", "MobileAgentOutputSessions.java");
+const buildPath = path.join(root, "apps", "cam-mobile", "build.sh");
 
 const detail = fs.readFileSync(detailPath, "utf8");
 const terminalMount = fs.readFileSync(terminalMountPath, "utf8");
