@@ -375,7 +375,7 @@ Keep `selectedAgentId` in route params (`#/agent/:id`) rather than global state 
 | New entry | `web/mobile.html`, `web/css/mobile.css` |
 | Bootstrap | `web/js/mobile/app.js` — Relay-only init, hash router |
 | Settings | `web/js/mobile/settings.js` — Relay form + profiles |
-| Android | Point `android/build.sh` asset copy at `mobile.html` (or ship both entries) |
+| Android | Point `apps/cam-mobile/build.sh` asset copy at `mobile.html` (or ship both entries) |
 | Shared API | Import `web/js/api.js` unchanged |
 
 **Exit criteria:** Connect to relay, show empty agents list, settings persist.
@@ -474,4 +474,4 @@ Keep `selectedAgentId` in route params (`#/agent/:id`) rather than global state 
 |------|--------|
 | 2026-06-20 | Initial Relay-first plan |
 | 2026-06-20 | Renamed to **CamUI Mobile V2**; backend = **CamUI start / embedded Hub** (not legacy `cam serve`); added Hub stub gap table |
-| 2026-06-20 | **V2.0.0 APK** built (`android/build/camui-v2-2.0.0.apk`); Hub assumed good via Desktop Relay — **client-only** backlog |
+| 2026-06-20 | **V2.0.0 APK** built (`apps/cam-mobile/build/camui-v2-2.0.0.apk`); Hub assumed good via Desktop Relay — **client-only** backlog |

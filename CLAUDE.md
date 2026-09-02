@@ -125,7 +125,7 @@ Six layers, top to bottom:
 - **Relay** (`relay/relay.py`) — Standalone zero-dep WebSocket relay (stdlib-only RFC 6455). Bridges REST-over-WS between mobile clients and CAM server.
 - **cam-agent** (`src/cam-agent/`) — Go binary providing standardized remote protocol over SSH. Wraps tmux on Linux.
 - **camc** (`src/camc_pkg/`, built to `dist/camc`) — Standalone single-file CLI (stdlib-only, Python 3.6+). Self-contained agent manager for each machine.
-- **Web/Mobile** (`web/`) — PWA frontend. Android WebView wrapper in `android/`.
+- **Web/Mobile** (`web/`) — PWA frontend. Android WebView wrapper in `apps/cam-mobile/`.
 
 ## Critical Pydantic v2 Patterns
 

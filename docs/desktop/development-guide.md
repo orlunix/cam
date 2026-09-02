@@ -777,7 +777,7 @@ bootstrap）deferred。
 - MAS 线 parked；剩余手动项见 `MAS-SUBMISSION.md` 末尾。
 - mobile 侧有一组 P0-P3 已知稳定问题（`web/AGENTS.md`，2.4.51 核实）——改
   `js/api.js`、`js/state.js`、`js/shared/*` 这些共享文件时必须把 mobile 影响
-  考虑进去（特别是 `?v=` 戳方案：mobile 由 `android/build.sh` sed 盖戳，
+  考虑进去（特别是 `?v=` 戳方案：mobile 由 `apps/cam-mobile/build.sh` sed 盖戳，
   desktop 全手工）。
 - 渲染层版本戳现状：`desktop.html` meta `v0.64.0`，各模块戳在
   0.64.0…0.68.0 区间，彼此不要求一致，但同一模块的所有引用必须一致。
@@ -809,7 +809,7 @@ bootstrap）deferred。
 - MSI 构建在 Windows 侧跑（WiX），5-30 分钟；产物累积在
   `apps/cam-desktop/dist/`（`CAM-Desktop-0.2.x.msi`）。
 - CDP E2E harness：`.tools/cdp-*.cjs`。
-- mobile 版本事实源：`android/VERSION`（当前 2.4.51）；APK：`cd android &&
+- mobile 版本事实源：`apps/cam-mobile/VERSION`（当前 2.4.51）；APK：`cd apps/cam-mobile &&
   ./build.sh`。
 - mobile 资产的 WebDAV（坚果云）：`https://dav.jianguoyun.com/dav/`，账号
   `renhuailu@qq.com`，应用密码不入库（问用户或看
