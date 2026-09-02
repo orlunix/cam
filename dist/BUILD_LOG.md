@@ -6205,3 +6205,112 @@ be0e296 refactor(camc): align direct API routing
 a379b67 fix(camc): remove misleading live status probe
 0940540 fix(camc): share reliable prompt submission
 ```
+## v1.2.128  45683a9-dirty 2026-08-26 01:59
+
+- Lines: 20099
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+45683a9 fix(camc): gate auto-confirm on tmux cursor state
+86a2a76 fix(camc): harden readiness and static input fallback
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+```
+## v1.2.129  45683a9-dirty 2026-08-26 03:55
+
+- Lines: 19509
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+45683a9 fix(camc): gate auto-confirm on tmux cursor state
+86a2a76 fix(camc): harden readiness and static input fallback
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+```
+## v1.2.130  45683a9-dirty 2026-08-26 03:56
+
+- Lines: 19509
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+45683a9 fix(camc): gate auto-confirm on tmux cursor state
+86a2a76 fix(camc): harden readiness and static input fallback
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+```
+## v1.2.131  45683a9-dirty 2026-08-27 03:19
+
+- Lines: 19541
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+45683a9 fix(camc): gate auto-confirm on tmux cursor state
+86a2a76 fix(camc): harden readiness and static input fallback
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+```
+## v1.2.132  45683a9-dirty 2026-09-02 01:14
+
+- Lines: 19541
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+45683a9 fix(camc): gate auto-confirm on tmux cursor state
+86a2a76 fix(camc): harden readiness and static input fallback
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+```
+## v1.2.133  45683a9-dirty 2026-09-02 01:36
+
+- Lines: 19540
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+45683a9 fix(camc): gate auto-confirm on tmux cursor state
+86a2a76 fix(camc): harden readiness and static input fallback
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+```
+## v1.2.134  45683a9-dirty 2026-09-02 01:42
+
+- Lines: 19540
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+45683a9 fix(camc): gate auto-confirm on tmux cursor state
+86a2a76 fix(camc): harden readiness and static input fallback
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+```
+## v1.2.135  45683a9-dirty 2026-09-02 01:44
+
+- Lines: 19540
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+45683a9 fix(camc): gate auto-confirm on tmux cursor state
+86a2a76 fix(camc): harden readiness and static input fallback
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+```
+
+## v1.2.136  45683a9-dirty 2026-09-02 01:45
+
+- Lines: 19540
+- Output: /home/hren/gitlab/cam/dist/camc
+- Recent changes:
+```
+45683a9 fix(camc): gate auto-confirm on tmux cursor state
+86a2a76 fix(camc): harden readiness and static input fallback
+be0e296 refactor(camc): align direct API routing
+a379b67 fix(camc): remove misleading live status probe
+0940540 fix(camc): share reliable prompt submission
+```

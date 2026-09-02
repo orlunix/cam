@@ -207,7 +207,15 @@ class AdapterConfig(object):
     """Parsed adapter config from a TOML dict."""
 
     def __init__(self, config):
-        self.config_dir = config.get("adapter", {}).get("config_dir") or ".agents"
+        adapter_cfg = config.get("adapter", {})
+        self.config_dir = adapter_cfg.get("config_dir") or ".agents"
+        # Some TUIs (notably Cursor's Ink renderer) hide the terminal's
+        # native cursor even while their own prompt accepts input.  Keep
+        # the historical guard enabled unless an adapter explicitly opts
+        # out; this preserves Codex/Claude behavior and makes the policy
+        # adapter-owned.
+        self.cursor_flag_support = bool(
+            adapter_cfg.get("cursor_flag_support", True))
         launch = config.get("launch", {})
         self.strip_ansi = launch.get("strip_ansi", False)
         self.command = launch.get("command", [])

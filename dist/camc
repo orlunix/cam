@@ -689,7 +689,6 @@ import signal
 import socket
 import socket as _sock
 import socket as _socket
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -704,8 +703,8 @@ import urllib.request
 # Constants and logging
 # ===========================================================================
 
-__version__ = "1.2.126"
-__build__ = "d8f3e27-dirty 2026-08-26 00:42"
+__version__ = "1.2.136"
+__build__ = "45683a9-dirty 2026-09-02 01:45"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1345,6 +1344,7 @@ name = "OPENAI_API_KEY"
 name = "cursor"
 display_name = "Cursor Agent"
 config_dir = ".cursor"
+cursor_flag_support = false
 
 [launch]
 command = ["cursor-agent", "--workspace", "{path}"]
@@ -1394,8 +1394,8 @@ fallback_summary_pattern = "·\\s*\\d+(\\.\\d+)?%"
 [[confirm]]
 # Cursor's permission menu offers Auto-run on the following unselected line.
 # BTab is sent as a tmux special key, not literal text.
-pattern = "^\\s*Auto-run everything \\(shift\\+tab\\)"
-flags = ["MULTILINE"]
+pattern = "^[ \\t]*(?:auto-)?run[ \\t]+everything[ \\t]*\\(shift\\+tab\\)"
+flags = ["MULTILINE", "IGNORECASE"]
 response = "BTab"
 send_enter = false
 
@@ -1512,6 +1512,7 @@ confirm_recent_lines = 128
 
 [adapter]
 name = "cursor"
+cursor_flag_support = false
 
 [launch]
 startup_wait = 15.0
@@ -1520,10 +1521,10 @@ ready_pattern = "→"
 ready_flags = ["MULTILINE"]
 
 [[confirm]]
-pattern = "^\\W*\\[a\\]\\s*Trust this workspace"
+pattern = "^[ \\t]*▶[ \\t]*\\[a\\][ \\t]*Trust this workspace"
 flags = ["MULTILINE"]
-response = "a"
-send_enter = false
+response = ""
+send_enter = true
 
 [monitor]
 confirm_recent_lines = 128
@@ -1720,7 +1721,15 @@ class AdapterConfig(object):
     """Parsed adapter config from a TOML dict."""
 
     def __init__(self, config):
-        self.config_dir = config.get("adapter", {}).get("config_dir") or ".agents"
+        adapter_cfg = config.get("adapter", {})
+        self.config_dir = adapter_cfg.get("config_dir") or ".agents"
+        # Some TUIs (notably Cursor's Ink renderer) hide the terminal's
+        # native cursor even while their own prompt accepts input.  Keep
+        # the historical guard enabled unless an adapter explicitly opts
+        # out; this preserves Codex/Claude behavior and makes the policy
+        # adapter-owned.
+        self.cursor_flag_support = bool(
+            adapter_cfg.get("cursor_flag_support", True))
         launch = config.get("launch", {})
         self.strip_ansi = launch.get("strip_ansi", False)
         self.command = launch.get("command", [])
@@ -3213,30 +3222,153 @@ def tmux_send_key(session_id, key):
         return False
 
 
-def tmux_submit_input(session_id, text,
-                      submit_delay=DEFAULT_PROMPT_SUBMIT_DELAY,
-                      send_input_fn=None, send_key_fn=None, sleep_fn=None):
-    """Send text, then use the reliable fast-Enter/fallback-Enter submit."""
+def insert_prompt(session_id, text, *, observe_fn,
+                  send_input_fn=None, send_key_fn=None,
+                  sleep_fn=None, monotonic_fn=None,
+                  ready_timeout=10.0, poll_interval=0.25,
+                  submit_delay=DEFAULT_PROMPT_SUBMIT_DELAY,
+                  ack_timeout=0.5, fallback_delay=None):
+    """Insert and submit one prompt with bounded screen feedback.
+
+    This is the shared wrapper for CAMC-owned prompt insertion.  The caller
+    supplies ``observe_fn`` so transport does not duplicate monitor screen
+    normalization.  The observation dictionary must contain ``ready``,
+    ``cursor_flag``, ``hash0``, and ``hash1``.  Text is sent without Enter,
+    then Enter is sent once; a single fallback Enter is allowed only when
+    the post-text screen remains unchanged and no acknowledgement appears.
+
+    The return value is a plain dictionary for Python 3.6 compatibility.
+    ``ok`` is true only after a screen/hash or known cursor transition is
+    observed; a successful tmux subprocess alone is not acknowledgement.
+    """
     send_input_fn = send_input_fn or tmux_send_input
     send_key_fn = send_key_fn or tmux_send_key
     sleep_fn = sleep_fn or time.sleep
-    if not send_input_fn(session_id, text, send_enter=False):
+    monotonic_fn = monotonic_fn or time.monotonic
+
+    def _number(value, default):
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return default
+
+    ready_timeout = _number(ready_timeout, 10.0)
+    poll_interval = _number(poll_interval, 0.25)
+    submit_delay = _number(submit_delay, DEFAULT_PROMPT_SUBMIT_DELAY)
+    ack_timeout = _number(ack_timeout, 0.5)
+    fast_delay = min(FAST_PROMPT_SUBMIT_DELAY, submit_delay)
+    if fallback_delay is None:
+        fallback_delay = submit_delay - fast_delay
+    fallback_delay = _number(fallback_delay, submit_delay - fast_delay)
+
+    enter_attempts = 0
+    before_hash0 = ""
+    after_hash0 = ""
+
+    def _result(ok, phase, reason, after=None):
+        final_hash = after_hash0
+        if isinstance(after, dict):
+            final_hash = after.get("hash0") or final_hash
+        return {
+            "ok": bool(ok),
+            "phase": phase,
+            "reason": reason,
+            "enter_attempts": enter_attempts,
+            "before_hash0": before_hash0,
+            "after_hash0": final_hash,
+        }
+
+    def _observe():
+        value = observe_fn(session_id)
+        if not isinstance(value, dict):
+            raise ValueError("prompt observation must be a dict")
+        return value
+
+    def _acknowledged(value, base_hash0, base_hash1):
+        if value.get("hash0") != base_hash0 or value.get("hash1") != base_hash1:
+            return True
+        if value.get("ready") is False:
+            return True
+        flag = value.get("cursor_flag")
+        if (value.get("cursor_flag_supported", True)
+                and flag in (0, False)):
+            return True
         return False
+
+    def _wait_for_ack(base_hash0, base_hash1):
+        deadline = monotonic_fn() + ack_timeout
+        while True:
+            try:
+                value = _observe()
+            except Exception:
+                return None, "observe_failed"
+            if _acknowledged(value, base_hash0, base_hash1):
+                return value, "acknowledged"
+            remaining = deadline - monotonic_fn()
+            if remaining <= 0.0:
+                return None, "timeout"
+            sleep_fn(min(poll_interval, remaining))
+
+    ready_started = monotonic_fn()
+    while True:
+        try:
+            observation = _observe()
+        except Exception:
+            return _result(False, "ready", "observe_failed")
+        if (observation.get("ready") is True
+                and (not observation.get("cursor_flag_supported", True)
+                     or observation.get("cursor_flag") == 1)):
+            break
+        remaining = ready_timeout - (monotonic_fn() - ready_started)
+        if remaining <= 0.0:
+            return _result(False, "ready", "ready_timeout")
+        sleep_fn(min(poll_interval, remaining))
+
+    before_hash0 = observation.get("hash0") or ""
     try:
-        delay = max(0.0, float(submit_delay))
-    except (TypeError, ValueError):
-        delay = DEFAULT_PROMPT_SUBMIT_DELAY
-    fast_delay = min(FAST_PROMPT_SUBMIT_DELAY, delay)
+        sent = send_input_fn(session_id, text, send_enter=False)
+    except Exception:
+        sent = False
+    if not sent:
+        return _result(False, "text", "text_send_failed")
+
+    try:
+        after_text = _observe()
+    except Exception:
+        return _result(False, "text", "observe_failed")
+    after_hash0 = after_text.get("hash0") or ""
+    after_hash1 = after_text.get("hash1") or ""
+
     if fast_delay:
         sleep_fn(fast_delay)
-    if not send_key_fn(session_id, "Enter"):
-        return False
-    fallback_delay = delay - fast_delay
+    enter_attempts = 1
+    try:
+        sent = send_key_fn(session_id, "Enter")
+    except Exception:
+        sent = False
+    if not sent:
+        return _result(False, "submit", "enter_send_failed")
+    acknowledged, reason = _wait_for_ack(after_hash0, after_hash1)
+    if acknowledged is not None:
+        return _result(True, "submit", "screen_changed", acknowledged)
+    if reason == "observe_failed":
+        return _result(False, "submit", reason)
+
     if fallback_delay:
         sleep_fn(fallback_delay)
-        if not send_key_fn(session_id, "Enter"):
-            return False
-    return True
+    enter_attempts = 2
+    try:
+        sent = send_key_fn(session_id, "Enter")
+    except Exception:
+        sent = False
+    if not sent:
+        return _result(False, "fallback", "enter_send_failed")
+    acknowledged, reason = _wait_for_ack(after_hash0, after_hash1)
+    if acknowledged is not None:
+        return _result(True, "fallback", "screen_changed", acknowledged)
+    if reason == "observe_failed":
+        return _result(False, "fallback", reason)
+    return _result(False, "fallback", "submit_unconfirmed")
 
 
 def tmux_is_attached(session_id):
@@ -3333,7 +3465,7 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
     ``cmd_run`` path), the function uses the SAME effective env and
     tmux binary that the readiness check just validated — eliminating
     the "works in preflight, fails in launch" PATH discrepancy. When
-    omitted (scheduler.py, tests, any legacy caller), behavior is
+    omitted (tests or any legacy caller), behavior is
     bit-identical to the pre-F-08 implementation: env is sourced from
     ``os.environ.copy()`` and the binary is the module-level
     ``TMUX_BIN`` resolved at import time.
@@ -3375,7 +3507,7 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
     # /etc/passwd (getpwuid) instead of $SHELL keeps tmux's default shell
     # aligned with the account. (build_runtime_env already does this
     # for the cmd_run path; this covers callers that pass no env= and
-    # fall through to os.environ.copy() — e.g. scheduler.py.)
+    # fall through to os.environ.copy() for legacy callers.)
     try:
         import pwd as _pwd
         _pw = _pwd.getpwuid(os.getuid())
@@ -3511,6 +3643,11 @@ _READY_STABLE_SECONDS = 10.0
 _CURSOR_FLAG_UNSET = object()
 
 
+def _cursor_flag_supported(config):
+    """Return whether this adapter can use tmux's native cursor flag."""
+    return bool(getattr(config, "cursor_flag_support", True))
+
+
 def _find_cursor_line(lines):
     """Return the bottom-most cursor line in ``lines``, or None."""
     for line in reversed(lines):
@@ -3553,7 +3690,8 @@ def detect_state(output, config):
 
 def should_auto_confirm(output, config, last_response="", prev_output="",
                         recent_lines=None, cursor_flag=_CURSOR_FLAG_UNSET):
-    if (cursor_flag is not _CURSOR_FLAG_UNSET and cursor_flag != 0):
+    if (_cursor_flag_supported(config)
+            and cursor_flag is not _CURSOR_FLAG_UNSET and cursor_flag != 0):
         return None
     if config.strip_ansi:
         output = strip_ansi(output)
@@ -3615,7 +3753,8 @@ def _detect_prompt_count(output, config):
 
 def is_ready_for_input(output, config, stable_for=None,
                        cursor_flag=_CURSOR_FLAG_UNSET):
-    if (cursor_flag is not _CURSOR_FLAG_UNSET and cursor_flag != 1):
+    if (_cursor_flag_supported(config)
+            and cursor_flag is not _CURSOR_FLAG_UNSET and cursor_flag != 1):
         return False
     if not config.ready_pattern:
         return True
@@ -4328,219 +4467,6 @@ def sync_camc_to_machine(machine, camc_path=None, configs_dir=None):
 
 
 # ===========================================================================
-# migrate
-# ===========================================================================
-
-def _find_cam_db():
-    """Find the cam SQLite database."""
-    # Standard location
-    default = os.path.expanduser("~/.local/share/cam/cam.db")
-    if os.path.exists(default):
-        return default
-    # Check env var
-    env = os.environ.get("CAM_DATA_DIR")
-    if env:
-        p = os.path.join(env, "cam.db")
-        if os.path.exists(p):
-            return p
-    return None
-
-
-def _read_contexts_from_sqlite(db_path):
-    """Read all contexts from cam's SQLite database."""
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT * FROM contexts ORDER BY created_at DESC").fetchall()
-    contexts = []
-    for row in rows:
-        machine_config = json.loads(row["machine_config"])
-        contexts.append({
-            "id": row["id"],
-            "name": row["name"],
-            "path": row["path"],
-            "machine_config": machine_config,
-            "tags": json.loads(row["tags"]) if row["tags"] else [],
-        })
-    conn.close()
-    return contexts
-
-
-def _read_active_agents_from_sqlite(db_path):
-    """Read active (non-terminal) agents from cam's SQLite database."""
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT * FROM agents WHERE status IN ('running', 'starting', 'pending')"
-    ).fetchall()
-    agents = []
-    for row in rows:
-        agents.append(dict(row))
-    conn.close()
-    return agents
-
-
-def _machine_key(mc):
-    """Generate a unique key for a machine config."""
-    return "%s@%s:%s" % (mc.get("user", ""), mc.get("host", "local"), mc.get("port", 22))
-
-
-def _machine_name_from_host(host):
-    """Generate a machine name from a hostname."""
-    if not host or host in ("localhost", "127.0.0.1"):
-        return "local"
-    # Use short hostname: pdx-110.nvidia.com → pdx-110
-    short = host.split(".")[0]
-    # Sanitize: only alphanumeric, dash, underscore
-    return "".join(c if c.isalnum() or c in "-_" else "-" for c in short)
-
-
-def run_migrate(db_path=None, dry_run=False):
-    """Main migration logic. Returns (machines_count, contexts_count, agents_count)."""
-
-    if db_path is None:
-        db_path = _find_cam_db()
-    if not db_path or not os.path.exists(db_path):
-        print("Error: cam database not found at %s" % (db_path or "~/.local/share/cam/cam.db"))
-        print("Use --db PATH to specify location.")
-        return 0, 0, 0
-
-    print("Reading from: %s" % db_path)
-
-    # Read SQLite data
-    sqlite_contexts = _read_contexts_from_sqlite(db_path)
-    print("Found %d contexts in SQLite" % len(sqlite_contexts))
-
-    # Deduplicate machines
-    seen_machines = {}  # key → machine dict
-    machine_name_map = {}  # key → machine name
-    name_counts = {}  # track name collisions
-
-    for ctx in sqlite_contexts:
-        mc = ctx["machine_config"]
-        mtype = mc.get("type", "local")
-        if mtype == "local":
-            key = "local"
-            machine = {"name": "local", "type": "local"}
-        else:
-            key = _machine_key(mc)
-            base_name = _machine_name_from_host(mc.get("host"))
-            # Handle name collisions
-            if base_name in name_counts and name_counts[base_name] != key:
-                # Different machine with same short name — append port
-                base_name = "%s-%s" % (base_name, mc.get("port", 22))
-            name_counts.setdefault(base_name, key)
-
-            machine = {"name": base_name, "type": mtype}
-            if mc.get("host"):
-                machine["host"] = mc["host"]
-            if mc.get("user"):
-                machine["user"] = mc["user"]
-            if mc.get("port"):
-                machine["port"] = mc["port"]
-            if mc.get("env_setup"):
-                machine["env_setup"] = mc["env_setup"]
-            if mc.get("key_file"):
-                machine["key_file"] = mc["key_file"]
-
-        if key not in seen_machines:
-            seen_machines[key] = machine
-        machine_name_map[key] = seen_machines[key]["name"]
-
-    machines = list(seen_machines.values())
-    print("Deduplicated to %d machines" % len(machines))
-
-    # Build contexts
-    contexts = []
-    for ctx in sqlite_contexts:
-        mc = ctx["machine_config"]
-        mtype = mc.get("type", "local")
-        if mtype == "local":
-            key = "local"
-        else:
-            key = _machine_key(mc)
-
-        contexts.append({
-            "name": ctx["name"],
-            "machine": machine_name_map[key],
-            "path": ctx["path"],
-        })
-
-    print("Converted %d contexts" % len(contexts))
-
-    # Print plan
-    print()
-    print("Machines:")
-    for m in machines:
-        if m["type"] == "local":
-            print("  local")
-        else:
-            print("  %s: %s@%s:%s" % (m["name"], m.get("user", ""), m.get("host", ""), m.get("port", 22)))
-
-    print()
-    print("Contexts:")
-    for c in contexts:
-        print("  %s → machine=%s, path=%s" % (c["name"], c["machine"], c["path"]))
-
-    if dry_run:
-        print()
-        print("Dry run — no files written.")
-        return len(machines), len(contexts), 0
-
-    # Write machines.json
-    m_store = MachineStore()
-    for m in machines:
-        m_store.save(m)
-    print()
-    print("Wrote %d machines to %s" % (len(machines), MACHINES_FILE))
-
-    # Write contexts.json
-    c_store = ContextStore()
-    for c in contexts:
-        c_store.save(c)
-    print("Wrote %d contexts to %s" % (len(contexts), CONTEXTS_FILE))
-
-    # Merge active agents
-    agents_merged = 0
-    try:
-        sqlite_agents = _read_active_agents_from_sqlite(db_path)
-        if sqlite_agents:
-            a_store = AgentStore()
-            existing_ids = {a["id"] for a in a_store.list()}
-            for sa in sqlite_agents:
-                aid = sa.get("id", "")
-                if aid and aid not in existing_ids:
-                    # Minimal agent record — these are cam-format agents
-                    a_store.save({
-                        "id": aid,
-                        "task": {"name": "", "tool": "claude", "prompt": "", "auto_confirm": True, "auto_exit": False},
-                        "context_name": sa.get("context_name", ""),
-                        "context_path": sa.get("context_path", ""),
-                        "transport_type": sa.get("transport_type", "local"),
-                        "status": sa.get("status", "running"),
-                        "state": sa.get("state", "initializing"),
-                        "tmux_session": sa.get("tmux_session", ""),
-                        "tmux_socket": sa.get("tmux_socket", ""),
-                        "pid": sa.get("pid"),
-                        "hostname": "",
-                        "started_at": sa.get("started_at"),
-                        "completed_at": sa.get("completed_at"),
-                        "exit_reason": sa.get("exit_reason"),
-                        "retry_count": 0, "cost_estimate": None, "files_changed": [],
-                    })
-                    agents_merged += 1
-            if agents_merged:
-                print("Merged %d active agents" % agents_merged)
-    except Exception as e:
-        print("Warning: could not merge agents: %s" % e)
-
-    print()
-    print("Migration complete!")
-    print("You can now verify with: camc machine list && camc context list")
-    print("When satisfied, you can remove: rm -rf ~/.local/share/cam/")
-    return len(machines), len(contexts), agents_merged
-
-
-# ===========================================================================
 # formatters
 # ===========================================================================
 
@@ -5204,16 +5130,22 @@ class BootPromptFeature(MonitorFeature):
             runtime.left_initializing = True
             return actions
         if not is_ready_for_boot(snap.output, boot_cfg, tool_cfg,
-                                 stable_for=snap.idle_for):
+                                 stable_for=snap.idle_for,
+                                 cursor_flag=snap.cursor_flag):
             return actions
         prompt = (runtime.boot_prompt or "").strip()
         if prompt and runtime.prompt_after_launch:
             cfg = boot_cfg or tool_cfg
             delay = cfg.prompt_submit_delay or DEFAULT_PROMPT_SUBMIT_DELAY
             actions.append({"kind": "submit_input", "text": prompt,
-                            "submit_delay": delay})
+                            "submit_delay": delay,
+                            "ready_timeout": boot_wait,
+                            "boot_prompt": True})
             actions.append({"kind": "log", "level": "info",
                             "msg": "Boot: prompt injected (%d chars)" % len(prompt)})
+            # The monitor action adapter commits the initializing -> idle
+            # transition only after insert_prompt reports acknowledgement.
+            return actions
         else:
             actions.append({"kind": "log", "level": "info",
                             "msg": "Boot: ready (interactive, no prompt)"})
@@ -5266,7 +5198,11 @@ class AutoConfirmationFeature(MonitorFeature):
             return actions
         # tmux's native cursor flag is the only input-box safety gate.  A
         # missing flag is fail-closed: never inject a key we cannot classify.
-        if snap.cursor_flag != 0:
+        flag_supported = bool(getattr(cfg, "cursor_flag_support", True))
+        if init_phase and runtime.boot_config is not None:
+            flag_supported = flag_supported and bool(
+                getattr(runtime.boot_config, "cursor_flag_support", True))
+        if flag_supported and snap.cursor_flag != 0:
             return actions
         if init_phase:
             confirm, rule_cfg = should_confirm_initializing(
@@ -5310,7 +5246,6 @@ class AutoConfirmationFeature(MonitorFeature):
         runtime.last_confirm = snap.now
         runtime.last_confirm_hash = snap.hash1
         runtime.last_confirm_response = response
-        runtime.last_change = snap.now
         runtime.idle_confirmed = False
         runtime.final_fallback = {
             "kind": "confirm",
@@ -5364,7 +5299,8 @@ class FinalStaticFallbackFeature(MonitorFeature):
     def after_confirm(self, snap, runtime):
         # The last-resort Enter is still a keystroke; only use it when the
         # native tmux flag confirms that no input cursor is active.
-        if snap.cursor_flag != 0:
+        if (getattr(runtime.config, "cursor_flag_support", True)
+                and snap.cursor_flag != 0):
             return []
         state = runtime.final_fallback
         store = getattr(runtime, "store", None)
@@ -5514,7 +5450,41 @@ def _content_hash(text):
     return hashlib.md5(text.encode("utf-8")).hexdigest()[:8]
 
 
-def _apply_action(action, *, session, agent_id, store, events_fn):
+def _make_prompt_observer(config, boot_config=None):
+    """Build the shared prompt observation callback for ``insert_prompt``."""
+    def observe(session_id):
+        output = capture_tmux(session_id, lines=128) or ""
+        cursor_flag = tmux_cursor_flag(session_id)
+        cursor_flag_supported = bool(
+            getattr(config, "cursor_flag_support", True))
+        if boot_config is not None:
+            cursor_flag_supported = cursor_flag_supported and bool(
+                getattr(boot_config, "cursor_flag_support", True))
+        normalized = _normalize_screen(output)
+        hash0 = _content_hash(normalized)
+        hash1 = _content_hash(_strip_ascii_digits(normalized))
+        # BootPromptFeature already gates its action on the configured
+        # stability window.  The wrapper itself needs the current cursor
+        # signal, not a zero-age stability check that would reject every
+        # visible cursor line.
+        if config is None:
+            ready = bool(output.strip()) and cursor_flag == 1
+        elif boot_config is not None:
+            ready = is_ready_for_boot(
+                output, boot_config, config, stable_for=None,
+                cursor_flag=cursor_flag)
+        else:
+            ready = is_ready_for_input(
+                output, config, stable_for=None,
+                cursor_flag=cursor_flag)
+        return {"ready": bool(ready), "cursor_flag": cursor_flag,
+                "cursor_flag_supported": cursor_flag_supported,
+                "hash0": hash0, "hash1": hash1}
+    return observe
+
+
+def _apply_action(action, *, session, agent_id, store, events_fn,
+                  runtime=None, config=None, boot_config=None):
     """Apply a single step action dict to the real world. Returns
     (halt_cycle, sleep_seconds). halt_cycle=True means the loop must
     stop running further steps in this cycle and skip the inline
@@ -5527,8 +5497,27 @@ def _apply_action(action, *, session, agent_id, store, events_fn):
         tmux_send_input(session, action["text"],
                         send_enter=action.get("send_enter", True))
     elif kind == "submit_input":
-        tmux_submit_input(session, action["text"],
-                          submit_delay=action.get("submit_delay", 0.5))
+        active_config = config or getattr(runtime, "config", None)
+        active_boot_config = boot_config or getattr(runtime, "boot_config", None)
+        observer = _make_prompt_observer(
+            active_config, active_boot_config if action.get("boot_prompt") else None)
+        result = insert_prompt(
+            session, action["text"], observe_fn=observer,
+            submit_delay=action.get("submit_delay", 0.5),
+            ready_timeout=action.get("ready_timeout", 10.0))
+        if not result.get("ok"):
+            log.warning("Prompt insertion failed phase=%s reason=%s",
+                        result.get("phase"), result.get("reason"))
+            return False, 0.0
+        if runtime is not None and action.get("boot_prompt"):
+            runtime.boot_prompt_sent = True
+            runtime.in_initializing = False
+            runtime.left_initializing = True
+            store.update(agent_id, state="idle")
+            events_fn("boot_ready", {
+                "prompt_sent": True,
+                "phase": result.get("phase"),
+            })
     elif kind == "send_key":
         tmux_send_key(session, action["key"])
     elif kind == "sleep":
@@ -5659,7 +5648,8 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 halt, slp = _apply_action(
                     action,
                     session=session, agent_id=agent_id,
-                    store=store, events_fn=_event,
+                    store=store, events_fn=_event, runtime=runtime,
+                    config=config, boot_config=boot_config,
                 )
                 if halt:
                     return True, slp
@@ -5944,334 +5934,6 @@ def _run_monitor(agent_id):
             log.info("Restarting monitor...")
 
     log.info("Monitor finished for agent %s", agent_id)
-
-
-# ===========================================================================
-# scheduler
-# ===========================================================================
-
-class SchedulerError(Exception):
-    """Error raised by the task scheduler."""
-
-
-# ---------------------------------------------------------------------------
-# Task graph (DAG) — topological sort, cycle detection
-# ---------------------------------------------------------------------------
-
-class TaskGraph(object):
-    """Directed Acyclic Graph of task dependencies."""
-
-    def __init__(self, tasks):
-        self._tasks = {}       # name -> task dict
-        self._edges = {}       # name -> [dep names]
-
-        for task in tasks:
-            name = task.get("name")
-            if not name:
-                raise SchedulerError("All tasks must have a 'name' field")
-            if name in self._tasks:
-                raise SchedulerError("Duplicate task name: '%s'" % name)
-            self._tasks[name] = task
-            deps = task.get("depends_on", [])
-            if isinstance(deps, str):
-                deps = [deps]
-            self._edges[name] = deps
-
-        self._validate()
-
-    def _validate(self):
-        # Check all dependencies reference existing tasks
-        for task_name, deps in self._edges.items():
-            for dep in deps:
-                if dep not in self._tasks:
-                    raise SchedulerError(
-                        "Task '%s' depends on '%s' which is not defined" % (task_name, dep))
-
-        # Detect cycles using DFS
-        visited = set()
-        in_stack = set()
-
-        def dfs(node):
-            if node in in_stack:
-                raise SchedulerError("Circular dependency detected involving task '%s'" % node)
-            if node in visited:
-                return
-            in_stack.add(node)
-            for dep in self._edges.get(node, []):
-                dfs(dep)
-            in_stack.discard(node)
-            visited.add(node)
-
-        for task_name in self._tasks:
-            dfs(task_name)
-
-    def execution_order(self):
-        """Return tasks grouped by execution level (list of lists of names)."""
-        in_degree = {name: len(self._edges.get(name, [])) for name in self._tasks}
-        levels = []
-        ready = sorted([name for name, deg in in_degree.items() if deg == 0])
-
-        while ready:
-            levels.append(ready)
-            next_ready = []
-            for completed_name in ready:
-                for task_name, deps in self._edges.items():
-                    if completed_name in deps:
-                        in_degree[task_name] -= 1
-                        if in_degree[task_name] == 0:
-                            next_ready.append(task_name)
-            ready = sorted(next_ready)
-
-        return levels
-
-    def get_task(self, name):
-        return self._tasks[name]
-
-    @property
-    def task_names(self):
-        return list(self._tasks.keys())
-
-    def __len__(self):
-        return len(self._tasks)
-
-
-# ---------------------------------------------------------------------------
-# YAML loader
-# ---------------------------------------------------------------------------
-
-def load_task_file(path):
-    """Load a task YAML file and return (tasks, metadata).
-
-    Each task is a dict with: name, tool, prompt, context, timeout,
-    depends_on, env.
-    """
-    try:
-        import yaml
-    except ImportError:
-        raise SchedulerError(
-            "PyYAML is required for task files. Install with: pip install pyyaml")
-
-    if not os.path.exists(path):
-        raise SchedulerError("Task file not found: %s" % path)
-
-    with open(path, "r") as f:
-        try:
-            data = yaml.safe_load(f)
-        except Exception as e:
-            raise SchedulerError("Invalid YAML in %s: %s" % (path, e))
-
-    if not isinstance(data, dict):
-        raise SchedulerError("Task file must be a YAML mapping")
-
-    defaults = data.get("defaults", {})
-    default_tool = defaults.get("tool", "claude")
-    default_timeout = defaults.get("timeout")
-
-    raw_tasks = data.get("tasks", [])
-    if not raw_tasks:
-        raise SchedulerError("No tasks defined in %s" % path)
-
-    tasks = []
-    for raw in raw_tasks:
-        if not isinstance(raw, dict):
-            raise SchedulerError("Each task must be a mapping")
-        name = raw.get("name")
-        if not name:
-            raise SchedulerError("Each task must have a 'name' field")
-        prompt = raw.get("prompt")
-        if not prompt:
-            raise SchedulerError("Task '%s' is missing required 'prompt' field" % name)
-
-        depends_on = raw.get("depends_on", [])
-        if isinstance(depends_on, str):
-            depends_on = [depends_on]
-
-        tasks.append({
-            "name": name,
-            "tool": raw.get("tool", default_tool),
-            "prompt": prompt,
-            "context": raw.get("context"),
-            "timeout": raw.get("timeout", default_timeout),
-            "depends_on": depends_on,
-            "env": raw.get("env", {}),
-        })
-
-    metadata = {
-        "version": data.get("version", "1"),
-        "defaults": defaults,
-        "task_count": len(tasks),
-    }
-    return tasks, metadata
-
-
-# ---------------------------------------------------------------------------
-# Scheduler — synchronous, level-by-level execution
-# ---------------------------------------------------------------------------
-
-def _launch_agent(task, workdir):
-    """Launch a single agent for a task. Returns agent dict or None."""
-    from uuid import uuid4
-    import subprocess
-
-    tool = task.get("tool", "claude")
-    prompt = task.get("prompt", "")
-    name = task.get("name")
-    config = _load_config(tool)
-
-    agent_id = uuid4().hex[:8]
-    session = "cam-%s" % agent_id
-    launch_cmd = _build_command(config, prompt, workdir)
-
-    context = _load_default_context()
-    # context.json is scheduler metadata only; it must not inject
-    # runtime env setup into agent launches.
-    env_setup = None
-
-    # Auto-install manifest skills to the selected tool's project config.
-    # Skills are an enhancement — a failed install must never block launch.
-    try:
-        install_manifest_skills(workdir, config_dir=config.config_dir)
-    except Exception as e:
-        log.warning("skill install skipped: %s", e)
-
-    if not create_tmux_session(session, launch_cmd, workdir, env_setup=env_setup, inherit_env=True):
-        return None
-
-    store = AgentStore()
-    import socket as _sock
-    ctx_name = context.get("name", "") if isinstance(context, dict) else ""
-    ctx_host = context.get("host") if isinstance(context, dict) else None
-    transport = "ssh" if ctx_host and ctx_host not in ("localhost", "127.0.0.1") else "local"
-    agent = {
-        "id": agent_id,
-        "task": {"name": name or "", "tool": tool, "prompt": prompt,
-                 "auto_confirm": True, "auto_exit": False},
-        "context_id": "",
-        "context_name": ctx_name,
-        "context_path": workdir,
-        "transport_type": transport,
-        "status": "running",
-        "state": "initializing",
-        "tmux_session": session,
-        "tmux_socket": "",
-        "pid": None,
-        "hostname": _sock.gethostname(),
-        "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
-        "retry_count": 0, "cost_estimate": None, "files_changed": [],
-    }
-    store.save(agent)
-
-    # Spawn background monitor (boot + tool TOML during initializing).
-    try:
-        proc = subprocess.Popen(
-            [sys.executable, os.path.abspath(sys.argv[0]), "_monitor", agent_id] if os.path.isfile(sys.argv[0]) else [sys.executable, "-m", "camc_pkg", "_monitor", agent_id],
-            stdout=subprocess.DEVNULL,
-            stderr=open("/tmp/camc-%s.log" % agent_id, "a"),
-            start_new_session=True)
-        store.update(agent_id, pid=proc.pid)
-    except Exception:
-        pass
-
-    return agent
-
-
-def run_dag(graph, workdir=None, dry_run=False, poll_interval=5, timeout=None):
-    """Execute a TaskGraph synchronously, level by level.
-
-    Args:
-        graph: Validated TaskGraph.
-        workdir: Working directory for agents (default: cwd).
-        dry_run: If True, just print plan without executing.
-        poll_interval: Seconds between status polls.
-        timeout: Max seconds to wait per level (None = no limit).
-
-    Returns:
-        Dict mapping task name -> final status string.
-    """
-    workdir = workdir or os.getcwd()
-    levels = graph.execution_order()
-    results = {}  # task_name -> {"status": ..., "agent_id": ...}
-
-    # Print plan
-    print("Task graph: %d tasks, %d levels" % (len(graph), len(levels)))
-    for level_idx, level in enumerate(levels):
-        print("  Level %d:" % (level_idx + 1))
-        for task_name in level:
-            task = graph.get_task(task_name)
-            deps = " (after: %s)" % ", ".join(task.get("depends_on", [])) if task.get("depends_on") else ""
-            print("    %s: [%s] %s%s" % (task_name, task.get("tool", "claude"),
-                  (task.get("prompt", ""))[:50], deps))
-    print()
-
-    if dry_run:
-        print("Dry run complete — no tasks were executed.")
-        return results
-
-    store = AgentStore()
-    events = EventStore()
-
-    for level_idx, level in enumerate(levels):
-        print("--- Level %d/%d ---" % (level_idx + 1, len(levels)))
-
-        # Check dependencies succeeded
-        for task_name in level:
-            task = graph.get_task(task_name)
-            for dep in task.get("depends_on", []):
-                dep_result = results.get(dep, {})
-                if dep_result.get("status") != "completed":
-                    msg = "Task '%s' skipped: dependency '%s' %s" % (
-                        task_name, dep, dep_result.get("status", "not run"))
-                    print("  ✗ %s" % msg)
-                    results[task_name] = {"status": "skipped", "agent_id": None}
-                    events.append(task_name, "skipped", {"reason": msg})
-                    continue
-
-        # Launch agents for this level
-        level_agents = {}  # task_name -> agent_id
-        for task_name in level:
-            if task_name in results:
-                continue  # Already handled (skipped)
-            task = graph.get_task(task_name)
-            print("  Starting: %s [%s]" % (task_name, task.get("tool", "claude")))
-            agent = _launch_agent(task, workdir)
-            if agent:
-                level_agents[task_name] = agent["id"]
-                print("    Agent %s session %s" % (agent["id"], agent.get("tmux_session", "")))
-                events.append(agent["id"], "dag_task_start", {"task": task_name, "level": level_idx + 1})
-            else:
-                print("    ✗ Failed to launch")
-                results[task_name] = {"status": "failed", "agent_id": None}
-
-        # Wait for all agents in this level to complete
-        if level_agents:
-            start = time.time()
-            pending = set(level_agents.keys())
-            while pending:
-                if timeout and (time.time() - start) > timeout:
-                    for tn in list(pending):
-                        results[tn] = {"status": "timeout", "agent_id": level_agents[tn]}
-                    print("  ⚠ Level timeout reached")
-                    break
-                time.sleep(poll_interval)
-                for task_name in list(pending):
-                    agent_id = level_agents[task_name]
-                    a = store.get(agent_id)
-                    if not a:
-                        continue
-                    status = a.get("status", "running")
-                    if status != "running":
-                        results[task_name] = {"status": status, "agent_id": agent_id}
-                        pending.discard(task_name)
-                        icon = "✓" if status == "completed" else "✗"
-                        print("  %s %s: %s [%s]" % (icon, task_name, status, agent_id))
-
-    # Summary
-    print()
-    completed = sum(1 for r in results.values() if r.get("status") == "completed")
-    failed = sum(1 for r in results.values() if r.get("status") in ("failed", "timeout", "skipped"))
-    print("Results: %d completed, %d failed/skipped out of %d" % (completed, failed, len(results)))
-
-    return results
 
 
 # ===========================================================================
@@ -13503,8 +13165,14 @@ def cmd_run(args):
         sys.exit(1)
 
     if not known_tool and prompt:
-        time.sleep(config.startup_wait)
-        tmux_send_input(session, prompt, send_enter=True)
+        result = insert_prompt(
+            session, prompt, observe_fn=_make_prompt_observer(config),
+            ready_timeout=config.startup_wait,
+            submit_delay=(getattr(config, "prompt_submit_delay", 0.0)
+                           or _MSG_SUBMIT_DELAY_DEFAULT))
+        if not result.get("ok"):
+            print_warning("Initial prompt was not confirmed: %s" %
+                          result.get("reason", "unknown"))
 
     # Snapshot the tmux binary + version that actually started this server.
     # tmux client/server protocol requires matching versions, so subsequent
@@ -16983,33 +16651,6 @@ def cmd_heal(args):
     _refresh_embedded_skills_after_heal()
 
 
-def cmd_apply(args):
-    """Apply tasks from a YAML file (DAG scheduler)."""
-
-    task_file = args.file
-    dry_run = getattr(args, "dry_run", False)
-    workdir = os.path.abspath(getattr(args, "path", None) or os.getcwd())
-
-    try:
-        tasks, metadata = load_task_file(task_file)
-    except SchedulerError as e:
-        sys.stderr.write("Error: %s\n" % e); sys.exit(1)
-
-    try:
-        graph = TaskGraph(tasks)
-    except SchedulerError as e:
-        sys.stderr.write("Error: invalid task graph: %s\n" % e); sys.exit(1)
-
-    try:
-        results = run_dag(graph, workdir=workdir, dry_run=dry_run)
-    except SchedulerError as e:
-        sys.stderr.write("Error: %s\n" % e); sys.exit(1)
-
-    # Exit code: non-zero if any task failed
-    if results and any(r.get("status") not in ("completed", None) for r in results.values()):
-        sys.exit(1)
-
-
 def cmd_history(args):
     """Show event history for an agent."""
     events = EventStore()
@@ -17473,10 +17114,20 @@ def _msg_inject(session, to_label, text, timeout_s,
         "to_id": to_id, "to_name": to_name,
     })
 
-    if not tmux_submit_input(session, payload, submit_delay=submit_delay,
-                             send_input_fn=tmux_send_input,
-                             send_key_fn=tmux_send_key, sleep_fn=time.sleep):
-        _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
+    target_tool = _agent_tool(target) if target else ""
+    try:
+        target_config = _load_config(target_tool) if target_tool else None
+    except Exception:
+        target_config = None
+    result = insert_prompt(
+        session, payload, observe_fn=_make_prompt_observer(target_config),
+        submit_delay=submit_delay)
+    if not result.get("ok"):
+        _msg_ledger_append({
+            "msg_id": msg_id, "status": "deliver_failed",
+            "phase": result.get("phase"),
+            "reason": result.get("reason"),
+        })
         return (msg_id, False)
     # The monitor may make one long-static, input-guarded Enter retry if the
     # TUI accepted the paste but did not consume the submit key.  Keep this
@@ -18138,7 +17789,16 @@ def cmd_msg_reply(args):
         wire_text = (prefix + " " + text) if prefix else text
         payload = "[camc msg#%s]: %s" % (orig_msg_id, wire_text)
         try:
-            tmux_send_input(recipient_session, payload, send_enter=True)
+            recipient_tool = _agent_tool(target_for_inject) if target_for_inject else ""
+            recipient_config = (_load_config(recipient_tool)
+                                if recipient_tool else None)
+            result = insert_prompt(
+                recipient_session, payload,
+                observe_fn=_make_prompt_observer(recipient_config),
+                submit_delay=_msg_submit_delay(target_for_inject))
+            if not result.get("ok"):
+                log.warning("Message reply prompt was not confirmed: %s",
+                            result.get("reason", "unknown"))
         except Exception:
             pass
 
@@ -19167,13 +18827,6 @@ def cmd_sync(args):
     print("Sync complete: %d deployed, %d failed" % (total_ok, total_fail))
 
 
-def cmd_db_migrate(args):
-    """Migrate cam SQLite data to JSON format."""
-    db_path = getattr(args, "db", None)
-    dry_run = getattr(args, "dry_run", False)
-    run_migrate(db_path=db_path, dry_run=dry_run)
-
-
 def cmd_version(args):
     build = __build__ if __build__ else "dev"
     print("camc v%s (%s)" % (__version__, build))
@@ -19377,7 +19030,6 @@ examples:
   camc status abc1                    Show detailed agent status
   camc add my-session --tool claude   Adopt existing tmux session
   camc rm abc1 --kill                 Remove and kill agent
-  camc apply -f tasks.yaml            Run DAG task file
   camc history abc1                   Show event history for agent
   camc capture myfix --lines 50       Capture agent screen output
   camc send myfix --text "hello"      Send text to agent
@@ -19570,12 +19222,6 @@ examples:
     st = sub.add_parser("status", help="Show detailed agent status")
     st.add_argument("agent_id", nargs="?", default=None, help="Agent ID (full or short)")
     st.add_argument("--hash", default=None, help="Return unchanged if hash matches (automation)")
-
-    # apply
-    ap = sub.add_parser("apply", help="Run tasks from a YAML file (DAG scheduler)")
-    ap.add_argument("--file", "-f", required=True, help="Path to task YAML file")
-    ap.add_argument("--path", "-p", default=None, help="Working directory [default: cwd]")
-    ap.add_argument("--dry-run", action="store_true", help="Validate and show plan without executing")
 
     # history
     hi = sub.add_parser("history", help="Show event history")
@@ -19790,11 +19436,6 @@ examples:
     sy = sub.add_parser("sync", help="Sync camc and configs to remote machines")
     sy.add_argument("target", nargs="?", default=None, help="Machine name (omit for all SSH machines)")
 
-    # migrate
-    mig = sub.add_parser("db-migrate", help="Migrate cam SQLite data to JSON")
-    mig.add_argument("--db", default=None, help="Path to cam.db [default: ~/.local/share/cam/cam.db]")
-    mig.add_argument("--dry-run", action="store_true", help="Show plan without writing files")
-
     # version
     sub.add_parser("version", help="Show version")
 
@@ -19873,7 +19514,6 @@ examples:
         "migrate": cmd_migrate,
         "attach": cmd_attach, "a": cmd_attach,
         "status": cmd_status,
-        "apply": cmd_apply,
         "history": cmd_history,
         "capture": cmd_capture,
         "send": cmd_send,
@@ -19885,7 +19525,6 @@ examples:
         "machine": cmd_machine,
         "context": cmd_context,
         "sync": cmd_sync,
-        "db-migrate": cmd_db_migrate,
         "version": cmd_version,
         "skills": cmd_skills,
         "api": cmd_api,

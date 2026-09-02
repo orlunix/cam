@@ -16,6 +16,11 @@ _READY_STABLE_SECONDS = 10.0
 _CURSOR_FLAG_UNSET = object()
 
 
+def _cursor_flag_supported(config):
+    """Return whether this adapter can use tmux's native cursor flag."""
+    return bool(getattr(config, "cursor_flag_support", True))
+
+
 def _find_cursor_line(lines):
     """Return the bottom-most cursor line in ``lines``, or None."""
     for line in reversed(lines):
@@ -58,7 +63,8 @@ def detect_state(output, config):
 
 def should_auto_confirm(output, config, last_response="", prev_output="",
                         recent_lines=None, cursor_flag=_CURSOR_FLAG_UNSET):
-    if (cursor_flag is not _CURSOR_FLAG_UNSET and cursor_flag != 0):
+    if (_cursor_flag_supported(config)
+            and cursor_flag is not _CURSOR_FLAG_UNSET and cursor_flag != 0):
         return None
     if config.strip_ansi:
         output = strip_ansi(output)
@@ -120,7 +126,8 @@ def _detect_prompt_count(output, config):
 
 def is_ready_for_input(output, config, stable_for=None,
                        cursor_flag=_CURSOR_FLAG_UNSET):
-    if (cursor_flag is not _CURSOR_FLAG_UNSET and cursor_flag != 1):
+    if (_cursor_flag_supported(config)
+            and cursor_flag is not _CURSOR_FLAG_UNSET and cursor_flag != 1):
         return False
     if not config.ready_pattern:
         return True

@@ -2,6 +2,7 @@
 
 [adapter]
 name = "cursor"
+cursor_flag_support = false
 
 [launch]
 startup_wait = 15.0
@@ -10,10 +11,10 @@ ready_pattern = "→"
 ready_flags = ["MULTILINE"]
 
 [[confirm]]
-pattern = "^\\W*\\[a\\]\\s*Trust this workspace"
+pattern = "^[ \\t]*▶[ \\t]*\\[a\\][ \\t]*Trust this workspace"
 flags = ["MULTILINE"]
-response = "a"
-send_enter = false
+response = ""
+send_enter = true
 
 [monitor]
 confirm_recent_lines = 128
