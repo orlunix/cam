@@ -3360,13 +3360,7 @@ body.desktop[data-theme="light"] .agent-browse-preview-md .md-code {
 
 
 /* ───────── Skills workspace (CAM-DESK-SKILLM-010..014) ───────── */
-#mode-skills .skills-header {
-  width: min(1280px, 100%);
-  max-width: 1280px;
-  margin-left: auto;
-  margin-right: auto;
-  box-sizing: border-box;
-}
+/* (no .skills-header: the app chrome injects the page header on open) */
 .skills-workbench {
   width: min(1280px, 100%);
   max-width: 1280px;
@@ -3881,7 +3875,6 @@ body.desktop[data-theme="light"] .skillm-repo-actions .btn-xs-danger:hover {
 }
 
 /* Skills full-width aligned layout (Nodes-style rail). */
-#mode-skills .skills-header,
 #mode-skills .skills-workbench,
 #mode-skills .skills-status {
   width: min(100%, var(--desktop-rail-wide));
@@ -4321,7 +4314,6 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
 }
 
 /* ───────── Todos / Notes worklog (CAM-DESK-TODOS-010..017) ───────── */
-#mode-todos .todos-header,
 #mode-todos .todos-workbench,
 #mode-todos .todos-status {
   width: min(100%, var(--desktop-rail-wide));
@@ -5657,8 +5649,7 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
 .ext-error { font-size: 12px; color: var(--red, #e5534b); }
 .ext-row-actions { display: flex; gap: 6px; flex: 0 0 auto; }
 .ext-view-wrap {
-  margin-top: 16px; border: 1px solid var(--border); border-radius: 10px;
-  overflow: hidden; display: flex; flex-direction: column;
+  margin-top: 16px; display: flex; flex-direction: column;
   height: 70vh;
 }
 /* Dedicated page mode: Open takes over the whole mode area (like
@@ -5690,15 +5681,44 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
   margin-right: auto;
 }
 #mode-extensions.ext-viewing { display: flex; flex-direction: column; }
-.ext-view-header {
-  display: flex; align-items: center; gap: 14px;
-  padding: 12px 16px; background: var(--bg-hover);
+/* Uniform app-managed extension header — ONE format for every
+ * extension surface: the Open page (iframe view or native chrome) and
+ * the Settings page. Line 1 Title@version, line 2 description, Back
+ * top-right, divider with page spacing above and below. */
+#mode-extensions .ext-view-header,
+#mode-extensions .ext-edit-head,
+.mode-panel > .ext-chrome {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start; gap: 12px;
+  margin: 0 0 14px;
+  padding: 14px 0 12px;
+  box-sizing: border-box;
+  background: none;
   border-bottom: 1px solid var(--border);
 }
 .ext-view-header h2 { margin: 0; font-size: 16px; }
 .ext-view-header .settings-help { margin: 2px 0 0; }
 .ext-view-host { flex: 1 1 auto; min-height: 0; }
-.ext-view-frame { width: 100%; height: 100%; border: none; display: block; background: #0f1216; }
+.ext-view-frame { width: 100%; height: 100%; border: 1px solid var(--border); border-radius: 10px; display: block; background: #0f1216; }
+
+/* Native ext pages: the chrome is injected by applyExtChrome as a direct
+ * child of the mode panel — rail width like the content under it; the
+ * page's own baked-in header is hidden (see .ext-chromed). */
+.mode-panel > .ext-chrome {
+  width: min(100%, var(--desktop-rail-wide));
+  margin-left: auto; margin-right: auto;
+}
+.mode-panel > .ext-chrome h2 { margin: 0; font-size: 16px; }
+.mode-panel > .ext-chrome .settings-help { margin: 2px 0 0; }
+/* Hide only the page's OWN baked-in header — the injected chrome also
+ * carries .settings-header (for shared styling), so without :not(.ext-chrome)
+ * this more-specific rule beats `.mode-panel > .ext-chrome` above and hides
+ * the chrome itself (title + Back gone on every native ext page). */
+.mode-panel.ext-chromed > .settings-header:not(.ext-chrome) { display: none; }
+/* Todos workspace renders its own .tw-header inside the workbench mount
+ * point — hide it too when the app chrome is present (same rule as the
+ * baked-in .settings-header above, one level deeper). */
+.mode-panel.ext-chromed .tw-header { display: none; }
 
 /* ────────── per-agent extension menu + overlay ────────── */
 .agent-ext-wrap { position: relative; }
@@ -5730,68 +5750,48 @@ body.desktop[data-theme="light"] .agent-row-menu-item.danger {
 .agent-ext-host { flex: 1 1 auto; min-height: 0; }
 .agent-ext-host .ext-view-frame { width: 100%; height: 100%; border: none; display: block; }
 
-/* ────────── Agent Doctor (native extension page) ──────────
- * Layout mirrors the Skills page: centered 1280px rail, skills-card
- * sections, ok/warn/bad status rows. All selectors are namespaced under
- * #mode-agent-doctor so they can never leak onto other pages. */
-#mode-agent-doctor .doctor-header,
-#mode-agent-doctor .doctor-workbench {
-  width: min(1280px, 100%);
-  max-width: 1280px;
-  margin-left: auto;
-  margin-right: auto;
+/* ────────── Extensions page: per-extension attribute editor ──────────
+ * Same dedicated-page pattern as ext-viewing: the list/toolbar hide and
+ * the editor takes the wide rail. Namespaced under #mode-extensions. */
+#mode-extensions.ext-editing .ext-page-header,
+#mode-extensions.ext-editing .ext-toolbar,
+#mode-extensions.ext-editing #ext-list,
+#mode-extensions.ext-editing #ext-status { display: none; }
+#mode-extensions .ext-edit-wrap {
+  width: min(100%, var(--desktop-rail-wide));
+  max-width: var(--desktop-rail-wide);
+  margin: 0 auto;
   box-sizing: border-box;
 }
-#mode-agent-doctor .doctor-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
-  gap: 12px;
-}
-#mode-agent-doctor .doctor-workbench {
-  padding: 16px 20px 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-#mode-agent-doctor .doctor-target-fields label {
-  font-size: 11px;
-  color: var(--text-dim);
-  align-self: center;
-}
-#mode-agent-doctor select {
+#mode-extensions .ext-edit-text {
+  width: 100%;
+  min-height: 280px;
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
   background: var(--bg-input);
-  border: 1px solid var(--border);
   color: var(--text);
-  padding: 4px 8px;
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  resize: vertical;
 }
-#mode-agent-doctor .doctor-report {
+#mode-extensions .ext-edit-actions {
   display: flex;
-  flex-direction: column;
-  gap: 12px;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
 }
-#mode-agent-doctor .doctor-card-title {
-  margin: 0;
-  font-size: 13.5px;
+
+/* Attribute form (manifest-declared schema) inside the editor: reuses the
+ * global .settings-section / .form-checkbox / .form-hint look (same as the
+ * Start dialog Options block), so the container needs no row styling. */
+#mode-extensions .ext-edit-form {
+  margin-top: 2px;
 }
-#mode-agent-doctor .doctor-row {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  padding: 3px 0;
-  font-size: 12.5px;
-}
-#mode-agent-doctor .doctor-row-icon { flex: 0 0 16px; }
-#mode-agent-doctor .doctor-row.is-ok .doctor-row-icon { color: var(--ok, #3fb950); }
-#mode-agent-doctor .doctor-row.is-warn .doctor-row-icon { color: var(--ansi-yellow, #d29922); }
-#mode-agent-doctor .doctor-row.is-bad .doctor-row-icon { color: var(--danger, #f85149); }
-#mode-agent-doctor .doctor-sug {
-  color: #79c0ff;
-  font-size: 12px;
-  margin-left: 24px;
-}
-#mode-agent-doctor .doctor-empty {
+#mode-extensions .ext-desc {
+  display: block;
   color: var(--text-dim);
-  font-size: 12.5px;
+  font-size: 12px;
 }

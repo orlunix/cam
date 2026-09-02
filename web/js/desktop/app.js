@@ -11,15 +11,12 @@
 import { api } from '../api.js?v=0.66.1';
 import { state } from '../state.js?v=0.64.0';
 import { mountShell } from './shell.js?v=0.65.1';
-import { mountAgentConsole } from './agent-console.js?v=0.67.5';
+import { mountAgentConsole } from './agent-console.js?v=0.68.3';
 import { mountSettingsMode } from './settings-mode.js?v=0.64.2';
 import { mountStartAgentMode } from './start-agent-mode.js?v=0.64.1';
 import { mountNodesMode } from './nodes-mode.js?v=0.64.0';
-import { mountSkillsMode } from './skills-mode.js?v=0.64.0';
 import { mountBotsMode } from './bots-mode.js?v=0.64.0';
-import { mountTodosMode } from './todos-mode.js?v=0.65.0';
-import { mountExtensionsMode } from './extensions-mode.js?v=0.68.0';
-import { mountAgentDoctorMode } from './agent-doctor-mode.js?v=0.68.0';
+import { mountExtensionsMode } from './extensions-mode.js?v=0.68.3';
 import { mountDiagnosticsMode } from './diagnostics-mode.js?v=0.65.1';
 
 const POLL_INTERVAL_MS = 5000;
@@ -32,13 +29,12 @@ const PROFILE_KIND_KEY = 'cam_profile_kind';
 // Unfinished workspace modes hidden from the nav (desktop.html
 // UNFINISHED-HIDDEN markers). setMode() and cold-start mode restore coerce
 // these to DEFAULT_MODE, so stale localStorage can't activate a hidden mode.
-// Re-enable: delete from HIDDEN_MODES + remove `hidden` on the nav buttons.
-// todos: reachable via the Extensions built-in entry (native: todos) —
-// its nav button stays hidden; only bots remains fully blocked.
+// skills/todos are no longer app modes — they are self-contained
+// extensions (packages/skills, packages/todos; iframe views over the
+// hub:api bridge passthrough), reached via Extensions → Open. Stale
+// persisted modes coerce to DEFAULT_MODE via the MODES.includes check.
 const HIDDEN_MODES = new Set(['bots']);
-// agent-doctor: no nav button — reached only via the agent console Ext
-// menu or Extensions → Open (native page of the agent-doctor extension).
-const MODES = ['agents', 'settings', 'start', 'nodes', 'skills', 'extensions', 'bots', 'todos', 'agent-doctor']
+const MODES = ['agents', 'settings', 'start', 'nodes', 'extensions', 'bots']
   .filter(m => !HIDDEN_MODES.has(m));
 const DEFAULT_MODE = 'agents';
 
@@ -322,10 +318,8 @@ function handleEvent(event) {
 /* ────────── Mode host ────────── */
 
 // Modes that survive a page reload. Derived from MODES so hidden unfinished
-// modes (HIDDEN_MODES above) are never persisted or restored. agent-doctor
-// is excluded: it is an entry-point page (needs a bound agent), so a reload
-// lands on the default mode instead.
-const PERSISTENT_MODES = new Set(MODES.filter(m => m !== 'agent-doctor'));
+// modes (HIDDEN_MODES above) are never persisted or restored.
+const PERSISTENT_MODES = new Set(MODES);
 
 function setMode(next) {
   if (!MODES.includes(next)) next = DEFAULT_MODE;
@@ -500,11 +494,8 @@ async function init() {
     loadContextsAndAdapters, loadAgents,
     connect: autoStartConnection,
   });
-  mountSkillsMode({ api, state, showToast });
   mountBotsMode({ api, state, showToast });
-  mountTodosMode({ api, state, showToast });
   mountExtensionsMode({ api, state, showToast, setMode });
-  mountAgentDoctorMode({ api, state, showToast, setMode });
 
   // First connection attempt.
   //

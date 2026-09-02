@@ -101,6 +101,9 @@ fingerprint unless `--show-token` is explicitly used for debugging.
 
 ## Files
 
+- [`development-guide.md`](./development-guide.md) — 中文交接版全量开发说明
+  (2026-08-18): architecture, main process, renderer, extensions, build/release,
+  tests, stability rules, doc map. **Onboarding read this first.**
 - [`requirements.md`](./requirements.md) — canonical requirement registry
   with stable Req IDs. **Read this first.** Starts with the Architecture
   and Connection Model section that this README summarizes.

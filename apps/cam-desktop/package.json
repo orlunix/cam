@@ -1,6 +1,6 @@
 {
   "name": "cam-desktop",
-  "version": "0.2.4",
+  "version": "0.2.36",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -76,7 +76,11 @@
       },
       {
         "from": "../../extensions",
-        "to": "extensions"
+        "to": "extensions",
+        "filter": [
+          "**/*",
+          "!vendor/**/node_modules/**"
+        ]
       }
     ],
     "win": {

@@ -1,0 +1,8 @@
+name: assistant
+version: 0.6.2
+title: Assistant
+description: Local Q&A assistant — an embedded pi agent against your own OpenAI-compatible endpoint (base URL / model / token in its Settings tab). Runs shell commands directly on this machine (direct flavor, non-MAS).
+capabilities:
+  - exec
+mounts:
+  - agent

@@ -27,6 +27,7 @@ const https = require('node:https');
 
 const embeddedHub     = require('./embedded-hub.cjs');
 const credentialStore = require('./credential-store.cjs');
+const assistantHost   = require('./assistant-host.cjs');
 const sshTransport    = require('./ssh-transport.cjs');
 const { tmuxMetadataForAgent, selectOnlyClient, selectNewClient, parseClientState, parseWindowRows, tmuxCommand } = require('./tmux-controls.cjs');
 
@@ -105,6 +106,8 @@ function netProbe(target, timeoutMs = 8000) {
   });
 }
 
+let _mainWindow = null;
+
 function createMainWindow() {
   const win = new BrowserWindow({
     width: 1280,
@@ -126,6 +129,8 @@ function createMainWindow() {
   const indexPath = path.join(webRoot, 'desktop.html');
   const fileUrl = url.pathToFileURL(indexPath).toString();
   win.loadURL(fileUrl);
+  _mainWindow = win;
+  win.on('closed', () => { if (_mainWindow === win) _mainWindow = null; });
 
   // Open http(s) links in the user's default browser.
   win.webContents.setWindowOpenHandler(({ url: target }) => {
@@ -195,6 +200,21 @@ function userDataDir() {
 function _ensureBackendsConfigured() {
   credentialStore.configure({ safeStorage, dataDir: userDataDir() });
   embeddedHub.configure({ credentialStore, sshTransport });
+  assistantHost.configure({
+    dataDir: userDataDir(),
+    credentialStore,
+    logger: (m) => _diagLog(`[assistant] ${m}`),
+    // Push rail: every assistant event (delta/thinking/done/…) is
+    // broadcast to the renderer the moment it exists — the view renders
+    // on receipt instead of waiting for a poll tick.
+    onEvent: (ev) => {
+      try {
+        if (_mainWindow && !_mainWindow.isDestroyed()) {
+          _mainWindow.webContents.send('assistant:event', ev);
+        }
+      } catch (_) {}
+    },
+  });
   if (sshTransport && typeof sshTransport.setLogger === 'function') {
     sshTransport.setLogger((m) => _diagLog(`[ssh] ${m}`));
   }
@@ -207,16 +227,24 @@ async function localCheck() {
 
 async function localStart() {
   _ensureBackendsConfigured();
-  return embeddedHub.start({ dataDir: userDataDir() });
+  const r = await embeddedHub.start({ dataDir: userDataDir(), appVersion: app.getVersion() });
+  // Feed the assistant the fresh hub pair (the token rotates on every
+  // hub start). Main sees it here anyway — it never crosses to the
+  // renderer through this path.
+  if (r && r.ok) assistantHost.setHub({ url: r.apiUrl, token: r.apiToken });
+  return r;
 }
 
 async function localStop() {
+  assistantHost.setHub(null);
   return embeddedHub.stop();
 }
 
 async function localRestart() {
   _ensureBackendsConfigured();
-  return embeddedHub.restart({ dataDir: userDataDir() });
+  const r = await embeddedHub.restart({ dataDir: userDataDir(), appVersion: app.getVersion() });
+  if (r && r.ok) assistantHost.setHub({ url: r.apiUrl, token: r.apiToken });
+  return r;
 }
 
 function localLogs() {
@@ -389,7 +417,15 @@ try:
 except Exception:
     pass
 `;
-  return `python3 - ${_shellQuote(agentId)} ${_shellQuote(String(safeCols))} ${_shellQuote(String(safeRows))} <<'PY'\n${py}\nPY`;
+  // No heredoc: the exec channel is interpreted by the remote LOGIN
+  // shell, which may be csh/tcsh (e.g. prgn.nvidia.com) where `<<` is a
+  // syntax error and the whole repair silently no-ops. `python3 -`
+  // reads the program from stdin instead — plain command + quoted args
+  // parse under any shell.
+  return {
+    command: `python3 - ${_shellQuote(agentId)} ${_shellQuote(String(safeCols))} ${_shellQuote(String(safeRows))}`,
+    stdin: py,
+  };
 }
 
 /** Append one line to the user-visible diagnostics log (userData).
@@ -405,9 +441,11 @@ function _diagLog(line) {
 async function _repairRemoteTerminalSize(opts, agentId, cols, rows) {
   if (!opts || !agentId) return;
   try {
+    const repair = _terminalRepairCommand(agentId, cols, rows);
     const res = await sshTransport.execRemote({
       ...opts,
-      command: _terminalRepairCommand(agentId, cols, rows),
+      command: repair.command,
+      stdin: repair.stdin,
       timeout_ms: 8000,
     });
     // Evidence for the recurring "window shrank to ~10 cols" mystery:
@@ -1206,8 +1244,9 @@ app.whenReady().then(() => {
       const nGates = _resetTmuxDiscovery();
       _diagLog(`[app:reset] terminals disposed (${nTerms}), SSH pools dropped, tmux discovery gates released (${nGates}); restarting hub`);
       _ensureBackendsConfigured();
-      const r = await embeddedHub.restart({ dataDir: userDataDir() });
+      const r = await embeddedHub.restart({ dataDir: userDataDir(), appVersion: app.getVersion() });
       if (r && r.ok) {
+        assistantHost.setHub({ url: r.apiUrl, token: r.apiToken });
         _diagLog(`[app:reset] hub restarted on ${r.apiUrl} — reset complete`);
         return { ok: true };
       }
@@ -1252,6 +1291,23 @@ app.whenReady().then(() => {
   ipcMain.handle('term:createWindow', (event, p) => termCreateWindow(event, p));
   ipcMain.handle('term:copyMode', (event, p) => termEnterCopyMode(event, p));
   ipcMain.handle('term:cancelCopyMode', (event, p) => termCancelCopyMode(event, p));
+
+  // Assistant (docs/desktop/assistant-design.md): the scoped surface for
+  // the built-in assistant extension. Main owns the child process; the
+  // renderer only sends text and polls the event log. The LLM token
+  // never crosses the bridge — it lives in the credential store.
+  ipcMain.handle('assistant:status',   () => { _ensureBackendsConfigured(); return assistantHost.status(); });
+  ipcMain.handle('assistant:configure', (_e, p) => { _ensureBackendsConfigured(); return assistantHost.setConfig(p || {}); });
+  ipcMain.handle('assistant:models',   (_e, p) => { _ensureBackendsConfigured(); return assistantHost.listModels(p || {}); });
+  ipcMain.handle('assistant:start',    () => { _ensureBackendsConfigured(); return assistantHost.start(); });
+  ipcMain.handle('assistant:stop',     () => assistantHost.stop());
+  ipcMain.handle('assistant:send',     (_e, p) => assistantHost.send(p || {}));
+  ipcMain.handle('assistant:poll',     (_e, p) => assistantHost.poll(p || {}));
+  ipcMain.handle('assistant:reset',    () => assistantHost.reset());
+  ipcMain.handle('assistant:threads',  () => { _ensureBackendsConfigured(); return assistantHost.threads(); });
+  ipcMain.handle('assistant:thread-new', () => assistantHost.newChat());
+  ipcMain.handle('assistant:thread-open', (_e, p) => assistantHost.openThread(p || {}));
+  ipcMain.handle('assistant:thread-delete', (_e, p) => assistantHost.deleteThread(p || {}));
   createMainWindow();
 
   app.on('activate', () => {
@@ -1283,6 +1339,7 @@ app.on('before-quit', () => {
   // teardown so any pooled ssh2 client can flush its END/CLOSE frames
   // cleanly.
   for (const sid of [..._terminals.keys()]) _dropSession(sid);
+  try { assistantHost.stop(); } catch (_) {}
   try {
     // best-effort, synchronous-flavored — the close callback may fire
     // after Electron exits; that's fine because the OS reclaims the

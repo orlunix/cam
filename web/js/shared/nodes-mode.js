@@ -429,6 +429,12 @@ export function mountNodesMode({
       render();
       return { ok: false, error: 'host_disabled', detail: 'Node is disabled' };
     }
+    // Local re-entry guard (button is also disabled while running; the
+    // hub refuses duplicates with sync_in_flight — three layers, one
+    // race killed for good).
+    if (hostKey && (hostSync.get(hostKey) || {}).status === 'running') {
+      return { ok: false, error: 'sync_in_flight', detail: 'sync already running for this host' };
+    }
     setSync({ ts: Date.now(), status: 'running' });
     render();
     let resp = null;
@@ -606,8 +612,14 @@ export function mountNodesMode({
         `<button type="button" class="btn-sm host-edit-btn"  data-key="${esc(node.key)}">Edit Host</button>`,
       );
       if (canSyncHost()) {
+        // Re-entry guard: while this node's sync runs, the button shows
+        // progress instead of offering another click. Clicking mid-sync
+        // used to stack a second sync that raced the first (double SFTP
+        // writers on the same camc.tmp); the hub also refuses with
+        // sync_in_flight, but the button state is the honest UX.
+        const syncing = (hostSync.get(node.key) || {}).status === 'running';
         acts.push(
-          `<button type="button" class="btn-sm sync-host-btn"  data-key="${esc(node.key)}">Sync Host</button>`,
+          `<button type="button" class="btn-sm sync-host-btn"  data-key="${esc(node.key)}"${syncing ? ' disabled' : ''}>${syncing ? 'Syncing…' : 'Sync Host'}</button>`,
           `<button type="button" class="btn-sm heal-host-btn"  data-key="${esc(node.key)}">Heal…</button>`,
         );
       }
@@ -942,10 +954,18 @@ export function mountNodesMode({
           const code   = resp.error  || 'failed';
           const detail = resp.detail || '';
           const timing = formatSyncTiming((resp && resp.sync) || null);
-          const summary = `Sync host "${epLabel}": ${primary.name}:${code}` +
-            (detail ? ` — ${detail.slice(0, 200)}` : '') +
-            (timing ? ` — ${timing}` : '');
-          showToast(summary, 'error', 8000);
+          // sync_in_flight means a duplicate was detected (earlier click,
+          // auto-sync, or a wedged hub-side flow). Tell the user what it
+          // means and how it clears — the bare "already running" line read
+          // like a dead end (pre-fix it was: only an app restart helped).
+          const summary = code === 'sync_in_flight'
+            ? `Sync host "${epLabel}": a sync is already running for this node (duplicate sync detected). `
+              + 'If an earlier sync got stuck, the lock clears itself after ~3 min of no progress — '
+              + 'click Sync again then, or Reload to reset now.'
+            : `Sync host "${epLabel}": ${primary.name}:${code}` +
+              (detail ? ` — ${detail.slice(0, 200)}` : '') +
+              (timing ? ` — ${timing}` : '');
+          showToast(summary, 'error', code === 'sync_in_flight' ? 12000 : 8000);
           setStatus(`Sync failed (${code})${timing ? ` — ${timing}` : ''}`, 'is-error');
           btn.disabled = false;
           btn.textContent = originalText;

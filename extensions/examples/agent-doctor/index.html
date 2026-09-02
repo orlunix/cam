@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Agent Doctor</title>
+<style>
+:root { color-scheme: dark; }
+body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 16px 20px 20px; background: #0f1216; color: #e6e8eb; font-size: 13px; }
+/* No own title bar: the app chrome above the view already shows the
+   manifest title / description / Back. Views start with content. */
+.card { background: #161b22; border: 1px solid #2d333b; border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; }
+.card h3 { margin: 0 0 8px; font-size: 13.5px; }
+.head-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+button { background: #1f6feb; color: #fff; border: none; border-radius: 6px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; }
+button:hover { background: #388bfd; }
+button:disabled { opacity: .5; cursor: default; }
+select { background: #0d1117; border: 1px solid #2d333b; color: #e6e8eb; padding: 4px 8px; border-radius: 6px; font-size: 12.5px; min-width: 260px; }
+.hint { color: #8b949e; font-size: 12px; margin-top: 8px; }
+.status { font-size: 12.5px; margin-top: 6px; min-height: 16px; }
+.status.is-error { color: #f85149; }
+.status.is-ok { color: #3fb950; }
+.row { padding: 3px 0; font-size: 12.5px; }
+.empty { color: #8b949e; font-size: 12.5px; padding: 3px 0; }
+details { padding: 3px 0; font-size: 12.5px; }
+details > summary { cursor: pointer; }
+details[open] > summary { margin-bottom: 4px; }
+pre { background: #0d1117; border: 1px solid #2d333b; border-radius: 6px; padding: 8px 10px; margin: 4px 0 8px; max-height: 320px; overflow: auto; font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; }
+pre.inline { max-height: 120px; margin-left: 12px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="head-row">
+    <h3>Review target</h3>
+    <button type="button" id="run">Load review</button>
+  </div>
+  <select id="agent"></select>
+  <div class="hint" id="cfg-note"></div>
+  <div class="status" id="status" aria-live="polite"></div>
+</div>
+<div id="report"></div>
+
+<script src="../client.js"></script>
+<script>
+const KB = 1024;
+const PROMPT_WARN_BYTES = 8 * KB;
+const $ = (id) => document.getElementById(id);
+const runBtn = $('run'), agentSel = $('agent'), statusEl = $('status'), cfgNoteEl = $('cfg-note'), reportEl = $('report');
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = String(s == null ? '' : s);
+  return d.innerHTML;
+}
+function fmtKb(n) { return (n / KB).toFixed(1) + 'KB'; }
+function fmtDate(mt) { return mt ? new Date(mt * 1000).toISOString().slice(0, 10) : ''; }
+function setStatus(text, cls) {
+  statusEl.textContent = text || '';
+  statusEl.className = 'status' + (cls ? ' ' + cls : '');
+}
+
+let _agents = [];
+let _running = false;
+
+function populateAgents(preselect) {
+  agentSel.innerHTML = _agents.length
+    ? _agents.map(a => `<option value="${esc(a.id)}">${esc(a.task_name || a.id)} · ${esc(a.context_name || 'local')}</option>`).join('')
+    : '<option value="">(no agents)</option>';
+  if (preselect && _agents.some(a => a && a.id === preselect)) agentSel.value = preselect;
+}
+
+/* ── rendering ── */
+
+function muted(text) { return `<div class="empty">${esc(text)}</div>`; }
+function row(text) { return `<div class="row">${esc(text)}</div>`; }
+function section(title, rows) { return `<div class="card"><h3>${esc(title)}</h3>${rows.join('')}</div>`; }
+
+function fileDetails(f, extraNote) {
+  if (!f) return muted('(no data)');
+  if (f.exists === false) return muted(`${f.path || 'file'} — not present`);
+  const meta = `${f.path} · ${fmtKb(f.size || 0)}${f.mtime ? ' · ' + fmtDate(f.mtime) : ''}${f.truncated ? ' · truncated' : ''}${extraNote ? ' · ' + extraNote : ''}`;
+  if (f.content == null) return row(`${meta}${f.error ? ' — ' + f.error : ''}`);
+  return `<details><summary>${esc(meta)}</summary><pre>${esc(f.content)}</pre></details>`;
+}
+
+function renderReview({ tool, adapter, review, wsPrompt, warnBytes }) {
+  const warnKb = Math.max(1, Math.round((warnBytes || PROMPT_WARN_BYTES) / KB));
+  const out = [];
+
+  // ── system prompt (workspace) ──
+  {
+    const rows = [];
+    const f = wsPrompt && wsPrompt.file;
+    if (f && f.exists) {
+      const over = (f.size || 0) > warnBytes ? `over prompt_warn_kb (${warnKb}KB)` : '';
+      rows.push(fileDetails(f, over));
+    } else {
+      const cand = (wsPrompt && wsPrompt.candidates || []).join(' / ') || 'CLAUDE.md / AGENTS.md';
+      rows.push(muted(`no ${cand} in workspace${wsPrompt && wsPrompt.dir ? ' (' + wsPrompt.dir + ')' : ''}`));
+    }
+    out.push(section(`System prompt — ${tool}${adapter ? ' · adapter: ' + adapter : ''}`, rows));
+  }
+
+  const sec = (review && review.sections) || {};
+
+  // ── memory ──
+  {
+    const rows = [];
+    const gm = sec.global_memory && sec.global_memory.file;
+    if (gm) rows.push(fileDetails(gm));
+    const mem = sec.memories;
+    if (mem) {
+      if (!mem.exists) rows.push(muted(`${mem.path} — not present`));
+      else {
+        rows.push(row(`${mem.path} — ${mem.total != null ? mem.total : (mem.files || []).length} file(s)`));
+        for (const f of mem.files || []) rows.push(fileDetails(f));
+      }
+    }
+    if (!rows.length) rows.push(muted('adapter declares no memory paths'));
+    out.push(section('Memory', rows));
+  }
+
+  // ── skills ──
+  {
+    const rows = [];
+    const sk = sec.skills;
+    if (!sk) rows.push(muted('adapter declares no skills_dir'));
+    else if (!sk.exists) rows.push(muted(`${sk.path} — not present`));
+    else {
+      rows.push(row(`${sk.path} — ${sk.total != null ? sk.total : sk.skills.length} skill(s)`));
+      for (const s of sk.skills || []) {
+        rows.push(s.doc ? fileDetails(s.doc, `skill: ${s.name}`) : row(`${s.name} (no SKILL.md)`));
+      }
+    }
+    out.push(section('Skills', rows));
+  }
+
+  // ── MCP (config is secret-redacted by the collector) ──
+  {
+    const rows = [];
+    const mcp = sec.mcp;
+    if (!mcp) rows.push(muted('adapter declares no MCP config'));
+    else if (mcp.exists === false) rows.push(muted(`${mcp.path} — not present`));
+    else if (mcp.error) rows.push(row(`MCP config unreadable: ${mcp.error}`));
+    else {
+      rows.push(row(mcp.servers && mcp.servers.length
+        ? `${mcp.servers.length} server(s): ${mcp.servers.join(', ')}`
+        : 'no MCP servers configured'));
+      if (mcp.config) rows.push(`<details><summary>config (secrets redacted)</summary><pre>${esc(mcp.config)}</pre></details>`);
+    }
+    out.push(section('MCP', rows));
+  }
+
+  // ── settings (redacted) ──
+  if (sec.settings && sec.settings.file) {
+    out.push(section('Settings', [fileDetails(sec.settings.file, 'secrets redacted')]));
+  }
+
+  // ── sessions ──
+  {
+    const rows = [];
+    const sess = sec.sessions;
+    if (!sess) rows.push(muted('adapter declares no sessions_dir'));
+    else if (!sess.exists) rows.push(muted(`${sess.path} — not present`));
+    else {
+      rows.push(row(`${sess.count} session file(s) under ${sess.path}`));
+      for (const r of sess.recent || []) rows.push(row(`${r.file} · ${fmtKb(r.size || 0)} · ${fmtDate(r.mtime)}`));
+    }
+    out.push(section('Sessions', rows));
+  }
+
+  // ── loops / cron (camc on the agent's node) ──
+  {
+    const rows = [];
+    const lp = (review && review.loops) || null;
+    if (!lp) rows.push(muted('(loops not queried)'));
+    else {
+      const jobs = lp.jobs || [];
+      const loops = lp.loops || [];
+      if (lp.error) rows.push(muted(`loops unavailable: ${lp.error}`));
+      if (lp.jobs_error) rows.push(muted(`cron jobs: ${lp.jobs_error}`));
+      if (lp.loops_error) rows.push(muted(`loops: ${lp.loops_error}`));
+      if (!jobs.length && !loops.length && !lp.error && !lp.jobs_error && !lp.loops_error) {
+        rows.push(muted('no cron jobs / loops'));
+      }
+      for (const j of jobs.slice(0, 20)) {
+        const bits = [j.display_name || j.name || 'job', j.cron || j.schedule || '',
+          (j.timeout_seconds || j.timeout) ? `timeout ${j.timeout_seconds || j.timeout}s` : 'no timeout'].filter(Boolean);
+        rows.push(row(bits.join(' · ')));
+        const cmd = j.command || j.prompt || j.text || '';
+        if (cmd) rows.push(`<pre class="inline">${esc(String(cmd).slice(0, 2000))}</pre>`);
+      }
+      for (const l of loops.slice(0, 20)) {
+        const bits = [l.name || 'loop', l.every || l.interval || l.schedule || '', l.prompt ? '' : ''].filter(Boolean);
+        rows.push(row(`loop: ${bits.join(' · ')}`));
+        if (l.prompt) rows.push(`<pre class="inline">${esc(String(l.prompt).slice(0, 2000))}</pre>`);
+      }
+    }
+    out.push(section('Loops / cron', rows));
+  }
+
+  reportEl.innerHTML = out.join('');
+}
+
+/* ── run ── */
+
+async function loadReview() {
+  if (_running) return;
+  const a = _agents.find(x => x && x.id === agentSel.value);
+  if (!a) { setStatus('Select an agent first.', 'is-error'); return; }
+  _running = true;
+  runBtn.disabled = true;
+  const tool = String(a.tool || '').toLowerCase();
+  const target = `${a.task_name || a.id} · tool: ${tool || '?'} · host: ${a.context_name || '?'}`;
+  setStatus(`Loading review for ${target} …`);
+  reportEl.innerHTML = '';
+  try {
+    const [review, cfg] = await Promise.all([
+      camExt.call('ext.call', {
+        context: a.context_name || '',
+        method: 'review',
+        args: { tool, workspace_path: a.context_path || a.path || '', agent_id: a.id },
+      }),
+      camExt.call('ext.config').catch(() => ({})),
+    ]);
+    const warnKbNum = Number((cfg || {}).prompt_warn_kb);
+    cfgNoteEl.textContent = `Prompt size reference: ${warnKbNum > 0 ? warnKbNum : 8} KB (ext config prompt_warn_kb)`;
+    if (review && review.error) {
+      reportEl.innerHTML = section('Harness', [row(
+        `collector: ${review.error}${review.detail ? ' — ' + review.detail : ''}${review.known ? ' (known: ' + review.known.join(', ') + ')' : ''}`)]);
+    } else {
+      renderReview({
+        tool,
+        adapter: review && review.adapter,
+        review,
+        wsPrompt: review && review.workspace_prompt,
+        warnBytes: (warnKbNum > 0 ? warnKbNum : 8) * KB,
+      });
+    }
+    setStatus(`Review loaded — ${target}.`, 'is-ok');
+  } catch (e) {
+    setStatus(`Load failed: ${(e && e.message) || e}`, 'is-error');
+  }
+  _running = false;
+  runBtn.disabled = false;
+}
+
+runBtn.addEventListener('click', loadReview);
+
+(async function init() {
+  let appCtx = {};
+  try { appCtx = await camExt.call('app.context') || {}; } catch (_) {}
+  try { _agents = await camExt.call('agents.list') || []; } catch (e) {
+    setStatus(`agents.list failed: ${(e && e.message) || e}`, 'is-error');
+  }
+  populateAgents(appCtx.agentId || null);
+  // Opened from an agent page (Ext▾): auto-load that agent's review.
+  if (appCtx.agentId && _agents.some(a => a && a.id === appCtx.agentId)) loadReview();
+})();
+</script>
+</body>
+</html>

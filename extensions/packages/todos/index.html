@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Todos</title>
+<style>
+/* Self-contained ext view. The vendored todos.css references the APP's
+ * variable names (--border, --text, …) — provide them locally so the
+ * vendored file stays byte-compatible with its mobile-used original. */
+:root {
+  --bg:#0f1216; --panel:#161b22; --line:#2d333b;
+  --accent:#1f6feb; --accent-hover:#388bfd;
+  --bg-card:#11161c; --bg-hover:#1c2128; --bg-input:#161b22;
+  --border:#2d333b; --text:#e6e8eb; --text-dim:#8b949e;
+  --green:#3fb950; --red:#f85149; --desktop-rail-wide:100%;
+}
+* { box-sizing: border-box; }
+body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 12px 16px; background: var(--bg); color: var(--text); font-size: 13px; }
+/* The app chrome already shows title + Back above the iframe — suppress
+ * the workspace's own title copy but KEEP the store actions (Markdown
+ * refresh button lives there). */
+.tw-header .tw-header-copy h2,
+.tw-header .tw-header-copy p { display: none; }
+.tw-header { margin-bottom: 4px; }
+.tw-store-actions { margin-left: auto; }
+#tw-status { min-height: 16px; font-size: 12px; color: var(--text-dim); padding: 0 2px 8px; }
+</style>
+<link rel="stylesheet" href="todos.css">
+</head>
+<body>
+<div id="tw-status"></div>
+<div class="todos-workbench" id="tw-root"></div>
+<script src="../client.js"></script>
+<script>
+/* Sandboxed ext views run in an OPAQUE ORIGIN — window.localStorage throws
+ * there. Install a global shim backed by the ext's hub-side storage
+ * (ext.storageGet/Set, ext-data/todos/storage.json) so the vendored
+ * controller modules work unchanged and tasks survive view reloads.
+ * Hydration completes before the module script below runs. */
+(() => {
+  const mem = new Map();
+  let persistTimer = null;
+  function schedulePersist() {
+    if (persistTimer) clearTimeout(persistTimer);
+    persistTimer = setTimeout(() => {
+      const obj = {};
+      for (const [k, v] of mem) obj[k] = v;
+      try { camExt.storageSet(obj); } catch (_) {}
+    }, 400);
+  }
+  const shim = {
+    getItem: (k) => (mem.has(k) ? mem.get(k) : null),
+    setItem: (k, v) => { mem.set(k, String(v)); schedulePersist(); },
+    removeItem: (k) => { mem.delete(k); schedulePersist(); },
+    clear: () => { mem.clear(); schedulePersist(); },
+    key: (i) => Array.from(mem.keys())[i] ?? null,
+    get length() { return mem.size; },
+  };
+  Object.defineProperty(window, 'localStorage', { get: () => shim });
+  window.__todosStorageReady = (async () => {
+    try {
+      const store = await camExt.storageGet();
+      for (const [k, v] of Object.entries(store || {})) mem.set(k, String(v));
+    } catch (_) { /* storage unavailable → session-only */ }
+  })();
+})();
+</script>
+<script type="module">
+/* Adapter replicating the retired web/js/desktop/todos-mode.js contract —
+ * the api shim maps worklog-core's file reads onto the hub:api passthrough
+ * (endpoints unchanged: /api/contexts/<id>/files[...]). */
+import { mountTodosWorkspace } from './todos-workspace.js';
+import { contextLabelFromContexts, storePathForContexts, readWorklogMarkdown } from './worklog-core.js';
+
+await window.__todosStorageReady; // localStorage shim hydrated
+
+const enc = encodeURIComponent;
+const apiShim = {
+  listFiles: (c, p) => camExt.hubCall('GET', `/api/contexts/${enc(c)}/files?path=${enc(p || '')}`),
+  readFile: (c, p) => camExt.hubCall('GET', `/api/contexts/${enc(c)}/files/read?path=${enc(p)}`),
+};
+
+let contexts = [];
+try {
+  const r = await camExt.call('contexts.list');
+  contexts = Array.isArray(r) ? r : (r && r.contexts) || [];
+} catch (_) {
+  document.getElementById('tw-status').textContent = 'Not connected — Markdown reload needs the app connected; local tasks still work.';
+}
+
+const root = document.getElementById('tw-root');
+mountTodosWorkspace(root, {
+  platform: 'desktop',
+  contextLabel: () => contextLabelFromContexts(contexts),
+  storePath: () => storePathForContexts(contexts),
+  reloadMarkdown: () => {
+    const ctx = contexts.find(c => c && (c.id || c.name));
+    return readWorklogMarkdown(apiShim, ctx && (ctx.id || ctx.name));
+  },
+});
+
+// The workspace's durable store is the workspace Markdown — load it once
+// per open (the view iframe reloads on every open) via the Refresh path.
+if (contexts.length) {
+  setTimeout(() => {
+    const btn = root.querySelector('[data-action="refresh"]');
+    if (btn) btn.click();
+  }, 0);
+}
+</script>
+</body>
+</html>

@@ -11,9 +11,17 @@
 window.camExt = (() => {
   let seq = 0;
   const pending = new Map();
+  const handlers = Object.create(null); // event name → [cb] (server push)
   window.addEventListener('message', (e) => {
     const d = e && e.data;
-    if (!d || d.extBridge !== true || !d.response) return;
+    if (!d || d.extBridge !== true) return;
+    if (d.event) {
+      // Server-push (e.g. assistant.event): no id, no response.
+      const list = handlers[d.event];
+      if (list) for (const cb of list) { try { cb(d.payload); } catch (_) {} }
+      return;
+    }
+    if (!d.response) return;
     const p = pending.get(d.id);
     if (p) { pending.delete(d.id); p(d); }
   });
@@ -27,6 +35,20 @@ window.camExt = (() => {
       throw new Error((d && d.error) || 'bridge_error');
     });
   }
+  /** Subscribe to a server-push channel (e.g. 'assistant.event'). */
+  function onEvent(name, cb) {
+    if (typeof cb !== 'function') return;
+    (handlers[name] = handlers[name] || []).push(cb);
+  }
+  /** Generic hub passthrough (needs the manifest's 'hub:api' capability):
+   *  camExt.hubCall('GET', '/api/contexts') — any /api/* endpoint. */
+  function hubCall(method, path, body) {
+    return call('ext.hubCall', { method, path, body });
+  }
+  /* The ext's own durable store (hub-side ext-data/<name>/storage.json).
+   * Sandboxed views have no localStorage (opaque origin) — use this. */
+  function storageGet() { return call('ext.storageGet'); }
+  function storageSet(storage) { return call('ext.storageSet', { storage }); }
   const m = /^\/ext\/([^/]+)\//.exec(location.pathname);
-  return { call, name: m ? m[1] : '' };
+  return { call, onEvent, hubCall, storageGet, storageSet, name: m ? m[1] : '' };
 })();

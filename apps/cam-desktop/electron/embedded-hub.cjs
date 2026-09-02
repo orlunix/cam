@@ -121,6 +121,11 @@ const OUTPUT_CAPTURE_CACHE_MAX = 100;
 
 /* ─────────────── State ─────────────── */
 
+// A sync step never goes quiet longer than its own timeout (the largest is
+// the 120s upload budget), so a sync lock with no activity for this long
+// belongs to a wedged flow — reap it instead of refusing syncs forever.
+const SYNC_STALE_MS = 180000;
+
 const state = {
   server:     null,
   port:       null,
@@ -140,7 +145,18 @@ const state = {
   // (checking/uploading/listing) during long syncs instead of a frozen
   // "Syncing…" line.
   syncProgress: new Map(),
-  agentSyncInFlight: false,
+  // Contexts with a sync currently running: flightKey -> lease {since, at}.
+  // A duplicate sync for the same context is refused with sync_in_flight —
+  // the frontend idle-abort cancels only the HTTP request, never the
+  // hub-side flow, so without this a reload/retry races the zombie. If a
+  // hub-side flow ever wedges (a step promise that never settles), the
+  // lease goes quiet; after syncStaleMs the next sync REAPS it instead of
+  // being refused until app restart. Leases are identity-checked on
+  // release so a wedged flow's late finally cannot clobber the reaper's
+  // fresh lease.
+  syncInFlightByCtx: new Map(),
+  agentSyncInFlight: false,  // false | lease {since, at}
+  syncStaleMs: SYNC_STALE_MS,
   lastAgentSyncAt: 0,
 };
 
@@ -945,6 +961,33 @@ async function _syncContextAgents(ctx, overrides = {}) {
       results: { camc: 'failed' },
     };
   }
+  // Per-context in-flight guard: a duplicate sync for the same context
+  // (frontend idle-abort does NOT cancel the hub-side sync; a reload or
+  // auto-sync then starts a second one) makes two flows race the same
+  // host — doubled probes on an already-slow link and two SFTP writers
+  // on the same camc.tmp. Refuse the duplicate instead. A lease that has
+  // been quiet past syncStaleMs belongs to a wedged flow: reap it so the
+  // context is not locked out of sync until an app restart.
+  const flightKey = String(ctx.id || ctx.name || '');
+  let lease = null;
+  if (flightKey) {
+    const flying = state.syncInFlightByCtx.get(flightKey);
+    if (flying) {
+      const quietMs = Date.now() - (flying.at || flying.since || 0);
+      if (quietMs < state.syncStaleMs) {
+        return {
+          ok:      false,
+          error:   'sync_in_flight',
+          detail:  `a sync for "${ctx.name || flightKey}" is already running`,
+          results: { camc: 'skipped' },
+        };
+      }
+      pushLog('warn', `sync ${ctx.name || flightKey}: previous sync wedged (no progress for ${Math.round(quietMs / 1000)}s) — reaping stale lock`);
+    }
+    lease = { since: Date.now(), at: Date.now() };
+    state.syncInFlightByCtx.set(flightKey, lease);
+  }
+  try {
   const m = ctx.machine;
   const baseOpts = {
     host:        m.host,
@@ -1174,6 +1217,14 @@ async function _syncContextAgents(ctx, overrides = {}) {
     total:    parsed.length,
     results:  { camc: status },
   };
+  } finally {
+    // Release only OUR lease: if the reaper cleared it and a fresh sync
+    // already installed its own, a wedged flow's late finally must not
+    // delete the replacement.
+    if (lease && state.syncInFlightByCtx.get(flightKey) === lease) {
+      state.syncInFlightByCtx.delete(flightKey);
+    }
+  }
 }
 
 function _syncableAgentContexts() {
@@ -1190,7 +1241,11 @@ function _syncableAgentContexts() {
 
 async function _syncAllAgentContexts(reason = 'manual') {
   if (state.agentSyncInFlight) {
-    return { ok: false, error: 'sync_in_flight', detail: 'agent sync already running' };
+    const quietMs = Date.now() - (state.agentSyncInFlight.at || state.agentSyncInFlight.since || 0);
+    if (quietMs < state.syncStaleMs) {
+      return { ok: false, error: 'sync_in_flight', detail: 'agent sync already running' };
+    }
+    pushLog('warn', `agent sync ${reason}: previous sync wedged (no progress for ${Math.round(quietMs / 1000)}s) — reaping stale lock`);
   }
   const contexts = _syncableAgentContexts();
   // Only SSH contexts are syncable — local ingestion was retired
@@ -1199,7 +1254,8 @@ async function _syncAllAgentContexts(reason = 'manual') {
   if (!contexts.length) {
     return { ok: true, synced: 0, failed: 0, results: [] };
   }
-  state.agentSyncInFlight = true;
+  state.agentSyncInFlight = { since: Date.now(), at: Date.now() };
+  const agentLease = state.agentSyncInFlight;
   const results = [];
   let synced = 0;
   let failed = 0;
@@ -1219,7 +1275,7 @@ async function _syncAllAgentContexts(reason = 'manual') {
     pushLog(failed ? 'warn' : 'info', `agent sync ${reason}: ${synced} ok, ${failed} failed${pruneNote}`);
     return { ok: failed === 0, synced, failed, results, pruned: prune.removed, pruned_ids: prune.ids };
   } finally {
-    state.agentSyncInFlight = false;
+    if (state.agentSyncInFlight === agentLease) state.agentSyncInFlight = false;
   }
 }
 
@@ -1760,6 +1816,11 @@ function _syncStep(ctxId, step, detail = '') {
     if (!state.syncProgress) return;
     const prev = state.syncProgress.get(ctxId);
     state.syncProgress.set(ctxId, { step, detail, since: (prev && prev.since) || Date.now(), at: Date.now() });
+    // Liveness for the stale-lock reapers: any step activity means the
+    // owning sync (single-context and/or fleet-wide) is still alive.
+    const lease = state.syncInFlightByCtx && state.syncInFlightByCtx.get(ctxId);
+    if (lease) lease.at = Date.now();
+    if (state.agentSyncInFlight) state.agentSyncInFlight.at = Date.now();
   } catch (_) {}
 }
 function _syncStepDone(ctxId) {
@@ -1807,8 +1868,22 @@ async function _ensureRemoteCamc(baseOpts, { force = false } = {}) {
   // work — check first, so a python3-less host gets a clear actionable
   // error instead of a successful upload followed by a confusing
   // "camc_missing" when the freshly-installed camc cannot run.
-  const py = await _sshTransport.execRemote({ ...baseOpts, command: 'command -v python3', timeout_ms: 15000 });
+  // Route through /bin/sh explicitly (same treatment as the tmux probe
+  // in main.cjs): the exec channel is interpreted by the user's login
+  // shell; /bin/sh + `command -v` are Linux-common and never gate on
+  // what shell the user logs in with.
+  const py = await _sshTransport.execRemote({ ...baseOpts, command: `/bin/sh -c 'command -v python3'`, timeout_ms: 15000 });
   if (!py || !py.ok) {
+    const pyErr = (py && py.error) || 'exec_failed';
+    // Only a probe that RAN and exited non-zero can say anything about
+    // python3 at all. Connection-level failures (auth_failed,
+    // connect_timeout, dns_failure, …) must surface as themselves —
+    // misreporting them as python3_missing sends users to "install
+    // python3" when the real problem is the login.
+    if (pyErr !== 'remote_nonzero') {
+      return { ok: false, error: pyErr,
+        detail: (py && (py.detail || py.stderr)) || `python3 probe failed: ${pyErr}` };
+    }
     return { ok: false, error: 'python3_missing', detail: 'camc requires python3 (3.6+) on the remote host, but `command -v python3` found none. Install python3 on the host, then Sync again.' };
   }
 
@@ -3906,6 +3981,30 @@ function _extDirs() {
   };
 }
 
+/** Full-removal cascade (DELETE /api/extensions/<name> when the ext is
+ *  gone entirely — user ext deleted, or built-in hidden via the removed
+ *  flag): the ext's per-extension attributes, its ext-data dir, and its
+ *  credential secrets (refs prefixed "<name>:") go with it. NOT called
+ *  for shadow removal (user copy over a built-in), which is an
+ *  "uninstall the update" — the built-in lives on with its config. */
+function _extCascadeDelete(extName) {
+  const dataDir = state.dataDir || os.tmpdir();
+  try {
+    const cfgFile = path.join(dataDir, 'extension-config.json');
+    const all = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+    if (all && typeof all === 'object' && !Array.isArray(all) && all[extName] !== undefined) {
+      delete all[extName];
+      fs.writeFileSync(cfgFile, JSON.stringify(all, null, 1));
+    }
+  } catch (_) { /* absent/corrupt → nothing to cascade */ }
+  try { fs.rmSync(path.join(dataDir, 'ext-data', extName), { recursive: true, force: true }); } catch (_) {}
+  try {
+    if (_credentialStore && typeof _credentialStore.removeWithPrefix === 'function') {
+      _credentialStore.removeWithPrefix(`${extName}:`);
+    }
+  } catch (_) {}
+}
+
 const _EXT_MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js':   'text/javascript; charset=utf-8',
@@ -3928,15 +4027,18 @@ function _extSendClientJs(res) {
   res.end(body);
 }
 
-/** Serve /ext/<name>/<file> from the user extRoot (or built-in
- *  packages dir) with strict path containment. */
+/** Serve /ext/<name>/<file> from the winning package dir (registry's
+ *  resolvePackageDir: higher version wins, tie → built-in) with strict
+ *  path containment. Files are served ONLY from the winner — falling
+ *  through to the losing copy would mix two versions of a package. */
 function _extServeFile(res, urlPath) {
   const rel = decodeURIComponent(urlPath.slice('/ext/'.length));
   const name = (rel.split('/')[0] || '');
   if (!/^[a-z0-9-]{1,32}$/.test(name)) return sendJson(res, 400, { error: 'invalid_name' });
   const file = rel.slice(name.length).replace(/^\//, '') || 'index.html';
   const { packagesDir, extRoot } = _extDirs();
-  const candidates = [path.join(extRoot, name), path.join(packagesDir, name)];
+  const win = _extRegistry.resolvePackageDir(name, { packagesDir, extRoot });
+  const candidates = win ? [win.dir] : [];
   for (const base of candidates) {
     const resolved = path.resolve(base, file);
     if (!resolved.startsWith(path.resolve(base) + path.sep) && resolved !== path.resolve(base)) continue;
@@ -4076,11 +4178,13 @@ async function handle(req, res) {
     const { extRoot } = _extDirs();
     const r = _extRegistry.installExtension(src, extRoot);
     if (!r.ok) return sendJson(res, 400, r);
-    // Persist enabled flag for the (re)installed user extension.
+    // Persist enabled flag for the (re)installed user extension; a
+    // same-name install also restores a removed built-in (clears the
+    // removed flag) — offline restore/update path.
     if (state.store) {
       if (!Array.isArray(state.store.extensions)) state.store.extensions = [];
       const ex = state.store.extensions.find(e => e.name === r.name);
-      if (ex) ex.enabled = true;
+      if (ex) { ex.enabled = true; delete ex.removed; }
       else state.store.extensions.push({ name: r.name, enabled: true, installed_at: nowIso() });
       saveStore();
     }
@@ -4089,21 +4193,134 @@ async function handle(req, res) {
   }
 
   const extMatch = /^\/api\/extensions\/([a-z0-9-]{1,32})(\/enable|\/disable|\/call)?$/.exec(p);
+
+  // GET/PUT /api/extensions/<name>/config — per-extension attributes.
+  // Stored OUTSIDE the package dir (one JSON file in dataDir) so a
+  // package reinstall/update never wipes user config. An empty object
+  // clears the entry back to defaults.
+  const extCfgMatch = /^\/api\/extensions\/([a-z0-9-]{1,32})\/config$/.exec(p);
+  if (extCfgMatch && (method === 'GET' || method === 'PUT')) {
+    if (!_extRegistry) return sendJson(res, 501, { error: 'not_implemented', detail: 'extensions runtime not packaged' });
+    const extName = extCfgMatch[1];
+    const { packagesDir, extRoot } = _extDirs();
+    const known = _extRegistry.listExtensions({
+      packagesDir, extRoot,
+      storeExts: (state.store && state.store.extensions) || [],
+    }).some(e => e.name === extName);
+    if (!known) return sendJson(res, 404, { error: 'unknown_extension', detail: extName });
+    const cfgFile = path.join(state.dataDir || os.tmpdir(), 'extension-config.json');
+    let all = {};
+    try { all = JSON.parse(fs.readFileSync(cfgFile, 'utf8')); } catch (_) { /* absent/corrupt → fresh */ }
+    if (!all || typeof all !== 'object' || Array.isArray(all)) all = {};
+    if (method === 'GET') {
+      const cfg = all[extName];
+      return sendJson(res, 200, { ok: true, name: extName,
+        config: (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) ? cfg : {} });
+    }
+    let body;
+    try { body = await readJsonBody(req); }
+    catch (e) { return send400(res, e.message); }
+    const cfg = body && body.config;
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+      return sendJson(res, 400, { error: 'invalid_config', detail: 'config must be a JSON object' });
+    }
+    let ser;
+    try { ser = JSON.stringify(cfg); } catch (e) { return sendJson(res, 400, { error: 'invalid_config', detail: e && e.message }); }
+    if (ser.length > 16384) return sendJson(res, 400, { error: 'config_too_large', detail: 'per-extension config exceeds 16KB' });
+    if (ser === '{}') delete all[extName]; else all[extName] = cfg;
+    if (JSON.stringify(all).length > 262144) return sendJson(res, 400, { error: 'config_too_large', detail: 'extension-config.json exceeds 256KB' });
+    try { fs.writeFileSync(cfgFile, JSON.stringify(all, null, 1)); } catch (e) {
+      return sendJson(res, 500, { error: 'save_failed', detail: e && e.message });
+    }
+    pushLog('info', `extension config saved: ${extName}`);
+    return sendJson(res, 200, { ok: true, name: extName });
+  }
+
+  // GET/PUT /api/extensions/<name>/storage — the ext's own free-form
+  // key/value store under ext-data/<name>/storage.json. Unlike config
+  // (app-edited via Settings), storage is written BY the extension's view
+  // through the bridge (ext.storageGet/Set): sandboxed views run in an
+  // opaque origin where localStorage throws, so this is their durable
+  // local-state channel (todos tasks, view preferences, …). Cap 512KB.
+  const extStoreMatch = /^\/api\/extensions\/([a-z0-9-]{1,32})\/storage$/.exec(p);
+  if (extStoreMatch && (method === 'GET' || method === 'PUT')) {
+    if (!_extRegistry) return sendJson(res, 501, { error: 'not_implemented', detail: 'extensions runtime not packaged' });
+    const extName = extStoreMatch[1];
+    const { packagesDir, extRoot } = _extDirs();
+    const known = _extRegistry.listExtensions({
+      packagesDir, extRoot,
+      storeExts: (state.store && state.store.extensions) || [],
+    }).some(e => e.name === extName);
+    if (!known) return sendJson(res, 404, { error: 'unknown_extension', detail: extName });
+    const dataFile = path.join(state.dataDir || os.tmpdir(), 'ext-data', extName, 'storage.json');
+    if (method === 'GET') {
+      let store = {};
+      try { store = JSON.parse(fs.readFileSync(dataFile, 'utf8')); } catch (_) { /* absent → empty */ }
+      if (!store || typeof store !== 'object' || Array.isArray(store)) store = {};
+      return sendJson(res, 200, { ok: true, name: extName, storage: store });
+    }
+    let body;
+    try { body = await readJsonBody(req); }
+    catch (e) { return send400(res, e.message); }
+    const st = body && body.storage;
+    if (!st || typeof st !== 'object' || Array.isArray(st)) {
+      return sendJson(res, 400, { error: 'invalid_storage', detail: 'storage must be a JSON object' });
+    }
+    let ser;
+    try { ser = JSON.stringify(st); } catch (e) { return sendJson(res, 400, { error: 'invalid_storage', detail: e && e.message }); }
+    if (ser.length > 524288) return sendJson(res, 400, { error: 'storage_too_large', detail: 'per-extension storage exceeds 512KB' });
+    try {
+      fs.mkdirSync(path.dirname(dataFile), { recursive: true });
+      fs.writeFileSync(dataFile, JSON.stringify(st, null, 1));
+    } catch (e) {
+      return sendJson(res, 500, { error: 'save_failed', detail: e && e.message });
+    }
+    return sendJson(res, 200, { ok: true, name: extName });
+  }
   if (extMatch && method !== 'GET') {
     const extName = extMatch[1];
     const sub = extMatch[2] || '';
     const { packagesDir, extRoot } = _extDirs();
     if (method === 'DELETE' && !sub) {
       const dir = path.join(extRoot, extName);
-      if (!fs.existsSync(dir)) return send404(res);
-      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {
-        return sendJson(res, 500, { error: 'remove_failed', detail: e && e.message });
-      }
-      if (state.store && Array.isArray(state.store.extensions)) {
-        state.store.extensions = state.store.extensions.filter(e => e.name !== extName);
+      const builtinDir = path.join(packagesDir, extName);
+      const hasUserCopy = fs.existsSync(dir);
+      const hasBuiltin = fs.existsSync(builtinDir);
+      if (hasUserCopy) {
+        try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) {
+          return sendJson(res, 500, { error: 'remove_failed', detail: e && e.message });
+        }
+        if (hasBuiltin) {
+          // Shadow removal: the built-in reappears on the next listing —
+          // this is an "uninstall the update", not an ext removal. Keep
+          // the store entry, attributes, data dir and secrets.
+          pushLog('info', `extension user copy removed (back to built-in): ${extName}`);
+          return sendJson(res, 200, { ok: true, reverted_to_builtin: true });
+        }
+        if (state.store && Array.isArray(state.store.extensions)) {
+          state.store.extensions = state.store.extensions.filter(e => e.name !== extName);
+          saveStore();
+        }
+        pushLog('info', `extension removed: ${extName}`);
+      } else if (hasBuiltin) {
+        // Built-in: same Remove UX as user exts (product decision
+        // 2026-08-17 v2) — hidden via the store `removed` flag, which the
+        // registry honors. An app version change or a same-name install
+        // restores it.
+        if (!state.store) return send500(res, 'store unavailable');
+        if (!Array.isArray(state.store.extensions)) state.store.extensions = [];
+        let ex = state.store.extensions.find(e => e.name === extName);
+        if (!ex) { ex = { name: extName, enabled: true, installed_at: nowIso() }; state.store.extensions.push(ex); }
+        ex.removed = true;
         saveStore();
+        pushLog('info', `built-in extension removed (hidden): ${extName}`);
+      } else {
+        return send404(res);
       }
-      pushLog('info', `extension removed: ${extName}`);
+      // The ext is gone entirely → its config goes with it: per-ext
+      // attributes, the ext-data dir, and its credential secrets. An
+      // UPDATE (install over install) never passes through here.
+      _extCascadeDelete(extName);
       return sendJson(res, 200, { ok: true });
     }
     if (method === 'POST' && (sub === '/enable' || sub === '/disable')) {
@@ -4123,9 +4340,8 @@ async function handle(req, res) {
       let body;
       try { body = await readJsonBody(req); }
       catch (e) { return send400(res, e.message); }
-      const userDir = path.join(extRoot, extName);
-      const builtinDir = path.join(packagesDir, extName);
-      const extDir = fs.existsSync(userDir) ? userDir : (fs.existsSync(builtinDir) ? builtinDir : null);
+      const win = _extRegistry.resolvePackageDir(extName, { packagesDir, extRoot });
+      const extDir = win ? win.dir : null;
       if (!extDir) return send404(res);
       const info = _extRegistry.inspectExtension(extDir);
       if (!info.ok) return sendJson(res, 400, { error: info.error, detail: info.detail });
@@ -4748,8 +4964,11 @@ function portRangeInfo() {
 
 /* ─────────────── Lifecycle ─────────────── */
 
-async function start({ dataDir, apiToken } = {}) {
+async function start({ dataDir, apiToken, appVersion, syncStaleMs } = {}) {
   if (state.server) {
+    // Reused-path tunables: the stale-sync window may be adjusted at
+    // runtime without a restart (used by tests; harmless in the app).
+    if (Number.isFinite(syncStaleMs) && syncStaleMs >= 0) state.syncStaleMs = syncStaleMs;
     return {
       ok:        true,
       apiUrl:    `http://127.0.0.1:${state.port}`,
@@ -4762,6 +4981,20 @@ async function start({ dataDir, apiToken } = {}) {
   if (dataDir && !state.store) loadStore(dataDir);
   if (!state.store) state.store = _emptyStore();
 
+  // An app reinstall/upgrade restores removed built-in extensions: the
+  // bundle content returns to factory state on every install, so the
+  // store's `removed` hide-flags must not survive a version change.
+  const appV = String(appVersion || '');
+  if (appV && state.store.app_version !== appV) {
+    state.store.app_version = appV;
+    let restored = 0;
+    for (const e of (Array.isArray(state.store.extensions) ? state.store.extensions : [])) {
+      if (e && e.removed) { delete e.removed; restored++; }
+    }
+    if (restored) pushLog('info', `app version changed — restored ${restored} removed built-in extension(s)`);
+    saveStore();
+  }
+
   const preferredPort = await pickPort();
   const listenPort = preferredPort == null ? 0 : preferredPort;
   if (preferredPort == null) {
@@ -4769,6 +5002,7 @@ async function start({ dataDir, apiToken } = {}) {
   }
 
   state.token = apiToken ? String(apiToken) : genToken();
+  if (Number.isFinite(syncStaleMs) && syncStaleMs >= 0) state.syncStaleMs = syncStaleMs;
   // Separate token for extension-view file serving (/ext/...). The view
   // URL carries it in the query (iframes can't set headers) — if it were
   // the API token, a hostile extension could read its own location and
@@ -4849,13 +5083,19 @@ async function stop() {
   // on the same port later.
   state.token     = null;
   state.viewToken = null;
+  // Drop any sync locks: in-flight flows from before a hub restart (app
+  // reload) reject when their SSH pools are dropped, but their finally
+  // paths are lease-guarded — clear here so a fresh hub never inherits a
+  // stale refusal.
+  try { state.syncInFlightByCtx.clear(); } catch (_) {}
+  state.agentSyncInFlight = false;
   pushLog('info', 'embedded Hub stopped');
   return { ok: true, state: publicState() };
 }
 
-async function restart({ dataDir } = {}) {
+async function restart({ dataDir, appVersion, apiToken, syncStaleMs } = {}) {
   await stop();
-  return start({ dataDir });
+  return start({ dataDir, appVersion, apiToken, syncStaleMs });
 }
 
 async function check({ dataDir } = {}) {

@@ -29,6 +29,10 @@ venv/
 htmlcov/
 .coverage
 
+# Extension vendor tooling (build-time only; the bundled artifact
+# extensions/vendor/cam-assist/dist/cam-assist.js IS committed)
+extensions/vendor/**/node_modules/
+
 # OS
 .DS_Store
 Thumbs.db

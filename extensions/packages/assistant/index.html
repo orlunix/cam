@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Assistant</title>
+<style>
+:root { --bg:#0f1216; --panel:#161b22; --line:#2d333b; --fg:#e6e8eb; --dim:#8b949e; --accent:#1f6feb; --accent-hi:#388bfd; --err:#f85149; --ok:#3fb950; }
+* { box-sizing: border-box; }
+body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 12px 16px; background: var(--bg); color: var(--fg); font-size: 13px; }
+button { background: var(--accent); color: #fff; border: none; border-radius: 6px; padding: 7px 13px; font-size: 12.5px; cursor: pointer; }
+button:hover { background: var(--accent-hi); }
+button:disabled { opacity: .5; cursor: default; }
+button.ghost { background: transparent; border: 1px solid var(--line); color: var(--fg); }
+button.ghost:hover { border-color: var(--accent); }
+
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+.tabs button { background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0; color: var(--dim); padding: 6px 12px; font-size: 13px; }
+.tabs button.active { color: var(--fg); border-bottom-color: var(--accent); }
+.tabs button:hover { color: var(--fg); background: none; }
+
+.field { margin-bottom: 12px; }
+.field label { display: block; color: var(--dim); font-size: 12px; margin-bottom: 4px; }
+.field input { width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; color: var(--fg); padding: 7px 10px; font-size: 13px; }
+.field input:focus { outline: none; border-color: var(--accent); }
+.row { display: flex; gap: 8px; align-items: center; }
+.hint { color: var(--dim); font-size: 12px; margin-top: 4px; }
+.statusline { font-size: 12px; margin-top: 10px; min-height: 16px; }
+.statusline.is-ok { color: var(--ok); }
+.statusline.is-error { color: var(--err); }
+
+/* model dropdown — custom (native <datalist> has no scrollbar and can
+   overflow the extension page); anchored under the input, capped in
+   height, always inside the page. */
+.model-wrap { position: relative; flex: 1; }
+#model-drop { position: absolute; top: calc(100% + 4px); left: 0; right: 0; max-height: 200px; overflow-y: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; z-index: 20; box-shadow: 0 6px 18px rgba(0,0,0,.45); }
+#model-drop .opt { padding: 6px 10px; cursor: pointer; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#model-drop .opt:hover { background: var(--accent); color: #fff; }
+#model-drop .empty { padding: 6px 10px; color: var(--dim); font-size: 12px; cursor: default; }
+
+.chat-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; color: var(--dim); }
+.chat-head .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+.chat-head .dot.idle { background: var(--ok); }
+.chat-head .dot.running { background: var(--accent-hi); }
+.chat-head .dot.error { background: var(--err); }
+.chat-head .spacer { flex: 1; }
+
+#transcript { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-height: 240px; max-height: calc(100vh - 280px); overflow-y: auto; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12.5px; line-height: 1.5; }
+.msg { margin-bottom: 10px; }
+.msg .who { color: var(--dim); font-size: 11px; margin-bottom: 2px; }
+.msg .who .time { margin-left: 6px; font-size: 10px; opacity: .55; }
+.msg .body { white-space: pre-wrap; word-break: break-word; }
+.msg.user { text-align: right; }
+.msg.user .who { text-align: right; }
+.msg.user .body { display: inline-block; text-align: left; background: var(--accent); color: #fff; border-radius: 12px 12px 4px 12px; padding: 7px 11px; max-width: 85%; }
+.msg.assistant .body { color: #d2d9e0; }
+.msg .think { color: var(--dim); font-style: italic; border-left: 2px solid var(--line); padding-left: 8px; margin: 0 0 4px; white-space: pre-wrap; word-break: break-word; }
+.msg.tool .body, .msg.sys .body { color: var(--dim); font-style: italic; }
+.msg.error .body { color: var(--err); }
+/* pending indicator lives OUTSIDE the transcript (pinned above the
+   composer) so it never takes a transcript position — a pure tool-call
+   turn produces no bubble and must not leave a placeholder behind. */
+#pending { color: var(--dim); font-size: 12px; margin-top: 8px; }
+.tdots span { animation: tblink 1.2s infinite; }
+.tdots span:nth-child(2) { animation-delay: .2s; }
+.tdots span:nth-child(3) { animation-delay: .4s; }
+@keyframes tblink { 0%, 60%, 100% { opacity: .25; } 30% { opacity: 1; } }
+.composer { display: flex; gap: 8px; margin-top: 10px; }
+.composer textarea { flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; color: var(--fg); padding: 8px 10px; font-size: 13px; font-family: inherit; resize: none; height: 40px; }
+.composer textarea:focus { outline: none; border-color: var(--accent); }
+.setup-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; color: var(--dim); }
+.setup-card b { color: var(--fg); }
+
+.thread-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; background: var(--panel); }
+.thread-row:hover { border-color: var(--accent); }
+.thread-row.active { border-color: var(--accent); background: rgba(31,111,235,.10); }
+.thread-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; cursor: pointer; }
+.thread-title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-when { color: var(--dim); font-size: 11px; }
+.thread-del { padding: 3px 9px; font-size: 12px; }
+</style>
+</head>
+<body>
+<!-- No own title bar: the app chrome above the view already shows the
+     manifest title / description / Back. Views start with content. -->
+
+<div class="tabs">
+  <button id="tab-chat" class="active">Chat</button>
+  <button id="tab-threads">Threads</button>
+  <button id="tab-settings">Settings</button>
+</div>
+
+<div id="pane-chat">
+  <div class="chat-head">
+    <span class="dot" id="status-dot"></span>
+    <span id="status-text">…</span>
+    <span class="spacer"></span>
+    <button class="ghost" id="btn-newchat" title="Start a new chat thread">New chat</button>
+  </div>
+  <div id="transcript"></div>
+  <div id="pending" hidden><span class="tdots"><span>.</span><span>.</span><span>.</span></span> assistant is working</div>
+  <div class="composer">
+    <textarea id="input" placeholder="Ask the assistant… (Enter to send, Shift+Enter for newline)"></textarea>
+    <button id="btn-send">Send</button>
+  </div>
+</div>
+
+<div id="pane-threads" hidden>
+  <div id="thread-list"></div>
+  <div class="hint" id="thread-status"></div>
+</div>
+
+<div id="pane-settings" hidden>
+  <div class="field">
+    <label>Base URL (OpenAI-compatible endpoint — empty or Tab = NVIDIA inference default)</label>
+    <input id="f-url" type="text" spellcheck="false" placeholder="https://inference-api.nvidia.com/v1">
+  </div>
+  <div class="field">
+    <label>API token</label>
+    <input id="f-token" type="password" spellcheck="false" placeholder="">
+    <div class="hint" id="token-hint"></div>
+  </div>
+  <div class="field">
+    <label>Model (empty or Tab = default)</label>
+    <div class="row">
+      <div class="model-wrap">
+        <input id="f-model" type="text" spellcheck="false" placeholder="nvidia/moonshotai/kimi-k3" autocomplete="off">
+        <div id="model-drop" hidden></div>
+      </div>
+      <button class="ghost" id="btn-fetch-models">Fetch list</button>
+    </div>
+    <div class="hint">Fetch list validates URL + token and fills the dropdown; you can also type a model id directly.</div>
+  </div>
+  <div class="field" id="f-shell-row">
+    <label>Local shell</label>
+    <div class="hint">
+      Enabled — the assistant runs shell commands directly on this machine (every command is audit-logged).
+    </div>
+  </div>
+  <div class="row">
+    <button id="btn-save">Save &amp; validate</button>
+  </div>
+  <div class="statusline" id="settings-status"></div>
+</div>
+
+<script src="../client.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const call = (m, a) => camExt.call(m, a || {});
+const DEFAULT_URL = 'https://inference-api.nvidia.com/v1';
+const DEFAULT_MODEL = 'nvidia/moonshotai/kimi-k3';
+
+/* ── tabs ── */
+function showTab(which) {
+  $('tab-chat').classList.toggle('active', which === 'chat');
+  $('tab-threads').classList.toggle('active', which === 'threads');
+  $('tab-settings').classList.toggle('active', which === 'settings');
+  $('pane-chat').hidden = which !== 'chat';
+  $('pane-threads').hidden = which !== 'threads';
+  $('pane-settings').hidden = which !== 'settings';
+}
+$('tab-chat').onclick = () => showTab('chat');
+$('tab-threads').onclick = () => { showTab('threads'); loadThreads(); };
+$('tab-settings').onclick = () => showTab('settings');
+
+/* ── transcript ── */
+let cursor = 0;
+let configured = false;
+let streaming = false;
+let currentBubble = null;  // the in-flight assistant .msg element (LAZY —
+                           // created by the first content event of a turn)
+let currentThink = null;   // its .think sub-element (reasoning text)
+const pendingUser = [];    // locally-rendered user texts awaiting their
+                           // echoed 'user' event (dedupe on replay/push)
+const toolLines = new Map(); // toolCallId → tool .msg element (start/end collapse)
+
+function fmtStamp(ts) {
+  const d = ts ? new Date(ts) : new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function stampTime(el, ts) {
+  const t = el && el.querySelector('.time');
+  if (t) t.textContent = fmtStamp(ts);
+}
+function addMsg(kind, text, ts) {
+  const el = document.createElement('div');
+  el.className = 'msg ' + kind;
+  const who = { user: 'you', assistant: 'assistant', tool: 'tool', sys: 'system', error: 'error' }[kind] || kind;
+  el.innerHTML = '<div class="who"></div><div class="body"></div>';
+  el.querySelector('.who').textContent = who;
+  const t = document.createElement('span');
+  t.className = 'time';
+  t.textContent = fmtStamp(ts);
+  el.querySelector('.who').appendChild(t);
+  el.querySelector('.body').textContent = text || '';
+  $('transcript').appendChild(el);
+  $('transcript').scrollTop = $('transcript').scrollHeight;
+  return el;
+}
+
+function ensureBubble() {
+  if (!currentBubble) {
+    currentBubble = addMsg('assistant', '');
+    currentThink = null;
+  }
+  return currentBubble;
+}
+function setBubble(el, text) {
+  el.querySelector('.body').textContent = text || '';
+  $('transcript').scrollTop = $('transcript').scrollHeight;
+}
+function setThinking(el, text) {
+  if (!currentThink) {
+    currentThink = document.createElement('div');
+    currentThink.className = 'think';
+    el.insertBefore(currentThink, el.querySelector('.body'));
+  }
+  currentThink.textContent = text || '';
+  $('transcript').scrollTop = $('transcript').scrollHeight;
+}
+function updatePending() {
+  $('pending').hidden = !(streaming && !currentBubble);
+}
+
+let runSince = 0;
+function setStatus(status, model) {
+  $('status-dot').className = 'dot ' + (status === 'idle' ? 'idle' : status === 'running' ? 'running' : (status === 'error' ? 'error' : ''));
+  let text = status + (model ? ' · ' + model : '');
+  if (status === 'running' && runSince) text += ' · ' + Math.max(1, Math.round((Date.now() - runSince) / 1000)) + 's';
+  $('status-text').textContent = text;
+}
+
+function applyEvent(ev) {
+  if (ev.type === 'turn') {
+    // Turn boundary: detach the current bubble (its content is complete);
+    // the next thinking/delta opens a fresh one BELOW any tool lines.
+    currentBubble = null;
+    currentThink = null;
+    updatePending();
+  } else if (ev.type === 'thinking') {
+    setThinking(ensureBubble(), ev.text);
+    updatePending();
+  } else if (ev.type === 'delta') {
+    setBubble(ensureBubble(), ev.text);
+    updatePending();
+  } else if (ev.type === 'done') {
+    if (currentBubble) {
+      if (ev.text) setBubble(currentBubble, ev.text);
+      // Replay path: a persisted stream replays through this same bubble
+      // flow, so without this every past reply shows the REPLAY time after
+      // a restart — pin the bubble to the event's own stamp.
+      if (ev.ts) stampTime(currentBubble, ev.ts);
+    } else if (ev.text) {
+      addMsg('assistant', ev.text, ev.ts);
+    }
+    if (ev.errorMessage) addMsg('error', ev.errorMessage, ev.ts);
+    currentBubble = null;
+    currentThink = null;
+    streaming = false;
+    updatePending();
+  } else if (ev.type === 'user') {
+    // Own messages render instantly at send time; the echoed event is
+    // skipped unless it arrives without a local render (transcript
+    // restore after page navigation / app restart).
+    const i = pendingUser.indexOf(ev.text);
+    if (i >= 0) pendingUser.splice(i, 1);
+    else addMsg('user', ev.text, ev.ts);
+  } else if (ev.type === 'queued') {
+    addMsg('sys', 'queued — will be answered after the current reply', ev.ts);
+  } else if (ev.type === 'tool') {
+    // One line per call: start writes "⟳ cam GET /api/…", end flips the
+    // marker to ✓/✗ in place — no start/end pairs piling up.
+    const label = `${ev.name || 'tool'}${ev.summary ? ' ' + ev.summary : ''}`;
+    if (ev.phase === 'start') {
+      const el = addMsg('tool', `⟳ ${label}`, ev.ts);
+      toolLines.set(ev.id || label, el);
+    } else {
+      const key = ev.id || label;
+      const el = toolLines.get(key);
+      if (el) {
+        const b = el.querySelector('.body');
+        b.textContent = b.textContent.replace(/^⟳/, ev.isError ? '✗' : '✓') + (ev.isError ? ' (error)' : '');
+        toolLines.delete(key);
+      } else {
+        addMsg('tool', `${ev.isError ? '✗' : '✓'} ${label}${ev.isError ? ' (error)' : ''}`, ev.ts);
+      }
+      $('transcript').scrollTop = $('transcript').scrollHeight;
+    }
+  } else if (ev.type === 'error') {
+    addMsg('error', ev.error + (ev.detail ? ': ' + ev.detail : ''), ev.ts);
+    currentBubble = null;
+    currentThink = null;
+    streaming = false;
+    updatePending();
+  } else if (ev.type === 'status') {
+    if (ev.state === 'running') { streaming = true; runSince = runSince || Date.now(); }
+    else { runSince = 0; if (ev.state !== 'running') streaming = false; }
+    setStatus(ev.state, lastModel);
+    updatePending();
+  } else if (ev.type === 'sys') {
+    // Host-side notices (e.g. bridge lifecycle in legacy bridge flavors)
+    // — informational one-liners in the transcript.
+    addMsg('sys', ev.text || '', ev.ts);
+  }
+}
+
+let lastModel = '';
+async function poll() {
+  try {
+    const r = await call('assistant.poll', { since: cursor });
+    if (!r) return;
+    for (const ev of (r.events || [])) {
+      if (typeof ev.seq === 'number' && ev.seq <= cursor) continue; // push rail may have applied it already
+      if (ev.seq > cursor) cursor = ev.seq;
+      applyEvent(ev);
+    }
+    if (r.seq > cursor) cursor = r.seq;
+    if (r.status) setStatus(r.status, lastModel);
+  } catch (_) { /* bridge hiccup — next tick retries */ }
+}
+
+/* Server-push rail: the host broadcasts every event the moment it
+ * exists. Apply it immediately; fall back to a poll resync when the seq
+ * says we missed one (e.g. the frame mounted mid-turn). */
+if (camExt.onEvent) {
+  camExt.onEvent('assistant.event', (ev) => {
+    if (ev && typeof ev.seq === 'number') {
+      if (ev.seq <= cursor) return;
+      if (ev.seq > cursor + 1) { poll(); return; }
+      cursor = ev.seq;
+    }
+    applyEvent(ev);
+  });
+}
+
+/* ── chat actions ── */
+function clearChatView() {
+  $('transcript').innerHTML = '';
+  currentBubble = null;
+  currentThink = null;
+  pendingUser.length = 0;
+  toolLines.clear();
+  cursor = 0;
+  updatePending();
+}
+
+async function waitForIdle(timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const st = await call('assistant.status');
+    if (st.status === 'idle') return true;
+    if (st.status === 'error') throw { error: 'assistant_error', detail: st.lastError || 'unknown' };
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  throw { error: 'start_timeout', detail: 'assistant did not become ready in time' };
+}
+
+async function saveFromForm() {
+  const apiUrl = $('f-url').value.trim();
+  const model = $('f-model').value.trim();
+  const token = $('f-token').value; // blank = keep the saved token
+  const r = await call('assistant.configure', { apiUrl, model, token });
+  if (!r || !r.ok) throw { error: (r && r.error) || 'unknown', detail: (r && r.detail) || '' };
+  configured = true;
+  fillModels(r.models);
+  $('token-hint').textContent = 'token saved (encrypted) — leave blank to keep it';
+  try { await call('assistant.start'); } catch (_) {}
+  await waitForIdle();
+  poll();
+  return r;
+}
+
+async function sendCurrent() {
+  const text = $('input').value.trim();
+  if (!text) return;
+  if (!configured) {
+    // First message: try to save & validate the current Settings form
+    // instead of forcing the user to click Save & validate manually.
+    try {
+      const r = await saveFromForm();
+      setSettingsStatus(`saved & validated — ${(r.models || []).length} model(s) available`, 'is-ok');
+    } catch (e) {
+      showTab('settings');
+      setSettingsStatus((e.error || 'save failed') + (e.detail ? ': ' + e.detail : ''), 'is-error');
+      return;
+    }
+  }
+  const sentAt = Date.now();
+  addMsg('user', text, sentAt);
+  pendingUser.push(text);
+  $('input').value = '';
+  streaming = true; // optimistic; the status events correct it
+  updatePending();
+  try {
+    const r = await call('assistant.send', { text });
+    if (r && r.ok === false) {
+      streaming = false;
+      updatePending();
+      addMsg('error', 'send failed: ' + (r.error || 'unknown'));
+    }
+  } catch (e) {
+    streaming = false;
+    updatePending();
+    addMsg('error', 'send failed: ' + (e && e.message || e));
+  }
+  poll();
+}
+$('btn-send').onclick = sendCurrent;
+$('input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendCurrent(); }
+});
+$('btn-newchat').onclick = async () => {
+  try {
+    const r = await call('assistant.newChat');
+    if (r && r.ok === false) { addMsg('error', 'new chat failed: ' + (r.error || 'unknown') + (r.detail ? ' — ' + r.detail : '')); return; }
+  } catch (e) { addMsg('error', 'new chat failed: ' + (e && e.message || e)); return; }
+  clearChatView();
+  poll();
+};
+
+/* ── threads tab ── */
+async function loadThreads() {
+  const el = $('thread-list');
+  const st = $('thread-status');
+  st.textContent = '';
+  el.innerHTML = '<div class="hint">Loading…</div>';
+  try {
+    const r = await call('assistant.threads');
+    const list = (r && r.threads) || [];
+    if (!list.length) { el.innerHTML = '<div class="hint">No threads yet.</div>'; return; }
+    el.innerHTML = '';
+    for (const t of list.slice().reverse()) { // newest first
+      const row = document.createElement('div');
+      row.className = 'thread-row' + (t.id === r.active ? ' active' : '');
+      const when = String(t.updated_at || '').replace('T', ' ').slice(5, 16);
+      row.innerHTML = '<div class="thread-main"><span class="thread-title"></span><span class="thread-when"></span></div>'
+        + '<button class="ghost thread-del" title="Delete thread">✕</button>';
+      row.querySelector('.thread-title').textContent = t.title || 'New chat';
+      row.querySelector('.thread-when').textContent = when + (t.id === r.active ? ' · active' : '');
+      row.querySelector('.thread-main').onclick = async () => {
+        const rr = await call('assistant.openThread', { id: t.id });
+        if (rr && rr.ok === false) { st.textContent = 'open failed: ' + (rr.error || '') + (rr.detail ? ' — ' + rr.detail : ''); return; }
+        clearChatView();
+        showTab('chat');
+        poll();
+      };
+      row.querySelector('.thread-del').onclick = async () => {
+        const wasActive = t.id === r.active;
+        const rr = await call('assistant.deleteThread', { id: t.id });
+        if (rr && rr.ok === false) { st.textContent = 'delete failed: ' + (rr.error || '') + (rr.detail ? ' — ' + rr.detail : ''); return; }
+        if (wasActive) { clearChatView(); poll(); }
+        loadThreads();
+      };
+      el.appendChild(row);
+    }
+  } catch (e) {
+    el.innerHTML = '';
+    st.textContent = 'load failed: ' + (e && e.message || e);
+  }
+}
+
+/* ── settings tab ── */
+function setSettingsStatus(text, cls) {
+  const el = $('settings-status');
+  el.textContent = text || '';
+  el.className = 'statusline' + (cls ? ' ' + cls : '');
+}
+
+/* Empty field + Tab (or just empty at save time, host-side) = default. */
+[['f-url', DEFAULT_URL], ['f-model', DEFAULT_MODEL]].forEach(([id, def]) => {
+  $(id).addEventListener('keydown', (e) => {
+    if (e.key === 'Tab' && !e.target.value.trim()) e.target.value = def;
+  });
+});
+
+/* model dropdown: filtered, scrollable, anchored under the input */
+let modelList = [];
+function renderDrop(filter) {
+  const drop = $('model-drop');
+  const q = String(filter || '').toLowerCase();
+  const items = modelList.filter((m) => !q || m.toLowerCase().includes(q));
+  drop.innerHTML = '';
+  if (!items.length) {
+    drop.innerHTML = '<div class="empty">no matches — Fetch list to reload</div>';
+  } else {
+    for (const m of items.slice(0, 200)) {
+      const d = document.createElement('div');
+      d.className = 'opt';
+      d.textContent = m;
+      d.title = m;
+      d.onmousedown = (e) => { // mousedown: fires before the input's blur
+        e.preventDefault();
+        $('f-model').value = m;
+        drop.hidden = true;
+      };
+      drop.appendChild(d);
+    }
+  }
+  drop.hidden = false;
+}
+function fillModels(models) {
+  modelList = Array.isArray(models) ? models : [];
+  // Store only — the dropdown opens on focus/typing, never as a side
+  // effect of Save/Fetch (a popup after save read as "not selected").
+}
+$('f-model').addEventListener('focus', () => { if (modelList.length) renderDrop($('f-model').value); });
+$('f-model').addEventListener('input', () => renderDrop($('f-model').value));
+$('f-model').addEventListener('keydown', (e) => { if (e.key === 'Escape') $('model-drop').hidden = true; });
+$('f-model').addEventListener('blur', () => { setTimeout(() => { $('model-drop').hidden = true; }, 120); });
+
+$('btn-fetch-models').onclick = async () => {
+  // Probe with the FORM values (unsaved edits included); a blank token
+  // falls back to the saved one on the host side, a blank URL to the
+  // default endpoint.
+  const apiUrl = $('f-url').value.trim();
+  const token = $('f-token').value;
+  setSettingsStatus('fetching model list…');
+  try {
+    const r = await call('assistant.models', { apiUrl, token });
+    if (r && r.ok) {
+      fillModels(r.models);
+      renderDrop($('f-model').value); // explicit user ask: open the list
+      setSettingsStatus(`${r.models.length} model(s) from endpoint`, 'is-ok');
+    } else {
+      setSettingsStatus((r && r.error) + (r && r.detail ? ': ' + r.detail : ''), 'is-error');
+    }
+  } catch (e) { setSettingsStatus('fetch failed: ' + (e && e.message || e), 'is-error'); }
+};
+
+$('btn-save').onclick = async () => {
+  setSettingsStatus('validating…');
+  try {
+    const r = await saveFromForm();
+    setSettingsStatus(`saved & validated — ${(r.models || []).length} model(s) available`, 'is-ok');
+  } catch (e) {
+    setSettingsStatus((e.error || 'save failed') + (e.detail ? ': ' + e.detail : ''), 'is-error');
+  }
+};
+
+/* Adaptive polling: fast while a turn streams (300 ms — near-realtime
+   rendering), slow when idle (1.2 s). With the push rail this is only a
+   resync fallback. */
+function schedulePoll() {
+  setTimeout(async () => { await poll(); schedulePoll(); }, streaming ? 300 : 1200);
+}
+
+/* ── boot ── */
+(async function boot() {
+  try {
+    const st = await call('assistant.status');
+    configured = !!(st && st.configured);
+    lastModel = (st && st.model) || '';
+    const defUrl = (st && st.defaults && st.defaults.apiUrl) || DEFAULT_URL;
+    const defModel = (st && st.defaults && st.defaults.model) || DEFAULT_MODEL;
+    // Prefill with the defaults when nothing is saved yet — the user can
+    // just paste a token and save.
+    $('f-url').value = (st && st.apiUrl) || defUrl;
+    $('f-model').value = lastModel || defModel;
+    $('token-hint').textContent = (st && st.hasToken) ? 'token saved (encrypted) — leave blank to keep it' : 'no token saved yet';
+    setStatus((st && st.status) || 'stopped', lastModel);
+    if (configured) {
+      // Auto-validate the saved key on open; don't block startup on it.
+      call('assistant.models', { apiUrl: $('f-url').value, token: '' })
+        .then((vr) => {
+          if (vr && vr.ok) {
+            fillModels(vr.models);
+            setSettingsStatus(`validated — ${vr.models.length} model(s) available`, 'is-ok');
+          } else {
+            const detail = (vr && vr.detail) ? ': ' + vr.detail : '';
+            addMsg('sys', `Saved key looks invalid (${(vr && vr.error) || 'unknown'}${detail}). Open Settings and check the token.`);
+          }
+        })
+        .catch((e) => addMsg('sys', 'Could not validate saved key automatically: ' + (e && e.message || e)));
+      if (st && (st.status === 'stopped' || st.status === 'error')) {
+        try { await call('assistant.start'); } catch (_) {}
+      }
+    } else {
+      addMsg('sys', 'Assistant is not configured yet — open the Settings tab, paste your token (URL and model are prefilled with the NVIDIA defaults), and save.');
+    }
+  } catch (e) {
+    addMsg('error', 'assistant bridge unavailable: ' + (e && e.message || e));
+  }
+  poll();
+  schedulePoll();
+})();
+</script>
+</body>
+</html>
