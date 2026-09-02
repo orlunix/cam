@@ -1,0 +1,15 @@
+{
+  "name": "cam-container",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "CAM WebUI — CAM Desktop's feature set as a containerized plain-Node web server.",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node test/server.test.cjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

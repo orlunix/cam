@@ -31,7 +31,11 @@ debugging/unblocks, or when `cam-dev` is unavailable. If bypassing
 
 - **Kimi (this assistant) owns DESKTOP work only** — `apps/cam-desktop/`
   and `web/` — because this machine has the desktop build/test/release
-  environment (electron-builder, MSI/DMG, Release flow).
+  environment (electron-builder, MSI/DMG, Release flow). Also in scope:
+  `apps/cam-container/` (the CAM WebUI container — it *reuses*
+  `apps/cam-desktop/electron/*.cjs` backends **read-only**; browser/
+  container adaptations belong in `apps/cam-container/` as serve-time
+  transforms or shims, not in desktop files).
 - **camc is owned by another agent** — do NOT edit `src/camc`,
   `src/camc_pkg/`, `dist/camc`, or `build_camc.py` on this machine.
   Route camc changes to the owning agent (see the cam-dev sibling
