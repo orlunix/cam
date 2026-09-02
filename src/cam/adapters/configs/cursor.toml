@@ -15,6 +15,7 @@
 name = "cursor"
 display_name = "Cursor Agent"
 config_dir = ".cursor"
+cursor_flag_support = false
 
 [launch]
 command = ["cursor-agent", "--workspace", "{path}"]
@@ -64,8 +65,8 @@ fallback_summary_pattern = "·\\s*\\d+(\\.\\d+)?%"
 [[confirm]]
 # Cursor's permission menu offers Auto-run on the following unselected line.
 # BTab is sent as a tmux special key, not literal text.
-pattern = "^\\s*Auto-run everything \\(shift\\+tab\\)"
-flags = ["MULTILINE"]
+pattern = "^[ \\t]*(?:auto-)?run[ \\t]+everything[ \\t]*\\(shift\\+tab\\)"
+flags = ["MULTILINE", "IGNORECASE"]
 response = "BTab"
 send_enter = false
 

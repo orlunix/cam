@@ -153,7 +153,7 @@ def test_boot_prompt_uses_message_style_submit_with_default_fallback_delay():
     runtime.boot_prompt = "say hi"
     runtime.prompt_after_launch = True
     runtime.boot_deadline = 20.0
-    snap = _mk_snap(output="› ready", now=1.0, idle_for=10.0)
+    snap = _mk_snap(output="› ready", now=1.0, idle_for=10.0, cursor_flag=1)
 
     actions = mf.BootPromptFeature().after_confirm(snap, runtime)
 
@@ -161,6 +161,8 @@ def test_boot_prompt_uses_message_style_submit_with_default_fallback_delay():
         "kind": "submit_input",
         "text": "say hi",
         "submit_delay": 0.5,
+        "ready_timeout": 20.0,
+        "boot_prompt": True,
     }
 
 
@@ -181,8 +183,25 @@ def test_boot_prompt_waits_for_stable_ready_cursor():
     assert runtime.boot_prompt_sent is False
 
     ready = feature.after_confirm(
-        _mk_snap(output="›", now=10.0, idle_for=10.0), runtime)
+        _mk_snap(output="›", now=10.0, idle_for=10.0, cursor_flag=1), runtime)
     assert ready[0]["kind"] == "submit_input"
+
+
+def test_boot_prompt_requires_visible_native_cursor():
+    cfg = _Cfg(ready_pattern=re.compile(r"^›", re.MULTILINE))
+    cfg.startup_wait = 20.0
+    cfg.prompt_submit_delay = 0.0
+    runtime = mf.MonitorRuntime("aid", cfg, now=0.0)
+    runtime.in_initializing = True
+    runtime.boot_prompt = "say hi"
+    runtime.prompt_after_launch = True
+    runtime.boot_deadline = 20.0
+
+    actions = mf.BootPromptFeature().after_confirm(
+        _mk_snap(output="›", now=10.0, idle_for=10.0, cursor_flag=0), runtime)
+
+    assert actions == []
+    assert runtime.boot_prompt_sent is False
 
 
 def test_register_feature_is_idempotent_for_repeat_calls():
@@ -350,6 +369,18 @@ def test_auto_confirmation_returns_send_input_and_halt_cycle():
     assert runtime.idle_confirmed is False
     halt = next(a for a in actions if a["kind"] == "halt_cycle")
     assert halt["sleep"] == pytest.approx(cfg.confirm_sleep)
+
+
+def test_auto_confirmation_does_not_reset_hash_idle_timer():
+    confirm_rules = [(re.compile(r"1\. Yes"), "1", False)]
+    cfg = _Cfg(confirm_rules=confirm_rules)
+    runtime = mf.MonitorRuntime("aid", cfg, now=1000.0)
+    runtime.last_change = 900.0
+    actions = mf.AutoConfirmationFeature().confirm(
+        _mk_snap("Do you want to proceed?\n1. Yes\n2. No\n",
+                 now=1000.0, idle_for=100.0, prompt_visible=False), runtime)
+    assert any(action["kind"] == "send_input" for action in actions)
+    assert runtime.last_change == 900.0
 
 
 def test_auto_confirmation_requires_hidden_tmux_cursor():
@@ -578,9 +609,7 @@ def _drive_three_phases(features, snap, runtime):
 def test_successful_confirm_with_1_spam_screen_still_halts_phase_c():
     """v2 TOML-only: even when the screen tail has '1' spam, a matching
     TOML rule still fires and the resulting halt skips after_confirm.
-    last_change is set by AutoConfirmationFeature's successful fire
-    path (not by the legacy 1-spam suppression which used to halt with
-    sleep=0)."""
+    last_change remains the hash-driven idle timestamp."""
     confirm_rules = [(re.compile(r"1\. Yes"), "1", False)]
     cfg = _Cfg(confirm_cooldown=5.0, confirm_rules=confirm_rules)
     runtime = mf.MonitorRuntime("aid", cfg, now=200.0)
@@ -596,9 +625,8 @@ def test_successful_confirm_with_1_spam_screen_still_halts_phase_c():
     applied, halted, phases = _drive_three_phases(features, snap, runtime)
     assert halted
     assert "after_confirm" not in phases
-    # Successful fire updates last_change to now (NOT preserved at 50.0
-    # as in the archived v1 1-spam suppression path).
-    assert runtime.last_change == 200.0
+    # A key attempt is not a screen change; preserve the hash-driven timer.
+    assert runtime.last_change == 50.0
 
 
 def test_successful_confirm_halt_also_skips_after_confirm():
@@ -616,11 +644,9 @@ def test_successful_confirm_halt_also_skips_after_confirm():
     applied, halted, phases = _drive_three_phases(features, snap, runtime)
     assert halted
     assert "after_confirm" not in phases
-    # AutoConfirmationFeature itself sets last_change=now on a successful
-    # fire; OutputChangeStep would have done the same — both paths yield
-    # the same answer, but we ASSERT after_confirm did not run via the
-    # phases_run check above.
-    assert runtime.last_change == 300.0
+    # The output-change step did not run; a key attempt does not rewrite the
+    # hash-driven idle timestamp.
+    assert runtime.last_change == 50.0
 
 
 def test_no_halt_runs_all_three_phases():

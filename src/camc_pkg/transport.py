@@ -361,30 +361,153 @@ def tmux_send_key(session_id, key):
         return False
 
 
-def tmux_submit_input(session_id, text,
-                      submit_delay=DEFAULT_PROMPT_SUBMIT_DELAY,
-                      send_input_fn=None, send_key_fn=None, sleep_fn=None):
-    """Send text, then use the reliable fast-Enter/fallback-Enter submit."""
+def insert_prompt(session_id, text, *, observe_fn,
+                  send_input_fn=None, send_key_fn=None,
+                  sleep_fn=None, monotonic_fn=None,
+                  ready_timeout=10.0, poll_interval=0.25,
+                  submit_delay=DEFAULT_PROMPT_SUBMIT_DELAY,
+                  ack_timeout=0.5, fallback_delay=None):
+    """Insert and submit one prompt with bounded screen feedback.
+
+    This is the shared wrapper for CAMC-owned prompt insertion.  The caller
+    supplies ``observe_fn`` so transport does not duplicate monitor screen
+    normalization.  The observation dictionary must contain ``ready``,
+    ``cursor_flag``, ``hash0``, and ``hash1``.  Text is sent without Enter,
+    then Enter is sent once; a single fallback Enter is allowed only when
+    the post-text screen remains unchanged and no acknowledgement appears.
+
+    The return value is a plain dictionary for Python 3.6 compatibility.
+    ``ok`` is true only after a screen/hash or known cursor transition is
+    observed; a successful tmux subprocess alone is not acknowledgement.
+    """
     send_input_fn = send_input_fn or tmux_send_input
     send_key_fn = send_key_fn or tmux_send_key
     sleep_fn = sleep_fn or time.sleep
-    if not send_input_fn(session_id, text, send_enter=False):
+    monotonic_fn = monotonic_fn or time.monotonic
+
+    def _number(value, default):
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return default
+
+    ready_timeout = _number(ready_timeout, 10.0)
+    poll_interval = _number(poll_interval, 0.25)
+    submit_delay = _number(submit_delay, DEFAULT_PROMPT_SUBMIT_DELAY)
+    ack_timeout = _number(ack_timeout, 0.5)
+    fast_delay = min(FAST_PROMPT_SUBMIT_DELAY, submit_delay)
+    if fallback_delay is None:
+        fallback_delay = submit_delay - fast_delay
+    fallback_delay = _number(fallback_delay, submit_delay - fast_delay)
+
+    enter_attempts = 0
+    before_hash0 = ""
+    after_hash0 = ""
+
+    def _result(ok, phase, reason, after=None):
+        final_hash = after_hash0
+        if isinstance(after, dict):
+            final_hash = after.get("hash0") or final_hash
+        return {
+            "ok": bool(ok),
+            "phase": phase,
+            "reason": reason,
+            "enter_attempts": enter_attempts,
+            "before_hash0": before_hash0,
+            "after_hash0": final_hash,
+        }
+
+    def _observe():
+        value = observe_fn(session_id)
+        if not isinstance(value, dict):
+            raise ValueError("prompt observation must be a dict")
+        return value
+
+    def _acknowledged(value, base_hash0, base_hash1):
+        if value.get("hash0") != base_hash0 or value.get("hash1") != base_hash1:
+            return True
+        if value.get("ready") is False:
+            return True
+        flag = value.get("cursor_flag")
+        if (value.get("cursor_flag_supported", True)
+                and flag in (0, False)):
+            return True
         return False
+
+    def _wait_for_ack(base_hash0, base_hash1):
+        deadline = monotonic_fn() + ack_timeout
+        while True:
+            try:
+                value = _observe()
+            except Exception:
+                return None, "observe_failed"
+            if _acknowledged(value, base_hash0, base_hash1):
+                return value, "acknowledged"
+            remaining = deadline - monotonic_fn()
+            if remaining <= 0.0:
+                return None, "timeout"
+            sleep_fn(min(poll_interval, remaining))
+
+    ready_started = monotonic_fn()
+    while True:
+        try:
+            observation = _observe()
+        except Exception:
+            return _result(False, "ready", "observe_failed")
+        if (observation.get("ready") is True
+                and (not observation.get("cursor_flag_supported", True)
+                     or observation.get("cursor_flag") == 1)):
+            break
+        remaining = ready_timeout - (monotonic_fn() - ready_started)
+        if remaining <= 0.0:
+            return _result(False, "ready", "ready_timeout")
+        sleep_fn(min(poll_interval, remaining))
+
+    before_hash0 = observation.get("hash0") or ""
     try:
-        delay = max(0.0, float(submit_delay))
-    except (TypeError, ValueError):
-        delay = DEFAULT_PROMPT_SUBMIT_DELAY
-    fast_delay = min(FAST_PROMPT_SUBMIT_DELAY, delay)
+        sent = send_input_fn(session_id, text, send_enter=False)
+    except Exception:
+        sent = False
+    if not sent:
+        return _result(False, "text", "text_send_failed")
+
+    try:
+        after_text = _observe()
+    except Exception:
+        return _result(False, "text", "observe_failed")
+    after_hash0 = after_text.get("hash0") or ""
+    after_hash1 = after_text.get("hash1") or ""
+
     if fast_delay:
         sleep_fn(fast_delay)
-    if not send_key_fn(session_id, "Enter"):
-        return False
-    fallback_delay = delay - fast_delay
+    enter_attempts = 1
+    try:
+        sent = send_key_fn(session_id, "Enter")
+    except Exception:
+        sent = False
+    if not sent:
+        return _result(False, "submit", "enter_send_failed")
+    acknowledged, reason = _wait_for_ack(after_hash0, after_hash1)
+    if acknowledged is not None:
+        return _result(True, "submit", "screen_changed", acknowledged)
+    if reason == "observe_failed":
+        return _result(False, "submit", reason)
+
     if fallback_delay:
         sleep_fn(fallback_delay)
-        if not send_key_fn(session_id, "Enter"):
-            return False
-    return True
+    enter_attempts = 2
+    try:
+        sent = send_key_fn(session_id, "Enter")
+    except Exception:
+        sent = False
+    if not sent:
+        return _result(False, "fallback", "enter_send_failed")
+    acknowledged, reason = _wait_for_ack(after_hash0, after_hash1)
+    if acknowledged is not None:
+        return _result(True, "fallback", "screen_changed", acknowledged)
+    if reason == "observe_failed":
+        return _result(False, "fallback", reason)
+    return _result(False, "fallback", "submit_unconfirmed")
 
 
 def tmux_is_attached(session_id):
@@ -481,7 +604,7 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
     ``cmd_run`` path), the function uses the SAME effective env and
     tmux binary that the readiness check just validated — eliminating
     the "works in preflight, fails in launch" PATH discrepancy. When
-    omitted (scheduler.py, tests, any legacy caller), behavior is
+    omitted (tests or any legacy caller), behavior is
     bit-identical to the pre-F-08 implementation: env is sourced from
     ``os.environ.copy()`` and the binary is the module-level
     ``TMUX_BIN`` resolved at import time.
@@ -523,7 +646,7 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
     # /etc/passwd (getpwuid) instead of $SHELL keeps tmux's default shell
     # aligned with the account. (build_runtime_env already does this
     # for the cmd_run path; this covers callers that pass no env= and
-    # fall through to os.environ.copy() — e.g. scheduler.py.)
+    # fall through to os.environ.copy() for legacy callers.)
     try:
         import pwd as _pwd
         _pw = _pwd.getpwuid(os.getuid())

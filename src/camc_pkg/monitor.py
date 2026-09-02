@@ -44,7 +44,7 @@ from camc_pkg.adapters import _load_config, _load_boot_config
 from camc_pkg.storage import AgentStore, EventStore
 from camc_pkg.transport import (
     capture_tmux, tmux_session_exists, tmux_send_input, tmux_send_key,
-    tmux_kill_session, tmux_is_attached, tmux_submit_input,
+    tmux_kill_session, tmux_is_attached, insert_prompt,
     tmux_cursor_flag,
 )
 from camc_pkg.detection import detect_completion, is_ready_for_input, is_ready_for_boot
@@ -128,7 +128,41 @@ def _content_hash(text):
     return hashlib.md5(text.encode("utf-8")).hexdigest()[:8]
 
 
-def _apply_action(action, *, session, agent_id, store, events_fn):
+def _make_prompt_observer(config, boot_config=None):
+    """Build the shared prompt observation callback for ``insert_prompt``."""
+    def observe(session_id):
+        output = capture_tmux(session_id, lines=128) or ""
+        cursor_flag = tmux_cursor_flag(session_id)
+        cursor_flag_supported = bool(
+            getattr(config, "cursor_flag_support", True))
+        if boot_config is not None:
+            cursor_flag_supported = cursor_flag_supported and bool(
+                getattr(boot_config, "cursor_flag_support", True))
+        normalized = _normalize_screen(output)
+        hash0 = _content_hash(normalized)
+        hash1 = _content_hash(_strip_ascii_digits(normalized))
+        # BootPromptFeature already gates its action on the configured
+        # stability window.  The wrapper itself needs the current cursor
+        # signal, not a zero-age stability check that would reject every
+        # visible cursor line.
+        if config is None:
+            ready = bool(output.strip()) and cursor_flag == 1
+        elif boot_config is not None:
+            ready = is_ready_for_boot(
+                output, boot_config, config, stable_for=None,
+                cursor_flag=cursor_flag)
+        else:
+            ready = is_ready_for_input(
+                output, config, stable_for=None,
+                cursor_flag=cursor_flag)
+        return {"ready": bool(ready), "cursor_flag": cursor_flag,
+                "cursor_flag_supported": cursor_flag_supported,
+                "hash0": hash0, "hash1": hash1}
+    return observe
+
+
+def _apply_action(action, *, session, agent_id, store, events_fn,
+                  runtime=None, config=None, boot_config=None):
     """Apply a single step action dict to the real world. Returns
     (halt_cycle, sleep_seconds). halt_cycle=True means the loop must
     stop running further steps in this cycle and skip the inline
@@ -141,8 +175,27 @@ def _apply_action(action, *, session, agent_id, store, events_fn):
         tmux_send_input(session, action["text"],
                         send_enter=action.get("send_enter", True))
     elif kind == "submit_input":
-        tmux_submit_input(session, action["text"],
-                          submit_delay=action.get("submit_delay", 0.5))
+        active_config = config or getattr(runtime, "config", None)
+        active_boot_config = boot_config or getattr(runtime, "boot_config", None)
+        observer = _make_prompt_observer(
+            active_config, active_boot_config if action.get("boot_prompt") else None)
+        result = insert_prompt(
+            session, action["text"], observe_fn=observer,
+            submit_delay=action.get("submit_delay", 0.5),
+            ready_timeout=action.get("ready_timeout", 10.0))
+        if not result.get("ok"):
+            log.warning("Prompt insertion failed phase=%s reason=%s",
+                        result.get("phase"), result.get("reason"))
+            return False, 0.0
+        if runtime is not None and action.get("boot_prompt"):
+            runtime.boot_prompt_sent = True
+            runtime.in_initializing = False
+            runtime.left_initializing = True
+            store.update(agent_id, state="idle")
+            events_fn("boot_ready", {
+                "prompt_sent": True,
+                "phase": result.get("phase"),
+            })
     elif kind == "send_key":
         tmux_send_key(session, action["key"])
     elif kind == "sleep":
@@ -273,7 +326,8 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                 halt, slp = _apply_action(
                     action,
                     session=session, agent_id=agent_id,
-                    store=store, events_fn=_event,
+                    store=store, events_fn=_event, runtime=runtime,
+                    config=config, boot_config=boot_config,
                 )
                 if halt:
                     return True, slp

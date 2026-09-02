@@ -47,7 +47,8 @@ Action protocol is unchanged from the step-pipeline era:
 
     {"kind": "log",          "level": "debug|info|warning|error", "msg": str}
     {"kind": "send_input",   "text": str, "send_enter": bool}
-    {"kind": "submit_input", "text": str, "submit_delay": float}
+    {"kind": "submit_input", "text": str, "submit_delay": float,
+     "ready_timeout": float, "boot_prompt": bool (optional)}
     {"kind": "send_key",     "key": str}
     {"kind": "store_update", "fields": {<field>: <value>, ...}}
     {"kind": "event",        "name": str, "detail": dict|None}
@@ -404,16 +405,22 @@ class BootPromptFeature(MonitorFeature):
             runtime.left_initializing = True
             return actions
         if not is_ready_for_boot(snap.output, boot_cfg, tool_cfg,
-                                 stable_for=snap.idle_for):
+                                 stable_for=snap.idle_for,
+                                 cursor_flag=snap.cursor_flag):
             return actions
         prompt = (runtime.boot_prompt or "").strip()
         if prompt and runtime.prompt_after_launch:
             cfg = boot_cfg or tool_cfg
             delay = cfg.prompt_submit_delay or DEFAULT_PROMPT_SUBMIT_DELAY
             actions.append({"kind": "submit_input", "text": prompt,
-                            "submit_delay": delay})
+                            "submit_delay": delay,
+                            "ready_timeout": boot_wait,
+                            "boot_prompt": True})
             actions.append({"kind": "log", "level": "info",
                             "msg": "Boot: prompt injected (%d chars)" % len(prompt)})
+            # The monitor action adapter commits the initializing -> idle
+            # transition only after insert_prompt reports acknowledgement.
+            return actions
         else:
             actions.append({"kind": "log", "level": "info",
                             "msg": "Boot: ready (interactive, no prompt)"})
@@ -468,7 +475,11 @@ class AutoConfirmationFeature(MonitorFeature):
             return actions
         # tmux's native cursor flag is the only input-box safety gate.  A
         # missing flag is fail-closed: never inject a key we cannot classify.
-        if snap.cursor_flag != 0:
+        flag_supported = bool(getattr(cfg, "cursor_flag_support", True))
+        if init_phase and runtime.boot_config is not None:
+            flag_supported = flag_supported and bool(
+                getattr(runtime.boot_config, "cursor_flag_support", True))
+        if flag_supported and snap.cursor_flag != 0:
             return actions
         if init_phase:
             confirm, rule_cfg = should_confirm_initializing(
@@ -512,7 +523,6 @@ class AutoConfirmationFeature(MonitorFeature):
         runtime.last_confirm = snap.now
         runtime.last_confirm_hash = snap.hash1
         runtime.last_confirm_response = response
-        runtime.last_change = snap.now
         runtime.idle_confirmed = False
         runtime.final_fallback = {
             "kind": "confirm",
@@ -566,7 +576,8 @@ class FinalStaticFallbackFeature(MonitorFeature):
     def after_confirm(self, snap, runtime):
         # The last-resort Enter is still a keystroke; only use it when the
         # native tmux flag confirms that no input cursor is active.
-        if snap.cursor_flag != 0:
+        if (getattr(runtime.config, "cursor_flag_support", True)
+                and snap.cursor_flag != 0):
             return []
         state = runtime.final_fallback
         store = getattr(runtime, "store", None)
