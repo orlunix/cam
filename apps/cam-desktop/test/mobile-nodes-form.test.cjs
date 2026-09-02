@@ -122,7 +122,7 @@ ok("desktop hub accepts context rename updates",
   fs.readFileSync(path.join(root, "apps", "cam-desktop", "electron", "embedded-hub.cjs"), "utf8")
     .includes("if (body.name != null)"));
 ok("android hub accepts context rename updates",
-  fs.readFileSync(path.join(root, "android", "app", "src", "main", "java", "com", "cam", "app", "MobileEmbeddedHub.java"), "utf8")
+  fs.readFileSync(path.join(root, "apps", "cam-mobile", "app", "src", "main", "java", "com", "cam", "app", "MobileEmbeddedHub.java"), "utf8")
     .includes("if (body.has(\"name\"))"));
 
 ok("ssh-config import flags missing IdentityFile and guides manual key/password fix",

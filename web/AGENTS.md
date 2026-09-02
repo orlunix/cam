@@ -21,7 +21,7 @@ phone client for monitoring and controlling those agents.
 ### What the mobile UI is
 
 - Developed on branch **`camui-desktop-v2`** (NOT `master` — master is
-  frozen at 2.2.0). Version source of truth: `android/VERSION`
+  frozen at 2.2.0). Version source of truth: `apps/cam-mobile/VERSION`
   (currently 2.4.51).
 - `mobile.html` + `js/mobile/*` — vanilla JS ES modules, no framework,
   no build step, hash router in `js/mobile/app.js`.
@@ -33,8 +33,8 @@ phone client for monitoring and controlling those agents.
     in localStorage).
   - **Direct**: the phone hosts an embedded hub itself (JS side
     `js/mobile/direct-*.js`, `settings-direct.js`; native side
-    `MobileEmbeddedHub.java` in `android/`).
-- Packaged as an Android APK by `android/build.sh` (no Gradle), loading
+    `MobileEmbeddedHub.java` in `apps/cam-mobile/`).
+- Packaged as an Android APK by `apps/cam-mobile/build.sh` (no Gradle), loading
   the web app via `CamAssetLoader.java` virtual HTTPS
   (`https://appassets.androidplatform.net/...`, NOT `file://`).
 - Resume/viewport drift is handled by the early inline script in
@@ -60,7 +60,7 @@ phone client for monitoring and controlling those agents.
 
 - Mobile work touches only: `web/mobile.html`, `web/js/mobile/*`,
   shared `web/js/api.js` / `web/js/state.js` (carefully — shared with
-  desktop), `web/css/mobile.css`, `docs/mobile/*`, and `android/`
+  desktop), `web/css/mobile.css`, `docs/mobile/*`, and `apps/cam-mobile/`
   packaging.
 - Never modify: `src/cam/**` (Python server), `embedded-hub.cjs`, camc
   (`src/camc_pkg/*` — owned by another agent, see root AGENTS.md), the
@@ -73,10 +73,10 @@ phone client for monitoring and controlling those agents.
 
 - Web PWA has no build step; serve `web/` statically or via
   `python3 relay/relay.py --port 8001 --token <t> --web-root web/`.
-- APK: `cd android && ./build.sh` → `build/cam.apk`; bump
-  `android/VERSION` (patch) per iteration; install with
-  `adb install -r android/build/cam.apk`.
-- `android/build.sh` stamps `?v=<version>` cache-bust query strings —
+- APK: `cd apps/cam-mobile && ./build.sh` → `build/cam.apk`; bump
+  `apps/cam-mobile/VERSION` (patch) per iteration; install with
+  `adb install -r apps/cam-mobile/build/cam.apk`.
+- `apps/cam-mobile/build.sh` stamps `?v=<version>` cache-bust query strings —
   do not hand-edit them out.
 
 ### Known open stability issues (verified on this branch, 2.4.51)
@@ -101,7 +101,7 @@ phone client for monitoring and controlling those agents.
   freezes; `hub-capabilities` reads hit the empty bare instance →
   capability gating silently defaults to "allow" in Relay mode.
 - Fix direction: consistent import specifiers everywhere (all bare, or
-  all stamped — check `android/build.sh` sed coverage), plus a reentry
+  all stamped — check `apps/cam-mobile/build.sh` sed coverage), plus a reentry
   guard in `init()`. One consistent scheme fixes this whole cluster.
 
 **P1 — connection / polling**

@@ -15,8 +15,8 @@ def test_desktop_and_cam_sync_use_dist_camc():
     remote_source = (ROOT / "src/camc_pkg/remote.py").read_text()
     assert '"dist", "camc"' in remote_source
 
-    mobile_build = (ROOT / "android/build.sh").read_text()
-    assert 'CAMC_DIST="$PROJ_DIR/../dist/camc"' in mobile_build
+    mobile_build = (ROOT / "apps/cam-mobile/build.sh").read_text()
+    assert 'CAMC_DIST="$PROJ_DIR/../../dist/camc"' in mobile_build
 
 
 def test_duplicate_src_camc_artifact_is_absent():

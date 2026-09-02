@@ -44,7 +44,7 @@ Reuse: `web/js/api.js` as spec; do not change server/hub.
 ## Build
 
 ```bash
-cd android && ./build.sh
+cd apps/cam-mobile && ./build.sh
 ```
 
 Versioning: patch builds during Phase 0–2; minor `2.2.0` when Phase 1 list ships.

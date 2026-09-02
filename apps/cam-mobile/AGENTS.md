@@ -8,7 +8,7 @@ modes, boundaries, and known issues are documented in
   apksigner directly; needs `~/android-sdk` with `platforms;android-34`
   and `build-tools;34.0.0` (`setup-sdk.sh` installs them). Output:
   `build/cam.apk` + `build/camui-v2-<version>.apk`.
-- Version source of truth: `android/VERSION` (semver; versionCode =
+- Version source of truth: `apps/cam-mobile/VERSION` (semver; versionCode =
   M*10000 + m*100 + p). Bump the patch per iteration. `build.sh` stamps
   `?v=<version>` cache-bust strings into the bundled web assets — do not
   hand-edit them.
@@ -31,7 +31,7 @@ modes, boundaries, and known issues are documented in
   upload key/secret files in plaintext — ask the user for a password,
   `gpg -c` encrypt, upload the `.gpg`, then delete any plaintext copy
   from cloud storage.** Restore: `gpg -d cam-release.keystore.gpg >
-  android/cam-release.keystore`.
+  apps/cam-mobile/cam-release.keystore`.
 - `probe/` — side-by-side WebView probe APK (`com.cam.probe`, levels
   A/B/C) for viewport-drift debugging; see `docs/mobile/webview-probe.md`.
 - Active branch: `camui-desktop-v2`. The archived native Kotlin UI line

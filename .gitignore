@@ -44,9 +44,9 @@ Thumbs.db
 .worktrees/
 
 # Build artifacts
-android/build/
-android/cam-release.keystore
-android/.upload-target
+apps/cam-mobile/build/
+apps/cam-mobile/cam-release.keystore
+apps/cam-mobile/.upload-target
 
 # Log files
 scripts/*.log
@@ -72,4 +72,4 @@ demos/*/.claude/scheduled_tasks.lock
 # APK release artifacts
 web/assets/*.apk
 a.out
-android/test/lockrepro/build/
+apps/cam-mobile/test/lockrepro/build/

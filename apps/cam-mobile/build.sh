@@ -21,7 +21,7 @@ PLATFORM="$ANDROID_HOME/platforms/android-34/android.jar"
 PROJ_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC_DIR="$PROJ_DIR/app/src/main"
 BUILD_DIR="$PROJ_DIR/build"
-WEB_DIR="$PROJ_DIR/../web"
+WEB_DIR="$PROJ_DIR/../../web"
 KEYSTORE="$PROJ_DIR/cam-release.keystore"
 KEY_ALIAS="cam"
 KEY_PASS="camapp123"
@@ -174,7 +174,7 @@ cd "$PROJ_DIR"
 echo "  Bundling web assets..."
 mkdir -p "$BUILD_DIR/assets_staging/assets/web"
 rsync -a --exclude='*.apk' "$WEB_DIR/" "$BUILD_DIR/assets_staging/assets/web/"
-CAMC_DIST="$PROJ_DIR/../dist/camc"
+CAMC_DIST="$PROJ_DIR/../../dist/camc"
 if [ ! -f "$CAMC_DIST" ]; then
     echo "ERROR: Missing bundled camc at $CAMC_DIST"
     exit 1
@@ -184,7 +184,7 @@ cp "$CAMC_DIST" "$BUILD_DIR/assets_staging/assets/camc/camc"
 chmod 700 "$BUILD_DIR/assets_staging/assets/camc/camc"
 
 # Bundle built-in extensions (SPEC v2 type-B packages)
-EXT_SRC="$PROJ_DIR/../extensions/examples"
+EXT_SRC="$PROJ_DIR/../../extensions/examples"
 if [ -d "$EXT_SRC/agent-doctor" ]; then
   mkdir -p "$BUILD_DIR/assets_staging/assets/extensions"
   cp -r "$EXT_SRC/agent-doctor" "$BUILD_DIR/assets_staging/assets/extensions/"

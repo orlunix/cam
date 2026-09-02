@@ -91,7 +91,7 @@ Match return shapes from `embedded-hub.cjs` `check` / `start` / `getProfile` (re
 **Hub entry script** (new, thin):
 
 ```text
-android/hub/run-hub.cjs
+apps/cam-mobile/hub/run-hub.cjs
   require('../../apps/cam-desktop/electron/embedded-hub.cjs')
   require('../../apps/cam-desktop/electron/credential-store.cjs')
   require('../../apps/cam-desktop/electron/ssh-transport.cjs')
@@ -181,7 +181,7 @@ Not required for MVP. Phone as Relay **client** (existing tab) is enough.
 ## Files to add (Android tree)
 
 ```text
-android/
+apps/cam-mobile/
   hub/
     run-hub.cjs              # Node entrypoint
     package.json             # ssh2 dependency

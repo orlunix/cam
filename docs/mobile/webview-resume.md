@@ -15,7 +15,7 @@ Active development on **`master`** uses the **WebView shell** + **`web/mobile.ht
 ## Build
 
 ```bash
-cd android && ./build.sh
+cd apps/cam-mobile && ./build.sh
 adb install -r build/cam.apk
 ```
 
@@ -33,4 +33,4 @@ See `camui-mobile-native:docs/mobile/native-archive.md` for details.
 ## Drift debugging
 
 - `docs/mobile/webview-probe.md`
-- `android/probe/` — side-by-side WebView probe APK
+- `apps/cam-mobile/probe/` — side-by-side WebView probe APK

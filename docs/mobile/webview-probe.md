@@ -4,7 +4,7 @@
 
 | Source | Location | What we copied |
 |--------|----------|----------------|
-| [WebAppCapsule](https://github.com/usokawa/WebAppCapsule) | `android/reference/WebAppCapsule-MainActivity.kt` | Virtual HTTPS via `WebViewAssetLoader`, minimal `WebSettings`, `allowFileAccess=false` |
+| [WebAppCapsule](https://github.com/usokawa/WebAppCapsule) | `apps/cam-mobile/reference/WebAppCapsule-MainActivity.kt` | Virtual HTTPS via `WebViewAssetLoader`, minimal `WebSettings`, `allowFileAccess=false` |
 | Google docs | [Load local content](https://developer.android.com/develop/ui/views/layout/webapps/load-local-content) | Same pattern — **no `file://android_asset/`** |
 
 CamUI implements the same idea in **`CamAssetLoader.java`** (stdlib-only, no Gradle/androidx).
@@ -20,14 +20,14 @@ CamUI implements the same idea in **`CamAssetLoader.java`** (stdlib-only, no Gra
 Build:
 
 ```bash
-cd android/probe && chmod +x build.sh && ./build.sh
+cd apps/cam-mobile/probe && chmod +x build.sh && ./build.sh
 ```
 
 Install **alongside** CamUI V2 (`com.cam.probe` vs `com.cam.app`):
 
 ```bash
-adb install android/probe/build/camui-probe.apk
-adb install android/build/cam.apk
+adb install apps/cam-mobile/probe/build/camui-probe.apk
+adb install apps/cam-mobile/build/cam.apk
 ```
 
 Open **CamUI Probe** → pick a level:
@@ -62,4 +62,4 @@ Repeat for B, then C.
 git clone --depth 1 https://github.com/usokawa/WebAppCapsule.git /tmp/WebAppCapsule
 ```
 
-Compare with `android/app/src/main/java/com/cam/app/MainActivity.java`.
+Compare with `apps/cam-mobile/app/src/main/java/com/cam/app/MainActivity.java`.

@@ -40,7 +40,7 @@ The source owns the CAM API token (`~/.cam/camui/relay/<name>/profile.json`). Th
 - Desktop UI / workspace gateway spec: [`../desktop-ui-spec.md`](../desktop-ui-spec.md)
 - Shared API client: [`../../web/js/api.js`](../../web/js/api.js)
 - Legacy mobile PWA entry: [`../../web/index.html`](../../web/index.html)
-- Legacy Android shell: [`../../android/`](../../android/)
+- Legacy Android shell: [`../../apps/cam-mobile/`](../../apps/cam-mobile/)
 
 ## Boundary
 
@@ -48,7 +48,7 @@ Mobile is a **pure client** of the existing Hub/API. It must not change Start Se
 
 ## Versioning (CamUI Mobile V2 APK)
 
-Source of truth: `android/VERSION` (semver `major.minor.patch`). `android/build.sh` stamps `mobile.html`, `app.js`, and AndroidManifest.
+Source of truth: `apps/cam-mobile/VERSION` (semver `major.minor.patch`). `apps/cam-mobile/build.sh` stamps `mobile.html`, `app.js`, and AndroidManifest.
 
 | Line | Branch | Version range | Shell |
 |------|--------|---------------|--------|
@@ -61,7 +61,7 @@ Rules:
 - **Native** (`camui-mobile-native`): stay on **2.1.x**; do not consume `2.2+` on that branch.
 - Reserve **major** for breaking product changes (V1 → V2 was `1.x` → `2.0.0`).
 
-Build: `cd android && ./build.sh` → `build/cam.apk` and `build/camui-v2-<version>.apk`.
+Build: `cd apps/cam-mobile && ./build.sh` → `build/cam.apk` and `build/camui-v2-<version>.apk`.
 
 ## Android WebView viewport (V2)
 

@@ -48,7 +48,7 @@ rm -rf "$WORK/data"   # fresh store per run — the test seeds its own context
 echo "=== TestAgentOps ==="
 rm -rf "$WORK/agentops-data"
 mkdir -p "$WORK/agentops-data/assets/extensions"
-cp -r "$HERE/../../../extensions/examples/agent-doctor" "$WORK/agentops-data/assets/extensions/"
+cp -r "$HERE/../../../../extensions/examples/agent-doctor" "$WORK/agentops-data/assets/extensions/"
 "$JAVA" -cp "$WORK/classes:$JSCH_JAR:$JSON_JAR" TestAgentOps "$WORK/agentops-data"
 
 echo "=== TestProxyJump ==="

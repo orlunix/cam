@@ -39,7 +39,7 @@ trust where.
   request (measured 117s in the repro). Removed the global monitor;
   per-host ordering stays where it belongs (the SSH layer's
   `MobileSshPool.lockFor()`); `ensureStoreLoaded`/`saveStore`
-  synchronized. Regression test: `android/test/lockrepro/` (real hub
+  synchronized. Regression test: `apps/cam-mobile/test/lockrepro/` (real hub
   classes on the JVM + Android stubs; `run.sh`).
 - **Copy-mode browsing UX, final form** (2.4.56–2.4.64): terminal
   History button (`⤒` left / `⤓` right in the floating status row)
@@ -102,7 +102,7 @@ local fix:
 
 1. ~~**Global `synchronized apiRequest`** (`MobileEmbeddedHub.java`) —
    one unreachable host stalls ALL Direct UI.~~ **Fixed in 2.4.54** (see
-   §1). Repro preserved in `android/test/lockrepro/`.
+   §1). Repro preserved in `apps/cam-mobile/test/lockrepro/`.
 2. **No agents auto-refresh** — Direct has neither agents polling nor
    an event stream (`/api/ws` unimplemented in the hub, disabled
    after 3 failures): dashboard state goes stale until manual refresh.
@@ -117,7 +117,7 @@ local fix:
    [ssh-ed25519, ssh-ed448]`. Symptom: nodes with ed25519 keys fail
    with `auth_failed`; RSA/ECDSA keys and password auth are fine.
    Desktop is unaffected (ssh2 handles ed25519 natively). **Fix**:
-   bundle `bcprov` (BouncyCastle, ~4MB) in `android/libs/` and add it
+   bundle `bcprov` (BouncyCastle, ~4MB) in `apps/cam-mobile/libs/` and add it
    to the javac/d8 classpath in `build.sh`, then verify ed25519
    direct + chained connect in the JVM harness. **Workaround until
    then**: use RSA keys or password auth.
@@ -160,7 +160,7 @@ local fix:
   polling in terminal state; wire `_inflightAbort`; `term_input`
   single-thread executor (§2.1.3).
 - **Bundle BouncyCastle for ed25519 key auth** (§2.2.4) — add
-  `bcprov` to `android/libs/` + classpath in `build.sh`; verify with
+  `bcprov` to `apps/cam-mobile/libs/` + classpath in `build.sh`; verify with
   ed25519 direct + chained connects in the JVM harness.
 
 **Batch 2 — module specifier unification (kills the P0 cluster)**
@@ -184,7 +184,7 @@ local fix:
 **Deferred / product decisions**
 - Foreground service for background keep-alive (persistent
   notification) vs. the current 10-min grace workaround.
-- `android/probe/` A/B/C root-causing of viewport drift (§5) if it
+- `apps/cam-mobile/probe/` A/B/C root-causing of viewport drift (§5) if it
   resurfaces.
 
 ## 4. Verification protocol (lesson from the 2.4.52 regression)
@@ -203,7 +203,7 @@ No upload without an on-device smoke pass:
 Viewport drift (screenshot/app-switch scale/scroll corruption) was the
 long-standing issue: mitigations went native-chrome + WebView
 destroy/recreate (2.1.x) → single height model + layout resets
-(2.2.x–2.4.x). Root cause never isolated; `android/probe/` exists for
+(2.2.x–2.4.x). Root cause never isolated; `apps/cam-mobile/probe/` exists for
 it. As of 2.4.53 it no longer reproduces on the test device (see §1) —
 treat as "dormant, unproven".
 
@@ -213,7 +213,7 @@ treat as "dormant, unproven".
 |---|---|
 | **this file** | **authoritative** |
 | `ios-plan.md` | **authoritative** (iOS port plan, pending decisions) |
-| `web/AGENTS.md`, `android/AGENTS.md` | authoritative (agent onboarding) |
+| `web/AGENTS.md`, `apps/cam-mobile/AGENTS.md` | authoritative (agent onboarding) |
 | `README.md` | stale: "Relay only", resume section |
 | `native-plan.md`, `webview-resume.md` | historical (native line archived) |
 | `webview-probe.md` | method still valid; "fixed in 2.2.1+" claims predate reality |

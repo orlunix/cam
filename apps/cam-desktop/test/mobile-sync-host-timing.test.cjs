@@ -14,9 +14,9 @@ function ok(name, condition, detail = "") {
 }
 
 const root = path.join(__dirname, "..", "..", "..");
-const hub = fs.readFileSync(path.join(root, "android", "app", "src", "main", "java", "com", "cam", "app", "MobileEmbeddedHub.java"), "utf8");
-const ssh = fs.readFileSync(path.join(root, "android", "app", "src", "main", "java", "com", "cam", "app", "MobileSshExec.java"), "utf8");
-const build = fs.readFileSync(path.join(root, "android", "build.sh"), "utf8");
+const hub = fs.readFileSync(path.join(root, "apps", "cam-mobile", "app", "src", "main", "java", "com", "cam", "app", "MobileEmbeddedHub.java"), "utf8");
+const ssh = fs.readFileSync(path.join(root, "apps", "cam-mobile", "app", "src", "main", "java", "com", "cam", "app", "MobileSshExec.java"), "utf8");
+const build = fs.readFileSync(path.join(root, "apps", "cam-mobile", "build.sh"), "utf8");
 const nodes = fs.readFileSync(path.join(root, "web", "js", "shared", "nodes-mode.js"), "utf8");
 
 ok("Sync Host returns timing metadata", hub.includes('put("sync", syncTiming('));
