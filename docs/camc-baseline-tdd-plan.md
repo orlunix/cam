@@ -77,6 +77,27 @@ No network, login, provider token, existing `~/.cam`, or user tmux server may
 be used. A real-provider smoke remains an explicit release test, not a unit or
 CI gate.
 
+### Layer 4: explicit real-provider regression
+
+Run the built candidate against a real coding agent and the inexpensive
+internal `kimi-k3` profile:
+
+```bash
+python3 scripts/camc_live_api_regression.py --camc /path/to/candidate/camc
+```
+
+This command validates the real lifecycle end to end:
+
+```text
+run --api -> trust auto-confirm -> task and tests -> msg -> rm --archive
+```
+
+It uses a fresh temporary workspace, requires exactly one `auto_confirm` and
+one prompt-sent `boot_ready`, independently verifies the generated program,
+and cleans up the owned agent. It is intentionally not collected by `pytest`;
+the command reaches a real provider and the user's live CamC registry. Its
+default can be overridden with `--api` or `CAMC_LIVE_API`.
+
 ## Determinism rules
 
 - Inject/fake time; no test should wait for production 5/60/120-second timers.
