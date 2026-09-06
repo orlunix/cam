@@ -525,6 +525,15 @@ class AutoConfirmationFeature(MonitorFeature):
         runtime.last_confirm = snap.now
         runtime.last_confirm_hash = snap.hash1
         runtime.last_confirm_response = response
+        if init_phase:
+            # Accepting a startup dialog is forward progress, but the tool
+            # may still need a full startup window to load before exposing
+            # its real input prompt.  Renew (never shorten) that window so
+            # the original task is not abandoned at the pre-dialog deadline.
+            boot_cfg = runtime.boot_config or runtime.config
+            boot_wait = float(getattr(boot_cfg, "startup_wait", 0.0) or 0.0)
+            runtime.boot_deadline = max(
+                runtime.boot_deadline, snap.now + boot_wait)
         runtime.idle_confirmed = False
         runtime.final_fallback = {
             "kind": "confirm",
