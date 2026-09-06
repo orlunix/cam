@@ -1,8 +1,10 @@
 """Public `camc run` baseline contract."""
 
+import json
+
 import pytest
 
-from camc_pkg import cli, storage
+from camc_pkg import cli, storage, utils
 
 
 @pytest.mark.parametrize(
@@ -30,6 +32,12 @@ def test_run_selects_tool_and_creates_one_session_and_monitor(
     assert command[binary_index] == expected_binary
     assert workdir == str(isolated_cam_home.work)
     assert kwargs["inherit_env"] is True
+    if expected_tool == "codex":
+        assert [
+            "-c",
+            'projects={%s={trust_level="trusted"}}' % json.dumps(
+                utils._workspace_trust_root(str(isolated_cam_home.work))),
+        ] == command[3:5]
     config, original_command = run_spy.configs[0]
     assert config.command == original_command
 
@@ -50,6 +58,25 @@ def test_run_selects_tool_and_creates_one_session_and_monitor(
     assert runtime["tool"]["bin"] == expected_binary
     assert runtime["tool"]["source"] == "baseline"
     assert runtime["shell"]["mode"] == "tmux-default-shell"
+
+
+def test_adapter_declared_workspace_trust_targets_git_root_and_escapes_path(
+        tmp_path):
+    from camc_pkg.adapters import AdapterConfig
+
+    repo = tmp_path / 'workspace with "quotes"'
+    workdir = repo / "nested" / "node"
+    workdir.mkdir(parents=True)
+    (repo / ".git").mkdir()
+    config = AdapterConfig({"launch": {
+        "command": ["codex"], "trust_workspace": True,
+    }})
+
+    assert cli._build_command(config, "", str(workdir)) == [
+        "codex", "-c",
+        'projects={%s={trust_level="trusted"}}' % json.dumps(
+            str(repo.resolve())),
+    ]
 
 
 def test_run_preflight_error_precedes_session_monitor_and_record(
