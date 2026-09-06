@@ -197,8 +197,14 @@ def is_ready_for_boot(output, boot_config, tool_config, stable_for=None,
     # A boot confirmation has priority over both ready patterns. Without
     # this cross-config guard, a trust prompt known only to boot.toml can be
     # mistaken for normal readiness by the tool config's cursor rule.
-    if ((boot_config and should_boot_confirm(output, boot_config))
-            or (tool_config and should_boot_confirm(output, tool_config))):
+    # cursor_flag=0 identifies an active selection menu. Once the tool's
+    # current input cursor is visible (flag=1), matching boot text may simply
+    # be stale scrollback and must not block the ready prompt below.
+    menu_active = (cursor_flag is _CURSOR_FLAG_UNSET
+                   or cursor_flag in (None, 0, False))
+    if (menu_active
+            and ((boot_config and should_boot_confirm(output, boot_config))
+                 or (tool_config and should_boot_confirm(output, tool_config)))):
         return False
     if (boot_config
             and is_ready_for_input(output, boot_config, stable_for=stable_for,
