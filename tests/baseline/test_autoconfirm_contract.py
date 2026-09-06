@@ -168,8 +168,12 @@ def test_boot_trust_is_confirmed_before_original_prompt_is_submitted_once(
     def screen():
         return {
             "trust": stale_trust + "\n›",
-            "ready": stale_trust + "\nTrust accepted\n› ",
-            "typed": stale_trust + "\nTrust accepted\n› " + prompt,
+            "ready": (stale_trust + "\nTrust accepted\n"
+                      "Tip: New Build faster with Codex.\n"
+                      "› Ask Codex to do anything\n"
+                      "nvidia/project"),
+            "typed": (stale_trust + "\nTrust accepted\n"
+                      "Tip: New Build faster with Codex.\n› " + prompt),
             "submitted": stale_trust + "\nWorking on: " + prompt,
         }[phase[0]]
 

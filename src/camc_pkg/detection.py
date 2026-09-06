@@ -136,12 +136,19 @@ def is_ready_for_input(output, config, stable_for=None,
     # older prompt line remains in scrollback or the selection uses the same
     # cursor glyph. Keep the menu text for classification; do not strip it.
     # Confirmation uses the configured 128-line search window; only the ready
-    # cursor itself is restricted to the final four non-empty lines.
-    confirm_lines = _active_ui_lines(clean, config)
-    confirm_active = "\n".join(confirm_lines)
-    for pattern, _response, _send_enter in config.confirm_rules:
-        if pattern.search(confirm_active):
-            return False
+    # cursor itself is restricted to the final four non-empty lines. With a
+    # supported native cursor, flag=1 proves the current UI is an input box;
+    # a confirm match can then be stale scrollback. Unknown/menu flags remain
+    # fail-closed, while adapters without cursor support retain the text guard.
+    menu_active = (not _cursor_flag_supported(config)
+                   or cursor_flag is _CURSOR_FLAG_UNSET
+                   or cursor_flag in (None, 0, False))
+    if menu_active:
+        confirm_lines = _active_ui_lines(clean, config)
+        confirm_active = "\n".join(confirm_lines)
+        for pattern, _response, _send_enter in config.confirm_rules:
+            if pattern.search(confirm_active):
+                return False
     active_lines = _active_ui_lines(clean, config, recent_lines=_READY_UI_LINES)
     active = "\n".join(active_lines)
     cursor_line = _find_cursor_line(active_lines)
