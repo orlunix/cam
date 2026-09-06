@@ -650,6 +650,26 @@ def test_failed_startup_command_leaves_repairable_tmux_shell(tmp_path, monkeypat
     exit_status = tmp_path / "tool-exit.status"
     monkeypatch.setattr(transport, "SOCKETS_DIR", str(sockets_dir))
 
+    # Some test sandboxes expose the tmux executable but forbid Unix-socket
+    # connections. Probe that capability separately so an EPERM environment
+    # is reported as a skip without hiding product failures from the actual
+    # integration assertion below.
+    probe_socket = str(tmp_path / "tmux-probe.sock")
+    probe_session = "camc-probe-" + uuid.uuid4().hex[:12]
+    probe = subprocess.run(
+        [shutil.which("tmux"), "-S", probe_socket,
+         "new-session", "-d", "-s", probe_session],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        universal_newlines=True,
+    )
+    if probe.returncode and "Operation not permitted" in probe.stderr:
+        pytest.skip("sandbox forbids private tmux socket connections")
+    assert probe.returncode == 0, probe.stderr
+    subprocess.call([
+        shutil.which("tmux"), "-S", probe_socket,
+        "kill-session", "-t", probe_session,
+    ])
+
     try:
         assert transport.create_tmux_session(
             session_id,
@@ -946,7 +966,11 @@ def test_cmd_run_loads_context_for_metadata_only_after_launch(tmp_path, monkeypa
     assert rec["context_name"] == "ctx-pdx"
     assert rec["transport_type"] == "ssh"
     assert rec["id"] == "abc12345"
-    assert captured["launch_cmd"] == ["claude", "hello", "--adapter-auto-run"]
+    # Binary rewriting and generated session flags are covered by the public
+    # run contract. This test only needs to prove context metadata does not
+    # alter the launch payload or runtime environment.
+    assert captured["launch_cmd"][0] == "/bin/claude"
+    assert captured["launch_cmd"][1:3] == ["hello", "--adapter-auto-run"]
 
 
 def test_scheduler_launch_ignores_context_env_setup(tmp_path, monkeypatch):
@@ -1086,6 +1110,7 @@ def test_adapter_readiness_env_wrapper_binary_resolves_correctly(tmp_path, monke
     home.mkdir()
     (home / ".claude.json").write_text("stub")
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(re_mod, "_GOLDEN_TOOL_PATHS", {})
     bindir = tmp_path / "bin"
     bindir.mkdir()
     for name in ("tmux", "claude"):
