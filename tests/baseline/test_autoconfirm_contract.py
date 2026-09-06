@@ -214,6 +214,60 @@ def test_boot_trust_is_confirmed_before_original_prompt_is_submitted_once(
     assert ready[0][2]["prompt_sent"] is True
 
 
+def test_active_boot_trust_with_input_cursor_is_confirmed_before_prompt(
+        monkeypatch, tmp_path):
+    """Captured Codex race: an active trust menu may report cursor_flag=1."""
+    from camc_pkg import detection
+
+    phase = ["trust"]
+    prompt = "task after cursor-one trust"
+
+    def screen():
+        return {
+            "trust": (
+                "> You are in /tmp/work\n"
+                "Do you trust the contents of this directory?\n"
+                "› 1. Yes, continue\n  2. No, quit\n"
+                "Press enter to continue"),
+            "ready": "Trust accepted\n› Ask Codex to do anything\nmodels/project",
+            "typed": "Trust accepted\n› " + prompt,
+            "submitted": "Working on: " + prompt,
+        }[phase[0]]
+
+    def cursor_flag():
+        return 1 if phase[0] in ("trust", "ready", "typed") else 0
+
+    def on_input(text, send_enter):
+        if text == "1":
+            assert phase[0] == "trust"
+            assert send_enter is True
+            phase[0] = "ready"
+        elif text == prompt:
+            assert phase[0] == "ready"
+            assert send_enter is False
+            phase[0] = "typed"
+
+    def on_key(key):
+        if key == "Enter" and phase[0] == "typed":
+            phase[0] = "submitted"
+
+    monkeypatch.setattr(detection, "_READY_STABLE_SECONDS", 0.0)
+    sends, events, store = _drive_monitor(
+        monkeypatch, tmp_path, "codex", screen,
+        cursor_flag=cursor_flag, state="initializing", boot=True,
+        max_sleeps=5, on_input=on_input, on_key=on_key, prompt=prompt,
+    )
+
+    assert sends == [
+        ("input", "1", True),
+        ("input", prompt, False),
+        ("key", "Enter"),
+    ]
+    assert phase == ["submitted"]
+    assert store.agent["state"] == "idle"
+    assert len([row for row in events if row[1] == "boot_ready"]) == 1
+
+
 def test_late_trust_confirmation_renews_wait_for_delayed_ready_prompt(
         monkeypatch, tmp_path):
     from camc_pkg import detection

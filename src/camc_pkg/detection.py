@@ -198,9 +198,31 @@ def should_confirm_initializing(output, boot_config, tool_config,
     return None, tool_config
 
 
+def should_confirm_active_boot_cursor(output, boot_config, tool_config):
+    """Match a boot action on the current bottom-most cursor line only."""
+    cfg = boot_config or tool_config
+    if cfg is None:
+        return None, tool_config
+    clean = strip_ansi(output) if cfg.strip_ansi else output
+    cursor_line = _find_cursor_line(
+        _active_ui_lines(clean, cfg, recent_lines=_READY_UI_LINES))
+    if cursor_line is None:
+        return None, tool_config
+    return should_confirm_initializing(
+        cursor_line, boot_config, tool_config, recent_lines=1)
+
+
 def is_ready_for_boot(output, boot_config, tool_config, stable_for=None,
                       cursor_flag=_CURSOR_FLAG_UNSET):
     """Ready if either boot or tool ready_pattern matches."""
+    # Some Codex builds report cursor_flag=1 while the workspace-trust menu
+    # is still active.  The final four non-empty lines distinguish that live
+    # menu from old trust text left in scrollback after the real input prompt
+    # appears.  A live boot menu always wins over readiness.
+    active_confirm, _active_cfg = should_confirm_active_boot_cursor(
+        output, boot_config, tool_config)
+    if active_confirm:
+        return False
     # A boot confirmation has priority over both ready patterns. Without
     # this cross-config guard, a trust prompt known only to boot.toml can be
     # mistaken for normal readiness by the tool config's cursor rule.
