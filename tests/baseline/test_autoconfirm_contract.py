@@ -210,6 +210,70 @@ def test_boot_trust_is_confirmed_before_original_prompt_is_submitted_once(
     assert ready[0][2]["prompt_sent"] is True
 
 
+def test_late_trust_confirmation_renews_wait_for_delayed_ready_prompt(
+        monkeypatch, tmp_path):
+    from camc_pkg import detection
+
+    phase = ["loading"]
+    prompt = "task after slow model load"
+    stale_trust = "Do you trust the contents of this directory?"
+
+    def screen():
+        return {
+            "loading": "Starting Codex...",
+            "trust": stale_trust + "\n› 1. Yes, continue\n  2. No, quit",
+            "waiting": stale_trust + "\nTrust accepted\nLoading model...",
+            "ready": stale_trust + "\nTrust accepted\n› Ask Codex to do anything",
+            "typed": stale_trust + "\nTrust accepted\n› " + prompt,
+            "submitted": stale_trust + "\nWorking on: " + prompt,
+        }[phase[0]]
+
+    def cursor_flag():
+        return 0 if phase[0] in ("loading", "trust", "submitted") else 1
+
+    def on_sleep(now, _store, _sends):
+        # The trust screen arrives near the original 20-second deadline.
+        if now >= 118.0 and phase[0] == "loading":
+            phase[0] = "trust"
+        # Codex then spends longer than the original deadline loading the
+        # model before it exposes the real input prompt.
+        if now >= 125.0 and phase[0] == "waiting":
+            phase[0] = "ready"
+
+    def on_input(text, send_enter):
+        if text == "1":
+            assert phase[0] == "trust"
+            assert send_enter is True
+            phase[0] = "waiting"
+        elif text == prompt:
+            assert phase[0] == "ready"
+            assert send_enter is False
+            phase[0] = "typed"
+
+    def on_key(key):
+        if key == "Enter" and phase[0] == "typed":
+            phase[0] = "submitted"
+
+    monkeypatch.setattr(detection, "_READY_STABLE_SECONDS", 0.0)
+    sends, events, store = _drive_monitor(
+        monkeypatch, tmp_path, "codex", screen,
+        cursor_flag=cursor_flag, state="initializing", boot=True,
+        max_sleeps=35, on_sleep=on_sleep, on_input=on_input,
+        on_key=on_key, prompt=prompt,
+    )
+
+    assert sends == [
+        ("input", "1", True),
+        ("input", prompt, False),
+        ("key", "Enter"),
+    ]
+    assert phase == ["submitted"]
+    assert store.agent["state"] == "idle"
+    ready = [row for row in events if row[1] == "boot_ready"]
+    assert len(ready) == 1
+    assert ready[0][2]["prompt_sent"] is True
+
+
 def test_failed_prompt_insert_is_not_claimed_and_retries_before_deadline(
         monkeypatch, tmp_path, caplog):
     from camc_pkg import detection
