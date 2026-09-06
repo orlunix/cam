@@ -59,6 +59,8 @@ Python 3.6+, stdlib only. No dataclasses, no f-strings.
 
 from camc_pkg.transport import DEFAULT_PROMPT_SUBMIT_DELAY
 
+POST_CONFIRM_READY_WAIT = 60.0
+
 # ---------------------------------------------------------------------------
 # Snapshot + runtime (plain classes; no dataclasses for 3.6 compat)
 # ---------------------------------------------------------------------------
@@ -532,6 +534,7 @@ class AutoConfirmationFeature(MonitorFeature):
             # the original task is not abandoned at the pre-dialog deadline.
             boot_cfg = runtime.boot_config or runtime.config
             boot_wait = float(getattr(boot_cfg, "startup_wait", 0.0) or 0.0)
+            boot_wait = max(boot_wait, POST_CONFIRM_READY_WAIT)
             runtime.boot_deadline = max(
                 runtime.boot_deadline, snap.now + boot_wait)
         runtime.idle_confirmed = False
