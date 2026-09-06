@@ -414,10 +414,12 @@ class BootPromptFeature(MonitorFeature):
             delay = cfg.prompt_submit_delay or DEFAULT_PROMPT_SUBMIT_DELAY
             actions.append({"kind": "submit_input", "text": prompt,
                             "submit_delay": delay,
-                            "ready_timeout": boot_wait,
+                            # The snapshot already established readiness.
+                            # Recheck once and return control immediately if
+                            # a trust/menu screen raced in, so auto-confirm
+                            # and later boot retries can run.
+                            "ready_timeout": 0.0,
                             "boot_prompt": True})
-            actions.append({"kind": "log", "level": "info",
-                            "msg": "Boot: prompt injected (%d chars)" % len(prompt)})
             # The monitor action adapter commits the initializing -> idle
             # transition only after insert_prompt reports acknowledgement.
             return actions
@@ -479,7 +481,7 @@ class AutoConfirmationFeature(MonitorFeature):
         if init_phase and runtime.boot_config is not None:
             flag_supported = flag_supported and bool(
                 getattr(runtime.boot_config, "cursor_flag_support", True))
-        if flag_supported and snap.cursor_flag != 0:
+        if not init_phase and flag_supported and snap.cursor_flag != 0:
             return actions
         if init_phase:
             confirm, rule_cfg = should_confirm_initializing(

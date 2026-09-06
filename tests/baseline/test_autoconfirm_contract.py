@@ -8,14 +8,14 @@ from camc_pkg import adapters, monitor
 
 
 class Store(object):
-    def __init__(self, path, tool, state="running", enabled=True):
+    def __init__(self, path, tool, state="running", enabled=True, prompt=""):
         self._path = str(path)
         self.agent = {
             "id": "agent1",
             "state": state,
             "status": "running",
             "task": {
-                "name": "baseline", "tool": tool, "prompt": "",
+                "name": "baseline", "tool": tool, "prompt": prompt,
                 "auto_confirm": enabled, "auto_exit": False,
             },
         }
@@ -42,32 +42,59 @@ class Events(object):
 
 def _drive_monitor(monkeypatch, tmp_path, tool, screen, cursor_flag=0,
                    state="running", enabled=True, boot=False, max_sleeps=4,
-                   on_sleep=None):
+                   on_sleep=None, on_input=None, on_key=None, prompt="",
+                   insert_prompt_override=None):
     config = adapters._load_config(tool)
     config.health_check_interval = 10000.0
     config.confirm_cooldown = 5.0
     config.confirm_sleep = 0.25
     boot_config = adapters._load_boot_config(tool) if boot else None
-    store = Store(tmp_path / (tool + "-agents.json"), tool, state, enabled)
+    store = Store(
+        tmp_path / (tool + "-agents.json"), tool, state, enabled, prompt)
     events = Events()
     clock = [100.0]
     sleeps = [0]
     sends = []
 
-    monkeypatch.setattr(monitor, "capture_tmux", lambda session, lines=128: screen)
-    monkeypatch.setattr(monitor, "tmux_cursor_flag", lambda session: cursor_flag)
+    monkeypatch.setattr(
+        monitor, "capture_tmux",
+        lambda session, lines=128: screen() if callable(screen) else screen,
+    )
+    monkeypatch.setattr(
+        monitor, "tmux_cursor_flag",
+        lambda session: cursor_flag() if callable(cursor_flag) else cursor_flag,
+    )
     monkeypatch.setattr(monitor, "tmux_session_exists", lambda session: True)
     monkeypatch.setattr(monitor, "tmux_is_attached", lambda session: False)
     monkeypatch.setattr(monitor, "tmux_kill_session", lambda session: None)
-    monkeypatch.setattr(
-        monitor, "tmux_send_input",
-        lambda session, text, send_enter=False:
-        sends.append(("input", text, send_enter)) or True,
-    )
-    monkeypatch.setattr(
-        monitor, "tmux_send_key",
-        lambda session, key: sends.append(("key", key)) or True,
-    )
+    def send_input(session, text, send_enter=False):
+        sends.append(("input", text, send_enter))
+        if on_input:
+            on_input(text, send_enter)
+        return True
+
+    def send_key(session, key):
+        sends.append(("key", key))
+        if on_key:
+            on_key(key)
+        return True
+
+    monkeypatch.setattr(monitor, "tmux_send_input", send_input)
+    monkeypatch.setattr(monitor, "tmux_send_key", send_key)
+    if insert_prompt_override is not None:
+        monkeypatch.setattr(monitor, "insert_prompt", insert_prompt_override)
+    else:
+        real_insert_prompt = monitor.insert_prompt
+
+        def insert_prompt(session, text, **kwargs):
+            kwargs.update(
+                send_input_fn=send_input,
+                send_key_fn=send_key,
+                sleep_fn=monitor.time.sleep,
+            )
+            return real_insert_prompt(session, text, **kwargs)
+
+        monkeypatch.setattr(monitor, "insert_prompt", insert_prompt)
     monkeypatch.setattr(monitor.signal, "signal", lambda *args: None)
     monkeypatch.setattr(monitor.time, "time", lambda: clock[0])
 
@@ -128,6 +155,84 @@ def test_boot_trust_prompt_is_confirmed_only_while_initializing(
         monkeypatch, tmp_path, tool, screen,
         state="running", boot=True, max_sleeps=2)
     assert sends == []
+
+
+def test_boot_trust_is_confirmed_before_original_prompt_is_submitted_once(
+        monkeypatch, tmp_path):
+    from camc_pkg import detection
+
+    phase = ["trust"]
+    prompt = "original launch prompt"
+
+    def screen():
+        return {
+            "trust": "Do you trust the contents of this directory?\n›",
+            "ready": "› ",
+            "typed": "› " + prompt,
+            "submitted": "Working on: " + prompt,
+        }[phase[0]]
+
+    def cursor_flag():
+        return 1 if phase[0] in ("trust", "ready", "typed") else 0
+
+    def on_input(text, send_enter):
+        if text == "1":
+            assert phase[0] == "trust"
+            assert send_enter is True
+            phase[0] = "ready"
+        elif text == prompt:
+            assert phase[0] == "ready"
+            assert send_enter is False
+            phase[0] = "typed"
+
+    def on_key(key):
+        if key == "Enter" and phase[0] == "typed":
+            phase[0] = "submitted"
+
+    monkeypatch.setattr(detection, "_READY_STABLE_SECONDS", 0.0)
+    sends, events, store = _drive_monitor(
+        monkeypatch, tmp_path, "codex", screen,
+        cursor_flag=cursor_flag, state="initializing", boot=True,
+        max_sleeps=5, on_input=on_input, on_key=on_key, prompt=prompt,
+    )
+
+    assert sends == [
+        ("input", "1", True),
+        ("input", prompt, False),
+        ("key", "Enter"),
+    ]
+    assert phase == ["submitted"]
+    assert store.agent["state"] == "idle"
+    ready = [row for row in events if row[1] == "boot_ready"]
+    assert len(ready) == 1
+    assert ready[0][2]["prompt_sent"] is True
+
+
+def test_failed_prompt_insert_is_not_claimed_and_retries_before_deadline(
+        monkeypatch, tmp_path, caplog):
+    from camc_pkg import detection
+
+    attempts = []
+
+    def insert_prompt(_session, text, **_kwargs):
+        attempts.append(text)
+        if len(attempts) == 1:
+            return {"ok": False, "phase": "ready", "reason": "ready_timeout"}
+        return {"ok": True, "phase": "submit", "reason": "screen_changed"}
+
+    monkeypatch.setattr(detection, "_READY_STABLE_SECONDS", 0.0)
+    _sends, events, store = _drive_monitor(
+        monkeypatch, tmp_path, "codex", "› ", cursor_flag=1,
+        state="initializing", boot=True, max_sleeps=4,
+        prompt="retry launch prompt", insert_prompt_override=insert_prompt,
+    )
+
+    assert attempts == ["retry launch prompt", "retry launch prompt"]
+    assert store.agent["state"] == "idle"
+    assert len([row for row in events if row[1] == "boot_ready"]) == 1
+    messages = [record.getMessage() for record in caplog.records]
+    assert len([msg for msg in messages if "Prompt insertion failed" in msg]) == 1
+    assert len([msg for msg in messages if "Boot: prompt injected" in msg]) == 1
 
 
 @pytest.mark.parametrize(

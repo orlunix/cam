@@ -1,5 +1,9 @@
 """Public `camc rm` baseline contract."""
 
+import errno
+import tarfile
+from argparse import Namespace
+
 from camc_pkg import cli, storage, transport
 
 
@@ -62,6 +66,31 @@ def test_rm_archives_only_when_requested(
 
     assert invoke_cli("rm", "aaa", "--archive") == 0
     assert calls == ["aaa11111"]
+
+
+def test_real_archive_accepts_an_existing_archive_directory(
+        isolated_cam_home, monkeypatch):
+    store = storage.AgentStore(str(isolated_cam_home.agents))
+    agent = _agent("aaa11111", "archive-agent")
+    agent["tmux_session"] = ""
+    store.save(agent)
+    archive_dir = isolated_cam_home.cam_home / "archives"
+    archive_dir.mkdir()
+    real_makedirs = cli.os.makedirs
+
+    def existing_dir_race(path, *args, **kwargs):
+        if str(path) == str(archive_dir):
+            raise OSError(errno.EEXIST, "File exists", str(path))
+        return real_makedirs(path, *args, **kwargs)
+
+    monkeypatch.setattr(cli.os, "makedirs", existing_dir_race)
+    cli.cmd_archive(Namespace(
+        id=agent["id"], output=str(archive_dir), session_id=None))
+
+    archives = list(archive_dir.glob("*.tar.gz"))
+    assert len(archives) == 1
+    with tarfile.open(str(archives[0]), "r:gz") as archive:
+        assert "agent.json" in archive.getnames()
 
 
 def test_rm_can_remove_the_last_registry_record(
