@@ -194,6 +194,12 @@ def should_confirm_initializing(output, boot_config, tool_config,
 def is_ready_for_boot(output, boot_config, tool_config, stable_for=None,
                       cursor_flag=_CURSOR_FLAG_UNSET):
     """Ready if either boot or tool ready_pattern matches."""
+    # A boot confirmation has priority over both ready patterns. Without
+    # this cross-config guard, a trust prompt known only to boot.toml can be
+    # mistaken for normal readiness by the tool config's cursor rule.
+    if ((boot_config and should_boot_confirm(output, boot_config))
+            or (tool_config and should_boot_confirm(output, tool_config))):
+        return False
     if (boot_config
             and is_ready_for_input(output, boot_config, stable_for=stable_for,
                                    cursor_flag=cursor_flag)):

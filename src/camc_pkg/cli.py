@@ -801,10 +801,15 @@ def _start_api_proxy(api_plan, owner_id, port=0):
         "--reasoning-map", json.dumps(
             api_plan.get("reasoning_mapping") or {}, separators=(",", ":")),
     ]
-    proc = subprocess.Popen(command, stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, universal_newlines=True,
-                            bufsize=1)
+    proc = subprocess.Popen(
+        command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, universal_newlines=True, bufsize=1,
+        close_fds=True, start_new_session=True)
     line = proc.stdout.readline() if proc.stdout else ""
+    if proc.stdout:
+        close_stdout = getattr(proc.stdout, "close", None)
+        if close_stdout:
+            close_stdout()
     try:
         port = int((line or "").strip())
     except (TypeError, ValueError):
@@ -1926,8 +1931,11 @@ def cmd_archive(args):
     try:
         os.makedirs(out_dir, exist_ok=True)
     except OSError as e:
-        print_error("Cannot create archive dir %s: %s" % (out_dir, e))
-        sys.exit(1)
+        # Existing directories are the normal repeated-archive path. Some
+        # older/NFS hosts still surface EEXIST despite exist_ok=True.
+        if not os.path.isdir(out_dir):
+            print_error("Cannot create archive dir %s: %s" % (out_dir, e))
+            sys.exit(1)
 
     # Filename: <aid>-<sid[:8]>-<timestamp>-<safe-name>.tar.gz
     # Keep sid + timestamp so we never overwrite an earlier snapshot (each
