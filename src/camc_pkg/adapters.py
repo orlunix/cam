@@ -219,6 +219,7 @@ class AdapterConfig(object):
         launch = config.get("launch", {})
         self.strip_ansi = launch.get("strip_ansi", False)
         self.command = launch.get("command", [])
+        self.trust_workspace = bool(launch.get("trust_workspace", False))
         self.auto_permission_mode = launch.get("auto_permission_mode", False)
         auto_run = launch.get("auto_run")
         if isinstance(auto_run, dict):
