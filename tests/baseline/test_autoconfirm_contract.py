@@ -235,9 +235,9 @@ def test_late_trust_confirmation_renews_wait_for_delayed_ready_prompt(
         # The trust screen arrives near the original 20-second deadline.
         if now >= 118.0 and phase[0] == "loading":
             phase[0] = "trust"
-        # Codex then spends longer than the original deadline loading the
-        # model before it exposes the real input prompt.
-        if now >= 125.0 and phase[0] == "waiting":
+        # A real API-backed Codex launch can spend roughly 45 seconds after
+        # trust loading its model before it exposes the real input prompt.
+        if now >= 163.0 and phase[0] == "waiting":
             phase[0] = "ready"
 
     def on_input(text, send_enter):
@@ -258,7 +258,7 @@ def test_late_trust_confirmation_renews_wait_for_delayed_ready_prompt(
     sends, events, store = _drive_monitor(
         monkeypatch, tmp_path, "codex", screen,
         cursor_flag=cursor_flag, state="initializing", boot=True,
-        max_sleeps=35, on_sleep=on_sleep, on_input=on_input,
+        max_sleeps=75, on_sleep=on_sleep, on_input=on_input,
         on_key=on_key, prompt=prompt,
     )
 
