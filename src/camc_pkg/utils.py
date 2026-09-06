@@ -131,6 +131,16 @@ def _workspace_trust_root(path):
         current = parent
 
 
+def _workspace_trust_config(path):
+    workdir = os.path.realpath(os.path.abspath(path))
+    root = _workspace_trust_root(workdir)
+    paths = [root] if root == workdir else [root, workdir]
+    entries = [
+        '%s={trust_level="trusted"}' % json.dumps(item) for item in paths
+    ]
+    return "projects={%s}" % ",".join(entries)
+
+
 def _build_command(config, prompt, path):
     replacements = {"{prompt}": prompt, "{path}": path}
     result = []
@@ -141,9 +151,7 @@ def _build_command(config, prompt, path):
                 break
         result.append(part)
     if getattr(config, "trust_workspace", False):
-        trust_key = 'projects={%s={trust_level="trusted"}}' % json.dumps(
-            _workspace_trust_root(path))
-        result.extend(["-c", trust_key])
+        result.extend(["-c", _workspace_trust_config(path)])
     # Inject --permission-mode auto if enabled in config.
     # The launch argv may be wrapped (`env KEY=VAL tool ...`), so we must
     # insert AFTER the actual tool binary, not at index 1 (which would land

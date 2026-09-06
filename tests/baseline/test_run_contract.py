@@ -35,8 +35,7 @@ def test_run_selects_tool_and_creates_one_session_and_monitor(
     if expected_tool == "codex":
         assert [
             "-c",
-            'projects={%s={trust_level="trusted"}}' % json.dumps(
-                utils._workspace_trust_root(str(isolated_cam_home.work))),
+            utils._workspace_trust_config(str(isolated_cam_home.work)),
         ] == command[3:5]
     config, original_command = run_spy.configs[0]
     assert config.command == original_command
@@ -74,8 +73,10 @@ def test_adapter_declared_workspace_trust_targets_git_root_and_escapes_path(
 
     assert cli._build_command(config, "", str(workdir)) == [
         "codex", "-c",
-        'projects={%s={trust_level="trusted"}}' % json.dumps(
-            str(repo.resolve())),
+        'projects={%s={trust_level="trusted"},%s={trust_level="trusted"}}' % (
+            json.dumps(str(repo.resolve())),
+            json.dumps(str(workdir.resolve())),
+        ),
     ]
 
 
