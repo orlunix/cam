@@ -467,7 +467,8 @@ class AutoConfirmationFeature(MonitorFeature):
 
     def confirm(self, snap, runtime):
         from camc_pkg.detection import (
-            should_auto_confirm, should_confirm_initializing)
+            should_auto_confirm, should_confirm_active_boot_cursor,
+            should_confirm_initializing)
         actions = []
         init_phase = runtime.in_initializing
         cfg = runtime.config
@@ -483,13 +484,24 @@ class AutoConfirmationFeature(MonitorFeature):
         if init_phase and runtime.boot_config is not None:
             flag_supported = flag_supported and bool(
                 getattr(runtime.boot_config, "cursor_flag_support", True))
+        confirm = None
+        rule_cfg = cfg
         if flag_supported and snap.cursor_flag != 0:
-            return actions
+            if not init_phase:
+                return actions
+            # Codex can expose cursor_flag=1 on its active workspace-trust
+            # menu.  Permit only a boot-rule match in the final four visible
+            # lines; stale trust text above a real input box remains blocked.
+            confirm, rule_cfg = should_confirm_active_boot_cursor(
+                snap.output, runtime.boot_config, runtime.config)
+            if not confirm:
+                return actions
         if init_phase:
-            confirm, rule_cfg = should_confirm_initializing(
-                snap.output, runtime.boot_config, runtime.config,
-                last_response=runtime.last_confirm_response,
-                prev_output=runtime.prev_output or "")
+            if confirm is None:
+                confirm, rule_cfg = should_confirm_initializing(
+                    snap.output, runtime.boot_config, runtime.config,
+                    last_response=runtime.last_confirm_response,
+                    prev_output=runtime.prev_output or "")
             cfg = rule_cfg
         else:
             confirm = should_auto_confirm(
