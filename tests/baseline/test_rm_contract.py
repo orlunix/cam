@@ -1,6 +1,5 @@
 """Public `camc rm` baseline contract."""
 
-import errno
 import tarfile
 from argparse import Namespace
 
@@ -68,29 +67,43 @@ def test_rm_archives_only_when_requested(
     assert calls == ["aaa11111"]
 
 
-def test_real_archive_accepts_an_existing_archive_directory(
-        isolated_cam_home, monkeypatch):
+def test_real_archive_repairs_a_dangling_archive_directory_symlink(
+        isolated_cam_home):
     store = storage.AgentStore(str(isolated_cam_home.agents))
     agent = _agent("aaa11111", "archive-agent")
     agent["tmux_session"] = ""
     store.save(agent)
+    archive_target = isolated_cam_home.home / "scratch" / "archives"
     archive_dir = isolated_cam_home.cam_home / "archives"
-    archive_dir.mkdir()
-    real_makedirs = cli.os.makedirs
-
-    def existing_dir_race(path, *args, **kwargs):
-        if str(path) == str(archive_dir):
-            raise OSError(errno.EEXIST, "File exists", str(path))
-        return real_makedirs(path, *args, **kwargs)
-
-    monkeypatch.setattr(cli.os, "makedirs", existing_dir_race)
+    archive_dir.symlink_to(archive_target, target_is_directory=True)
+    assert archive_dir.is_symlink()
+    assert not archive_dir.exists()
     cli.cmd_archive(Namespace(
         id=agent["id"], output=str(archive_dir), session_id=None))
 
+    assert archive_target.is_dir()
     archives = list(archive_dir.glob("*.tar.gz"))
     assert len(archives) == 1
     with tarfile.open(str(archives[0]), "r:gz") as archive:
         assert "agent.json" in archive.getnames()
+
+
+def test_real_archive_rejects_an_existing_non_directory_output(
+        isolated_cam_home):
+    store = storage.AgentStore(str(isolated_cam_home.agents))
+    agent = _agent("aaa11111", "archive-agent")
+    agent["tmux_session"] = ""
+    store.save(agent)
+    archive_path = isolated_cam_home.cam_home / "archives"
+    archive_path.write_text("not a directory")
+
+    import pytest
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_archive(Namespace(
+            id=agent["id"], output=str(archive_path), session_id=None))
+
+    assert exc.value.code == 1
+    assert archive_path.read_text() == "not a directory"
 
 
 def test_rm_can_remove_the_last_registry_record(

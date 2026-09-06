@@ -1932,7 +1932,14 @@ def cmd_archive(args):
         os.makedirs(out_dir, exist_ok=True)
     except OSError as e:
         # Existing directories are the normal repeated-archive path. Some
-        # older/NFS hosts still surface EEXIST despite exist_ok=True.
+        # installations keep this as a symlink into scratch; repair only an
+        # explicit dangling symlink by creating its resolved target.
+        if os.path.islink(out_dir) and not os.path.exists(out_dir):
+            target_dir = os.path.realpath(out_dir)
+            try:
+                os.makedirs(target_dir, exist_ok=True)
+            except OSError:
+                pass
         if not os.path.isdir(out_dir):
             print_error("Cannot create archive dir %s: %s" % (out_dir, e))
             sys.exit(1)

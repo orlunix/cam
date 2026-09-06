@@ -163,17 +163,19 @@ def test_boot_trust_is_confirmed_before_original_prompt_is_submitted_once(
 
     phase = ["trust"]
     prompt = "original launch prompt"
+    stale_trust = "Do you trust the contents of this directory?"
 
     def screen():
         return {
-            "trust": "Do you trust the contents of this directory?\n›",
-            "ready": "› ",
-            "typed": "› " + prompt,
-            "submitted": "Working on: " + prompt,
+            "trust": stale_trust + "\n›",
+            "ready": stale_trust + "\nTrust accepted\n› ",
+            "typed": stale_trust + "\nTrust accepted\n› " + prompt,
+            "submitted": stale_trust + "\nWorking on: " + prompt,
         }[phase[0]]
 
     def cursor_flag():
-        return 1 if phase[0] in ("trust", "ready", "typed") else 0
+        return 0 if phase[0] == "trust" else (
+            1 if phase[0] in ("ready", "typed") else 0)
 
     def on_input(text, send_enter):
         if text == "1":

@@ -481,7 +481,7 @@ class AutoConfirmationFeature(MonitorFeature):
         if init_phase and runtime.boot_config is not None:
             flag_supported = flag_supported and bool(
                 getattr(runtime.boot_config, "cursor_flag_support", True))
-        if not init_phase and flag_supported and snap.cursor_flag != 0:
+        if flag_supported and snap.cursor_flag != 0:
             return actions
         if init_phase:
             confirm, rule_cfg = should_confirm_initializing(
