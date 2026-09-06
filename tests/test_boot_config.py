@@ -81,6 +81,23 @@ def test_ready_requires_input_marker_and_visible_tmux_cursor():
                               cursor_flag=1) is True
 
 
+def test_current_codex_cursor_beats_stale_trust_in_scrollback():
+    boot = _boot_config("codex.boot.toml")
+    tool = _boot_config("codex.toml")
+    screen = (
+        "Do you trust the contents of this directory?\n"
+        "Trust accepted\n"
+        "Tip: New Build faster with Codex.\n"
+        "› Ask Codex to do anything\n"
+        "models/project\n"
+    )
+
+    assert is_ready_for_input(
+        screen, boot, stable_for=45.0, cursor_flag=1) is True
+    assert is_ready_for_boot(
+        screen, boot, tool, stable_for=45.0, cursor_flag=1) is True
+
+
 def test_cursor_boot_trust_rule():
     boot = _boot_config("cursor.boot.toml")
     screen = "[a] Trust this workspace\n"
