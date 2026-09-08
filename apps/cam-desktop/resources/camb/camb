@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""camb — extremely thin fleet-bridge client.
+
+Packs a camc-style argv into a JSON file request under ~/.cam/camb/outbox/
+and prints the hub's response from ~/.cam/camb/inbox/. camb contains NO verb
+validation, NO target parsing and NO fleet knowledge — the hub does
+everything. This keeps camb trivially embeddable into camc later.
+
+stdlib-only, Python 3.6+.
+"""
+
+import json
+import os
+import re
+import sys
+import time
+import uuid
+
+__version__ = "0.1.0"
+
+POLL_INTERVAL_S = 0.2
+DEFAULT_TIMEOUT_MS = 30000
+
+HELP = """camb — cam-style fleet bridge client (thin; hub does the real work)
+
+usage: camb <verb> [args...]  (camc-aligned surface)
+
+  list [--status S] [--tag T] [--last N|-n N] [--json]
+  status <agent>
+  capture <agent> [--lines N|-n N] [--format plain|ansi]
+  send <agent> [--text T|-t T | --file F|-f F | --stdin] [--no-enter]
+  key <agent> --key K
+  msg send <agent> -t TEXT
+
+special modes (handled locally, never sent to the hub):
+  camb version | --version     print version
+  camb --hub-drain             atomically drain outbox as a JSON array
+  camb --help | -h             this help
+
+targets may be bare (<id-or-name>, local node first) or
+<node>:<id-or-name>; unsupported verbs are rejected by the hub.
+"""
+
+_TMUX_SOCK_RE = re.compile(r"^cam-(.+)\.sock$")
+
+
+def _camb_home():
+    return os.path.join(os.path.expanduser("~"), ".cam", "camb")
+
+
+def _ensure_dirs():
+    home = _camb_home()
+    for sub in ("outbox", "inbox"):
+        d = os.path.join(home, sub)
+        if not os.path.isdir(d):
+            os.makedirs(d, 0o700)
+    return home
+
+
+def _from_agent():
+    """Best-effort: parse agent id from $TMUX socket basename
+    (cam-<agentid>.sock). Returns None for foreign sockets."""
+    tmux = os.environ.get("TMUX") or ""
+    sock = tmux.split(",")[0]
+    m = _TMUX_SOCK_RE.match(os.path.basename(sock))
+    return m.group(1) if m else None
+
+
+def _resolve_send_io(argv):
+    """Resolve send --file/--stdin client-side into --text <content> so the
+    hub only ever sees --text. Everything else passes through untouched."""
+    if not argv or argv[0] != "send":
+        return argv
+    out = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--file", "-f") and i + 1 < len(argv):
+            path = argv[i + 1]
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    content = fh.read()
+            except (OSError, IOError) as e:
+                sys.stderr.write("camb: cannot read %s: %s\n" % (path, e))
+                sys.exit(1)
+            out.append("--text")
+            out.append(content)
+            i += 2
+        elif a == "--stdin":
+            content = sys.stdin.read()
+            out.append("--text")
+            out.append(content)
+            i += 1
+        else:
+            out.append(a)
+            i += 1
+    return out
+
+
+def _timeout_s():
+    raw = os.environ.get("CAMB_TIMEOUT_MS")
+    if raw:
+        try:
+            return max(0.0, float(raw) / 1000.0)
+        except ValueError:
+            pass
+    return DEFAULT_TIMEOUT_MS / 1000.0
+
+
+def _hub_drain():
+    """Atomically print + delete finalized outbox requests as a JSON array.
+    Skips unfinished .tmp files; leaves unreadable files in place.
+    Always exits 0."""
+    home = _ensure_dirs()
+    outbox = os.path.join(home, "outbox")
+    try:
+        names = sorted(
+            n for n in os.listdir(outbox)
+            if n.endswith(".json") and os.path.isfile(os.path.join(outbox, n))
+        )
+    except OSError:
+        names = []
+    reqs = []
+    drained = []
+    for n in names:
+        p = os.path.join(outbox, n)
+        try:
+            with open(p, "r", encoding="utf-8") as fh:
+                reqs.append(json.load(fh))
+            drained.append(p)
+        except (OSError, IOError, ValueError):
+            continue  # unreadable: leave it
+    sys.stdout.write(json.dumps(reqs) + "\n")
+    for p in drained:
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+    return 0
+
+
+def _submit(argv):
+    home = _ensure_dirs()
+    outbox = os.path.join(home, "outbox")
+    inbox = os.path.join(home, "inbox")
+
+    req = {
+        "id": uuid.uuid4().hex,
+        "argv": list(argv),
+        "from": {"agent": _from_agent()},
+        "ts": time.time(),
+    }
+
+    tmp = os.path.join(outbox, req["id"] + ".json.tmp")
+    final = os.path.join(outbox, req["id"] + ".json")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(req, fh)
+    os.rename(tmp, final)
+
+    resp_path = os.path.join(inbox, req["id"] + ".json")
+    deadline = time.time() + _timeout_s()
+    while time.time() < deadline:
+        if os.path.isfile(resp_path):
+            try:
+                with open(resp_path, "r", encoding="utf-8") as fh:
+                    resp = json.load(fh)
+            except (OSError, IOError, ValueError):
+                time.sleep(POLL_INTERVAL_S)
+                continue
+            try:
+                os.unlink(resp_path)
+            except OSError:
+                pass
+            if resp.get("ok"):
+                text = resp.get("text")
+                if text is not None:
+                    sys.stdout.write(str(text) + "\n")
+                return 0
+            err = resp.get("error") or "unknown error"
+            sys.stderr.write("camb: %s\n" % err)
+            for c in resp.get("candidates") or []:
+                sys.stderr.write(str(c) + "\n")
+            return 1
+        time.sleep(POLL_INTERVAL_S)
+
+    sys.stderr.write(
+        "camb: bridge unavailable (hub not connected or bridge disabled "
+        "on this node)\n"
+    )
+    return 2
+
+
+def main(argv):
+    if not argv or argv[0] in ("--help", "-h"):
+        sys.stdout.write(HELP)
+        return 0
+    if argv[0] in ("version", "--version"):
+        sys.stdout.write("camb %s\n" % __version__)
+        return 0
+    if argv[0] == "--hub-drain":
+        return _hub_drain()
+    return _submit(_resolve_send_io(argv))
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

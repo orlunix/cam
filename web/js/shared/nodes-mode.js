@@ -562,6 +562,11 @@ export function mountNodesMode({
     const jumpChip = primaryM.jump
       ? `<span class="host-state-chip" title="ProxyJump via ${esc(primaryM.jump)}">via ${esc(primaryM.jump.split('@')[1] || primaryM.jump)}</span>`
       : '';
+    // Fleet bridge badge: any context of this host opted in
+    // (machine.bridge) — agents here can see/message other bridge nodes.
+    const bridgeChip = node.contexts.some(c => c && c.machine && c.machine.bridge)
+      ? `<span class="host-state-chip" title="Bridge enabled — agents on this node can see and message agents on other bridge-enabled nodes">bridge</span>`
+      : '';
     // Node-level sync status: live step while running, final result
     // with age afterwards (mirrors per-context rows, but Sync Host is
     // one connection — the progress belongs on the host header).
@@ -590,6 +595,7 @@ export function mountNodesMode({
         ${typeBadge}
         ${stateChip}
         ${jumpChip}
+        ${bridgeChip}
         ${ctxCount}
         ${agentBadge}
         ${syncChip}
@@ -1285,6 +1291,9 @@ function mountNodesActions({
   const fPassword   = panel.querySelector('#nodes-add-password');
   const fRemPasswd  = panel.querySelector('#nodes-add-remember-password');
   const fEnv        = panel.querySelector('#nodes-add-env');
+  // Desktop-only field (fleet bridge opt-in); the mobile form has no
+  // checkbox, so every use below is gated on fBridge existing.
+  const fBridge     = panel.querySelector('#nodes-add-bridge');
   const authSections = panel.querySelectorAll('.nodes-auth-section[data-auth]');
 
   /* ProxyJump dropdown: options are the existing SSH nodes (jump is a
@@ -1687,6 +1696,7 @@ function mountNodesActions({
     if (fAuth) fAuth.value = m.auth_method || (m.key_file ? 'key' : 'agent');
     if (fKey) fKey.value = fAuth && fAuth.value === 'key' ? (m.key_file || '') : '';
     if (fEnv) fEnv.value = m.env_setup || '';
+    if (fBridge) fBridge.checked = !!m.bridge;
     refreshJumpOptions(m.jump || '', node.key);
     if (fPassphrase) fPassphrase.value = '';
     if (fPassword)   fPassword.value   = '';
@@ -1726,6 +1736,9 @@ function mountNodesActions({
       fPath.dataset.autofill = '';
     }
     if (fEnv) fEnv.value = m.env_setup || '';
+    // Bridge checkbox is hidden in context-edit mode; prefilled so the
+    // submit body echoes the current machine.bridge value unchanged.
+    if (fBridge) fBridge.checked = !!m.bridge;
     if (fHost) fHost.value = m.host || '';
     if (fUser) fUser.value = m.user || '';
     if (fPort) fPort.value = String(m.port || 22);
@@ -1888,6 +1901,10 @@ function mountNodesActions({
     // host's method (e.g. 'password'), which is surprising on a fresh
     // Add. Mobile's restoreDraft (inside openManage) still overrides
     // this with the saved draft, preserving draft semantics.
+    // Bridge opt-in likewise starts off on a fresh Add (desktop only —
+    // mobile has no fBridge); placed before the fAuth reset to keep the
+    // pinned "fAuth reset → openManage" adjacency intact.
+    if (fBridge) fBridge.checked = false;
     if (fAuth) fAuth.value = 'key';
     openManage('manual');
   });
@@ -1917,6 +1934,10 @@ function mountNodesActions({
         : ((fPath && fPath.value.trim()) || '');
       if (!nextName || !ctxPath) { setAddStatus('Context name and remote path are required.', 'is-error'); return; }
       const body = { name: nextName, path: ctxPath, env_setup: fEnv ? fEnv.value.trim() : '' };
+      // machine.bridge lives on the context record and the hub accepts
+      // it here; the (hidden) checkbox was prefilled with the current
+      // value on open, so this echoes it back unchanged, not a toggle.
+      if (fBridge) body.bridge = !!fBridge.checked;
       setAddStatus(`Saving context "${nextName}"…`);
       try {
         await persistReady('Save context');
@@ -1961,6 +1982,9 @@ function mountNodesActions({
       // ProxyJump: a new context inherits the host's tunnel config —
       // machine.jump describes how to reach the host, not the context.
       if (m.jump) body.jump = m.jump;
+      // Fleet bridge is likewise a host-level opt-in stored per context
+      // (machine.bridge): inherit it under a bridge-enabled host.
+      if (m.bridge) body.bridge = true;
       if (authMethod === 'key') {
         body.key_file = m.key_file || '';
         // Secrets are always remembered (OS keychain) — no opt-out
@@ -2020,6 +2044,10 @@ function mountNodesActions({
     }
 
     const hostBody = { host, user, port, auth_method: authMethod };
+    // Fleet bridge opt-in (desktop-only checkbox; mobile has no fBridge
+    // and keeps its payload unchanged). Edit Host fans this out to
+    // every context of the host below.
+    if (fBridge) hostBody.bridge = !!fBridge.checked;
     // ProxyJump: '' means direct — the hub stores machine.jump only
     // when non-empty and clears it on empty (edit fan-out included).
     if (fJump) hostBody.jump = fJump.value || '';

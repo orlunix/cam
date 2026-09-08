@@ -885,6 +885,14 @@
                 <span class="form-hint">Tunnel this host through an existing node (ProxyJump). The jump node's own auth config is reused — no extra credentials here.</span>
               </label>
 
+              <label class="form-checkbox" data-add-ctx-hide="1" data-ctx-edit-hide="1">
+                <input type="checkbox" id="nodes-add-bridge">
+                <span>Bridge (fleet messaging)</span>
+                <span class="form-hint">Agents on this node can see and
+                  message agents on other bridge-enabled nodes
+                  (<code>camb</code> CLI).</span>
+              </label>
+
               <label data-host-edit-hide="1">Context name
                 <input type="text" id="nodes-add-name" placeholder="defaults to node name" autocomplete="off"
                   pattern="[A-Za-z0-9_-]{1,64}" title="Letters, digits, underscore, hyphen (1–64 chars)">

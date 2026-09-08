@@ -75,6 +75,10 @@
         "to": "skillm/skillm"
       },
       {
+        "from": "resources/camb/camb",
+        "to": "camb/camb"
+      },
+      {
         "from": "../../extensions",
         "to": "extensions",
         "filter": [

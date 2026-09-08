@@ -15,6 +15,7 @@ RUN cd apps/cam-desktop && npm ci --omit=dev --omit=optional \
 # Repo-relative layout matters: embedded-hub.cjs / assistant-host.cjs
 # resolve extensions/, dist/camc, dist/skillm via __dirname fallbacks.
 COPY apps/cam-desktop/electron apps/cam-desktop/electron
+COPY apps/cam-desktop/resources/camb apps/cam-desktop/resources/camb
 COPY apps/cam-container/lib apps/cam-container/lib
 COPY apps/cam-container/server.mjs apps/cam-container/
 COPY extensions/host extensions/host
