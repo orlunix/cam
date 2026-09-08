@@ -857,6 +857,16 @@ function _normalizeAgent(rec, ctx) {
     machine_user:   m.user || '',
     machine_port:   m.port || null,
     machine_type:   m.type || 'local',
+    // Full connection profile stamp (2026-09-08): a context is only a
+    // start-agent template — once an agent exists, ops on it must not
+    // depend on the context record. These stamps let _contextForAgent
+    // synthesize an ephemeral connection profile after the context was
+    // deleted, so attach/send/stop/rm keep working while the node lives.
+    local_context_id:       (ctx && ctx.id) || '',
+    machine_auth_method:    m.auth_method || '',
+    machine_key_file:       m.key_file || '',
+    machine_jump:           m.jump || '',
+    machine_credential_ref: m.credential_ref || '',
   };
 }
 
@@ -1700,6 +1710,36 @@ function _contextForAgent(agentId) {
         && String(m.port == null ? '' : m.port) === String(agent.machine_port == null ? '' : agent.machine_port);
     });
     if (byMachine) return { agent, ctx: byMachine };
+  }
+  // No context claims this endpoint (the context was deleted): synthesize
+  // an ephemeral connection profile from the agent's own stamps. Context
+  // is only a start-agent template — ops on an existing agent must keep
+  // working while its node is alive (attach/send/stop/rm/…). Auth comes
+  // from machine_credential_ref, which context deletion preserves while
+  // agents still reference the endpoint.
+  for (const agent of candidates) {
+    const type = agent.machine_type || agent.transport_type || '';
+    if (!agent.machine_host || (type && type !== 'ssh')) continue;
+    const eph = {
+      id:   agent.local_context_id
+        || `ep:${agent.machine_user || ''}@${agent.machine_host}:${agent.machine_port == null ? 22 : agent.machine_port}`,
+      name: agent.context_name || `${agent.machine_user || ''}@${agent.machine_host}`,
+      path: agent.context_path || '',
+      machine: {
+        type:        'ssh',
+        host:        agent.machine_host,
+        user:        agent.machine_user || '',
+        port:        agent.machine_port == null ? 22 : agent.machine_port,
+        auth_method: agent.machine_auth_method || (agent.machine_key_file ? 'key' : 'agent'),
+        key_file:    agent.machine_key_file || '',
+        env_setup:   '',
+        bridge:      false,
+        ...(agent.machine_credential_ref ? { credential_ref: agent.machine_credential_ref } : {}),
+        ...(agent.machine_jump ? { jump: agent.machine_jump } : {}),
+      },
+      _ephemeral: true,
+    };
+    return { agent, ctx: eph, ephemeral: true };
   }
   return { error: 'context_not_found', agent: candidates[0] };
 }
@@ -2840,10 +2880,28 @@ async function _editAgent(agentId, body) {
  *  Returns `{ ok: true, agent }` on success, or `{ ok: false, error,
  *  detail }` with error one of: agent_not_found, context_not_found,
  *  store_unavailable, stop_failed.
- */
+ *
+ *  Orphan agents whose rows predate connection-profile stamping
+ *  (context gone AND no endpoint stamps → context_not_found) are
+ *  marked stopped LOCALLY: there is no reachable node to stop, and
+ *  the user still needs to clear the stale row. Such results carry
+ *  `local_only: true`. */
 async function _stopAgent(agentId, { force = false } = {}) {
   const resolved = _contextForAgent(agentId);
   if (resolved.error) {
+    if (resolved.error === 'context_not_found' && resolved.agent
+        && state.store && Array.isArray(state.store.agents)) {
+      const orphan = state.store.agents.find(x =>
+        x && String(x.id || '') === String(resolved.agent.id || ''));
+      if (orphan) {
+        orphan.status = 'stopped';
+        orphan.state = 'stopped';
+        orphan.exit_reason = 'Marked stopped locally (node gone)';
+        orphan.completed_at = orphan.completed_at || new Date().toISOString();
+        try { saveStore && saveStore(); } catch { /* noop */ }
+        return { ok: true, agent: orphan, local_only: true };
+      }
+    }
     return { ok: false, error: resolved.error, detail: `Stop unavailable: ${resolved.error}` };
   }
   const ctx = resolved.ctx;
@@ -2894,10 +2952,37 @@ async function _stopAgent(agentId, { force = false } = {}) {
  *  `{ ok: true, removed_id }` or `{ ok: false, error, detail }` with
  *  error one of: agent_not_found, context_not_found, store_unavailable,
  *  remove_failed.
+ *
+ *  Two local-only paths (the row is dropped without any remote traffic,
+ *  result carries `local_only: true`):
+ *   - orphan rows predating connection-profile stamping (context gone
+ *     AND no endpoint stamps → context_not_found): automatic — nothing
+ *     reachable exists to kill;
+ *   - `{ local: true }`: explicit "forget from list" escape hatch for
+ *     when the node is unreachable. Connectivity-class exec failures
+ *     (connect_timeout / connect_lost / connect_refused / dns_failure /
+ *     auth_failed) report `can_forget: true` so the renderer can offer
+ *     exactly that.
  */
-async function _removeAgent(agentId, { archive = false } = {}) {
+async function _removeAgent(agentId, { archive = false, local = false } = {}) {
+  const _dropLocal = () => {
+    const id = decodeURIComponent(String(agentId || ''));
+    if (!id) return { ok: false, error: 'agent_not_found', detail: 'Remove unavailable: agent_not_found' };
+    if (!state.store || !Array.isArray(state.store.agents)) {
+      return { ok: false, error: 'store_unavailable', detail: 'Remove unavailable: store_unavailable' };
+    }
+    const match = state.store.agents.find(x =>
+      x && (String(x.id || '') === id || String(x.id || '').startsWith(id)));
+    if (!match) return { ok: false, error: 'agent_not_found', detail: 'Remove unavailable: agent_not_found' };
+    const localId = String(match.id || id);
+    state.store.agents = state.store.agents.filter(x => !(x && String(x.id || '') === localId));
+    try { saveStore && saveStore(); } catch { /* noop */ }
+    return { ok: true, removed_id: localId, local_only: true };
+  };
+  if (local) return _dropLocal();
   const resolved = _contextForAgent(agentId);
   if (resolved.error) {
+    if (resolved.error === 'context_not_found' && resolved.agent) return _dropLocal();
     return { ok: false, error: resolved.error, detail: `Remove unavailable: ${resolved.error}` };
   }
   const ctx = resolved.ctx;
@@ -2910,10 +2995,13 @@ async function _removeAgent(agentId, { archive = false } = {}) {
     { timeoutMs: Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000) },
   );
   if (!exec.ok) {
+    const unreachable = ['connect_timeout', 'connect_lost', 'connect_refused', 'dns_failure', 'auth_failed']
+      .includes(exec.error);
     return {
       ok: false,
       error:  exec.error || 'remove_failed',
       detail: exec.detail || exec.stderr || 'camc rm failed',
+      ...(unreachable ? { can_forget: true } : {}),
     };
   }
   // Mirror: drop the agent row locally so the menu's Remove updates the
@@ -4543,13 +4631,19 @@ async function handle(req, res) {
       if (!existing) return send404(res);
       const idx = state.store.contexts.findIndex(c => c === existing);
       state.store.contexts.splice(idx, 1);
+      // Credential policy on delete (2026-09-08): a context is only a
+      // start template — its agents keep working via their stamped
+      // endpoint profile (_contextForAgent ephemeral resolution), which
+      // needs the remembered credential for password/passphrase auth.
+      // Keep the secret while any agent still references this endpoint;
+      // cascade-drop it only when the endpoint has no agents left
+      // (CAM-DESK-DIRECT-018 hygiene preserved).
+      const stillReferenced = Array.isArray(state.store.agents)
+        && state.store.agents.some(a => a && _agentMatchesContextEndpoint(a, existing));
+      if (!stillReferenced) _cascadeDeleteCreds(existing.id);
       saveStore();
-      // Cascade: drop any remembered password/passphrase tied to
-      // this context id so they don't linger as orphans in the
-      // credential store (CAM-DESK-DIRECT-018).
-      _cascadeDeleteCreds(existing.id);
-      pushLog('info', `context deleted: ${ctxName}`);
-      return sendJson(res, 200, { ok: true });
+      pushLog('info', `context deleted: ${ctxName}${stillReferenced ? ' (credentials kept — agents still reference this endpoint)' : ''}`);
+      return sendJson(res, 200, { ok: true, ...(stillReferenced ? { credentials_kept: true } : {}) });
     }
     // Live sync step progress (GET while a sync is running): lets the
     // UI show checking/uploading/listing/importing during long syncs.
@@ -4735,18 +4829,23 @@ async function handle(req, res) {
                      : 502;
         return sendJson(res, status, { error: stopped.error || 'stop_failed', detail: stopped.detail });
       }
-      return sendJson(res, 200, { ok: true, agent: stopped.agent || null, no_op: !!stopped.no_op });
+      return sendJson(res, 200, { ok: true, agent: stopped.agent || null, no_op: !!stopped.no_op, ...(stopped.local_only ? { local_only: true } : {}) });
     }
     if (method === 'DELETE' && sub === '/history') {
-      const removed = await _removeAgent(agentMatch[1]);
+      const localOnly = /^(1|true|yes)$/i.test(url.searchParams.get('local') || '');
+      const removed = await _removeAgent(agentMatch[1], { local: localOnly });
       if (!removed.ok) {
         const status = removed.error === 'agent_not_found' ? 404
                      : removed.error === 'context_not_found' ? 404
                      : removed.error === 'store_unavailable' ? 503
                      : 502;
-        return sendJson(res, status, { error: removed.error || 'remove_failed', detail: removed.detail });
+        return sendJson(res, status, {
+          error: removed.error || 'remove_failed',
+          detail: removed.detail,
+          ...(removed.can_forget ? { can_forget: true } : {}),
+        });
       }
-      return sendJson(res, 200, { ok: true, removed_id: removed.removed_id });
+      return sendJson(res, 200, { ok: true, removed_id: removed.removed_id, ...(removed.local_only ? { local_only: true } : {}) });
     }
     if (sub === '/cron') {
       if (method === 'GET') {
