@@ -1767,10 +1767,12 @@ export function mountShell({ api, state, connect }) {
     if (!confirm(`Stop agent "${agentName(agent)}"?`)) return;
     try {
       await requireAgentSettingsConnected('Stop');
-      await api.stopAgent(agent.id);
+      const resp = await api.stopAgent(agent.id);
       bumpUserActivity(agent.id);
       state.updateAgent(agent.id, { status: 'stopped' });
-      state.toast('Agent stopped', 'success');
+      state.toast(resp && resp.local_only
+        ? 'Agent marked stopped (node gone — remote not touched)'
+        : 'Agent stopped', 'success');
     } catch (err) {
       state.toast(`Stop failed: ${err?.message || err}`, 'error', 5000);
     }
@@ -1780,14 +1782,32 @@ export function mountShell({ api, state, connect }) {
     closeAgentActionMenu();
     if (!agent) return;
     if (!confirm(`Remove agent "${agentName(agent)}" from history?`)) return;
-    try {
-      await requireAgentSettingsConnected('Remove');
-      await api.deleteAgentHistory(agent.id);
+    const dropFromList = () => {
       state.removeAgent(agent.id);
       if (state.get('selectedAgentId') === agent.id) state.set('selectedAgentId', null);
       if (_agentSettingsAgentId === agent.id) closeAgentSettings();
-      state.toast('Agent removed', 'success');
+    };
+    try {
+      await requireAgentSettingsConnected('Remove');
+      const resp = await api.deleteAgentHistory(agent.id);
+      dropFromList();
+      state.toast(resp && resp.local_only
+        ? 'Removed from list (node gone — remote not touched)'
+        : 'Agent removed', 'success');
     } catch (err) {
+      // Node unreachable — the hub flags the row as forgettable; offer
+      // the explicit local-only "forget" path instead of a dead end.
+      if (err && err.can_forget
+          && confirm(`Node unreachable (${err.message || err}).\n\nRemove "${agentName(agent)}" from the list anyway? The remote agent will NOT be stopped.`)) {
+        try {
+          await api.deleteAgentHistory(agent.id, { local: true });
+          dropFromList();
+          state.toast('Removed from list (remote not touched)', 'success');
+        } catch (err2) {
+          state.toast(`Remove failed: ${err2?.message || err2}`, 'error', 5000);
+        }
+        return;
+      }
       state.toast(`Remove failed: ${err?.message || err}`, 'error', 5000);
     }
   }

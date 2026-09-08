@@ -381,6 +381,10 @@ export class CamApi {
     if (!resp.ok) {
       const err = new Error(data?.detail || `HTTP ${resp.status}`);
       err.status = resp.status;
+      if (data && typeof data === 'object') {
+        if (data.error) err.code = data.error;
+        if (data.can_forget) err.can_forget = true;
+      }
       throw err;
     }
     return data;
@@ -660,7 +664,7 @@ export class CamApi {
   createAgentCronJob(id, body) { return this.request('POST', `/api/agents/${id}/cron`, body); }
   deleteAgentCronJob(id, jobKey) { return this.request('DELETE', `/api/agents/${id}/cron/${encodeURIComponent(jobKey)}`); }
   restartAgent(id) { return this.request('POST', `/api/agents/${id}/restart`); }
-  deleteAgentHistory(id) { return this.request('DELETE', `/api/agents/${id}/history`); }
+  deleteAgentHistory(id, { local = false } = {}) { return this.request('DELETE', `/api/agents/${id}/history${local ? '?local=1' : ''}`); }
   agentLogs(id, tail = 100) { return this.request('GET', `/api/agents/${id}/logs?tail=${tail}`); }
   agentOutput(id, lines = 80, hash = null, format = null, hints = null) {
     const qs = new URLSearchParams();
