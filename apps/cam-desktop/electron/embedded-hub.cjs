@@ -139,6 +139,11 @@ const state = {
   storePath:  null,
   outputCaptureCache: new Map(),
   remoteCamcReadyCache: new Map(),
+  remoteCambReadyCache: new Map(),
+  // Fleet bridge (camb): one polling worker per context with
+  // machine.bridge=true. contextId -> {timer, backoffMs, inflight,
+  // lastPoll, lastError}. All workers are torn down by stop().
+  bridgeWorkers: new Map(),
   // Live sync step progress per context id — written by _syncContextAgents
   // / _ensureRemoteCamc, read by GET /api/contexts/:name/sync-status,
   // cleared when a sync finishes. Lets the UI show real progress
@@ -466,6 +471,8 @@ const REMOTE_CAMC = '~/.cam/camc';
 const REMOTE_CAMC_UPLOAD_PATH = '.cam/camc.tmp';
 const REMOTE_SKILLM = '~/.cam/skillm';
 const REMOTE_SKILLM_UPLOAD_PATH = '.cam/skillm.tmp';
+const REMOTE_CAMB = '~/.cam/camb';
+const REMOTE_CAMB_UPLOAD_PATH = '.cam/camb.tmp';
 
 function configure({ credentialStore, sshTransport } = {}) {
   if (credentialStore !== undefined) _credentialStore = credentialStore || null;
@@ -575,6 +582,9 @@ function buildContextRecord(body) {
     port:       isSSH ? (port || 22) : null,
     key_file:   isSSH && authMethod === 'key' ? keyFile : '',
     env_setup:  envSetup,
+    // Fleet bridge opt-in (camb): when true the hub polls this node's
+    // ~/.cam/camb outbox and its agents become targetable cross-node.
+    bridge:     !!body.bridge,
   };
   if (isSSH) {
     machine.auth_method      = authMethod;       // 'key' | 'password' | 'agent'
@@ -683,6 +693,7 @@ function applyContextUpdate(existing, body) {
   if (body.user      != null) m.user      = String(body.user).trim();
   if (body.key_file  != null) m.key_file  = String(body.key_file).trim();
   if (body.env_setup != null) m.env_setup = String(body.env_setup).trim();
+  if (body.bridge    != null) m.bridge    = !!body.bridge;
   if (body.port      != null && body.port !== '') {
     const p = Number.parseInt(body.port, 10);
     if (!Number.isFinite(p) || p < 1 || p > 65535) {
@@ -2060,6 +2071,123 @@ async function _ensureRemoteSkillm(baseOpts) {
   return { ok: true, installed: !remote, updated: !!remote, hash: local.hash };
 }
 
+/* ─────────────── Fleet bridge (camb) deploy ───────────────
+ * camb is the thin argv ferry that lives on bridge-enabled nodes at
+ * ~/.cam/camb (requests land in ~/.cam/camb/outbox/, the hub writes
+ * responses to ~/.cam/camb/inbox/<id>.json). Same deploy shape as
+ * camc/skillm: probe version → upload .tmp → chmod 700 + mv → verify,
+ * with a per-endpoint ready cache so steady-state polling costs no
+ * extra round trips. Only ever called for bridge-enabled contexts. */
+
+function _bundledCambPath() {
+  const candidates = [];
+  if (process.resourcesPath) {
+    candidates.push(path.join(process.resourcesPath, 'camb', 'camb'));
+  }
+  // Dev/layout path: apps/cam-desktop/resources/camb/camb (the electron
+  // dir's parent holds resources/, mirroring the packaged resourcesPath
+  // layout).
+  candidates.push(path.resolve(__dirname, '..', 'resources', 'camb', 'camb'));
+  for (const c of candidates) {
+    try { if (fs.statSync(c).isFile()) return c; } catch (_) {}
+  }
+  return null;
+}
+
+function _readBundledCamb() {
+  const p = _bundledCambPath();
+  if (!p) return { error: 'bundled_camb_missing', detail: 'bundled camb was not found in resources/camb/camb' };
+  try {
+    const content = fs.readFileSync(p);
+    return {
+      content,
+      path: p,
+      hash: crypto.createHash('md5').update(content).digest('hex').slice(0, 12),
+    };
+  }
+  catch (e) { return { error: 'bundled_camb_read_failed', detail: e && e.message }; }
+}
+
+function _markRemoteCambReady(baseOpts, localHash) {
+  if (!state.remoteCambReadyCache) state.remoteCambReadyCache = new Map();
+  state.remoteCambReadyCache.set(_remoteCamcReadyKey(baseOpts, localHash), Date.now());
+}
+
+function _clearRemoteCambReady(baseOpts, localHash) {
+  if (!state.remoteCambReadyCache) return;
+  state.remoteCambReadyCache.delete(_remoteCamcReadyKey(baseOpts, localHash));
+}
+
+async function _ensureRemoteCamb(baseOpts, { force = false } = {}) {
+  // Same stub tolerance as camc/skillm: exec-only test transports skip
+  // the deploy path.
+  if (!_sshTransport || typeof _sshTransport.writeRemoteFile !== 'function') {
+    return { ok: true, skipped: 'writeRemoteFile_unavailable' };
+  }
+
+  const local = _readBundledCamb();
+  if (local.error) return { ok: false, error: local.error, detail: local.detail };
+
+  const readyKey = _remoteCamcReadyKey(baseOpts, local.hash);
+  if (!force && state.remoteCambReadyCache && state.remoteCambReadyCache.has(readyKey)) {
+    return { ok: true, present: true, cached: true, hash: local.hash };
+  }
+
+  const probe = await _sshTransport.execRemote({
+    ...baseOpts,
+    command: `bash -c 'test -x ${REMOTE_CAMB} && ${REMOTE_CAMB} version | head -1'`,
+    timeout_ms: 15000,
+  });
+  // Connection-class probe failures (auth_failed, connect_timeout, …)
+  // surface as themselves; only a probe that RAN and exited nonzero
+  // (camb missing/broken) falls through to the deploy path.
+  if (probe && !probe.ok && probe.error && probe.error !== 'remote_nonzero') {
+    return { ok: false, error: probe.error, detail: (probe.detail || probe.stderr) || `camb probe failed: ${probe.error}` };
+  }
+  const remoteOut = probe && probe.ok ? String(probe.stdout || '').trim() : '';
+  // Version-based freshness, same rule as camc: upload only when the
+  // remote camb is missing or strictly older; never downgrade.
+  // (_camcBundledVersion is a generic `__version__ = "x.y.z"` parser.)
+  const rv = _parseCamcVersion(remoteOut);
+  const bundledV = _camcBundledVersion(local.content);
+  if (!force && remoteOut && rv && bundledV && _versionCmp(rv, bundledV) >= 0) {
+    _markRemoteCambReady(baseOpts, local.hash);
+    return { ok: true, present: true, remote_version: rv.join('.'), hash: local.hash };
+  }
+
+  const mkdir = await _sshTransport.execRemote({ ...baseOpts, command: 'mkdir -p ~/.cam' });
+  if (!mkdir || !mkdir.ok) {
+    return { ok: false, error: mkdir && mkdir.error || 'remote_mkdir_failed', detail: mkdir && (mkdir.detail || mkdir.stderr) || 'mkdir -p ~/.cam failed' };
+  }
+
+  const uploaded = await _sshTransport.writeRemoteFile({
+    ...baseOpts,
+    timeout_ms: 120000, // same slow-link budget as the camc upload
+    remotePath: REMOTE_CAMB_UPLOAD_PATH,
+    content: local.content,
+  });
+  if (!uploaded || !uploaded.ok) {
+    return { ok: false, error: uploaded && uploaded.error || 'remote_camb_upload_failed', detail: uploaded && uploaded.detail || 'failed to upload bundled camb' };
+  }
+
+  // Install via $HOME, not the relative upload path (rc `cd` moves the
+  // exec cwd away from the sftp-server's home-relative start dir — see
+  // the camc install above).
+  const install = await _sshTransport.execRemote({ ...baseOpts, command: `chmod 700 "$HOME/${REMOTE_CAMB_UPLOAD_PATH}" && mv "$HOME/${REMOTE_CAMB_UPLOAD_PATH}" ${REMOTE_CAMB}` });
+  if (!install || !install.ok) {
+    return { ok: false, error: install && install.error || 'remote_camb_install_failed', detail: install && (install.detail || install.stderr) || 'failed to install ~/.cam/camb' };
+  }
+
+  const verify = await _sshTransport.execRemote({ ...baseOpts, command: `test -x ${REMOTE_CAMB}` });
+  if (!verify || !verify.ok) {
+    return { ok: false, error: verify && verify.error || 'remote_camb_verify_failed', detail: verify && (verify.detail || verify.stderr) || '~/.cam/camb is not executable after upload' };
+  }
+  const action = remoteOut ? 'updated' : 'installed';
+  _markRemoteCambReady(baseOpts, local.hash);
+  pushLog('info', `${action} bundled camb on ${baseOpts.user}@${baseOpts.host}:${baseOpts.port || 22}`);
+  return { ok: true, installed: !remoteOut, updated: !!remoteOut, hash: local.hash };
+}
+
 function _shellQuote(s) {
   return `'${String(s == null ? '' : s).replace(/'/g, `'\\''`)}'`;
 }
@@ -2881,11 +3009,10 @@ async function _editAgent(agentId, body) {
  *  detail }` with error one of: agent_not_found, context_not_found,
  *  store_unavailable, stop_failed.
  *
- *  Orphan agents whose rows predate connection-profile stamping
- *  (context gone AND no endpoint stamps → context_not_found) are
- *  marked stopped LOCALLY: there is no reachable node to stop, and
- *  the user still needs to clear the stale row. Such results carry
- *  `local_only: true`. */
+ *  Orphan agents (context deleted/renamed → context_not_found) are
+ *  marked stopped LOCALLY: the node is gone, so there is nothing to
+ *  stop remotely, and the user still needs to clear the stale row.
+ *  Such results carry `local_only: true`. */
 async function _stopAgent(agentId, { force = false } = {}) {
   const resolved = _contextForAgent(agentId);
   if (resolved.error) {
@@ -2955,9 +3082,8 @@ async function _stopAgent(agentId, { force = false } = {}) {
  *
  *  Two local-only paths (the row is dropped without any remote traffic,
  *  result carries `local_only: true`):
- *   - orphan rows predating connection-profile stamping (context gone
- *     AND no endpoint stamps → context_not_found): automatic — nothing
- *     reachable exists to kill;
+ *   - orphan agents (context deleted/renamed → context_not_found):
+ *     automatic — nothing reachable exists to kill;
  *   - `{ local: true }`: explicit "forget from list" escape hatch for
  *     when the node is unreachable. Connectivity-class exec failures
  *     (connect_timeout / connect_lost / connect_refused / dns_failure /
@@ -3486,6 +3612,337 @@ async function _execCamcOnContext(ctx, camcArgs, { overrides = {}, timeoutMs = S
     return { ok: false, error: code, detail: err.detail || err.stderr || 'unknown exec failure', stderr: err.stderr || '', stdout: err.stdout || '' };
   }
   return { ok: true, stdout: String(res.stdout || ''), stderr: String(res.stderr || '') };
+}
+
+/* ─────────────── Fleet bridge (camb) workers + dispatch ───────────────
+ *
+ * One worker per bridge-enabled context polls the node's camb outbox via
+ * `~/.cam/camb --hub-drain` (atomic print+delete, empty = `[]`) over the
+ * existing SSH exec channel, dispatches each request, and writes
+ * responses back to `~/.cam/camb/inbox/<id>.json`. Requests are
+ * `{id, argv, from:{agent}, ts}` with argv a full camc-style argv
+ * (verb included); responses are `{id, ok, text?, error?, candidates?}`.
+ *
+ * camc's CLI is the interface standard: the hub reimplements none of
+ * its semantics. It only (a) aggregates the fleet for `list`, and
+ * (b) resolves `[node:]agent` targets — source node first, then
+ * fleet-wide with ambiguity candidates — checks the target node's
+ * consent (machine.bridge must be on there too), and forwards the raw
+ * argv to the target node's camc via _execCamcOnContext.
+ */
+
+const BRIDGE_POLL_MS = 2000;
+const BRIDGE_BACKOFF_MAX_MS = 60000;
+const BRIDGE_DRAIN_TIMEOUT_MS = 10000;
+// `camc msg send` blocks waiting for the reply (its own --timeout
+// defaults to 600s) — give it a longer but bounded hub-side cap.
+const BRIDGE_MSG_TIMEOUT_MS = 120000;
+const BRIDGE_TARGETED_VERBS = new Set(['status', 'capture', 'send', 'key', 'msg']);
+const BRIDGE_VERBS_HELP = 'list, status, capture, send, key, msg';
+
+function _bridgeWorkerMap() {
+  if (!state.bridgeWorkers) state.bridgeWorkers = new Map();
+  return state.bridgeWorkers;
+}
+
+function _bridgeStartContext(ctx) {
+  if (!ctx || !ctx.id || !ctx.machine || ctx.machine.type !== 'ssh') return;
+  const key = String(ctx.id);
+  const workers = _bridgeWorkerMap();
+  if (workers.has(key)) return;
+  const w = { timer: null, backoffMs: BRIDGE_POLL_MS, inflight: false, lastPoll: null, lastError: null };
+  workers.set(key, w);
+  pushLog('info', `bridge: worker started for ${ctx.name}`);
+  w.timer = setTimeout(() => { void _bridgeTick(key); }, 50);
+}
+
+function _bridgeStopContext(contextId) {
+  const key = String(contextId || '');
+  const workers = _bridgeWorkerMap();
+  const w = workers.get(key);
+  if (!w) return;
+  if (w.timer) clearTimeout(w.timer);
+  workers.delete(key);
+  const ctxs = (state.store && Array.isArray(state.store.contexts)) ? state.store.contexts : [];
+  const ctx = ctxs.find(c => c && String(c.id) === key);
+  pushLog('info', `bridge: worker stopped for ${(ctx && ctx.name) || key}`);
+}
+
+function _bridgeStopAll() {
+  for (const key of [..._bridgeWorkerMap().keys()]) _bridgeStopContext(key);
+}
+
+async function _bridgeTick(ctxId) {
+  const w = _bridgeWorkerMap().get(ctxId);
+  if (!w) return;
+  // Chained setTimeout (never setInterval): the next poll is scheduled
+  // only after this one settles, and only while the worker still lives.
+  const schedule = () => {
+    if (!_bridgeWorkerMap().has(ctxId)) return;
+    w.timer = setTimeout(() => { void _bridgeTick(ctxId); }, w.backoffMs);
+  };
+  if (w.inflight) { schedule(); return; }
+  const ctxs = (state.store && Array.isArray(state.store.contexts)) ? state.store.contexts : [];
+  const ctx = ctxs.find(c => c && String(c.id) === ctxId);
+  // Self-terminate when the context vanished or bridge was flipped off
+  // out-of-band (the PUT/DELETE routes stop workers directly; this is
+  // the belt-and-suspenders path for store edits that bypass them).
+  if (!ctx || !ctx.machine || ctx.machine.type !== 'ssh' || ctx.machine.bridge !== true) {
+    _bridgeStopContext(ctxId);
+    return;
+  }
+  w.inflight = true;
+  const fail = (msg) => {
+    w.lastError = String(msg || 'unknown').slice(0, 300);
+    w.backoffMs = Math.min(w.backoffMs * 2, BRIDGE_BACKOFF_MAX_MS);
+  };
+  try {
+    const baseBuilt = _sshBaseOptsForContext(ctx, BRIDGE_DRAIN_TIMEOUT_MS);
+    if (baseBuilt.error) {
+      fail(`${baseBuilt.error}${baseBuilt.detail ? `: ${baseBuilt.detail}` : ''}`);
+    } else {
+      const baseOpts = baseBuilt.opts;
+      const ensured = await _ensureRemoteCamb(baseOpts);
+      if (!ensured.ok) {
+        fail(`ensure camb: ${ensured.error || 'failed'}${ensured.detail ? `: ${ensured.detail}` : ''}`);
+      } else {
+        const res = await _sshTransport.execRemote({ ...baseOpts, command: `${REMOTE_CAMB} --hub-drain`, timeout_ms: BRIDGE_DRAIN_TIMEOUT_MS });
+        if (!res || !res.ok) {
+          const err = res || {};
+          // A failed drain right after a cache-hit ensure means the
+          // remote camb vanished mid-session — drop the ready cache so
+          // the next tick re-probes and redeploys.
+          const local = _readBundledCamb();
+          if (!local.error) _clearRemoteCambReady(baseOpts, local.hash);
+          fail(`drain: ${err.error || 'exec_failed'}${(err.detail || err.stderr) ? `: ${err.detail || err.stderr}` : ''}`);
+        } else {
+          let reqs = null;
+          try {
+            const parsed = JSON.parse(String(res.stdout || '').trim() || '[]');
+            if (Array.isArray(parsed)) reqs = parsed;
+          } catch (_) { /* garbage stdout → treated as a failed poll */ }
+          if (!reqs) {
+            fail('drain returned invalid JSON');
+          } else {
+            w.lastPoll = nowIso();
+            w.lastError = null;
+            w.backoffMs = BRIDGE_POLL_MS;
+            const responses = [];
+            for (const req of reqs) {
+              try {
+                // eslint-disable-next-line no-await-in-loop
+                responses.push(await _bridgeDispatch(ctx, req));
+              } catch (e) {
+                responses.push({ id: req && req.id, ok: false, error: `hub dispatch error: ${e && e.message}` });
+              }
+            }
+            if (responses.length) {
+              // eslint-disable-next-line no-await-in-loop
+              const mkdir = await _sshTransport.execRemote({ ...baseOpts, command: 'mkdir -p ~/.cam/camb/inbox' });
+              if (!mkdir || !mkdir.ok) {
+                fail(`inbox mkdir: ${(mkdir && mkdir.error) || 'exec_failed'}`);
+              } else {
+                for (const resp of responses) {
+                  const rid = String((resp && resp.id) || '');
+                  // The id becomes a remote filename — refuse anything
+                  // that could escape the inbox dir.
+                  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(rid) || rid.includes('..')) continue;
+                  // eslint-disable-next-line no-await-in-loop
+                  const wr = await _sshTransport.writeRemoteFile({
+                    ...baseOpts,
+                    remotePath: `.cam/camb/inbox/${rid}.json`,
+                    content: JSON.stringify(resp),
+                  });
+                  if (!wr || !wr.ok) {
+                    fail(`inbox write ${rid}: ${(wr && wr.error) || 'failed'}`);
+                    break;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    fail(e && e.message);
+  } finally {
+    w.inflight = false;
+    schedule();
+  }
+}
+
+/** All store agents attributed to a context: by stamped context_name,
+ *  or by machine endpoint for legacy rows that predate stamping (same
+ *  two-pass matching _contextForAgent uses). */
+function _bridgeAgentsForContext(ctx) {
+  const agents = Array.isArray(state.store && state.store.agents) ? state.store.agents : [];
+  return agents.filter(a => a && (a.context_name === ctx.name || _machineMatchesAgent(ctx, a)));
+}
+
+function _bridgeMatchAgent(agents, ref) {
+  const r = String(ref || '');
+  if (!r) return [];
+  const lower = r.toLowerCase();
+  return agents.filter(a => {
+    const id = String(a.id || '');
+    const name = String(a.task_name || '');
+    return id === r || (id.length > r.length && id.startsWith(r)) || (name && name.toLowerCase() === lower);
+  });
+}
+
+function _bridgeCandidate(ctx, a) {
+  return `${ctx.name}:${String(a.id || '')} ${String(a.task_name || '')}`.trim();
+}
+
+/** Resolve a `[node:]agent` ref to {ctx, agent}. Bare refs match the
+ *  source node FIRST (local-first semantics), then the fleet; >1
+ *  fleet-wide hit returns {candidates: ['<ctx>:<id> <name>', …]}. */
+function _bridgeResolveTarget(fromCtx, ref) {
+  const raw = String(ref || '');
+  if (!raw) return { error: 'missing target' };
+  const ctxs = Array.isArray(state.store && state.store.contexts) ? state.store.contexts : [];
+  if (raw.includes(':')) {
+    const ctxName = raw.slice(0, raw.indexOf(':'));
+    const agentRef = raw.slice(raw.indexOf(':') + 1);
+    const ctx = ctxs.find(c => c && c.name === ctxName);
+    if (!ctx) return { error: `unknown node '${ctxName}'` };
+    if (!agentRef) return { error: 'missing target' };
+    const matches = _bridgeMatchAgent(_bridgeAgentsForContext(ctx), agentRef);
+    if (!matches.length) return { error: `no agent '${agentRef}' on node '${ctxName}'` };
+    if (matches.length > 1) return { candidates: matches.map(a => _bridgeCandidate(ctx, a)) };
+    return { ctx, agent: matches[0] };
+  }
+  const local = fromCtx ? _bridgeMatchAgent(_bridgeAgentsForContext(fromCtx), raw) : [];
+  if (local.length === 1) return { ctx: fromCtx, agent: local[0] };
+  if (local.length > 1) return { candidates: local.map(a => _bridgeCandidate(fromCtx, a)) };
+  const fleet = [];
+  for (const c of ctxs) {
+    for (const a of _bridgeMatchAgent(_bridgeAgentsForContext(c), raw)) fleet.push({ ctx: c, agent: a });
+  }
+  if (!fleet.length) return { error: `no agent matches '${raw}'` };
+  if (fleet.length > 1) return { candidates: fleet.map(m => _bridgeCandidate(m.ctx, m.agent)) };
+  return fleet[0];
+}
+
+/** `list` is the fleet verb: aggregate the store across ALL contexts
+ *  (camc `list -a` semantics). No target, no consent — seeing the fleet
+ *  is symmetric with running a node. Table shape follows camc list
+ *  (ID/NAME/TOOL/STATUS, updated_at DESC, --last default 50) plus a
+ *  CONTEXT column naming the owning node. */
+function _bridgeFleetList(args) {
+  let statusF = '', tagF = '', last = 50, asJson = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = String(args[i] || '');
+    if (a === '--json') asJson = true;
+    else if (a === '--status' && i + 1 < args.length) statusF = String(args[++i]);
+    else if (a.startsWith('--status=')) statusF = a.slice('--status='.length);
+    else if (a === '--tag' && i + 1 < args.length) tagF = String(args[++i]);
+    else if (a.startsWith('--tag=')) tagF = a.slice('--tag='.length);
+    else if ((a === '--last' || a === '-n') && i + 1 < args.length) last = Number.parseInt(args[++i], 10);
+    else if (a.startsWith('--last=')) last = Number.parseInt(a.slice('--last='.length), 10);
+    else if (a.startsWith('-n=')) last = Number.parseInt(a.slice(3), 10);
+  }
+  if (!Number.isFinite(last) || last < 1) last = 50;
+  let agents = (Array.isArray(state.store && state.store.agents) ? state.store.agents : []).filter(Boolean);
+  if (statusF) agents = agents.filter(a => String(a.status || '') === statusF);
+  if (tagF) agents = agents.filter(a => Array.isArray(a.tags) && a.tags.includes(tagF));
+  agents.sort((x, y) => String(y.updated_at || y.created_at || '').localeCompare(String(x.updated_at || x.created_at || '')));
+  agents = agents.slice(0, last);
+  if (asJson) return { ok: true, text: JSON.stringify(agents, null, 2) };
+  if (!agents.length) return { ok: true, text: 'No agents.' };
+  const head = ['ID', 'NAME', 'TOOL', 'STATUS', 'CONTEXT'];
+  const rows = agents.map(a => [
+    String(a.id || '').slice(0, 8),
+    String(a.task_name || ''),
+    String(a.tool || ''),
+    String(a.status || ''),
+    String(a.context_name || ''),
+  ]);
+  const widths = head.map((h, i) => Math.max(h.length, ...rows.map(r => r[i].length)));
+  const line = r => r.map((c, i) => c.padEnd(widths[i])).join('  ').replace(/\s+$/, '');
+  return { ok: true, text: [line(head), ...rows.map(line)].join('\n') };
+}
+
+function _bridgeAudit(entry) {
+  try {
+    if (!state.storePath) return;
+    const file = path.join(path.dirname(state.storePath), 'bus-audit.jsonl');
+    fs.appendFileSync(file, JSON.stringify(entry) + '\n');
+  } catch (_) { /* audit must never break dispatch */ }
+}
+
+async function _bridgeDispatch(fromCtx, req) {
+  const argv = (req && Array.isArray(req.argv)) ? req.argv.map(a => String(a == null ? '' : a)) : [];
+  const verb = argv[0] || '';
+  const rest = argv.slice(1);
+  let targetCtx = '';
+  let out;
+  if (verb === 'list') {
+    out = _bridgeFleetList(rest);
+  } else if (BRIDGE_TARGETED_VERBS.has(verb)) {
+    // `msg` carries a subcommand; only `msg send` addresses an agent
+    // (wait/reply/read/… address msg_ids on the sender's own node, so
+    // bridging them is meaningless in v1).
+    const refIndex = verb === 'msg' ? (rest[0] === 'send' ? 1 : -1) : 0;
+    if (refIndex < 0) {
+      out = { ok: false, error: `unsupported verb 'msg${rest[0] ? ` ${rest[0]}` : ''}' via bridge (v1: ${BRIDGE_VERBS_HELP})` };
+    } else {
+      const ref = rest[refIndex];
+      if (!ref) {
+        out = { ok: false, error: `missing target (usage: ${verb === 'msg' ? 'msg send' : verb} <[node:]agent> [flags])` };
+      } else {
+        const resolved = _bridgeResolveTarget(fromCtx, ref);
+        if (resolved.candidates) {
+          out = { ok: false, error: 'ambiguous target', candidates: resolved.candidates };
+        } else if (resolved.error) {
+          out = { ok: false, error: resolved.error };
+        } else {
+          targetCtx = resolved.ctx.name;
+          if (!resolved.ctx.machine || resolved.ctx.machine.bridge !== true) {
+            out = { ok: false, error: 'target node has bridge disabled' };
+          } else {
+            const fwd = rest.slice();
+            // Strip the "node:" prefix before forwarding; the target
+            // node's camc resolves id-prefixes/names itself. Every
+            // other token passes through byte-identical.
+            if (ref.includes(':')) fwd[refIndex] = ref.slice(ref.indexOf(':') + 1);
+            // eslint-disable-next-line no-await-in-loop
+            const exec = await _execCamcOnContext(resolved.ctx, [verb, ...fwd], {
+              timeoutMs: verb === 'msg' ? BRIDGE_MSG_TIMEOUT_MS : Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000),
+            });
+            if (exec.ok) {
+              out = { ok: true, text: exec.stdout || '' };
+            } else if (exec.error === 'remote_nonzero') {
+              // Relay camc's own error text — bridge users want the
+              // real stderr, not a translated hub code. Partial stdout
+              // rides along as text.
+              out = { ok: false, error: String(exec.stderr || exec.detail || 'remote command failed').trim() || 'remote command failed' };
+              if (exec.stdout) out.text = String(exec.stdout);
+            } else {
+              const detail = String(exec.detail || '').trim();
+              out = { ok: false, error: `${exec.error || 'exec_failed'}${detail ? `: ${detail}` : ''}` };
+              if (exec.stdout) out.text = String(exec.stdout);
+            }
+          }
+        }
+      }
+    }
+  } else {
+    out = { ok: false, error: `unsupported verb '${verb}' via bridge (v1: ${BRIDGE_VERBS_HELP})` };
+  }
+  _bridgeAudit({
+    ts: nowIso(),
+    from_ctx: (fromCtx && fromCtx.name) || '',
+    from_agent: (req && req.from && req.from.agent) || '',
+    argv,
+    target_ctx: targetCtx || null,
+    ok: out.ok === true,
+    error: out.ok ? undefined : (out.error || ''),
+  });
+  pushLog(out.ok ? 'info' : 'warn',
+    `bridge ${(fromCtx && fromCtx.name) || '?'} ${verb || '?'}${targetCtx ? ` → ${targetCtx}` : ''}: ${out.ok ? 'ok' : String(out.error || '').slice(0, 160)}`);
+  return { id: req && req.id, ...out };
 }
 
 /* ─────────────── Skillm wrapper (CAM-DESK-SKILLM-010..014) ─────────────── */
@@ -4587,6 +5044,10 @@ async function handle(req, res) {
       state.store.contexts.push(built.record);
       saveStore();
       pushLog('info', `context created: ${built.record.name}`);
+      // Created with the fleet bridge on → boot its camb polling worker
+      // (first tick deploys camb via _ensureRemoteCamb, best-effort —
+      // failures surface via bridge-status, not the create response).
+      if (built.record.machine && built.record.machine.bridge === true) _bridgeStartContext(built.record);
       // Auto-sync the new node's agents in the background so its agents
       // appear without a manual Sync Host (the renderer's 5s store-poll
       // picks them up on the next tick). Failures only log — the context
@@ -4625,6 +5086,13 @@ async function handle(req, res) {
       }
       saveStore();
       pushLog('info', `context updated: ${ctxName}`);
+      // Bridge flip: start/stop this node's camb polling worker. Enable
+      // is best-effort — the worker's first tick deploys camb and
+      // surfaces failures via bridge-status, not this response.
+      const wasBridge = !!(existing.machine && existing.machine.bridge === true);
+      const nowBridge = !!(upd.record.machine && upd.record.machine.bridge === true);
+      if (!wasBridge && nowBridge) _bridgeStartContext(upd.record);
+      else if (wasBridge && !nowBridge) _bridgeStopContext(upd.record.id);
       return sendJson(res, 200, upd.record);
     }
     if (method === 'DELETE' && !sub) {
@@ -4642,6 +5110,7 @@ async function handle(req, res) {
         && state.store.agents.some(a => a && _agentMatchesContextEndpoint(a, existing));
       if (!stillReferenced) _cascadeDeleteCreds(existing.id);
       saveStore();
+      _bridgeStopContext(existing.id);
       pushLog('info', `context deleted: ${ctxName}${stillReferenced ? ' (credentials kept — agents still reference this endpoint)' : ''}`);
       return sendJson(res, 200, { ok: true, ...(stillReferenced ? { credentials_kept: true } : {}) });
     }
@@ -4651,6 +5120,19 @@ async function handle(req, res) {
       if (!existing) return send404(res);
       const p = (state.syncProgress && state.syncProgress.get(String(existing.id))) || null;
       return sendJson(res, 200, { ok: true, progress: p });
+    }
+    // Fleet bridge worker state for this node (camb polling loop).
+    if (method === 'GET' && sub === '/bridge-status') {
+      if (!existing) return send404(res);
+      const w = (state.bridgeWorkers && state.bridgeWorkers.get(String(existing.id))) || null;
+      return sendJson(res, 200, {
+        ok: true,
+        enabled: !!(existing.machine && existing.machine.bridge === true),
+        running: !!w,
+        lastPoll: (w && w.lastPoll) || null,
+        lastError: (w && w.lastError) || null,
+        backoffMs: (w && w.backoffMs) || null,
+      });
     }
     if (method === 'POST' && sub === '/sync') {
       if (!existing) return send404(res);      // Optional one-shot credential overrides for debugging via the
@@ -5149,6 +5631,11 @@ async function start({ dataDir, apiToken, appVersion, syncStaleMs } = {}) {
   state.lastError = null;
   pushLog('info', `embedded Hub listening on 127.0.0.1:${actualPort}`);
 
+  // Boot fleet-bridge workers for contexts with machine.bridge on.
+  for (const c of (state.store && Array.isArray(state.store.contexts)) ? state.store.contexts : []) {
+    if (c && c.machine && c.machine.bridge === true) _bridgeStartContext(c);
+  }
+
   return {
     ok:       true,
     apiUrl:   `http://127.0.0.1:${actualPort}`,
@@ -5188,6 +5675,8 @@ async function stop() {
   // stale refusal.
   try { state.syncInFlightByCtx.clear(); } catch (_) {}
   state.agentSyncInFlight = false;
+  // Bridge workers poll over SSH — they must not outlive the hub.
+  _bridgeStopAll();
   pushLog('info', 'embedded Hub stopped');
   return { ok: true, state: publicState() };
 }

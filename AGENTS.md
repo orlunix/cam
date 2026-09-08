@@ -35,7 +35,11 @@ debugging/unblocks, or when `cam-dev` is unavailable. If bypassing
   `apps/cam-container/` (the CAM WebUI container — it *reuses*
   `apps/cam-desktop/electron/*.cjs` backends **read-only**; browser/
   container adaptations belong in `apps/cam-container/` as serve-time
-  transforms or shims, not in desktop files).
+  transforms or shims, not in desktop files). Also in scope:
+  `apps/cam-desktop/resources/camb/` (the camb fleet-bridge client —
+  a thin, camc-aligned CLI deployed to bridge-enabled nodes; the hub
+  side lives in `embedded-hub.cjs` bridge workers, see
+  `docs/desktop/camb-bridge.md`).
 - **camc is owned by another agent** — do NOT edit `src/camc`,
   `src/camc_pkg/`, `dist/camc`, or `build_camc.py` on this machine.
   Route camc changes to the owning agent (see the cam-dev sibling

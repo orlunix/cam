@@ -109,6 +109,14 @@ fingerprint unless `--show-token` is explicitly used for debugging.
   and Connection Model section that this README summarizes.
 - [`skillm-integration.md`](./skillm-integration.md) — Desktop Skillm v0
   implementation contract and follow-up boundaries.
+- [`fleet-bridge-plan.md`](./fleet-bridge-plan.md) — 跨 node fleet bridge
+  总纲 (2026-09-08): camc baseline 红线、组件职责、分期验收、camc 归并
+  交接 spec（给 cam-dev）与 bridge 实现者指导.
+- [`bridge-protocol-v1.md`](./bridge-protocol-v1.md) — bridge 协议规范
+  (2026-09-08): 消息 schema、文件 transport、解析/consent/审计、投递语义、
+  多 bridge 认领、v2 隧道预留、兼容性规则. mobile/python-cli 实现的依据.
+- [`camb-bridge.md`](./camb-bridge.md) — camb/desktop bridge worker v1
+  实现笔记 (2026-09-07): 文件协议、轮询而非隧道的原因、运维注意.
 - [`../desktop-ui-spec.md`](../desktop-ui-spec.md) — current milestone /
   product spec. Explains design direction; cite `requirements.md` IDs in
   reviews.
