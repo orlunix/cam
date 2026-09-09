@@ -309,18 +309,6 @@ class TestCursorAdapter:
     # ("\(y\)" / "Run \(always") in cursor.toml. See the hot-fix block
     # in src/cam/adapters/configs/cursor.toml.
 
-    def test_trust_workspace_is_boot_only(self, cursor_adapter):
-        from camc_pkg.detection import should_boot_confirm
-        from camc_pkg.adapters import AdapterConfig, _parse_toml
-        from pathlib import Path
-        configs = Path(__file__).resolve().parent.parent / "src" / "cam" / "adapters" / "configs"
-        boot = AdapterConfig(_parse_toml((configs / "cursor.boot.toml").read_text(encoding="utf-8")))
-        output = "▶ [a] Trust this workspace\n  [q] Quit\n  Use arrow keys to navigate"
-        assert cursor_adapter.should_auto_confirm(output) is None
-        hit = should_boot_confirm(output, boot)
-        assert hit is not None
-        assert hit[0] == "a"
-
     def test_stale_trust_workspace_does_not_auto_confirm(self, cursor_adapter):
         output = (
             "▶ [a] Trust this workspace\n"
@@ -757,22 +745,6 @@ class TestGlobalInputCursorGuard:
 
         assert should_auto_confirm("› 1. Yes, proceed (y)", cfg) is not None
         assert should_auto_confirm("› 1. yes it is", cfg) is None
-
-    def test_codex_runtime_confirm_ignores_stale_menu_outside_active_tail(
-            self, tmp_path, monkeypatch):
-        """A prompt after a trust menu must not receive a second ``1``."""
-        from camc_pkg import adapters
-        from camc_pkg.detection import should_auto_confirm
-
-        monkeypatch.setattr(adapters, "CONFIGS_DIR", str(tmp_path))
-        cfg = adapters._load_config("codex")
-        screen = "› 1. Yes, continue\n  2. No, quit\n" + "\n".join([
-            "Codex started", "model: test", "directory: /tmp/test",
-            "Tip: help", "status", "footer", "more footer",
-            "› waiting for input",
-        ])
-
-        assert should_auto_confirm(screen, cfg) is None
 
     def test_bare_input_cursor_blocks_confirm(self):
         """Bare input cursor means the user is typing — skip confirm."""

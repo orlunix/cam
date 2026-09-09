@@ -120,6 +120,27 @@ def _load_default_context():
         return dict(_DEFAULT_CONTEXT)
 
 
+def _workspace_trust_root(path):
+    current = os.path.realpath(os.path.abspath(path))
+    while True:
+        if os.path.exists(os.path.join(current, ".git")):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return os.path.realpath(os.path.abspath(path))
+        current = parent
+
+
+def _workspace_trust_config(path):
+    workdir = os.path.realpath(os.path.abspath(path))
+    root = _workspace_trust_root(workdir)
+    paths = [root] if root == workdir else [root, workdir]
+    entries = [
+        '%s={trust_level="trusted"}' % json.dumps(item) for item in paths
+    ]
+    return "projects={%s}" % ",".join(entries)
+
+
 def _build_command(config, prompt, path):
     replacements = {"{prompt}": prompt, "{path}": path}
     result = []
@@ -129,6 +150,8 @@ def _build_command(config, prompt, path):
                 part = part.replace(key, value)
                 break
         result.append(part)
+    if getattr(config, "trust_workspace", False):
+        result.extend(["-c", _workspace_trust_config(path)])
     # Inject --permission-mode auto if enabled in config.
     # The launch argv may be wrapped (`env KEY=VAL tool ...`), so we must
     # insert AFTER the actual tool binary, not at index 1 (which would land

@@ -59,6 +59,8 @@ Python 3.6+, stdlib only. No dataclasses, no f-strings.
 
 from camc_pkg.transport import DEFAULT_PROMPT_SUBMIT_DELAY
 
+POST_CONFIRM_READY_WAIT = 60.0
+
 # ---------------------------------------------------------------------------
 # Snapshot + runtime (plain classes; no dataclasses for 3.6 compat)
 # ---------------------------------------------------------------------------
@@ -414,10 +416,12 @@ class BootPromptFeature(MonitorFeature):
             delay = cfg.prompt_submit_delay or DEFAULT_PROMPT_SUBMIT_DELAY
             actions.append({"kind": "submit_input", "text": prompt,
                             "submit_delay": delay,
-                            "ready_timeout": boot_wait,
+                            # The snapshot already established readiness.
+                            # Recheck once and return control immediately if
+                            # a trust/menu screen raced in, so auto-confirm
+                            # and later boot retries can run.
+                            "ready_timeout": 0.0,
                             "boot_prompt": True})
-            actions.append({"kind": "log", "level": "info",
-                            "msg": "Boot: prompt injected (%d chars)" % len(prompt)})
             # The monitor action adapter commits the initializing -> idle
             # transition only after insert_prompt reports acknowledgement.
             return actions
@@ -463,7 +467,8 @@ class AutoConfirmationFeature(MonitorFeature):
 
     def confirm(self, snap, runtime):
         from camc_pkg.detection import (
-            should_auto_confirm, should_confirm_initializing)
+            should_auto_confirm, should_confirm_active_boot_cursor,
+            should_confirm_initializing)
         actions = []
         init_phase = runtime.in_initializing
         cfg = runtime.config
@@ -479,13 +484,24 @@ class AutoConfirmationFeature(MonitorFeature):
         if init_phase and runtime.boot_config is not None:
             flag_supported = flag_supported and bool(
                 getattr(runtime.boot_config, "cursor_flag_support", True))
+        confirm = None
+        rule_cfg = cfg
         if flag_supported and snap.cursor_flag != 0:
-            return actions
+            if not init_phase:
+                return actions
+            # Codex can expose cursor_flag=1 on its active workspace-trust
+            # menu.  Permit only a boot-rule match in the final four visible
+            # lines; stale trust text above a real input box remains blocked.
+            confirm, rule_cfg = should_confirm_active_boot_cursor(
+                snap.output, runtime.boot_config, runtime.config)
+            if not confirm:
+                return actions
         if init_phase:
-            confirm, rule_cfg = should_confirm_initializing(
-                snap.output, runtime.boot_config, runtime.config,
-                last_response=runtime.last_confirm_response,
-                prev_output=runtime.prev_output or "")
+            if confirm is None:
+                confirm, rule_cfg = should_confirm_initializing(
+                    snap.output, runtime.boot_config, runtime.config,
+                    last_response=runtime.last_confirm_response,
+                    prev_output=runtime.prev_output or "")
             cfg = rule_cfg
         else:
             confirm = should_auto_confirm(
@@ -523,6 +539,16 @@ class AutoConfirmationFeature(MonitorFeature):
         runtime.last_confirm = snap.now
         runtime.last_confirm_hash = snap.hash1
         runtime.last_confirm_response = response
+        if init_phase:
+            # Accepting a startup dialog is forward progress, but the tool
+            # may still need a full startup window to load before exposing
+            # its real input prompt.  Renew (never shorten) that window so
+            # the original task is not abandoned at the pre-dialog deadline.
+            boot_cfg = runtime.boot_config or runtime.config
+            boot_wait = float(getattr(boot_cfg, "startup_wait", 0.0) or 0.0)
+            boot_wait = max(boot_wait, POST_CONFIRM_READY_WAIT)
+            runtime.boot_deadline = max(
+                runtime.boot_deadline, snap.now + boot_wait)
         runtime.idle_confirmed = False
         runtime.final_fallback = {
             "kind": "confirm",

@@ -6314,3 +6314,28 @@ be0e296 refactor(camc): align direct API routing
 a379b67 fix(camc): remove misleading live status probe
 0940540 fix(camc): share reliable prompt submission
 ```
+## v1.2.137  dee07ef 2026-09-06 03:10
+
+- Lines: 20236
+- Output: /home/scratch.hren_gpu_2/test/dvnet/agent-arena/camc-baseline-tdd/dist/camc
+- Recent changes:
+```
+dee07ef chore(camc): prepare 1.2.137 release
+a4e8f14 feat(camc): trust Codex workspaces by default
+d4b7329 fix(camc): prioritize active boot trust menu
+74f0625 fix(camc): recognize ready cursor past stale trust
+6318c62 fix(camc): allow slow readiness after trust
+```
+
+## v1.2.137  0fcf80c 2026-09-06 05:10
+
+- Lines: 20244
+- Output: /home/scratch.hren_gpu_2/test/dvnet/agent-arena/camc-baseline-tdd/dist/camc
+- Recent changes:
+```
+0fcf80c fix(camc): trust exact Codex workdir
+dee07ef chore(camc): prepare 1.2.137 release
+a4e8f14 feat(camc): trust Codex workspaces by default
+d4b7329 fix(camc): prioritize active boot trust menu
+74f0625 fix(camc): recognize ready cursor past stale trust
+```
