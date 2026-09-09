@@ -136,12 +136,19 @@ def is_ready_for_input(output, config, stable_for=None,
     # older prompt line remains in scrollback or the selection uses the same
     # cursor glyph. Keep the menu text for classification; do not strip it.
     # Confirmation uses the configured 128-line search window; only the ready
-    # cursor itself is restricted to the final four non-empty lines.
-    confirm_lines = _active_ui_lines(clean, config)
-    confirm_active = "\n".join(confirm_lines)
-    for pattern, _response, _send_enter in config.confirm_rules:
-        if pattern.search(confirm_active):
-            return False
+    # cursor itself is restricted to the final four non-empty lines. With a
+    # supported native cursor, flag=1 proves the current UI is an input box;
+    # a confirm match can then be stale scrollback. Unknown/menu flags remain
+    # fail-closed, while adapters without cursor support retain the text guard.
+    menu_active = (not _cursor_flag_supported(config)
+                   or cursor_flag is _CURSOR_FLAG_UNSET
+                   or cursor_flag in (None, 0, False))
+    if menu_active:
+        confirm_lines = _active_ui_lines(clean, config)
+        confirm_active = "\n".join(confirm_lines)
+        for pattern, _response, _send_enter in config.confirm_rules:
+            if pattern.search(confirm_active):
+                return False
     active_lines = _active_ui_lines(clean, config, recent_lines=_READY_UI_LINES)
     active = "\n".join(active_lines)
     cursor_line = _find_cursor_line(active_lines)
@@ -191,9 +198,43 @@ def should_confirm_initializing(output, boot_config, tool_config,
     return None, tool_config
 
 
+def should_confirm_active_boot_cursor(output, boot_config, tool_config):
+    """Match a boot action on the current bottom-most cursor line only."""
+    cfg = boot_config or tool_config
+    if cfg is None:
+        return None, tool_config
+    clean = strip_ansi(output) if cfg.strip_ansi else output
+    cursor_line = _find_cursor_line(
+        _active_ui_lines(clean, cfg, recent_lines=_READY_UI_LINES))
+    if cursor_line is None:
+        return None, tool_config
+    return should_confirm_initializing(
+        cursor_line, boot_config, tool_config, recent_lines=1)
+
+
 def is_ready_for_boot(output, boot_config, tool_config, stable_for=None,
                       cursor_flag=_CURSOR_FLAG_UNSET):
     """Ready if either boot or tool ready_pattern matches."""
+    # Some Codex builds report cursor_flag=1 while the workspace-trust menu
+    # is still active.  The final four non-empty lines distinguish that live
+    # menu from old trust text left in scrollback after the real input prompt
+    # appears.  A live boot menu always wins over readiness.
+    active_confirm, _active_cfg = should_confirm_active_boot_cursor(
+        output, boot_config, tool_config)
+    if active_confirm:
+        return False
+    # A boot confirmation has priority over both ready patterns. Without
+    # this cross-config guard, a trust prompt known only to boot.toml can be
+    # mistaken for normal readiness by the tool config's cursor rule.
+    # cursor_flag=0 identifies an active selection menu. Once the tool's
+    # current input cursor is visible (flag=1), matching boot text may simply
+    # be stale scrollback and must not block the ready prompt below.
+    menu_active = (cursor_flag is _CURSOR_FLAG_UNSET
+                   or cursor_flag in (None, 0, False))
+    if (menu_active
+            and ((boot_config and should_boot_confirm(output, boot_config))
+                 or (tool_config and should_boot_confirm(output, tool_config)))):
+        return False
     if (boot_config
             and is_ready_for_input(output, boot_config, stable_for=stable_for,
                                    cursor_flag=cursor_flag)):

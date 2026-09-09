@@ -161,7 +161,7 @@ def test_boot_prompt_uses_message_style_submit_with_default_fallback_delay():
         "kind": "submit_input",
         "text": "say hi",
         "submit_delay": 0.5,
-        "ready_timeout": 20.0,
+        "ready_timeout": 0.0,
         "boot_prompt": True,
     }
 
@@ -510,7 +510,7 @@ def test_auto_confirmation_cursor_flag_skips_a_normal_bottom_input_box():
     assert not any(action["kind"] == "send_input" for action in actions)
 
 
-def test_boot_trust_respects_native_cursor_flag():
+def test_stale_boot_trust_is_blocked_by_current_native_input_cursor():
     trust_rule = [(re.compile(r"Do you trust the contents"), "1", True)]
     cfg = _Cfg(confirm_rules=trust_rule, confirm_recent_lines=128,
                confirm_stuck_recent_lines=32)
@@ -528,12 +528,13 @@ def test_boot_trust_respects_native_cursor_flag():
     guarded_runtime = mf.MonitorRuntime("aid-guarded", cfg, now=121.0)
     guarded_runtime.in_initializing = True
     guarded_runtime.boot_config = cfg
-    guarded = feat.confirm(_mk_snap(
-        output=screen + "\n❯ ", now=121.0, idle_for=0.0,
+    stale_scrollback = feat.confirm(_mk_snap(
+        output=screen + "\nTrust accepted\n❯ ", now=121.0, idle_for=0.0,
         hash="different-screen",
         cursor_flag=1,
     ), guarded_runtime)
-    assert not any(action["kind"] == "send_input" for action in guarded)
+    assert not any(action["kind"] == "send_input"
+                   for action in stale_scrollback)
 
 
 def test_auto_confirmation_no_1_spam_guard_python_side():

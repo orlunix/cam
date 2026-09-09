@@ -1,5 +1,12 @@
 """Runtime compatibility contracts for the API proxy launcher."""
 
+import builtins
+import io
+import os
+import select
+import signal
+import sys
+
 from camc_pkg import api_proxy, cli
 from pathlib import Path
 
@@ -55,6 +62,87 @@ def test_api_proxy_uses_python36_compatible_text_pipe(monkeypatch):
     assert port == 18432
     assert captured["universal_newlines"] is True
     assert "text" not in captured
+    assert captured["stdin"] is cli.subprocess.DEVNULL
+    assert captured["close_fds"] is True
+    assert captured["start_new_session"] is True
+
+
+def test_api_proxy_process_ignores_launcher_hup(monkeypatch):
+    calls = []
+
+    class Server(object):
+        server_address = ("127.0.0.1", 18432)
+
+        def serve_forever(self):
+            return None
+
+        def server_close(self):
+            calls.append(("closed",))
+
+    monkeypatch.setattr(api_proxy, "bind_server", lambda *args: Server())
+    monkeypatch.setattr(
+        api_proxy.signal, "signal",
+        lambda sig, handler: calls.append((sig, handler)),
+    )
+
+    api_proxy.run_api_proxy([
+        "--upstream-url", "http://127.0.0.1:1",
+        "--upstream-model", "stub", "--alias", "stub",
+    ])
+
+    assert (api_proxy.signal.SIGHUP, api_proxy.signal.SIG_IGN) in calls
+    assert ("closed",) in calls
+
+
+def test_api_proxy_is_detached_hup_safe_and_owner_cleanable(
+        tmp_path, monkeypatch):
+    fake_proxy = tmp_path / "fake-camc"
+    fake_proxy.write_text(
+        "#!%s\nimport signal\nimport time\n"
+        "signal.signal(signal.SIGHUP, signal.SIG_IGN)\n"
+        "print(18432, flush=True)\ntime.sleep(30)\n"
+        % sys.executable)
+    fake_proxy.chmod(0o755)
+    plan = {
+        "upstream_base_url": "http://127.0.0.1:1",
+        "model": "stub-model",
+        "client_model": "stub-model",
+    }
+    monkeypatch.setattr(cli, "_CAMC_SCRIPT", str(fake_proxy))
+    proc, port = cli._start_api_proxy(plan, "lifetime-owner")
+    real_open = builtins.open
+
+    def owner_cmdline(path, *args, **kwargs):
+        if path == "/proc/%d/cmdline" % proc.pid:
+            return io.BytesIO(
+                b"python\0fake-camc\0_api_proxy\0--owner\0"
+                b"lifetime-owner\0")
+        return real_open(path, *args, **kwargs)
+
+    # The test sandbox exposes host /proc while Popen returns namespace-local
+    # PIDs. Supply only the exact cmdline read; signal delivery and process
+    # lifecycle remain real.
+    monkeypatch.setattr(builtins, "open", owner_cmdline)
+
+    reaped = False
+    try:
+        assert port == 18432
+        assert os.getsid(proc.pid) != os.getsid(0)
+        os.kill(proc.pid, signal.SIGHUP)
+        select.select([], [], [], 0.05)
+        assert proc.poll() is None
+
+        api_proxy.stop_agent_api_proxy({
+            "id": "lifetime-owner",
+            "api": {"proxy_pid": proc.pid},
+        })
+        waited_pid, _status = os.waitpid(proc.pid, 0)
+        reaped = True
+        assert waited_pid == proc.pid
+    finally:
+        if not reaped and proc.poll() is None:
+            proc.terminate()
+            os.waitpid(proc.pid, 0)
 
 
 def test_debug_api_proxy_launch_uses_owner_without_log_file(monkeypatch, tmp_path):

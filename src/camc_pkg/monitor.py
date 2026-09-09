@@ -188,6 +188,7 @@ def _apply_action(action, *, session, agent_id, store, events_fn,
                         result.get("phase"), result.get("reason"))
             return False, 0.0
         if runtime is not None and action.get("boot_prompt"):
+            log.info("Boot: prompt injected (%d chars)" % len(action["text"]))
             runtime.boot_prompt_sent = True
             runtime.in_initializing = False
             runtime.left_initializing = True

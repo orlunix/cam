@@ -492,6 +492,11 @@ def run_api_proxy(argv=None):
     parser.add_argument("--owner", default="")
     parser.add_argument("--reasoning-map", default="{}")
     args = parser.parse_args(argv)
+    # The proxy belongs to the agent record, not to the short-lived `run`
+    # invocation that launched it. A terminal/session teardown must not take
+    # the proxy down before `rm` can stop it by its recorded owner PID.
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
     try:
         reasoning_mapping = json.loads(args.reasoning_map)
     except ValueError:

@@ -6,9 +6,10 @@
     send-keys -l) when paste succeeds.
   * Per-tool golden path resolution: claude / codex / cursor in
     order; PATH alias fallback; --use-env-tool skips golden.
-  * launch_cmd is rewritten to the absolute resolved binary across
-    the three command shapes.
-  * Runtime manifest fields land in agent record.
+
+The former source-mirroring launch-command and runtime-manifest tests are
+replaced by the public ``camc run`` contract in
+``tests/baseline/test_run_contract.py``.
 
 Python 3.6 compatible. No new dependencies.
 """
@@ -418,124 +419,6 @@ class TestMissingToolErrors:
         # No `tool` entry resolved -> cmd_run would exit before
         # create_tmux_session is reached.
         assert "tool" not in r["resolved"]
-
-
-# ---------------------------------------------------------------------------
-# 9. launch_cmd uses absolute resolved binary for claude/codex/cursor
-# (mirror of the helper extracted from cmd_run; kept here so the
-#  contract is pinned per shape regardless of any cli.py drift)
-# ---------------------------------------------------------------------------
-
-def _rewrite_launch_cmd(launch_cmd, resolved_bin, tool):
-    if not (resolved_bin and os.path.isabs(resolved_bin) and launch_cmd):
-        return list(launch_cmd or [])
-    expected_basename = os.path.basename(resolved_bin)
-    i = 0
-    if launch_cmd[0] == "env":
-        i = 1
-        while i < len(launch_cmd) and ("=" in launch_cmd[i]
-                                       and not launch_cmd[i].startswith("-")):
-            i += 1
-    aliases = _rt._PATH_TOOL_ALIASES.get(tool, (tool,))
-    if i < len(launch_cmd):
-        tok = launch_cmd[i]
-        if tok == expected_basename or tok == tool or tok in aliases:
-            launch_cmd = list(launch_cmd)
-            launch_cmd[i] = resolved_bin
-    return launch_cmd
-
-
-class TestLaunchCmdRewrite:
-    def test_codex_argv0_rewritten(self):
-        out = _rewrite_launch_cmd(
-            ["codex", "-c", "features.goals=true"],
-            "/home/prgn_share/tools/codex/bin/codex", "codex")
-        assert out[0] == "/home/prgn_share/tools/codex/bin/codex"
-
-    def test_claude_env_wrapper_rewritten(self):
-        out = _rewrite_launch_cmd(
-            ["env", "CLAUDE_CODE_DISABLE_MOUSE=1",
-             "claude", "--allowed-tools", "Bash"],
-            "/home/prgn_share/tools/claude-code/bin/claude", "claude")
-        assert out[:2] == ["env", "CLAUDE_CODE_DISABLE_MOUSE=1"]
-        assert out[2] == "/home/prgn_share/tools/claude-code/bin/claude"
-
-    def test_cursor_alias_agent_rewritten(self):
-        out = _rewrite_launch_cmd(
-            ["agent", "--workspace", "/proj"],
-            "/home/prgn_share/tools/cursor/cursor-cli/latest/bin/cursor-agent",
-            "cursor")
-        assert out[0].endswith("/cursor-agent")
-        assert out[1:] == ["--workspace", "/proj"]
-
-
-# ---------------------------------------------------------------------------
-# 10. Runtime manifest in agent record (composed inline by cmd_run;
-#     pinned via the same shape contract here so a future refactor
-#     can't drop fields silently).
-# ---------------------------------------------------------------------------
-
-class TestRuntimeManifestShape:
-    def test_runtime_manifest_keys_present(self):
-        # Build the manifest exactly as cmd_run does, with a
-        # representative resolved payload. This pins the schema +
-        # field names without driving the full cmd_run.
-        resolved = {
-            "tmux": "/bin/tmux",
-            "tmux_source": "golden",
-            "tool": "/home/prgn_share/tools/codex/bin/codex",
-            "tool_resolution": {
-                "tool": "codex",
-                "bin": "/home/prgn_share/tools/codex/bin/codex",
-                "source": "golden",
-                "warnings": [],
-            },
-        }
-        tool = "codex"
-        tmux_bin_used = "/bin/tmux"
-        tmux_ver_used = "tmux 3.0"
-        session = "cam-deadbeef"
-        SOCKETS_DIR = "/tmp/cam-sockets"
-        camc_tmux_config = "/home/me/.cam/configs/tmux.conf"
-
-        _tool_resolution = (resolved or {}).get("tool_resolution") or {}
-        _python_version = "%d.%d.%d" % (
-            sys.version_info[0], sys.version_info[1], sys.version_info[2])
-        manifest = {
-            "schema": "camc-runtime/1",
-            "python": {"bin": sys.executable, "version": _python_version},
-            "tmux": {
-                "bin":         tmux_bin_used,
-                "version":     tmux_ver_used,
-                "socket":      "%s/%s.sock" % (SOCKETS_DIR, session),
-                "config":      camc_tmux_config,
-                "config_mode": "camc-default" if camc_tmux_config else "system-default",
-                "source":      (resolved or {}).get("tmux_source", "unknown"),
-            },
-            "tool": {
-                "name":     tool,
-                "bin":      _tool_resolution.get("bin") or (resolved or {}).get("tool", ""),
-                "version":  "",
-                "source":   _tool_resolution.get("source", "unknown"),
-                "warnings": list(_tool_resolution.get("warnings", []) or []),
-            },
-            "shell": {
-                "mode": "tmux-default-shell",
-                "note": "launch argv uses absolute tool path",
-            },
-        }
-        assert manifest["schema"] == "camc-runtime/1"
-        assert manifest["python"]["bin"] == sys.executable
-        assert manifest["tmux"]["bin"] == "/bin/tmux"
-        assert manifest["tmux"]["source"] == "golden"
-        assert manifest["tmux"]["config"] == camc_tmux_config
-        assert manifest["tmux"]["config_mode"] == "camc-default"
-        assert manifest["tool"]["name"] == "codex"
-        assert manifest["tool"]["bin"] == "/home/prgn_share/tools/codex/bin/codex"
-        assert manifest["tool"]["source"] == "golden"
-        assert manifest["shell"]["mode"] == "tmux-default-shell"
-
-
 def _write_exe(path, body="echo ok"):
     with open(str(path), "w") as f:
         f.write("#!/bin/sh\n%s\n" % body)

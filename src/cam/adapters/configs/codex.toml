@@ -13,6 +13,7 @@ config_dir = ".codex"
 
 [launch]
 command = ["codex", "-c", "features.goals=true"]
+trust_workspace = true
 prompt_after_launch = true
 startup_wait = 20.0
 # 2026-06-23 PDX hotfix: include U+276F ❯ in addition to U+203A ›

@@ -510,6 +510,37 @@ def insert_prompt(session_id, text, *, observe_fn,
     return _result(False, "fallback", "submit_unconfirmed")
 
 
+def tmux_submit_input(session_id, text,
+                      submit_delay=DEFAULT_PROMPT_SUBMIT_DELAY,
+                      send_input_fn=None, send_key_fn=None, sleep_fn=None):
+    """Backward-compatible unobserved prompt submission helper.
+
+    Message delivery still installs its acknowledgement guard in the owning
+    monitor after this call, so keep the legacy boolean contract until that
+    caller is migrated to :func:`insert_prompt` with an observation callback.
+    """
+    send_input_fn = send_input_fn or tmux_send_input
+    send_key_fn = send_key_fn or tmux_send_key
+    sleep_fn = sleep_fn or time.sleep
+    if not send_input_fn(session_id, text, send_enter=False):
+        return False
+    try:
+        delay = max(0.0, float(submit_delay))
+    except (TypeError, ValueError):
+        delay = DEFAULT_PROMPT_SUBMIT_DELAY
+    fast_delay = min(FAST_PROMPT_SUBMIT_DELAY, delay)
+    if fast_delay:
+        sleep_fn(fast_delay)
+    if not send_key_fn(session_id, "Enter"):
+        return False
+    fallback_delay = delay - fast_delay
+    if fallback_delay:
+        sleep_fn(fallback_delay)
+        if not send_key_fn(session_id, "Enter"):
+            return False
+    return True
+
+
 def tmux_is_attached(session_id):
     """Check if a user is attached to this tmux session."""
     base = _tmux_base(session_id)
