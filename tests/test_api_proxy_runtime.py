@@ -22,6 +22,13 @@ def test_proxy_does_not_duplicate_upstream_v1_prefix():
         "https://inference-api.example.com/v1", "/v1/responses") == "/v1/responses"
 
 
+def test_proxy_recognizes_only_native_llm_endpoint_paths():
+    assert api_proxy.native_endpoint_for_path("/v1/messages?beta=1") == "messages"
+    assert api_proxy.native_endpoint_for_path("/responses") == "responses"
+    assert api_proxy.native_endpoint_for_path("/v1/chat/completions") == "completions"
+    assert api_proxy.native_endpoint_for_path("/v1/unknown") is None
+
+
 def test_proxy_requests_uncompressed_upstream_for_response_cache():
     headers = api_proxy.upstream_request_headers({
         "Authorization": "Bearer secret",
@@ -305,6 +312,23 @@ def test_response_output_is_extracted_from_json_and_sse():
         "resp-1", [reasoning, call])
 
 
+def test_usage_and_cache_tokens_are_observed_without_response_rewrite():
+    raw = (b'data: {"type":"response.output_text.delta","delta":"hello"}\n\n'
+           b'data: {"response":{"usage":{"input_tokens":11,'
+           b'"output_tokens":3,"input_tokens_details":{"cached_tokens":7}}}}\n\n')
+
+    usage = api_proxy.extract_usage(raw)
+
+    assert usage["input_tokens"] == 11
+    assert usage["output_tokens"] == 3
+    assert usage["input_tokens_details"]["cached_tokens"] == 7
+    shape = api_proxy.usage_log_shape(usage, complete=True)
+    assert "input_tokens=11" in shape
+    assert "output_tokens=3" in shape
+    assert "cached_tokens=7" in shape
+    assert "hello" not in shape
+
+
 def test_response_call_cache_is_bounded():
     cache = api_proxy.ResponseCallCache(max_entries=2)
     cache.put("resp-1", [{"type": "function_call", "call_id": "1"}])
@@ -474,7 +498,7 @@ def test_upstream_schema_400_is_not_retried():
     conn.close()
 
 
-def test_upstream_retry_policy_is_data_driven_and_other_errors_pass_through():
+def test_upstream_retry_policy_is_data_driven_and_nonretryable_errors_pass_through():
     class Response(object):
         def __init__(self, status):
             self.status = status
@@ -519,11 +543,49 @@ def test_upstream_retry_policy_is_data_driven_and_other_errors_pass_through():
     conn.close()
 
     calls[:] = []
-    statuses[:] = [500]
+    statuses[:] = [418]
     conn, response = api_proxy.request_upstream_with_retry(
         connect, "POST", "/", b"", {}, sleep=lambda _delay: None)
-    assert response.status == 500
+    assert response.status == 418
     assert len(calls) == 1
+    conn.close()
+
+
+def test_default_retry_policy_covers_transient_gateway_statuses():
+    assert {408, 409, 429, 500, 502, 503, 504}.issubset(
+        api_proxy.RETRY_STATUS_POLICIES)
+
+
+def test_connection_failures_retry_before_any_response_bytes():
+    calls = []
+
+    class Response(object):
+        status = 200
+
+        def getheader(self, _name):
+            return None
+
+    class Connection(object):
+        def request(self, *_args):
+            return None
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            return None
+
+    def connect():
+        calls.append(1)
+        if len(calls) < 3:
+            raise OSError("temporary connect failure")
+        return Connection()
+
+    conn, response = api_proxy.request_upstream_with_retry(
+        connect, "POST", "/responses", b"{}", {}, sleep=lambda _delay: None)
+
+    assert len(calls) == 3
+    assert response.status == 200
     conn.close()
 
 

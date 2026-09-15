@@ -47,6 +47,8 @@ class TestApiStore:
         )
         assert "glm-5.2" in data["apis"]
         assert data["apis"]["glm-5.2"]["model"] == "nvidia/zai-org/eccn-glm-5.2"
+        assert data["apis"]["glm-5.3"]["model"] == "nvidia/zai-org/eccn-glm-5.3"
+        assert data["apis"]["qwen3.8-27b"]["model"] == "nvidia/qwen/eccn-qwen3.8-27b"
         assert "minimax-m3" in data["apis"]
         assert "default" not in data
         assert "default_provider" not in data
@@ -236,7 +238,9 @@ class TestApiResolver:
         assert claude["api_endpoint"] == "anthropic_messages"
         assert codex["api_endpoint"] == "openai_responses"
 
-    def test_disabled_api_rejected(self, api_models_file):
+    def test_disabled_api_rejected(self, api_models_file, monkeypatch):
+        monkeypatch.setattr("camc_pkg.api_resolver.check_provider",
+                            lambda _data: None)
         ensure_ready()
         with pytest.raises(ValueError, match="disabled"):
             resolve_run_plan("claude", "glm-5.2")
@@ -324,6 +328,64 @@ class TestApiResolver:
         assert link.is_symlink()
         assert os.path.realpath(str(link)) == os.path.realpath(str(login_skills))
 
+    def test_codex_api_config_is_isolated_per_agent(self, tmp_path, monkeypatch):
+        from camc_pkg import api_resolver
+        root = tmp_path / ".codex-api"
+        monkeypatch.setattr(api_resolver, "CODEX_API_CONFIG_DIR", str(root))
+        monkeypatch.setattr(
+            "camc_pkg.api_metadata.resolve_api_metadata",
+            lambda _name: {"context_window": 1024},
+        )
+        monkeypatch.setattr(
+            "camc_pkg.api_metadata.write_codex_model_catalog",
+            lambda path, *_args, **_kwargs: open(path, "w").write("{}\n"),
+        )
+
+        first = api_resolver.ensure_codex_api_config_dir(
+            "http://127.0.0.1:1111/v1", "glm-5.3",
+            model_id="nvidia/zai-org/eccn-glm-5.3", owner_id="agent-glm")
+        second = api_resolver.ensure_codex_api_config_dir(
+            "http://127.0.0.1:2222/v1", "qwen3.8-27b",
+            model_id="nvidia/qwen/eccn-qwen3.8-27b", owner_id="agent-qwen")
+
+        assert first != second
+        assert 'base_url = "http://127.0.0.1:1111/v1"' in open(
+            os.path.join(first, "config.toml")).read()
+        assert 'base_url = "http://127.0.0.1:2222/v1"' in open(
+            os.path.join(second, "config.toml")).read()
+        assert api_resolver.remove_codex_api_config_dir("agent-glm") is True
+        assert not os.path.exists(first)
+        assert os.path.exists(second)
+
+    def test_codex_agent_home_links_skills_and_permission_profiles(
+            self, tmp_path, monkeypatch):
+        from camc_pkg import api_resolver
+        donor = tmp_path / ".codex"
+        skills = donor / "skills"
+        skills.mkdir(parents=True)
+        (skills / "example").mkdir()
+        (donor / "aris_yolo.config.toml").write_text(
+            'approval_policy = "never"\nsandbox_mode = "danger-full-access"\n')
+        root = tmp_path / ".codex-api"
+        monkeypatch.setattr(api_resolver, "CODEX_API_CONFIG_DIR", str(root))
+        monkeypatch.setattr(api_resolver, "_codex_default_home", lambda: str(donor))
+        monkeypatch.setattr(
+            "camc_pkg.api_metadata.resolve_api_metadata",
+            lambda _name: {"context_window": 1024},
+        )
+        monkeypatch.setattr(
+            "camc_pkg.api_metadata.write_codex_model_catalog",
+            lambda path, *_args, **_kwargs: open(path, "w").write("{}\n"),
+        )
+
+        home = api_resolver.ensure_codex_api_config_dir(
+            "http://127.0.0.1:1111/v1", "glm-5.2", owner_id="agent-yolo")
+        assert os.path.islink(os.path.join(home, "skills"))
+        assert os.path.islink(os.path.join(home, "aris_yolo.config.toml"))
+        generated = open(os.path.join(home, "config.toml")).read()
+        assert "approval_policy" not in generated
+        assert "sandbox_mode" not in generated
+
     def test_non_curated_api_not_supported(self, api_models_file):
         data = ensure_ready()
         data["apis"]["my-custom"] = {
@@ -398,8 +460,10 @@ class TestApiDefaults:
         assert name is None
         assert source == "login"
 
-    def test_default_requires_enabled(self, api_models_file):
+    def test_default_requires_enabled(self, api_models_file, monkeypatch):
         from camc_pkg.api_store import resolve_run_api_name
+        monkeypatch.setattr("camc_pkg.api_store.check_provider",
+                            lambda _data: None)
         data = ensure_ready()
         data["defaults"] = {"claude": ["glm-5.2"]}
         data["apis"]["glm-5.2"]["enabled"] = False

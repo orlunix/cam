@@ -10,12 +10,15 @@ models that do not publish complete limits.
 - `GET /v1/models` refreshes the provider model-id catalog.
 - `/public/litellm_model_cost_map` supplies context/output limits when
   available; it is fetched directly from the provider host.
-- Codex receives an isolated `~/.codex-api/camc-model-catalog.json` and can
-  switch among enabled profiles advertising `responses` with `/model`.
+- Codex receives an agent-owned `~/.codex-api/<agent-id>/camc-model-catalog.json`
+  and can switch among enabled profiles from the same provider that advertise
+  `responses` with `/model`.
 - Claude receives `CLAUDE_CODE_AUTO_COMPACT_WINDOW` from `context_window`.
 
-The Codex API home links `~/.codex/skills` when that directory exists, and
-does not modify the normal subscription home.
+Each Codex API home links `~/.codex/skills` and any `*.config.toml` permission
+profiles when they exist. It does not modify the normal subscription home.
+Permission escalation remains explicit: CAMC does not enable a linked YOLO
+profile or inject approval/sandbox bypass settings automatically.
 
 ## API entry metadata
 
