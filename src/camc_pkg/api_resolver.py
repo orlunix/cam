@@ -2,6 +2,8 @@
 
 import json
 import os
+import shutil
+import time
 
 from camc_pkg import CAM_DIR
 from camc_pkg.api_routing import build_routing_plan
@@ -118,10 +120,55 @@ def ensure_claude_api_config_dir():
     return CLAUDE_API_CONFIG_DIR
 
 
-def _ensure_codex_skills_link():
+def _codex_default_home():
+    """Return the normal Codex home used only as a read-only donor."""
+    configured = os.environ.get("CODEX_HOME")
+    if configured:
+        return os.path.abspath(os.path.expanduser(configured))
+    return os.path.expanduser("~/.codex")
+
+
+def _link_codex_defaults(config_dir, default_home=None):
+    """Link skills and named permission profiles into one generated home."""
+    default_home = os.path.abspath(os.path.expanduser(
+        default_home or _codex_default_home()))
+    config_dir = os.path.abspath(os.path.expanduser(config_dir))
+    if os.path.realpath(default_home) == os.path.realpath(config_dir):
+        return {}
+    sources = [("skills", os.path.join(default_home, "skills"))]
+    try:
+        names = sorted(os.listdir(default_home))
+    except OSError:
+        names = []
+    for name in names:
+        if name.endswith(".config.toml"):
+            sources.append((name, os.path.join(default_home, name)))
+
+    results = {}
+    for name, source in sources:
+        target = os.path.join(config_dir, name)
+        if not (os.path.isdir(source) or os.path.isfile(source)):
+            results[name] = "missing_source"
+            continue
+        if os.path.islink(target) and os.path.realpath(target) == os.path.realpath(source):
+            results[name] = "linked"
+            continue
+        if os.path.lexists(target):
+            results[name] = "preserved"
+            continue
+        try:
+            os.symlink(source, target, target_is_directory=os.path.isdir(source))
+            results[name] = "linked"
+        except OSError:
+            results[name] = "error"
+    return results
+
+
+def _ensure_codex_skills_link(config_dir=None):
     """Reuse normal Codex skills from the isolated API home, idempotently."""
     source = CODEX_LOGIN_SKILLS_DIR
-    target = os.path.join(CODEX_API_CONFIG_DIR, "skills")
+    config_dir = config_dir or CODEX_API_CONFIG_DIR
+    target = os.path.join(config_dir, "skills")
     if not os.path.isdir(source):
         return "missing_source"
     if os.path.islink(target):
@@ -140,29 +187,39 @@ def _ensure_codex_skills_link():
         except OSError:
             return "preserved"
     try:
-        os.makedirs(CODEX_API_CONFIG_DIR, exist_ok=True)
+        os.makedirs(config_dir, exist_ok=True)
         os.symlink(source, target, target_is_directory=True)
         return "linked"
     except OSError:
         return "error"
 
 
+def _codex_owner_dir(owner_id=""):
+    if not owner_id:
+        return CODEX_API_CONFIG_DIR
+    safe = "".join(c for c in str(owner_id) if c.isalnum() or c in "-_")
+    if not safe:
+        raise ValueError("invalid Codex API config owner id")
+    return os.path.join(CODEX_API_CONFIG_DIR, safe)
+
+
 def ensure_codex_api_config_dir(base_url, api_name, require_endpoint="responses",
-                                model_id=None):
-    """Seed ~/.codex-api/ for Codex --api (isolated from ~/.codex/)."""
+                                model_id=None, owner_id=""):
+    """Seed one agent-owned Codex API home without touching normal login."""
     from camc_pkg.api_metadata import resolve_api_metadata, write_codex_model_catalog
 
-    os.makedirs(CODEX_API_CONFIG_DIR, exist_ok=True)
-    _ensure_codex_skills_link()
+    config_dir = _codex_owner_dir(owner_id)
+    os.makedirs(config_dir, exist_ok=True)
+    _link_codex_defaults(config_dir)
     base_url = str(base_url or "").rstrip("/")
     api_name = str(api_name or "api")
     model_id = str(model_id or api_name)
-    catalog_path = os.path.join(CODEX_API_CONFIG_DIR, "camc-model-catalog.json")
+    catalog_path = os.path.join(config_dir, "camc-model-catalog.json")
     metadata = resolve_api_metadata(api_name)
     write_codex_model_catalog(
         catalog_path, api_name, metadata, require_endpoint=require_endpoint,
         model_id=model_id)
-    config_path = os.path.join(CODEX_API_CONFIG_DIR, "config.toml")
+    config_path = os.path.join(config_dir, "config.toml")
     content = (
         'model = "%s"\n'
         'model_provider = "%s"\n'
@@ -191,7 +248,29 @@ def ensure_codex_api_config_dir(base_url, api_name, require_endpoint="responses"
                 f.write(content)
     except IOError:
         pass
-    return CODEX_API_CONFIG_DIR
+    return config_dir
+
+
+def remove_codex_api_config_dir(owner_id):
+    """Remove only one generated per-agent Codex home."""
+    if not owner_id:
+        return False
+    path = _codex_owner_dir(owner_id)
+    root = os.path.realpath(CODEX_API_CONFIG_DIR)
+    target = os.path.realpath(path)
+    if not target.startswith(root + os.sep):
+        return False
+    if not os.path.isdir(target):
+        return False
+    for attempt in range(10):
+        try:
+            shutil.rmtree(target)
+            return True
+        except OSError:
+            if attempt == 9:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+    return False
 
 
 def resolve_run_plan(tool, api_name):
@@ -239,6 +318,7 @@ def resolve_run_plan(tool, api_name):
         "local_base_url": routing["local_base_url"],
         "tool_protocol": routing["tool_protocol"],
         "api_endpoint": routing.get("api_endpoint"),
+        "available_endpoints": list(api_entry.get("available_endpoints") or []),
         "base_url_suffix": routing.get("base_url_suffix") or "",
         "upstream_base_url": str(provider.get("base_url") or "").rstrip("/"),
         "auth_key": provider.get("auth_key") or "inference_hub",
