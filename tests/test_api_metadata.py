@@ -87,6 +87,20 @@ class TestMergeApiMetadata:
         meta = merge_api_metadata("glm-5.2", "nvidia/zai-org/eccn-glm-5.2", {})
         assert meta["context_window"] == 1048576
 
+    def test_partial_metadata_is_preserved_without_context_window(
+            self, api_models_file):
+        from camc_pkg.api_metadata import resolve_api_metadata
+        data = ensure_ready()
+        data["apis"]["qwen3.8-27b"]["metadata"] = {
+            "max_output_tokens": 32768,
+            "mode": "chat",
+            "source": "litellm_cost_map",
+        }
+        meta = resolve_api_metadata("qwen3.8-27b", data=data)
+        assert meta["max_output_tokens"] == 32768
+        assert meta["mode"] == "chat"
+        assert meta["source"] == "litellm_cost_map"
+
 
 class TestSyncMetadataInData:
     def test_writes_all_apis(self, api_models_file):
@@ -202,6 +216,23 @@ class TestCodexCatalog:
             "nvidia/moonshotai/eccn-kimi-k3",
         ]
 
+    def test_catalog_is_scoped_to_selected_provider(self, api_models_file):
+        data = ensure_ready()
+        data["apis"]["glm-5.2"]["enabled"] = True
+        data["providers"]["other"] = {"base_url": "https://other.example"}
+        data["apis"]["other-model"] = {
+            "provider": "other", "model": "vendor/other",
+            "enabled": True, "available_endpoints": ["responses"],
+            "aliases": [],
+        }
+        data["tool_supported_apis"]["codex"].append("other-model")
+
+        rows = codex_catalog_models(
+            "glm-5.2", data=data, template={"shell_type": "default"},
+            require_endpoint="responses")
+
+        assert "vendor/other" not in [row["slug"] for row in rows]
+
     def test_catalog_has_one_profile_for_unified_kimi_model(
             self, api_models_file):
         data = ensure_ready()
@@ -222,7 +253,7 @@ class TestCodexCatalog:
         row = codex_catalog_model("glm-5.2", apply_metadata_fallbacks("glm-5.2", {}), template=template)
         assert row["slug"] == "glm-5.2"
         assert row["context_window"] == 1048576
-        assert row["shell_type"] in ("shell_command", "default")
+        assert row["shell_type"] in ("shell_command", "unified_exec", "default")
         assert row["priority"] == 1000
         assert "base_instructions" in row
         assert row["supported_reasoning_levels"] == []

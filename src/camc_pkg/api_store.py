@@ -28,12 +28,14 @@ LEGACY_KIMI_K3_PROFILES = ("kimi-k3-low", "kimi-k3-high", "kimi-k3-max")
 
 CURATED_APIS = [
     ("glm-5.2", "nvidia/zai-org/eccn-glm-5.2", ["glm", "glm52"]),
+    ("glm-5.3", "nvidia/zai-org/eccn-glm-5.3", ["glm53"]),
     ("deepseek-v4-flash", "nvidia/deepseek-ai/eccn-deepseek-v4-flash", ["deepseek-flash", "ds-v4-flash"]),
     ("deepseek-v4-pro", "nvidia/deepseek-ai/eccn-deepseek-v4-pro", ["deepseek", "ds-v4"]),
     ("kimi-k2.6", "nvidia/moonshotai/eccn-kimi-k2.6", ["kimi", "k2.6"]),
     (KIMI_K3_KEY, "nvidia/moonshotai/eccn-kimi-k3", ["k3"]),
     ("minimax-m3", "nvidia/minimaxai/eccn-minimax-m3", ["minimax", "m3"]),
     ("qwen3-5-397b", "nvidia/qwen/eccn-qwen3-5-397b-a17b", ["qwen397", "qwen3.5"]),
+    ("qwen3.8-27b", "nvidia/qwen/eccn-qwen3.8-27b", ["qwen38"]),
     ("nemotron-3-ultra", "nvidia/nvidia/eccn-nemotron-3-ultra", ["nemotron", "nemo-ultra"]),
 ]
 
@@ -42,12 +44,14 @@ CURATED_APIS = [
 # so it intentionally keeps the completion fallback for Claude.
 CURATED_AVAILABLE_ENDPOINTS = {
     "glm-5.2": ["completions", "messages", "responses"],
+    "glm-5.3": ["completions", "messages", "responses"],
     "deepseek-v4-flash": ["completions", "messages", "responses"],
     "deepseek-v4-pro": ["completions", "messages", "responses"],
     "kimi-k2.6": ["completions", "messages", "responses"],
     KIMI_K3_KEY: ["completions", "responses"],
     "minimax-m3": ["completions", "messages", "responses"],
     "qwen3-5-397b": ["completions", "messages", "responses"],
+    "qwen3.8-27b": ["completions", "messages", "responses"],
     "nemotron-3-ultra": ["completions", "messages", "responses"],
 }
 
@@ -55,6 +59,7 @@ CLAUDE_CLIENT_MODELS = {
     "deepseek-v4-flash": "claude-haiku-5-dsv4f",
     "deepseek-v4-pro": "claude-opus-5-dsv4p",
     "glm-5.2": "claude-sonnet-5-glm52",
+    "glm-5.3": "claude-sonnet-5-glm53",
     "kimi-k2.6": "claude-sonnet-5-kimi26",
 }
 

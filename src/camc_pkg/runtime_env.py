@@ -517,6 +517,8 @@ def _spec_from_readiness(readiness):
     # treats version_args failures as blocking (F2 fix). Carry it so a
     # future advisory mode can opt out.
     spec["version_required"] = bool(readiness.get("version_required", True))
+    if readiness.get("version_timeout"):
+        spec["version_timeout"] = readiness["version_timeout"]
     return spec
 
 
@@ -705,7 +707,8 @@ def check_tool_readiness(runtime, selected_tool, tool_binary=None,
         resolved["tool"] = tool_path
         version_args = spec.get("version_args", ["--version"])
         rc, _out = (0, "") if other_tool else run_probe(
-            runtime, [tool_path] + version_args, timeout=5)
+            runtime, [tool_path] + version_args,
+            timeout=spec.get("version_timeout", 5))
         # F2: any non-zero rc — including -1 (timeout/OSError) — must
         # block. The previous "warn for rc != 0 and rc != -1" branch
         # let a broken-but-present binary silently pass readiness, then

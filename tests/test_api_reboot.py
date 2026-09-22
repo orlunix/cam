@@ -132,8 +132,10 @@ def test_codex_api_reboot_migrates_retired_model_to_current_profile(
     configured = []
     monkeypatch.setattr(
         "camc_pkg.api_resolver.ensure_codex_api_config_dir",
-        lambda base_url, name, require_endpoint="responses", model_id=None:
-        configured.append((base_url, name, require_endpoint, model_id)) or
+        lambda base_url, name, require_endpoint="responses", model_id=None,
+        owner_id="":
+        configured.append((base_url, name, require_endpoint, model_id,
+                           owner_id)) or
         "/tmp/.codex-api",
     )
     monkeypatch.setattr("camc_pkg.api_resolver.resolve_run_plan",
@@ -146,5 +148,5 @@ def test_codex_api_reboot_migrates_retired_model_to_current_profile(
     assert updated["api"]["model"] == "nvidia/moonshotai/eccn-kimi-k3"
     assert configured == [(
         "http://127.0.0.1:32123/v1", "kimi-k3", "responses",
-        "nvidia/moonshotai/eccn-kimi-k3",
+        "nvidia/moonshotai/eccn-kimi-k3", "deadbeef",
     )]

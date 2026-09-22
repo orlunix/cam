@@ -798,6 +798,8 @@ def _start_api_proxy(api_plan, owner_id, port=0):
         "--upstream-model", api_plan.get("model") or "",
         "--alias", api_plan.get("client_model") or "",
         "--owner", owner_id,
+        "--available-endpoints", json.dumps(
+            api_plan.get("available_endpoints") or [], separators=(",", ":")),
         "--reasoning-map", json.dumps(
             api_plan.get("reasoning_mapping") or {}, separators=(",", ":")),
     ]
@@ -1132,9 +1134,16 @@ def cmd_run(args):
                 runtime.env["CODEX_HOME"] = ensure_codex_api_config_dir(
                     proxy_url, api_plan.get("name") or "api",
                     require_endpoint="responses",
-                    model_id=api_plan.get("model"))
+                    model_id=api_plan.get("model"), owner_id=agent_id)
             print_info("API proxy listening on %d" % proxy_port)
         except Exception as e:
+            _stop_api_proxy(api_proxy_proc)
+            if tool == "codex":
+                try:
+                    from camc_pkg.api_resolver import remove_codex_api_config_dir
+                    remove_codex_api_config_dir(agent_id)
+                except Exception:
+                    pass
             print_error("API proxy failed: %s" % e)
             sys.exit(1)
     if not create_tmux_session(session, launch_cmd, workdir,
@@ -1143,6 +1152,12 @@ def cmd_run(args):
                                tmux_config=camc_tmux_config,
                                exit_status_path=exit_status_path or None):
         _stop_api_proxy(api_proxy_proc)
+        if tool == "codex" and api_plan:
+            try:
+                from camc_pkg.api_resolver import remove_codex_api_config_dir
+                remove_codex_api_config_dir(agent_id)
+            except Exception:
+                pass
         print_error("Failed to create tmux session for '%s'" % session)
         print_info("Debug: %s -u -S %s/%s.sock new-session -d -s %s -c %s" %
                    (resolved_tmux, SOCKETS_DIR, session, session, workdir))
@@ -3562,7 +3577,7 @@ def cmd_migrate(args):
                 ensure_codex_api_config_dir(
                     proxy_url, api_plan.get("name") or "api",
                     require_endpoint="responses",
-                    model_id=api_plan.get("model"))
+                    model_id=api_plan.get("model"), owner_id=old_id)
             except OSError as e:
                 print_warning("Codex API catalog refresh skipped: %s" % e)
 

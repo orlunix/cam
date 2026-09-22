@@ -43,6 +43,12 @@ CURATED_METADATA_FALLBACKS = {
         "supports_tools": True,
         "supports_reasoning": True,
     },
+    "glm-5.3": {
+        "context_window": 1048576,
+        "max_output_tokens": 131072,
+        "supports_tools": True,
+        "supports_reasoning": True,
+    },
     "deepseek-v4-pro": {
         "context_window": 1048576,
         "max_output_tokens": 131072,
@@ -58,6 +64,11 @@ CURATED_METADATA_FALLBACKS = {
     "qwen3-5-397b": {
         "context_window": 262144,
         "max_output_tokens": 131072,
+        "supports_tools": True,
+        "supports_reasoning": True,
+    },
+    "qwen3.8-27b": {
+        "max_output_tokens": 32768,
         "supports_tools": True,
         "supports_reasoning": True,
     },
@@ -89,9 +100,11 @@ CURATED_METADATA_FALLBACKS = {
 
 DISPLAY_NAMES = {
     "glm-5.2": "GLM 5.2",
+    "glm-5.3": "GLM 5.3",
     "deepseek-v4-pro": "DeepSeek V4 Pro",
     "deepseek-v4-flash": "DeepSeek V4 Flash",
     "qwen3-5-397b": "Qwen3.5 397B",
+    "qwen3.8-27b": "Qwen3.8 27B",
     "kimi-k2.6": "Kimi K2.6",
     "kimi-k3": "Kimi K3",
     "minimax-m3": "MiniMax M3",
@@ -303,7 +316,10 @@ def resolve_api_metadata(api_name, data=None):
         data = load_api_models()
     _key, entry = get_api_entry(data, api_name)
     meta = entry.get("metadata")
-    if isinstance(meta, dict) and meta.get("context_window"):
+    # Cost maps can publish useful partial rows (for example output limits or
+    # price data without a context window). Preserve every known field and
+    # fill only the gaps from curated defaults.
+    if isinstance(meta, dict):
         return apply_metadata_fallbacks(_key, meta)
     model = entry.get("model")
     return merge_api_metadata(_key, str(model or ""), {})
@@ -405,10 +421,19 @@ def codex_catalog_models(default_api_name, data=None, template=None,
     apis = data.get("apis") if isinstance(data, dict) else {}
     apis = apis if isinstance(apis, dict) else {}
     default_name = str(default_api_name or "").strip()
+    selected_entry = apis.get(default_name)
+    selected_entry = selected_entry if isinstance(selected_entry, dict) else {}
+    selected_provider = (selected_entry.get("provider") or
+                         (data.get("default_provider") if isinstance(data, dict)
+                          else None))
     names = []
     for name in sorted(apis):
         entry = apis.get(name)
         if not isinstance(entry, dict) or entry.get("enabled") is not True:
+            continue
+        entry_provider = entry.get("provider") or (
+            data.get("default_provider") if isinstance(data, dict) else None)
+        if selected_provider and entry_provider != selected_provider:
             continue
         if (require_endpoint
                 and require_endpoint not in normalize_available_endpoints(

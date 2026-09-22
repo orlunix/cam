@@ -17,6 +17,18 @@ API_MODELS_FILE = os.path.join(os.path.expanduser("~/.cam"), "api-models.json")
 _DEBUG_CACHE = {"path": None, "signature": None, "enabled": False}
 _MAX_RESPONSE_CAPTURE = 4 * 1024 * 1024
 _MAX_ERROR_INSPECT = 64 * 1024
+_MAX_CONNECT_ATTEMPTS = 3
+_HOP_HEADERS = frozenset((
+    "connection", "content-length", "host", "keep-alive",
+    "proxy-authenticate", "proxy-authorization", "te", "trailer",
+    "transfer-encoding", "upgrade", "accept-encoding",
+))
+_NATIVE_PATHS = {
+    "/messages": "messages",
+    "/messages/count_tokens": "messages",
+    "/responses": "responses",
+    "/chat/completions": "completions",
+}
 
 
 def _is_retryable_internal_400(status, body):
@@ -28,8 +40,14 @@ def _is_retryable_internal_400(status, body):
 
 
 RETRY_STATUS_POLICIES = {
+    408: {"max_elapsed": 8.0, "initial_delay": .5, "max_delay": 2.0},
+    409: {"max_elapsed": 8.0, "initial_delay": .5, "max_delay": 2.0},
     429: {"max_elapsed": 300.0, "initial_delay": 1.0,
           "max_delay": 30.0},
+    500: {"max_elapsed": 8.0, "initial_delay": .5, "max_delay": 2.0},
+    502: {"max_elapsed": 8.0, "initial_delay": .5, "max_delay": 2.0},
+    503: {"max_elapsed": 8.0, "initial_delay": .5, "max_delay": 2.0},
+    504: {"max_elapsed": 8.0, "initial_delay": .5, "max_delay": 2.0},
     400: {"max_elapsed": 8.0, "initial_delay": 1.0,
           "max_delay": 2.0, "retry_if": _is_retryable_internal_400},
 }
@@ -61,11 +79,18 @@ def upstream_request_path(upstream_url, request_path):
 def upstream_request_headers(headers, body_length):
     """Build upstream headers while keeping the response cache readable."""
     result = {key: value for key, value in headers.items()
-              if key.lower() not in ("host", "content-length", "connection",
-                                     "accept-encoding")}
+              if key.lower() not in _HOP_HEADERS}
     result["Accept-Encoding"] = "identity"
     result["Content-Length"] = str(body_length)
     return result
+
+
+def native_endpoint_for_path(request_path):
+    """Return the native protocol name for one supported LLM path."""
+    path = urlsplit(str(request_path or "/")).path.rstrip("/") or "/"
+    if path.startswith("/v1/"):
+        path = path[3:]
+    return _NATIVE_PATHS.get(path)
 
 
 def _retry_after_seconds(value, now=None):
@@ -82,17 +107,35 @@ def _retry_after_seconds(value, now=None):
 
 
 def request_upstream_with_retry(connect, method, path, body, headers,
-                                policies=None, sleep=time.sleep,
-                                monotonic=time.monotonic,
+                                policies=None, sleep=None,
+                                monotonic=None,
                                 jitter=None, on_retry=None):
     """Open an upstream response, hiding only configured transient statuses."""
     policies = RETRY_STATUS_POLICIES if policies is None else policies
+    sleep = sleep or time.sleep
+    monotonic = monotonic or time.monotonic
     jitter = jitter or (lambda delay: random.uniform(delay * .8, delay * 1.2))
     started, attempts = monotonic(), 0
     while True:
-        conn = connect()
-        conn.request(method, path, body, headers)
-        response = conn.getresponse()
+        conn = None
+        try:
+            conn = connect()
+            conn.request(method, path, body, headers)
+            response = conn.getresponse()
+        except (OSError, http.client.HTTPException):
+            if conn:
+                try:
+                    conn.close()
+                except (IOError, OSError):
+                    pass
+            attempts += 1
+            delay = min(2.0, .5 * (2 ** (attempts - 1)))
+            if attempts >= _MAX_CONNECT_ATTEMPTS:
+                raise
+            if on_retry:
+                on_retry("connection", attempts, delay)
+            sleep(delay)
+            continue
         policy = policies.get(response.status)
         if not policy:
             return conn, response
@@ -110,6 +153,8 @@ def request_upstream_with_retry(connect, method, path, body, headers,
         base = min(float(policy.get("max_delay", 30)),
                    float(policy.get("initial_delay", 1)) * (2 ** attempts))
         retry_after = _retry_after_seconds(response.getheader("Retry-After"))
+        if retry_after is not None:
+            retry_after = min(retry_after, float(policy.get("max_delay", 30)))
         delay = max(.25, retry_after if retry_after is not None else jitter(base))
         if remaining <= 0 or delay > remaining:
             return conn, response
@@ -140,24 +185,36 @@ def read_upstream_response(response, size=65536):
     return response.read(size)
 
 
+def _cleanup_agent_codex_home(agent, owner):
+    task = agent.get("task") if isinstance(agent, dict) else None
+    tool = ((task or {}).get("tool") if isinstance(task, dict) else None) or (
+        agent.get("tool") if isinstance(agent, dict) else None)
+    if tool == "codex" and owner:
+        try:
+            from camc_pkg.api_resolver import remove_codex_api_config_dir
+            remove_codex_api_config_dir(owner)
+        except (IOError, OSError, ValueError):
+            pass
+
+
 def stop_agent_api_proxy(agent):
     """Terminate only the proxy whose command line names this exact agent."""
     api = agent.get("api") if isinstance(agent, dict) else None
+    owner = agent.get("id", "") if isinstance(agent, dict) else ""
     try:
         pid = int((api or {}).get("proxy_pid") or 0)
     except (TypeError, ValueError):
-        return
-    if pid <= 0:
-        return
-    try:
-        with open("/proc/%d/cmdline" % pid, "rb") as handle:
-            cmdline = handle.read().decode("utf-8", "replace")
-        marker = "--owner\x00%s\x00" % agent.get("id", "")
-        if "_api_proxy\x00" not in cmdline or marker not in cmdline:
-            return
-        os.kill(pid, signal.SIGTERM)
-    except (IOError, OSError):
-        pass
+        pid = 0
+    if pid > 0:
+        try:
+            with open("/proc/%d/cmdline" % pid, "rb") as handle:
+                cmdline = handle.read().decode("utf-8", "replace")
+            marker = "--owner\x00%s\x00" % owner
+            if "_api_proxy\x00" in cmdline and marker in cmdline:
+                os.kill(pid, signal.SIGTERM)
+        except (IOError, OSError):
+            pass
+    _cleanup_agent_codex_home(agent, owner)
 
 
 class ResponseCallCache(object):
@@ -303,6 +360,55 @@ def extract_response_output(body):
 extract_response_calls = extract_response_output
 
 
+def extract_usage(body):
+    """Observe the last JSON/SSE usage object without changing response bytes."""
+    if not body:
+        return {}
+    objects = []
+    try:
+        objects.append(json.loads(bytes(body).decode("utf-8")))
+    except (UnicodeDecodeError, ValueError):
+        for raw in bytes(body).splitlines():
+            if not raw.startswith(b"data:"):
+                continue
+            data = raw[5:].strip()
+            if not data or data == b"[DONE]":
+                continue
+            try:
+                objects.append(json.loads(data.decode("utf-8")))
+            except (UnicodeDecodeError, ValueError):
+                continue
+    usage = {}
+    for obj in objects:
+        if not isinstance(obj, dict):
+            continue
+        candidate = obj.get("usage")
+        response = obj.get("response")
+        if not isinstance(candidate, dict) and isinstance(response, dict):
+            candidate = response.get("usage")
+        if isinstance(candidate, dict):
+            usage = dict(candidate)
+    return usage
+
+
+def usage_log_shape(usage, complete=True):
+    """Flatten only token counters for body- and credential-free logging."""
+    if not isinstance(usage, dict):
+        usage = {}
+    fields = {"complete": int(bool(complete))}
+    for key in ("input_tokens", "output_tokens", "total_tokens",
+                "cache_read_input_tokens", "cache_creation_input_tokens"):
+        value = usage.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            fields[key] = value
+    details = usage.get("input_tokens_details")
+    if isinstance(details, dict):
+        value = details.get("cached_tokens")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            fields["cached_tokens"] = value
+    return ",".join("%s=%s" % (key, fields[key]) for key in sorted(fields))
+
+
 def debug_log_file_for_owner(owner):
     """Return the fixed owner log path when JSON debug is enabled now."""
     try:
@@ -359,6 +465,17 @@ class _Handler(BaseHTTPRequestHandler):
         return
 
     def do_GET(self):
+        if urlsplit(self.path).path.rstrip("/") in ("/health", "/healthz"):
+            raw = json.dumps({"ok": True, "status": "ok",
+                              "route": "camc_proxy",
+                              "mode": "native-endpoints-only"},
+                             separators=(",", ":")).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         self._forward()
 
     def do_POST(self):
@@ -366,6 +483,18 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _forward(self):
         started = time.time()
+        endpoint = native_endpoint_for_path(self.path)
+        available = self.server.available_endpoints
+        if not endpoint or (available and endpoint not in available):
+            raw = json.dumps({"error": {"type": "invalid_request_error",
+                                        "message": "native endpoint unavailable; protocol conversion is disabled"}},
+                             separators=(",", ":")).encode("utf-8")
+            self.send_response(400 if endpoint else 404)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         length = int(self.headers.get("Content-Length", "0") or 0)
         log_file = debug_log_file_for_owner(self.server.owner)
         with self.server.transaction_lock:
@@ -380,14 +509,18 @@ class _Handler(BaseHTTPRequestHandler):
         except (UnicodeDecodeError, ValueError):
             payload = None
         if isinstance(payload, dict):
-            input_types = [str(item.get("type") or "-")
-                           for item in (payload.get("input") or [])
-                           if isinstance(item, dict)]
-            had_previous = bool(payload.get("previous_response_id"))
-            expanded = expand_tool_continuation(
-                payload, self.server.response_call_cache)
-            normalized = normalize_tool_history(payload)
-            text_normalized = normalize_response_text_format(payload)
+            input_types = []
+            had_previous = False
+            expanded = normalized = text_normalized = False
+            if endpoint == "responses":
+                input_types = [str(item.get("type") or "-")
+                               for item in (payload.get("input") or [])
+                               if isinstance(item, dict)]
+                had_previous = bool(payload.get("previous_response_id"))
+                expanded = expand_tool_continuation(
+                    payload, self.server.response_call_cache)
+                normalized = normalize_tool_history(payload)
+                text_normalized = normalize_response_text_format(payload)
             reasoning_normalized = normalize_reasoning_effort(
                 payload, self.server.reasoning_mapping)
             write_proxy_log(
@@ -396,12 +529,10 @@ class _Handler(BaseHTTPRequestHandler):
                 "previous=%d,expanded=%d,normalized=%d,input=%s" %
                 (had_previous, expanded, normalized,
                  ",".join(input_types) or "-"))
-            model = str(payload.get("model") or "")
-            if model == self.server.alias or model.startswith(self.server.alias + "["):
-                payload["model"] = self.server.upstream_model
-            if (text_normalized or reasoning_normalized or
-                    model == self.server.alias or model.startswith(
-                    self.server.alias + "[")):
+            model_changed = payload.get("model") != self.server.upstream_model
+            payload["model"] = self.server.upstream_model
+            if (expanded or normalized or text_normalized or
+                    reasoning_normalized or model_changed):
                 body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         target = urlsplit(self.server.upstream_url)
         conn_type = (http.client.HTTPSConnection if target.scheme == "https"
@@ -425,15 +556,23 @@ class _Handler(BaseHTTPRequestHandler):
                             self.command, self.path,
                             self.server.upstream_model, response.status,
                             (time.time() - started) * 1000, "")
-            self.send_response(response.status)
-            for key, value in response.getheaders():
-                if key.lower() in ("content-length", "transfer-encoding",
-                                   "connection", "server", "date"):
-                    continue
-                self.send_header(key, value)
-            self.send_header("Connection", "close")
-            self.end_headers()
+            try:
+                self.send_response(response.status)
+                for key, value in response.getheaders():
+                    if key.lower() in _HOP_HEADERS or key.lower() in ("server", "date"):
+                        continue
+                    self.send_header(key, value)
+                self.send_header("Connection", "close")
+                self.end_headers()
+            except OSError:
+                write_proxy_log(
+                    log_file, transaction_id, "request_complete", self.command,
+                    self.path, self.server.upstream_model, response.status,
+                    (time.time() - started) * 1000, "ClientDisconnect",
+                    usage_log_shape({}, complete=False))
+                return
             captured = bytearray()
+            complete = True
             while True:
                 chunk = read_upstream_response(response, 65536)
                 if not chunk:
@@ -441,9 +580,21 @@ class _Handler(BaseHTTPRequestHandler):
                 captured.extend(chunk)
                 if len(captured) > _MAX_RESPONSE_CAPTURE:
                     del captured[:-_MAX_RESPONSE_CAPTURE]
-                self.wfile.write(chunk)
-                self.wfile.flush()
-            if response.status == 200:
+                try:
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                except OSError:
+                    complete = False
+                    self.close_connection = True
+                    break
+            usage = extract_usage(bytes(captured))
+            write_proxy_log(
+                log_file, transaction_id, "request_complete", self.command,
+                self.path, self.server.upstream_model, response.status,
+                (time.time() - started) * 1000,
+                "" if complete else "ClientDisconnect",
+                usage_log_shape(usage, complete=complete))
+            if response.status == 200 and endpoint == "responses":
                 response_id, calls = extract_response_output(bytes(captured))
                 self.server.response_call_cache.put(response_id, calls)
                 write_proxy_log(
@@ -466,7 +617,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def bind_server(port, upstream_url="", upstream_model="", alias="", owner="",
-                reasoning_mapping=None):
+                reasoning_mapping=None, available_endpoints=None):
     server = ThreadingHTTPServer(("127.0.0.1", int(port)), _Handler)
     actual = int(server.server_address[1])
     if actual <= 0:
@@ -477,6 +628,9 @@ def bind_server(port, upstream_url="", upstream_model="", alias="", owner="",
     server.alias = str(alias)
     server.owner = str(owner or "")
     server.reasoning_mapping = dict(reasoning_mapping or {})
+    server.available_endpoints = frozenset(
+        ("completions", "messages", "responses")
+        if available_endpoints is None else available_endpoints)
     server.transaction_count = 0
     server.transaction_lock = threading.Lock()
     server.response_call_cache = ResponseCallCache()
@@ -490,6 +644,7 @@ def run_api_proxy(argv=None):
     parser.add_argument("--upstream-model", required=True)
     parser.add_argument("--alias", required=True)
     parser.add_argument("--owner", default="")
+    parser.add_argument("--available-endpoints", default="")
     parser.add_argument("--reasoning-map", default="{}")
     args = parser.parse_args(argv)
     # The proxy belongs to the agent record, not to the short-lived `run`
@@ -501,8 +656,14 @@ def run_api_proxy(argv=None):
         reasoning_mapping = json.loads(args.reasoning_map)
     except ValueError:
         reasoning_mapping = {}
+    try:
+        available_endpoints = (json.loads(args.available_endpoints)
+                               if args.available_endpoints else None)
+    except ValueError:
+        available_endpoints = None
     server = bind_server(args.port, args.upstream_url, args.upstream_model,
-                         args.alias, args.owner, reasoning_mapping)
+                         args.alias, args.owner, reasoning_mapping,
+                         available_endpoints)
     print(server.server_address[1], flush=True)
     try:
         server.serve_forever()
