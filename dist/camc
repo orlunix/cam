@@ -704,8 +704,8 @@ import urllib.request
 # Constants and logging
 # ===========================================================================
 
-__version__ = "1.2.137"
-__build__ = "0fcf80c 2026-09-06 05:10"
+__version__ = "1.2.138"
+__build__ = "543ab82-dirty 2026-09-14 23:38"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -1218,6 +1218,7 @@ exit_command = "/exit"        # command to send if exit_action = "send_exit"
 binary = "claude"
 version_args = ["--version"]
 version_required = true
+version_timeout = 15
 install_hint = "npm install -g @anthropic-ai/claude-code"
 
 [[readiness.required_files]]
@@ -2649,6 +2650,8 @@ def _spec_from_readiness(readiness):
     # treats version_args failures as blocking (F2 fix). Carry it so a
     # future advisory mode can opt out.
     spec["version_required"] = bool(readiness.get("version_required", True))
+    if readiness.get("version_timeout"):
+        spec["version_timeout"] = readiness["version_timeout"]
     return spec
 
 
@@ -2837,7 +2840,8 @@ def check_tool_readiness(runtime, selected_tool, tool_binary=None,
         resolved["tool"] = tool_path
         version_args = spec.get("version_args", ["--version"])
         rc, _out = (0, "") if other_tool else run_probe(
-            runtime, [tool_path] + version_args, timeout=5)
+            runtime, [tool_path] + version_args,
+            timeout=spec.get("version_timeout", 5))
         # F2: any non-zero rc — including -1 (timeout/OSError) — must
         # block. The previous "warn for rc != 0 and rc != -1" branch
         # let a broken-but-present binary silently pass readiness, then
@@ -8781,12 +8785,14 @@ LEGACY_KIMI_K3_PROFILES = ("kimi-k3-low", "kimi-k3-high", "kimi-k3-max")
 
 CURATED_APIS = [
     ("glm-5.2", "models/zai-org/dep-glm-5.2", ["glm", "glm52"]),
+    ("glm-5.3", "models/zai-org/dep-glm-5.3", ["glm53"]),
     ("deepseek-v4-flash", "models/deepseek-ai/dep-deepseek-v4-flash", ["deepseek-flash", "ds-v4-flash"]),
     ("deepseek-v4-pro", "models/deepseek-ai/dep-deepseek-v4-pro", ["deepseek", "ds-v4"]),
     ("kimi-k2.6", "models/moonshotai/dep-kimi-k2.6", ["kimi", "k2.6"]),
     (KIMI_K3_KEY, "models/moonshotai/dep-kimi-k3", ["k3"]),
     ("minimax-m3", "models/minimaxai/dep-minimax-m3", ["minimax", "m3"]),
     ("qwen3-5-397b", "models/qwen/dep-qwen3-5-397b-a17b", ["qwen397", "qwen3.5"]),
+    ("qwen3.8-27b", "models/qwen/dep-qwen3.8-27b", ["qwen38"]),
     ("nemotron-3-ultra", "models/models/dep-nemotron-3-ultra", ["nemotron", "nemo-ultra"]),
 ]
 
@@ -8795,12 +8801,14 @@ CURATED_APIS = [
 # so it intentionally keeps the completion fallback for Claude.
 CURATED_AVAILABLE_ENDPOINTS = {
     "glm-5.2": ["completions", "messages", "responses"],
+    "glm-5.3": ["completions", "messages", "responses"],
     "deepseek-v4-flash": ["completions", "messages", "responses"],
     "deepseek-v4-pro": ["completions", "messages", "responses"],
     "kimi-k2.6": ["completions", "messages", "responses"],
     KIMI_K3_KEY: ["completions", "responses"],
     "minimax-m3": ["completions", "messages", "responses"],
     "qwen3-5-397b": ["completions", "messages", "responses"],
+    "qwen3.8-27b": ["completions", "messages", "responses"],
     "nemotron-3-ultra": ["completions", "messages", "responses"],
 }
 
@@ -8808,6 +8816,7 @@ CLAUDE_CLIENT_MODELS = {
     "deepseek-v4-flash": "claude-haiku-5-dsv4f",
     "deepseek-v4-pro": "claude-opus-5-dsv4p",
     "glm-5.2": "claude-sonnet-5-glm52",
+    "glm-5.3": "claude-sonnet-5-glm53",
     "kimi-k2.6": "claude-sonnet-5-kimi26",
 }
 
@@ -9507,6 +9516,12 @@ CURATED_METADATA_FALLBACKS = {
         "supports_tools": True,
         "supports_reasoning": True,
     },
+    "glm-5.3": {
+        "context_window": 1048576,
+        "max_output_tokens": 131072,
+        "supports_tools": True,
+        "supports_reasoning": True,
+    },
     "deepseek-v4-pro": {
         "context_window": 1048576,
         "max_output_tokens": 131072,
@@ -9522,6 +9537,11 @@ CURATED_METADATA_FALLBACKS = {
     "qwen3-5-397b": {
         "context_window": 262144,
         "max_output_tokens": 131072,
+        "supports_tools": True,
+        "supports_reasoning": True,
+    },
+    "qwen3.8-27b": {
+        "max_output_tokens": 32768,
         "supports_tools": True,
         "supports_reasoning": True,
     },
@@ -9553,9 +9573,11 @@ CURATED_METADATA_FALLBACKS = {
 
 DISPLAY_NAMES = {
     "glm-5.2": "GLM 5.2",
+    "glm-5.3": "GLM 5.3",
     "deepseek-v4-pro": "DeepSeek V4 Pro",
     "deepseek-v4-flash": "DeepSeek V4 Flash",
     "qwen3-5-397b": "Qwen3.5 397B",
+    "qwen3.8-27b": "Qwen3.8 27B",
     "kimi-k2.6": "Kimi K2.6",
     "kimi-k3": "Kimi K3",
     "minimax-m3": "MiniMax M3",
@@ -9766,7 +9788,10 @@ def resolve_api_metadata(api_name, data=None):
         data = load_api_models()
     _key, entry = get_api_entry(data, api_name)
     meta = entry.get("metadata")
-    if isinstance(meta, dict) and meta.get("context_window"):
+    # Cost maps can publish useful partial rows (for example output limits or
+    # price data without a context window). Preserve every known field and
+    # fill only the gaps from curated defaults.
+    if isinstance(meta, dict):
         return apply_metadata_fallbacks(_key, meta)
     model = entry.get("model")
     return merge_api_metadata(_key, str(model or ""), {})
@@ -9867,10 +9892,19 @@ def codex_catalog_models(default_api_name, data=None, template=None,
     apis = data.get("apis") if isinstance(data, dict) else {}
     apis = apis if isinstance(apis, dict) else {}
     default_name = str(default_api_name or "").strip()
+    selected_entry = apis.get(default_name)
+    selected_entry = selected_entry if isinstance(selected_entry, dict) else {}
+    selected_provider = (selected_entry.get("provider") or
+                         (data.get("default_provider") if isinstance(data, dict)
+                          else None))
     names = []
     for name in sorted(apis):
         entry = apis.get(name)
         if not isinstance(entry, dict) or entry.get("enabled") is not True:
+            continue
+        entry_provider = entry.get("provider") or (
+            data.get("default_provider") if isinstance(data, dict) else None)
+        if selected_provider and entry_provider != selected_provider:
             continue
         if (require_endpoint
                 and require_endpoint not in normalize_available_endpoints(
@@ -10211,6 +10245,18 @@ API_MODELS_FILE = os.path.join(os.path.expanduser("~/.cam"), "api-models.json")
 _DEBUG_CACHE = {"path": None, "signature": None, "enabled": False}
 _MAX_RESPONSE_CAPTURE = 4 * 1024 * 1024
 _MAX_ERROR_INSPECT = 64 * 1024
+_MAX_CONNECT_ATTEMPTS = 3
+_HOP_HEADERS = frozenset((
+    "connection", "content-length", "host", "keep-alive",
+    "proxy-authenticate", "proxy-authorization", "te", "trailer",
+    "transfer-encoding", "upgrade", "accept-encoding",
+))
+_NATIVE_PATHS = {
+    "/messages": "messages",
+    "/messages/count_tokens": "messages",
+    "/responses": "responses",
+    "/chat/completions": "completions",
+}
 
 
 def _is_retryable_internal_400(status, body):
@@ -10222,8 +10268,14 @@ def _is_retryable_internal_400(status, body):
 
 
 RETRY_STATUS_POLICIES = {
+    408: {"max_elapsed": 8.0, "initial_delay": .5, "max_delay": 2.0},
+    409: {"max_elapsed": 8.0, "initial_delay": .5, "max_delay": 2.0},
     429: {"max_elapsed": 300.0, "initial_delay": 1.0,
           "max_delay": 30.0},
+    500: {"max_elapsed": 8.0, "initial_delay": .5, "max_delay": 2.0},
+    502: {"max_elapsed": 8.0, "initial_delay": .5, "max_delay": 2.0},
+    503: {"max_elapsed": 8.0, "initial_delay": .5, "max_delay": 2.0},
+    504: {"max_elapsed": 8.0, "initial_delay": .5, "max_delay": 2.0},
     400: {"max_elapsed": 8.0, "initial_delay": 1.0,
           "max_delay": 2.0, "retry_if": _is_retryable_internal_400},
 }
@@ -10255,11 +10307,18 @@ def upstream_request_path(upstream_url, request_path):
 def upstream_request_headers(headers, body_length):
     """Build upstream headers while keeping the response cache readable."""
     result = {key: value for key, value in headers.items()
-              if key.lower() not in ("host", "content-length", "connection",
-                                     "accept-encoding")}
+              if key.lower() not in _HOP_HEADERS}
     result["Accept-Encoding"] = "identity"
     result["Content-Length"] = str(body_length)
     return result
+
+
+def native_endpoint_for_path(request_path):
+    """Return the native protocol name for one supported LLM path."""
+    path = urlsplit(str(request_path or "/")).path.rstrip("/") or "/"
+    if path.startswith("/v1/"):
+        path = path[3:]
+    return _NATIVE_PATHS.get(path)
 
 
 def _retry_after_seconds(value, now=None):
@@ -10276,17 +10335,35 @@ def _retry_after_seconds(value, now=None):
 
 
 def request_upstream_with_retry(connect, method, path, body, headers,
-                                policies=None, sleep=time.sleep,
-                                monotonic=time.monotonic,
+                                policies=None, sleep=None,
+                                monotonic=None,
                                 jitter=None, on_retry=None):
     """Open an upstream response, hiding only configured transient statuses."""
     policies = RETRY_STATUS_POLICIES if policies is None else policies
+    sleep = sleep or time.sleep
+    monotonic = monotonic or time.monotonic
     jitter = jitter or (lambda delay: random.uniform(delay * .8, delay * 1.2))
     started, attempts = monotonic(), 0
     while True:
-        conn = connect()
-        conn.request(method, path, body, headers)
-        response = conn.getresponse()
+        conn = None
+        try:
+            conn = connect()
+            conn.request(method, path, body, headers)
+            response = conn.getresponse()
+        except (OSError, http.client.HTTPException):
+            if conn:
+                try:
+                    conn.close()
+                except (IOError, OSError):
+                    pass
+            attempts += 1
+            delay = min(2.0, .5 * (2 ** (attempts - 1)))
+            if attempts >= _MAX_CONNECT_ATTEMPTS:
+                raise
+            if on_retry:
+                on_retry("connection", attempts, delay)
+            sleep(delay)
+            continue
         policy = policies.get(response.status)
         if not policy:
             return conn, response
@@ -10304,6 +10381,8 @@ def request_upstream_with_retry(connect, method, path, body, headers,
         base = min(float(policy.get("max_delay", 30)),
                    float(policy.get("initial_delay", 1)) * (2 ** attempts))
         retry_after = _retry_after_seconds(response.getheader("Retry-After"))
+        if retry_after is not None:
+            retry_after = min(retry_after, float(policy.get("max_delay", 30)))
         delay = max(.25, retry_after if retry_after is not None else jitter(base))
         if remaining <= 0 or delay > remaining:
             return conn, response
@@ -10334,24 +10413,35 @@ def read_upstream_response(response, size=65536):
     return response.read(size)
 
 
+def _cleanup_agent_codex_home(agent, owner):
+    task = agent.get("task") if isinstance(agent, dict) else None
+    tool = ((task or {}).get("tool") if isinstance(task, dict) else None) or (
+        agent.get("tool") if isinstance(agent, dict) else None)
+    if tool == "codex" and owner:
+        try:
+            remove_codex_api_config_dir(owner)
+        except (IOError, OSError, ValueError):
+            pass
+
+
 def stop_agent_api_proxy(agent):
     """Terminate only the proxy whose command line names this exact agent."""
     api = agent.get("api") if isinstance(agent, dict) else None
+    owner = agent.get("id", "") if isinstance(agent, dict) else ""
     try:
         pid = int((api or {}).get("proxy_pid") or 0)
     except (TypeError, ValueError):
-        return
-    if pid <= 0:
-        return
-    try:
-        with open("/proc/%d/cmdline" % pid, "rb") as handle:
-            cmdline = handle.read().decode("utf-8", "replace")
-        marker = "--owner\x00%s\x00" % agent.get("id", "")
-        if "_api_proxy\x00" not in cmdline or marker not in cmdline:
-            return
-        os.kill(pid, signal.SIGTERM)
-    except (IOError, OSError):
-        pass
+        pid = 0
+    if pid > 0:
+        try:
+            with open("/proc/%d/cmdline" % pid, "rb") as handle:
+                cmdline = handle.read().decode("utf-8", "replace")
+            marker = "--owner\x00%s\x00" % owner
+            if "_api_proxy\x00" in cmdline and marker in cmdline:
+                os.kill(pid, signal.SIGTERM)
+        except (IOError, OSError):
+            pass
+    _cleanup_agent_codex_home(agent, owner)
 
 
 class ResponseCallCache(object):
@@ -10497,6 +10587,55 @@ def extract_response_output(body):
 extract_response_calls = extract_response_output
 
 
+def extract_usage(body):
+    """Observe the last JSON/SSE usage object without changing response bytes."""
+    if not body:
+        return {}
+    objects = []
+    try:
+        objects.append(json.loads(bytes(body).decode("utf-8")))
+    except (UnicodeDecodeError, ValueError):
+        for raw in bytes(body).splitlines():
+            if not raw.startswith(b"data:"):
+                continue
+            data = raw[5:].strip()
+            if not data or data == b"[DONE]":
+                continue
+            try:
+                objects.append(json.loads(data.decode("utf-8")))
+            except (UnicodeDecodeError, ValueError):
+                continue
+    usage = {}
+    for obj in objects:
+        if not isinstance(obj, dict):
+            continue
+        candidate = obj.get("usage")
+        response = obj.get("response")
+        if not isinstance(candidate, dict) and isinstance(response, dict):
+            candidate = response.get("usage")
+        if isinstance(candidate, dict):
+            usage = dict(candidate)
+    return usage
+
+
+def usage_log_shape(usage, complete=True):
+    """Flatten only token counters for body- and credential-free logging."""
+    if not isinstance(usage, dict):
+        usage = {}
+    fields = {"complete": int(bool(complete))}
+    for key in ("input_tokens", "output_tokens", "total_tokens",
+                "cache_read_input_tokens", "cache_creation_input_tokens"):
+        value = usage.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            fields[key] = value
+    details = usage.get("input_tokens_details")
+    if isinstance(details, dict):
+        value = details.get("cached_tokens")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            fields["cached_tokens"] = value
+    return ",".join("%s=%s" % (key, fields[key]) for key in sorted(fields))
+
+
 def debug_log_file_for_owner(owner):
     """Return the fixed owner log path when JSON debug is enabled now."""
     try:
@@ -10553,6 +10692,17 @@ class _Handler(BaseHTTPRequestHandler):
         return
 
     def do_GET(self):
+        if urlsplit(self.path).path.rstrip("/") in ("/health", "/healthz"):
+            raw = json.dumps({"ok": True, "status": "ok",
+                              "route": "camc_proxy",
+                              "mode": "native-endpoints-only"},
+                             separators=(",", ":")).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         self._forward()
 
     def do_POST(self):
@@ -10560,6 +10710,18 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _forward(self):
         started = time.time()
+        endpoint = native_endpoint_for_path(self.path)
+        available = self.server.available_endpoints
+        if not endpoint or (available and endpoint not in available):
+            raw = json.dumps({"error": {"type": "invalid_request_error",
+                                        "message": "native endpoint unavailable; protocol conversion is disabled"}},
+                             separators=(",", ":")).encode("utf-8")
+            self.send_response(400 if endpoint else 404)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         length = int(self.headers.get("Content-Length", "0") or 0)
         log_file = debug_log_file_for_owner(self.server.owner)
         with self.server.transaction_lock:
@@ -10574,14 +10736,18 @@ class _Handler(BaseHTTPRequestHandler):
         except (UnicodeDecodeError, ValueError):
             payload = None
         if isinstance(payload, dict):
-            input_types = [str(item.get("type") or "-")
-                           for item in (payload.get("input") or [])
-                           if isinstance(item, dict)]
-            had_previous = bool(payload.get("previous_response_id"))
-            expanded = expand_tool_continuation(
-                payload, self.server.response_call_cache)
-            normalized = normalize_tool_history(payload)
-            text_normalized = normalize_response_text_format(payload)
+            input_types = []
+            had_previous = False
+            expanded = normalized = text_normalized = False
+            if endpoint == "responses":
+                input_types = [str(item.get("type") or "-")
+                               for item in (payload.get("input") or [])
+                               if isinstance(item, dict)]
+                had_previous = bool(payload.get("previous_response_id"))
+                expanded = expand_tool_continuation(
+                    payload, self.server.response_call_cache)
+                normalized = normalize_tool_history(payload)
+                text_normalized = normalize_response_text_format(payload)
             reasoning_normalized = normalize_reasoning_effort(
                 payload, self.server.reasoning_mapping)
             write_proxy_log(
@@ -10590,12 +10756,10 @@ class _Handler(BaseHTTPRequestHandler):
                 "previous=%d,expanded=%d,normalized=%d,input=%s" %
                 (had_previous, expanded, normalized,
                  ",".join(input_types) or "-"))
-            model = str(payload.get("model") or "")
-            if model == self.server.alias or model.startswith(self.server.alias + "["):
-                payload["model"] = self.server.upstream_model
-            if (text_normalized or reasoning_normalized or
-                    model == self.server.alias or model.startswith(
-                    self.server.alias + "[")):
+            model_changed = payload.get("model") != self.server.upstream_model
+            payload["model"] = self.server.upstream_model
+            if (expanded or normalized or text_normalized or
+                    reasoning_normalized or model_changed):
                 body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         target = urlsplit(self.server.upstream_url)
         conn_type = (http.client.HTTPSConnection if target.scheme == "https"
@@ -10619,15 +10783,23 @@ class _Handler(BaseHTTPRequestHandler):
                             self.command, self.path,
                             self.server.upstream_model, response.status,
                             (time.time() - started) * 1000, "")
-            self.send_response(response.status)
-            for key, value in response.getheaders():
-                if key.lower() in ("content-length", "transfer-encoding",
-                                   "connection", "server", "date"):
-                    continue
-                self.send_header(key, value)
-            self.send_header("Connection", "close")
-            self.end_headers()
+            try:
+                self.send_response(response.status)
+                for key, value in response.getheaders():
+                    if key.lower() in _HOP_HEADERS or key.lower() in ("server", "date"):
+                        continue
+                    self.send_header(key, value)
+                self.send_header("Connection", "close")
+                self.end_headers()
+            except OSError:
+                write_proxy_log(
+                    log_file, transaction_id, "request_complete", self.command,
+                    self.path, self.server.upstream_model, response.status,
+                    (time.time() - started) * 1000, "ClientDisconnect",
+                    usage_log_shape({}, complete=False))
+                return
             captured = bytearray()
+            complete = True
             while True:
                 chunk = read_upstream_response(response, 65536)
                 if not chunk:
@@ -10635,9 +10807,21 @@ class _Handler(BaseHTTPRequestHandler):
                 captured.extend(chunk)
                 if len(captured) > _MAX_RESPONSE_CAPTURE:
                     del captured[:-_MAX_RESPONSE_CAPTURE]
-                self.wfile.write(chunk)
-                self.wfile.flush()
-            if response.status == 200:
+                try:
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                except OSError:
+                    complete = False
+                    self.close_connection = True
+                    break
+            usage = extract_usage(bytes(captured))
+            write_proxy_log(
+                log_file, transaction_id, "request_complete", self.command,
+                self.path, self.server.upstream_model, response.status,
+                (time.time() - started) * 1000,
+                "" if complete else "ClientDisconnect",
+                usage_log_shape(usage, complete=complete))
+            if response.status == 200 and endpoint == "responses":
                 response_id, calls = extract_response_output(bytes(captured))
                 self.server.response_call_cache.put(response_id, calls)
                 write_proxy_log(
@@ -10660,7 +10844,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def bind_server(port, upstream_url="", upstream_model="", alias="", owner="",
-                reasoning_mapping=None):
+                reasoning_mapping=None, available_endpoints=None):
     server = ThreadingHTTPServer(("127.0.0.1", int(port)), _Handler)
     actual = int(server.server_address[1])
     if actual <= 0:
@@ -10671,6 +10855,9 @@ def bind_server(port, upstream_url="", upstream_model="", alias="", owner="",
     server.alias = str(alias)
     server.owner = str(owner or "")
     server.reasoning_mapping = dict(reasoning_mapping or {})
+    server.available_endpoints = frozenset(
+        ("completions", "messages", "responses")
+        if available_endpoints is None else available_endpoints)
     server.transaction_count = 0
     server.transaction_lock = threading.Lock()
     server.response_call_cache = ResponseCallCache()
@@ -10684,6 +10871,7 @@ def run_api_proxy(argv=None):
     parser.add_argument("--upstream-model", required=True)
     parser.add_argument("--alias", required=True)
     parser.add_argument("--owner", default="")
+    parser.add_argument("--available-endpoints", default="")
     parser.add_argument("--reasoning-map", default="{}")
     args = parser.parse_args(argv)
     # The proxy belongs to the agent record, not to the short-lived `run`
@@ -10695,8 +10883,14 @@ def run_api_proxy(argv=None):
         reasoning_mapping = json.loads(args.reasoning_map)
     except ValueError:
         reasoning_mapping = {}
+    try:
+        available_endpoints = (json.loads(args.available_endpoints)
+                               if args.available_endpoints else None)
+    except ValueError:
+        available_endpoints = None
     server = bind_server(args.port, args.upstream_url, args.upstream_model,
-                         args.alias, args.owner, reasoning_mapping)
+                         args.alias, args.owner, reasoning_mapping,
+                         available_endpoints)
     print(server.server_address[1], flush=True)
     try:
         server.serve_forever()
@@ -10810,10 +11004,55 @@ def ensure_claude_api_config_dir():
     return CLAUDE_API_CONFIG_DIR
 
 
-def _ensure_codex_skills_link():
+def _codex_default_home():
+    """Return the normal Codex home used only as a read-only donor."""
+    configured = os.environ.get("CODEX_HOME")
+    if configured:
+        return os.path.abspath(os.path.expanduser(configured))
+    return os.path.expanduser("~/.codex")
+
+
+def _link_codex_defaults(config_dir, default_home=None):
+    """Link skills and named permission profiles into one generated home."""
+    default_home = os.path.abspath(os.path.expanduser(
+        default_home or _codex_default_home()))
+    config_dir = os.path.abspath(os.path.expanduser(config_dir))
+    if os.path.realpath(default_home) == os.path.realpath(config_dir):
+        return {}
+    sources = [("skills", os.path.join(default_home, "skills"))]
+    try:
+        names = sorted(os.listdir(default_home))
+    except OSError:
+        names = []
+    for name in names:
+        if name.endswith(".config.toml"):
+            sources.append((name, os.path.join(default_home, name)))
+
+    results = {}
+    for name, source in sources:
+        target = os.path.join(config_dir, name)
+        if not (os.path.isdir(source) or os.path.isfile(source)):
+            results[name] = "missing_source"
+            continue
+        if os.path.islink(target) and os.path.realpath(target) == os.path.realpath(source):
+            results[name] = "linked"
+            continue
+        if os.path.lexists(target):
+            results[name] = "preserved"
+            continue
+        try:
+            os.symlink(source, target, target_is_directory=os.path.isdir(source))
+            results[name] = "linked"
+        except OSError:
+            results[name] = "error"
+    return results
+
+
+def _ensure_codex_skills_link(config_dir=None):
     """Reuse normal Codex skills from the isolated API home, idempotently."""
     source = CODEX_LOGIN_SKILLS_DIR
-    target = os.path.join(CODEX_API_CONFIG_DIR, "skills")
+    config_dir = config_dir or CODEX_API_CONFIG_DIR
+    target = os.path.join(config_dir, "skills")
     if not os.path.isdir(source):
         return "missing_source"
     if os.path.islink(target):
@@ -10832,28 +11071,38 @@ def _ensure_codex_skills_link():
         except OSError:
             return "preserved"
     try:
-        os.makedirs(CODEX_API_CONFIG_DIR, exist_ok=True)
+        os.makedirs(config_dir, exist_ok=True)
         os.symlink(source, target, target_is_directory=True)
         return "linked"
     except OSError:
         return "error"
 
 
-def ensure_codex_api_config_dir(base_url, api_name, require_endpoint="responses",
-                                model_id=None):
-    """Seed ~/.codex-api/ for Codex --api (isolated from ~/.codex/)."""
+def _codex_owner_dir(owner_id=""):
+    if not owner_id:
+        return CODEX_API_CONFIG_DIR
+    safe = "".join(c for c in str(owner_id) if c.isalnum() or c in "-_")
+    if not safe:
+        raise ValueError("invalid Codex API config owner id")
+    return os.path.join(CODEX_API_CONFIG_DIR, safe)
 
-    os.makedirs(CODEX_API_CONFIG_DIR, exist_ok=True)
-    _ensure_codex_skills_link()
+
+def ensure_codex_api_config_dir(base_url, api_name, require_endpoint="responses",
+                                model_id=None, owner_id=""):
+    """Seed one agent-owned Codex API home without touching normal login."""
+
+    config_dir = _codex_owner_dir(owner_id)
+    os.makedirs(config_dir, exist_ok=True)
+    _link_codex_defaults(config_dir)
     base_url = str(base_url or "").rstrip("/")
     api_name = str(api_name or "api")
     model_id = str(model_id or api_name)
-    catalog_path = os.path.join(CODEX_API_CONFIG_DIR, "camc-model-catalog.json")
+    catalog_path = os.path.join(config_dir, "camc-model-catalog.json")
     metadata = resolve_api_metadata(api_name)
     write_codex_model_catalog(
         catalog_path, api_name, metadata, require_endpoint=require_endpoint,
         model_id=model_id)
-    config_path = os.path.join(CODEX_API_CONFIG_DIR, "config.toml")
+    config_path = os.path.join(config_dir, "config.toml")
     content = (
         'model = "%s"\n'
         'model_provider = "%s"\n'
@@ -10882,7 +11131,29 @@ def ensure_codex_api_config_dir(base_url, api_name, require_endpoint="responses"
                 f.write(content)
     except IOError:
         pass
-    return CODEX_API_CONFIG_DIR
+    return config_dir
+
+
+def remove_codex_api_config_dir(owner_id):
+    """Remove only one generated per-agent Codex home."""
+    if not owner_id:
+        return False
+    path = _codex_owner_dir(owner_id)
+    root = os.path.realpath(CODEX_API_CONFIG_DIR)
+    target = os.path.realpath(path)
+    if not target.startswith(root + os.sep):
+        return False
+    if not os.path.isdir(target):
+        return False
+    for attempt in range(10):
+        try:
+            shutil.rmtree(target)
+            return True
+        except OSError:
+            if attempt == 9:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+    return False
 
 
 def resolve_run_plan(tool, api_name):
@@ -10930,6 +11201,7 @@ def resolve_run_plan(tool, api_name):
         "local_base_url": routing["local_base_url"],
         "tool_protocol": routing["tool_protocol"],
         "api_endpoint": routing.get("api_endpoint"),
+        "available_endpoints": list(api_entry.get("available_endpoints") or []),
         "base_url_suffix": routing.get("base_url_suffix") or "",
         "upstream_base_url": str(provider.get("base_url") or "").rstrip("/"),
         "auth_key": provider.get("auth_key") or "inference_hub",
@@ -13494,6 +13766,8 @@ def _start_api_proxy(api_plan, owner_id, port=0):
         "--upstream-model", api_plan.get("model") or "",
         "--alias", api_plan.get("client_model") or "",
         "--owner", owner_id,
+        "--available-endpoints", json.dumps(
+            api_plan.get("available_endpoints") or [], separators=(",", ":")),
         "--reasoning-map", json.dumps(
             api_plan.get("reasoning_mapping") or {}, separators=(",", ":")),
     ]
@@ -13819,9 +14093,15 @@ def cmd_run(args):
                 runtime.env["CODEX_HOME"] = ensure_codex_api_config_dir(
                     proxy_url, api_plan.get("name") or "api",
                     require_endpoint="responses",
-                    model_id=api_plan.get("model"))
+                    model_id=api_plan.get("model"), owner_id=agent_id)
             print_info("API proxy listening on %d" % proxy_port)
         except Exception as e:
+            _stop_api_proxy(api_proxy_proc)
+            if tool == "codex":
+                try:
+                    remove_codex_api_config_dir(agent_id)
+                except Exception:
+                    pass
             print_error("API proxy failed: %s" % e)
             sys.exit(1)
     if not create_tmux_session(session, launch_cmd, workdir,
@@ -13830,6 +14110,11 @@ def cmd_run(args):
                                tmux_config=camc_tmux_config,
                                exit_status_path=exit_status_path or None):
         _stop_api_proxy(api_proxy_proc)
+        if tool == "codex" and api_plan:
+            try:
+                remove_codex_api_config_dir(agent_id)
+            except Exception:
+                pass
         print_error("Failed to create tmux session for '%s'" % session)
         print_info("Debug: %s -u -S %s/%s.sock new-session -d -s %s -c %s" %
                    (resolved_tmux, SOCKETS_DIR, session, session, workdir))
@@ -16244,7 +16529,7 @@ def cmd_migrate(args):
                 ensure_codex_api_config_dir(
                     proxy_url, api_plan.get("name") or "api",
                     require_endpoint="responses",
-                    model_id=api_plan.get("model"))
+                    model_id=api_plan.get("model"), owner_id=old_id)
             except OSError as e:
                 print_warning("Codex API catalog refresh skipped: %s" % e)
 

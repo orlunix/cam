@@ -124,6 +124,7 @@ exit_command = "/exit"        # command to send if exit_action = "send_exit"
 binary = "claude"
 version_args = ["--version"]
 version_required = true
+version_timeout = 15
 install_hint = "npm install -g @anthropic-ai/claude-code"
 
 [[readiness.required_files]]
