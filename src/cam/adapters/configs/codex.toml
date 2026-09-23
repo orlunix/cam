@@ -10,10 +10,39 @@
 name = "codex"
 display_name = "OpenAI Codex"
 config_dir = ".codex"
+isolate_tool_home = true
+
+# Every Codex agent gets the same thin overlay. The donor remains ~/.codex;
+# shared state is linked while config.toml is snapshotted per agent. Runtime
+# paths whose locking/janitor semantics require a host-local filesystem are
+# redirected before Codex starts, including on a --tool-launcher target.
+[runtime]
+environment = "CODEX_HOME"
+shared_home = "~/.codex"
+local_links = ["tmp/arg0=/tmp/{user}/codex-arg0"]
+config_local_dirs = ["sqlite_home"]
+prune_path_links = ["tmp/arg0"]
+clear_environment = ["CODEX_SQLITE_HOME"]
+
+# Login and API runs use this same overlay. API profiles only add their
+# provider/catalog settings to the overlay's private config snapshot.
+[runtime.overlay]
+root = "~/.codex"
+config_file = "config.toml"
+config_format = "codex"
+wire_api = "responses"
+catalog_file = "camc-model-catalog.json"
+shared = ["auth.json", "skills", "skills.json", "mcp.json", "mcp.toml", "mcp.yaml", "mcp.yml", "hooks.json"]
+shared_globs = ["*"]
+shared_exclude = ["tmp", "config.toml", "camc-model-catalog.json"]
 
 [launch]
 command = ["codex", "-c", "features.goals=true"]
 trust_workspace = true
+# Launcher jobs cannot rely on camc's local confirmation loop reaching the
+# target process.  Ordinary launches continue to use the conditional
+# /etc/codex/requirements.toml policy below.
+launcher_autorun_args = ["--yolo"]
 prompt_after_launch = true
 startup_wait = 20.0
 # 2026-06-23 PDX hotfix: include U+276F ❯ in addition to U+203A ›
