@@ -185,7 +185,20 @@ def read_upstream_response(response, size=65536):
     return response.read(size)
 
 
-def _cleanup_agent_codex_home(agent, owner):
+def _cleanup_agent_runtime_home(agent, owner):
+    """Clean an owned adapter overlay plus obsolete API-home state."""
+    runtime = agent.get("runtime") if isinstance(agent, dict) else None
+    storage = runtime.get("storage") if isinstance(runtime, dict) else None
+    home_info = storage.get("overlay") if isinstance(storage, dict) else None
+    if not isinstance(home_info, dict) and isinstance(runtime, dict):
+        home_info = runtime.get("home")  # short-lived full-home WIP records
+    if isinstance(home_info, dict):
+        try:
+            from camc_pkg.runtime_env import remove_agent_runtime_home
+            remove_agent_runtime_home(home_info, owner_id=owner)
+        except (IOError, OSError, ValueError):
+            pass
+
     task = agent.get("task") if isinstance(agent, dict) else None
     tool = ((task or {}).get("tool") if isinstance(task, dict) else None) or (
         agent.get("tool") if isinstance(agent, dict) else None)
@@ -197,8 +210,17 @@ def _cleanup_agent_codex_home(agent, owner):
             pass
 
 
-def stop_agent_api_proxy(agent):
-    """Terminate only the proxy whose command line names this exact agent."""
+# Kept as a private compatibility alias for older bundled callers.
+_cleanup_agent_codex_home = _cleanup_agent_runtime_home
+
+
+def stop_agent_api_proxy(agent, cleanup_home=True):
+    """Terminate an owned proxy; overlay cleanup is lifecycle-owned.
+
+    Monitor terminal paths call this only after tmux is gone and use the
+    cleanup default.  CLI kill/rm explicitly defer cleanup until after their
+    own tmux termination so open files cannot race recursive removal.
+    """
     api = agent.get("api") if isinstance(agent, dict) else None
     owner = agent.get("id", "") if isinstance(agent, dict) else ""
     try:
@@ -214,7 +236,8 @@ def stop_agent_api_proxy(agent):
                 os.kill(pid, signal.SIGTERM)
         except (IOError, OSError):
             pass
-    _cleanup_agent_codex_home(agent, owner)
+    if cleanup_home:
+        _cleanup_agent_runtime_home(agent, owner)
 
 
 class ResponseCallCache(object):

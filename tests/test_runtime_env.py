@@ -1002,13 +1002,14 @@ def test_scheduler_launch_ignores_context_env_setup(tmp_path, monkeypatch):
 # Adapter-owned readiness (preferred over hardcoded _TOOL_SPECS fallback)
 # ---------------------------------------------------------------------------
 
-def test_adapter_config_parses_readiness_for_claude_codex_cursor():
-    """The three shipped TOMLs declare [readiness] blocks. Each one
+def test_adapter_config_parses_readiness_for_shipped_tools():
+    """The shipped TOMLs declare [readiness] blocks. Each one
     must parse into the canonical dict shape with the expected fields."""
     from camc_pkg.adapters import _load_config
     for tool, expected_binary in (("claude", "claude"),
                                   ("codex", "codex"),
-                                  ("cursor", "cursor-agent")):
+                                  ("cursor", "cursor-agent"),
+                                  ("pi", "pi")):
         cfg = _load_config(tool)
         rd = cfg.readiness
         assert rd is not None, "%s adapter must declare [readiness]" % tool
@@ -1029,6 +1030,16 @@ def test_adapter_config_parses_readiness_for_claude_codex_cursor():
             assert "~/.codex/auth.json" in paths
             assert "~/.codex/config.toml" in paths
             assert rd["optional_env"] == [{"name": "OPENAI_API_KEY"}]
+        elif tool == "pi":
+            assert rd["required_files"] == []
+            assert rd["optional_files"] == [
+                {"path": "~/.pi/agent/auth.json", "label": ""}
+            ]
+            assert rd["optional_env"] == [
+                {"name": "NVIDIA_API_KEY"},
+                {"name": "ANTHROPIC_API_KEY"},
+                {"name": "OPENAI_API_KEY"},
+            ]
         else:  # cursor
             assert rd["required_files"] == []
             assert rd["optional_files"] == []

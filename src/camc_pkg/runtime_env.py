@@ -39,6 +39,8 @@ Public API:
 Python 3.6+, stdlib only. No dataclasses, no f-strings.
 """
 
+import fnmatch
+import json
 import os
 import pwd
 import re
@@ -76,6 +78,487 @@ class RuntimeEnv(object):
         self.shell = shell
         self.path = path or self.env.get("PATH", "")
         self.warnings = list(warnings or [])
+
+
+# ---------------------------------------------------------------------------
+# Per-agent runtime homes
+# ---------------------------------------------------------------------------
+
+_RUNTIME_HOME_MARKER = ".camc-runtime-home.json"
+
+def _runtime_env_mapping(runtime):
+    """Return the effective environment mapping for a runtime value."""
+    if isinstance(runtime, RuntimeEnv):
+        return runtime.env
+    if isinstance(runtime, dict):
+        return runtime
+    return os.environ
+
+
+def _expand_runtime_home_path(path, runtime=None):
+    """Expand a runtime-home path against the effective HOME."""
+    text = str(path or "")
+    env = _runtime_env_mapping(runtime)
+    home = env.get("HOME")
+    if home and (text == "~" or text.startswith("~/")):
+        text = home if text == "~" else os.path.join(home, text[2:])
+    else:
+        text = os.path.expanduser(text)
+    return os.path.abspath(text)
+
+
+def _safe_runtime_owner(owner_id):
+    """Validate the owner component used below a managed runtime root."""
+    owner = str(owner_id or "")
+    if not owner or not re.match(r"^[A-Za-z0-9_-]+$", owner):
+        raise ValueError("invalid runtime home owner id")
+    return owner
+
+
+def _link_runtime_home_entry(source, target):
+    """Link one shared file/directory without replacing user content."""
+    if os.path.islink(target) and os.path.realpath(target) == os.path.realpath(source):
+        return "linked"
+    if os.path.lexists(target):
+        return "preserved"
+    try:
+        os.symlink(source, target, target_is_directory=os.path.isdir(source))
+    except OSError:
+        return "error"
+    return "linked"
+
+
+def _read_managed_marker(path, name):
+    try:
+        with open(os.path.join(path, name), "r") as handle:
+            value = json.load(handle)
+        return value if isinstance(value, dict) else None
+    except (IOError, OSError, ValueError):
+        return None
+
+
+def _write_managed_marker(path, name, value):
+    marker = os.path.join(path, name)
+    tmp = marker + ".tmp.%d" % os.getpid()
+    with open(tmp, "w") as handle:
+        json.dump(value, handle, sort_keys=True)
+        handle.write("\n")
+    os.replace(tmp, marker)
+
+
+def _write_runtime_config(source, target, owner):
+    """Snapshot donor config for a managed per-agent overlay."""
+    if not os.path.isfile(source):
+        return "missing_source"
+    if os.path.lexists(target) and (
+            not os.path.isfile(target) or os.path.islink(target)):
+        return "error"
+
+    try:
+        with open(source, "r") as handle:
+            content = handle.read()
+    except OSError:
+        return "error"
+
+    tmp = target + ".tmp.%d" % os.getpid()
+    try:
+        with open(tmp, "w") as handle:
+            handle.write(content)
+            handle.flush()
+            try:
+                os.fsync(handle.fileno())
+            except OSError:
+                pass
+        os.replace(tmp, target)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return "error"
+    return "copied"
+
+
+def ensure_agent_runtime_home(owner_id, spec, runtime=None):
+    """Create one isolated tool home from an adapter-declared specification.
+
+    ``spec`` is intentionally generic and is derived from an adapter's
+    optional ``[runtime.overlay]`` block. Selected donor assets are linked so
+    auth, MCP, skills, sessions, and permission profiles remain shared. The
+    config file is a private snapshot so API-only routing changes can never
+    rewrite the donor or another agent's login configuration.
+
+    Returns a request-safe manifest suitable for the agent's runtime record,
+    or ``None`` when no valid specification is supplied.
+    """
+    if not isinstance(spec, dict) or not spec.get("environment"):
+        return None
+    owner = _safe_runtime_owner(owner_id)
+    environment = str(spec.get("environment"))
+    # The adapter donor is authoritative.  Inherited tool-home variables may
+    # point at a parent tool process or another managed agent and must never
+    # become the source for a new agent home.
+    donor_value = spec.get("donor") or "~"
+    donor = _expand_runtime_home_path(donor_value, runtime)
+    root = _expand_runtime_home_path(spec.get("root") or
+                                     "~/.camc/runtime", runtime)
+    target = os.path.join(root, owner)
+    if os.path.realpath(target) == os.path.realpath(root):
+        raise ValueError("runtime home target may not be its root")
+
+    created_target = False
+    try:
+        os.makedirs(root, exist_ok=True)
+        if os.path.lexists(target) and os.path.islink(target):
+            raise ValueError("runtime home target is a symlink: %s" % target)
+        expected_marker = {
+            "schema": "camc-runtime-home/1", "owner_id": owner,
+            "donor": donor, "root": root,
+        }
+        if os.path.lexists(target):
+            if not os.path.isdir(target):
+                raise ValueError("runtime home target is not a directory: %s" % target)
+            if _read_managed_marker(target, _RUNTIME_HOME_MARKER) != expected_marker:
+                raise ValueError("runtime home target is not owned by camc: %s" % target)
+        else:
+            os.makedirs(target, mode=0o700)
+            created_target = True
+            _write_managed_marker(
+                target, _RUNTIME_HOME_MARKER, expected_marker)
+    except OSError as exc:
+        raise IOError("cannot create runtime home %s: %s" % (target, exc))
+
+    info = {
+        "path": target,
+        "root": root,
+        "donor": donor,
+        "environment": environment,
+        "owner_id": owner,
+        "config_mode": "snapshot",
+        "shared": {},
+    }
+    try:
+        config_name = str(spec.get("config_file") or "")
+        if config_name:
+            status = _write_runtime_config(
+                os.path.join(donor, config_name),
+                os.path.join(target, config_name), owner,
+            )
+            info["shared"][config_name] = status
+            if status == "error":
+                raise IOError("cannot materialize runtime config %s" % config_name)
+
+        excluded = set(str(name) for name in
+                       (spec.get("shared_exclude") or []))
+        names = []
+        for name in (spec.get("shared") or []):
+            text = str(name or "")
+            if (text and text not in names and text != config_name and
+                    text not in excluded):
+                names.append(text)
+        try:
+            donor_names = sorted(os.listdir(donor))
+        except OSError:
+            donor_names = []
+        for pattern in (spec.get("shared_globs") or []):
+            pattern = str(pattern or "")
+            if not pattern:
+                continue
+            for name in donor_names:
+                source = os.path.join(donor, name)
+                managed = (os.path.isdir(source) and not os.path.islink(source)
+                           and (_read_managed_marker(
+                               source, _RUNTIME_HOME_MARKER) or {}).get(
+                                   "schema") == "camc-runtime-home/1")
+                if (fnmatch.fnmatchcase(name, pattern) and not managed and
+                        name not in names and name != config_name and
+                        name not in excluded and name != _RUNTIME_HOME_MARKER):
+                    names.append(name)
+        for name in names:
+            source = os.path.join(donor, name)
+            target_entry = os.path.join(target, name)
+            if not (os.path.isfile(source) or os.path.isdir(source) or
+                    os.path.islink(source)):
+                info["shared"][name] = "missing_source"
+                continue
+            status = _link_runtime_home_entry(source, target_entry)
+            info["shared"][name] = status
+            if status in ("error", "preserved"):
+                raise IOError("cannot link shared runtime asset %s" % name)
+    except Exception:
+        # A failed setup must never leave a half-owned home that a later agent
+        # could accidentally reuse.  The donor is never touched.
+        try:
+            if (created_target and os.path.isdir(target) and
+                    not os.path.islink(target)):
+                shutil.rmtree(target)
+        except OSError:
+            pass
+        raise
+    return info
+
+
+def _runtime_placeholders(runtime):
+    """Return safe values accepted by adapter local-path templates."""
+    env = _runtime_env_mapping(runtime)
+    home = env.get("HOME") or os.path.expanduser("~")
+    user = env.get("USER") or env.get("LOGNAME") or ""
+    if not user:
+        try:
+            user = pwd.getpwuid(os.getuid()).pw_name
+        except (KeyError, OSError):
+            user = str(os.getuid())
+    if not re.match(r"^[A-Za-z0-9_.-]+$", str(user)):
+        raise ValueError("unsafe runtime user name")
+    return {
+        "home": os.path.abspath(home),
+        "user": str(user),
+        "uid": str(os.getuid()),
+    }
+
+
+def _expand_local_path(value, runtime):
+    """Expand a small, non-shell adapter path template."""
+    text = str(value or "")
+    values = _runtime_placeholders(runtime)
+    for key, replacement in values.items():
+        text = text.replace("{%s}" % key, replacement)
+    if "{" in text or "}" in text:
+        raise ValueError("unsupported runtime path placeholder: %s" % text)
+    return _expand_runtime_home_path(text, runtime)
+
+
+def _ensure_private_directory(path):
+    """Create a host-local directory before the tool observes its symlink."""
+    try:
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        if not os.path.isdir(path) or os.path.islink(path):
+            raise IOError("not a directory")
+        os.chmod(path, 0o700)
+    except OSError as exc:
+        raise IOError("cannot bootstrap local runtime directory %s: %s" %
+                      (path, exc))
+
+
+def _ensure_local_link(home, declaration, runtime):
+    """Create one shared-home -> host-local link without leaving it dangling."""
+    text = str(declaration or "")
+    relative, separator, target_value = text.partition("=")
+    relative = relative.strip().strip("/")
+    if not separator or not relative or relative.startswith("../"):
+        raise ValueError("invalid runtime local link: %s" % text)
+    link_path = os.path.abspath(os.path.join(home, relative))
+    if not link_path.startswith(os.path.abspath(home) + os.sep):
+        raise ValueError("runtime local link escapes shared home: %s" % text)
+    target = _expand_local_path(target_value.strip(), runtime)
+
+    # Some tools treat a dangling runtime symlink as EEXIST. The ordering is a
+    # correctness requirement: make/chmod the local target first, then expose
+    # or validate the shared symlink.
+    _ensure_private_directory(target)
+    try:
+        os.makedirs(os.path.dirname(link_path), exist_ok=True)
+        if os.path.lexists(link_path):
+            if not os.path.islink(link_path):
+                raise IOError("runtime link path already exists: %s" % link_path)
+            if os.path.realpath(link_path) != os.path.realpath(target):
+                raise IOError("runtime link points elsewhere: %s" % link_path)
+        else:
+            os.symlink(target, link_path, target_is_directory=True)
+    except OSError as exc:
+        raise IOError("cannot install runtime link %s: %s" % (link_path, exc))
+    if not os.path.isdir(link_path):
+        raise IOError("runtime link is dangling: %s" % link_path)
+    return {"link": link_path, "target": target, "mode": "0700"}
+
+
+def _config_string_value(config_path, key):
+    """Read one top-level quoted TOML string without evaluating config."""
+    try:
+        with open(config_path, "r") as handle:
+            content = handle.read()
+    except OSError:
+        return ""
+    match = re.search(
+        r"(?m)^\s*%s\s*=\s*(['\"])(.*?)\1\s*(?:#.*)?$" %
+        re.escape(str(key)), content)
+    return match.group(2) if match else ""
+
+
+def _path_is_within(path, roots):
+    absolute = os.path.abspath(path)
+    real = os.path.realpath(path)
+    for root in roots:
+        root_abs = os.path.abspath(root)
+        root_real = os.path.realpath(root)
+        if (absolute == root_abs or absolute.startswith(root_abs + os.sep) or
+                real == root_real or real.startswith(root_real + os.sep)):
+            return True
+    return False
+
+
+def ensure_runtime_split(spec, runtime, home=None):
+    """Bootstrap adapter-declared host-local paths for one effective home."""
+    if not isinstance(spec, dict):
+        return None
+    shared_home = _expand_runtime_home_path(
+        home or spec.get("shared_home") or "~", runtime)
+    try:
+        os.makedirs(shared_home, exist_ok=True)
+    except OSError as exc:
+        raise IOError("cannot access shared runtime home %s: %s" %
+                      (shared_home, exc))
+
+    links = [_ensure_local_link(shared_home, item, runtime)
+             for item in (spec.get("local_links") or [])]
+    local_dirs = []
+    config_path = os.path.join(shared_home, "config.toml")
+    for key in (spec.get("config_local_dirs") or []):
+        value = _config_string_value(config_path, key)
+        if not value:
+            continue
+        path = _expand_local_path(value, runtime)
+        _ensure_private_directory(path)
+        local_dirs.append({"config_key": str(key), "target": path,
+                           "mode": "0700"})
+
+    prune_roots = []
+    prune_names = set(str(value).strip("/") for value in
+                      (spec.get("prune_path_links") or []))
+    for link in links:
+        relative = os.path.relpath(link["link"], shared_home)
+        if relative in prune_names:
+            prune_roots.extend([link["link"], link["target"]])
+    env = _runtime_env_mapping(runtime)
+    old_path = env.get("PATH", "")
+    if prune_roots and old_path:
+        env["PATH"] = os.pathsep.join(
+            entry for entry in old_path.split(os.pathsep)
+            if entry and not _path_is_within(entry, prune_roots))
+
+    return {
+        "shared_home": shared_home,
+        "environment": str(spec.get("environment") or ""),
+        "links": links,
+        "config_dirs": local_dirs,
+        "bootstrap_dirs": sorted(set(
+            [item["target"] for item in links] +
+            [item["target"] for item in local_dirs])),
+    }
+
+
+def _overlay_home_spec(spec):
+    overlay = (spec or {}).get("overlay") or {}
+    return {
+        "environment": str((spec or {}).get("environment") or ""),
+        "donor": str((spec or {}).get("shared_home") or "~"),
+        "root": str(overlay.get("root") or "~/.camc/runtime"),
+        "config_file": str(overlay.get("config_file") or "config.toml"),
+        "api_config_format": str(overlay.get("config_format") or ""),
+        "api_wire_api": str(overlay.get("wire_api") or ""),
+        "api_catalog_file": str(overlay.get("catalog_file") or ""),
+        "shared": list(overlay.get("shared") or []),
+        "shared_globs": list(overlay.get("shared_globs") or []),
+        "shared_exclude": list(overlay.get("shared_exclude") or []),
+    }
+
+
+def configure_agent_runtime_home(owner_id, adapter, runtime, api_plan=None,
+                                 api_base_url="", isolate_tool_home=None):
+    """Apply an adapter's shared-vs-local runtime declaration.
+
+    The adapter declares whether its tool home is isolated by default, while
+    ``isolate_tool_home`` can override that boolean for one run. API runs add
+    provider/catalog changes only when an isolated home is selected.
+    """
+    spec = getattr(adapter, "runtime", None)
+    if not spec:
+        return None
+    overlay_info = None
+    try:
+        overlay = spec.get("overlay") or {}
+        adapter_default = bool(getattr(adapter, "isolate_tool_home", False))
+        use_overlay = (adapter_default if isolate_tool_home is None else
+                       bool(isolate_tool_home))
+        if (api_plan and not use_overlay and
+                str(overlay.get("config_format") or "")):
+            raise ValueError(
+                "this adapter's API configuration requires an isolated "
+                "tool home")
+        overlay_spec = _overlay_home_spec(spec) if use_overlay else None
+        if use_overlay:
+            overlay_info = ensure_agent_runtime_home(
+                owner_id, overlay_spec, runtime)
+        selected_home = (overlay_info or {}).get("path") or str(
+            spec.get("shared_home") or "~")
+        info = ensure_runtime_split(spec, runtime, home=selected_home)
+        if api_plan and overlay_info:
+            from camc_pkg.api_resolver import configure_runtime_home_api
+            configure_runtime_home_api(
+                overlay_info, overlay_spec, api_plan,
+                api_base_url=api_base_url)
+    except Exception:
+        if overlay_info:
+            remove_agent_runtime_home(overlay_info, owner_id=owner_id)
+        raise
+    if runtime is not None:
+        for name in (spec.get("clear_environment") or []):
+            runtime.env.pop(str(name), None)
+        environment = info.get("environment") or ""
+        selected_home = (overlay_info or {}).get("path") or info["shared_home"]
+        if environment:
+            runtime.env[environment] = selected_home
+    info["donor_home"] = _expand_runtime_home_path(
+        spec.get("shared_home") or "~", runtime)
+    info["isolate_tool_home"] = use_overlay
+    if overlay_info:
+        info["overlay"] = overlay_info
+    return info
+
+
+def remove_agent_runtime_home(home_info, owner_id=None):
+    """Remove one generated runtime home after validating its ownership."""
+    if isinstance(home_info, dict):
+        path = home_info.get("path") or ""
+        root = home_info.get("root") or ""
+        recorded_owner = home_info.get("owner_id") or ""
+    else:
+        path = str(home_info or "")
+        root = ""
+        recorded_owner = ""
+    owner = str(owner_id or recorded_owner or "")
+    try:
+        safe_owner = _safe_runtime_owner(owner)
+    except ValueError:
+        return False
+    path = os.path.abspath(os.path.expanduser(path)) if path else ""
+    root = (os.path.abspath(os.path.expanduser(root)) if root else
+            os.path.dirname(path))
+    if not path or os.path.basename(path) != safe_owner:
+        return False
+    real_root = os.path.realpath(root)
+    real_target = os.path.realpath(path)
+    if real_target == real_root or not real_target.startswith(real_root + os.sep):
+        return False
+    if not os.path.lexists(path):
+        return False
+    marker = _read_managed_marker(path, _RUNTIME_HOME_MARKER)
+    if not marker or marker.get("schema") != "camc-runtime-home/1":
+        return False
+    if marker.get("owner_id") != safe_owner:
+        return False
+    if os.path.abspath(str(marker.get("root") or "")) != root:
+        return False
+    try:
+        if os.path.islink(path):
+            os.unlink(path)
+        elif os.path.isdir(path):
+            shutil.rmtree(path)
+        else:
+            os.unlink(path)
+        return True
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +818,13 @@ _TOOL_SPECS = {
         "version_args": ["--version"],
         "install_hint": "ensure 'cursor' is in PATH",
     },
+    "pi": {
+        "binary": "pi",
+        "version_args": ["--version"],
+        "auth_files_any": ["~/.pi/agent/auth.json"],
+        "env_keys": ["NVIDIA_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
+        "install_hint": "use the approved Pi installation for your environment",
+    },
 }
 
 
@@ -370,6 +860,10 @@ _GOLDEN_TOOL_PATHS = {
         "/home/prgn_share/tools/cursor/cursor-cli/latest/bin/cursor-agent",
         "/home/tools_ai/cursor/cursor-cli/latest/bin/cursor-agent",
     ),
+    "pi": (
+        "/home/tools_ai/earendil-works/pi-coding-agent/latest/bin/pi",
+        "/home/tools_ai/earendil-works/pi-coding-agent/stable/bin/pi",
+    ),
 }
 
 # Alias set used for PATH/env fallback resolution. Some tools ship
@@ -380,6 +874,7 @@ _PATH_TOOL_ALIASES = {
     "claude": ("claude",),
     "codex": ("codex",),
     "cursor": ("cursor-agent", "agent"),
+    "pi": ("pi",),
 }
 
 

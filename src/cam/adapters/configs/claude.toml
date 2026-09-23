@@ -16,6 +16,7 @@
 name = "claude"
 display_name = "Claude Code"
 config_dir = ".claude"
+isolate_tool_home = false
 
 [launch]
 # Use POSIX `env KEY=VAL prog…` prefix to disable Claude mouse handling and
@@ -24,6 +25,10 @@ config_dir = ".claude"
 # login shells — /usr/bin/env is the single source of truth.
 command = ["env", "CLAUDE_CODE_DISABLE_MOUSE=1", "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1", "claude", "--allowed-tools", "Bash,Edit,Read,Write,Glob,Grep,WebFetch,TodoWrite,NotebookEdit"]
 auto_permission_mode = true     # add --permission-mode auto to launch command (default on as of 2026-06-11)
+# A launcher targets a non-local environment where camc cannot drive Claude's
+# permission UI reliably.  This replaces (rather than accompanies) the
+# conflicting `--permission-mode auto` used by ordinary local launches.
+launcher_autorun_args = ["--dangerously-skip-permissions"]
 prompt_after_launch = true
 startup_wait = 90.0
 strip_ansi = true

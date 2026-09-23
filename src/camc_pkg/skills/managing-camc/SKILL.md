@@ -1,7 +1,7 @@
 ---
 name: managing-camc
 description: >
-  Manage AI coding agents (Claude Code, Codex, Cursor) on a single
+  Manage AI coding agents (Claude Code, Codex, Cursor, Pi) on a single
   machine with camc — the standalone, stdlib-only Python CLI. Use when
   the user wants to start an agent, send it a prompt, capture its
   output, attach to it, resume / reboot / move it, or clean up records.
@@ -12,7 +12,7 @@ compatibility: Requires ~/.cam/camc deployed by the camc release.
 metadata:
   author: hren
   tags: camc, cam, agent, agents, tmux, claude, claude-code, codex,
-    cursor, monitor, session, attach, capture, send, key, prune,
+    cursor, pi, monitor, session, attach, capture, send, key, prune,
     reboot, resume, migrate, heal, single-machine, ai-agent,
     coding-agent, pm2, run, lifecycle
   category: infra
@@ -24,7 +24,7 @@ allowed-tools: Bash Read Glob Grep
 
 # camc — single-machine agent manager
 
-camc starts AI coding agents (claude / codex / cursor) inside tmux
+camc starts AI coding agents (claude / codex / cursor / pi) inside tmux
 sessions, lets you send them prompts and read their output, and tracks
 each agent's lifecycle. Every agent has its own tmux session, monitor
 process, and Claude session-id, so multiple agents in the same
@@ -84,8 +84,10 @@ use that profile; `api default show` displays the selection.
 When a default is configured, use `--no-default-api` for one normal login
 run. This skips the default without changing configuration. To permanently
 return a tool to login, run `api default clear --tool <tool>`; an explicit
-`--api NAME` still wins for a single run. Codex API runs use the isolated
-`~/.codex-api` home; normal login uses the tool's regular login home.
+`--api NAME` still wins for a single run. Codex login and API runs use the
+same thin `~/.codex/<agent-id>` home, linking safe donor state while retaining
+a private config snapshot and host-local runtime paths. Only API runs add
+provider/catalog settings to that snapshot.
 
 ## 1. Starting an agent
 
@@ -96,6 +98,7 @@ clear one (`fix-ecc`, `bug5893270`, `regr-fn100`).
 ```bash
 ~/.cam/camc run "fix the ECC error" -n fix-ecc                # codex (default)
 ~/.cam/camc run "add tests" -t claude -n add-tests
+~/.cam/camc run "review this tree" -t pi -n pi-review
 ~/.cam/camc run -n debug-mem                                   # interactive (no prompt)
 ~/.cam/camc run "build" -a -n nightly                          # auto-exit on completion
 ~/.cam/camc run "x" -n x --tag NR10 --tag WORK
@@ -103,11 +106,59 @@ clear one (`fix-ecc`, `bug5893270`, `regr-fn100`).
 ~/.cam/camc run "x" -p /path/to/proj -n proj-dev               # explicit path (default: CWD)
 ~/.cam/camc run "x" -n y --system-prompt "You are a reviewer." # inject system prompt inline
 ~/.cam/camc run "x" -n y --system-file path/to/SKILL.md        # inject system prompt from file
+~/.cam/camc run "x" -n y --isolate-tool-home 0               # override adapter home-isolation default
+~/.cam/camc run "x" -n reuse --tool-launcher ssh-auto         # best reachable autorun job
+~/.cam/camc run "x" -n reuse --tool-launcher ssh-auto:1796123900
+~/.cam/camc run "x" -n auto --tool-launcher auto              # SSH reuse, then new qsub
+~/.cam/camc run "x" -n fresh --tool-launcher qsub-4g          # always allocate a new 4G job
+~/.cam/camc run "x" -n batch --tool-launcher 'qsub -q o_cpu_4G -m rel8x -app r89docker --qsla autorun_sla -app affinity -Is {command}'
+~/.cam/camc run "x" -n remote --tool-launcher 'ssh -tt root@192.168.1.100 {command}'
 ```
+
+The named launchers are `ssh-auto[:JOBID]`, `auto`, and `qsub-4g`.
+`ssh-auto` ranks the caller's RUN interactive `autorun_sla` jobs by current
+project, matching `QJT_AI_AGENT_TYPE`, generic shell, preferred interactive
+queue, and recency. It verifies each candidate's long job metadata and
+`EXEC_HOST`, deduplicates hosts, and probes SSH with bounded noninteractive
+timeouts. `ssh-auto:JOBID` restricts this to one job. `auto` tries every safe
+SSH candidate and falls back to a new qsub only when none is usable;
+`qsub-4g` always creates that new allocation. The qsub project is resolved and
+validated from the requested workdir with `nvprojectname`. Selection and
+fallback decisions are printed and safe structural metadata is recorded.
+
+Remote launchers are rejected while an explicit or default API profile is
+active because the per-agent loopback proxy is not reachable on the remote
+host. Pass `--no-default-api` to use normal tool login. Reusing an EXEC_HOST
+does not put the SSH process inside the original job's cgroup, so prefer a new
+qsub when strict resource accounting is required.
+
+For a raw launcher template, `--tool-launcher LAUNCHER` parses `LAUNCHER` with
+POSIX `shlex` rules and
+requires exactly one standalone `{command}` argv element. camc replaces that
+element with the complete POSIX-shell-quoted tool command as one argv; it does
+not use `eval`. The launcher executable is checked locally, while the tool
+name is deliberately left unresolved for the qsub/SSH target environment.
+Claude launcher runs add `--dangerously-skip-permissions` (without the local
+`--permission-mode auto`); Codex launcher runs add `--yolo`; Pi launcher runs
+add `--approve` so project-local resources cannot block in a remote trust TUI.
+Cursor and custom tools add no launcher autorun option unless their adapter
+config declares one.
+Tool-launcher agents always disable the local monitor's `auto_confirm`, even
+if a later update attempts to enable it; the remote tool's adapter autorun
+option is the sole confirmation policy.
+The ordinary non-launcher startup and Codex requirements-based autorun policy
+are unchanged. A launcher/tool failure records its exit status and retains the
+tmux shell for inspection.
+
+`--isolate-tool-home 1|0` overrides the selected adapter's Boolean
+`isolate_tool_home` default for one run. Codex defaults to
+an isolated `~/.codex/<agent-id>` home. Claude, Cursor, and Pi default to their
+ordinary shared homes; Pi can be explicitly isolated under `~/.pi/agent/`.
+An adapter must declare its runtime-home layout before isolation can be enabled.
 
 `--system-prompt` / `--system-file` writes the content into a
 marker-delimited block inside the tool's auto-loaded config file in the
-workdir (`CLAUDE.md` for claude, `AGENTS.md` for codex/cursor).
+workdir (`CLAUDE.md` for claude, `AGENTS.md` for codex/cursor/pi).
 The tool picks it up on startup via its own auto-load mechanism.
 
 **Naming gotcha:** don't use `camflow-*` for personal dev agents.
