@@ -336,7 +336,7 @@ def run_monitor_steps(screens, store=None, config=None, auto_exit=False,
          patch("camc_pkg.monitor.time.time", side_effect=mock_time), \
          patch("camc_pkg.monitor.signal.signal", side_effect=mock_signal):
         with patch("camc_pkg.monitor.stop_agent_api_proxy",
-                   side_effect=lambda agent: proxy_stops.append(agent),
+                   side_effect=lambda agent, **_kwargs: proxy_stops.append(agent),
                    create=True):
             try:
                 run_monitor_loop("test-session", "test-001", config, store,
@@ -400,6 +400,23 @@ def test_monitor_reloads_auto_confirm_after_ten_second_mtime_check(tmp_path):
 
     assert sends == [110.0]
     assert stat_calls == [100.0, 110.0]
+
+
+def test_monitor_never_enables_auto_confirm_for_tool_launcher(tmp_path):
+    """Launcher ownership overrides even a stale/manually enabled task flag."""
+    from camc_pkg import monitor
+
+    store = MockStore()
+    store._path = str(tmp_path / "agents.json")
+    (tmp_path / "agents.json").write_text("[]")
+    store.agent["task"]["auto_confirm"] = True
+    store.agent["runtime"] = {"launcher": {"preset": "auto"}}
+    feature = SimpleNamespace(name="auto_confirm", enabled=True)
+    state = {"next_check": 0.0, "mtime": None, "loaded": False}
+
+    monitor._refresh_auto_confirm([feature], store, store.agent_id, state, 1.0)
+
+    assert feature.enabled is False
 
 
 # ===========================================================================

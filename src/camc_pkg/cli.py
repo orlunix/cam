@@ -19,6 +19,17 @@ from pathlib import Path
 from camc_pkg import __build__
 from camc_pkg.api_proxy import run_api_proxy
 from camc_pkg.skills import list_skills, install_manifest_skills
+from camc_pkg.tool_launcher import (
+    build_launcher_command,
+    launcher_target_environment,
+    launcher_target_binary,
+    named_tool_launcher,
+    parse_tool_launcher,
+    record_uses_tool_launcher,
+    resolve_named_tool_launcher,
+    validate_tool_launcher_api,
+    without_launcher_auto_permission,
+)
 
 
 _PHASE1_STORAGE_RELPATHS = (
@@ -354,7 +365,7 @@ def cmd_init(args):
         sys.exit(1)
 
     # Check available tools
-    for tool_name in ("claude", "codex", "agent"):
+    for tool_name in ("claude", "codex", "cursor-agent", "pi"):
         path = shutil.which(tool_name)
         if path:
             print_success("%s: %s" % (tool_name, path))
@@ -716,7 +727,8 @@ def _auto_run_args(config, env=None):
 
 
 def _preflight(tool, tool_binary, workdir, env_setup=None, runtime=None,
-               adapter_readiness=None, use_env_tool=False, tool_dir=None):
+               adapter_readiness=None, use_env_tool=False, tool_dir=None,
+               tool_launcher=None):
     """Tool readiness (via runtime_env) + local writable-dir checks.
 
     Returns ``(issues, resolved)`` — a list of (level, message) tuples
@@ -744,8 +756,29 @@ def _preflight(tool, tool_binary, workdir, env_setup=None, runtime=None,
     }
     if tool_dir:
         readiness_kwargs["tool_dir"] = tool_dir
-    readiness = check_tool_readiness(runtime, tool, tool_binary,
-                                     **readiness_kwargs)
+    if tool_launcher:
+        launcher_name = tool_launcher[0]
+        readiness = check_tool_readiness(
+            runtime, launcher_name, launcher_name, readiness={})
+        launcher_resolution = readiness["resolved"].get("tool_resolution") or {}
+        launcher_bin = launcher_resolution.get("bin")
+        if (not launcher_bin or
+                launcher_resolution.get("source") == "unresolved"):
+            readiness["issues"].append((
+                "error", "launcher executable %r not found in effective PATH"
+                % launcher_name))
+        readiness["resolved"]["launcher"] = launcher_bin or ""
+        readiness["resolved"]["launcher_resolution"] = launcher_resolution
+        readiness["resolved"]["tool"] = tool_binary or tool
+        readiness["resolved"]["tool_resolution"] = {
+            "tool": tool,
+            "bin": tool_binary or tool,
+            "source": "target-environment",
+            "warnings": [],
+        }
+    else:
+        readiness = check_tool_readiness(runtime, tool, tool_binary,
+                                         **readiness_kwargs)
     issues = list(readiness["issues"])
 
     # workdir accessible
@@ -844,16 +877,43 @@ def _codex_api_proxy_override(api_plan):
             (CODEX_API_PROVIDER, json.dumps(url))]
 
 
-def _stop_agent_api_proxy(agent):
+def _stop_agent_api_proxy(agent, cleanup_home=True):
     from camc_pkg.api_proxy import stop_agent_api_proxy
-    stop_agent_api_proxy(agent)
+    stop_agent_api_proxy(agent, cleanup_home=cleanup_home)
+
+
+def _cleanup_agent_runtime_overlay(agent):
+    """Remove only agent-owned overlay state after its tool has terminated."""
+    runtime_record = (agent or {}).get("runtime") or {}
+    storage = runtime_record.get("storage") or {}
+    overlay = storage.get("overlay") if isinstance(storage, dict) else None
+    # Compatibility with records created by the short-lived full-home WIP.
+    if not isinstance(overlay, dict):
+        overlay = runtime_record.get("home")
+    if not isinstance(overlay, dict):
+        return False
+    try:
+        from camc_pkg.runtime_env import remove_agent_runtime_home
+        return remove_agent_runtime_home(
+            overlay, owner_id=str((agent or {}).get("id") or ""))
+    except Exception:
+        return False
 
 
 def cmd_run(args):
     tool = getattr(args, "tool", None) or "codex"
-    known_tool = tool in ("claude", "codex", "cursor")
+    known_tool = tool in ("claude", "codex", "cursor", "pi")
     prompt = getattr(args, "prompt", "") or ""
     workdir = os.path.abspath(args.path)
+    raw_tool_launcher = getattr(args, "tool_launcher", None)
+    launcher_preset = named_tool_launcher(raw_tool_launcher)
+    launcher_metadata = {}
+    try:
+        tool_launcher = ([] if launcher_preset else
+                         parse_tool_launcher(raw_tool_launcher))
+    except ValueError as e:
+        print_error(str(e))
+        sys.exit(1)
     raw_tool_dir = getattr(args, "tool_dir", None)
     tool_dir = None
     if raw_tool_dir:
@@ -871,6 +931,14 @@ def cmd_run(args):
         sys.exit(1)
     os.makedirs(workdir, exist_ok=True)
     config = _load_config(tool)
+    isolate_tool_home = getattr(args, "isolate_tool_home", None)
+    effective_isolation = (
+        bool(getattr(config, "isolate_tool_home", False))
+        if isolate_tool_home is None else bool(isolate_tool_home))
+    if effective_isolation and not getattr(config, "runtime", None):
+        print_error(
+            "tool-home isolation is not supported by the '%s' adapter" % tool)
+        sys.exit(2)
     # Load context for agent metadata only. context.env_setup must not
     # implicitly change every standalone camc run. If runtime setup is
     # needed, it must be explicit (future --env-profile / --env-setup).
@@ -898,6 +966,11 @@ def cmd_run(args):
         except ValueError as e:
             print_error(str(e))
             sys.exit(1)
+    try:
+        validate_tool_launcher_api(raw_tool_launcher, api_name)
+    except ValueError as exc:
+        print_error(str(exc))
+        sys.exit(2)
     if api_name:
         from camc_pkg.api_resolver import apply_resolved_token, resolve_run_plan
         from camc_pkg.api_token import resolve_token
@@ -937,12 +1010,26 @@ def cmd_run(args):
             api_plan.get("name"),
             api_plan.get("mode"),
             ", ".join(src_bits) if src_bits else "none"))
+    tool_binary = config.command[0] if config.command else None
+    target_tool_binary = launcher_target_binary(config.command)
+    if launcher_preset:
+        try:
+            tool_launcher, launcher_metadata, launcher_notices = (
+                resolve_named_tool_launcher(
+                    launcher_preset, tool, workdir, runtime.env,
+                    target_tool=target_tool_binary))
+        except ValueError as exc:
+            print_error(str(exc))
+            sys.exit(2)
+        for notice in launcher_notices:
+            print_info(notice)
+    launcher_command_index = (tool_launcher.index("{command}")
+                              if tool_launcher else None)
     try:
         tool_env_keys = _apply_tool_env(runtime, getattr(args, "tool_env", None))
     except ValueError as e:
         print_error(str(e))
         sys.exit(1)
-    tool_binary = config.command[0] if config.command else None
     # F-08 (adapter-owned): prefer the adapter's [readiness] block
     # over runtime_env's hardcoded _TOOL_SPECS fallback. None when
     # the adapter doesn't declare [readiness] — fallback kicks in.
@@ -956,7 +1043,11 @@ def cmd_run(args):
     }
     if tool_dir:
         preflight_kwargs["tool_dir"] = tool_dir
-    issues, resolved = _preflight(tool, tool_binary, workdir,
+    if tool_launcher:
+        preflight_kwargs["tool_launcher"] = tool_launcher
+    preflight_tool_binary = (target_tool_binary
+                             if tool_launcher else tool_binary)
+    issues, resolved = _preflight(tool, preflight_tool_binary, workdir,
                                   **preflight_kwargs)
     has_error = False
     for level, msg in issues:
@@ -970,7 +1061,9 @@ def cmd_run(args):
 
     agent_id = _gen_agent_id()
     session = "cam-%s" % agent_id
-    custom_launch_enabled = bool(tool_dir or tool_env_keys or tool_args)
+    runtime_storage_info = None
+    custom_launch_enabled = bool(
+        tool_dir or tool_env_keys or tool_args or tool_launcher)
     exit_status_path = (os.path.join(PIDS_DIR, "%s.tool-exit" % agent_id)
                         if custom_launch_enabled else "")
 
@@ -1024,10 +1117,18 @@ def cmd_run(args):
 
     launch_cmd = _build_command(config, prompt, workdir)
 
-    # Auto-run is opt-in through the adapter's three-gate policy.  Keep
-    # user-supplied --tool-args last so the legacy/default command remains
-    # authoritative whenever the policy does not fully match.
-    launch_cmd += _auto_run_args(config, runtime.env)
+    # Launcher jobs run beyond the local confirmation loop, so adapters may
+    # opt into a dedicated safe-to-automate argument set. Ordinary launches
+    # retain the historical conditional autorun behavior byte-for-byte.
+    if tool_launcher:
+        if getattr(config, "auto_permission_mode", False):
+            launch_cmd = without_launcher_auto_permission(launch_cmd)
+        launch_cmd += list(getattr(config, "launcher_autorun_args", []) or [])
+    else:
+        # Auto-run is opt-in through the adapter's three-gate policy. Keep
+        # user --tool-args last so the default command remains authoritative
+        # whenever the policy does not fully match.
+        launch_cmd += _auto_run_args(config, runtime.env)
 
     if tool == "codex" and api_plan:
         launch_cmd += _codex_api_model_override(api_plan)
@@ -1064,7 +1165,8 @@ def cmd_run(args):
     # Preserves env prefixes (so CLAUDE_CODE_DISABLE_MOUSE still
     # reaches the wrapped tool) and tool-flag tails verbatim.
     resolved_bin = (resolved or {}).get("tool")
-    if resolved_bin and os.path.isabs(resolved_bin) and launch_cmd:
+    if (not tool_launcher and resolved_bin and os.path.isabs(resolved_bin)
+            and launch_cmd):
         _expected_basename = os.path.basename(resolved_bin)
         # Walk past `env` + `KEY=VAL` prefix tokens to find the tool
         # invocation. The first token that is neither 'env' nor a
@@ -1122,6 +1224,8 @@ def cmd_run(args):
     except Exception as e:
         log.warning("ensure_camc_tmux_config failed: %s", e)
         camc_tmux_config = ""
+
+    proxy_url = ""
     if api_plan and api_plan.get("proxy_required"):
         try:
             api_proxy_proc, proxy_port = _start_api_proxy(api_plan, agent_id)
@@ -1129,33 +1233,51 @@ def cmd_run(args):
             proxy_url = proxy_base + (api_plan.get("base_url_suffix") or "")
             if tool == "claude":
                 runtime.env["ANTHROPIC_BASE_URL"] = proxy_url
-            elif tool == "codex":
-                from camc_pkg.api_resolver import ensure_codex_api_config_dir
-                runtime.env["CODEX_HOME"] = ensure_codex_api_config_dir(
-                    proxy_url, api_plan.get("name") or "api",
-                    require_endpoint="responses",
-                    model_id=api_plan.get("model"), owner_id=agent_id)
             print_info("API proxy listening on %d" % proxy_port)
         except Exception as e:
             _stop_api_proxy(api_proxy_proc)
-            if tool == "codex":
-                try:
-                    from camc_pkg.api_resolver import remove_codex_api_config_dir
-                    remove_codex_api_config_dir(agent_id)
-                except Exception:
-                    pass
             print_error("API proxy failed: %s" % e)
             sys.exit(1)
+
+    # Adapter-owned shared-vs-local policy and optional overlay selection.
+    if getattr(config, "runtime", None):
+        try:
+            from camc_pkg.runtime_env import configure_agent_runtime_home
+            runtime_storage_info = configure_agent_runtime_home(
+                agent_id, config, runtime, api_plan=api_plan,
+                api_base_url=proxy_url,
+                isolate_tool_home=isolate_tool_home)
+            if runtime_storage_info:
+                print_info("Runtime home: %s" %
+                           runtime_storage_info["shared_home"])
+        except Exception as e:
+            _stop_api_proxy(api_proxy_proc)
+            print_error("Runtime storage bootstrap failed: %s" % e)
+            sys.exit(1)
+    if tool_launcher:
+        launcher_bin = (resolved or {}).get("launcher")
+        if launcher_bin and os.path.isabs(launcher_bin):
+            tool_launcher = list(tool_launcher)
+            tool_launcher[0] = launcher_bin
+        launch_cmd = build_launcher_command(
+            tool_launcher, launch_cmd,
+            bootstrap_dirs=(runtime_storage_info or {}).get(
+                "bootstrap_dirs") or [],
+            target_env=launcher_target_environment(
+                runtime.env, runtime_storage_info),
+            target_unset=(getattr(config, "runtime", None) or {}).get(
+                "clear_environment") or [])
     if not create_tmux_session(session, launch_cmd, workdir,
                                env_setup=env_setup, inherit_env=inherit_env,
                                env=runtime.env, tmux_bin=resolved_tmux,
                                tmux_config=camc_tmux_config,
                                exit_status_path=exit_status_path or None):
         _stop_api_proxy(api_proxy_proc)
-        if tool == "codex" and api_plan:
+        overlay_info = (runtime_storage_info or {}).get("overlay")
+        if overlay_info:
             try:
-                from camc_pkg.api_resolver import remove_codex_api_config_dir
-                remove_codex_api_config_dir(agent_id)
+                from camc_pkg.runtime_env import remove_agent_runtime_home
+                remove_agent_runtime_home(overlay_info, owner_id=agent_id)
             except Exception:
                 pass
         print_error("Failed to create tmux session for '%s'" % session)
@@ -1195,7 +1317,11 @@ def cmd_run(args):
         "session_id": session_uuid,
         "task": {"name": name or "", "tool": tool if known_tool else "others",
                  "prompt": prompt,
-                 "auto_confirm": known_tool, "auto_exit": auto_exit,
+                 # Launcher targets already receive adapter-owned autorun
+                 # arguments.  The local monitor must never inject answers
+                 # into a remote/qsub TUI whose screen timing it cannot own.
+                 "auto_confirm": bool(known_tool and not tool_launcher),
+                 "auto_exit": auto_exit,
                  "auto_exit_enable": auto_exit_enable,
                  "tags": tags,
                  "system_prompt": sp_text,
@@ -1268,9 +1394,25 @@ def cmd_run(args):
         },
         "shell": {
             "mode": "tmux-default-shell",
-            "note": "launch argv uses absolute tool path",
+            "note": ("launcher receives one POSIX-quoted target command argv"
+                     if tool_launcher else
+                     "launch argv uses absolute tool path"),
         },
     }
+    if tool_launcher:
+        # Store structural metadata only. The raw template, its argv, the
+        # expanded target command, and runtime env can contain passwords,
+        # tokens, prompts, or API routing details and must not be persisted.
+        agent_rec["runtime"]["launcher"] = {
+            "executable": (resolved or {}).get("launcher", ""),
+            "target_tool": target_tool_binary or tool,
+            "argv_count": len(tool_launcher),
+            "command_index": launcher_command_index,
+        }
+        if launcher_metadata:
+            agent_rec["runtime"]["launcher"].update(launcher_metadata)
+    if runtime_storage_info:
+        agent_rec["runtime"]["storage"] = runtime_storage_info
     store.save(agent_rec)
     if tool == "codex":
         _spawn_codex_session_binder(agent_id, session, workdir, started_at)
@@ -1501,7 +1643,7 @@ def cmd_exit(args):
         print_error("tmux session not found for agent %s" % a["id"])
         sys.exit(1)
     print_info("Sending graceful exit to agent %s..." % a["id"])
-    clean = graceful_exit(session)
+    clean = graceful_exit(session, tool=_tf(a, "tool", "claude"))
     _kill_monitor(a)
     _stop_agent_api_proxy(a)
     store.update(a["id"], status="stopped",
@@ -1546,8 +1688,13 @@ def cmd_update(args):
         print_info("Updated name to: %s" % args.name)
         changed = True
     if args.auto_confirm is not None:
-        task["auto_confirm"] = args.auto_confirm
-        print_info("Updated auto_confirm to: %s" % args.auto_confirm)
+        uses_launcher = record_uses_tool_launcher(a)
+        task["auto_confirm"] = bool(args.auto_confirm and not uses_launcher)
+        if args.auto_confirm and uses_launcher:
+            print_warning(
+                "auto_confirm remains disabled for tool-launcher agents")
+        else:
+            print_info("Updated auto_confirm to: %s" % args.auto_confirm)
         changed = True
 
     # Tag operations
@@ -7114,14 +7261,14 @@ examples:
     env_sub = env_p.add_subparsers(dest="env_action", parser_class=CamArgumentParser)
     env_check = env_sub.add_parser("check", help="Check effective env + tool readiness")
     env_check.add_argument("--tool", "-t", default="claude",
-                           help="Tool to check readiness for (claude/codex/cursor)")
+                           help="Tool to check readiness for (claude/codex/cursor/pi)")
     env_check.add_argument("--json", action="store_true",
                            help="Emit a JSON envelope instead of human text")
 
     # run
     r = sub.add_parser("run", help="Start a coding agent on a task")
     r.add_argument("prompt", nargs="?", default="", help="Task prompt (empty for interactive mode)")
-    r.add_argument("--tool", "-t", default="codex", help="Tool command (claude, codex, cursor, or other PATH executable) [default: codex]")
+    r.add_argument("--tool", "-t", default="codex", help="Tool command (claude, codex, cursor, pi, or other PATH executable) [default: codex]")
     r.add_argument("--path", "-p", default=os.getcwd(), help="Working directory")
     r.add_argument("--name", "-n", default=None, help="Human-readable name")
     r.add_argument("--auto-exit", "-a", action="store_true", help="Auto-exit on completion")
@@ -7137,13 +7284,22 @@ examples:
                    help="Resume an existing Claude session by ID (adds --resume to claude, skips prompt injection)")
     r.add_argument("--no-inherit-env", action="store_true", help="Legacy mode: wrap command with bash -c and env_setup")
     r.add_argument("--use-env-tool", dest="use_env_tool", action="store_true",
-                   help="Advanced: skip golden tool paths (claude/codex/cursor stable+latest) and resolve from runtime PATH only. Useful for testing dev builds.")
+                   help="Advanced: skip golden tool paths (claude/codex/cursor/pi stable+latest) and resolve from runtime PATH only. Useful for testing dev builds.")
     r.add_argument("--tool-dir", default=None, metavar="DIR",
                    help="Absolute directory searched first for the requested tool executable")
     r.add_argument("--tool-env", action="append", default=[], metavar="NAME=VALUE",
                    help="Per-agent environment override (repeatable; supports $NAME expansion)")
     r.add_argument("--tool-args", action="append", default=[], metavar="ARGS",
                    help="Extra shell-like argv string for the tool (repeatable; use --tool-args=... when it starts with '-')")
+    r.add_argument("--tool-launcher", default=None, metavar="LAUNCHER",
+                   help=("Named launcher (qsub-4g, ssh-auto[:JOBID], auto) "
+                         "or shell-like argv containing exactly one standalone "
+                         "{command} element"))
+    r.add_argument(
+        "--isolate-tool-home", dest="isolate_tool_home",
+        type=int, choices=(0, 1), default=None, metavar="{0,1}",
+        help=("Override tool-home isolation for this run: 1 isolates the "
+              "home, 0 uses the adapter's shared home (default: adapter policy)"))
     r.add_argument("--system-prompt", dest="system_prompt", default=None,
                    help="Inline system prompt; injected into CLAUDE.md/AGENTS.md in workdir before launch")
     r.add_argument("--system-file", dest="system_file", default=None,

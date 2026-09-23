@@ -14,6 +14,10 @@ from camc_pkg.transport import (
     capture_tmux, tmux_session_exists, tmux_send_input,
     tmux_kill_session, create_tmux_session,
 )
+from camc_pkg.runtime_env import (
+    build_runtime_env, configure_agent_runtime_home,
+    remove_agent_runtime_home,
+)
 
 
 class SchedulerError(Exception):
@@ -188,6 +192,18 @@ def _launch_agent(task, workdir):
     session = "cam-%s" % agent_id
     launch_cmd = _build_command(config, prompt, workdir)
 
+    # The scheduler shares the adapter-declared shared-vs-local contract with
+    # ``camc run`` so Codex never falls back to an NFS runtime directory.
+    runtime = build_runtime_env() if getattr(config, "runtime", None) else None
+    runtime_storage_info = None
+    if runtime is not None:
+        try:
+            runtime_storage_info = configure_agent_runtime_home(
+                agent_id, config, runtime)
+        except Exception as exc:
+            log.warning("runtime home setup failed for %s: %s", agent_id, exc)
+            return None
+
     context = _load_default_context()
     # context.json is scheduler metadata only; it must not inject
     # runtime env setup into agent launches.
@@ -200,7 +216,16 @@ def _launch_agent(task, workdir):
     except Exception as e:
         log.warning("skill install skipped: %s", e)
 
-    if not create_tmux_session(session, launch_cmd, workdir, env_setup=env_setup, inherit_env=True):
+    create_kwargs = {
+        "env_setup": env_setup,
+        "inherit_env": True,
+    }
+    if runtime is not None:
+        create_kwargs["env"] = runtime.env
+    if not create_tmux_session(session, launch_cmd, workdir, **create_kwargs):
+        overlay = (runtime_storage_info or {}).get("overlay")
+        if overlay:
+            remove_agent_runtime_home(overlay, owner_id=agent_id)
         return None
 
     store = AgentStore()
@@ -225,6 +250,12 @@ def _launch_agent(task, workdir):
         "started_at": _now_iso(), "completed_at": None, "exit_reason": None,
         "retry_count": 0, "cost_estimate": None, "files_changed": [],
     }
+    if runtime_storage_info:
+        agent["runtime"] = {
+            "schema": "camc-runtime/1",
+            "tool": {"name": tool},
+            "storage": runtime_storage_info,
+        }
     store.save(agent)
 
     # Spawn background monitor (boot + tool TOML during initializing).

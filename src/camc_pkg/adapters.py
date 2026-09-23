@@ -209,6 +209,49 @@ class AdapterConfig(object):
     def __init__(self, config):
         adapter_cfg = config.get("adapter", {})
         self.config_dir = adapter_cfg.get("config_dir") or ".agents"
+        self.isolate_tool_home = bool(
+            adapter_cfg.get("isolate_tool_home", False))
+        # Optional shared-vs-local runtime policy.  Adapters declare the
+        # shared tool home, host-local links/config paths, and a thin
+        # per-agent overlay.  Lifecycle code stays tool
+        # neutral and never hard-codes a username or Codex path.
+        runtime = config.get("runtime")
+        if isinstance(runtime, dict):
+            overlay = runtime.get("overlay") or {}
+            self.runtime = {
+                "environment": str(runtime.get("environment") or ""),
+                "shared_home": str(runtime.get("shared_home") or ""),
+                "local_links": [str(value) for value in
+                                (runtime.get("local_links") or []) if value],
+                "config_local_dirs": [str(value) for value in
+                                      (runtime.get("config_local_dirs") or [])
+                                      if value],
+                "prune_path_links": [str(value) for value in
+                                    (runtime.get("prune_path_links") or [])
+                                    if value],
+                "clear_environment": [str(value) for value in
+                                      (runtime.get("clear_environment") or [])
+                                      if value],
+                "overlay": {
+                    "root": str(overlay.get("root") or ""),
+                    "config_file": str(overlay.get("config_file") or ""),
+                    "config_format": str(overlay.get("config_format") or ""),
+                    "wire_api": str(overlay.get("wire_api") or ""),
+                    "catalog_file": str(overlay.get("catalog_file") or ""),
+                    "shared": [str(value) for value in
+                               (overlay.get("shared") or []) if value],
+                    "shared_globs": [str(value) for value in
+                                     (overlay.get("shared_globs") or [])
+                                     if value],
+                    "shared_exclude": [str(value) for value in
+                                       (overlay.get("shared_exclude") or [])
+                                       if value],
+                },
+            }
+            if not self.runtime["environment"] or not self.runtime["shared_home"]:
+                self.runtime = None
+        else:
+            self.runtime = None
         # Some TUIs (notably Cursor's Ink renderer) hide the terminal's
         # native cursor even while their own prompt accepts input.  Keep
         # the historical guard enabled unless an adapter explicitly opts
@@ -221,6 +264,10 @@ class AdapterConfig(object):
         self.command = launch.get("command", [])
         self.trust_workspace = bool(launch.get("trust_workspace", False))
         self.auto_permission_mode = launch.get("auto_permission_mode", False)
+        self.launcher_autorun_args = [
+            str(value) for value in
+            (launch.get("launcher_autorun_args") or [])
+        ]
         auto_run = launch.get("auto_run")
         if isinstance(auto_run, dict):
             autorun_config = (auto_run.get("autorun_config") or

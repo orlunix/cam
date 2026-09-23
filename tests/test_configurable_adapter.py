@@ -16,6 +16,7 @@ from cam.core.models import AgentState, AgentStatus, Context, TaskDefinition
 CONFIGS_DIR = Path(__file__).parent.parent / "src" / "cam" / "adapters" / "configs"
 CODEX_TOML = CONFIGS_DIR / "codex.toml"
 CURSOR_TOML = CONFIGS_DIR / "cursor.toml"
+PI_TOML = CONFIGS_DIR / "pi.toml"
 
 
 @pytest.fixture
@@ -56,6 +57,17 @@ class TestLoading:
         adapter = ConfigurableAdapter.from_toml(CURSOR_TOML)
         assert adapter.name == "cursor"
         assert adapter.display_name == "Cursor Agent"
+
+    def test_load_pi_toml(self):
+        adapter = ConfigurableAdapter.from_toml(PI_TOML)
+        assert adapter.name == "pi"
+        assert adapter.display_name == "Pi"
+        assert adapter.get_launch_command(
+            TaskDefinition(name="t", tool="pi", prompt="Fix it"),
+            Context(id=str(uuid4()), name="c", path="/tmp/project",
+                    created_at=datetime.now(timezone.utc)),
+        ) == ["pi"]
+        assert adapter.needs_prompt_after_launch() is True
 
     def test_missing_name_raises(self):
         with pytest.raises(ValueError, match="adapter.name is required"):
@@ -447,7 +459,7 @@ class TestRegistryIntegration:
     def test_total_adapter_count(self):
         from cam.adapters.registry import AdapterRegistry
         reg = AdapterRegistry()
-        assert len(reg) == 4  # generic (Python) + claude + codex + cursor (TOML)
+        assert len(reg) == 5  # generic (Python) + four TOML adapters
 
     def test_names_includes_cursor(self):
         from cam.adapters.registry import AdapterRegistry
@@ -456,6 +468,7 @@ class TestRegistryIntegration:
         assert "cursor" in names
         assert "claude" in names
         assert "codex" in names
+        assert "pi" in names
 
     def test_invalid_toml_does_not_crash(self, tmp_path):
         """Bad TOML files in the scan directory are skipped gracefully."""

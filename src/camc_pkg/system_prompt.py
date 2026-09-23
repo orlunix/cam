@@ -16,6 +16,7 @@ _TOOL_FILES = {
     "claude": "CLAUDE.md",
     "codex": "AGENTS.md",
     "cursor": "AGENTS.md",
+    "pi": "AGENTS.md",
 }
 
 _CODEX_HOST_ESCALATION_ID = "codex-host-escalation"

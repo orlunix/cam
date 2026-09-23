@@ -40,6 +40,8 @@ MODULE_ORDER = [
     "remote",
     "migrate",
     "formatters",
+    # Centralized launcher policy is consumed by monitor + cli.
+    "tool_launcher",
     # monitor_features MUST precede monitor: monitor.py imports
     # MonitorSnapshot / MonitorRuntime / build_features from
     # monitor_features. Earlier bundles crashed at standalone _monitor

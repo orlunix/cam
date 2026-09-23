@@ -39,6 +39,7 @@ import sys
 import time
 
 from camc_pkg import LOGS_DIR, log
+from camc_pkg.tool_launcher import record_uses_tool_launcher
 from camc_pkg.utils import _now_iso
 from camc_pkg.adapters import _load_config, _load_boot_config
 from camc_pkg.storage import AgentStore, EventStore
@@ -243,7 +244,9 @@ def _refresh_auto_confirm(features, store, agent_id, state, now):
     task = record.get("task") if isinstance(record, dict) else None
     value = (task.get("auto_confirm") if isinstance(task, dict)
              else record.get("auto_confirm"))
-    enabled = value if isinstance(value, bool) else True
+    uses_launcher = record_uses_tool_launcher(record)
+    enabled = False if uses_launcher else (
+        value if isinstance(value, bool) else True)
     for feature in features:
         if feature.name == "auto_confirm":
             feature.enabled = enabled
@@ -539,7 +542,9 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                                      completed_at=_now_iso())
                         agent_rec = store.get(agent_id)
                         if agent_rec:
-                            stop_agent_api_proxy(agent_rec)
+                            stop_agent_api_proxy(
+                                agent_rec,
+                                cleanup_home=not tmux_session_exists(session))
                         _event("completed", {"status": "completed", "reason": "auto-exit"})
                         return
                     else:
