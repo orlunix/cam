@@ -1,0 +1,108 @@
+# Pi coding harness adapter — interactive mode.
+#
+# Pi deliberately ships without permission prompts.  Project-local resources
+# (extensions, skills, prompts, and themes) have a separate trust gate; remote
+# launchers use --approve because camc cannot answer that TUI on the target.
+#
+# TUI markers (Pi 0.85.x):
+#   Idle editor:     solid horizontal top/bottom borders
+#   Working editor:  top border contains "Working" and a spinner
+#   Completion:      working label disappears and the solid editor returns
+
+[adapter]
+name = "pi"
+display_name = "Pi"
+config_dir = ".agents"
+isolate_tool_home = false
+
+# Pi natively supports relocating its config/session root.  Keep the shared
+# home by default so existing auth and settings work unchanged; an explicit
+# --isolate-tool-home 1 creates a thin per-agent overlay with private settings
+# and sessions while linking reusable credentials and customizations.
+[runtime]
+environment = "PI_CODING_AGENT_DIR"
+shared_home = "~/.pi/agent"
+
+[runtime.overlay]
+root = "~/.pi/agent"
+config_file = "settings.json"
+shared = ["auth.json", "models.json", "models-store.json", "keybindings.json", "skills", "extensions", "prompts", "themes", "npm"]
+shared_globs = ["*"]
+shared_exclude = ["sessions", "settings.json", "auth.json.lock", "session-index.lock", "session-index.sqlite"]
+
+[launch]
+command = ["pi"]
+launcher_autorun_args = ["--approve"]
+prompt_after_launch = true
+startup_wait = 30.0
+strip_ansi = true
+
+# Pi's editor has no prompt glyph.  When idle, its top and bottom borders are
+# solid box-drawing lines; while streaming, the top border embeds "Working".
+# Match a solid border only when the active UI tail has no base Pi working
+# indicator.  The editor remains focusable while streaming (steering is a Pi
+# feature), so tmux cursor_flag alone cannot distinguish idle from busy.
+ready_pattern = "\\A(?![\\s\\S]*Working)[\\s\\S]*^─{10,}$"
+ready_flags = ["MULTILINE"]
+prompt_submit_delay = 0.5
+
+[state]
+strategy = "last"
+recent_chars = 3000
+
+[[state.patterns]]
+state = "planning"
+pattern = "(Working|Thinking|Analyzing|(^|\\n)\\s*(read|grep|find|ls)\\b)"
+flags = ["IGNORECASE"]
+
+[[state.patterns]]
+state = "editing"
+pattern = "(^|\\n)\\s*(edit|write)\\b"
+flags = ["IGNORECASE"]
+
+[[state.patterns]]
+state = "testing"
+pattern = "((^|\\n)\\s*bash\\b|Running tests|pytest|npm test|cargo test)"
+flags = ["IGNORECASE"]
+
+[[state.patterns]]
+state = "committing"
+pattern = "(git commit|git push|gh pr create)"
+flags = ["IGNORECASE"]
+
+[completion]
+# Interactive Pi stays alive after each task.  The monitor's adapter-owned
+# busy marker plus solid-editor readiness drives idle detection.
+strategy = "process_exit"
+
+[monitor]
+busy_pattern = "Working"
+confirm_cooldown = 5.0
+confirm_recent_lines = 128
+confirm_sleep = 0.5
+health_check_interval = 15
+idle_stable_seconds = 60
+auto_exit = false
+exit_action = "send_exit"
+exit_command = "/quit"
+
+[readiness]
+binary = "pi"
+version_args = ["--version"]
+version_required = true
+version_timeout = 15
+install_hint = "use the approved Pi installation for your sandbox or HW Farm environment"
+
+# Pi supports many providers, so auth is intentionally soft.  Either its
+# auth store or one of the common provider environment variables is enough.
+[[readiness.optional_files]]
+path = "~/.pi/agent/auth.json"
+
+[[readiness.optional_env]]
+name = "ACME_API_KEY"
+
+[[readiness.optional_env]]
+name = "ANTHROPIC_API_KEY"
+
+[[readiness.optional_env]]
+name = "OPENAI_API_KEY"
