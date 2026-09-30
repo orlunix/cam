@@ -7316,6 +7316,8 @@ examples:
     ls.add_argument("--status", default=None, help="Filter by status")
     ls.add_argument("--tag", default=None, help="Filter by tag")
     ls.add_argument("--last", "-n", type=int, default=50, help="Show last N agents [default: 50]")
+    ls.add_argument("--all", "-a", dest="fleet_all", action="store_true",
+                    help="Fleet-wide list via the bridge host (mailbox ferry; intercepted pre-dispatch)")
 
     # logs
     l = sub.add_parser("logs", help="View agent output logs")
@@ -7697,6 +7699,19 @@ examples:
     _aliases = {"a": "attach", "ls": "list"}
     if len(sys.argv) > 1 and sys.argv[1] in _aliases:
         sys.argv[1] = _aliases[sys.argv[1]]
+
+    # Fleet bridge (docs/desktop/bridge-protocol-v1.md): --hub-drain is the
+    # host's outbox-drain hook; route() applies local-first semantics and
+    # ferries remote traffic through ~/.cam/camb/ when a bridge host serves
+    # this node. Both must run before argparse: the ferry packs argv
+    # verbatim (and packs nothing when dispatch stays local).
+    if len(sys.argv) >= 2 and sys.argv[1] == "--hub-drain":
+        from camc_pkg.bridge import hub_drain as _hub_drain
+        sys.exit(_hub_drain())
+    from camc_pkg.bridge import route as _bridge_route, submit as _bridge_submit
+    _ferry_argv = _bridge_route(sys.argv[1:])
+    if _ferry_argv is not None:
+        sys.exit(_bridge_submit(_ferry_argv))
 
     # Dual-mode `archive`: if no inspect-subcommand is given, inject
     # `create` so `camc archive <id>` routes to the builder while

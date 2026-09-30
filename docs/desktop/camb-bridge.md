@@ -20,6 +20,13 @@ camui hub（embedded-hub.cjs bridge workers）执行，node 上**零凭据**。
 - 将来归并 camc（spec 交 camc 所有方）：`camc list -a` = 本设计的
   fleet list；`camc <verb> <remote-agent>` 先本地后远程解析 = 本设计
   hub 侧的解析顺序。归并后 camb 可退役
+- **归并第一步已落地（camc 1.2.139，2026-09-30）**：
+  `src/camc_pkg/bridge.py` 吸收全部 ferry 行为（mailbox-only：
+  `--hub-drain`、outbox 原子发布、inbox 轮询、exit 0/1/2、
+  `send --file/--stdin` → `--text`），`cli.py` 在 argparse 前做
+  本地优先路由（`list -a` / 显式 `node:ref` / 本地 miss 且信箱已部署
+  才 ferry）。hub 侧零改动即可继续用 camb drain；把 drain 命令切到
+  `camc --hub-drain` 是后续独立的 hub 改动。camb 保留至切换完成
 - 第二步扩容路径：targeted verbs 是 `_execCamcOnContext` 原样转发，
   加 `run/stop/…` = 只扩 allowlist，转发通道零改动
 
