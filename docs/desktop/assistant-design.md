@@ -14,7 +14,7 @@ openai-completions provider only) via `ELECTRON_RUN_AS_NODE`. v1 is pure Q&A
   (legacy `<userData>/assistant.json` is migrated on first boot); the token
   goes to the credential store (safeStorage), ref `assistant:llm-token`.
   Empty URL/model fields resolve to the built-in defaults
-  (`https://inference-api.example.com/v1`, `nvidia/moonshotai/kimi-k3`).
+  (`https://inference-api.example.com/v1`, `models/moonshotai/kimi-k3`).
 - 0.2.24 UX+plumbing round: reasoning (`reasoning_content`) streams into a
   dim thinking block; sends during a running turn are **queued**
   (pi-agent-core `followUp`) instead of rejected; events reach the view over

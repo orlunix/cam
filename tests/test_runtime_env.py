@@ -396,7 +396,7 @@ def test_check_tool_readiness_codex_accepts_openai_api_key_env(tmp_path, monkeyp
 
 def test_check_tool_readiness_selected_tool_not_on_effective_path_is_error(tmp_path, monkeypatch):
     """Even if `claude` is on the test process's PATH (it is, on
-    NVIDIA hosts), the readiness check looks at runtime.env['PATH']
+    ACME hosts), the readiness check looks at runtime.env['PATH']
     only. An empty runtime PATH must make `claude not found` an
     error. 2026-06-23: golden paths neutralized for this test so PATH
     fallback is exercised."""
@@ -1036,7 +1036,7 @@ def test_adapter_config_parses_readiness_for_shipped_tools():
                 {"path": "~/.pi/agent/auth.json", "label": ""}
             ]
             assert rd["optional_env"] == [
-                {"name": "NVIDIA_API_KEY"},
+                {"name": "ACME_API_KEY"},
                 {"name": "ANTHROPIC_API_KEY"},
                 {"name": "OPENAI_API_KEY"},
             ]

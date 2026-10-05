@@ -39,7 +39,7 @@ const patchPiConfig = {
 };
 
 // The pi-coding-agent SDK assumes every assistant message carries a `usage`
-// object, but OpenAI-compatible endpoints (e.g. NVIDIA inference API) may omit
+// object, but OpenAI-compatible endpoints (e.g. ACME inference API) may omit
 // it. Without this guard, `_checkCompaction` crashes with
 // "Cannot read properties of undefined (reading 'totalTokens')".
 const USAGE_OLD = 'export function calculateContextTokens(usage) {\n    return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;\n}';

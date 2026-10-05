@@ -760,7 +760,7 @@ def _expand_runtime_path(runtime, path):
     when available, NOT ``os.environ['HOME']``. This is the F-08
     invariant: every check the launch will later honor must consult
     the same effective env — login shell or env_setup can legitimately
-    rewrite HOME (NVIDIA containers do this), and checking
+    rewrite HOME (ACME containers do this), and checking
     ``~/.claude.json`` against the wrong HOME would either falsely
     block or falsely pass."""
     if not path:
@@ -822,7 +822,7 @@ _TOOL_SPECS = {
         "binary": "pi",
         "version_args": ["--version"],
         "auth_files_any": ["~/.pi/agent/auth.json"],
-        "env_keys": ["NVIDIA_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
+        "env_keys": ["ACME_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
         "install_hint": "use the approved Pi installation for your environment",
     },
 }
@@ -834,7 +834,7 @@ _TOOL_SPECS = {
 # even when the caller's env is messy.
 # ---------------------------------------------------------------------------
 
-# /bin/tmux is the fallback tmux on NVIDIA containers/VMs. New sessions
+# /bin/tmux is the fallback tmux on ACME containers/VMs. New sessions
 # prefer the effective runtime PATH so a user's selected tmux binary (for
 # example Homebrew tmux on macOS) matches the client they use to attach.
 _GOLDEN_TMUX_PATHS = (
@@ -1218,7 +1218,7 @@ def check_tool_readiness(runtime, selected_tool, tool_binary=None,
     # ---- auth / config file (selected tool only) ----
     # F1: expand ~ via runtime.env['HOME'], not os.environ['HOME'].
     # Otherwise a host where login-shell HOME differs from process
-    # HOME (NVIDIA containers, sudo -u workflows, etc.) would check
+    # HOME (ACME containers, sudo -u workflows, etc.) would check
     # the wrong ~/.claude.json file.
     for af in spec.get("auth_files", []):
         path = _expand_runtime_path(runtime, af)

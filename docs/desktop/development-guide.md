@@ -213,7 +213,7 @@ session id、元数据和字节流。
   配置 + 线程 transcript 持久化在 `<userData>/ext-data/assistant/`；所有事件经
   `webContents.send('assistant:event')` 推给渲染层。`setHub({url, token})` 在每次
   hub 启动后重新注入（token 会轮换）。默认 LLM 端点
-  `https://inference-api.example.com/v1`（默认模型 `nvidia/moonshotai/kimi-k3`）。
+  `https://inference-api.example.com/v1`（默认模型 `models/moonshotai/kimi-k3`）。
 - **历史是有损 live log（assistant v0.4.7 实测，三层上限叠加）**：
   1. 内存 ring buffer `MAX_EVENTS=1000`（:28，:315-316 超出即 splice 丢弃）；
   2. 磁盘 JSONL（`ext-data/assistant/threads/<id>.events.jsonl`）超过

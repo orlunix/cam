@@ -32,23 +32,23 @@ class TestApiStore:
         assert data["version"] == "1.0.5"
         assert "deepseek-v4-flash" in data["apis"]
         assert data["apis"]["deepseek-v4-flash"]["model"] == (
-            "nvidia/deepseek-ai/eccn-deepseek-v4-flash"
+            "models/deepseek-ai/dep-deepseek-v4-flash"
         )
         assert "kimi-k3" in data["apis"]
         assert not {"kimi-k3-low", "kimi-k3-high", "kimi-k3-max"}.intersection(
             data["apis"]
         )
         assert data["apis"]["kimi-k3"]["model"] == (
-            "nvidia/moonshotai/eccn-kimi-k3"
+            "models/moonshotai/dep-kimi-k3"
         )
         assert all(
-            entry["model"].startswith("nvidia/")
+            entry["model"].startswith("models/")
             for entry in data["apis"].values()
         )
         assert "glm-5.2" in data["apis"]
-        assert data["apis"]["glm-5.2"]["model"] == "nvidia/zai-org/eccn-glm-5.2"
-        assert data["apis"]["glm-5.3"]["model"] == "nvidia/zai-org/eccn-glm-5.3"
-        assert data["apis"]["qwen3.8-27b"]["model"] == "nvidia/qwen/eccn-qwen3.8-27b"
+        assert data["apis"]["glm-5.2"]["model"] == "models/zai-org/dep-glm-5.2"
+        assert data["apis"]["glm-5.3"]["model"] == "models/zai-org/dep-glm-5.3"
+        assert data["apis"]["qwen3.8-27b"]["model"] == "models/qwen/dep-qwen3.8-27b"
         assert "minimax-m3" in data["apis"]
         assert "default" not in data
         assert "default_provider" not in data
@@ -64,7 +64,7 @@ class TestApiStore:
         data = ensure_ready()
 
         assert data["apis"]["kimi-k3"]["model"] == (
-            "nvidia/moonshotai/eccn-kimi-k3"
+            "models/moonshotai/dep-kimi-k3"
         )
         assert all("kimi-k3-" not in entry.get("model", "")
                    for entry in data["apis"].values())
@@ -159,7 +159,7 @@ class TestApiStore:
         data = _default_seed()
         data["apis"]["test-api"] = {
             "provider": "inference-hub",
-            "model": "nvidia/foo/bar",
+            "model": "models/foo/bar",
             "aliases": ["foo"],
         }
         rebuild_aliases(data)
@@ -191,7 +191,7 @@ class TestApiResolver:
             "https://inference-api.example.com"
         )
         assert plan["env"]["ANTHROPIC_MODEL"] == "claude-sonnet-5-glm52"
-        assert plan["model"] == "nvidia/zai-org/eccn-glm-5.2"
+        assert plan["model"] == "models/zai-org/dep-glm-5.2"
         assert plan["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "1048576"
         assert "CLAUDE_CODE_MAX_CONTEXT_TOKENS" not in plan["env"]
 
@@ -204,7 +204,7 @@ class TestApiResolver:
             json.dump(data, f)
         plan = resolve_run_plan("claude", "deepseek-v4-flash")
         assert plan["env"]["ANTHROPIC_MODEL"] == "claude-haiku-5-dsv4f"
-        assert plan["model"] == "nvidia/deepseek-ai/eccn-deepseek-v4-flash"
+        assert plan["model"] == "models/deepseek-ai/dep-deepseek-v4-flash"
 
     def test_native_messages_plan_uses_claude_client_root_url(self, api_models_file):
         data = ensure_ready()
@@ -305,11 +305,11 @@ class TestApiResolver:
         api_resolver.ensure_codex_api_config_dir(
             "https://inference-api.example.com/v1",
             "deepseek-v4-flash",
-            model_id="nvidia/deepseek-ai/eccn-deepseek-v4-flash",
+            model_id="models/deepseek-ai/dep-deepseek-v4-flash",
         )
 
         config = (home / "config.toml").read_text()
-        assert 'model = "nvidia/deepseek-ai/eccn-deepseek-v4-flash"' in config
+        assert 'model = "models/deepseek-ai/dep-deepseek-v4-flash"' in config
 
     def test_codex_api_reuses_login_skills_with_idempotent_link(self, tmp_path, monkeypatch):
         from camc_pkg import api_resolver
@@ -343,10 +343,10 @@ class TestApiResolver:
 
         first = api_resolver.ensure_codex_api_config_dir(
             "http://127.0.0.1:1111/v1", "glm-5.3",
-            model_id="nvidia/zai-org/eccn-glm-5.3", owner_id="agent-glm")
+            model_id="models/zai-org/dep-glm-5.3", owner_id="agent-glm")
         second = api_resolver.ensure_codex_api_config_dir(
             "http://127.0.0.1:2222/v1", "qwen3.8-27b",
-            model_id="nvidia/qwen/eccn-qwen3.8-27b", owner_id="agent-qwen")
+            model_id="models/qwen/dep-qwen3.8-27b", owner_id="agent-qwen")
 
         assert first != second
         assert 'base_url = "http://127.0.0.1:1111/v1"' in open(
@@ -390,7 +390,7 @@ class TestApiResolver:
         data = ensure_ready()
         data["apis"]["my-custom"] = {
             "provider": "inference-hub",
-            "model": "nvidia/foo/bar",
+            "model": "models/foo/bar",
             "enabled": True,
             "aliases": [],
         }

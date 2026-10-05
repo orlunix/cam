@@ -27,19 +27,19 @@ KIMI_K3_KEY = "kimi-k3"
 LEGACY_KIMI_K3_PROFILES = ("kimi-k3-low", "kimi-k3-high", "kimi-k3-max")
 
 CURATED_APIS = [
-    ("glm-5.2", "nvidia/zai-org/eccn-glm-5.2", ["glm", "glm52"]),
-    ("glm-5.3", "nvidia/zai-org/eccn-glm-5.3", ["glm53"]),
-    ("deepseek-v4-flash", "nvidia/deepseek-ai/eccn-deepseek-v4-flash", ["deepseek-flash", "ds-v4-flash"]),
-    ("deepseek-v4-pro", "nvidia/deepseek-ai/eccn-deepseek-v4-pro", ["deepseek", "ds-v4"]),
-    ("kimi-k2.6", "nvidia/moonshotai/eccn-kimi-k2.6", ["kimi", "k2.6"]),
-    (KIMI_K3_KEY, "nvidia/moonshotai/eccn-kimi-k3", ["k3"]),
-    ("minimax-m3", "nvidia/minimaxai/eccn-minimax-m3", ["minimax", "m3"]),
-    ("qwen3-5-397b", "nvidia/qwen/eccn-qwen3-5-397b-a17b", ["qwen397", "qwen3.5"]),
-    ("qwen3.8-27b", "nvidia/qwen/eccn-qwen3.8-27b", ["qwen38"]),
-    ("nemotron-3-ultra", "nvidia/nvidia/eccn-nemotron-3-ultra", ["nemotron", "nemo-ultra"]),
+    ("glm-5.2", "models/zai-org/dep-glm-5.2", ["glm", "glm52"]),
+    ("glm-5.3", "models/zai-org/dep-glm-5.3", ["glm53"]),
+    ("deepseek-v4-flash", "models/deepseek-ai/dep-deepseek-v4-flash", ["deepseek-flash", "ds-v4-flash"]),
+    ("deepseek-v4-pro", "models/deepseek-ai/dep-deepseek-v4-pro", ["deepseek", "ds-v4"]),
+    ("kimi-k2.6", "models/moonshotai/dep-kimi-k2.6", ["kimi", "k2.6"]),
+    (KIMI_K3_KEY, "models/moonshotai/dep-kimi-k3", ["k3"]),
+    ("minimax-m3", "models/minimaxai/dep-minimax-m3", ["minimax", "m3"]),
+    ("qwen3-5-397b", "models/qwen/dep-qwen3-5-397b-a17b", ["qwen397", "qwen3.5"]),
+    ("qwen3.8-27b", "models/qwen/dep-qwen3.8-27b", ["qwen38"]),
+    ("nemotron-3-ultra", "models/models/dep-nemotron-3-ultra", ["nemotron", "nemo-ultra"]),
 ]
 
-# Endpoint probes against the NVIDIA Inference Hub.  Kimi K3 Max exposes the
+# Endpoint probes against the ACME Inference Hub.  Kimi K3 Max exposes the
 # Messages route but returned empty native content in the verification probe,
 # so it intentionally keeps the completion fallback for Claude.
 CURATED_AVAILABLE_ENDPOINTS = {
@@ -189,7 +189,7 @@ def _curated_client_models(key, model):
 
 
 def _curated_tool_capabilities():
-    # NVIDIA Responses profiles do not accept Codex's tool_search type.
+    # ACME Responses profiles do not accept Codex's tool_search type.
     # This is durable profile data, not catalog-generator behavior.
     return {"codex": {"supports_search_tool": False}}
 
@@ -225,7 +225,7 @@ def _default_seed():
         "version": API_SCHEMA_VERSION,
         "providers": {
             DEFAULT_PROVIDER: {
-                "display_name": "NVIDIA Inference Hub",
+                "display_name": "ACME Inference Hub",
                 "auth_key": "inference_hub",
                 "env_names": [
                     "INFERENCE_HUB_TOKEN",
@@ -281,7 +281,7 @@ def merge_curated_apis(data):
     if not isinstance(provider, dict):
         providers[DEFAULT_PROVIDER] = dict(_default_seed()["providers"][DEFAULT_PROVIDER])
     else:
-        provider.setdefault("display_name", "NVIDIA Inference Hub")
+        provider.setdefault("display_name", "ACME Inference Hub")
         provider.setdefault("auth_key", "inference_hub")
         provider.setdefault("env_names", ["INFERENCE_HUB_TOKEN"])
         provider.setdefault("token_file", "~/.my_tokens.yaml")

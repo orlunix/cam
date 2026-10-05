@@ -330,11 +330,11 @@ Three layers of protection:
 ### CamcDelegate SSH Connection
 
 `CamcDelegate._run_camc_ssh()` reuses the same ControlMaster socket as `SSHTransport` (computed from `user@host:port`). This is critical because:
-- Some remote machines (NVIDIA containers) only accept SSH via specific ports (e.g., 3859, 3706, 3422) — not port 22.
+- Some remote machines (ACME containers) only accept SSH via specific ports (e.g., 3859, 3706, 3422) — not port 22.
 - ControlMaster sharing means CamcDelegate piggy-backs on SSHTransport's already-authenticated persistent connection.
 - Without ControlMaster, each camc subprocess call would need fresh SSH authentication, which fails on machines that require jump hosts or Kerberos.
 
-**Non-ASCII SSH handling**: Remote shells (csh/tcsh on NVIDIA machines) mangle non-ASCII bytes in command arguments. For non-ASCII args (e.g., Chinese prompts), `_run_camc_ssh` pipes a bash script via stdin (`ssh -T target bash` with `input=script`) to bypass the login shell.
+**Non-ASCII SSH handling**: Remote shells (csh/tcsh on ACME machines) mangle non-ASCII bytes in command arguments. For non-ASCII args (e.g., Chinese prompts), `_run_camc_ssh` pipes a bash script via stdin (`ssh -T target bash` with `input=script`) to bypass the login shell.
 
 ## Test Conventions
 
@@ -386,7 +386,7 @@ Agent IDs are 8 hex characters generated via `uuid5(NAMESPACE_DNS, hostname + ti
 
 ### camc Cluster / Shared-Disk Support
 
-In environments where multiple machines share the same home directory (NFS clusters like NVIDIA PDX containers), `~/.cam/agents.json` is shared across all machines but tmux sessions are per-machine (`/tmp/cam-sockets/` is local).
+In environments where multiple machines share the same home directory (NFS clusters like ACME PDX containers), `~/.cam/agents.json` is shared across all machines but tmux sessions are per-machine (`/tmp/cam-sockets/` is local).
 
 - **`hostname` field**: `camc run` records `socket.gethostname()` in each agent record.
 - **`camc list`**: filters to only show agents from the current hostname.
@@ -491,9 +491,9 @@ All CLI tools (calendar-cli, outlook-cli, etc.) authenticate as the TeaSpirit ho
 |-----------|-------------|--------|
 | Other user's public calendar | Yes | `calendar-cli find --user <email>` if shared |
 | Other user's email | No | No cross-user permission |
-| NVBugs | Yes | Public query API |
-| Helios directory | Yes | Organization-wide |
-| Confluence / Glean | Yes | Organization-wide content |
+| internal-bug-tracker | Yes | Public query API |
+| internal-platform directory | Yes | Organization-wide |
+| internal-wiki / internal-search | Yes | Organization-wide content |
 | Other user's private calendar | No | Requires their auth token |
 
 **Strategy**: For queries the host token can't serve, respond honestly ("I don't have permission to access your calendar"). For organization-wide data (bugs, docs, directory), answer normally.

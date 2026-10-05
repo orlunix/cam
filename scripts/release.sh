@@ -25,7 +25,7 @@ REMOTE_PATH="~/.cam/camc"
 # and doesn't fail the release.
 SHARED_BIN_DIR="/home/prgn_share/bin"
 SHARED_BIN_PATH="$SHARED_BIN_DIR/camc"
-# Release archive on NFS-shared NVIDIA tools tree. Every successfully
+# Release archive on NFS-shared ACME tools tree. Every successfully
 # deployed build gets copied here under camc-<version>-<hash>. Serves
 # as the rollback artifact store (see tools/release/RELEASE-STRATEGY.md).
 SHARED_RELEASES_DIR="/home/prgn_share/tools/camc/releases"
@@ -228,7 +228,7 @@ while IFS=$'\t' read -r name host user port; do
   fi
 
   # 4d: Also install to /home/prgn_share/bin/camc when that dir exists
-  # on the remote — shared NFS-ish location some NVIDIA containers have
+  # on the remote — shared NFS-ish location some ACME containers have
   # in $PATH. Non-fatal: missing dir / no write perm just logs and
   # moves on. Uses the already-scp'd ~/.cam/camc as the source so we
   # don't re-transfer. Atomic-ish via temp + mv so a concurrent reader

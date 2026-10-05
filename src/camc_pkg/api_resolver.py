@@ -362,7 +362,7 @@ def apply_resolved_token(tool, env, token):
     overrides = dict(env or {})
     overrides.pop("_API_USE_RESOLVED_TOKEN", None)
     if tool == "claude":
-        # NVIDIA Inference Hub expects the bearer token header used by
+        # ACME Inference Hub expects the bearer token header used by
         # ANTHROPIC_AUTH_TOKEN; ANTHROPIC_API_KEY selects x-api-key instead.
         overrides.pop("ANTHROPIC_API_KEY", None)
         overrides["ANTHROPIC_AUTH_TOKEN"] = token

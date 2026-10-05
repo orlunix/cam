@@ -30,9 +30,9 @@ const EVENTS_KEEP = 2000;         // lines kept when the log is (re)written
 const EVENTS_MAX_BYTES = 10485760; // runtime rewrite threshold (10 MB)
 const MODELS_TIMEOUT_MS = 15000;
 // Out-of-the-box endpoint: an empty URL/model field (or a bare Tab in
-// the Settings form) means "use the NVIDIA inference API".
+// the Settings form) means "use the ACME inference API".
 const DEFAULT_API_URL = 'https://inference-api.example.com/v1';
-const DEFAULT_MODEL   = 'nvidia/moonshotai/kimi-k3';
+const DEFAULT_MODEL   = 'models/moonshotai/kimi-k3';
 
 const state = {
   dataDir: null,
@@ -618,7 +618,7 @@ function status() {
 }
 
 /** Resolve form values against the built-in defaults: an empty base URL
- *  or model field means the NVIDIA inference API default. */
+ *  or model field means the ACME inference API default. */
 function _resolveConfig(payload = {}) {
   return {
     apiUrl: (String(payload.apiUrl || '').trim().replace(/\/+$/, '')) || DEFAULT_API_URL,

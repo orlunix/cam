@@ -23,7 +23,7 @@ per-tool defaults:
   },
   "providers": {
     "inference-hub": {
-      "display_name": "NVIDIA Inference Hub",
+      "display_name": "ACME Inference Hub",
       "base_url": "https://inference-api.example.com",
       "auth_key": "inference_hub",
       "env_names": ["INFERENCE_HUB_TOKEN"],
@@ -34,10 +34,10 @@ per-tool defaults:
   "apis": {
     "deepseek-v4-flash": {
       "provider": "inference-hub",
-      "model": "nvidia/deepseek-ai/eccn-deepseek-v4-flash",
+      "model": "models/deepseek-ai/dep-deepseek-v4-flash",
       "client_models": {
         "claude": "claude-sonnet-5-glm52",
-        "codex": "nvidia/deepseek-ai/eccn-deepseek-v4-flash"
+        "codex": "models/deepseek-ai/dep-deepseek-v4-flash"
       },
       "available_endpoints": ["completions", "messages", "responses"],
       "enabled": true

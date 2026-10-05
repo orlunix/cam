@@ -125,7 +125,7 @@ No deduplication needed.
   {
     "name": "falcon-rtl",
     "machine": "pdx-110",
-    "path": "/home/scratch.hren_gpu/p5d1_sc0/hw/nvip/ip/peregrine"
+    "path": "/home/scratch.hren_gpu/p5d1_sc0/hw/nvip/ip/internal-org"
   },
   {
     "name": "bpmpfw-fw",

@@ -69,7 +69,7 @@ def test_codex_catalog_uses_upstream_slug_and_disables_search(api_models_file):
                                 template={"shell_type": "default"},
                                 require_endpoint="responses")
 
-    assert rows[0]["slug"] == "nvidia/moonshotai/eccn-kimi-k3"
+    assert rows[0]["slug"] == "models/moonshotai/dep-kimi-k3"
     assert rows[0]["supports_search_tool"] is False
 
 
@@ -92,7 +92,7 @@ def test_legacy_k3_phase_profiles_migrate_to_one_canonical_profile(api_models_fi
         refreshed["apis"]
     )
     assert refreshed["apis"]["kimi-k3"]["model"] == (
-        "nvidia/moonshotai/eccn-kimi-k3"
+        "models/moonshotai/dep-kimi-k3"
     )
     assert "kimi-k3" in refreshed["tool_supported_apis"]["codex"]
     assert resolve_api_name(refreshed, "kimi-k3-max") == "kimi-k3"

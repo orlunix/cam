@@ -2,7 +2,7 @@
 
 ## 背景
 
-TeaSpirit 运行在一台机器上，使用宿主用户（如 hren）的 CLI token 访问 Microsoft Graph API（日历、邮件、Teams）和 NVIDIA 内部服务（NVBugs、Helios、Confluence、Glean）。
+TeaSpirit 运行在一台机器上，使用宿主用户（如 hren）的 CLI token 访问 Microsoft Graph API（日历、邮件、Teams）和 ACME 内部服务（internal-bug-tracker、internal-platform、internal-wiki、internal-search）。
 
 在 **Personal Chat** 中，所有请求都是宿主用户自己的，没有权限问题。
 
@@ -21,10 +21,10 @@ TeaSpirit 需要解析 `[Name]` 识别发言人，按人维护状态。
 
 | 服务 | CLI 工具 | Auth 类型 | 说明 |
 |------|---------|-----------|------|
-| NVBugs | nvbugs-cli | API token | 公开查询，不限用户 |
-| Helios 员工目录 | helios-cli | API token | 组织架构、manager chain、group membership |
-| Confluence | confluence-cli | PAT | 组织级 wiki 内容 |
-| Glean | glean-cli | MaaS OAuth | 跨数据源企业搜索（P4、GitLab、SharePoint、Confluence、Google Drive） |
+| internal-bug-tracker | nvbugs-cli | API token | 公开查询，不限用户 |
+| internal-platform 员工目录 | helios-cli | API token | 组织架构、manager chain、group membership |
+| internal-wiki | confluence-cli | PAT | 组织级 wiki 内容 |
+| internal-search | glean-cli | MaaS OAuth | 跨数据源企业搜索（P4、GitLab、SharePoint、internal-wiki、Google Drive） |
 | SharePoint | sharepoint-cli | Entra ID | 文件搜索（受文档权限限制） |
 | Google Drive | gdrive-cli | MCP | 文件搜索（受文档权限限制） |
 | Redmine | redmine-cli | API token | Issue/ticket 追踪，公开查询 |
@@ -80,7 +80,7 @@ TeaSpirit 需要解析 `[Name]` 识别发言人，按人维护状态。
 [Jason Xiong] 我明天有什么会？
 ```
 
-1. **先尝试** `calendar-cli find --user jasonx@example.com`
+1. **先尝试** `calendar-cli find --user user2@example.com`
 2. **如果成功** → 返回结果
 3. **如果失败**（权限不足）→ 回复：
    > "我没有权限访问你的日历。你可以让 IT 开启日历共享，或者我可以帮你查组织级的信息（bug、文档、员工目录等）。"

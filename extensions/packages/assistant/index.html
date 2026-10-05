@@ -111,7 +111,7 @@ button.ghost:hover { border-color: var(--accent); }
 
 <div id="pane-settings" hidden>
   <div class="field">
-    <label>Base URL (OpenAI-compatible endpoint — empty or Tab = NVIDIA inference default)</label>
+    <label>Base URL (OpenAI-compatible endpoint — empty or Tab = ACME inference default)</label>
     <input id="f-url" type="text" spellcheck="false" placeholder="https://inference-api.example.com/v1">
   </div>
   <div class="field">
@@ -123,7 +123,7 @@ button.ghost:hover { border-color: var(--accent); }
     <label>Model (empty or Tab = default)</label>
     <div class="row">
       <div class="model-wrap">
-        <input id="f-model" type="text" spellcheck="false" placeholder="nvidia/moonshotai/kimi-k3" autocomplete="off">
+        <input id="f-model" type="text" spellcheck="false" placeholder="models/moonshotai/kimi-k3" autocomplete="off">
         <div id="model-drop" hidden></div>
       </div>
       <button class="ghost" id="btn-fetch-models">Fetch list</button>
@@ -147,7 +147,7 @@ button.ghost:hover { border-color: var(--accent); }
 const $ = (id) => document.getElementById(id);
 const call = (m, a) => camExt.call(m, a || {});
 const DEFAULT_URL = 'https://inference-api.example.com/v1';
-const DEFAULT_MODEL = 'nvidia/moonshotai/kimi-k3';
+const DEFAULT_MODEL = 'models/moonshotai/kimi-k3';
 
 /* ── tabs ── */
 function showTab(which) {
@@ -575,7 +575,7 @@ function schedulePoll() {
         try { await call('assistant.start'); } catch (_) {}
       }
     } else {
-      addMsg('sys', 'Assistant is not configured yet — open the Settings tab, paste your token (URL and model are prefilled with the NVIDIA defaults), and save.');
+      addMsg('sys', 'Assistant is not configured yet — open the Settings tab, paste your token (URL and model are prefilled with the ACME defaults), and save.');
     }
   } catch (e) {
     addMsg('error', 'assistant bridge unavailable: ' + (e && e.message || e));

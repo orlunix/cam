@@ -171,7 +171,7 @@ def test_boot_trust_is_confirmed_before_original_prompt_is_submitted_once(
             "ready": (stale_trust + "\nTrust accepted\n"
                       "Tip: New Build faster with Codex.\n"
                       "› Ask Codex to do anything\n"
-                      "nvidia/project"),
+                      "models/project"),
             "typed": (stale_trust + "\nTrust accepted\n"
                       "Tip: New Build faster with Codex.\n› " + prompt),
             "submitted": stale_trust + "\nWorking on: " + prompt,
@@ -229,7 +229,7 @@ def test_active_boot_trust_with_input_cursor_is_confirmed_before_prompt(
                 "Do you trust the contents of this directory?\n"
                 "› 1. Yes, continue\n  2. No, quit\n"
                 "Press enter to continue"),
-            "ready": "Trust accepted\n› Ask Codex to do anything\nnvidia/project",
+            "ready": "Trust accepted\n› Ask Codex to do anything\nmodels/project",
             "typed": "Trust accepted\n› " + prompt,
             "submitted": "Working on: " + prompt,
         }[phase[0]]

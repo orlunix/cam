@@ -1,6 +1,6 @@
-# NVIDIA Inference Hub with CAMC
+# ACME Inference Hub with CAMC
 
-CAMC's API mode talks directly to the NVIDIA Inference Hub. It does not start
+CAMC's API mode talks directly to the ACME Inference Hub. It does not start
 an HTTP server, proxy, or protocol-conversion process.
 
 ## Credentials

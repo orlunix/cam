@@ -293,12 +293,12 @@ async function waitFor(fn, what, timeoutMs = 15000) {
   await waitFor(() => host.poll({ since: 0 }).events.filter((e) => e.type === 'load_done').length >= loadBefore + 2,
     'both reconfigures drained');
 
-  // ── defaults: empty url/model resolve to the NVIDIA inference defaults ──
+  // ── defaults: empty url/model resolve to the ACME inference defaults ──
   const rsv0 = host._resolveConfig({});
   ok(rsv0.apiUrl === host.DEFAULT_API_URL && rsv0.model === host.DEFAULT_MODEL,
     'empty form resolves to the built-in defaults');
-  ok(host.DEFAULT_API_URL === 'https://inference-api.example.com/v1' && host.DEFAULT_MODEL === 'nvidia/moonshotai/kimi-k3',
-    'the defaults are the NVIDIA inference endpoint + kimi-k3');
+  ok(host.DEFAULT_API_URL === 'https://inference-api.example.com/v1' && host.DEFAULT_MODEL === 'models/moonshotai/kimi-k3',
+    'the defaults are the ACME inference endpoint + kimi-k3');
   const rsv1 = host._resolveConfig({ apiUrl: ' http://x/v1/ ', model: ' m ' });
   ok(rsv1.apiUrl === 'http://x/v1' && rsv1.model === 'm', 'explicit values win (trimmed, trailing slash dropped)');
   ok(host.status().defaults && host.status().defaults.apiUrl === host.DEFAULT_API_URL,

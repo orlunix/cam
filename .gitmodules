@@ -1,6 +1,6 @@
 [submodule "teaspirit"]
 	path = teaspirit
-	url = git@gitlab-master.example.com:peregrine/tools/teaspirit.git
+	url = git@gitlab-master.example.com:internal-org/tools/teaspirit.git
 [submodule "components-camflow"]
 	path = components/camflow
 	url = https://github.com/orlunix/camflow.git

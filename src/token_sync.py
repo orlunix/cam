@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""token-sync: Encrypted cross-machine token synchronization for NVIDIA AI CLIs.
+"""token-sync: Encrypted cross-machine token synchronization for ACME AI CLIs.
 
 Single-file, stdlib-only, Python 3.6+. Stores tokens in an encrypted vault
 (AES-256-CBC via openssl) in a private GitLab repo. Merges across machines
@@ -572,7 +572,7 @@ def cmd_list(args):
 def main():
     parser = argparse.ArgumentParser(
         prog="token-sync",
-        description="Encrypted cross-machine token sync for NVIDIA AI CLIs",
+        description="Encrypted cross-machine token sync for ACME AI CLIs",
     )
     parser.add_argument("--version", action="version", version="%%(prog)s %s" % __version__)
 

@@ -89,7 +89,7 @@ def test_current_codex_cursor_beats_stale_trust_in_scrollback():
         "Trust accepted\n"
         "Tip: New Build faster with Codex.\n"
         "› Ask Codex to do anything\n"
-        "nvidia/project\n"
+        "models/project\n"
     )
 
     assert is_ready_for_input(

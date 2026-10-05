@@ -99,7 +99,7 @@ install_hint = "use the approved Pi installation for your sandbox or HW Farm env
 path = "~/.pi/agent/auth.json"
 
 [[readiness.optional_env]]
-name = "NVIDIA_API_KEY"
+name = "ACME_API_KEY"
 
 [[readiness.optional_env]]
 name = "ANTHROPIC_API_KEY"

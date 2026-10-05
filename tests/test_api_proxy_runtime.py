@@ -59,8 +59,8 @@ def test_api_proxy_uses_python36_compatible_text_pipe(monkeypatch):
     monkeypatch.setattr(cli.subprocess, "Popen", fake_popen)
     plan = {
         "upstream_base_url": "https://inference-api.example.com",
-        "model": "nvidia/test",
-        "client_model": "nvidia/test",
+        "model": "models/test",
+        "client_model": "models/test",
         "env": {},
     }
 
@@ -171,8 +171,8 @@ def test_debug_api_proxy_launch_uses_owner_without_log_file(monkeypatch, tmp_pat
     monkeypatch.setattr(cli, "LOGS_DIR", str(tmp_path))
     plan = {
         "upstream_base_url": "https://inference-api.example.com/v1",
-        "model": "nvidia/test",
-        "client_model": "nvidia/test",
+        "model": "models/test",
+        "client_model": "models/test",
         "debug_api_proxy": True,
     }
 
@@ -187,10 +187,10 @@ def test_debug_proxy_log_has_no_request_body_or_auth(tmp_path):
 
     api_proxy.write_proxy_log(
         str(path), "tx-1", "response", "POST", "/v1/responses?secret=no",
-        "nvidia/test", 200, 17, "")
+        "models/test", 200, 17, "")
 
     text = path.read_text()
-    assert "method=POST path=/v1/responses model=nvidia/test status=200 duration_ms=17" in text
+    assert "method=POST path=/v1/responses model=models/test status=200 duration_ms=17" in text
     assert "secret=no" not in text
     assert "Authorization" not in text
 
@@ -200,10 +200,10 @@ def test_debug_proxy_log_correlates_request_and_response(tmp_path):
 
     api_proxy.write_proxy_log(
         str(path), "tx-1", "request", "POST", "/v1/responses?secret=no",
-        "nvidia/test", "-", 0, "")
+        "models/test", "-", 0, "")
     api_proxy.write_proxy_log(
         str(path), "tx-1", "response", "POST", "/v1/responses",
-        "nvidia/test", 200, 17, "")
+        "models/test", 200, 17, "")
 
     rows = path.read_text().splitlines()
     assert "tx=tx-1 event=request method=POST path=/v1/responses" in rows[0]
@@ -228,7 +228,7 @@ def test_tool_continuation_is_expanded_from_all_cached_output_items():
             "name": "read_file", "input": "opaque"}
     cache = {"resp-1": [reasoning, call]}
     payload = {
-        "model": "nvidia/test",
+        "model": "models/test",
         "previous_response_id": "resp-1",
         "input": [{"type": "custom_tool_call_output", "call_id": "call-1",
                    "output": "unit_ok"}],
@@ -271,7 +271,7 @@ def test_responses_text_format_defaults_are_made_explicit_without_overwrite():
     explicit = {"text": {"verbosity": "low", "format": {
         "type": "json_schema", "name": "result", "schema": {},
     }}}
-    absent = {"model": "nvidia/test"}
+    absent = {"model": "models/test"}
 
     assert api_proxy.normalize_response_text_format(missing) is True
     assert missing["text"] == {
@@ -281,7 +281,7 @@ def test_responses_text_format_defaults_are_made_explicit_without_overwrite():
     assert api_proxy.normalize_response_text_format(explicit) is False
     assert explicit["text"]["format"]["type"] == "json_schema"
     assert api_proxy.normalize_response_text_format(absent) is False
-    assert absent == {"model": "nvidia/test"}
+    assert absent == {"model": "models/test"}
 
 
 def test_codex_reasoning_effort_uses_json_mapping():
@@ -596,10 +596,10 @@ def test_codex_api_launch_overrides_project_local_model(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "_load_config", lambda _tool: config)
 
     command = cli._build_command(config, "", str(tmp_path))
-    api_plan = {"model": "nvidia/moonshotai/eccn-kimi-k3"}
+    api_plan = {"model": "models/moonshotai/dep-kimi-k3"}
     command += cli._codex_api_model_override(api_plan)
 
     assert command[-2:] == [
         "-c",
-        'model="nvidia/moonshotai/eccn-kimi-k3"',
+        'model="models/moonshotai/dep-kimi-k3"',
     ]

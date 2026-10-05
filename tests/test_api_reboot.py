@@ -58,7 +58,7 @@ def _run_reboot(monkeypatch, tmp_path, agent):
 def test_codex_api_reboot_preserves_bound_session_model_and_proxy_port(
         monkeypatch, tmp_path):
     session_id = "12345678-1234-1234-1234-123456789abc"
-    model = "nvidia/moonshotai/eccn-kimi-k3"
+    model = "models/moonshotai/dep-kimi-k3"
     agent = {
         "id": "deadbeef", "session_id": session_id,
         "session_binding": "bound", "tmux_session": "cam-deadbeef-m",
@@ -120,13 +120,13 @@ def test_codex_api_reboot_migrates_retired_model_to_current_profile(
         "context_path": "/tmp/work", "status": "running",
         "task": {"tool": "codex", "name": "api-codex", "prompt": ""},
         "api": {"name": "kimi-k3", "provider": "inference-hub",
-                "model": "nvidia/moonshotai/eccn-kimi-k3-max-preview",
+                "model": "models/moonshotai/dep-kimi-k3-max-preview",
                 "proxy_pid": 111, "proxy_port": 32123},
     }
     plan = {
         "name": "kimi-k3", "provider": "inference-hub",
-        "model": "nvidia/moonshotai/eccn-kimi-k3",
-        "client_model": "nvidia/moonshotai/eccn-kimi-k3",
+        "model": "models/moonshotai/dep-kimi-k3",
+        "client_model": "models/moonshotai/dep-kimi-k3",
         "base_url_suffix": "/v1",
     }
     configured = []
@@ -144,9 +144,9 @@ def test_codex_api_reboot_migrates_retired_model_to_current_profile(
     updated, _sent, _stopped, started = _run_reboot(
         monkeypatch, tmp_path, agent)
 
-    assert started[0][0]["model"] == "nvidia/moonshotai/eccn-kimi-k3"
-    assert updated["api"]["model"] == "nvidia/moonshotai/eccn-kimi-k3"
+    assert started[0][0]["model"] == "models/moonshotai/dep-kimi-k3"
+    assert updated["api"]["model"] == "models/moonshotai/dep-kimi-k3"
     assert configured == [(
         "http://127.0.0.1:32123/v1", "kimi-k3", "responses",
-        "nvidia/moonshotai/eccn-kimi-k3", "deadbeef",
+        "models/moonshotai/dep-kimi-k3", "deadbeef",
     )]

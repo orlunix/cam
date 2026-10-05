@@ -116,7 +116,7 @@ Run on the user's machine, against the reported node, with the user's own key
 (`~/.ssh/id_rsa` or the node's `key_file`). This bypasses the app entirely:
 
 ```bash
-H=pdx-container-xterm-034.prd.it.example.com; P=4368; U=user2   # from embedded-hub.json
+H=pdx-container-xterm-034.prd.it.example.com; P=4368; U=user1   # from embedded-hub.json
 # 1. bare path
 ping -c 50 $H
 # 2. warm-connection loop == the app's exec channel (30 rounds)

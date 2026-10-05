@@ -14,7 +14,7 @@
 - Preserve existing `reasoning_levels`, Codex catalog generation, API profile names, and normal login defaults.
 - Do not silently downgrade a requested maximum effort; mappings must either preserve the level, use an explicit documented saturation fallback, or report it as unsupported.
 - `camc run -t cursor --api NAME` and arbitrary-tool API runs must fail with a clear unsupported-tool error before starting a proxy or agent.
-- NVIDIA model/API requests are read-only; no credentials are stored in source or tests.
+- ACME model/API requests are read-only; no credentials are stored in source or tests.
 - Do not commit or push during implementation.
 
 ---
@@ -128,4 +128,4 @@
 
 ## Capability verification boundary
 
-The public NVIDIA cost map exposes context/token metadata but does not reliably enumerate reasoning effort values for these deployments. A later token-backed Claude probe may mark individual profiles `verified: true`; this plan deliberately records uncertainty instead of fabricating successful model support. The probe must never print or persist the API token.
+The public ACME cost map exposes context/token metadata but does not reliably enumerate reasoning effort values for these deployments. A later token-backed Claude probe may mark individual profiles `verified: true`; this plan deliberately records uncertainty instead of fabricating successful model support. The probe must never print or persist the API token.

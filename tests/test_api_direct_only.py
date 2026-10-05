@@ -39,7 +39,7 @@ def test_claude_proxy_plan_keeps_upstream_model_and_marks_proxy(tmp_path, monkey
     plan = resolve_run_plan("claude", "deepseek-v4-flash")
     assert plan["client_model"] == "claude-haiku-5-dsv4f"
     assert plan["proxy_required"] is True
-    assert plan["model"] == "nvidia/deepseek-ai/eccn-deepseek-v4-flash"
+    assert plan["model"] == "models/deepseek-ai/dep-deepseek-v4-flash"
 
 
 def test_claude_client_alias_is_not_allowed_for_codex(tmp_path, monkeypatch):
@@ -87,7 +87,7 @@ def test_proxy_routing_requires_native_tool_endpoint():
     }
     entry = {
         "available_endpoints": ["completions"],
-        "model": "nvidia/example/model",
+        "model": "models/example/model",
     }
     with pytest.raises(ValueError, match="native.*messages"):
         build_routing_plan("claude", provider, entry)

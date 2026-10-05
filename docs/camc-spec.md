@@ -477,7 +477,7 @@ system PATH; missing → standard shell error.
 | **B — standalone** | `machines.json` entry has **no** `tools` field | Fall back to `which <tool>` (after `env_setup`) | **ERROR** for hard deps (tmux + the agent's own tool); **WARN** for anything else |
 
 The presence/absence of `tools` is the **only** discriminator. No new
-flag, no new file. NVIDIA `*-container-xterm-*` hosts opt in to Tier A;
+flag, no new file. ACME `*-container-xterm-*` hosts opt in to Tier A;
 local / `bpmpfw` / `hlren` / `vdi-wsl` stay zero-config Tier B.
 
 #### Schema (extension of `machines.json` entry)
@@ -541,7 +541,7 @@ Auto-rewrite would silently mask drift instead of surfacing it.
 - **Tool profiles** (`~/.cam/tool_profiles.json` + `tools_profile:
   "<name>"` reference). Container hosts will likely share identical
   `tools` blocks; once the duplication actually hurts, add a profile
-  layer. Until then, duplicate the block across the 3–4 NVIDIA
+  layer. Until then, duplicate the block across the 3–4 ACME
   containers — honest > clever.
 - **Auto-rewrite of `machines.json`** by `fingerprint`. Same reasoning.
 - **Fingerprinting tools agents invoke via Bash** (git/p4/nvip/make/…).

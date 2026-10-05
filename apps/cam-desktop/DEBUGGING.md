@@ -360,7 +360,7 @@ In order of observed frequency:
   the single rolling Release via `--clobber`.
 - GitHub token for API polling: `~/.my_tokens.yaml` (`GITHUB:` line),
   outside any repo. Never commit it.
-- Remote shell is csh on the NVIDIA nodes: base64-wrap bash.
+- Remote shell is csh on the ACME nodes: base64-wrap bash.
 - Windows Python defaults to GBK: always `encoding='utf-8'` or
   `PYTHONUTF8=1`.
 - Web UI JS is ES modules; `node --check` needs a `.mjs` copy.

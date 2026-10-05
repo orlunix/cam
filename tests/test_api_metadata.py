@@ -61,7 +61,7 @@ class TestMergeApiMetadata:
     def test_deepseek_flash_uses_curated_fallback(self):
         meta = merge_api_metadata(
             "deepseek-v4-flash",
-            "nvidia/deepseek-ai/eccn-deepseek-v4-flash",
+            "models/deepseek-ai/dep-deepseek-v4-flash",
             {},
         )
         assert meta["context_window"] == 1048576
@@ -70,21 +70,21 @@ class TestMergeApiMetadata:
     def test_kimi_k3_uses_curated_fallback(self):
         meta = merge_api_metadata(
             "kimi-k3",
-            "nvidia/moonshotai/eccn-kimi-k3",
+            "models/moonshotai/dep-kimi-k3",
             {},
         )
         assert meta["context_window"] == 1048576
         assert meta["supports_reasoning"] is True
 
     def test_cost_map_plus_fallback(self):
-        cost = {"nvidia/zai-org/eccn-glm-5.2": {"max_input_tokens": 1048576, "mode": "chat"}}
-        meta = merge_api_metadata("glm-5.2", "nvidia/zai-org/eccn-glm-5.2", cost)
+        cost = {"models/zai-org/dep-glm-5.2": {"max_input_tokens": 1048576, "mode": "chat"}}
+        meta = merge_api_metadata("glm-5.2", "models/zai-org/dep-glm-5.2", cost)
         assert meta["context_window"] == 1048576
         assert meta["max_output_tokens"] == 131072
         assert meta["reasoning_levels"] == []
 
     def test_missing_cost_map_uses_curated(self):
-        meta = merge_api_metadata("glm-5.2", "nvidia/zai-org/eccn-glm-5.2", {})
+        meta = merge_api_metadata("glm-5.2", "models/zai-org/dep-glm-5.2", {})
         assert meta["context_window"] == 1048576
 
     def test_partial_metadata_is_preserved_without_context_window(
@@ -106,7 +106,7 @@ class TestSyncMetadataInData:
     def test_writes_all_apis(self, api_models_file):
         data = ensure_ready()
         count = sync_metadata_in_data(data, data["providers"]["inference-hub"], cost_map={
-            "nvidia/zai-org/eccn-glm-5.2": {"max_input_tokens": 1048576},
+            "models/zai-org/dep-glm-5.2": {"max_input_tokens": 1048576},
         })
         assert count == len(data["apis"])
         assert data["apis"]["glm-5.2"]["metadata"]["context_window"] == 1048576
@@ -211,9 +211,9 @@ class TestCodexCatalog:
             require_endpoint="responses",
         )
         assert [row["slug"] for row in rows] == [
-            "nvidia/zai-org/eccn-glm-5.2",
-            "nvidia/deepseek-ai/eccn-deepseek-v4-flash",
-            "nvidia/moonshotai/eccn-kimi-k3",
+            "models/zai-org/dep-glm-5.2",
+            "models/deepseek-ai/dep-deepseek-v4-flash",
+            "models/moonshotai/dep-kimi-k3",
         ]
 
     def test_catalog_is_scoped_to_selected_provider(self, api_models_file):
@@ -244,7 +244,7 @@ class TestCodexCatalog:
         )
 
         slugs = [row["slug"] for row in rows]
-        assert slugs.count("nvidia/moonshotai/eccn-kimi-k3") == 1
+        assert slugs.count("models/moonshotai/dep-kimi-k3") == 1
 
     def test_from_official_template(self):
         template = load_codex_catalog_template()
