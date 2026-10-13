@@ -11,7 +11,7 @@ per-tool defaults:
 
 ```json
 {
-  "version": "1.0.2",
+  "version": "1.0.5",
   "tool_supported_endpoints": {
     "claude": ["messages"],
     "codex": ["responses"]
@@ -72,5 +72,7 @@ camc run -t codex --api NAME "prompt"
 
 `--api` is limited to Claude and Codex. API runs use the provider token from
 the environment, an optional provider token file, or the normal CAMC token
-fallbacks. Codex API runs use the isolated `~/.codex-api` home and link the
-normal Codex skills directory.
+fallbacks. Codex login and API runs use the same thin adapter-declared home at
+`~/.codex/<agent-id>`; auth, skills, MCP state, sessions, history, hooks, and
+permission profiles link to the untouched `~/.codex` donor. Each agent owns a
+private config snapshot, and only API runs add provider/catalog settings to it.

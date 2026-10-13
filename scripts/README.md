@@ -9,8 +9,8 @@ explicitly copied by an operator.
 | `camc_live_api_regression.py` | Explicit real-agent lifecycle regression; defaults to the internal `kimi-k3` API profile |
 | `release.sh`, `cam-serve-daemon.sh`, … | Release / ops helpers |
 
-API routing is implemented by **`src/camc_pkg/api_*.py`** and embedded with
-`python3 build_camc.py`. There is no production proxy. See
+API routing and the per-agent native proxy are implemented by
+**`src/camc_pkg/api_*.py`** and embedded with `python3 build_camc.py`. See
 `docs/code-layout.md`.
 
 Run the real API release regression explicitly (it is not part of normal

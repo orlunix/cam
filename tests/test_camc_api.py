@@ -262,129 +262,20 @@ class TestApiResolver:
         with pytest.raises(ValueError, match="only supported for Claude and Codex"):
             resolve_run_plan("cursor", "glm-5.2")
 
-    def test_codex_api_home_is_fully_isolated(self):
+    def test_legacy_codex_api_cleanup_is_owner_scoped(self, tmp_path, monkeypatch):
         from camc_pkg import api_resolver
-        assert os.path.basename(api_resolver.CODEX_API_CONFIG_DIR) == ".codex-api"
-        assert os.path.basename(os.path.dirname(api_resolver.CODEX_API_CONFIG_DIR)) != ".cam"
-
-    def test_codex_api_config_writer_keeps_home_isolated(self, tmp_path, monkeypatch):
-        from camc_pkg import api_resolver
-        home = tmp_path / ".codex-api"
-        monkeypatch.setattr(api_resolver, "CODEX_API_CONFIG_DIR", str(home))
+        root = tmp_path / "legacy-codex-api"
+        stale = root / "agent-old"
+        keep = root / "agent-keep"
+        stale.mkdir(parents=True)
+        keep.mkdir()
         monkeypatch.setattr(
-            "camc_pkg.api_metadata.resolve_api_metadata",
-            lambda _name: {"context_window": 1024},
-        )
+            api_resolver, "LEGACY_CODEX_API_CONFIG_DIR", str(root))
 
-        def _write_catalog(path, _name, _metadata, **_kwargs):
-            with open(path, "w") as handle:
-                handle.write("{}\n")
-
-        monkeypatch.setattr(
-            "camc_pkg.api_metadata.write_codex_model_catalog", _write_catalog)
-        result = api_resolver.ensure_codex_api_config_dir(
-            "https://inference-api.example.com/v1", "glm-5.2")
-        assert result == str(home)
-        assert (home / "config.toml").is_file()
-        assert "CODEX_HOME" not in (home / "config.toml").read_text()
-        assert (home / "camc-model-catalog.json").is_file()
-
-    def test_codex_api_config_uses_full_upstream_model_id(self, tmp_path, monkeypatch):
-        from camc_pkg import api_resolver
-        home = tmp_path / ".codex-api"
-        monkeypatch.setattr(api_resolver, "CODEX_API_CONFIG_DIR", str(home))
-        monkeypatch.setattr(
-            "camc_pkg.api_metadata.resolve_api_metadata",
-            lambda _name: {"context_window": 1024},
-        )
-        monkeypatch.setattr(
-            "camc_pkg.api_metadata.write_codex_model_catalog",
-            lambda path, _name, _metadata, **_kwargs: open(path, "w").write("{}\n"),
-        )
-
-        api_resolver.ensure_codex_api_config_dir(
-            "https://inference-api.example.com/v1",
-            "deepseek-v4-flash",
-            model_id="models/deepseek-ai/dep-deepseek-v4-flash",
-        )
-
-        config = (home / "config.toml").read_text()
-        assert 'model = "models/deepseek-ai/dep-deepseek-v4-flash"' in config
-
-    def test_codex_api_reuses_login_skills_with_idempotent_link(self, tmp_path, monkeypatch):
-        from camc_pkg import api_resolver
-        login_skills = tmp_path / ".codex" / "skills"
-        api_home = tmp_path / ".codex-api"
-        login_skills.mkdir(parents=True)
-        (login_skills / "example").mkdir()
-        monkeypatch.setattr(api_resolver, "CODEX_LOGIN_SKILLS_DIR", str(login_skills))
-        monkeypatch.setattr(api_resolver, "CODEX_API_CONFIG_DIR", str(api_home))
-
-        first = api_resolver._ensure_codex_skills_link()
-        second = api_resolver._ensure_codex_skills_link()
-        link = api_home / "skills"
-        assert first == "linked"
-        assert second == "linked"
-        assert link.is_symlink()
-        assert os.path.realpath(str(link)) == os.path.realpath(str(login_skills))
-
-    def test_codex_api_config_is_isolated_per_agent(self, tmp_path, monkeypatch):
-        from camc_pkg import api_resolver
-        root = tmp_path / ".codex-api"
-        monkeypatch.setattr(api_resolver, "CODEX_API_CONFIG_DIR", str(root))
-        monkeypatch.setattr(
-            "camc_pkg.api_metadata.resolve_api_metadata",
-            lambda _name: {"context_window": 1024},
-        )
-        monkeypatch.setattr(
-            "camc_pkg.api_metadata.write_codex_model_catalog",
-            lambda path, *_args, **_kwargs: open(path, "w").write("{}\n"),
-        )
-
-        first = api_resolver.ensure_codex_api_config_dir(
-            "http://127.0.0.1:1111/v1", "glm-5.3",
-            model_id="models/zai-org/dep-glm-5.3", owner_id="agent-glm")
-        second = api_resolver.ensure_codex_api_config_dir(
-            "http://127.0.0.1:2222/v1", "qwen3.8-27b",
-            model_id="models/qwen/dep-qwen3.8-27b", owner_id="agent-qwen")
-
-        assert first != second
-        assert 'base_url = "http://127.0.0.1:1111/v1"' in open(
-            os.path.join(first, "config.toml")).read()
-        assert 'base_url = "http://127.0.0.1:2222/v1"' in open(
-            os.path.join(second, "config.toml")).read()
-        assert api_resolver.remove_codex_api_config_dir("agent-glm") is True
-        assert not os.path.exists(first)
-        assert os.path.exists(second)
-
-    def test_codex_agent_home_links_skills_and_permission_profiles(
-            self, tmp_path, monkeypatch):
-        from camc_pkg import api_resolver
-        donor = tmp_path / ".codex"
-        skills = donor / "skills"
-        skills.mkdir(parents=True)
-        (skills / "example").mkdir()
-        (donor / "aris_yolo.config.toml").write_text(
-            'approval_policy = "never"\nsandbox_mode = "danger-full-access"\n')
-        root = tmp_path / ".codex-api"
-        monkeypatch.setattr(api_resolver, "CODEX_API_CONFIG_DIR", str(root))
-        monkeypatch.setattr(api_resolver, "_codex_default_home", lambda: str(donor))
-        monkeypatch.setattr(
-            "camc_pkg.api_metadata.resolve_api_metadata",
-            lambda _name: {"context_window": 1024},
-        )
-        monkeypatch.setattr(
-            "camc_pkg.api_metadata.write_codex_model_catalog",
-            lambda path, *_args, **_kwargs: open(path, "w").write("{}\n"),
-        )
-
-        home = api_resolver.ensure_codex_api_config_dir(
-            "http://127.0.0.1:1111/v1", "glm-5.2", owner_id="agent-yolo")
-        assert os.path.islink(os.path.join(home, "skills"))
-        assert os.path.islink(os.path.join(home, "aris_yolo.config.toml"))
-        generated = open(os.path.join(home, "config.toml")).read()
-        assert "approval_policy" not in generated
-        assert "sandbox_mode" not in generated
+        assert api_resolver.remove_codex_api_config_dir("agent-old") is True
+        assert not stale.exists()
+        assert keep.exists()
+        assert api_resolver.remove_codex_api_config_dir("../agent-keep") is False
 
     def test_non_curated_api_not_supported(self, api_models_file):
         data = ensure_ready()

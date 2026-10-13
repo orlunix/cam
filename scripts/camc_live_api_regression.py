@@ -154,6 +154,7 @@ def main():
 
         _, output = camc(
             binary, "run", "--tool", "codex", "--api", args.api,
+            "--tool-launcher", "none",
             "--path", workdir, "--name", "camc-live-api-regression", PROMPT,
             timeout=60)
         agent_id = parse_agent_id(output)

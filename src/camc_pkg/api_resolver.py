@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import time
 
@@ -24,9 +25,9 @@ CURATED_API_KEYS = frozenset(key for key, _model, _aliases in CURATED_APIS)
 
 # One shared Claude Code config for all --api runs (onboarding once).
 CLAUDE_API_CONFIG_DIR = os.path.join(CAM_DIR, "claude-api")
-# Isolated Codex home — does not touch ~/.codex/ OAuth login or ~/.cam state.
-CODEX_API_CONFIG_DIR = os.path.expanduser("~/.codex-api")
-CODEX_LOGIN_SKILLS_DIR = os.path.expanduser("~/.codex/skills")
+# Retained only to clean up homes created by releases predating unified
+# adapter-owned overlays. No current launch path writes here.
+LEGACY_CODEX_API_CONFIG_DIR = os.path.expanduser("~/.codex-api")
 CODEX_API_PROVIDER = "camc-ihub"
 CODEX_API_ENV_KEY = "CAMC_CODEX_API_KEY"
 
@@ -120,143 +121,135 @@ def ensure_claude_api_config_dir():
     return CLAUDE_API_CONFIG_DIR
 
 
-def _codex_default_home():
-    """Return the normal Codex home used only as a read-only donor."""
-    configured = os.environ.get("CODEX_HOME")
-    if configured:
-        return os.path.abspath(os.path.expanduser(configured))
-    return os.path.expanduser("~/.codex")
-
-
-def _link_codex_defaults(config_dir, default_home=None):
-    """Link skills and named permission profiles into one generated home."""
-    default_home = os.path.abspath(os.path.expanduser(
-        default_home or _codex_default_home()))
-    config_dir = os.path.abspath(os.path.expanduser(config_dir))
-    if os.path.realpath(default_home) == os.path.realpath(config_dir):
-        return {}
-    sources = [("skills", os.path.join(default_home, "skills"))]
-    try:
-        names = sorted(os.listdir(default_home))
-    except OSError:
-        names = []
-    for name in names:
-        if name.endswith(".config.toml"):
-            sources.append((name, os.path.join(default_home, name)))
-
-    results = {}
-    for name, source in sources:
-        target = os.path.join(config_dir, name)
-        if not (os.path.isdir(source) or os.path.isfile(source)):
-            results[name] = "missing_source"
+def _without_codex_api_overrides(content, provider):
+    """Remove only CamC-owned top-level keys and provider table."""
+    kept = []
+    current = ""
+    provider_table = "model_providers.%s" % provider
+    for line in str(content or "").splitlines(True):
+        stripped = line.strip()
+        match = re.match(r"^\[([^\]]+)\]\s*(?:#.*)?$", stripped)
+        if match:
+            current = match.group(1).strip()
+            if current == provider_table or current.startswith(provider_table + "."):
+                continue
+        if current == provider_table or current.startswith(provider_table + "."):
             continue
-        if os.path.islink(target) and os.path.realpath(target) == os.path.realpath(source):
-            results[name] = "linked"
+        if not current and re.match(
+                r"^(model|model_provider|model_catalog_json)\s*=", stripped):
             continue
-        if os.path.lexists(target):
-            results[name] = "preserved"
-            continue
-        try:
-            os.symlink(source, target, target_is_directory=os.path.isdir(source))
-            results[name] = "linked"
-        except OSError:
-            results[name] = "error"
-    return results
+        kept.append(line)
+    return "".join(kept)
 
 
-def _ensure_codex_skills_link(config_dir=None):
-    """Reuse normal Codex skills from the isolated API home, idempotently."""
-    source = CODEX_LOGIN_SKILLS_DIR
-    config_dir = config_dir or CODEX_API_CONFIG_DIR
-    target = os.path.join(config_dir, "skills")
-    if not os.path.isdir(source):
-        return "missing_source"
-    if os.path.islink(target):
-        if os.path.realpath(target) == os.path.realpath(source):
-            return "linked"
-        try:
-            os.unlink(target)
-        except OSError:
-            return "error"
-    elif os.path.lexists(target):
-        # Never delete a non-empty API-home skills directory owned by a user.
-        if not os.path.isdir(target) or os.listdir(target):
-            return "preserved"
-        try:
-            os.rmdir(target)
-        except OSError:
-            return "preserved"
-    try:
-        os.makedirs(config_dir, exist_ok=True)
-        os.symlink(source, target, target_is_directory=True)
-        return "linked"
-    except OSError:
-        return "error"
-
-
-def _codex_owner_dir(owner_id=""):
-    if not owner_id:
-        return CODEX_API_CONFIG_DIR
-    safe = "".join(c for c in str(owner_id) if c.isalnum() or c in "-_")
-    if not safe:
-        raise ValueError("invalid Codex API config owner id")
-    return os.path.join(CODEX_API_CONFIG_DIR, safe)
-
-
-def ensure_codex_api_config_dir(base_url, api_name, require_endpoint="responses",
-                                model_id=None, owner_id=""):
-    """Seed one agent-owned Codex API home without touching normal login."""
+def _write_codex_api_config(config_dir, base_url, api_name,
+                            require_endpoint="responses", model_id=None,
+                            config_file="config.toml",
+                            catalog_file="camc-model-catalog.json",
+                            wire_api="responses"):
+    """Overlay API routing onto one already isolated Codex home."""
     from camc_pkg.api_metadata import resolve_api_metadata, write_codex_model_catalog
 
-    config_dir = _codex_owner_dir(owner_id)
-    os.makedirs(config_dir, exist_ok=True)
-    _link_codex_defaults(config_dir)
     base_url = str(base_url or "").rstrip("/")
+    if not base_url:
+        raise ValueError("Codex API runtime requires a proxy base URL")
+    os.makedirs(config_dir, exist_ok=True)
     api_name = str(api_name or "api")
     model_id = str(model_id or api_name)
-    catalog_path = os.path.join(config_dir, "camc-model-catalog.json")
+    catalog_path = os.path.join(config_dir, catalog_file)
     metadata = resolve_api_metadata(api_name)
     write_codex_model_catalog(
         catalog_path, api_name, metadata, require_endpoint=require_endpoint,
         model_id=model_id)
-    config_path = os.path.join(config_dir, "config.toml")
-    content = (
-        'model = "%s"\n'
-        'model_provider = "%s"\n'
-        'model_catalog_json = "%s"\n'
-        '\n'
-        '[model_providers.%s]\n'
-        'name = "CAM Inference Hub"\n'
-        'base_url = "%s"\n'
-        'env_key = "%s"\n'
-        'wire_api = "responses"\n'
-    ) % (
-        model_id,
-        CODEX_API_PROVIDER,
-        catalog_path,
-        CODEX_API_PROVIDER,
-        base_url,
-        CODEX_API_ENV_KEY,
-    )
+    config_path = os.path.join(config_dir, config_file)
     try:
-        prev = ""
-        if os.path.isfile(config_path):
-            with open(config_path, "r") as f:
-                prev = f.read()
-        if prev != content:
-            with open(config_path, "w") as f:
-                f.write(content)
+        with open(config_path, "r") as handle:
+            existing = handle.read()
     except IOError:
-        pass
+        existing = ""
+    marker = ""
+    if existing.startswith("# camc-runtime-home:"):
+        marker, _separator, existing = existing.partition("\n")
+        marker += "\n"
+    existing = _without_codex_api_overrides(existing, CODEX_API_PROVIDER)
+    content = marker + (
+        'model = %s\n'
+        'model_provider = %s\n'
+        'model_catalog_json = %s\n'
+        '\n'
+    ) % (json.dumps(model_id), json.dumps(CODEX_API_PROVIDER),
+         json.dumps(catalog_path))
+    if existing.strip():
+        content += existing.rstrip() + "\n\n"
+    content += (
+        '[model_providers.%s]\n'
+        'name = %s\n'
+        'base_url = %s\n'
+        'env_key = %s\n'
+        'wire_api = %s\n'
+    ) % (
+        CODEX_API_PROVIDER,
+        json.dumps("CAM Inference Hub"),
+        json.dumps(base_url),
+        json.dumps(CODEX_API_ENV_KEY),
+        json.dumps(wire_api),
+    )
+    tmp = config_path + ".tmp.%d" % os.getpid()
+    try:
+        with open(tmp, "w") as handle:
+            handle.write(content)
+            handle.flush()
+            try:
+                os.fsync(handle.fileno())
+            except OSError:
+                pass
+        os.replace(tmp, config_path)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return config_dir
 
 
+def configure_runtime_home_api(home_info, spec, api_plan, api_base_url=""):
+    """Apply an adapter-declared API config format to one runtime home."""
+    format_name = str((spec or {}).get("api_config_format") or "")
+    if not format_name:
+        return None
+    if format_name != "codex":
+        raise ValueError("unsupported runtime-home API format: %s" % format_name)
+    config_dir = str((home_info or {}).get("path") or "")
+    if not config_dir:
+        raise ValueError("runtime-home API config requires an owned home")
+    result = _write_codex_api_config(
+        config_dir,
+        api_base_url,
+        (api_plan or {}).get("name") or "api",
+        require_endpoint=str((spec or {}).get("api_wire_api") or "responses"),
+        model_id=(api_plan or {}).get("model"),
+        config_file=str((spec or {}).get("config_file") or "config.toml"),
+        catalog_file=str((spec or {}).get("api_catalog_file") or
+                         "camc-model-catalog.json"),
+        wire_api=str((spec or {}).get("api_wire_api") or "responses"),
+    )
+    home_info["api_config"] = {
+        "format": format_name,
+        "config_file": str((spec or {}).get("config_file") or "config.toml"),
+        "catalog_file": str((spec or {}).get("api_catalog_file") or
+                            "camc-model-catalog.json"),
+    }
+    return result
+
+
 def remove_codex_api_config_dir(owner_id):
-    """Remove only one generated per-agent Codex home."""
-    if not owner_id:
+    """Remove one obsolete pre-unification ``~/.codex-api`` owner home."""
+    owner = str(owner_id or "")
+    if not re.match(r"^[A-Za-z0-9_-]+$", owner):
         return False
-    path = _codex_owner_dir(owner_id)
-    root = os.path.realpath(CODEX_API_CONFIG_DIR)
+    path = os.path.join(LEGACY_CODEX_API_CONFIG_DIR, owner)
+    root = os.path.realpath(LEGACY_CODEX_API_CONFIG_DIR)
     target = os.path.realpath(path)
     if not target.startswith(root + os.sep):
         return False

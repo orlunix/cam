@@ -81,21 +81,20 @@ class TestClaudeAdapter:
             "env", "CLAUDE_CODE_DISABLE_MOUSE=1",
             "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1", "claude",
         ]
-        assert "--allowed-tools" in cmd
+        assert "--allowed-tools" not in cmd
+        assert "--permission-mode" not in cmd
         # Prompt is NOT in launch command — sent via stdin after launch
         assert task.prompt not in cmd
         # Should NOT use headless mode
         assert "-p" not in cmd
         assert "--dangerously-skip-permissions" not in cmd
 
-    def test_launch_command_has_tools(self, task, context):
+    def test_launch_command_keeps_default_permissions(self, task, context):
         adapter = ClaudeAdapter()
         cmd = adapter.get_launch_command(task, context)
-        tools_idx = cmd.index("--allowed-tools")
-        tools_arg = cmd[tools_idx + 1]
-        assert "Bash" in tools_arg
-        assert "Edit" in tools_arg
-        assert "Write" in tools_arg
+        assert "--allowed-tools" not in cmd
+        assert "--permission-mode" not in cmd
+        assert "--dangerously-skip-permissions" not in cmd
 
     def test_detect_state_planning_thinking(self):
         adapter = ClaudeAdapter()

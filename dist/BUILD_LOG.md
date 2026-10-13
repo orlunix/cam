@@ -4720,7 +4720,6 @@ e9025b4 Merge remote camui-desktop-v2 (15 commits) with local skills/env fixes
 e9025b4 Merge remote camui-desktop-v2 (15 commits) with local skills/env fixes
 ```
 
-<<<<<<< HEAD
 ## v1.2.0  b3f7f1a-dirty 2026-07-23 01:14
 
 - Lines: 19815
@@ -4734,7 +4733,6 @@ b3f7f1a camc: capture fast paths resolve tmux env-first (no forced /bin/tmux)
 9909fb1 camc: fast-path stdin sends
 ```
 
-<<<<<<< HEAD
 ## v1.2.0  b3f7f1a-dirty 2026-07-23 01:15
 
 - Lines: 19466
@@ -4752,12 +4750,10 @@ b3f7f1a camc: capture fast paths resolve tmux env-first (no forced /bin/tmux)
 
 - Lines: 19815
 - Output: C:\Users\Thinkpad\AppData\Local\Temp\pytest-of-Thinkpad\pytest-2\test_build_camc_default_includ0\camc
-=======
 ## v1.2.0  b3f7f1a-dirty 2026-07-22 10:37
 
 - Lines: 19720
 - Output: /home/hren/gitlab/cam/dist/camc
->>>>>>> origin/camui-desktop-v2
 - Recent changes:
 ```
 b3f7f1a camc: capture fast paths resolve tmux env-first (no forced /bin/tmux)
@@ -4774,7 +4770,6 @@ b3f7f1a camc: capture fast paths resolve tmux env-first (no forced /bin/tmux)
 - Recent changes:
 ```
 126c565 camc: attach with the server's own tmux binary (was bare PATH execvp)
-=======
 ## v1.2.0  4658fb1-dirty 2026-07-22 10:45
 
 - Lines: 19720
@@ -4782,7 +4777,6 @@ b3f7f1a camc: capture fast paths resolve tmux env-first (no forced /bin/tmux)
 - Recent changes:
 ```
 4658fb1 camc: bundle skills and refresh them during heal
->>>>>>> origin/camui-desktop-v2
 b3f7f1a camc: capture fast paths resolve tmux env-first (no forced /bin/tmux)
 347458c fix: prefer runtime tmux path
 411cbcf Support custom start tools
@@ -6337,4 +6331,442 @@ dee07ef chore(camc): prepare 1.2.137 release
 a4e8f14 feat(camc): trust Codex workspaces by default
 d4b7329 fix(camc): prioritize active boot trust menu
 74f0625 fix(camc): recognize ready cursor past stale trust
+```
+## v1.2.139  8d77bc8-dirty 2026-09-15 03:48
+
+- Lines: 21037
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+8d77bc8 feat(camc): harden native API proxy and isolate agents
+0fcf80c fix(camc): trust exact Codex workdir
+dee07ef chore(camc): prepare 1.2.137 release
+a4e8f14 feat(camc): trust Codex workspaces by default
+d4b7329 fix(camc): prioritize active boot trust menu
+```
+## v1.2.140  8d77bc8-dirty 2026-09-16 07:47
+
+- Lines: 21173
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+8d77bc8 feat(camc): harden native API proxy and isolate agents
+0fcf80c fix(camc): trust exact Codex workdir
+dee07ef chore(camc): prepare 1.2.137 release
+a4e8f14 feat(camc): trust Codex workspaces by default
+d4b7329 fix(camc): prioritize active boot trust menu
+```
+## v1.2.140  8d77bc8-dirty 2026-09-16 17:17
+
+- Lines: 21403
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+8d77bc8 feat(camc): harden native API proxy and isolate agents
+0fcf80c fix(camc): trust exact Codex workdir
+dee07ef chore(camc): prepare 1.2.137 release
+a4e8f14 feat(camc): trust Codex workspaces by default
+d4b7329 fix(camc): prioritize active boot trust menu
+```
+## v1.2.140  8d77bc8-dirty 2026-09-16 17:21
+
+- Lines: 21424
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+8d77bc8 feat(camc): harden native API proxy and isolate agents
+0fcf80c fix(camc): trust exact Codex workdir
+dee07ef chore(camc): prepare 1.2.137 release
+a4e8f14 feat(camc): trust Codex workspaces by default
+d4b7329 fix(camc): prioritize active boot trust menu
+```
+## v1.2.140  8d77bc8-dirty 2026-09-16 17:49
+
+- Lines: 21376
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+8d77bc8 feat(camc): harden native API proxy and isolate agents
+0fcf80c fix(camc): trust exact Codex workdir
+dee07ef chore(camc): prepare 1.2.137 release
+a4e8f14 feat(camc): trust Codex workspaces by default
+d4b7329 fix(camc): prioritize active boot trust menu
+```
+## v1.2.140  8d77bc8-dirty 2026-09-16 17:50
+
+- Lines: 21376
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+8d77bc8 feat(camc): harden native API proxy and isolate agents
+0fcf80c fix(camc): trust exact Codex workdir
+dee07ef chore(camc): prepare 1.2.137 release
+a4e8f14 feat(camc): trust Codex workspaces by default
+d4b7329 fix(camc): prioritize active boot trust menu
+```
+## v1.2.140  8d77bc8-dirty 2026-09-16 17:53
+
+- Lines: 21385
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+8d77bc8 feat(camc): harden native API proxy and isolate agents
+0fcf80c fix(camc): trust exact Codex workdir
+dee07ef chore(camc): prepare 1.2.137 release
+a4e8f14 feat(camc): trust Codex workspaces by default
+d4b7329 fix(camc): prioritize active boot trust menu
+```
+## v1.2.140  8d77bc8-dirty 2026-09-16 17:54
+
+- Lines: 21386
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+8d77bc8 feat(camc): harden native API proxy and isolate agents
+0fcf80c fix(camc): trust exact Codex workdir
+dee07ef chore(camc): prepare 1.2.137 release
+a4e8f14 feat(camc): trust Codex workspaces by default
+d4b7329 fix(camc): prioritize active boot trust menu
+```
+## v1.2.140  8d77bc8-dirty 2026-09-16 19:28
+
+- Lines: 21425
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+8d77bc8 feat(camc): harden native API proxy and isolate agents
+0fcf80c fix(camc): trust exact Codex workdir
+dee07ef chore(camc): prepare 1.2.137 release
+a4e8f14 feat(camc): trust Codex workspaces by default
+d4b7329 fix(camc): prioritize active boot trust menu
+```
+## v1.2.140  8d77bc8-dirty 2026-09-16 19:30
+
+- Lines: 21423
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+8d77bc8 feat(camc): harden native API proxy and isolate agents
+0fcf80c fix(camc): trust exact Codex workdir
+dee07ef chore(camc): prepare 1.2.137 release
+a4e8f14 feat(camc): trust Codex workspaces by default
+d4b7329 fix(camc): prioritize active boot trust menu
+```
+## v1.2.141  8d77bc8-dirty 2026-09-16 20:13
+
+- Lines: 21548
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+8d77bc8 feat(camc): harden native API proxy and isolate agents
+0fcf80c fix(camc): trust exact Codex workdir
+dee07ef chore(camc): prepare 1.2.137 release
+a4e8f14 feat(camc): trust Codex workspaces by default
+d4b7329 fix(camc): prioritize active boot trust menu
+```
+## v1.2.142  8d77bc8-dirty 2026-09-17 00:40
+
+- Lines: 21544
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+8d77bc8 feat(camc): harden native API proxy and isolate agents
+0fcf80c fix(camc): trust exact Codex workdir
+dee07ef chore(camc): prepare 1.2.137 release
+a4e8f14 feat(camc): trust Codex workspaces by default
+d4b7329 fix(camc): prioritize active boot trust menu
+```
+## v1.2.143  8d77bc8-dirty 2026-09-17 03:05
+
+- Lines: 21874
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+8d77bc8 feat(camc): harden native API proxy and isolate agents
+0fcf80c fix(camc): trust exact Codex workdir
+dee07ef chore(camc): prepare 1.2.137 release
+a4e8f14 feat(camc): trust Codex workspaces by default
+d4b7329 fix(camc): prioritize active boot trust menu
+```
+## v1.2.144  8d77bc8-dirty 2026-09-17 03:10
+
+- Lines: 21890
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+8d77bc8 feat(camc): harden native API proxy and isolate agents
+0fcf80c fix(camc): trust exact Codex workdir
+dee07ef chore(camc): prepare 1.2.137 release
+a4e8f14 feat(camc): trust Codex workspaces by default
+d4b7329 fix(camc): prioritize active boot trust menu
+```
+## v1.2.148  8d77bc8-dirty 2026-09-17 03:49
+
+- Lines: 21926
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+8d77bc8 feat(camc): harden native API proxy and isolate agents
+0fcf80c fix(camc): trust exact Codex workdir
+dee07ef chore(camc): prepare 1.2.137 release
+a4e8f14 feat(camc): trust Codex workspaces by default
+d4b7329 fix(camc): prioritize active boot trust menu
+```
+## v1.2.149  500ab5a-dirty 2026-10-01 19:50
+
+- Lines: 22191
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+500ab5a feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+56f37ec feat(camc): centralize tool launcher execution
+8d77bc8 feat(camc): harden native API proxy and isolate agents
+0fcf80c fix(camc): trust exact Codex workdir
+dee07ef chore(camc): prepare 1.2.137 release
+```
+## v1.2.150  500ab5a-dirty 2026-10-02 13:14
+
+- Lines: 22196
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+500ab5a feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+56f37ec feat(camc): centralize tool launcher execution
+8d77bc8 feat(camc): harden native API proxy and isolate agents
+0fcf80c fix(camc): trust exact Codex workdir
+dee07ef chore(camc): prepare 1.2.137 release
+```
+
+## v1.2.151  9f90391-dirty 2026-10-05 08:11
+
+- Lines: 22206
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+44b334f chore(camc): prepare 1.2.137 release
+```
+
+## v1.2.152  9f90391-dirty 2026-10-05 08:17
+
+- Lines: 21857
+- Output: /tmp/pytest-of-hren/pytest-1970/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+44b334f chore(camc): prepare 1.2.137 release
+```
+
+## v1.2.153  9f90391-dirty 2026-10-05 08:17
+
+- Lines: 22206
+- Output: /tmp/pytest-of-hren/pytest-1970/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+44b334f chore(camc): prepare 1.2.137 release
+```
+
+## v1.2.154  9f90391-dirty 2026-10-07 23:43
+
+- Lines: 22331
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+44b334f chore(camc): prepare 1.2.137 release
+```
+
+## v1.2.155  9f90391-dirty 2026-10-08 02:00
+
+- Lines: 22346
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+44b334f chore(camc): prepare 1.2.137 release
+```
+
+## v1.2.156  9f90391-dirty 2026-10-11 11:16
+
+- Lines: 22637
+- Output: /tmp/pytest-of-hren/pytest-2057/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+44b334f chore(camc): prepare 1.2.137 release
+```
+
+## v1.2.157  9f90391-dirty 2026-10-11 11:16
+
+- Lines: 22986
+- Output: /tmp/pytest-of-hren/pytest-2057/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+44b334f chore(camc): prepare 1.2.137 release
+```
+
+## v1.2.158  9f90391-dirty 2026-10-11 16:30
+
+- Lines: 22986
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+44b334f chore(camc): prepare 1.2.137 release
+```
+
+## v1.2.159  9f90391-dirty 2026-10-11 16:39
+
+- Lines: 23122
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+44b334f chore(camc): prepare 1.2.137 release
+```
+
+## v1.2.159  9f90391-dirty 2026-10-11 16:42
+
+- Lines: 23170
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+44b334f chore(camc): prepare 1.2.137 release
+```
+
+## v1.2.159  9f90391-dirty 2026-10-11 16:46
+
+- Lines: 23206
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+44b334f chore(camc): prepare 1.2.137 release
+```
+
+## v1.2.159  9f90391-dirty 2026-10-11 16:47
+
+- Lines: 23208
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+44b334f chore(camc): prepare 1.2.137 release
+```
+
+## v1.2.159  9f90391-dirty 2026-10-11 16:48
+
+- Lines: 23220
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+44b334f chore(camc): prepare 1.2.137 release
+```
+
+## v1.2.160  9f90391-dirty 2026-10-11 17:34
+
+- Lines: 23220
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+44b334f chore(camc): prepare 1.2.137 release
+```
+
+## v1.2.161  9f90391-dirty 2026-10-11 19:25
+
+- Lines: 23265
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+44b334f chore(camc): prepare 1.2.137 release
+```
+
+## v1.2.161  9f90391-dirty 2026-10-11 19:28
+
+- Lines: 23275
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+44b334f chore(camc): prepare 1.2.137 release
+```
+
+## v1.2.161  9f90391-dirty 2026-10-11 19:29
+
+- Lines: 23284
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+44b334f chore(camc): prepare 1.2.137 release
+```
+
+## v1.2.162  9f90391-dirty 2026-10-12 02:35
+
+- Lines: 23283
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+44b334f chore(camc): prepare 1.2.137 release
 ```

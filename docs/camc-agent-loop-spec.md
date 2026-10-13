@@ -673,7 +673,7 @@ Expected:
    `monitor_features` or before `cli`, depending on imports.
 8. Add focused tests in `tests/test_agent_loop.py` and monitor feature
    tests in `tests/test_monitor_features.py`.
-9. Rebuild `dist/camc`, sync `src/camc`, run focused tests and full
+9. Rebuild and sync the sole `dist/camc` artifact, run focused tests and full
    non-integration tests.
 10. Update `docs/camc-cron-spec.md` with a short pointer to this spec,
     clarifying that loop jobs are not host cron jobs.

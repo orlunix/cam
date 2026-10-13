@@ -1,10 +1,34 @@
 # Camc Proxy Test Report
 
-Date: 2026-09-05
+Date: 2026-09-15
 
 This report records the TDD and live acceptance evidence for the design in
 `docs/camc-proxy-design.md`. It distinguishes Camc Proxy results from unrelated
 repository or host-environment failures.
+
+## 2026-09-16 shared-vs-local Codex runtime repair
+
+The adapter policy in `src/cam/adapters/configs/codex.toml` gives login and API
+runs the same thin `~/.codex/<agent-id>` home. Safe state links directly to the
+untouched `~/.codex` donor, while `config.toml` is a private snapshot.
+`tmp/arg0` links to a host-local target and configured `sqlite_home` storage is
+bootstrapped locally. Targets are created and chmod 0700 before launch;
+qsub/SSH launcher targets repeat the bootstrap before `exec`. Only API runs
+add provider/catalog settings to their own snapshot.
+
+| Scope | Result | Command / note |
+|---|---:|---|
+| Focused source regression | **209 passed, 1 deselected** | Runtime-home creation/cleanup, adapter overlay modes, proxy startup/usage, monitor lifecycle, reboot, routing, metadata, launcher, artifact-path, and baseline run/API contracts. The deselected real-tmux launcher test is blocked by this sandbox's socket permissions. |
+| Expanded Proxy/API/monitor collection | **314 passed, 1 ordering failure** | The one failure was test isolation: a monitor test's process-wide `time.sleep` patch affected the following artifact test. |
+| Built artifact smoke | **4 passed** | `dist/camc` v1.2.140, 21,386 lines; offline lifecycle and artifact-path checks passed. |
+| Artifact path/build checks | **4 passed** | The desktop/agent-manager consumers select the sole `dist/camc` artifact. |
+| Full repository suite | **1120 passed, 2 skipped, 91 failed, 1 error** | Changed runtime-home, API proxy, reboot, routing, and artifact-path tests passed; remaining failures stay in the unrelated environment/test buckets described below. |
+
+The full run still lacks `pytest-asyncio` for async transport/relay suites and
+has host-dependent real-tmux probe failures. It also includes pre-existing
+boot/autoconfirm/heal/runtime assertions. Therefore the focused feature is
+green, but this checkout cannot honestly be described as having a completely
+green repository-wide suite.
 
 ## Automated results
 
@@ -69,7 +93,7 @@ the proxy.
   native endpoint.
 - A different-model three-agent run exposed and then fixed a shared
   `CODEX_HOME` bug. Codex configuration is now generated under
-  `~/.codex-api/<owner-id>/`, so a later GLM agent cannot overwrite a Qwen
+  `~/.codex/<owner-id>/`, so a later GLM agent cannot overwrite a Qwen
   agent's model or proxy URL.
 - GLM 5.3 remained correctly isolated but its native Responses endpoint
   rejected the current Codex tool schema with HTTP 400 (`format` missing).
@@ -86,14 +110,17 @@ the proxy.
 2. Claude may replace the display model with an organization-approved alias.
    The proxy now routes through the API profile bound at startup and maps only
    the model field to that profile's provider model.
-3. Multiple Codex agents shared one mutable `CODEX_HOME`. It is now isolated
-   by owner id and reclaimed after the tool exits.
+3. The actual cross-host failure was Codex's fixed `CODEX_HOME/tmp/arg0`
+   janitor/lock path on shared NFS. Each agent now receives a thin marked home;
+   that path and configured SQLite storage are host-local while safe donor
+   state stays shared through direct links.
 4. A client disconnect while response headers were being written produced a
    server traceback. It is now handled as a request-local disconnect.
 
 ## Current acceptance status
 
-The merged source passes the 176-test focused Proxy/API regression. The live
+The adapter-owned home repair passes its 209-test focused regression and the
+v1.2.140 single-file artifact passes version and artifact-path checks. The live
 native-endpoint, ten-turn, concurrency, cache-observability, interrupted-stream,
-and lifecycle figures above are historical evidence and must be repeated after
-the single-file build before this merge is released.
+and lifecycle figures above are historical evidence and must still be repeated
+against v1.2.140 before release.

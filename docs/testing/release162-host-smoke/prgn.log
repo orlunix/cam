@@ -1,0 +1,64 @@
+prgn claude START 0 2026-10-12 06:56:41,426 [camc] INFO Merged external config: /home/hren/.cam/configs/claude.toml
+ℹ auto: bjobs not found
+ℹ auto: qsub could not be prepared; launching locally
+⚠ tmux resolved from effective PATH (/usr/bin/tmux)
+2026-10-12 06:56:41,466 [camc] INFO Resolved claude binary: claude -> /home/prgn_share/tools/claude-code/bin/claude (slot 3 in launch_cmd)
+2026-10-12 06:56:41,516 [camc] INFO camc tmux config refreshed: /home/hren/.cam/configs/tmux.conf (v3)
+Starting claude agent f7960a90...
+  ID: f7960a90  Tool: claude  Session: cam-f7960a90
+  Name: release162-prgn-claude
+  Path: /home/hren/.cam/release162-smoke-prgn-1791813401/claude
+  Prompt: Reply exactly CAMC_FALLBACK_PRGN_CLAUDE_OK. Do not use tools...
+
+  Attach: camc attach f7960a90
+  Logs:   camc logs f7960a90 -f
+
+prgn codex START 0 2026-10-12 06:56:41,984 [camc] INFO Merged external config: /home/hren/.cam/configs/codex.toml
+ℹ auto: bjobs not found
+ℹ auto: qsub could not be prepared; launching locally
+⚠ tmux resolved from effective PATH (/usr/bin/tmux)
+2026-10-12 06:56:42,064 [camc] INFO Resolved codex binary: codex -> /home/hren/.local/bin/codex (slot 0 in launch_cmd)
+2026-10-12 06:56:42,093 [camc] INFO camc tmux config refreshed: /home/hren/.cam/configs/tmux.conf (v3)
+Starting codex agent 1227aeb0...
+ℹ Runtime home: /home/hren/.codex/1227aeb0
+  ID: 1227aeb0  Tool: codex  Session: cam-1227aeb0
+  Name: release162-prgn-codex
+  Path: /home/hren/.cam/release162-smoke-prgn-1791813401/codex
+  Prompt: Reply exactly CAMC_FALLBACK_PRGN_CODEX_OK. Do not use tools ...
+
+  Attach: camc attach 1227aeb0
+  Logs:   camc logs 1227aeb0 -f
+
+prgn codex REPLY_OK
+prgn claude REPLY_OK
+{
+  "host": "prgn",
+  "candidate": "/tmp/camc-v1.2.162-candidate",
+  "work": "/home/hren/.cam/release162-smoke-prgn-1791813401",
+  "results": {
+    "claude": {
+      "start_code": 0,
+      "scheduler_output_in_start_stdout": false,
+      "agent": "f7960a90",
+      "submitted_jobs": [],
+      "passed": true
+    },
+    "codex": {
+      "start_code": 0,
+      "scheduler_output_in_start_stdout": false,
+      "agent": "1227aeb0",
+      "submitted_jobs": [],
+      "passed": true
+    }
+  },
+  "cleanup": {
+    "claude": {
+      "kill_code": 0,
+      "output": "Killed agent f7960a90"
+    },
+    "codex": {
+      "kill_code": 0,
+      "output": "Killed agent 1227aeb0"
+    }
+  }
+}

@@ -243,6 +243,8 @@ class AdapterConfig(object):
                     "shared_globs": [str(value) for value in
                                      (overlay.get("shared_globs") or [])
                                      if value],
+                    "config_boolean_overrides": dict(overlay.get("config_boolean_overrides") or {}),
+                    "launcher_config_boolean_overrides": dict(overlay.get("launcher_config_boolean_overrides") or {}),
                     "shared_exclude": [str(value) for value in
                                        (overlay.get("shared_exclude") or [])
                                        if value],

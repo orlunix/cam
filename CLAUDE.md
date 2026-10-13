@@ -10,8 +10,8 @@ CAM (Coding Agent Manager) is "PM2 for AI coding agents." It manages Claude Code
 
 | Tree | Purpose |
 |------|---------|
-| `src/camc_pkg/api_*.py` | Direct API profiles, routing, tokens, and metadata |
-| `tests/test_api_*.py` | Direct API profile and routing tests |
+| `src/camc_pkg/api_*.py` | API profiles, native proxy, routing, tokens, and metadata |
+| `tests/test_api_*.py` | API profile, native proxy, and routing tests |
 | `benchmarks/` | Manual E2E harnesses (not imported by camc) |
 
 Full rules: `docs/code-layout.md`. **Three routing examples:** `docs/api-routing.md`.
@@ -365,7 +365,7 @@ Three layers of protection:
 
 ## Standalone camc (`src/camc_pkg/`, built to `dist/camc`)
 
-Single-file, stdlib-only CLI (Python 3.6+) for machines without the full cam package. Deployed to remotes by `cam sync`. Source in `src/camc_pkg/`, built to `dist/camc` via `python3 build_camc.py`. Copy `dist/camc` to `src/camc` before `cam sync` (sync source is `src/camc`).
+Single-file, stdlib-only CLI (Python 3.6+) for machines without the full cam package. Deployed to remotes by `cam sync`. Source lives in `src/camc_pkg/` and the sole deployable artifact is built at `dist/camc` via `python3 build_camc.py`; `cam sync` reads that artifact directly.
 
 - **Self-contained**: all detection logic, TOML parser, and adapter configs (claude/codex/cursor) embedded inline. No pip install needed.
 - **Commands**: `init`, `run`, `list`, `logs`, `attach`, `stop`, `add`, `rm`, `status`, `heal`, `capture`, `send`, `key`, `version`.

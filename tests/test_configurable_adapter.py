@@ -137,7 +137,7 @@ class TestCodexToml:
 
     def test_launch_command(self, codex_adapter, task, context):
         cmd = codex_adapter.get_launch_command(task, context)
-        assert cmd[0] == "codex"
+        assert cmd == ["codex"]
         assert "--full-auto" not in cmd
         assert task.prompt not in cmd
 

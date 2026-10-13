@@ -8,8 +8,7 @@ The rule is simple: **do not publish to shared if local smoke has not passed on 
 
 ```bash
 python3 build_camc.py
-cp dist/camc src/camc
-cmp dist/camc src/camc
+test -x dist/camc
 ```
 
 Record the version:
@@ -62,9 +61,9 @@ mkdir -p "$SMOKE_DIR"
 Run these with `./dist/camc` or the exact candidate path, not an older `camc` from `PATH`:
 
 ```bash
-./dist/camc run -t claude -n smoke-claude --path "$SMOKE_DIR" --auto-exit "Reply exactly: CAMC_SMOKE_OK"
-./dist/camc run -t codex  -n smoke-codex  --path "$SMOKE_DIR" --auto-exit "Reply exactly: CAMC_SMOKE_OK"
-./dist/camc run -t cursor -n smoke-cursor --path "$SMOKE_DIR" --auto-exit "Reply exactly: CAMC_SMOKE_OK"
+./dist/camc run -t claude -n smoke-claude --path "$SMOKE_DIR" --tool-launcher none --auto-exit "Reply exactly: CAMC_SMOKE_OK"
+./dist/camc run -t codex  -n smoke-codex  --path "$SMOKE_DIR" --tool-launcher none --auto-exit "Reply exactly: CAMC_SMOKE_OK"
+./dist/camc run -t cursor -n smoke-cursor --path "$SMOKE_DIR" --tool-launcher none --auto-exit "Reply exactly: CAMC_SMOKE_OK"
 ```
 
 For each agent, verify:

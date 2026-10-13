@@ -52,14 +52,14 @@ Agents are addressable by name, ID prefix, or `#N` (1-based from `~/.cam/camc li
 | Attach interactively | `~/.cam/camc attach <agent>` (Ctrl+B D to detach) |
 | Logs | `camc logs <agent> -f` |
 | Reboot (resume session) | `camc reboot <agent>` |
-| Move to other host | `camc reboot <agent> --to host:port` |
+| Reboot through LSF | `camc reboot <agent> --tool-launcher auto` |
 | Update name/tag | `camc update <agent> --name x --tag T` |
 | Stop (graceful) | `~/.cam/camc stop <agent>` |
 | Kill (force) | `~/.cam/camc kill <agent>` |
 | Remove | `~/.cam/camc rm <agent>` (always kills tmux; `--archive` to save first) |
 | Bulk cleanup | `camc prune --orphans` |
 | Start with system prompt | `~/.cam/camc run "task" -n name --system-prompt "..."` or `--system-file <path>` |
-| Run with an API profile | `~/.cam/camc run -t codex --api <name> -n <name> "task"` |
+| Run with an API profile | `~/.cam/camc run -t codex --api <name> --tool-launcher none -n <name> "task"` |
 | Check/list API profiles | `~/.cam/camc api check` / `~/.cam/camc api list` |
 | Show API defaults | `~/.cam/camc api default show` |
 | Set a per-tool API default | `~/.cam/camc api default set -t codex <name>` |
@@ -78,6 +78,7 @@ Agents are addressable by name, ID prefix, or `#N` (1-based from `~/.cam/camc li
 
 `--api NAME` explicitly selects a profile from `~/.cam/api-models.json` for
 Claude or Codex. Run `~/.cam/camc api check` before relying on a profile.
+API profiles require `--tool-launcher none` because their proxy is local.
 API defaults are per-tool and opt-in: `api default set` makes ordinary runs
 use that profile; `api default show` displays the selection.
 
@@ -107,46 +108,85 @@ clear one (`fix-ecc`, `bug5893270`, `regr-fn100`).
 ~/.cam/camc run "x" -n y --system-prompt "You are a reviewer." # inject system prompt inline
 ~/.cam/camc run "x" -n y --system-file path/to/SKILL.md        # inject system prompt from file
 ~/.cam/camc run "x" -n y --isolate-tool-home 0               # override adapter home-isolation default
-~/.cam/camc run "x" -n reuse --tool-launcher ssh-auto         # best reachable autorun job
-~/.cam/camc run "x" -n reuse --tool-launcher ssh-auto:1796123900
-~/.cam/camc run "x" -n auto --tool-launcher auto              # SSH reuse, then new qsub
-~/.cam/camc run "x" -n fresh --tool-launcher qsub-4g          # always allocate a new 4G job
-~/.cam/camc run "x" -n batch --tool-launcher 'qsub -q o_cpu_4G -m rel8x -app r89docker --qsla autorun_sla -app affinity -Is {command}'
-~/.cam/camc run "x" -n remote --tool-launcher 'ssh -tt root@192.168.1.100 {command}'
+~/.cam/camc run "x" -n auto                                   # direct -> battach -> SSH -> qsub -> local
+~/.cam/camc run "x" -n batch --tool-launcher 'qsub -q o_cpu_4G -m rel8x -app r89docker --qsla autorun_sla -app affinity -Is'
 ```
 
-The named launchers are `ssh-auto[:JOBID]`, `auto`, and `qsub-4g`.
-`ssh-auto` ranks the caller's RUN interactive `autorun_sla` jobs by current
-project, matching `QJT_AI_AGENT_TYPE`, generic shell, preferred interactive
-queue, and recency. It verifies each candidate's long job metadata and
-`EXEC_HOST`, deduplicates hosts, and probes SSH with bounded noninteractive
-timeouts. `ssh-auto:JOBID` restricts this to one job. `auto` tries every safe
-SSH candidate and falls back to a new qsub only when none is usable;
-`qsub-4g` always creates that new allocation. The qsub project is resolved and
-validated from the requested workdir with `nvprojectname`. Selection and
-fallback decisions are printed and safe structural metadata is recorded.
+When `nvprojectname` is available, every tool defaults to
+`--tool-launcher auto`, including custom PATH tools. Outside that NVIDIA
+environment, the default is local execution. Remote launcher choices are
+`auto` or a custom argv prefix. The caller owns the behavior of a custom
+prefix (for example, submitting its own qsub command); camc appends the tool
+command. `none` is the local direct-launch sentinel, not a separate remote
+launcher mode. Pass `--tool-launcher auto` to opt into the automatic path
+explicitly.
+With `auto`, camc first checks whether this process is inside its own RUN
+interactive `autorun_sla` allocation. It verifies `LSB_JOBID` against
+the LSF record, current user, service class, and local execution host. When
+verified, it runs the tool directly in that allocation with the adapter's
+`launcher_autorun_args`, avoiding a nested qsub or SSH hop. Missing or
+mismatched allocation context falls through to normal launcher selection;
+custom launcher templates remain authoritative. Otherwise, `auto` ranks the
+caller's RUN interactive `autorun_sla` jobs by current project, matching
+`QJT_AI_AGENT_TYPE`, generic shell, preferred interactive queue, and recency.
+After rechecking each candidate's long job metadata and `EXEC_HOST`, it uses
+LSF `battach -L` to run a private probe inside that job's container/cgroup.
+The probe resolves the tool to an absolute path there, and the actual launch
+uses the same job attachment and resolved executable. All battach candidates
+are tried before independent SSH connections to the verified execution hosts.
+SSH uses batch authentication and bounded connection timeouts; missing public
+keys advance to qsub. SSH reaches the host shell and does not claim to enter
+the job's container or cgroup. The tool must pass its version check in that
+host environment before SSH is selected.
+The order is current allocation direct -> battach -> SSH -> qsub -> local.
+The qsub project is resolved and validated from the requested workdir with
+`nvprojectname`, with the existing missing-project save policy. This save is
+deferred until qsub is actually needed. Connection/submission failures before
+the tool starts advance the chain, including qsub failures. Once a tool has
+started, its exit ends the run; camc does not start a second agent on failure.
+The final local fallback adds no adapter autorun arguments or monitor
+auto-confirm. Explicit user tool arguments remain authoritative.
+Selection and fallback decisions are printed and safe structural metadata is
+recorded.
+
+For auto/current-allocation Claude and Codex runs, an initial task is passed
+as the tool's positional prompt, avoiding terminal paste/Enter races. The
+monitor does not submit it again. Queue dispatch time does not consume the
+tool startup timeout. Codex isolated homes exclude donor daemon socket/lock
+directories so agents on different execution hosts cannot reuse those locks.
+
+Probe and launch preserve the allocation's PATH and append target-visible
+absolute submit-host directories plus `/home/nv/bin`, `/home/utils/bin`, and
+`/usr/local/lsf/bin`. Duplicate, absent, relative, and transient submit paths
+are skipped. Loader variables and arbitrary submit-host secrets are not
+copied. Remote/current-allocation Codex home snapshots set
+`allow_login_shell = false` so command shells retain that PATH; ordinary local
+Codex settings are preserved. Already running agents need reboot to pick up
+this environment repair.
 
 Remote launchers are rejected while an explicit or default API profile is
-active because the per-agent loopback proxy is not reachable on the remote
-host. Pass `--no-default-api` to use normal tool login. Reusing an EXEC_HOST
-does not put the SSH process inside the original job's cgroup, so prefer a new
-qsub when strict resource accounting is required.
+active because the per-agent loopback proxy is not reachable from the attached
+job or new allocation. A verified current `autorun_sla` allocation runs
+directly and can use the API profile. Pass `--tool-launcher none` to use an API
+profile locally, or `--no-default-api` to use normal tool login with a remote
+launcher. `battach` runs directly from the submit host without SSH and places
+the process inside the verified job context. SSH is a separate later fallback.
 
-For a raw launcher template, `--tool-launcher LAUNCHER` parses `LAUNCHER` with
-POSIX `shlex` rules and
-requires exactly one standalone `{command}` argv element. camc replaces that
-element with the complete POSIX-shell-quoted tool command as one argv; it does
-not use `eval`. The launcher executable is checked locally, while the tool
-name is deliberately left unresolved for the qsub/SSH target environment.
+For a custom launcher prefix, `--tool-launcher LAUNCHER` parses `LAUNCHER`
+with POSIX `shlex` rules and appends the complete POSIX-shell-quoted tool
+command as one argv. A single standalone `{command}` remains accepted for
+older templates. camc does not use `eval`. The launcher executable is checked
+locally, while the tool name is deliberately left unresolved for the
+qsub/SSH target environment.
 Claude launcher runs add `--dangerously-skip-permissions` (without the local
 `--permission-mode auto`); Codex launcher runs add `--yolo`; Pi launcher runs
 add `--approve` so project-local resources cannot block in a remote trust TUI.
 Cursor and custom tools add no launcher autorun option unless their adapter
 config declares one.
-Tool-launcher agents always disable the local monitor's `auto_confirm`, even
-if a later update attempts to enable it; the remote tool's adapter autorun
-option is the sole confirmation policy.
-The ordinary non-launcher startup and Codex requirements-based autorun policy
+Remote-launcher and verified current-allocation autorun runs disable the local
+monitor's `auto_confirm`; the adapter's autorun option is the sole
+confirmation policy in those modes.
+With `--tool-launcher none`, ordinary local startup and Codex requirements-based autorun policy
 are unchanged. A launcher/tool failure records its exit status and retains the
 tmux shell for inspection.
 
@@ -246,9 +286,23 @@ camc logs <agent> -f               # follow monitor log
 ### Reboot / move
 
 ```bash
-camc reboot <agent>                # restart locally; resumes Claude session
-camc reboot <agent> --to host:port # reboot on a different machine
+camc reboot <agent>                # inherit saved launcher, otherwise NV auto / non-NV local
+camc reboot <agent> --tool-launcher auto # resume through direct/battach/SSH/qsub; no local fallback
+camc reboot <agent> --tool-launcher none # explicitly resume locally
+camc reboot <agent> --tool-launcher 'qsub -q o_cpu_4G --qsla autorun_sla -Is'
 ```
+
+Reboot resolves the launcher before stopping the old agent. A saved `auto` or
+`none` selection is inherited; legacy records use the environment default.
+Custom prefixes must be supplied again, so secrets in templates are not saved.
+Auto reboot never falls back to a local tool; a failed remote chain reports
+failure. Local API profiles require an explicit local override unless already
+inside a verified current allocation.
+
+Remote Codex sessions without a local PID binding can be recovered only from
+an idle pane with no pending input: reboot queries `/status` and validates that
+exact UUID's transcript, workdir, and creation time. Managed Codex home
+snapshots disable `check_for_update_on_startup` without changing the donor.
 
 ### Update
 

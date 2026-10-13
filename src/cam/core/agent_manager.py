@@ -407,9 +407,7 @@ class AgentManager:
                 results["cam-client.py"] = "unchanged"
 
         # 2. Sync camc (standalone CLI)
-        camc_path = Path(__file__).parent.parent.parent / "camc"
-        if not camc_path.exists():
-            camc_path = Path(__file__).parent.parent / "camc.py"
+        camc_path = Path(__file__).resolve().parents[3] / "dist" / "camc"
         if camc_path.exists():
             camc_bytes = camc_path.read_bytes()
             camc_local_hash = hashlib.md5(camc_bytes).hexdigest()[:12]

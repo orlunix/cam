@@ -7,6 +7,8 @@ import select
 import signal
 import sys
 
+import pytest
+
 from camc_pkg import api_proxy, cli
 from pathlib import Path
 
@@ -72,6 +74,43 @@ def test_api_proxy_uses_python36_compatible_text_pipe(monkeypatch):
     assert captured["stdin"] is cli.subprocess.DEVNULL
     assert captured["close_fds"] is True
     assert captured["start_new_session"] is True
+
+
+def test_api_proxy_startup_timeout_terminates_silent_child(monkeypatch):
+    calls = []
+
+    class FakeStdout(object):
+        def fileno(self):
+            return 7
+
+        def close(self):
+            calls.append("stdout-close")
+
+    class FakeProcess(object):
+        pid = 99
+        stdout = FakeStdout()
+
+        def terminate(self):
+            calls.append("terminate")
+
+        def wait(self, timeout=None):
+            calls.append(("wait", timeout))
+
+        def kill(self):
+            calls.append("kill")
+
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda *_a, **_kw: FakeProcess())
+    monkeypatch.setattr(cli.select, "select", lambda *_a, **_kw: ([], [], []))
+
+    with pytest.raises(RuntimeError, match="startup timed out"):
+        cli._start_api_proxy({
+            "upstream_base_url": "https://example.invalid",
+            "model": "model",
+            "client_model": "model",
+        }, "deadbeef")
+
+    assert "terminate" in calls
+    assert "stdout-close" in calls
 
 
 def test_api_proxy_process_ignores_launcher_hup(monkeypatch):
@@ -293,6 +332,15 @@ def test_codex_reasoning_effort_uses_json_mapping():
     assert api_proxy.normalize_reasoning_effort(payload, mapping) is False
     assert api_proxy.normalize_reasoning_effort(
         {"reasoning": {"effort": "low"}}, {}) is False
+
+
+def test_claude_messages_output_config_effort_uses_json_mapping():
+    payload = {"output_config": {"effort": "medium"}}
+    mapping = {"low": "low", "medium": "high", "high": "high"}
+
+    assert api_proxy.normalize_reasoning_effort(payload, mapping) is True
+    assert payload["output_config"] == {"effort": "high"}
+    assert api_proxy.normalize_reasoning_effort(payload, mapping) is False
 
 
 def test_response_output_is_extracted_from_json_and_sse():
@@ -556,6 +604,20 @@ def test_default_retry_policy_covers_transient_gateway_statuses():
         api_proxy.RETRY_STATUS_POLICIES)
 
 
+def test_chat_usage_is_normalized_for_cost_and_cache_logging():
+    shape = api_proxy.usage_log_shape({
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "total_tokens": 120,
+        "prompt_tokens_details": {"cached_tokens": 75},
+    })
+
+    assert "input_tokens=100" in shape
+    assert "output_tokens=20" in shape
+    assert "total_tokens=120" in shape
+    assert "cached_tokens=75" in shape
+
+
 def test_connection_failures_retry_before_any_response_bytes():
     calls = []
 
@@ -591,7 +653,7 @@ def test_connection_failures_retry_before_any_response_bytes():
 
 def test_codex_api_launch_overrides_project_local_model(monkeypatch, tmp_path):
     config = type("Config", (), {
-        "command": ["codex", "-c", "features.goals=true"],
+        "command": ["codex"],
     })()
     monkeypatch.setattr(cli, "_load_config", lambda _tool: config)
 

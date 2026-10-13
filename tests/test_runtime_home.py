@@ -54,7 +54,45 @@ def test_codex_adapter_declares_shared_vs_local_runtime():
     assert config.runtime["overlay"]["root"] == "~/.codex"
     assert config.runtime["overlay"]["shared_globs"] == ["*"]
     assert config.runtime["overlay"]["shared_exclude"] == [
-        "tmp", "config.toml", "camc-model-catalog.json"]
+        "tmp", "config.toml", "camc-model-catalog.json",
+        "app-server-control", "app-server-daemon"]
+
+
+def test_codex_overlay_does_not_reuse_donor_daemon_sockets(tmp_path):
+    home = tmp_path / "home"
+    donor = home / ".codex"
+    donor.mkdir(parents=True)
+    (donor / "auth.json").write_text("test-login")
+    (donor / "config.toml").write_text("check_for_update_on_startup = true\n[features]\nhooks = true\n")
+    for name in ("app-server-control", "app-server-daemon"):
+        (donor / name).mkdir()
+        (donor / name / "daemon.lock").write_text("existing-owner")
+    info = runtime_env.configure_agent_runtime_home(
+        "remote-test", _load_config("codex"), _runtime(home))
+    overlay = donor / "remote-test"
+    assert info["overlay"]["path"] == str(overlay)
+    assert (overlay / "auth.json").is_symlink()
+    assert (overlay / "config.toml").read_text().startswith("check_for_update_on_startup = false\n")
+    assert (donor / "config.toml").read_text().startswith("check_for_update_on_startup = true\n")
+    # Upgrade an existing managed overlay without touching the donor locks.
+    for name in ("app-server-control", "app-server-daemon"):
+        os.symlink(str(donor / name), str(overlay / name))
+    runtime_env.configure_agent_runtime_home("remote-test", _load_config("codex"), _runtime(home))
+    for name in ("app-server-control", "app-server-daemon"):
+        assert not (overlay / name).exists()
+        assert (donor / name / "daemon.lock").read_text() == "existing-owner"
+
+
+def test_codex_launcher_snapshot_retains_allocation_shell_environment(tmp_path):
+    home = tmp_path / "home"
+    donor = home / ".codex"
+    donor.mkdir(parents=True)
+    (donor / "config.toml").write_text("allow_login_shell = true\n")
+    runtime_env.configure_agent_runtime_home("local", _load_config("codex"), _runtime(home))
+    runtime_env.configure_agent_runtime_home("remote", _load_config("codex"), _runtime(home), launcher=True)
+    assert "allow_login_shell = true" in (donor / "local" / "config.toml").read_text()
+    assert "allow_login_shell = false" in (donor / "remote" / "config.toml").read_text()
+    assert (donor / "config.toml").read_text() == "allow_login_shell = true\n"
 
 
 @pytest.mark.parametrize("tool,expected", [

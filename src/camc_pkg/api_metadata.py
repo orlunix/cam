@@ -466,7 +466,7 @@ def codex_catalog_models(default_api_name, data=None, template=None,
 
 def write_codex_model_catalog(catalog_path, api_name, metadata=None, data=None,
                               require_endpoint=None, model_id=None):
-    """Write ~/.codex-api/camc-model-catalog.json for Codex --api."""
+    """Write an agent-owned Codex model catalog for ``--api``."""
     if data is None:
         from camc_pkg.api_store import load_api_models
         data = load_api_models()

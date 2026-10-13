@@ -223,10 +223,9 @@ source and live-tested on 2.7 (Rocky 8.9), 3.2a (hlren), 3.4 (prgn):
   prefer the record — always matching the server binary.
 - Resolution order (since `347458c`, env-first): effective runtime
   PATH → `/bin/tmux` fallback. Older builds were golden-first
-  (`/bin/tmux` preferred). The desktop bundles `src/camc` via
-  electron-builder `extraResources` — if you change camc, rebuild and
-  **sync `dist/camc` → `src/camc`** or the packaged app keeps
-  shipping the old build (this bit us once).
+  (`/bin/tmux` preferred). The desktop bundles `dist/camc` directly via
+  electron-builder `extraResources`; if you change camc, rebuild that sole
+  artifact on Linux before packaging the app.
 - Remaining bare-PATH spots: `camc attach` (`os.execvp("tmux", …)`)
   and the repair Python (`"tmux"`). A PATH tmux whose version differs
   from the session's server causes protocol-mismatch attach failures.

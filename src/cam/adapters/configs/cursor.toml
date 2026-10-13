@@ -15,6 +15,7 @@
 name = "cursor"
 display_name = "Cursor Agent"
 config_dir = ".cursor"
+isolate_tool_home = false
 cursor_flag_support = false
 
 [launch]

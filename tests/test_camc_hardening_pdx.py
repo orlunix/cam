@@ -119,7 +119,7 @@ class TestCreateTmuxSessionInjectsConfig:
         _tx.ensure_camc_tmux_config(path=cfg)
 
         _tx.create_tmux_session(
-            "cam-deadbeef", ["codex", "-c", "features.goals=true"],
+            "cam-deadbeef", ["codex"],
             "/work", inherit_env=False,
             env={"PATH": "/usr/bin"},
             tmux_bin="/bin/tmux",

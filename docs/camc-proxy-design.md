@@ -3,9 +3,9 @@
 ## Status
 
 Camc Proxy is the single proxy implementation embedded in the standalone
-`camc` build. Each `camc run --api` owns one proxy process for the lifetime of
-that agent. Proxy processes, loopback ports, logs, credentials, and generated
-Codex homes are not shared across agents. The owning agent record stores the
+`camc` build. Each API run owns one proxy process for the lifetime of its
+agent. Proxy processes, loopback ports, logs, credentials, and generated
+API config overlays are not shared across agents. The owning agent record stores the
 proxy PID and port; there is no second proxy registry or readiness-file format.
 
 This document is the executable contract for the implementation. A change is
@@ -28,25 +28,55 @@ repository-level blockers are recorded in `docs/camc-proxy-test-report.md`.
 4. **Retry only before output.** Transient connection errors and retryable
    HTTP status codes may be retried before the first response byte. A stream
    is never replayed after output begins.
-5. **One agent, one proxy.** Every agent has a unique owner id, loopback port,
-   process, optional debug log, and (for Codex) generated home. Every terminal
-   path reclaims the process and generated home.
+5. **Shared config, local runtime.** Every agent has a unique owner id. API
+   runs add one loopback proxy/process and optional config overlay. Adapters
+   redirect only lock/janitor-sensitive paths to a host-local filesystem.
 6. **No secrets in observability.** Logs contain lifecycle and request
    metadata only, never credentials, full prompts, or response content.
 7. **Single-file release.** The source is stdlib-only and is embedded in
    `dist/camc` by `build_camc.py`.
 
+## Shared-vs-local runtime storage
+
+Runtime-storage policy belongs to the adapter, not to the flow implementation.
+An adapter may declare a `[runtime]` block with its donor home, host-local
+links, config keys whose directory values need bootstrap, and the adapter's
+Boolean `isolate_tool_home` default. A single run can override that default
+with `--isolate-tool-home 1` or `--isolate-tool-home 0`; reboot preserves the
+resolved value. `camc run` and the DAG scheduler persist the resolved,
+non-secret layout in `agent.runtime.storage`.
+
+Codex is the first adapter using this contract:
+
+- login and API runs set `CODEX_HOME=~/.codex/<agent-id>`;
+- each thin home directly links safe donor entries such as auth, MCP, skills,
+  sessions, and history, while keeping a private `config.toml` snapshot;
+- `<agent-home>/tmp/arg0` links to adapter-resolved host-local
+  storage, whose target is created and chmod 0700 before Codex starts;
+- the configured `sqlite_home` directory is likewise bootstrapped locally;
+- inherited stale arg0 helper entries are removed from `PATH`;
+- qsub/SSH launcher commands repeat target creation/chmod on the target host
+  before `exec`, with POSIX argv quoting and no `eval`;
+- API runs alone add provider/catalog settings to their private snapshot.
+
+Managed-home ownership markers prevent recursive links and make cleanup
+path-safe. Existing unmarked directories are rejected and never modified.
+
+The donor is never removed or rewritten. Missing optional shared assets are
+reported in the runtime manifest and do not prevent a login that can use the
+tool's other authentication paths.
+
 ## Request flow
 
 ```text
-camc run --api MODEL
-  -> resolve profile and token
+camc run [--api MODEL]
+  -> resolve an optional profile and token
   -> preflight coding tool
-  -> allocate agent id and an isolated loopback proxy
-  -> start Camc Proxy and pass its loopback URL to the tool
-  -> run Claude/Codex
-  -> native endpoint forwarding with pre-output retry
-  -> terminal path stops proxy and removes its run record
+  -> allocate agent id and bootstrap adapter-declared runtime storage
+  -> (API) start Camc Proxy and pass its loopback URL to the tool
+  -> run the selected adapter
+  -> (API) native endpoint forwarding with pre-output retry
+  -> terminal path stops owned resources and removes its run record
 ```
 
 ## Permitted transformations
@@ -71,8 +101,9 @@ reused during reboot) loopback port. The child prints the bound port only after
 the HTTP server is listening. The owning agent record persists its PID, port,
 profile, provider, and model. Before cleanup, `/proc/<pid>/cmdline` is matched
 against both `_api_proxy` and the exact owner id so a reused PID is not
-signalled. Cleanup is idempotent and also removes only that owner's generated
-Codex home under `~/.codex-api/<owner-id>/`.
+signalled. Shared host-local targets are retained for other agents. Terminal
+cleanup first stops the tool/tmux and only then removes the owned overlay;
+reboot refreshes the same overlay after the old process exits.
 
 ## Automated test matrix
 
@@ -80,7 +111,8 @@ Codex home under `~/.codex-api/<owner-id>/`.
 
 1. Current PID is alive; a missing/invalid PID is not.
 2. Each owner receives a distinct process and port.
-3. Each owner receives a distinct optional debug log and Codex home.
+3. Each owner receives a distinct optional debug log and any declared runtime
+   home.
 4. Concurrent starts do not collide or overwrite agent records.
 5. `stop`, `exit`, `kill`, and `rm` reclaim only the owning proxy.
 6. Auto-exit and unexpected session termination reclaim the proxy.
@@ -116,7 +148,9 @@ Codex home under `~/.codex-api/<owner-id>/`.
 
 1. 408, 409, 429, 500, 502, 503, and 504 retry before output.
 2. Other 4xx responses do not retry.
-3. Connect and pre-output read timeouts retry within the configured maximum.
+3. Connect, request, and response-header failures retry within the configured
+   maximum. Once upstream response headers are accepted, body-stream failures
+   are not replayed because doing so can duplicate a billed request.
 4. Retry-After is bounded and honored.
 5. Every abandoned response is closed.
 

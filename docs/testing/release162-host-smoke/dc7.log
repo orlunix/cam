@@ -1,0 +1,58 @@
+dc7 claude START 0 2026-10-12 06:56:39,084 [camc] INFO camc tmux config refreshed: /home/hren/.cam/configs/tmux.conf (v3)
+ℹ auto: using job 1042549372 on dc2-sim-c24-005 (o_pri_interactive_cpu_16G)
+⚠ tmux resolved from effective PATH (/bin/tmux)
+Starting claude agent 6e4273c1...
+  ID: 6e4273c1  Tool: claude  Session: cam-6e4273c1
+  Name: release162-dc7-claude
+  Path: /home/hren/.cam/release162-smoke-dc7-1791813395/claude
+  Prompt: Reply exactly CAMC_FALLBACK_DC7_CLAUDE_OK. Do not use tools ...
+
+  Attach: camc attach 6e4273c1
+  Logs:   camc logs 6e4273c1 -f
+
+dc7 codex START 0 2026-10-12 06:56:41,928 [camc] INFO camc tmux config refreshed: /home/hren/.cam/configs/tmux.conf (v3)
+ℹ auto: using job 1042549372 on dc2-sim-c24-005 (o_pri_interactive_cpu_16G)
+⚠ tmux resolved from effective PATH (/bin/tmux)
+Starting codex agent c5f88c8b...
+ℹ Runtime home: /home/hren/.codex/c5f88c8b
+  ID: c5f88c8b  Tool: codex  Session: cam-c5f88c8b
+  Name: release162-dc7-codex
+  Path: /home/hren/.cam/release162-smoke-dc7-1791813395/codex
+  Prompt: Reply exactly CAMC_FALLBACK_DC7_CODEX_OK. Do not use tools o...
+
+  Attach: camc attach c5f88c8b
+  Logs:   camc logs c5f88c8b -f
+
+{
+  "host": "dc7",
+  "candidate": "/tmp/camc-v1.2.162-candidate",
+  "work": "/home/hren/.cam/release162-smoke-dc7-1791813395",
+  "results": {
+    "claude": {
+      "start_code": 0,
+      "scheduler_output_in_start_stdout": false,
+      "agent": "6e4273c1",
+      "submitted_jobs": [],
+      "passed": false,
+      "actual_transport": "battach"
+    },
+    "codex": {
+      "start_code": 0,
+      "scheduler_output_in_start_stdout": false,
+      "agent": "c5f88c8b",
+      "submitted_jobs": [],
+      "passed": false,
+      "actual_transport": "battach"
+    }
+  },
+  "cleanup": {
+    "claude": {
+      "kill_code": 0,
+      "output": "Killed agent 6e4273c1"
+    },
+    "codex": {
+      "kill_code": 0,
+      "output": "Killed agent c5f88c8b"
+    }
+  }
+}

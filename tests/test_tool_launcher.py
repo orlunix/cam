@@ -1,5 +1,6 @@
 """Focused coverage for ``camc run --tool-launcher``."""
 
+import json
 import os
 import shlex
 import shutil
@@ -16,6 +17,7 @@ from camc_pkg import adapters, cli, runtime_env, tool_launcher, transport
 
 
 ROOT = Path(__file__).resolve().parents[1]
+_OMITTED_LAUNCHER = object()
 
 
 def _without_env_prefix(argv):
@@ -32,6 +34,12 @@ def _without_env_prefix(argv):
     return argv[index:]
 
 
+def _resolved_target_script(command):
+    argv = shlex.split(command)
+    assert argv[:2] == ["/bin/sh", "-c"]
+    return argv[2]
+
+
 def _adapter(name):
     path = ROOT / "src" / "cam" / "adapters" / "configs" / (name + ".toml")
     config = adapters.AdapterConfig(adapters._parse_toml(path.read_text()))
@@ -43,36 +51,84 @@ def _adapter(name):
 
 
 @pytest.mark.parametrize("value, expected", [
+    ("none", []),
+    (" none ", []),
+    ("ssh -tt root@192.168.1.100",
+     ["ssh", "-tt", "root@192.168.1.100"]),
     ("ssh -tt root@192.168.1.100 {command}",
      ["ssh", "-tt", "root@192.168.1.100", "{command}"]),
     ("qsub -q o_cpu_4G -m rel8x -app r89docker --qsla autorun_sla "
-     "-app affinity -Is {command}",
+     "-app affinity -Is",
      ["qsub", "-q", "o_cpu_4G", "-m", "rel8x", "-app", "r89docker",
-      "--qsla", "autorun_sla", "-app", "affinity", "-Is", "{command}"]),
+      "--qsla", "autorun_sla", "-app", "affinity", "-Is"]),
 ])
 def test_launcher_is_parsed_with_shlex(value, expected):
     assert tool_launcher.parse_tool_launcher(value) == expected
 
 
 @pytest.mark.parametrize("value", [
-    "", "ssh host", "ssh {command} {command}", "ssh x{command}",
-    "ssh '{command",
+    "", "ssh {command} {command}", "ssh x{command}", "ssh '{command",
 ])
-def test_launcher_rejects_bad_placeholder_or_shlex(value):
+def test_launcher_rejects_bad_prefix_or_legacy_placeholder(value):
     with pytest.raises(ValueError, match="--tool-launcher"):
         tool_launcher.parse_tool_launcher(value)
 
 
 @pytest.mark.parametrize("value, expected", [
     ("auto", ("auto", "")),
-    ("qsub-4g", ("qsub-4g", "")),
-    ("ssh-auto", ("ssh-auto", "")),
-    ("ssh-auto:1796123900", ("ssh-auto", "1796123900")),
+    ("qsub-4g", None),
+    ("ssh-auto", None),
+    ("ssh-auto:1796123900", None),
     ("ssh host {command}", None),
     ("ssh-auto:not-a-job", None),
 ])
 def test_named_launcher_parser(value, expected):
     assert tool_launcher.named_tool_launcher(value) == expected
+
+
+@pytest.mark.parametrize("value", [
+    "qsub-4g", "ssh-auto", "ssh-auto:1796123900",
+])
+def test_removed_named_launchers_direct_users_to_auto(value):
+    with pytest.raises(ValueError, match="no longer a preset; use auto"):
+        tool_launcher.parse_tool_launcher(value)
+
+
+def test_default_tool_launcher_is_environment_aware(monkeypatch):
+    seen = []
+
+    def resolve(env, names):
+        seen.append((env, names))
+        return "/fake/nvprojectname" if env.get("NV_SITE") == "1" else ""
+
+    monkeypatch.setattr(tool_launcher, "_launcher_binary", resolve)
+
+    assert tool_launcher.default_tool_launcher({"NV_SITE": "1"}) == "auto"
+    assert tool_launcher.default_tool_launcher({"PATH": "/usr/bin"}) == "none"
+    assert all(names == tool_launcher._NVPROJECTNAME_BINARIES
+               for _env, names in seen)
+
+
+@pytest.mark.parametrize("tool", ["codex", "claude", "cursor", "pi", "custom-tool"])
+@pytest.mark.parametrize("launcher", [
+    None, "auto", "none",
+    "ssh host",
+])
+def test_run_launcher_defaults_for_every_tool_and_preserves_overrides(
+        tool, launcher, monkeypatch):
+    argv = ["camc", "run", "-t", tool, "-n", "launcher-test"]
+    if launcher is not None:
+        argv += ["--tool-launcher", launcher]
+    calls = []
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(cli, "_ensure_logs_on_scratch", lambda: None)
+    monkeypatch.setattr(cli, "cmd_run", lambda args: calls.append(args))
+    monkeypatch.setattr(cli, "default_tool_launcher", lambda: "auto")
+
+    cli.main()
+
+    assert len(calls) == 1
+    assert calls[0].tool_launcher == ("auto" if launcher is None else launcher)
 
 
 def _autorun_jobs_output():
@@ -100,13 +156,189 @@ def _long_job(candidate, user="tester"):
         (candidate["job_id"], user, candidate["host"]))
 
 
+def _current_autorun_job(job_id="123", user="tester",
+                         service_class="autorun_sla", status="RUN",
+                         interactive=True, host="host-a"):
+    mode = ("Interactive pseudo-terminal shell mode" if interactive else
+            "Batch job")
+    return (
+        "Job <%s>, User <%s>, Project <mobile>, Service Class <%s>, "
+        "Status <%s>, Queue <o_priority>, %s\n"
+        "Job Description <QJT_QSLA=autorun_sla "
+        "QSUB_JOB_TAG_QSUB_VIRTUAL_QUEUE="
+        "interactive_asic_16G_48H>\nStarted on <%s>;\n" %
+        (job_id, user, service_class, status, mode, host))
+
+
+def _mock_current_job_query(monkeypatch, output, rc=0):
+    calls = []
+    monkeypatch.setattr(
+        tool_launcher, "_launcher_binary",
+        lambda _env, _names: "/fake/bjobs")
+
+    def process(argv, env=None, **kwargs):
+        calls.append((argv, env, kwargs))
+        return rc, output, ""
+
+    monkeypatch.setattr(tool_launcher, "_launcher_process", process)
+    return calls
+
+
+def test_detect_current_autorun_allocation_verifies_lsf_record(monkeypatch):
+    output = _current_autorun_job()
+    calls = _mock_current_job_query(monkeypatch, output)
+
+    result = tool_launcher.detect_current_autorun_allocation(
+        {"LSB_JOBID": "123", "USER": "tester"},
+        local_host="host-a.example.com", current_user="tester")
+
+    assert result == {
+        "job_id": "123",
+        "service_class": "autorun_sla",
+        "host": "host-a",
+        "project": "mobile",
+        "queue": "o_priority",
+        "virtual_queue": "interactive_asic_16G_48H",
+    }
+    assert calls[0][0] == ["/fake/bjobs", "-l", "-UF", "123"]
+
+
+@pytest.mark.parametrize("output,rc", [
+    (_current_autorun_job(status="PEND"), 0),
+    (_current_autorun_job(service_class="normal"), 0),
+    (_current_autorun_job(user="other"), 0),
+    (_current_autorun_job(interactive=False), 0),
+    (_current_autorun_job(host="other-host"), 0),
+    (_current_autorun_job(), 1),
+])
+def test_detect_current_autorun_allocation_fails_closed(
+        monkeypatch, output, rc):
+    _mock_current_job_query(monkeypatch, output, rc=rc)
+
+    result = tool_launcher.detect_current_autorun_allocation(
+        {"LSB_JOBID": "123", "USER": "tester"},
+        local_host="host-a", current_user="tester")
+
+    assert result is None
+
+
+def test_detect_current_autorun_allocation_skips_without_job_id(monkeypatch):
+    def unexpected_query(*_args, **_kwargs):
+        pytest.fail("bjobs must not run without an LSB_JOBID hint")
+
+    monkeypatch.setattr(tool_launcher, "_launcher_process", unexpected_query)
+    assert tool_launcher.detect_current_autorun_allocation(
+        {"USER": "tester"}, local_host="host-a",
+        current_user="tester") is None
+
+
 def _fake_launcher_binary(_env, names):
-    known = {"bjobs", "ssh", "nvprojectname", "qsub"}
+    known = {"bjobs", "battach", "nvprojectname", "qsub"}
     for name in names:
         base = os.path.basename(name)
         if base in known:
             return "/fake/" + base
     return ""
+
+
+def _run_fake_battach_probe(argv, env, cwd):
+    assert argv[1] == "-L"
+    result = subprocess.run(
+        ["/bin/sh", argv[2]], cwd=cwd, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        universal_newlines=True)
+    return result.returncode, result.stdout, result.stderr
+
+
+def _install_fake_target_tool(tmp_path, name="codex"):
+    tool_dir = tmp_path / "remote-bin"
+    tool_dir.mkdir(exist_ok=True)
+    tool = tool_dir / name
+    tool.write_text("#!/bin/sh\nexit 0\n")
+    tool.chmod(0o755)
+    return tool_dir, tool
+
+
+def test_local_target_tool_path_hint_uses_absolute_tool_dir(tmp_path):
+    tool_dir, tool = _install_fake_target_tool(tmp_path)
+    resolved = tool_launcher.resolve_local_target_tool_path(
+        "codex", "codex", {"PATH": "/missing"}, tool_dir=str(tool_dir))
+    assert resolved == str(tool)
+
+
+def test_battach_probe_checks_non_codex_version_and_prefers_local_path(
+        tmp_path):
+    preferred_dir = tmp_path / "preferred"
+    preferred_dir.mkdir()
+    preferred = preferred_dir / "claude"
+    preferred.write_text(
+        "#!/bin/sh\n[ \"$1\" = --version ] && exit 0\nexit 42\n")
+    preferred.chmod(0o755)
+    fallback_dir, _fallback = _install_fake_target_tool(tmp_path, "claude")
+    script = tool_launcher._target_tool_probe_script(
+        "claude", str(tmp_path), selected_tool="claude",
+        preferred_tool_path=str(preferred), version_args=["--version"])
+    probe = tmp_path / "probe"
+    probe.write_text("#!/bin/sh\n" + script)
+    probe.chmod(0o700)
+
+    result = subprocess.run(
+        [str(probe)], cwd=str(tmp_path),
+        env={"PATH": str(fallback_dir)}, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, universal_newlines=True)
+    assert result.returncode == 0
+    assert "__CAMC_TARGET_TOOL__%s" % preferred in result.stdout
+
+
+def test_resolved_tool_command_executes_preferred_absolute_path(tmp_path):
+    log = tmp_path / "tool.log"
+    preferred_dir = tmp_path / "preferred"
+    preferred_dir.mkdir()
+    preferred = preferred_dir / "codex"
+    preferred.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = --version ]; then echo version >> %s; exit 0; fi\n"
+        "echo run:$* >> %s\n" % (shlex.quote(str(log)), shlex.quote(str(log))))
+    preferred.chmod(0o755)
+    command = tool_launcher.build_resolved_tool_command(
+        ["codex", "--yolo", "two words"], "codex", str(tmp_path),
+        preferred_tool_path=str(preferred), version_args=["--version"])
+
+    result = subprocess.run(
+        command, cwd=str(tmp_path), env={"PATH": "/missing"},
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        universal_newlines=True)
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines() == [
+        "version", "run:--yolo two words"]
+
+
+def test_resolved_tool_command_uses_target_path_when_local_hint_fails(
+        tmp_path):
+    preferred_dir = tmp_path / "preferred"
+    fallback_dir = tmp_path / "fallback"
+    preferred_dir.mkdir()
+    fallback_dir.mkdir()
+    preferred = preferred_dir / "pi"
+    preferred.write_text("#!/bin/sh\nexit 126\n")
+    preferred.chmod(0o755)
+    fallback_log = tmp_path / "fallback.log"
+    fallback = fallback_dir / "pi"
+    fallback.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = --version ]; then exit 0; fi\n"
+        "echo target-path >> %s\n" % shlex.quote(str(fallback_log)))
+    fallback.chmod(0o755)
+    command = tool_launcher.build_resolved_tool_command(
+        ["pi", "--approve"], "pi", str(tmp_path),
+        preferred_tool_path=str(preferred), version_args=["--version"])
+
+    result = subprocess.run(
+        command, cwd=str(tmp_path), env={"PATH": str(fallback_dir)},
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        universal_newlines=True)
+    assert result.returncode == 0, result.stderr
+    assert fallback_log.read_text().splitlines() == ["target-path"]
 
 
 def test_autorun_parser_ranks_then_deduplicates_hosts():
@@ -116,9 +348,6 @@ def test_autorun_parser_ranks_then_deduplicates_hosts():
     assert [item["job_id"] for item in candidates] == [
         "1729124669", "1761147411", "1796124140"]
     assert candidates[-1]["job_name"] == "dvnet_autorun"
-    assert tool_launcher._parse_autorun_jobs(
-        _autorun_jobs_output(), "codex",
-        explicit_job_id="1796123900")[0]["job_id"] == "1796123900"
 
 
 def test_long_metadata_verifies_owner_and_exec_host():
@@ -135,8 +364,9 @@ def test_long_metadata_verifies_owner_and_exec_host():
 
 def test_auto_skips_changed_and_unreachable_hosts(monkeypatch, tmp_path):
     calls = []
+    tool_dir, remote_tool = _install_fake_target_tool(tmp_path)
 
-    def fake_process(argv, **_kwargs):
+    def fake_process(argv, **kwargs):
         calls.append(list(argv))
         if argv[:2] == ["/fake/nvprojectname", "resolve_validate"]:
             return 0, "mobile\n", ""
@@ -151,82 +381,86 @@ def test_auto_skips_changed_and_unreachable_hosts(monkeypatch, tmp_path):
                 return 0, _long_job(candidate).replace(
                     "host-project", "changed-host"), ""
             return 0, _long_job(candidate), ""
-        if argv[0] == "/fake/ssh":
-            return ((255, "", "connection refused")
-                    if argv[-2] == "host-regress" else (0, "", ""))
+        if argv[0] == "/fake/battach":
+            if argv[-1] == "1761147411":
+                return 255, "", "connection refused"
+            return _run_fake_battach_probe(
+                argv, {"PATH": str(tool_dir)}, kwargs.get("cwd"))
         raise AssertionError("unexpected subprocess: %r" % argv)
 
     monkeypatch.setattr(tool_launcher, "_launcher_binary", _fake_launcher_binary)
     monkeypatch.setattr(tool_launcher, "_launcher_process", fake_process)
     launcher, metadata, notices = tool_launcher.resolve_named_tool_launcher(
         ("auto", ""), "codex", str(tmp_path),
-        {"USER": "tester", "PATH": "/fake"})
+        {"USER": "tester", "PATH": str(tool_dir)})
 
-    assert launcher == ["/fake/ssh", "-tt", "host-ai", "{command}"]
+    assert launcher == ["/fake/battach", "-L", "{command}", "1796124140"]
     assert metadata["job_id"] == "1796124140"
+    assert metadata["transport"] == "battach"
+    assert metadata["_target_tool_path"] == str(remote_tool)
     assert metadata["fallback"] is True
     assert any("metadata/EXEC_HOST changed" in item for item in notices)
     assert any("connection refused" in item for item in notices)
     assert not any("/fake/qsub" in call for call in calls)
+    probes = [call for call in calls if call[0] == "/fake/battach"]
+    assert len(probes) == 2
+    assert all(call[1] == "-L" for call in probes)
+    assert all(not os.path.exists(call[2]) for call in probes)
 
 
-def test_explicit_ssh_auto_job_is_user_scoped(monkeypatch, tmp_path):
+def test_auto_skips_codex_runtime_failure_and_uses_next_candidate(
+        monkeypatch, tmp_path):
     calls = []
+    bad_root = tmp_path / "bad"
+    good_root = tmp_path / "good"
+    bad_root.mkdir()
+    good_root.mkdir()
+    bad_dir, bad_tool = _install_fake_target_tool(bad_root)
+    good_dir, good_tool = _install_fake_target_tool(good_root)
+    bad_tool.write_text("#!/bin/sh\nexit 126\n")
 
-    def fake_process(argv, **_kwargs):
+    def fake_process(argv, **kwargs):
         calls.append(list(argv))
         if argv[:2] == ["/fake/nvprojectname", "resolve_validate"]:
             return 0, "mobile\n", ""
         if "-noheader" in argv:
             return 0, _autorun_jobs_output(), ""
         if argv[:3] == ["/fake/bjobs", "-l", "-UF"]:
-            candidate = tool_launcher._parse_autorun_jobs(
-                _autorun_jobs_output(), "codex",
-                explicit_job_id="1796123900")[0]
+            job_id = argv[-1]
+            candidate = next(item for item in tool_launcher._parse_autorun_jobs(
+                _autorun_jobs_output(), "codex")
+                             if item["job_id"] == job_id)
+            if job_id == "1729124669":
+                return 0, _long_job(candidate).replace(
+                    "host-project", "changed-host"), ""
             return 0, _long_job(candidate), ""
-        if argv[0] == "/fake/ssh":
-            return 0, "", ""
+        if argv[0] == "/fake/battach":
+            target_dir = bad_dir if argv[-1] == "1761147411" else good_dir
+            rc, stdout, stderr = _run_fake_battach_probe(
+                argv, {"PATH": str(target_dir)}, kwargs.get("cwd"))
+            # battach may merge the attached process's stderr into its stdout.
+            if argv[-1] == "1761147411":
+                return rc, stdout + stderr, ""
+            return rc, stdout, stderr
         raise AssertionError("unexpected subprocess: %r" % argv)
 
     monkeypatch.setattr(tool_launcher, "_launcher_binary", _fake_launcher_binary)
     monkeypatch.setattr(tool_launcher, "_launcher_process", fake_process)
-    launcher, metadata, _notices = tool_launcher.resolve_named_tool_launcher(
-        ("ssh-auto", "1796123900"), "codex", str(tmp_path),
-        {"USER": "tester", "PATH": "/fake"})
+    launcher, metadata, notices = tool_launcher.resolve_named_tool_launcher(
+        ("auto", ""), "codex", str(tmp_path),
+        {"USER": "tester", "PATH": str(good_dir)})
 
-    discovery = next(call for call in calls if "-noheader" in call)
-    assert discovery[-3:] == ["-u", "tester", "1796123900"]
-    assert launcher == ["/fake/ssh", "-tt", "host-ai", "{command}"]
-    assert metadata["job_id"] == "1796123900"
-
-
-def test_explicit_ssh_auto_rejects_host_without_target_tool(
-        monkeypatch, tmp_path):
-    def fake_process(argv, **_kwargs):
-        if argv[:2] == ["/fake/nvprojectname", "resolve_validate"]:
-            return 0, "mobile\n", ""
-        if "-noheader" in argv:
-            return 0, _autorun_jobs_output(), ""
-        if argv[:3] == ["/fake/bjobs", "-l", "-UF"]:
-            candidate = tool_launcher._parse_autorun_jobs(
-                _autorun_jobs_output(), "codex",
-                explicit_job_id="1796123900")[0]
-            return 0, _long_job(candidate), ""
-        if argv[0] == "/fake/ssh":
-            assert "command -v codex" in argv[-1]
-            return 127, "", "__CAMC_TARGET_TOOL_MISSING__\n"
-        raise AssertionError("unexpected subprocess: %r" % argv)
-
-    monkeypatch.setattr(tool_launcher, "_launcher_binary", _fake_launcher_binary)
-    monkeypatch.setattr(tool_launcher, "_launcher_process", fake_process)
-
-    with pytest.raises(ValueError, match="reachable but target tool codex"):
-        tool_launcher.resolve_named_tool_launcher(
-            ("ssh-auto", "1796123900"), "codex", str(tmp_path),
-            {"USER": "tester", "PATH": "/fake"}, target_tool="codex")
+    assert launcher == ["/fake/battach", "-L", "{command}", "1796124140"]
+    assert metadata["transport"] == "battach"
+    assert metadata["job_id"] == "1796124140"
+    assert metadata["_target_tool_path"] == str(good_tool)
+    assert any("could not start in the LSF job environment" in item
+               for item in notices)
+    assert not any(call[0] == "/fake/qsub" for call in calls)
+    assert len([call for call in calls if call[0] == "/fake/battach"]) == 2
 
 
-def test_auto_uses_qsub_only_after_all_ssh_candidates_fail(
+def test_auto_uses_qsub_only_after_all_battach_candidates_fail(
         monkeypatch, tmp_path):
     calls = []
 
@@ -242,7 +476,7 @@ def test_auto_uses_qsub_only_after_all_ssh_candidates_fail(
                 _autorun_jobs_output(), "codex")
                              if item["job_id"] == job_id)
             return 0, _long_job(candidate), ""
-        if argv[0] == "/fake/ssh":
+        if argv[0] == "/fake/battach":
             return 255, "", "unreachable"
         raise AssertionError("unexpected subprocess: %r" % argv)
 
@@ -258,23 +492,252 @@ def test_auto_uses_qsub_only_after_all_ssh_candidates_fail(
         "--qsla", "autorun_sla", "-app", "affinity", "-Is", "{command}"]
     assert metadata == {
         "preset": "auto", "transport": "qsub", "project": "mobile",
-        "fallback": True}
+        "fallback": True, "_auto_plan": []}
     assert notices[-1].startswith("auto: submitting a new qsub allocation")
-    assert len([call for call in calls if call[0] == "/fake/ssh"]) == 3
+    assert len([call for call in calls if call[0] == "/fake/battach"]) == 3
     # Resolver only constructs the final launcher; it never submits qsub.
     assert not any(call[0] == "/fake/qsub" for call in calls)
 
 
-def test_qsub_launcher_fails_closed_when_project_cannot_resolve(
+def test_auto_qsub_fallback_saves_default_project_when_mapping_is_empty(
         monkeypatch, tmp_path):
-    monkeypatch.setattr(tool_launcher, "_launcher_binary", _fake_launcher_binary)
-    monkeypatch.setattr(
-        tool_launcher, "_launcher_process",
-        lambda _argv, **_kwargs: (1, "", "project is not registered"))
+    calls = []
+    resolves = [0]
+    empty_project_error = (
+        "nvprojectname: ERROR: NV::Project::Name::"
+        "UnregisteredProjectNameException: project_name: ''")
 
-    with pytest.raises(ValueError, match="project resolution failed"):
-        tool_launcher.resolve_named_tool_launcher(
-            ("qsub-4g", ""), "codex", str(tmp_path), {"PATH": "/fake"})
+    def fake_process(argv, env, cwd, timeout):
+        calls.append((list(argv), cwd))
+        if "-noheader" in argv:
+            return 0, "", ""
+        if argv[:2] == ["/fake/nvprojectname", "resolve_validate"]:
+            resolves[0] += 1
+            if resolves[0] <= 2:
+                return 1, "", empty_project_error
+            return 0, "gpu_gr102g_hw_mmplex_riscv\n", ""
+        if argv[:2] == ["/fake/nvprojectname", "save"]:
+            return 0, "saved\n", ""
+        raise AssertionError("unexpected subprocess: %r" % argv)
+
+    monkeypatch.setattr(tool_launcher, "_launcher_binary", _fake_launcher_binary)
+    monkeypatch.setattr(tool_launcher, "_launcher_process", fake_process)
+    launcher, metadata, _notices = tool_launcher.resolve_named_tool_launcher(
+        ("auto", ""), "codex", str(tmp_path), {"PATH": "/fake"})
+
+    save_calls = [call for call in calls
+                  if call[0][:2] == ["/fake/nvprojectname", "save"]]
+    assert save_calls == [(
+        ["/fake/nvprojectname", "save", "./",
+         "gpu_gr102g_hw_mmplex_riscv"], str(tmp_path))]
+    assert resolves[0] == 3
+    assert launcher[0:3] == [
+        "/fake/nvprojectname", "run", "gpu_gr102g_hw_mmplex_riscv"]
+    assert metadata["transport"] == "qsub"
+    assert metadata["preset"] == "auto"
+
+
+def test_auto_falls_back_to_local_when_qsub_project_is_unavailable(
+        monkeypatch, tmp_path):
+    calls = []
+
+    def fake_process(argv, **_kwargs):
+        calls.append(list(argv))
+        if argv[:2] == ["/fake/nvprojectname", "resolve_validate"]:
+            return 1, "", "project is not registered"
+        if "-noheader" in argv:
+            return 0, "", ""
+        raise AssertionError("unexpected subprocess: %r" % argv)
+
+    monkeypatch.setattr(tool_launcher, "_launcher_binary", _fake_launcher_binary)
+    monkeypatch.setattr(tool_launcher, "_launcher_process", fake_process)
+
+    launcher, metadata, notices = tool_launcher.resolve_named_tool_launcher(
+        ("auto", ""), "codex", str(tmp_path),
+        {"USER": "tester", "PATH": "/fake"})
+
+    assert launcher == []
+    assert metadata == {
+        "preset": "auto", "transport": "local", "fallback": True}
+    assert notices[-1] == (
+        "auto: qsub could not be prepared; launching locally")
+    assert len([call for call in calls
+                if call[:2] == ["/fake/nvprojectname", "resolve_validate"]]) == 2
+
+
+@pytest.mark.parametrize("ssh_works", [True, False])
+def test_auto_checks_all_battach_jobs_before_independent_ssh(
+        monkeypatch, tmp_path, ssh_works):
+    calls = []
+    tool_dir, remote_tool = _install_fake_target_tool(tmp_path)
+
+    def binary(env, names):
+        if any(os.path.basename(name) == "ssh" for name in names):
+            return "/fake/ssh"
+        return _fake_launcher_binary(env, names)
+
+    def process(argv, **kwargs):
+        calls.append(argv)
+        if argv[:2] == ["/fake/nvprojectname", "resolve_validate"]:
+            return 0, "mobile\n", ""
+        if "-noheader" in argv:
+            return 0, _autorun_jobs_output(), ""
+        if argv[:3] == ["/fake/bjobs", "-l", "-UF"]:
+            candidate = next(c for c in tool_launcher._parse_autorun_jobs(
+                _autorun_jobs_output(), "codex") if c["job_id"] == argv[-1])
+            return 0, _long_job(candidate), ""
+        if argv[0] == "/fake/battach":
+            return 255, "", "LSF attachment unavailable"
+        if argv[0] == "/fake/ssh":
+            assert "BatchMode=yes" in argv
+            assert "/fake/battach" not in argv[-1]
+            if not ssh_works:
+                return 255, "", "Permission denied (publickey)"
+            result = subprocess.run(
+                ["/bin/sh", "-c", argv[-1]],
+                env={"PATH": str(tool_dir)}, cwd=kwargs["cwd"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                universal_newlines=True)
+            return result.returncode, result.stdout, result.stderr
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(tool_launcher, "_launcher_binary", binary)
+    monkeypatch.setattr(tool_launcher, "_launcher_process", process)
+    launcher, metadata, notices = tool_launcher.resolve_named_tool_launcher(
+        ("auto", ""), "codex", str(tmp_path),
+        {"USER": "tester", "PATH": str(tool_dir)})
+    transports = [os.path.basename(call[0]) for call in calls
+                  if call[0] in ("/fake/battach", "/fake/ssh")]
+    assert transports[:3] == ["battach"] * 3
+    assert transports[3:] == ["ssh"] * (1 if ssh_works else 3)
+    if ssh_works:
+        assert launcher[0] == "/fake/ssh"
+        assert metadata["transport"] == "ssh"
+        assert metadata["_target_tool_path"] == str(remote_tool)
+    else:
+        assert metadata["transport"] == "qsub"
+        assert any("publickey" in notice for notice in notices)
+
+
+def _executable(tmp_path, name, body):
+    path = tmp_path / name
+    path.write_text("#!/bin/sh\n" + body + "\n")
+    path.chmod(0o700)
+    return str(path)
+
+
+@pytest.mark.parametrize("winning_transport", ["battach", "ssh", "qsub", "local"])
+def test_auto_runtime_fallback_order_and_local_has_no_autorun(
+        tmp_path, winning_transport):
+    events = tmp_path / "events"
+    tool_events = tmp_path / "tool-events"
+    tool = _executable(tmp_path, "codex", (
+        'if [ "$1" = --version ]; then exit 0; fi\n'
+        'printf "%s\\n" "$*" >> %s\nexit 0' %
+        ("%s", shlex.quote(str(tool_events)))))
+    stages = []
+    for transport in ("battach", "ssh", "qsub"):
+        body = "printf '%s\\n' %s >> %s\n" % (
+            "%s", shlex.quote(transport), shlex.quote(str(events)))
+        if transport == winning_transport:
+            body += ('exec "$2"' if transport == "battach" else
+                     'for _arg do :; done\nexec /bin/sh -c "$_arg"')
+        else:
+            body += "exit 255"
+        binary = _executable(tmp_path, transport, body)
+        argv = ([binary, "-L", "{command}", "123"]
+                if transport == "battach" else [binary, "{command}"])
+        stages.append({"transport": transport, "argv": argv})
+    status = str(tmp_path / "exit")
+    metadata = {"transport": "battach", "_auto_plan": stages[1:]}
+    command, directory = tool_launcher.build_auto_launcher_command(
+        stages[0]["argv"], metadata, ["env", tool, "--yolo", "hello"],
+        ["env", tool, "hello"], str(tmp_path), "codex",
+        preferred_tool_path=tool, exit_status_path=status)
+    assert os.stat(command[0]).st_mode & 0o777 == 0o700
+    result = subprocess.run(command, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, universal_newlines=True)
+    assert result.returncode == 0, result.stderr
+    expected = ["battach", "ssh", "qsub"]
+    if winning_transport != "local":
+        expected = expected[:expected.index(winning_transport) + 1]
+    assert events.read_text().splitlines() == expected
+    assert tool_events.read_text().splitlines() == [
+        "hello" if winning_transport == "local" else "--yolo hello"]
+    assert (tmp_path / "exit").read_text().strip() == "0"
+    assert (tmp_path / "exit.launcher").read_text().strip() == winning_transport
+    assert not os.path.exists(directory)
+
+
+def test_auto_does_not_retry_after_agent_starts_and_exits_with_error(tmp_path):
+    tool = _executable(tmp_path, "codex", (
+        'if [ "$1" = --version ]; then exit 0; fi\nexit 7'))
+    attach = _executable(tmp_path, "battach", 'exec "$2"')
+    forbidden = _executable(tmp_path, "forbidden", "exit 99")
+    command, _directory = tool_launcher.build_auto_launcher_command(
+        [attach, "-L", "{command}", "123"],
+        {"transport": "battach", "_auto_plan": [
+            {"transport": "ssh", "argv": [forbidden, "{command}"]}]},
+        [tool, "--yolo"], [forbidden], str(tmp_path), "codex",
+        preferred_tool_path=tool)
+    assert subprocess.run(command).returncode == 7
+
+
+def test_reboot_auto_never_executes_local_after_remote_failure(tmp_path):
+    events = tmp_path / "local-started"
+    local = _executable(tmp_path, "codex", "touch %s" % shlex.quote(str(events)))
+    status = tmp_path / "exit"
+    command, directory = tool_launcher.build_auto_launcher_command(
+        ["/bin/false", "-L", "{command}", "123"],
+        {"transport": "battach", "_auto_plan": []}, [local, "--yolo"],
+        [local], str(tmp_path), "codex", preferred_tool_path=local,
+        exit_status_path=str(status), allow_local_fallback=False)
+    assert subprocess.run(command).returncode == 125
+    assert status.read_text().strip() == "125"
+    assert not events.exists()
+    assert not os.path.exists(directory)
+
+
+def test_auto_runtime_qsub_preparation_failure_runs_local_without_autorun(tmp_path):
+    project_events = tmp_path / "project-events"
+    project = _executable(tmp_path, "nvprojectname", (
+        "printf '%s\\n' \"$*\" >> %s\n"
+        "echo 'UnregisteredProjectNameException: project_name: '\"''\" >&2\n"
+        "exit 1" % ("%s", shlex.quote(str(project_events)))))
+    unreachable = _executable(tmp_path, "battach", "exit 255")
+    never_qsub = _executable(tmp_path, "qsub", "exit 99")
+    flags = tmp_path / "flags"
+    tool = _executable(tmp_path, "codex", (
+        'if [ "$1" = --version ]; then exit 0; fi\n'
+        "printf '%s\\n' \"$*\" > %s" % ("%s", shlex.quote(str(flags)))))
+    command, _directory = tool_launcher.build_auto_launcher_command(
+        [unreachable, "-L", "{command}", "123"],
+        {"transport": "battach", "_auto_plan": [
+            {"transport": "qsub", "nvproject": project,
+             "qsub": never_qsub, "project": ""}]},
+        [tool, "--yolo"], [tool, "hello"], str(tmp_path), "codex",
+        preferred_tool_path=tool)
+    assert subprocess.run(command).returncode == 0
+    assert flags.read_text().strip() == "hello"
+    assert project_events.read_text().splitlines() == [
+        "resolve_validate", "save ./ gpu_gr102g_hw_mmplex_riscv"]
+
+
+def test_auto_runtime_defers_project_save_when_battach_succeeds(tmp_path):
+    tool = _executable(tmp_path, "codex", "exit 0")
+    attach = _executable(tmp_path, "battach", 'exec "$2"')
+    log = tmp_path / "unexpected-project-operation"
+    project = _executable(tmp_path, "nvprojectname", ": > %s\nexit 99" %
+                          shlex.quote(str(log)))
+    command, _directory = tool_launcher.build_auto_launcher_command(
+        [attach, "-L", "{command}", "123"],
+        {"transport": "battach", "_auto_plan": [
+            {"transport": "qsub", "nvproject": project,
+             "qsub": project, "project": ""}]},
+        [tool, "--yolo"], [tool], str(tmp_path), "codex",
+        preferred_tool_path=tool)
+    assert subprocess.run(command).returncode == 0
+    assert not log.exists()
 
 
 def test_remote_launcher_rejects_api_profile():
@@ -283,12 +746,71 @@ def test_remote_launcher_rejects_api_profile():
     tool_launcher.validate_tool_launcher_api("auto", None)
 
 
-def test_launcher_target_environment_carries_only_tool_home():
+def test_local_launcher_supports_api_profiles():
+    tool_launcher.validate_tool_launcher_api("none", "ihub-direct")
+    assert tool_launcher.parse_tool_launcher("none") == []
+
+
+def test_launcher_target_environment_carries_home_and_paths_only():
     assert tool_launcher.launcher_target_environment(
-        {"PATH": "/shared/tool/bin:/usr/bin", "CODEX_HOME": "/shared/codex"},
+        {"PATH": "/shared/tool/bin:/usr/bin", "CODEX_HOME": "/shared/codex",
+         "LD_LIBRARY_PATH": "/submit-only/lib", "SECRET_TOKEN": "never-transfer"},
         {"environment": "CODEX_HOME"}) == {
             "CODEX_HOME": "/shared/codex",
+            "PATH": "/shared/tool/bin:/usr/bin:/home/nv/bin:/home/utils/bin:/usr/local/lsf/bin",
         }
+
+
+def test_target_path_preserves_job_and_appends_visible_submit_paths(tmp_path):
+    job = tmp_path / "job-bin"
+    shared = tmp_path / "shared bin"
+    job.mkdir()
+    shared.mkdir()
+    _executable(job, "same-tool", "echo job-tool")
+    _executable(shared, "same-tool", "echo submit-tool")
+    _executable(shared, "new-tool", "echo appended-tool")
+    environment = {"PATH": ":".join([str(shared), str(shared),
+                                      str(tmp_path / "absent"), "."])}
+    command = tool_launcher.build_launcher_command(
+        ["{command}"], ["/bin/sh", "-c",
+                        'same-tool; new-tool; printf "%s\\n" "$PATH" "$LD_LIBRARY_PATH" "$LSB_JOBID"'],
+        target_env=environment)[0]
+    result = subprocess.run(["/bin/sh", "-c", command],
+                            env={"PATH": str(job) + ":/usr/bin:/bin",
+                                 "LD_LIBRARY_PATH": "/job/lib", "LSB_JOBID": "123"},
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            universal_newlines=True)
+    assert result.returncode == 0, result.stderr
+    output = result.stdout.splitlines()
+    assert output[:2] == ["job-tool", "appended-tool"]
+    assert output[2] == str(job) + ":/usr/bin:/bin:" + str(shared)
+    assert output[3:] == ["/job/lib", "123"]
+
+
+def test_target_environment_drops_transient_and_relative_submit_paths():
+    environment = tool_launcher.launcher_target_environment({
+        "PATH": ":.:relative:/home/u/.codex/tmp/arg0/old:/shared/bin:/shared/bin"})
+    assert environment["PATH"] == "/shared/bin:/home/nv/bin:/home/utils/bin:/usr/local/lsf/bin"
+
+
+def test_probe_and_launch_use_the_same_supplemental_path(tmp_path):
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    executable = _executable(tools, "codex", "echo fake-version")
+    environment = tool_launcher.launcher_target_environment({"PATH": str(tools)})
+    probe = tool_launcher._target_tool_probe_script(
+        "codex", str(tmp_path), target_path=environment["PATH"])
+    result = subprocess.run(["/bin/sh", "-c", probe], env={"PATH": "/usr/bin:/bin"},
+                            stdout=subprocess.PIPE, universal_newlines=True)
+    assert result.returncode == 0
+    assert tool_launcher._target_tool_from_probe(result.stdout) == executable
+    resolved = tool_launcher.build_resolved_tool_command(["codex"], "codex", str(tmp_path))
+    launch = tool_launcher.build_launcher_command(["{command}"], resolved,
+                                                 target_env=environment)[0]
+    result = subprocess.run(["/bin/sh", "-c", launch], env={"PATH": "/usr/bin:/bin"},
+                            stdout=subprocess.PIPE, universal_newlines=True)
+    assert result.returncode == 0
+    assert result.stdout.strip() == "fake-version"
 
 
 def test_update_cannot_enable_auto_confirm_for_launcher_agent(monkeypatch):
@@ -326,9 +848,19 @@ def test_complete_quoted_command_replaces_one_launcher_argv():
     assert launch[3] == " ".join(shlex.quote(item) for item in tool)
 
 
+def test_complete_quoted_command_appends_to_custom_launcher_prefix():
+    prefix = ["qsub", "-q", "o_cpu_4G", "--qsla", "autorun_sla", "-Is"]
+    tool = ["/tools/codex/bin/codex", "--yolo", "two words"]
+
+    launch = tool_launcher.build_launcher_command(prefix, tool)
+
+    assert launch[:-1] == prefix
+    assert shlex.split(launch[-1]) == tool
+
+
 def test_launcher_bootstraps_target_dirs_then_execs_without_eval():
     launch = tool_launcher.build_launcher_command(
-        ["ssh", "host", "{command}"], ["codex", "two words"],
+        ["ssh", "host"], ["codex", "two words"],
         bootstrap_dirs=["/tmp/user/codex arg0", "/tmp/user/sqlite"],
         target_env={"CODEX_HOME": "/shared/home with space/.codex"},
         target_unset=["CODEX_SQLITE_HOME"])
@@ -342,7 +874,53 @@ def test_launcher_bootstraps_target_dirs_then_execs_without_eval():
     assert "eval" not in command
 
 
-def _capture_run(tmp_path, monkeypatch, tool, launcher, runtime_spec=None):
+def test_battach_runs_directly_and_private_script_cleans_and_records_exit(
+        tmp_path):
+    workdir = tmp_path / "project with spaces"
+    workdir.mkdir()
+    output = tmp_path / "target-output"
+    remote_tool = tmp_path / "remote codex"
+    remote_tool.write_text(
+        "#!/bin/sh\nprintf '%%s\\n' \"$PWD\" \"$1\" "
+        "\"$CAMC_TEST_VALUE\" > %s\nexit 7\n" % shlex.quote(str(output)))
+    remote_tool.chmod(0o755)
+    status = tmp_path / "tool-exit.status"
+
+    command, private_dir = tool_launcher.build_battach_launcher_command(
+        ["/fake/battach", "-L", "{command}", "123"],
+        [str(remote_tool), "two words"], str(workdir),
+        target_env={"CAMC_TEST_VALUE": "env value"},
+        exit_status_path=str(status))
+    script_path = command[command.index("-L") + 1]
+    assert command == ["/fake/battach", "-L", script_path, "123"]
+    script = Path(script_path)
+    assert script.exists()
+    assert script.stat().st_mode & 0o777 == 0o700
+    assert script.parent == Path(private_dir)
+    assert "/bin/rm -f -- \"$0\"" in script.read_text()
+    assert "cd %s" % shlex.quote(str(workdir)) in script.read_text()
+    assert "env 'CAMC_TEST_VALUE=env value' " in script.read_text()
+    assert str(remote_tool) in script.read_text()
+
+    result = subprocess.run([script_path], env=os.environ.copy())
+    assert result.returncode == 7
+    assert not script.exists()
+    assert not Path(private_dir).exists()
+    assert status.read_text().strip() == "7"
+    assert output.read_text().splitlines() == [
+        str(workdir), "two words", "env value"]
+
+
+def test_replace_launcher_target_binary_preserves_env_prefix():
+    command = ["env", "CLAUDE_FLAG=1", "claude", "--dangerously-skip-permissions"]
+    assert tool_launcher.replace_launcher_target_binary(
+        command, "/lsf/bin/claude") == [
+            "env", "CLAUDE_FLAG=1", "/lsf/bin/claude",
+            "--dangerously-skip-permissions"]
+
+
+def _capture_run(tmp_path, monkeypatch, tool, launcher, runtime_spec=None,
+                 via_cli=False, api=None):
     captured = {}
     config = _adapter(tool)
     if runtime_spec is not None:
@@ -372,7 +950,6 @@ def _capture_run(tmp_path, monkeypatch, tool, launcher, runtime_spec=None):
         tool_dir = None
         tool_env = []
         tool_args = []
-        tool_launcher = launcher
         system_prompt = None
         system_file = None
         api = None
@@ -380,6 +957,9 @@ def _capture_run(tmp_path, monkeypatch, tool, launcher, runtime_spec=None):
         api_token = None
 
     Args.tool = tool
+    Args.api = api
+    if launcher is not _OMITTED_LAUNCHER:
+        Args.tool_launcher = launcher
 
     monkeypatch.setattr(cli, "_load_config", lambda _tool: config)
     monkeypatch.setattr(cli, "_load_default_context", lambda: {})
@@ -387,19 +967,22 @@ def _capture_run(tmp_path, monkeypatch, tool, launcher, runtime_spec=None):
         runtime_env, "build_runtime_env",
         lambda **_kwargs: runtime_env.RuntimeEnv(
             env={"PATH": "/launcher/bin", "HOME": str(tmp_path),
+                 "LSB_JOBID": "",
                  "SECRET_TOKEN": "must-not-enter-manifest"},
             source="explicit", shell="/bin/sh", path="/launcher/bin"))
 
     def fake_preflight(selected, binary, workdir, **kwargs):
         captured["preflight"] = (selected, binary, kwargs)
+        resolved_tool = (binary if kwargs.get("tool_launcher") else
+                         "/launcher/bin/" + os.path.basename(binary))
         return [], {
             "tmux": "/bin/tmux",
             "launcher": "/launcher/bin/fake-launcher",
             "launcher_resolution": {
                 "bin": "/launcher/bin/fake-launcher", "source": "env"},
-            "tool": binary,
+            "tool": resolved_tool,
             "tool_resolution": {
-                "bin": binary, "source": "target-environment",
+                "bin": resolved_tool, "source": "target-environment",
                 "warnings": []},
         }
 
@@ -419,36 +1002,432 @@ def _capture_run(tmp_path, monkeypatch, tool, launcher, runtime_spec=None):
     monkeypatch.setattr(cli.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(cli, "AgentStore", lambda: Store())
     monkeypatch.setattr(cli, "_spawn_codex_session_binder", lambda *_a: None)
+    if cli.resolve_local_target_tool_path is tool_launcher.resolve_local_target_tool_path:
+        monkeypatch.setattr(cli, "resolve_local_target_tool_path",
+                            lambda *_args, **_kwargs: "")
 
-    cli.cmd_run(Args())
+    if via_cli:
+        argv = ["camc", "run", "-t", tool, "-n", Args.name,
+                "-p", Args.path, "--no-default-api", Args.prompt]
+        if launcher is not None and launcher is not _OMITTED_LAUNCHER:
+            argv += ["--tool-launcher", launcher]
+        if api:
+            argv += ["--api", api]
+        monkeypatch.setattr(sys, "argv", argv)
+        monkeypatch.setattr(cli, "_ensure_logs_on_scratch", lambda: None)
+        cli.main()
+    else:
+        cli.cmd_run(Args())
     return captured
+
+
+@pytest.mark.parametrize("tool", ["codex", "claude", "cursor", "pi"])
+@pytest.mark.parametrize("transport_name", ["ssh", "qsub"])
+def test_default_run_launches_via_auto_and_records_chosen_transport(
+        tmp_path, monkeypatch, tool, transport_name):
+    calls = []
+
+    def resolve(preset, selected, workdir, env, **kwargs):
+        calls.append((preset, selected))
+        return (["fake-launcher", "{command}"],
+                {"preset": "auto", "transport": transport_name}, [])
+
+    monkeypatch.setattr(cli, "resolve_named_tool_launcher", resolve)
+    monkeypatch.setattr(cli, "default_tool_launcher", lambda: "auto")
+    captured = _capture_run(tmp_path, monkeypatch, tool, None, via_cli=True)
+
+    assert calls == [(("auto", ""), tool)]
+    assert captured["preflight"][2]["tool_launcher"] == [
+        "fake-launcher", "{command}"]
+    assert captured["launch"][1][0] == "/launcher/bin/fake-launcher"
+    metadata = captured["record"]["runtime"]["launcher"]
+    assert metadata["preset"] == "auto"
+    assert metadata["transport"] == transport_name
+    assert captured["record"]["task"]["auto_confirm"] is False
+
+
+@pytest.mark.parametrize("launcher", [None, _OMITTED_LAUNCHER])
+def test_direct_run_omitting_launcher_uses_auto(tmp_path, monkeypatch, launcher):
+    calls = []
+
+    def resolve(preset, *_args, **_kwargs):
+        calls.append(preset)
+        return (["fake-launcher", "{command}"], {"preset": "auto"}, [])
+
+    monkeypatch.setattr(cli, "default_tool_launcher", lambda: "auto")
+    monkeypatch.setattr(cli, "resolve_named_tool_launcher", resolve)
+    _capture_run(tmp_path, monkeypatch, "codex", launcher)
+
+    assert calls == [("auto", "")]
+
+
+def test_explicit_local_run_never_discovers_remote_jobs(tmp_path, monkeypatch):
+    def unexpected_discovery(*_args, **_kwargs):
+        pytest.fail("local launch must not discover remote jobs")
+
+    monkeypatch.setattr(cli, "resolve_named_tool_launcher", unexpected_discovery)
+    captured = _capture_run(tmp_path, monkeypatch, "codex", "none", via_cli=True)
+
+    assert "tool_launcher" not in captured["preflight"][2]
+    assert captured["launch"][1][0] == "/launcher/bin/codex"
+    assert "--yolo" not in captured["launch"][1]
+    assert "launcher" not in captured["record"]["runtime"]
+    assert captured["record"]["task"]["auto_confirm"] is True
+
+
+@pytest.mark.parametrize("tool", ["codex", "claude"])
+def test_auto_local_fallback_never_applies_local_autorun_policy(
+        tmp_path, monkeypatch, tool):
+    monkeypatch.setattr(cli, "resolve_named_tool_launcher", lambda *_a, **_kw: (
+        [], {"preset": "auto", "transport": "local", "fallback": True}, []))
+
+    def forbidden_autorun(*_args):
+        raise AssertionError("local auto fallback must not add autorun flags")
+
+    monkeypatch.setattr(cli, "_auto_run_args", forbidden_autorun)
+    captured = _capture_run(tmp_path, monkeypatch, tool, "auto")
+    argv = captured["launch"][1]
+    assert "--yolo" not in argv
+    assert "--dangerously-skip-permissions" not in argv
+    assert "--permission-mode" not in argv
+    assert captured["record"]["task"]["auto_confirm"] is False
+
+
+def test_cmd_run_auto_chain_uses_private_runner_without_shell_status_wrapper(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "resolve_named_tool_launcher", lambda *_a, **_kw: (
+        ["qsub", "-Is", "{command}"],
+        {"preset": "auto", "transport": "qsub", "_auto_plan": []}, []))
+    captured = _capture_run(tmp_path, monkeypatch, "codex", "auto")
+    command = captured["launch"][1]
+    assert len(command) == 1
+    assert os.path.isfile(command[0])
+    assert captured["launch"][3]["exit_status_path"] is None
+    metadata = captured["record"]["runtime"]["launcher"]
+    assert metadata["fallback_order"] == [
+        "direct", "battach", "ssh", "qsub", "local"]
+    assert "_auto_plan" not in metadata
+    assert command[0] not in json.dumps(captured["record"])
+    assert captured["record"]["task"]["auto_confirm"] is False
+    assert captured["record"]["task"]["prompt_in_command"] is True
+    target = Path(command[0]).parent / "target-0"
+    assert "launcher prompt" in target.read_text()
+
+
+@pytest.mark.parametrize("tool", ["claude", "codex", "cursor"])
+def test_native_initial_prompt_is_submitted_once_in_argv(tmp_path, monkeypatch, tool):
+    captured = _capture_run(tmp_path, monkeypatch, tool, "none")
+    command = captured["launch"][1]
+    assert command.count("launcher prompt") == 1
+    assert captured["record"]["task"]["prompt_in_command"] is True
+
+
+def test_auto_queue_wait_does_not_consume_tool_boot_timeout(tmp_path, monkeypatch):
+    from camc_pkg import monitor
+    from camc_pkg.monitor_features import MonitorRuntime
+    status = tmp_path / "launch-status"
+    config = types.SimpleNamespace(startup_wait=20)
+    runtime = MonitorRuntime("test", config, now=0)
+    runtime.boot_deadline = 20
+    record = {"state": "initializing", "task": {"prompt": "hello"},
+              "runtime": {"launcher": {"launch_status_file": str(status)}}}
+    store = types.SimpleNamespace(get=lambda _id: record)
+    now = [200]
+    monkeypatch.setattr(monitor.time, "time", lambda: now[0])
+    monitor._refresh_boot_runtime(runtime, store, "test", None)
+    assert runtime.boot_deadline == 220
+    assert not runtime.feature_state.get("launcher_started")
+    status.write_text("qsub\n")
+    now[0] = 250
+    monitor._refresh_boot_runtime(runtime, store, "test", None)
+    assert runtime.feature_state["launcher_started"] is True
+    assert runtime.boot_deadline == 270
+    now[0] = 260
+    monitor._refresh_boot_runtime(runtime, store, "test", None)
+    assert runtime.boot_deadline == 270
+
+
+def test_monitor_does_not_reinject_initial_prompt_passed_in_tool_argv():
+    from camc_pkg import monitor
+    from camc_pkg.monitor_features import MonitorRuntime
+    runtime = MonitorRuntime("test", types.SimpleNamespace(startup_wait=20))
+    record = {"state": "initializing", "task": {
+        "prompt": "hello", "prompt_in_command": True}}
+    store = types.SimpleNamespace(get=lambda _id: record)
+    monitor._refresh_boot_runtime(runtime, store, "test", None)
+    assert runtime.boot_prompt == ""
+
+
+def test_default_remote_launcher_with_api_fails_before_remote_discovery(
+        tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "default_tool_launcher", lambda: "auto")
+    monkeypatch.setattr(
+        "camc_pkg.api_store.resolve_run_api_name",
+        lambda *_args, **_kwargs: ("ihub-direct", "explicit"))
+
+    def unexpected_discovery(*_args, **_kwargs):
+        pytest.fail("API incompatibility must be checked before discovery")
+
+    monkeypatch.setattr(cli, "resolve_named_tool_launcher", unexpected_discovery)
+    with pytest.raises(SystemExit) as exc:
+        _capture_run(tmp_path, monkeypatch, "codex", None,
+                     via_cli=True, api="ihub-direct")
+
+    assert exc.value.code == 2
+    assert "--tool-launcher none" in capsys.readouterr().err
+
+
+def test_default_run_outside_nv_uses_local_launcher(tmp_path, monkeypatch):
+    def unexpected_discovery(*_args, **_kwargs):
+        pytest.fail("non-NV default must not discover remote jobs")
+
+    monkeypatch.setattr(cli, "default_tool_launcher", lambda: "none")
+    monkeypatch.setattr(cli, "resolve_named_tool_launcher", unexpected_discovery)
+    captured = _capture_run(tmp_path, monkeypatch, "codex", None, via_cli=True)
+
+    assert "tool_launcher" not in captured["preflight"][2]
+    assert captured["launch"][1][0] == "/launcher/bin/codex"
+    assert "launcher" not in captured["record"]["runtime"]
+    assert captured["record"]["task"]["auto_confirm"] is True
+
+
+def test_explicit_auto_overrides_non_nv_default(tmp_path, monkeypatch):
+    calls = []
+
+    def resolve(preset, selected, *_args, **_kwargs):
+        calls.append((preset, selected))
+        return (["fake-launcher", "{command}"], {"preset": "auto"}, [])
+
+    monkeypatch.setattr(cli, "default_tool_launcher", lambda: "none")
+    monkeypatch.setattr(cli, "resolve_named_tool_launcher", resolve)
+    captured = _capture_run(tmp_path, monkeypatch, "codex", "auto", via_cli=True)
+
+    assert calls == [(('auto', ''), "codex")]
+    assert captured["launch"][1][0] == "/launcher/bin/fake-launcher"
+
+
+def test_current_autorun_allocation_runs_local_with_adapter_autorun_args(
+        tmp_path, monkeypatch):
+    allocation = {
+        "job_id": "123", "service_class": "autorun_sla",
+        "host": "host-a", "project": "mobile",
+        "queue": "o_priority",
+        "virtual_queue": "interactive_asic_16G_48H",
+    }
+    monkeypatch.setattr(
+        cli, "detect_current_autorun_allocation",
+        lambda _env: dict(allocation))
+    monkeypatch.setattr(cli, "default_tool_launcher", lambda: "auto")
+
+    def unexpected_discovery(*_args, **_kwargs):
+        pytest.fail("current autorun allocation must not invoke a launcher")
+
+    monkeypatch.setattr(cli, "resolve_named_tool_launcher", unexpected_discovery)
+    monkeypatch.setattr(
+        cli, "_auto_run_args",
+        lambda *_args, **_kwargs: pytest.fail(
+            "current allocation should use adapter launcher_autorun_args"))
+
+    captured = _capture_run(
+        tmp_path, monkeypatch, "codex", None, via_cli=True)
+    command = captured["launch"][1]
+
+    assert command[0] == "/launcher/bin/codex"
+    assert command.count("--yolo") == 1
+    assert "tool_launcher" not in captured["preflight"][2]
+    assert captured["record"]["task"]["auto_confirm"] is False
+    assert "launcher" not in captured["record"]["runtime"]
+    assert captured["record"]["runtime"]["launch_mode"] == (
+        "current_autorun_allocation")
+    assert captured["record"]["runtime"]["allocation"] == allocation
+
+
+@pytest.mark.parametrize("tool,expected_arg", [
+    ("claude", "--dangerously-skip-permissions"),
+    ("pi", "--approve"),
+])
+def test_current_autorun_allocation_uses_tool_specific_autorun_args(
+        tmp_path, monkeypatch, tool, expected_arg):
+    monkeypatch.setattr(
+        cli, "detect_current_autorun_allocation",
+        lambda _env: {"job_id": "123", "service_class": "autorun_sla",
+                      "host": "host-a"})
+    monkeypatch.setattr(cli, "default_tool_launcher", lambda: "auto")
+
+    def unexpected_discovery(*_args, **_kwargs):
+        pytest.fail("current autorun allocation must not invoke a launcher")
+
+    monkeypatch.setattr(cli, "resolve_named_tool_launcher", unexpected_discovery)
+    captured = _capture_run(tmp_path, monkeypatch, tool, None, via_cli=True)
+    command = captured["launch"][1]
+
+    if tool == "claude":
+        assert command[0] == "env"
+    else:
+        assert command[0] == "/launcher/bin/" + tool
+    assert expected_arg in command
+    if tool == "claude":
+        assert "--permission-mode" not in command
+    assert captured["record"]["task"]["auto_confirm"] is False
+
+
+def test_unverified_autorun_job_uses_the_auto_launcher(
+        tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        cli, "detect_current_autorun_allocation", lambda _env: None)
+    monkeypatch.setattr(cli, "default_tool_launcher", lambda: "auto")
+
+    def resolve(preset, selected, *_args, **_kwargs):
+        calls.append((preset, selected))
+        return (["fake-launcher", "{command}"],
+                {"preset": "auto", "transport": "qsub"}, [])
+
+    monkeypatch.setattr(cli, "resolve_named_tool_launcher", resolve)
+    captured = _capture_run(
+        tmp_path, monkeypatch, "codex", None, via_cli=True)
+
+    assert calls == [(("auto", ""), "codex")]
+    assert captured["launch"][1][0] == "/launcher/bin/fake-launcher"
+    assert captured["record"]["runtime"]["launcher"]["transport"] == "qsub"
+    assert "allocation" not in captured["record"]["runtime"]
+
+
+def test_explicit_non_auto_launcher_keeps_precedence(
+        tmp_path, monkeypatch):
+    def unexpected_allocation_check(*_args, **_kwargs):
+        pytest.fail("explicit launcher override must be preserved")
+
+    monkeypatch.setattr(
+        cli, "detect_current_autorun_allocation",
+        unexpected_allocation_check)
+    custom_launcher = "/launcher/bin/fake-launcher"
+    captured = _capture_run(
+        tmp_path, monkeypatch, "codex", custom_launcher, via_cli=True)
+
+    assert captured["launch"][1][0] == "/launcher/bin/fake-launcher"
+
+
+def test_current_autorun_allocation_allows_local_api_profile(
+        tmp_path, monkeypatch):
+    allocation = {
+        "job_id": "123", "service_class": "autorun_sla",
+        "host": "host-a", "project": "mobile", "queue": "o_priority",
+        "virtual_queue": "interactive_asic_16G_48H",
+    }
+    monkeypatch.setattr(
+        cli, "detect_current_autorun_allocation",
+        lambda _env: dict(allocation))
+    monkeypatch.setattr(cli, "default_tool_launcher", lambda: "auto")
+    monkeypatch.setattr(
+        "camc_pkg.api_store.resolve_run_api_name",
+        lambda *_args, **_kwargs: ("ihub-direct", "explicit"))
+    monkeypatch.setattr(
+        "camc_pkg.api_resolver.resolve_run_plan",
+        lambda *_args, **_kwargs: {
+            "name": "ihub-direct", "provider": "test", "mode": "direct",
+            "model": "test-model", "env": {}, "proxy_required": False,
+        })
+    monkeypatch.setattr(
+        "camc_pkg.api_token.resolve_token",
+        lambda *_args, **_kwargs: ("token", "test"))
+
+    def unexpected_discovery(*_args, **_kwargs):
+        pytest.fail("local API run must not invoke a remote launcher")
+
+    monkeypatch.setattr(cli, "resolve_named_tool_launcher", unexpected_discovery)
+    captured = _capture_run(
+        tmp_path, monkeypatch, "codex", None, via_cli=True,
+        api="ihub-direct")
+
+    assert captured["launch"][1][0] == "/launcher/bin/codex"
+    assert captured["record"]["runtime"]["launch_mode"] == (
+        "current_autorun_allocation")
+    assert captured["record"]["api"]["name"] == "ihub-direct"
 
 
 def test_codex_launcher_adds_yolo_and_keeps_remote_tool_name(tmp_path, monkeypatch):
     secret = "SECRET_TOKEN=manifest-must-not-store-this"
     captured = _capture_run(
         tmp_path, monkeypatch, "codex",
-        "qsub --credential %s -q o_cpu_4G -Is {command}" % secret)
+        "qsub --credential %s -q o_cpu_4G -Is" % secret)
 
     launch = captured["launch"][1]
     assert launch[:-1] == [
         "/launcher/bin/fake-launcher", "--credential", secret,
         "-q", "o_cpu_4G", "-Is"]
-    target = _without_env_prefix(shlex.split(launch[-1]))
-    assert target[0] == "codex"
-    assert target[0] != "/launcher/bin/codex"
-    assert "--yolo" in target
+    target_script = _resolved_target_script(launch[-1])
+    assert "command -v codex" in target_script
+    assert 'exec ' in target_script and '"$_camc_tool"' in target_script
+    assert "--yolo" in target_script
+    assert "/launcher/bin/codex" not in target_script
     assert captured["launch"][3]["exit_status_path"].endswith("abc12345.tool-exit")
     manifest = captured["record"]["runtime"]
     assert manifest["launcher"] == {
         "executable": "/launcher/bin/fake-launcher",
         "target_tool": "codex",
-        "argv_count": 7,
+        "argv_count": 6,
         "command_index": 6,
     }
     assert secret not in repr(manifest)
     assert "SECRET_TOKEN" not in repr(manifest)
     assert captured["record"]["task"]["auto_confirm"] is False
+
+
+@pytest.mark.parametrize("tool,target_binary", [
+    ("codex", "codex"),
+    ("claude", "claude"),
+    ("cursor", "cursor-agent"),
+    ("pi", "pi"),
+])
+def test_named_qsub_resolves_every_tool_before_exec(
+        tmp_path, monkeypatch, tool, target_binary):
+    preferred = str(tmp_path / "absolute tool dir" / target_binary)
+    monkeypatch.setattr(
+        cli, "resolve_local_target_tool_path",
+        lambda *_args, **_kwargs: preferred)
+    monkeypatch.setattr(
+        cli, "detect_current_autorun_allocation", lambda _env: None)
+    monkeypatch.setattr(
+        cli, "resolve_named_tool_launcher",
+        lambda *_args, **_kwargs: (
+            ["fake-launcher", "-Is", "{command}"],
+            {"preset": "auto", "transport": "qsub"}, []))
+
+    captured = _capture_run(tmp_path, monkeypatch, tool, "auto")
+    target_script = _resolved_target_script(captured["launch"][1][-1])
+
+    assert "command -v %s" % target_binary in target_script
+    assert shlex.quote(preferred) in target_script
+    assert "--version" in target_script
+    assert 'exec ' in target_script and '"$_camc_tool"' in target_script
+
+
+def test_qsub_keeps_env_absolute_tool_and_options_in_order(
+        tmp_path, monkeypatch):
+    preferred = str(tmp_path / "absolute tool dir" / "claude")
+    monkeypatch.setattr(
+        cli, "resolve_local_target_tool_path",
+        lambda *_args, **_kwargs: preferred)
+    monkeypatch.setattr(
+        cli, "detect_current_autorun_allocation", lambda _env: None)
+    monkeypatch.setattr(
+        cli, "resolve_named_tool_launcher",
+        lambda *_args, **_kwargs: (
+            ["fake-launcher", "-Is", "{command}"],
+            {"preset": "auto", "transport": "qsub"}, []))
+
+    captured = _capture_run(tmp_path, monkeypatch, "claude", "auto")
+    target_script = _resolved_target_script(captured["launch"][1][-1])
+    exec_line = next(line for line in target_script.splitlines()
+                     if line.startswith("exec "))
+
+    assert shlex.quote(preferred) in target_script
+    assert exec_line.startswith(
+        "exec /usr/bin/env CLAUDE_CODE_DISABLE_MOUSE=1 "
+        "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 \"$_camc_tool\" ")
+    assert "--allowed-tools" not in exec_line
+    assert "--dangerously-skip-permissions" in exec_line
 
 
 def test_named_launcher_metadata_is_safe_and_observable(tmp_path, monkeypatch):
@@ -463,9 +1442,10 @@ def test_named_launcher_metadata_is_safe_and_observable(tmp_path, monkeypatch):
     captured = _capture_run(tmp_path, monkeypatch, "codex", "auto")
 
     assert captured["launch"][1][0] == "/launcher/bin/fake-launcher"
-    target = _without_env_prefix(shlex.split(captured["launch"][1][-1]))
-    assert target[0] == "codex"
-    assert "--yolo" in target
+    target_script = _resolved_target_script(captured["launch"][1][-1])
+    assert "command -v codex" in target_script
+    assert 'exec ' in target_script and '"$_camc_tool"' in target_script
+    assert "--yolo" in target_script
     assert captured["record"]["runtime"]["launcher"] == {
         "executable": "/launcher/bin/fake-launcher",
         "target_tool": "codex",
@@ -480,13 +1460,46 @@ def test_named_launcher_metadata_is_safe_and_observable(tmp_path, monkeypatch):
     assert captured["record"]["task"]["auto_confirm"] is False
 
 
+def test_cmd_run_uses_resolved_battach_tool_and_drops_private_metadata(
+        tmp_path, monkeypatch):
+    remote_tool = "/home/prgn_share/tools/codex/bin/codex"
+    monkeypatch.setattr(
+        cli, "resolve_named_tool_launcher",
+        lambda *_args, **_kwargs: (
+            ["/fake/battach", "-L", "{command}", "1796124140"],
+            {"preset": "auto", "transport": "battach",
+             "job_id": "1796124140", "host": "host-a",
+             "_target_tool_path": remote_tool}, []))
+
+    captured = _capture_run(
+        tmp_path, monkeypatch, "codex", "auto", via_cli=True)
+    command = captured["launch"][1]
+    assert command[0] == "/launcher/bin/fake-launcher"
+    script_path = command[command.index("-L") + 1]
+    assert command == ["/launcher/bin/fake-launcher", "-L", script_path,
+                       "1796124140"]
+    script_text = Path(script_path).read_text()
+    assert remote_tool in script_text
+    assert "--yolo" in script_text
+    assert captured["launch"][3]["exit_status_path"] is None
+    assert captured["record"]["runtime"]["custom_launch"][
+        "exit_status_path"].endswith("abc12345.tool-exit")
+    launcher_record = captured["record"]["runtime"]["launcher"]
+    assert launcher_record["transport"] == "battach"
+    assert launcher_record["job_id"] == "1796124140"
+    assert "_target_tool_path" not in launcher_record
+    assert remote_tool not in repr(launcher_record)
+    shutil.rmtree(os.path.dirname(script_path), ignore_errors=True)
+
+
 def test_pi_launcher_approves_project_resources(tmp_path, monkeypatch):
     captured = _capture_run(
         tmp_path, monkeypatch, "pi",
-        "qsub -q o_cpu_4G -Is {command}")
+        "qsub -q o_cpu_4G -Is")
 
-    target = _without_env_prefix(shlex.split(captured["launch"][1][-1]))
-    assert target == ["pi", "--approve"]
+    target_script = _resolved_target_script(captured["launch"][1][-1])
+    assert "command -v pi" in target_script
+    assert 'exec "$_camc_tool" --approve' in target_script
     assert captured["record"]["task"]["tool"] == "pi"
     assert captured["record"]["state"] == "initializing"
 
@@ -494,13 +1507,14 @@ def test_pi_launcher_approves_project_resources(tmp_path, monkeypatch):
 def test_claude_launcher_uses_skip_permissions_without_auto_mode(tmp_path, monkeypatch):
     captured = _capture_run(
         tmp_path, monkeypatch, "claude",
-        "ssh -tt root@192.168.1.100 {command}")
+        "ssh -tt root@192.168.1.100")
 
-    target = shlex.split(captured["launch"][1][-1])
-    assert "--dangerously-skip-permissions" in target
-    assert "--permission-mode" not in target
-    assert "auto" not in target
-    assert target[target.index("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1") + 1] == "claude"
+    target_script = _resolved_target_script(captured["launch"][1][-1])
+    assert "command -v claude" in target_script
+    assert "--allowed-tools" not in target_script
+    assert "--dangerously-skip-permissions" in target_script
+    assert "--permission-mode" not in target_script
+    assert "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1" in target_script
 
 
 def test_cmd_run_launcher_bootstraps_adapter_targets_on_target_host(
@@ -518,7 +1532,7 @@ def test_cmd_run_launcher_bootstraps_adapter_targets_on_target_host(
                     "shared_exclude": ["tmp", "config.toml"]},
     }
     captured = _capture_run(
-        tmp_path, monkeypatch, "codex", "ssh target {command}",
+        tmp_path, monkeypatch, "codex", "ssh target",
         runtime_spec=spec)
 
     command = captured["launch"][1][-1]
@@ -526,23 +1540,32 @@ def test_cmd_run_launcher_bootstraps_adapter_targets_on_target_host(
     assert "chmod 700 -- %s" % shlex.quote(str(local)) in command
     overlay = shared / "abc12345"
     assert " CODEX_HOME=%s " % overlay in command
-    assert " PATH=" not in command
+    assert "PATH=$_camc_path; export PATH" in command
     assert local.is_dir()  # submit host is bootstrapped too
     assert (overlay / "tmp" / "arg0").is_dir()
     assert not (shared / "tmp").exists()
 
 
-def test_normal_launch_command_and_conditional_autorun_remain_unchanged(tmp_path):
+def test_normal_launch_and_conditional_autorun_use_minimal_args(tmp_path):
     claude = _adapter("claude")
     normal = cli._build_command(claude, "prompt", str(tmp_path))
-    assert "--permission-mode" in normal
-    assert "auto" in normal
+    assert "--allowed-tools" not in normal
+    assert "--permission-mode" not in normal
     assert "--dangerously-skip-permissions" not in normal
 
     codex = _adapter("codex")
+    assert codex.command == ["codex"]
+    assert codex.trust_workspace is True
+    codex_normal = cli._build_command(codex, "prompt", str(tmp_path))
+    assert codex_normal[0:2] == ["codex", "-c"]
+    assert "projects={" in codex_normal[2]
+    assert 'trust_level="trusted"' in codex_normal[2]
+    assert "features.goals=true" not in codex_normal
+    assert "--yolo" not in codex_normal
     assert codex.auto_run["autorun_config"] == "/etc/codex/requirements.toml"
-    assert codex.auto_run["autorun_args"] == [
-        "--sandbox", "danger-full-access", "--ask-for-approval", "never"]
+    assert codex.auto_run["autorun_args"] == ["--yolo"]
+    assert "--sandbox" not in codex.auto_run["autorun_args"]
+    assert "--ask-for-approval" not in codex.auto_run["autorun_args"]
     assert "--yolo" not in cli._build_command(codex, "prompt", str(tmp_path))
 
 
@@ -559,7 +1582,7 @@ def test_launcher_preflight_checks_launcher_not_target_tool(tmp_path, monkeypatc
     issues, resolved = cli._preflight(
         "codex", "codex", str(tmp_path / "work"), runtime=runtime,
         adapter_readiness={"binary": "/definitely/local/codex"},
-        tool_launcher=["fake-launcher", "{command}"])
+        tool_launcher=["fake-launcher"])
 
     assert not [message for level, message in issues if level == "error"]
     assert resolved["launcher"] == str(launcher)
@@ -601,8 +1624,8 @@ def test_local_fake_launcher_failure_keeps_shell_and_receives_one_command(
     try:
         ok = transport.create_tmux_session(
             session,
-            tool_launcher.build_launcher_command([str(launcher), "{command}"],
-                                  ["remote-tool", "two words"]),
+            tool_launcher.build_launcher_command(
+                [str(launcher)], ["remote-tool", "two words"]),
             str(tmp_path), inherit_env=True, env=env,
             tmux_bin=shutil.which("tmux"), tmux_config=tmux_config,
             exit_status_path=str(status))

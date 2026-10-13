@@ -3,7 +3,7 @@
 import json
 import re
 
-from camc_pkg import cli, storage
+from camc_pkg import cli, storage, transport
 
 
 SENDER = {
@@ -154,3 +154,80 @@ def test_msg_submit_fallback_never_duplicates_the_turn(
     assert len([event for event in events if event[0] == "key"]) == 2
     assert len([row for row in _ledger(isolated_cam_home.messages)
                 if row.get("record") == "turn"]) == 1
+
+
+def test_msg_reply_recovers_a_dropped_enter_without_retyping_or_duplicate_turns(
+        invoke_cli, isolated_cam_home, monkeypatch, capsys):
+    code, msg_id, _observed, _output = _send(
+        invoke_cli, monkeypatch, isolated_cam_home, capsys)
+    assert code == 0
+    monkeypatch.setattr(cli, "_msg_sender_identity", lambda: dict(RECEIVER))
+    monkeypatch.setattr(cli, "tmux_submit_input", transport.tmux_submit_input)
+
+    typed = []
+    submitted = []
+    keys = []
+    sleeps = []
+
+    def send_key(session, key):
+        keys.append((session, key))
+        # Model the reported failure: the TUI drops the first Enter while
+        # it is still handling the paste; the next Enter submits it.
+        if len(keys) == 2:
+            submitted.append(typed[-1])
+        return True
+
+    def send_input(session, text, send_enter=True):
+        typed.append((session, text))
+        if send_enter:
+            send_key(session, "Enter")
+        return True
+
+    monkeypatch.setattr(cli, "tmux_send_input", send_input)
+    monkeypatch.setattr(cli, "tmux_send_key", send_key)
+    monkeypatch.setattr(cli.time, "sleep", sleeps.append)
+    monkeypatch.setattr(cli, "capture_tmux", lambda session: "Working on reply")
+    monkeypatch.setattr(cli, "_msg_submit_delay", lambda target: 0.8)
+
+    assert invoke_cli("msg", "reply", msg_id, "-t", "reply with fallback") == 0
+    output = capsys.readouterr()
+    assert len(typed) == 1
+    assert submitted == typed
+    assert submitted[0][0] == "cam-11111111"
+    assert "[camc msg#%s]" % msg_id in submitted[0][1]
+    assert submitted[0][1].endswith("reply with fallback")
+    assert sum(sleeps) >= 0.8
+    assert "SEQ=2" in output.out
+    turns = [row for row in _ledger(isolated_cam_home.messages)
+             if row.get("record") == "turn"]
+    assert [(row["seq"], row["text"]) for row in turns] == [
+        (1, "hello"), (2, "reply with fallback"),
+    ]
+    pending = storage.AgentStore(str(isolated_cam_home.agents)).get(
+        "11111111")["screen_fallback"]
+    assert pending["kind"] == "message"
+    assert pending["msg_id"] == msg_id
+    assert pending["session"] == "cam-11111111"
+    assert pending["attempts"] == 0
+
+
+def test_msg_reply_keeps_mailbox_delivery_when_terminal_submission_fails(
+        invoke_cli, isolated_cam_home, monkeypatch, capsys):
+    code, msg_id, _observed, _output = _send(
+        invoke_cli, monkeypatch, isolated_cam_home, capsys)
+    assert code == 0
+    monkeypatch.setattr(cli, "_msg_sender_identity", lambda: dict(RECEIVER))
+    monkeypatch.setattr(cli, "tmux_submit_input", lambda *args, **kwargs: False)
+    monkeypatch.setattr(cli, "tmux_send_input", lambda *args, **kwargs: False)
+
+    assert invoke_cli("msg", "reply", msg_id, "-t", "durable reply") == 0
+    output = capsys.readouterr()
+    assert "terminal notification failed" in output.err
+    assert "REPLIED_TO=%s" % msg_id in output.out
+    rows = _ledger(isolated_cam_home.messages)
+    assert [(r["seq"], r["text"]) for r in rows if r.get("record") == "turn"] == [
+        (1, "hello"), (2, "durable reply"),
+    ]
+    assert len([r for r in rows if r.get("record") == "delivery"]) == 2
+    assert storage.AgentStore(str(isolated_cam_home.agents)).get(
+        "11111111").get("screen_fallback") is None

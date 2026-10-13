@@ -1,7 +1,9 @@
 # ACME Inference Hub with CAMC
 
-CAMC's API mode talks directly to the ACME Inference Hub. It does not start
-an HTTP server, proxy, or protocol-conversion process.
+CAMC's API mode starts one loopback Camc Proxy per agent and forwards that
+agent's native protocol to ACME Inference Hub. The proxy adds bounded retry,
+request isolation, compatibility mappings, and usage observability without a
+shared service or cross-protocol fallback.
 
 ## Credentials
 
@@ -24,8 +26,8 @@ The selected adapter controls the endpoint shape:
 
 | Tool | Native endpoint | Base URL passed to tool |
 |------|-----------------|-------------------------|
-| Claude | Messages | `https://inference-api.example.com` |
-| Codex | Responses | `https://inference-api.example.com/v1` |
+| Claude | Messages | Per-agent loopback proxy |
+| Codex | Responses | Per-agent loopback proxy with `/v1` suffix |
 
 Each API profile records `available_endpoints`. Claude profiles need
 `messages`; Codex profiles need `responses`. CAMC rejects a profile before
@@ -42,8 +44,11 @@ camc run -t claude --api deepseek-v4-flash "prompt"
 camc run -t codex --api deepseek-v4-flash "prompt"
 ```
 
-Codex API runs use the isolated `~/.codex-api` home and link normal Codex
-skills from `~/.codex/skills` when present. Claude API runs use the managed
+Codex login and API runs use the same thin `~/.codex/<agent-id>` home. Shared
+auth, skills, MCP, sessions, history, hooks, and permission profiles link to
+the untouched `~/.codex` donor; `config.toml` is snapshotted per agent and
+`tmp/arg0` plus configured SQLite storage are host-local. Only API runs add
+provider/catalog settings to their snapshot. Claude API runs use the managed
 `~/.cam/claude-api` config directory.
 
 `camc api check` also refreshes context-window and output-token metadata from

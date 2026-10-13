@@ -322,16 +322,21 @@ def normalize_response_text_format(payload):
 
 
 def normalize_reasoning_effort(payload, mapping):
-    """Map Codex effort names to the upstream model's accepted values."""
-    reasoning = payload.get("reasoning") if isinstance(payload, dict) else None
-    if not isinstance(reasoning, dict) or not isinstance(mapping, dict):
+    """Map client effort names for Responses and Claude Messages payloads."""
+    if not isinstance(payload, dict) or not isinstance(mapping, dict):
         return False
-    effort = str(reasoning.get("effort") or "").strip().lower()
-    mapped = str(mapping.get(effort) or "").strip().lower()
-    if not mapped or mapped == effort:
-        return False
-    reasoning["effort"] = mapped
-    return True
+    normalized = False
+    for field in ("reasoning", "output_config"):
+        config = payload.get(field)
+        if not isinstance(config, dict):
+            continue
+        effort = str(config.get("effort") or "").strip().lower()
+        mapped = str(mapping.get(effort) or "").strip().lower()
+        if not mapped or mapped == effort:
+            continue
+        config["effort"] = mapped
+        normalized = True
+    return normalized
 
 
 def extract_response_output(body):
@@ -419,12 +424,21 @@ def usage_log_shape(usage, complete=True):
     if not isinstance(usage, dict):
         usage = {}
     fields = {"complete": int(bool(complete))}
-    for key in ("input_tokens", "output_tokens", "total_tokens",
-                "cache_read_input_tokens", "cache_creation_input_tokens"):
-        value = usage.get(key)
+    aliases = (
+        ("input_tokens", ("input_tokens", "prompt_tokens")),
+        ("output_tokens", ("output_tokens", "completion_tokens")),
+        ("total_tokens", ("total_tokens",)),
+        ("cache_read_input_tokens", ("cache_read_input_tokens",)),
+        ("cache_creation_input_tokens", ("cache_creation_input_tokens",)),
+    )
+    for key, candidates in aliases:
+        value = next((usage.get(name) for name in candidates
+                      if isinstance(usage.get(name), (int, float)) and
+                      not isinstance(usage.get(name), bool)), None)
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             fields[key] = value
-    details = usage.get("input_tokens_details")
+    details = (usage.get("input_tokens_details") or
+               usage.get("prompt_tokens_details"))
     if isinstance(details, dict):
         value = details.get("cached_tokens")
         if isinstance(value, (int, float)) and not isinstance(value, bool):

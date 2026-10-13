@@ -1,0 +1,64 @@
+local claude START 0 2026-10-12 06:56:31,866 [camc] INFO Merged external config: /home/hren/.cam/configs/claude.toml
+2026-10-12 06:56:34,529 [camc] INFO camc tmux config refreshed: /home/hren/.cam/configs/tmux.conf (v3)
+ℹ auto: job 1729124669 metadata/EXEC_HOST changed; skipping
+ℹ auto: using job 1796124140 on pdx3-sim-g46-042 (interactive_asic_256G_33D)
+⚠ tmux resolved from effective PATH (/usr/bin/tmux)
+Starting claude agent 514b8c22...
+  ID: 514b8c22  Tool: claude  Session: cam-514b8c22
+  Name: release162-local-claude
+  Path: /home/hren/.cam/release162-smoke-local-1791813391/claude
+  Prompt: Reply exactly CAMC_FALLBACK_LOCAL_CLAUDE_OK. Do not use tool...
+
+  Attach: camc attach 514b8c22
+  Logs:   camc logs 514b8c22 -f
+
+local codex START 0 2026-10-12 06:56:35,420 [camc] INFO Merged external config: /home/hren/.cam/configs/codex.toml
+2026-10-12 06:56:36,773 [camc] INFO camc tmux config refreshed: /home/hren/.cam/configs/tmux.conf (v3)
+ℹ auto: job 1729124669 metadata/EXEC_HOST changed; skipping
+ℹ auto: using job 1796124140 on pdx3-sim-g46-042 (interactive_asic_256G_33D)
+⚠ tmux resolved from effective PATH (/usr/bin/tmux)
+Starting codex agent 290b533f...
+ℹ Runtime home: /home/hren/.codex/290b533f
+  ID: 290b533f  Tool: codex  Session: cam-290b533f
+  Name: release162-local-codex
+  Path: /home/hren/.cam/release162-smoke-local-1791813391/codex
+  Prompt: Reply exactly CAMC_FALLBACK_LOCAL_CODEX_OK. Do not use tools...
+
+  Attach: camc attach 290b533f
+  Logs:   camc logs 290b533f -f
+
+local claude REPLY_OK
+local codex REPLY_OK
+{
+  "host": "local",
+  "candidate": "/home/prgn_share/tools/camc/v1.2.162-9f90391-dirty/camc",
+  "work": "/home/hren/.cam/release162-smoke-local-1791813391",
+  "results": {
+    "claude": {
+      "start_code": 0,
+      "scheduler_output_in_start_stdout": false,
+      "agent": "514b8c22",
+      "submitted_jobs": [],
+      "passed": true,
+      "actual_transport": "battach"
+    },
+    "codex": {
+      "start_code": 0,
+      "scheduler_output_in_start_stdout": false,
+      "agent": "290b533f",
+      "submitted_jobs": [],
+      "passed": true,
+      "actual_transport": "battach"
+    }
+  },
+  "cleanup": {
+    "claude": {
+      "kill_code": 0,
+      "output": "Killed agent 514b8c22"
+    },
+    "codex": {
+      "kill_code": 0,
+      "output": "Killed agent 290b533f"
+    }
+  }
+}

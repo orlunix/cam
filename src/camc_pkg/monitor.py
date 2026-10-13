@@ -222,7 +222,25 @@ def _refresh_boot_runtime(runtime, store, agent_id, boot_config):
     rec = store.get(agent_id) or {}
     runtime.in_initializing = rec.get("state") == "initializing"
     if runtime.in_initializing:
-        runtime.boot_prompt = _task_prompt(rec)
+        task = rec.get("task") or {}
+        runtime.boot_prompt = ("" if task.get("prompt_in_command") else
+                               _task_prompt(rec))
+        launcher = ((rec.get("runtime") or {}).get("launcher") or {})
+        launch_status = launcher.get("launch_status_file")
+        if launch_status and not runtime.feature_state.get("launcher_started"):
+            # Queue time is not tool startup time. The auto runner records a
+            # transport only after target resolution, immediately before exec.
+            started = ""
+            try:
+                with open(launch_status) as status_file:
+                    started = status_file.read(32).strip()
+            except (IOError, OSError):
+                pass
+            boot_wait = (boot_config.startup_wait if boot_config
+                         else runtime.config.startup_wait)
+            runtime.boot_deadline = time.time() + boot_wait
+            if started in ("battach", "ssh", "qsub", "local"):
+                runtime.feature_state["launcher_started"] = True
         if not runtime.boot_deadline:
             boot_wait = (boot_config.startup_wait if boot_config
                          else runtime.config.startup_wait)

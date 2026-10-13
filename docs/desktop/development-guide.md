@@ -586,9 +586,9 @@ network.client/server + keychain + user-selected file read）。
   desktop：Linux 上 `python3 build_camc.py` → pytest → scp 到
   `~/.cam/machines.json` 里的机器。
 - **绝不在 Windows 上跑 `build_camc.py`**（CRLF/反斜杠会腐蚀 polyglot；Linux 构建
-  的、已提交的 `dist/camc` 才是 artifact）。camc 变了 → Linux 重建 `dist/camc`
-  → 同步 `dist/camc` → `src/camc` → **再打 MSI**（MSI 经 extraResources  bundle
-  它；这个错位咬过人一次）。
+  的、已提交的 `dist/camc` 才是 artifact）。camc 变了 → Linux 重建并提交
+  `dist/camc` → **再打 MSI**（MSI 的 extraResources 直接 bundle 这个唯一
+  artifact）。
 - MSI 还 bundle `dist/skillm` 和整个 `extensions/`——同理，它们变了才需要新
   MSI；只改 `web/` 或扩展逻辑时优先想 shadowing / 扩展发货。
 
@@ -694,8 +694,8 @@ ready-gate 缓冲首输出直到 `term:ready`（3.4）；channel 带 generation 
 4. preload 只准 `require('electron'|'events'|'timers'|'url')`。
 5. 永不向 PTY/tmux 发送 <40 列 / <4 行（5 处 clamp 点）。
 6. 永不 idle-close SSH 池；exec 池与终端池隔离。
-7. 绝不在 Windows 跑 `build_camc.py`；camc 更新后同步 `dist/camc` → `src/camc`
-   再打 MSI。
+7. 绝不在 Windows 跑 `build_camc.py`；camc 更新后在 Linux 重建唯一的
+   `dist/camc` artifact，再打 MSI。
 8. 同版本 MSI 不替换文件——测试安装先卸载或 bump 版本；MSI 构建中不改源码。
 9. 本地 `npm install`，不用 `npm ci`（lockfile 漂移）、不 `npm audit fix`。
 10. 测试 pin 随行为变更同 commit 更新；永不删断言过测试；minimal diff。

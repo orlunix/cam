@@ -129,6 +129,7 @@ def test_unknown_tool_run_keeps_monitor_but_disables_automation(tmp_path, monkey
         system_file = None
         api = None
         no_default_api = True
+        tool_launcher = "none"
         api_token = None
 
     Args.tool_dir = str(tool_dir)

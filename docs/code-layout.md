@@ -1,9 +1,12 @@
 # Code layout
 
 CAMC is a stdlib-only package that is concatenated into `dist/camc` by
-`build_camc.py`. The API path is direct-only: provider profiles live in
-`api_store.py`, endpoint selection in `api_routing.py`, and tool-specific URL
-shape in `src/cam/adapters/configs/*.toml`.
+`build_camc.py`. Provider profiles live in `api_store.py`, endpoint selection
+in `api_routing.py`, the per-agent native proxy in `api_proxy.py`, and
+tool-specific runtime policy in `src/cam/adapters/configs/*.toml`. Replaceable
+launcher policy (raw templates, named presets, LSF/SSH discovery, and qsub
+fallback) is isolated in `src/camc_pkg/tool_launcher.py`; `cli.py` and
+`monitor.py` contain integration hooks only.
 
 ```text
 cam/
@@ -16,8 +19,9 @@ cam/
 
 `camc run --api NAME` resolves one provider `base_url`, reads the provider
 token, verifies the profile advertises the adapter's native endpoint, and
-passes the resulting URL/model directly to Claude or Codex. There is no
-production proxy package, proxy worker, or protocol-conversion test suite.
+starts one loopback Camc Proxy owned by that agent. Messages, Responses, and
+Chat Completions are forwarded only to the matching native provider endpoint;
+there is no hidden Chat fallback.
 
 Build and verify the bundle with:
 

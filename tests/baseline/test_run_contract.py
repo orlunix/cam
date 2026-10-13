@@ -36,7 +36,7 @@ def test_run_selects_tool_and_creates_one_session_and_monitor(
         assert [
             "-c",
             utils._workspace_trust_config(str(isolated_cam_home.work)),
-        ] == command[3:5]
+        ] == command[1:3]
     config, original_command = run_spy.configs[0]
     assert config.command == original_command
 
@@ -57,6 +57,13 @@ def test_run_selects_tool_and_creates_one_session_and_monitor(
     assert runtime["tool"]["bin"] == expected_binary
     assert runtime["tool"]["source"] == "baseline"
     assert runtime["shell"]["mode"] == "tmux-default-shell"
+    if expected_tool == "codex":
+        # Login and API runs use the same adapter-declared thin overlay.
+        assert kwargs["env"]["CODEX_HOME"] == str(
+            isolated_cam_home.home / ".codex" / "a1b2c3d4")
+        assert runtime["storage"]["overlay"]["path"] == kwargs["env"]["CODEX_HOME"]
+        assert runtime["storage"]["donor_home"] == str(
+            isolated_cam_home.home / ".codex")
 
 
 def test_adapter_declared_workspace_trust_targets_git_root_and_escapes_path(
@@ -113,6 +120,38 @@ def test_run_launch_failure_leaves_no_record_or_monitor(
     assert run_spy.monitors == []
     assert storage.AgentStore(str(isolated_cam_home.agents)).list() == []
     assert run_spy.stopped_proxies == [None]
+    assert not (isolated_cam_home.home / ".codex" / "a1b2c3d4").exists()
+
+
+def test_run_tool_home_isolation_option_overrides_adapter_default(
+        invoke_cli, run_spy, isolated_cam_home):
+    code = invoke_cli(
+        "run", "shared home", "--name", "no-overlay",
+        "--path", str(isolated_cam_home.work), "--no-default-api",
+        "--isolate-tool-home", "0",
+    )
+
+    assert code == 0
+    _session, _command, _workdir, kwargs = run_spy.sessions[0]
+    shared_home = str(isolated_cam_home.home / ".codex")
+    assert kwargs["env"]["CODEX_HOME"] == shared_home
+    record = storage.AgentStore(str(isolated_cam_home.agents)).list()[0]
+    runtime_storage = record["runtime"]["storage"]
+    assert runtime_storage["isolate_tool_home"] is False
+    assert "overlay" not in runtime_storage
+
+
+def test_run_tool_home_isolation_rejects_adapter_without_runtime_contract(
+        invoke_cli, run_spy, isolated_cam_home):
+    code = invoke_cli(
+        "run", "unsupported", "--name", "claude-overlay",
+        "--path", str(isolated_cam_home.work), "--no-default-api",
+        "--tool", "claude", "--isolate-tool-home", "1",
+    )
+
+    assert code == 2
+    assert run_spy.sessions == []
+    assert storage.AgentStore(str(isolated_cam_home.agents)).list() == []
 
 
 def test_run_binds_selected_api_metadata_into_record(
@@ -143,8 +182,8 @@ def test_run_binds_selected_api_metadata_into_record(
         return Proxy(), 1777
 
     monkeypatch.setattr(cli, "_start_api_proxy", start_proxy)
-    monkeypatch.setattr("camc_pkg.api_resolver.ensure_codex_api_config_dir",
-                        lambda *args, **kwargs: str(isolated_cam_home.home / ".codex-api"))
+    monkeypatch.setattr("camc_pkg.api_resolver.configure_runtime_home_api",
+                        lambda *args, **kwargs: None)
     code = invoke_cli(
         "run", "api prompt", "--api", "baseline-api",
         "--api-token", "top-secret", "--path", str(isolated_cam_home.work),
@@ -158,3 +197,6 @@ def test_run_binds_selected_api_metadata_into_record(
         "client_model": "model-v1", "proxy_port": 1777, "proxy_pid": 777,
     }
     assert "top-secret" not in repr(record)
+    overlay = record["runtime"]["storage"]["overlay"]["path"]
+    assert overlay.endswith("/.codex/a1b2c3d4")
+    assert run_spy.sessions[0][3]["env"]["CODEX_HOME"] == overlay

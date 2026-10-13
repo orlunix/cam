@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import select
 import shlex
 import signal
 import shutil
@@ -20,12 +21,19 @@ from camc_pkg import __build__
 from camc_pkg.api_proxy import run_api_proxy
 from camc_pkg.skills import list_skills, install_manifest_skills
 from camc_pkg.tool_launcher import (
+    build_auto_launcher_command,
+    build_battach_launcher_command,
     build_launcher_command,
+    build_resolved_tool_command,
+    default_tool_launcher,
+    detect_current_autorun_allocation,
     launcher_target_environment,
     launcher_target_binary,
     named_tool_launcher,
     parse_tool_launcher,
     record_uses_tool_launcher,
+    resolve_local_target_tool_path,
+    replace_launcher_target_binary,
     resolve_named_tool_launcher,
     validate_tool_launcher_api,
     without_launcher_auto_permission,
@@ -300,7 +308,9 @@ def cmd_env(args):
     readiness. NEVER modifies anything; safe to invoke on production
     hosts. Used by tests + by humans debugging "tmux says command not
     found" vs "PATH looks fine in my shell" disagreements."""
-    from camc_pkg.runtime_env import build_runtime_env, check_tool_readiness
+    from camc_pkg.runtime_env import (
+        build_runtime_env, check_tool_readiness, resolve_tool,
+        resolve_tool_with_source)
     tool = getattr(args, "tool", None) or "claude"
     config = _load_config(tool)
     tool_binary = config.command[0] if config.command else None
@@ -840,7 +850,22 @@ def _start_api_proxy(api_plan, owner_id, port=0):
         command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, universal_newlines=True, bufsize=1,
         close_fds=True, start_new_session=True)
-    line = proc.stdout.readline() if proc.stdout else ""
+    line = ""
+    if proc.stdout:
+        try:
+            readable, _writable, _errors = select.select(
+                [proc.stdout], [], [], 10.0)
+        except (AttributeError, OSError, TypeError, ValueError):
+            # Test doubles and unusual file objects may not expose a selectable
+            # descriptor.  Real proxy subprocess pipes always take this path.
+            readable = [proc.stdout]
+        if not readable:
+            close_stdout = getattr(proc.stdout, "close", None)
+            if close_stdout:
+                close_stdout()
+            _stop_api_proxy(proc)
+            raise RuntimeError("API proxy startup timed out")
+        line = proc.stdout.readline()
     if proc.stdout:
         close_stdout = getattr(proc.stdout, "close", None)
         if close_stdout:
@@ -906,8 +931,11 @@ def cmd_run(args):
     prompt = getattr(args, "prompt", "") or ""
     workdir = os.path.abspath(args.path)
     raw_tool_launcher = getattr(args, "tool_launcher", None)
+    if raw_tool_launcher is None:
+        raw_tool_launcher = default_tool_launcher()
     launcher_preset = named_tool_launcher(raw_tool_launcher)
     launcher_metadata = {}
+    battach_target_binary = ""
     try:
         tool_launcher = ([] if launcher_preset else
                          parse_tool_launcher(raw_tool_launcher))
@@ -950,6 +978,7 @@ def cmd_run(args):
     # preflight and then fail in tmux (or vice versa).
     from camc_pkg.runtime_env import build_runtime_env
     runtime = build_runtime_env(env_setup=env_setup)
+    current_allocation = None
     api_plan = None
     api_proxy_proc = None
     cli_api = getattr(args, "api", None)
@@ -966,8 +995,26 @@ def cmd_run(args):
         except ValueError as e:
             print_error(str(e))
             sys.exit(1)
+    if launcher_preset and launcher_preset[0] == "auto":
+        # The login-shell environment normally preserves LSF variables, but
+        # use the original process environment as a fallback for LSB_JOBID.
+        allocation_env = dict(os.environ)
+        allocation_env.update(runtime.env)
+        current_allocation = detect_current_autorun_allocation(
+            allocation_env)
+        if current_allocation:
+            launcher_preset = None
+            tool_launcher = []
+            queue = (current_allocation.get("virtual_queue") or
+                     current_allocation.get("queue") or "")
+            print_info(
+                "Using current autorun_sla allocation %s on %s%s" %
+                (current_allocation.get("job_id"),
+                 current_allocation.get("host"),
+                 (" (" + queue + ")") if queue else ""))
     try:
-        validate_tool_launcher_api(raw_tool_launcher, api_name)
+        validate_tool_launcher_api(
+            "none" if current_allocation else raw_tool_launcher, api_name)
     except ValueError as exc:
         print_error(str(exc))
         sys.exit(2)
@@ -1010,31 +1057,53 @@ def cmd_run(args):
             api_plan.get("name"),
             api_plan.get("mode"),
             ", ".join(src_bits) if src_bits else "none"))
-    tool_binary = config.command[0] if config.command else None
-    target_tool_binary = launcher_target_binary(config.command)
-    if launcher_preset:
-        try:
-            tool_launcher, launcher_metadata, launcher_notices = (
-                resolve_named_tool_launcher(
-                    launcher_preset, tool, workdir, runtime.env,
-                    target_tool=target_tool_binary))
-        except ValueError as exc:
-            print_error(str(exc))
-            sys.exit(2)
-        for notice in launcher_notices:
-            print_info(notice)
-    launcher_command_index = (tool_launcher.index("{command}")
-                              if tool_launcher else None)
     try:
         tool_env_keys = _apply_tool_env(runtime, getattr(args, "tool_env", None))
     except ValueError as e:
         print_error(str(e))
         sys.exit(1)
+    adapter_readiness = getattr(config, "readiness", None)
+    use_env_tool = bool(getattr(args, "use_env_tool", False))
+    tool_binary = config.command[0] if config.command else None
+    target_tool_binary = launcher_target_binary(config.command)
+    target_tool_path_hint = ""
+    target_tool_version_args = None
+    if launcher_preset or tool_launcher:
+        target_tool_path_hint = resolve_local_target_tool_path(
+            tool, target_tool_binary, runtime.env, tool_dir=tool_dir,
+            configured_binary=(adapter_readiness or {}).get("binary"),
+            use_env_tool=use_env_tool)
+        if isinstance(adapter_readiness, dict):
+            target_tool_version_args = adapter_readiness.get("version_args")
+    if launcher_preset:
+        try:
+            tool_launcher, launcher_metadata, launcher_notices = (
+                resolve_named_tool_launcher(
+                    launcher_preset, tool, workdir, runtime.env,
+                    target_tool=target_tool_binary,
+                    target_tool_path=target_tool_path_hint,
+                    target_tool_version_args=target_tool_version_args))
+        except ValueError as exc:
+            print_error(str(exc))
+            sys.exit(2)
+        if launcher_metadata.get("transport") in ("battach", "ssh"):
+            battach_target_binary = str(
+                launcher_metadata.pop("_target_tool_path", "") or "")
+            if (launcher_metadata.get("transport") == "battach" and
+                    not os.path.isabs(battach_target_binary)):
+                print_error(
+                    "battach probe did not return an absolute target tool path")
+                sys.exit(2)
+        for notice in launcher_notices:
+            print_info(notice)
+    launcher_command_index = None
+    if tool_launcher:
+        launcher_command_index = (
+            tool_launcher.index("{command}")
+            if "{command}" in tool_launcher else len(tool_launcher))
     # F-08 (adapter-owned): prefer the adapter's [readiness] block
     # over runtime_env's hardcoded _TOOL_SPECS fallback. None when
     # the adapter doesn't declare [readiness] — fallback kicks in.
-    adapter_readiness = getattr(config, "readiness", None)
-    use_env_tool = bool(getattr(args, "use_env_tool", False))
     preflight_kwargs = {
         "env_setup": env_setup,
         "runtime": runtime,
@@ -1116,30 +1185,48 @@ def cmd_run(args):
             session_uuid = "%s-0000-0000-0000-000000000000" % agent_id
 
     launch_cmd = _build_command(config, prompt, workdir)
+    local_fallback_cmd = without_launcher_auto_permission(list(launch_cmd))
 
-    # Launcher jobs run beyond the local confirmation loop, so adapters may
-    # opt into a dedicated safe-to-automate argument set. Ordinary launches
-    # retain the historical conditional autorun behavior byte-for-byte.
-    if tool_launcher:
+    # Remote launchers and a verified current autorun allocation both use
+    # the adapter's explicit autorun argument set. Ordinary local launches
+    # retain the conditional config-driven auto_run behavior.
+    if tool_launcher or current_allocation:
         if getattr(config, "auto_permission_mode", False):
             launch_cmd = without_launcher_auto_permission(launch_cmd)
         launch_cmd += list(getattr(config, "launcher_autorun_args", []) or [])
-    else:
+    elif launcher_metadata.get("preset") != "auto":
         # Auto-run is opt-in through the adapter's three-gate policy. Keep
         # user --tool-args last so the default command remains authoritative
         # whenever the policy does not fully match.
         launch_cmd += _auto_run_args(config, runtime.env)
+    else:
+        launch_cmd = list(local_fallback_cmd)
 
     if tool == "codex" and api_plan:
         launch_cmd += _codex_api_model_override(api_plan)
+        local_fallback_cmd += _codex_api_model_override(api_plan)
 
     # Inject --session-id or --resume into Claude launch command
     if tool == "claude":
         if resume_session:
             launch_cmd += ["--resume", resume_session]
+            local_fallback_cmd += ["--resume", resume_session]
         elif session_uuid:
             launch_cmd += ["--session-id", session_uuid]
+            local_fallback_cmd += ["--session-id", session_uuid]
     launch_cmd += tool_args
+    local_fallback_cmd += tool_args
+    prompt_in_command = bool(
+        prompt and tool in ("codex", "claude", "cursor") and
+        getattr(config, "prompt_after_launch", False))
+    if prompt_in_command:
+        # These CLIs accept an initial interactive prompt as positional argv.
+        # Native and launcher PTYs must not depend on a later pasted Enter.
+        launch_cmd.append(prompt)
+        local_fallback_cmd.append(prompt)
+    if battach_target_binary:
+        launch_cmd = replace_launcher_target_binary(
+            launch_cmd, battach_target_binary)
 
     inherit_env = not getattr(args, "no_inherit_env", False)
 
@@ -1152,13 +1239,14 @@ def cmd_run(args):
     #   resolved["tool"]  -> str | None   (absolute selected-tool path)
     #
     # Cases:
-    #   codex:  launch_cmd == ["codex", "-c", "features.goals=true"]
+    #   codex:  launch_cmd == ["codex", "-c", "projects={...trusted...}"]
     #     -> replace launch_cmd[0] with the resolved absolute path
     #   claude: launch_cmd == ["env", "CLAUDE_CODE_DISABLE_MOUSE=1",
-    #                          "claude", "--allowed-tools", "..."]
+    #                          "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1",
+    #                          "claude"]
     #     -> walk past env-wrapper prefix tokens ('env' + KEY=VAL
     #        assignments) and replace the first executable name.
-    #   cursor: launch_cmd[0] == "agent"   (cursor binary)
+    #   cursor: launch_cmd[0] == "cursor-agent"
     #     -> replace launch_cmd[0] if it matches the expected tool
     #        binary name; otherwise leave alone.
     #
@@ -1246,7 +1334,8 @@ def cmd_run(args):
             runtime_storage_info = configure_agent_runtime_home(
                 agent_id, config, runtime, api_plan=api_plan,
                 api_base_url=proxy_url,
-                isolate_tool_home=isolate_tool_home)
+                isolate_tool_home=isolate_tool_home,
+                **({"launcher": True} if tool_launcher or current_allocation else {}))
             if runtime_storage_info:
                 print_info("Runtime home: %s" %
                            runtime_storage_info["shared_home"])
@@ -1254,24 +1343,75 @@ def cmd_run(args):
             _stop_api_proxy(api_proxy_proc)
             print_error("Runtime storage bootstrap failed: %s" % e)
             sys.exit(1)
+    battach_script_dir = ""
+    auto_launch_script = False
     if tool_launcher:
         launcher_bin = (resolved or {}).get("launcher")
         if launcher_bin and os.path.isabs(launcher_bin):
             tool_launcher = list(tool_launcher)
             tool_launcher[0] = launcher_bin
-        launch_cmd = build_launcher_command(
-            tool_launcher, launch_cmd,
-            bootstrap_dirs=(runtime_storage_info or {}).get(
+        launcher_command_kwargs = {
+            "bootstrap_dirs": (runtime_storage_info or {}).get(
                 "bootstrap_dirs") or [],
-            target_env=launcher_target_environment(
+            "target_env": launcher_target_environment(
                 runtime.env, runtime_storage_info),
-            target_unset=(getattr(config, "runtime", None) or {}).get(
-                "clear_environment") or [])
+            "target_unset": (getattr(config, "runtime", None) or {}).get(
+                "clear_environment") or [],
+        }
+        try:
+            if "_auto_plan" in launcher_metadata:
+                launch_cmd, battach_script_dir = build_auto_launcher_command(
+                    tool_launcher, launcher_metadata, launch_cmd,
+                    local_fallback_cmd, workdir, target_tool_binary,
+                    preferred_tool_path=target_tool_path_hint,
+                    version_args=target_tool_version_args,
+                    exit_status_path=exit_status_path or None,
+                    **launcher_command_kwargs)
+                launcher_metadata.pop("_auto_plan", None)
+                launcher_metadata["fallback_order"] = [
+                    "direct", "battach", "ssh", "qsub", "local"]
+                if exit_status_path:
+                    launcher_metadata["launch_status_file"] = (
+                        exit_status_path + ".launcher")
+                auto_launch_script = True
+            elif launcher_metadata.get("transport") == "battach":
+                launch_cmd, battach_script_dir = (
+                    build_battach_launcher_command(
+                        tool_launcher, launch_cmd, workdir,
+                        exit_status_path=exit_status_path or None,
+                        **launcher_command_kwargs))
+            else:
+                resolved_tool_command = build_resolved_tool_command(
+                    launch_cmd, target_tool_binary, workdir,
+                    preferred_tool_path=target_tool_path_hint,
+                    version_args=target_tool_version_args)
+                launch_cmd = build_launcher_command(
+                    tool_launcher, resolved_tool_command,
+                    **launcher_command_kwargs)
+        except (IOError, OSError, ValueError) as exc:
+            _stop_api_proxy(api_proxy_proc)
+            overlay_info = (runtime_storage_info or {}).get("overlay")
+            if overlay_info:
+                try:
+                    from camc_pkg.runtime_env import remove_agent_runtime_home
+                    remove_agent_runtime_home(overlay_info, owner_id=agent_id)
+                except Exception:
+                    pass
+            print_error("Failed to prepare tool launch command: %s" % exc)
+            sys.exit(1)
+    # battach's target-side one-shot script records the tool's status itself.
+    # Do not wrap the visible battach command in transport's generic shell
+    # status recorder; that produced a nested /bin/sh -c command in tmux.
+    tmux_exit_status_path = exit_status_path or None
+    if auto_launch_script or launcher_metadata.get("transport") == "battach":
+        tmux_exit_status_path = None
     if not create_tmux_session(session, launch_cmd, workdir,
                                env_setup=env_setup, inherit_env=inherit_env,
                                env=runtime.env, tmux_bin=resolved_tmux,
                                tmux_config=camc_tmux_config,
-                               exit_status_path=exit_status_path or None):
+                               exit_status_path=tmux_exit_status_path):
+        if battach_script_dir:
+            shutil.rmtree(battach_script_dir, ignore_errors=True)
         _stop_api_proxy(api_proxy_proc)
         overlay_info = (runtime_storage_info or {}).get("overlay")
         if overlay_info:
@@ -1320,7 +1460,10 @@ def cmd_run(args):
                  # Launcher targets already receive adapter-owned autorun
                  # arguments.  The local monitor must never inject answers
                  # into a remote/qsub TUI whose screen timing it cannot own.
-                 "auto_confirm": bool(known_tool and not tool_launcher),
+                 "auto_confirm": bool(
+                     known_tool and not tool_launcher and
+                     not current_allocation and
+                     launcher_metadata.get("preset") != "auto"),
                  "auto_exit": auto_exit,
                  "auto_exit_enable": auto_exit_enable,
                  "tags": tags,
@@ -1399,6 +1542,9 @@ def cmd_run(args):
                      "launch argv uses absolute tool path"),
         },
     }
+    if current_allocation:
+        agent_rec["runtime"]["launch_mode"] = "current_autorun_allocation"
+        agent_rec["runtime"]["allocation"] = dict(current_allocation)
     if tool_launcher:
         # Store structural metadata only. The raw template, its argv, the
         # expanded target command, and runtime env can contain passwords,
@@ -1413,6 +1559,11 @@ def cmd_run(args):
             agent_rec["runtime"]["launcher"].update(launcher_metadata)
     if runtime_storage_info:
         agent_rec["runtime"]["storage"] = runtime_storage_info
+    agent_rec["runtime"]["launcher_mode"] = (
+        "auto" if str(raw_tool_launcher).strip() == "auto" else
+        "custom" if parse_tool_launcher(raw_tool_launcher) else "none")
+    if prompt_in_command:
+        agent_rec["task"]["prompt_in_command"] = True
     store.save(agent_rec)
     if tool == "codex":
         _spawn_codex_session_binder(agent_id, session, workdir, started_at)
@@ -1624,7 +1775,7 @@ def cmd_stop(args):
     else:
         print_warning("tmux session not found; marking agent stopped anyway")
     _kill_monitor(a)
-    _stop_agent_api_proxy(a)
+    _stop_agent_api_proxy(a, cleanup_home=False)
     store.update(a["id"], status="stopped", exit_reason="Stopped by user", completed_at=_now_iso())
     if killed_pid:
         print("Stopped agent %s (killed PID %d, tmux session still alive)" % (a["id"], killed_pid))
@@ -1645,7 +1796,7 @@ def cmd_exit(args):
     print_info("Sending graceful exit to agent %s..." % a["id"])
     clean = graceful_exit(session, tool=_tf(a, "tool", "claude"))
     _kill_monitor(a)
-    _stop_agent_api_proxy(a)
+    _stop_agent_api_proxy(a, cleanup_home=False)
     store.update(a["id"], status="stopped",
                  exit_reason="Exited cleanly" if clean else "Exited (process killed)",
                  completed_at=_now_iso())
@@ -1662,8 +1813,13 @@ def cmd_kill(args):
     if not a:
         sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
     _kill_monitor(a)
-    _stop_agent_api_proxy(a)
-    tmux_kill_session(_sf(a, "tmux_session"))
+    _stop_agent_api_proxy(a, cleanup_home=False)
+    session = _sf(a, "tmux_session")
+    tmux_kill_session(session)
+    if session and tmux_session_exists(session):
+        print_warning("tmux session is still alive; preserving runtime overlay")
+        return
+    _cleanup_agent_runtime_overlay(a)
     store.update(a["id"], status="killed", exit_reason="Force killed by user", completed_at=_now_iso())
     print("Killed agent %s" % a["id"])
 
@@ -2802,7 +2958,13 @@ def cmd_rm(args):
         except Exception as e:
             print_warning("Archive step raised %s; proceeding with rm anyway." % e)
     _kill_monitor(a)
-    _stop_agent_api_proxy(a)
+    _stop_agent_api_proxy(a, cleanup_home=False)
+    session = _sf(a, "tmux_session")
+    if session:
+        tmux_kill_session(session)
+    if session and tmux_session_exists(session):
+        print_warning("tmux session is still alive; preserving agent record and runtime overlay")
+        return
     # Strip the system_prompt block we injected at run-time, if any.
     task_rec = a.get("task") or {}
     sp_file_path = task_rec.get("system_prompt_file") or ""
@@ -2812,9 +2974,7 @@ def cmd_rm(args):
                 print_info("System prompt block removed from %s" % sp_file_path)
         except Exception as e:
             print_warning("Failed to strip system prompt block: %s" % e)
-    session = _sf(a, "tmux_session")
     if session:
-        tmux_kill_session(session)
         # tmux usually removes its socket when the server exits, but on some
         # filesystems (NFS) the file lingers. Unlink explicitly — but only
         # after confirming no tmux server is still bound to that path. If
@@ -2834,6 +2994,10 @@ def cmd_rm(args):
                     os.unlink(sock_path)
                 except OSError:
                     pass
+    # Owned overlays can contain files still open by the tool. Reclaim them
+    # only after the tmux/tool process is gone; shared host-local targets are
+    # deliberately retained for other agents on this host.
+    _cleanup_agent_runtime_overlay(a)
     store.remove(a["id"])
     print("Removed agent %s" % a["id"])
 
@@ -3590,6 +3754,99 @@ def graceful_exit(session, timeout=15, tool="claude"):
     return False
 
 
+def _recover_remote_codex_session(agent, store):
+    """Use the exact pane's status receipt, never the newest shared rollout."""
+    if not record_uses_tool_launcher(agent) or agent.get("state") != "idle":
+        return None
+    session = _sf(agent, "tmux_session")
+    if not session or not tmux_session_exists(session):
+        return None
+    screen = capture_tmux(session) or ""
+    # Do not overwrite input which the user has already composed.
+    prompt_lines = [line for line in screen.splitlines()
+                    if re.match(r"^\s*[›❯>]", line)]
+    if prompt_lines and prompt_lines[-1].strip() not in (
+            "› Ask Codex to do anything", "›", "❯", ">"):
+        return None
+    tmux_send_input(session, "/status", send_enter=True)
+    storage = (agent.get("runtime") or {}).get("storage") or {}
+    home = ((storage.get("overlay") or {}).get("path") or
+            storage.get("shared_home") or os.path.expanduser("~/.codex"))
+    workdir = _sf(agent, "context_path")
+    import glob
+    for attempt in range(20):
+        screen = capture_tmux(session) or ""
+        receipt = screen.rsplit("/status", 1)[-1] if "/status" in screen else ""
+        ids = re.findall(r"(?m)^\s*Session:\s*(%s)\s*$" % _UUID_RE_STR, receipt)
+        directory = re.search(r"(?m)^\s*Directory:\s*(.+?)\s*$", receipt)
+        if (len(set(ids)) == 1 and directory and
+                os.path.realpath(directory.group(1)) == os.path.realpath(workdir)):
+            session_id = ids[0]
+            paths = glob.glob(os.path.join(
+                home, "sessions", "*", "*", "*",
+                "rollout-*-%s.jsonl" % session_id))
+            paths = [path for path in paths if _codex_rollout_metadata(
+                path, workdir, expected_id=session_id,
+                started_at=_sf(agent, "started_at"))]
+            if len(paths) == 1:
+                store.update(agent["id"], session_id=session_id,
+                             session_path=paths[0], session_binding="bound")
+                agent.update(session_id=session_id, session_path=paths[0],
+                             session_binding="bound")
+                return session_id
+        if attempt == 2 and not receipt:
+            tmux_send_key(session, "Enter")
+        time.sleep(.2)
+    return None
+
+
+def _prepare_reboot_launcher(agent, tool, workdir, requested=None):
+    """Resolve reboot transports before disturbing the existing session."""
+    record = agent.get("runtime") or {}
+    if requested is None:
+        requested = record.get("launcher_mode")
+        if requested is None and (record.get("launcher") or {}).get("preset") == "auto":
+            requested = "auto"
+        if requested is None:
+            requested = default_tool_launcher()
+        if requested == "custom":
+            raise ValueError("reboot requires the custom --tool-launcher prefix again")
+    preset = named_tool_launcher(requested)
+    prefix = [] if preset else parse_tool_launcher(requested)
+    if not preset and not prefix:
+        return None
+    from camc_pkg.runtime_env import build_runtime_env
+    runtime = build_runtime_env()
+    config = _load_config(tool)
+    allocation_env = dict(os.environ)
+    allocation_env.update(runtime.env)
+    allocation = (detect_current_autorun_allocation(allocation_env)
+                  if preset else None)
+    validate_tool_launcher_api(
+        "none" if allocation else requested,
+        (agent.get("api") or {}).get("name"))
+    binary = launcher_target_binary(config.command)
+    readiness = getattr(config, "readiness", None) or {}
+    preferred = resolve_local_target_tool_path(
+        tool, binary, runtime.env, configured_binary=readiness.get("binary"))
+    version_args = readiness.get("version_args")
+    metadata = {}
+    if allocation:
+        prefix = []
+    elif preset:
+        prefix, metadata, notices = resolve_named_tool_launcher(
+            preset, tool, workdir, runtime.env, target_tool=binary,
+            target_tool_path=preferred, target_tool_version_args=version_args)
+        for notice in notices:
+            print_info(notice)
+        if not prefix:
+            raise ValueError("reboot auto requires a remote launcher; local fallback is disabled")
+    return {"runtime": runtime, "config": config, "prefix": prefix,
+            "metadata": metadata, "allocation": allocation,
+            "binary": binary, "preferred": preferred,
+            "version_args": version_args, "mode": "auto" if preset else "custom"}
+
+
 def cmd_migrate(args):
     """Restart an agent with session resume (preserves conversation history)."""
     store = AgentStore()
@@ -3612,8 +3869,10 @@ def cmd_migrate(args):
     old_api = a.get("api") if isinstance(a.get("api"), dict) else None
     if tool == "codex":
         if not old_session_id or a.get("session_binding") != "bound":
-            print_error("Cannot reboot Codex: a bound session_id is required")
-            sys.exit(1)
+            old_session_id = _recover_remote_codex_session(a, store)
+            if not old_session_id:
+                print_error("Cannot reboot Codex: a bound session_id is required; remote recovery requires an idle pane with no pending input")
+                sys.exit(1)
         if old_api:
             from camc_pkg.api_resolver import resolve_run_plan
             try:
@@ -3658,6 +3917,15 @@ def cmd_migrate(args):
     tags = _tf(a, "tags")
     tags = tags if isinstance(tags, list) else []
 
+    try:
+        reboot_launcher = _prepare_reboot_launcher(
+            a, tool, workdir, getattr(args, "tool_launcher", None))
+        if reboot_launcher and getattr(args, "to", None):
+            raise ValueError("--to cannot be combined with --tool-launcher")
+    except ValueError as exc:
+        print_error(str(exc))
+        sys.exit(2)
+
     print_info("Rebooting agent %s (%s)..." % (name, old_id))
 
     # Re-inject system_prompt block if recorded and missing from file
@@ -3679,6 +3947,13 @@ def cmd_migrate(args):
         sys.exit(1)
     print_info("Sending graceful exit sequence...")
     clean = graceful_exit(old_session, tool=tool)
+    if record_uses_tool_launcher(a):
+        # Remote PIDs are invisible to the submit host's process finder.
+        # Claude's /exit may detach to its background-session picker; two
+        # interrupts leave that picker and release the transport as well.
+        tmux_send_key(old_session, "C-c")
+        tmux_send_key(old_session, "C-c")
+        time.sleep(2)
     print_info("Agent exited cleanly" if clean else "Agent killed (exit not clean)")
     # Let the shell prompt settle before typing into it.
     time.sleep(2)
@@ -3696,8 +3971,15 @@ def cmd_migrate(args):
     # 3. Kill old monitor (new one will be spawned after relaunch).
     _kill_monitor(a)
 
+    config = reboot_launcher["config"] if reboot_launcher else _load_config(tool)
+    runtime_record = a.get("runtime") if isinstance(a.get("runtime"), dict) else {}
+    prior_storage = runtime_record.get("storage")
+    if not isinstance(prior_storage, dict):
+        prior_storage = {}
     if api_plan:
-        _stop_agent_api_proxy(a)
+        # Reboot replaces only the proxy process.  Runtime storage is refreshed
+        # after the old tool process exits and before resume starts.
+        _stop_agent_api_proxy(a, cleanup_home=False)
         try:
             old_proxy_pid = int(old_api.get("proxy_pid") or 0)
         except (TypeError, ValueError):
@@ -3716,21 +3998,35 @@ def cmd_migrate(args):
         api_plan["proxy_port"] = proxy_port
         old_api["proxy_pid"] = proxy_proc.pid
         old_api["proxy_port"] = proxy_port
-        if tool == "codex":
-            from camc_pkg.api_resolver import ensure_codex_api_config_dir
-            proxy_url = "http://127.0.0.1:%d%s" % (
-                proxy_port, api_plan.get("base_url_suffix") or "")
-            try:
-                ensure_codex_api_config_dir(
-                    proxy_url, api_plan.get("name") or "api",
-                    require_endpoint="responses",
-                    model_id=api_plan.get("model"), owner_id=old_id)
-            except OSError as e:
-                print_warning("Codex API catalog refresh skipped: %s" % e)
+        proxy_url = "http://127.0.0.1:%d%s" % (
+            proxy_port, api_plan.get("base_url_suffix") or "")
+
+    runtime_spec = getattr(config, "runtime", None)
+    runtime_storage_info = None
+    runtime_reboot_env = None
+    if runtime_spec:
+        try:
+            from camc_pkg.runtime_env import (
+                build_runtime_env, configure_agent_runtime_home)
+            reboot_runtime = (reboot_launcher["runtime"] if reboot_launcher
+                              else build_runtime_env())
+            runtime_reboot_env = reboot_runtime.env
+            runtime_storage_info = configure_agent_runtime_home(
+                old_id, config, reboot_runtime, api_plan=api_plan,
+                api_base_url=proxy_url if api_plan else "",
+                isolate_tool_home=prior_storage.get("isolate_tool_home"),
+                **({"launcher": True} if reboot_launcher else {}))
+            runtime_record = a.setdefault("runtime", {})
+            runtime_record.pop("home", None)
+            runtime_record["storage"] = runtime_storage_info
+        except Exception as e:
+            if api_plan:
+                _stop_api_proxy(proxy_proc)
+            print_error("Runtime storage refresh failed: %s" % e)
+            sys.exit(1)
 
     # 4. Relaunch Claude in the SAME tmux session: cd + claude --resume.
     new_session_uuid = "%s-0000-0000-0000-000000000000" % old_id
-    config = _load_config(tool)
     launch_cmd = _build_command(config, "", workdir)
     if tool == "codex":
         launch_cmd += _codex_api_model_override(api_plan)
@@ -3741,16 +4037,93 @@ def cmd_migrate(args):
     else:
         launch_cmd += ["--session-id", new_session_uuid]
 
+    if reboot_launcher:
+        launch_cmd = without_launcher_auto_permission(launch_cmd)
+        launch_cmd += list(getattr(config, "launcher_autorun_args", []) or [])
+        info = reboot_launcher
+        metadata = info["metadata"]
+        target_path = metadata.pop("_target_tool_path", "") or info["preferred"]
+        if target_path:
+            launch_cmd = replace_launcher_target_binary(launch_cmd, target_path)
+        storage = runtime_storage_info or {}
+        kwargs = {
+            "bootstrap_dirs": storage.get("bootstrap_dirs") or [],
+            "target_env": launcher_target_environment(info["runtime"].env, storage),
+            "target_unset": (runtime_spec or {}).get("clear_environment") or [],
+        }
+        status_path = os.path.join(PIDS_DIR, "%s.tool-exit" % old_id)
+        os.makedirs(PIDS_DIR, exist_ok=True)
+        for path in (status_path, status_path + ".launcher"):
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+        if "_auto_plan" in metadata:
+            launch_cmd, _script_dir = build_auto_launcher_command(
+                info["prefix"], metadata, launch_cmd, [], workdir,
+                info["binary"], preferred_tool_path=info["preferred"],
+                version_args=info["version_args"], exit_status_path=status_path,
+                allow_local_fallback=False, **kwargs)
+            metadata.pop("_auto_plan", None)
+            metadata["launch_status_file"] = status_path + ".launcher"
+        elif info["prefix"]:
+            resolved_command = build_resolved_tool_command(
+                launch_cmd, info["binary"], workdir,
+                preferred_tool_path=info["preferred"], version_args=info["version_args"])
+            launch_cmd = build_launcher_command(info["prefix"], resolved_command, **kwargs)
+        else:
+            env_prefix = ["env"]
+            for key in kwargs["target_unset"]:
+                env_prefix += ["-u", key]
+            env_prefix += ["%s=%s" % (key, value) for key, value in
+                           sorted(kwargs["target_env"].items())]
+            launch_cmd = env_prefix + launch_cmd
+        runtime_record = a.setdefault("runtime", {})
+        runtime_record["launcher_mode"] = info["mode"]
+        runtime_record.pop("launcher", None)
+        runtime_record.pop("allocation", None)
+        runtime_record.pop("launch_mode", None)
+        if info["allocation"]:
+            runtime_record["allocation"] = info["allocation"]
+            runtime_record["launch_mode"] = "current_autorun_allocation"
+        else:
+            runtime_record["launcher"] = dict(metadata, target_tool=info["binary"])
+        runtime_record.setdefault("custom_launch", {})["exit_status_path"] = status_path
+        a.setdefault("task", {})["auto_confirm"] = False
+    elif getattr(args, "tool_launcher", None) is not None:
+        runtime_record = a.setdefault("runtime", {})
+        runtime_record["launcher_mode"] = "none"
+        for key in ("launcher", "allocation", "launch_mode"):
+            runtime_record.pop(key, None)
+
+    if runtime_storage_info and not reboot_launcher:
+        environment = str(runtime_storage_info.get("environment") or "")
+        overlay = runtime_storage_info.get("overlay") or {}
+        home_path = str(overlay.get("path") or
+                        runtime_storage_info.get("shared_home") or "")
+        if _TOOL_ENV_NAME_RE.match(environment) and home_path:
+            env_prefix = ["env"]
+            for name in (runtime_spec.get("clear_environment") or []):
+                if _TOOL_ENV_NAME_RE.match(str(name)):
+                    env_prefix += ["-u", str(name)]
+            if runtime_reboot_env is not None:
+                clean_path = str(runtime_reboot_env.get("PATH") or "")
+                if clean_path:
+                    env_prefix.append("PATH=%s" % clean_path)
+            launch_cmd = env_prefix + ["%s=%s" % (environment, home_path)] + launch_cmd
+
     import shlex
     cmd_str = "cd %s && %s" % (shlex.quote(workdir), " ".join(shlex.quote(arg) for arg in launch_cmd))
     tmux_send_input(old_session, cmd_str, send_enter=True)
 
     # 5. Update agent record (same ID, preserve session_id).
-    if not old_session_id:
-        a["session_id"] = new_session_uuid
+    a["session_id"] = old_session_id or new_session_uuid
     a["status"] = "running"
     a["state"] = "initializing"
+    a["completed_at"] = None
+    a["exit_reason"] = None
     a.get("task", {})["prompt"] = "(resumed)"
+    a.setdefault("task", {})["prompt_in_command"] = True
     store.save(a)
 
     # 5. Restart monitor
@@ -5224,6 +5597,39 @@ _MSG_REPLY_INSTRUCTION = (
 )
 
 
+def _msg_submit_notification(session, payload, msg_id, target=None,
+                             submit_delay=_MSG_SUBMIT_DELAY_DEFAULT):
+    """Submit one wire payload and arm the owning monitor's guarded retry."""
+    if not tmux_submit_input(session, payload, submit_delay=submit_delay,
+                             send_input_fn=tmux_send_input,
+                             send_key_fn=tmux_send_key, sleep_fn=time.sleep):
+        return False
+    # The TUI may accept the paste without consuming Enter. Both sends and
+    # replies need the same bounded, screen-guarded monitor fallback. Raw
+    # tmux sessions have no owning monitor and get no background retry.
+    if target and target.get("target_id"):
+        try:
+            post_output = capture_tmux(session)
+            post_normalized = _normalize_screen(post_output or "")
+            post_hash0 = _content_hash(post_normalized)
+            post_hash1 = _content_hash(_strip_ascii_digits(post_normalized))
+            submitted_at = time.time()
+            AgentStore().update(
+                target.get("target_id"),
+                screen_fallback={
+                    "kind": "message", "msg_id": msg_id,
+                    "session": session, "created_at": submitted_at,
+                    "baseline_at": submitted_at,
+                    "baseline_hash0": post_hash0,
+                    "baseline_hash1": post_hash1,
+                    "attempts": 0,
+                },
+            )
+        except Exception:
+            pass
+    return True
+
+
 def _msg_inject(session, to_label, text, timeout_s,
                 expect_reply=False, reply_to=None,
                 submit_delay=_MSG_SUBMIT_DELAY_DEFAULT):
@@ -5303,35 +5709,10 @@ def _msg_inject(session, to_label, text, timeout_s,
         "to_id": to_id, "to_name": to_name,
     })
 
-    if not tmux_submit_input(session, payload, submit_delay=submit_delay,
-                             send_input_fn=tmux_send_input,
-                             send_key_fn=tmux_send_key, sleep_fn=time.sleep):
+    if not _msg_submit_notification(session, payload, msg_id, target,
+                                    submit_delay=submit_delay):
         _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
         return (msg_id, False)
-    # The monitor may make one long-static, input-guarded Enter retry if the
-    # TUI accepted the paste but did not consume the submit key.  Keep this
-    # tiny pending record on the target agent only; raw tmux session sends do
-    # not have an owning monitor and therefore never get a blind fallback.
-    if target and target.get("target_id"):
-        try:
-            post_output = capture_tmux(session)
-            post_normalized = _normalize_screen(post_output or "")
-            post_hash0 = _content_hash(post_normalized)
-            post_hash1 = _content_hash(_strip_ascii_digits(post_normalized))
-            submitted_at = time.time()
-            AgentStore().update(
-                target.get("target_id"),
-                screen_fallback={
-                    "kind": "message", "msg_id": msg_id,
-                    "session": session, "created_at": submitted_at,
-                    "baseline_at": submitted_at,
-                    "baseline_hash0": post_hash0,
-                    "baseline_hash1": post_hash1,
-                    "attempts": 0,
-                },
-            )
-        except Exception:
-            pass
     _msg_ledger_append({"msg_id": msg_id, "status": "delivered"})
     return (msg_id, True)
 
@@ -5914,15 +6295,17 @@ def cmd_msg_reply(args):
     # Preference: id > session > name (stable → human-readable). First
     # candidate that yields a session wins.
     recipient_session = None
+    recipient_agent = None
     target_for_inject = None
     for label in (recipient.get("id"),
                   recipient.get("session"),
                   recipient.get("name")):
         if not label:
             continue
-        _, sess, _ = _msg_resolve_session(label)
+        resolved_agent, sess, _ = _msg_resolve_session(label)
         if sess:
             recipient_session = sess
+            recipient_agent = resolved_agent
             target_for_inject = _msg_target_identity(label)
             break
 
@@ -5968,9 +6351,14 @@ def cmd_msg_reply(args):
         wire_text = (prefix + " " + text) if prefix else text
         payload = "[camc msg#%s]: %s" % (orig_msg_id, wire_text)
         try:
-            tmux_send_input(recipient_session, payload, send_enter=True)
+            notified = _msg_submit_notification(
+                recipient_session, payload, orig_msg_id, target_for_inject,
+                submit_delay=_msg_submit_delay(recipient_agent))
         except Exception:
-            pass
+            notified = False
+        if not notified:
+            sys.stderr.write(
+                "camc msg: reply saved to mailbox; terminal notification failed\n")
 
     sys.stdout.write(
         "REPLIED_TO=%s\nSEQ=%d\nMAILBOX=%s\n"
@@ -7291,10 +7679,14 @@ examples:
                    help="Per-agent environment override (repeatable; supports $NAME expansion)")
     r.add_argument("--tool-args", action="append", default=[], metavar="ARGS",
                    help="Extra shell-like argv string for the tool (repeatable; use --tool-args=... when it starts with '-')")
-    r.add_argument("--tool-launcher", default=None, metavar="LAUNCHER",
-                   help=("Named launcher (qsub-4g, ssh-auto[:JOBID], auto) "
-                         "or shell-like argv containing exactly one standalone "
-                         "{command} element"))
+    r.add_argument("--tool-launcher", default=default_tool_launcher(),
+                   metavar="LAUNCHER",
+                   help=("Launcher (default: auto when nvprojectname is "
+                         "available, otherwise local; auto checks the current "
+                         "autorun allocation, attaches to a suitable existing "
+                         "job via battach, then SSH, qsub, and local without "
+                         "autorun; or provide a custom argv "
+                         "prefix (camc appends the tool command))"))
     r.add_argument(
         "--isolate-tool-home", dest="isolate_tool_home",
         type=int, choices=(0, 1), default=None, metavar="{0,1}",
@@ -7430,9 +7822,13 @@ examples:
     rb = sub.add_parser("reboot", help="Restart agent with session resume (alias for migrate)")
     rb.add_argument("id", help="Agent ID or name")
     rb.add_argument("--to", default=None, help="Target machine (host:port). Omit for local reboot.")
+    rb.add_argument("--tool-launcher", default=None,
+                    help="auto or a custom launcher prefix; inherit saved launcher, otherwise use environment default. Auto reboot never falls back locally.")
     mig_a = sub.add_parser("migrate", help="Restart or move agent with session resume")
     mig_a.add_argument("id", help="Agent ID or name")
     mig_a.add_argument("--to", default=None, help="Target machine (host:port). Omit for local reboot.")
+    mig_a.add_argument("--tool-launcher", default=None,
+                       help="Same launcher policy as reboot")
 
     # attach
     at = sub.add_parser("attach", help="Attach to an agent's TMUX session (interactive)")

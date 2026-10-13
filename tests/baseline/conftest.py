@@ -63,16 +63,21 @@ def isolated_cam_home(tmp_path, monkeypatch):
     monkeypatch.setattr(api_token, "TOKEN_ENV_FILE", str(cam_home / "token.env"))
     monkeypatch.setattr(api_token, "LEGACY_TOKEN_ENV", str(cam_home / "inference-hub.env"))
     monkeypatch.setattr(api_token, "MY_TOKENS_YAML", str(home / ".my_tokens.yaml"))
-    monkeypatch.setattr(api_resolver, "CODEX_API_CONFIG_DIR", str(home / ".codex-api"))
-    monkeypatch.setattr(api_resolver, "CODEX_LOGIN_SKILLS_DIR", str(home / ".codex" / "skills"))
+    monkeypatch.setattr(
+        api_resolver, "LEGACY_CODEX_API_CONFIG_DIR",
+        str(home / ".legacy-codex-api"))
 
     return paths
 
 
 @pytest.fixture
 def invoke_cli(monkeypatch):
-    """Invoke the real argparse/dispatch boundary and return its exit code."""
+    """Invoke argparse/dispatch with local execution for lifecycle contracts."""
     def invoke(*argv):
+        if (argv and argv[0] == "run" and not any(
+                arg == "--tool-launcher" or arg.startswith("--tool-launcher=")
+                for arg in argv)):
+            argv += ("--tool-launcher", "none")
         monkeypatch.setattr(sys, "argv", ["camc"] + list(argv))
         try:
             cli.main()

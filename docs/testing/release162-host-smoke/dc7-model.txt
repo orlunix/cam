@@ -1,0 +1,42 @@
+/home/hren/.cam/release162-smoke-dc7-1791813395/codex/.camc-auto-launch-hn8mmcip/run
+(venv) dc7-container-xterm-26:~/.cam/release162-smoke-dc7-1791813395/codex> /home/hren/.cam/release162-smoke-dc7-1791813395/codex/.camc-auto-launch-hn8mmcip/run
+Attaching job execution host: dc2-sim-c24-005 for job: <1042549372>
+Codex couldn't start because its local database appears to be damaged.
+Moving the damaged local database aside so Codex can rebuild it from saved data.
+Technical details:
+  Location: /home/hren/.codex/0e94a507/logs_2.sqlite
+  Cause: failed to initialize state runtime at /home/hren/.codex/0e94a507: failed to open log DB at /home/hren/.codex/0e94a507/logs_2.sqlite: error returned from database: (code: 26) file is not a database: error returned from database: (code: 26) file is not a database: (code: 26) file is not a database
+Codex rebuilt its local database.
+Codex detected a damaged local database, moved it into a backup folder, and will continue startup with a fresh database.
+Database path: /home/hren/.codex/0e94a507/logs_2.sqlite
+Backup folder: /home/hren/.codex/0e94a507/db-backups/sqlite-1791813547-0
+Press Enter to continue.
+
+⚠ Ignoring unknown `features` requirement `ultrafast_mode` from requirements layers: enterprise-managed requirements Fast mode access (rbac-fast-mode), enterprise-managed requirements Ultra Fast mode access (rbac-
+  ultrafast-mode), enterprise-managed requirements unrestricted-coding-assistant-codex (34556808-5c3a-408a-a68b-50bb9553125b), /etc/codex/requirements.toml
+
+╭──────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.147.0)                       │
+│                                                  │
+│ model:       gpt-5.4 max   /model to change      │
+│ directory:   /home/scratch.hren_gpu/.cam/…/codex │
+│ permissions: YOLO mode                           │
+╰──────────────────────────────────────────────────╯
+
+  Tip: Use /feedback to send logs to the maintainers when something looks off.
+
+
+› Reply exactly CAMC_DC7_MODEL_CHECK_OK. Do not use tools or modify files.
+
+
+⚠ Ignoring unknown `features` requirement `ultrafast_mode` from requirements layers: enterprise-managed requirements Fast mode access (rbac-fast-mode), enterprise-managed requirements Ultra Fast mode access (rbac-
+  ultrafast-mode), enterprise-managed requirements unrestricted-coding-assistant-codex (34556808-5c3a-408a-a68b-50bb9553125b), /etc/codex/requirements.toml
+
+⚠ Model metadata for `gpt-5.4` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.
+
+■ {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account."}}
+
+
+› Summarize recent commits
+
+  gpt-5.4 max · /home/scratch.hren_gpu/.cam/release162-smoke-dc7-1791813395/codex

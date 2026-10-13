@@ -1,6 +1,8 @@
-# Claude Code adapter — interactive mode with --allowed-tools.
+# Claude Code adapter — interactive mode with default permissions.
 #
-# Runs in interactive mode (not headless -p) with pre-authorized tools.
+# Runs in interactive mode (not headless -p). Ordinary launches keep the
+# permission behavior configured by Claude Code; autorun launches opt into
+# the explicit bypass below.
 # Permission prompts use numbered menus:
 #   "1. Yes  2. Yes, don't ask again  3. No" — send "1" without Enter.
 # Trust dialogs (v2.1+) use Ink select menus:
@@ -23,11 +25,9 @@ isolate_tool_home = false
 # alternate-screen use. tmux execs argv directly without a shell,
 # so this works identically under bash / zsh / csh / tcsh / fish / dash
 # login shells — /usr/bin/env is the single source of truth.
-command = ["env", "CLAUDE_CODE_DISABLE_MOUSE=1", "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1", "claude", "--allowed-tools", "Bash,Edit,Read,Write,Glob,Grep,WebFetch,TodoWrite,NotebookEdit"]
-auto_permission_mode = true     # add --permission-mode auto to launch command (default on as of 2026-06-11)
-# A launcher targets a non-local environment where camc cannot drive Claude's
-# permission UI reliably.  This replaces (rather than accompanies) the
-# conflicting `--permission-mode auto` used by ordinary local launches.
+command = ["env", "CLAUDE_CODE_DISABLE_MOUSE=1", "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1", "claude"]
+# A remote/current autorun launch cannot rely on camc's local permission UI,
+# so only that path adds Claude's autorun permission option.
 launcher_autorun_args = ["--dangerously-skip-permissions"]
 prompt_after_launch = true
 startup_wait = 90.0

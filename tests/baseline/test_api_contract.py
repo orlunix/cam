@@ -87,10 +87,8 @@ def test_api_alias_and_cli_secret_precedence_reach_run_without_secret_output(
         return Proxy(), 1777
 
     monkeypatch.setattr(cli, "_start_api_proxy", start_proxy)
-    monkeypatch.setattr(
-        api_resolver, "ensure_codex_api_config_dir",
-        lambda *args, **kwargs: str(isolated_cam_home.home / ".codex-api"),
-    )
+    monkeypatch.setattr(api_resolver, "configure_runtime_home_api",
+                        lambda *args, **kwargs: None)
 
     code = invoke_cli(
         "run", "api baseline", "--tool", "codex", "--api", "glm",
@@ -103,6 +101,8 @@ def test_api_alias_and_cli_secret_precedence_reach_run_without_secret_output(
     assert "environment-secret" not in output.out + output.err
     _session, _command, _workdir, kwargs = run_spy.sessions[0]
     assert kwargs["env"][api_resolver.CODEX_API_ENV_KEY] == "cli-secret"
+    assert kwargs["env"]["CODEX_HOME"].endswith(
+        "/.codex/a1b2c3d4")
     record = storage.AgentStore(str(isolated_cam_home.agents)).list()[0]
     assert record["api"]["name"] == "glm-5.2"
     assert "cli-secret" not in repr(record)

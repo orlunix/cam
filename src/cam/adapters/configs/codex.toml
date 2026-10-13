@@ -34,14 +34,23 @@ wire_api = "responses"
 catalog_file = "camc-model-catalog.json"
 shared = ["auth.json", "skills", "skills.json", "mcp.json", "mcp.toml", "mcp.yaml", "mcp.yml", "hooks.json"]
 shared_globs = ["*"]
-shared_exclude = ["tmp", "config.toml", "camc-model-catalog.json"]
+# Daemon sockets and locks belong to this agent, especially across LSF hosts.
+shared_exclude = ["tmp", "config.toml", "camc-model-catalog.json", "app-server-control", "app-server-daemon"]
+
+[runtime.overlay.config_boolean_overrides]
+# Managed agents must not offer npm installation in a remote resume menu.
+check_for_update_on_startup = false
+
+[runtime.overlay.launcher_config_boolean_overrides]
+# Remote command shells must retain the resolved allocation environment.
+allow_login_shell = false
 
 [launch]
-command = ["codex", "-c", "features.goals=true"]
+command = ["codex"]
 trust_workspace = true
 # Launcher jobs cannot rely on camc's local confirmation loop reaching the
-# target process.  Ordinary launches continue to use the conditional
-# /etc/codex/requirements.toml policy below.
+# target process.  Ordinary launches use the same --yolo alias only when the
+# conditional /etc/codex/requirements.toml policy below matches.
 launcher_autorun_args = ["--yolo"]
 prompt_after_launch = true
 startup_wait = 20.0
@@ -54,13 +63,13 @@ ready_pattern = "^[❯›>]"
 ready_flags = ["MULTILINE"]
 prompt_submit_delay = 0.5
 
-# Auto-run is enabled only for the managed autorun profile and when the
-# requirements file does not explicitly exclude danger-full-access. The
-# condition is fail-closed; syntax/runtime errors keep the old command.
+# Auto-run is enabled only for the managed autorun profile when its
+# requirements policy matches. The condition is fail-closed; syntax/runtime
+# errors keep the ordinary command.
 [launch.auto_run]
 autorun_config = "/etc/codex/requirements.toml"
 autorun_condition = "'autorun' in path_parts and (('allowed_sandbox_modes' not in config and 'allowed_permission_profiles' not in config) or 'danger-full-access' in config.get('allowed_sandbox_modes', []) or config.get('allowed_permission_profiles', {}).get(':danger-full-access') is True)"
-autorun_args = ["--sandbox", "danger-full-access", "--ask-for-approval", "never"]
+autorun_args = ["--yolo"]
 
 [state]
 strategy = "first"

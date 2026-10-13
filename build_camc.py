@@ -63,6 +63,7 @@ MODULE_ORDER = [
     "api_proxy",
     "api_resolver",
     "skills",
+    "bridge",
     "cli",
 ]
 
@@ -397,6 +398,14 @@ def build():
         parts.append("# " + "=" * 75)
         parts.append('')
         parts.append(body.strip())
+        if mod == "bridge":
+            # cli's lazy aliased imports are stripped in the single-file
+            # build; retain their names for normal and --hub-drain entry.
+            parts.extend([
+                "_hub_drain = hub_drain",
+                "_bridge_route = route",
+                "_bridge_submit = submit",
+            ])
         parts.append('')
 
     # Entry point

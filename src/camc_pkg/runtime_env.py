@@ -250,6 +250,12 @@ def ensure_agent_runtime_home(owner_id, spec, runtime=None):
 
         excluded = set(str(name) for name in
                        (spec.get("shared_exclude") or []))
+        for name in excluded:
+            previous = os.path.join(target, name)
+            source = os.path.join(donor, name)
+            if (os.path.islink(previous) and
+                    os.path.realpath(previous) == os.path.realpath(source)):
+                os.unlink(previous)
         names = []
         for name in (spec.get("shared") or []):
             text = str(name or "")
@@ -464,7 +470,8 @@ def _overlay_home_spec(spec):
 
 
 def configure_agent_runtime_home(owner_id, adapter, runtime, api_plan=None,
-                                 api_base_url="", isolate_tool_home=None):
+                                 api_base_url="", isolate_tool_home=None,
+                                 launcher=False):
     """Apply an adapter's shared-vs-local runtime declaration.
 
     The adapter declares whether its tool home is isolated by default, while
@@ -489,6 +496,33 @@ def configure_agent_runtime_home(owner_id, adapter, runtime, api_plan=None,
         if use_overlay:
             overlay_info = ensure_agent_runtime_home(
                 owner_id, overlay_spec, runtime)
+            overrides = dict(overlay.get("config_boolean_overrides") or {})
+            if launcher:
+                overrides.update(overlay.get("launcher_config_boolean_overrides") or {})
+            if overrides:
+                config_path = os.path.join(
+                    overlay_info["path"], overlay_spec["config_file"])
+                if os.path.islink(config_path):
+                    raise ValueError("runtime configuration must be a private snapshot")
+                try:
+                    with open(config_path) as handle:
+                        content = handle.read()
+                except FileNotFoundError:
+                    content = ""
+                first_table = re.search(r"(?m)^\s*\[", content)
+                boundary = first_table.start() if first_table else len(content)
+                top, tables = content[:boundary], content[boundary:]
+                for key, value in overrides.items():
+                    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", str(key)) or not isinstance(value, bool):
+                        raise ValueError("runtime config overrides must be named booleans")
+                    assignment = "%s = %s\n" % (key, "true" if value else "false")
+                    pattern = r"(?m)^\s*%s\s*=.*(?:\n|$)" % re.escape(key)
+                    top = (re.sub(pattern, assignment, top) if re.search(pattern, top)
+                           else assignment + top)
+                temporary = config_path + ".tmp.%d" % os.getpid()
+                with open(temporary, "w") as handle:
+                    handle.write(top + tables)
+                os.replace(temporary, config_path)
         selected_home = (overlay_info or {}).get("path") or str(
             spec.get("shared_home") or "~")
         info = ensure_runtime_split(spec, runtime, home=selected_home)
@@ -857,8 +891,8 @@ _GOLDEN_TOOL_PATHS = {
         "~/.local/bin/codex",
     ),
     "cursor": (
-        "/home/prgn_share/tools/cursor/cursor-cli/latest/bin/cursor-agent",
         "/home/tools_ai/cursor/cursor-cli/latest/bin/cursor-agent",
+        "/home/prgn_share/tools/cursor/cursor-cli/latest/bin/cursor-agent",
     ),
     "pi": (
         "/home/tools_ai/earendil-works/pi-coding-agent/latest/bin/pi",

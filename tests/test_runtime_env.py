@@ -51,19 +51,15 @@ def test_codex_autorun_condition_eval_enables_declared_args(tmp_path):
             "'autorun' in path_parts and "
             "config.get('features', {}).get('hooks') is True"
         ),
-        "autorun_args": [
-            "--sandbox", "workspace-write", "--ask-for-approval", "never"
-        ],
+        "autorun_args": ["--yolo"],
     })
 
     assert camc_cli._auto_run_args(config) == config.auto_run["autorun_args"]
 
 
-def test_codex_builtin_autorun_uses_danger_full_access_args():
+def test_codex_builtin_autorun_uses_yolo_only():
     config = camc_cli._load_config("codex")
-    assert config.auto_run["autorun_args"] == [
-        "--sandbox", "danger-full-access", "--ask-for-approval", "never",
-    ]
+    assert config.auto_run["autorun_args"] == ["--yolo"]
 
 
 def test_codex_auto_run_falls_back_when_global_config_missing(tmp_path):
@@ -645,6 +641,11 @@ def test_failed_startup_command_leaves_repairable_tmux_shell(tmp_path, monkeypat
     immediately failing command does not take away the user's terminal:
     they can type a repair command into the same session afterwards.
     """
+    # Isolate this command/exit-status test from the account's csh rc files.
+    import pwd
+    import types
+    monkeypatch.setattr(pwd, "getpwuid", lambda _uid:
+                        types.SimpleNamespace(pw_shell="/bin/sh"))
     session_id = "repair-terminal-" + uuid.uuid4().hex[:12]
     sockets_dir = tmp_path / "sockets"
     exit_status = tmp_path / "tool-exit.status"
@@ -677,10 +678,13 @@ def test_failed_startup_command_leaves_repairable_tmux_shell(tmp_path, monkeypat
             str(tmp_path),
             inherit_env=True,
             tmux_bin=shutil.which("tmux"),
-            tmux_config="",
+            tmux_config=transport.ensure_camc_tmux_config(
+                str(tmp_path / "tmux.conf")),
             exit_status_path=str(exit_status),
         )
-        time.sleep(0.25)
+        deadline = time.monotonic() + 10
+        while not exit_status.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
         assert exit_status.read_text().strip() == "7"
         assert transport.tmux_session_exists(session_id)
         assert transport.tmux_send_input(
@@ -742,6 +746,7 @@ def test_cmd_run_does_not_create_tmux_session_on_readiness_error(tmp_path, monke
         prompt = ""
         path = str(tmp_path / "work")
         no_inherit_env = True
+        tool_launcher = "none"
         name = None
         auto_exit = False
         auto_exit_enable = False
@@ -858,6 +863,7 @@ def test_cmd_run_ignores_context_env_setup(tmp_path, monkeypatch):
         prompt = ""
         path = str(tmp_path / "work")
         no_inherit_env = False
+        tool_launcher = "none"
         use_env_tool = False
         name = None
         auto_exit = False
@@ -929,6 +935,7 @@ def test_cmd_run_loads_context_for_metadata_only_after_launch(tmp_path, monkeypa
         prompt = "hello"
         path = str(tmp_path / "work")
         no_inherit_env = False
+        tool_launcher = "none"
         use_env_tool = False
         name = "pdx-test"
         auto_exit = False
@@ -1207,6 +1214,7 @@ def test_cmd_run_passes_adapter_readiness_to_check(tmp_path, monkeypatch):
         prompt = ""
         path = str(tmp_path / "work")
         no_inherit_env = True
+        tool_launcher = "none"
         name = None
         auto_exit = False
         auto_exit_enable = False
