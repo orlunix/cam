@@ -4,6 +4,16 @@ export function agentName(agent) {
   return String(agent?.task_name || agent?.task?.name || agent?.id?.slice(0, 8) || '');
 }
 
+/** Status shown and colored in the UI: alive exposes its running/idle state;
+ *  dead stays dead (the reason is separate metadata). Legacy statuses pass
+ *  through unchanged. */
+export function agentDisplayStatus(agent) {
+  const status = String(agent?.status || 'unknown').toLowerCase();
+  const state = String(agent?.state || '').toLowerCase();
+  if (status === 'alive' && (state === 'running' || state === 'idle')) return state;
+  return status;
+}
+
 export function agentTags(agent) {
   const tags = [];
   if (Array.isArray(agent?.tags)) tags.push(...agent.tags);
