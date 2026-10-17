@@ -2,6 +2,7 @@
  * Appearance settings — menu + output font sizes (mirrors Desktop Appearance tab).
  */
 import {
+  MOBILE_THEME_KEY,
   MOBILE_UI_FONT_KEY,
   MOBILE_OUTPUT_FONT_KEY,
   MOBILE_UI_MIN,
@@ -10,6 +11,7 @@ import {
   MOBILE_OUTPUT_MIN,
   MOBILE_OUTPUT_MAX,
   MOBILE_OUTPUT_DEFAULT,
+  readMobileTheme,
   readMobileUiFont,
   readMobileOutputFont,
   applyMobileAppearance,
@@ -22,6 +24,16 @@ export function renderAppearanceSettings(container) {
         <h2>Appearance</h2>
       </div>
       <form id="settings-form-appearance" class="form settings-section">
+        <div class="form-group appearance-row">
+          <label for="appearance-theme">Theme</label>
+          <div class="appearance-control">
+            <select id="appearance-theme">
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+              <option value="system">Match system</option>
+            </select>
+          </div>
+        </div>
         <p class="settings-help">
           <strong>Menu</strong> — navigation, lists, terminal chrome. Uses Material-style type scale (14/12/11px tiers); scales together.<br>
           <strong>Output</strong> — xterm + capture text only. A± / pinch adjusts terminal font, not the toolbar.
@@ -50,6 +62,7 @@ export function renderAppearanceSettings(container) {
     </div>
   `;
 
+  const themeSelect = container.querySelector('#appearance-theme');
   const menuInput = container.querySelector('#appearance-menu-font');
   const menuVal = container.querySelector('#appearance-menu-font-val');
   const outInput = container.querySelector('#appearance-output-font');
@@ -65,6 +78,7 @@ export function renderAppearanceSettings(container) {
   }
 
   function syncFromStorage() {
+    if (themeSelect) themeSelect.value = readMobileTheme();
     const ui = readMobileUiFont();
     const out = readMobileOutputFont();
     if (menuInput) menuInput.value = String(ui);
@@ -101,6 +115,14 @@ export function renderAppearanceSettings(container) {
 
   menuInput?.addEventListener('input', commitMenu);
   outInput?.addEventListener('input', commitOutput);
+
+  themeSelect?.addEventListener('change', () => {
+    const v = themeSelect.value;
+    try { localStorage.setItem(MOBILE_THEME_KEY, v); } catch {}
+    applyMobileAppearance();
+    const label = v === 'light' ? 'Light' : v === 'system' ? 'Match system' : 'Dark';
+    setStatus(`Theme: ${label}.`, 'is-ok');
+  });
 
   resetBtn?.addEventListener('click', () => {
     try {
