@@ -418,7 +418,49 @@ body.camui-v2 #content.agent-detail-active .output-bottom-controls {
   min-height: 0;
   padding-bottom: env(safe-area-inset-bottom, 0px);
   background: #1c2128;
-  transition: margin-bottom 120ms ease-out;
+  transition: transform 120ms ease-out;
+}
+
+body.camui-v2 #content.agent-detail-active .output-bottom-controls.keyboard-open {
+  position: relative;
+  z-index: 20;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.25);
+}
+
+body.camui-v2 #content.agent-detail-active .terminal-ime-buffer {
+  display: none;
+}
+
+body.camui-v2 #content.agent-detail-active .output-bottom-controls.ime-buffer-active .terminal-ime-buffer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 4px;
+  padding: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+body.camui-v2 #content.agent-detail-active .terminal-buffer-preview {
+  grid-column: 1 / -1;
+  overflow-x: auto;
+  color: var(--text-dim);
+  font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: nowrap;
+}
+
+body.camui-v2 #content.agent-detail-active .terminal-buffer-preview.hidden {
+  display: none;
+}
+
+body.camui-v2 #content.agent-detail-active .terminal-buffer-input {
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-input);
+  color: var(--text);
+  font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 body.camui-v2 #content.agent-detail-active .output-wrap {
@@ -2011,3 +2053,123 @@ body.camui-v2 .ext-name { font-weight: 600; color: #c9d1d9; }
 body.camui-v2 .ext-badge { font-size: 11px; font-weight: 400; color: #79b8ff; border: 1px solid rgba(88, 166, 255, 0.4); border-radius: 999px; padding: 1px 8px; margin-left: 6px; }
 body.camui-v2 .ext-meta { font-size: 12px; color: #8b949e; margin-top: 2px; }
 body.camui-v2 .ext-result { margin: 12px; padding: 12px; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; color: #c9d1d9; max-height: 55vh; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+
+/* === Light theme ===
+ * Mirrors web/css/desktop.css `body.desktop[data-theme="light"]`. Dark stays
+ * the unattributed default; this block only overrides what dark rules
+ * hardcode. Toggled by js/shared/mobile-appearance.js (body[data-theme]). */
+body.camui-v2[data-theme="light"] {
+  --bg: #f6f8fa;
+  --bg-card: #ffffff;
+  --bg-input: #f0f3f6;
+  --bg-hover: #eaeef2;
+  --border: #d0d7de;
+  --text: #1f2328;
+  --text-dim: #57606a;
+  --text-muted: #6e7781;
+  --accent: #0969da;
+  --accent-hover: #0757b8;
+  --green: #1a7f37;
+  --blue: #0969da;
+  --red: #cf222e;
+  --yellow: #9a6700;
+  --orange: #bc4c00;
+  --terminal-bg: #ffffff;
+  --terminal-fg: #1f2328;
+  --terminal-selection-bg: rgba(9, 105, 218, 0.24);
+  --ansi-bright-blue: #0550ae; /* xterm cursor */
+  color-scheme: light;
+}
+
+/* Hardcoded dark surfaces → light equivalents. */
+body.camui-v2[data-theme="light"] #content.agent-detail-active.terminal-ui-active #terminal-meta-bar {
+  border-bottom-color: #d0d7de;
+}
+body.camui-v2[data-theme="light"] #content.agent-detail-active .output-bottom-controls,
+body.camui-v2[data-theme="light"] #content.agent-detail-active .terminal-keybar,
+body.camui-v2[data-theme="light"] #content.agent-detail-active.terminal-ui-active .output-bottom-controls .input-section {
+  background: #f0f3f6;
+}
+body.camui-v2[data-theme="light"] #content.agent-detail-active .terminal-keybar {
+  border-top-color: #d0d7de;
+}
+body.camui-v2[data-theme="light"] #content.agent-detail-active .terminal-keybar .term-key {
+  background: #eaeef2;
+  color: #1f2328;
+}
+body.camui-v2[data-theme="light"] #content.agent-detail-active .terminal-keybar .term-key-more {
+  color: #57606a;
+}
+body.camui-v2[data-theme="light"] .nodes-manage-tab {
+  border-color: #d0d7de;
+  color: #57606a;
+}
+body.camui-v2[data-theme="light"] .nodes-import-toolbar .btn-sm {
+  border-color: #d0d7de;
+  background: #f0f3f6;
+  color: #1f2328;
+}
+body.camui-v2[data-theme="light"] #ssh-config-paste {
+  background: #f6f8fa;
+  color: #1f2328;
+  border-color: #d0d7de;
+}
+body.camui-v2[data-theme="light"] .ext-row {
+  border-color: #d0d7de;
+  background: #ffffff;
+}
+body.camui-v2[data-theme="light"] .ext-name { color: #1f2328; }
+body.camui-v2[data-theme="light"] .ext-badge {
+  color: #0969da;
+  border-color: rgba(9, 105, 218, 0.4);
+}
+body.camui-v2[data-theme="light"] .ext-meta { color: #57606a; }
+body.camui-v2[data-theme="light"] .ext-result {
+  background: #f6f8fa;
+  border-color: #d0d7de;
+  color: #1f2328;
+}
+
+/* Floating action buttons: keep the translucent look, flip the polarity. */
+body.camui-v2[data-theme="light"] #content.agent-detail-active .output-action-bar .action-fab {
+  border-color: rgba(31, 35, 40, 0.3);
+  background: rgba(255, 255, 255, 0.55);
+  color: rgba(31, 35, 40, 0.85);
+  text-shadow: none;
+}
+body.camui-v2[data-theme="light"] #content.agent-detail-active .output-action-bar .action-fab:active {
+  background: rgba(31, 35, 40, 0.12);
+}
+body.camui-v2[data-theme="light"] #content.agent-detail-active .output-action-bar .action-fab.history-btn.is-active {
+  background: rgba(9, 105, 218, 0.16);
+  border-color: rgba(9, 105, 218, 0.5);
+  color: #0969da;
+}
+
+/* Rich output (base styles are injected by js/mobile/rich-output.js). */
+body.camui-v2[data-theme="light"] .rich-line-heading { color: #1f2328; }
+body.camui-v2[data-theme="light"] .rich-line-command { color: #8250df; }
+body.camui-v2[data-theme="light"] .rich-line-error { color: #cf222e; }
+body.camui-v2[data-theme="light"] .rich-line-warning { color: #9a6700; }
+body.camui-v2[data-theme="light"] .rich-line-success { color: #1a7f37; }
+body.camui-v2[data-theme="light"] .rich-line-separator::before { border-top-color: rgba(87, 96, 106, 0.35); }
+body.camui-v2[data-theme="light"] .rich-inline-path { color: #0969da; }
+body.camui-v2[data-theme="light"] .rich-inline-code { color: #8250df; background: rgba(130, 80, 223, 0.10); }
+body.camui-v2[data-theme="light"] .rich-inline-quote { color: #0550ae; }
+
+/* Agent activity colors: alive (running/idle) vs dead. */
+body.camui-v2 .dot.alive { background: var(--blue); }
+body.camui-v2 .dot.idle { background: var(--yellow); }
+body.camui-v2 .dot.dead { background: var(--text-muted); }
+body.camui-v2 .badge-alive {
+  background: rgba(74, 158, 255, 0.15);
+  color: var(--blue);
+}
+body.camui-v2 .badge-idle {
+  background: rgba(210, 153, 34, 0.15);
+  color: var(--yellow);
+}
+body.camui-v2 .badge-dead {
+  background: rgba(136, 136, 136, 0.15);
+  color: var(--text-dim);
+}

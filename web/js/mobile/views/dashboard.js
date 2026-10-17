@@ -7,10 +7,13 @@ import {
   getNodeDisplayName,
   isAgentHostEnabled,
 } from '../../shared/node-host-meta.js';
-import { agentRouteQuery } from '../../shared/agent-helpers.js';
+import { agentDisplayStatus, agentRouteQuery } from '../../shared/agent-helpers.js';
 
 const STATUS_ICONS = {
   running: '<span class="dot running"></span>',
+  idle: '<span class="dot idle"></span>',
+  alive: '<span class="dot alive"></span>',
+  dead: '<span class="dot dead"></span>',
   completed: '<span class="dot completed"></span>',
   failed: '<span class="dot failed"></span>',
   timeout: '<span class="dot timeout"></span>',
@@ -179,14 +182,15 @@ export function renderDashboard(container) {
       filtered.forEach(agent => {
         const card = existingList.querySelector(`.agent-card[data-id="${agent.id}"]`);
         if (!card) return;
+        const displayStatus = agentDisplayStatus(agent);
         const badge = card.querySelector('.badge');
-        if (badge && badge.textContent !== agent.status) {
-          badge.textContent = agent.status;
-          badge.className = `badge badge-${agent.status}`;
+        if (badge && badge.textContent !== displayStatus) {
+          badge.textContent = displayStatus;
+          badge.className = `badge badge-${displayStatus}`;
         }
         const dot = card.querySelector('.dot');
-        if (dot && dot.className !== `dot ${agent.status}`) {
-          dot.className = `dot ${agent.status}`;
+        if (dot && dot.className !== `dot ${displayStatus}`) {
+          dot.className = `dot ${displayStatus}`;
         }
         const timeEl = card.querySelector('.agent-time');
         if (timeEl) timeEl.textContent = timeSince(agent.started_at);
@@ -209,9 +213,9 @@ export function renderDashboard(container) {
                 return `
                 <div class="agent-card${isEditing ? ' editing' : ''}" data-id="${agent.id}" data-host-key="${escapeHtml(hostKeyFromAgent(agent))}">
                   <div class="agent-card-header">
-                    ${statusIcon(agent.status)}
+                    ${statusIcon(agentDisplayStatus(agent))}
                     <span class="agent-name">${escapeHtml(agent.task_name || agent.id.slice(0, 8))}</span>
-                    <span class="badge badge-${agent.status}">${agent.status}</span>
+                    <span class="badge badge-${agentDisplayStatus(agent)}">${agentDisplayStatus(agent)}</span>
                     <button class="btn-sm btn-secondary edit-agent" data-id="${agent.id}" title="Edit">Edit</button>
                     ${canDelete ? `<button class="btn-delete-card" data-delete-id="${agent.id}" title="Delete">&times;</button>` : ''}
                   </div>

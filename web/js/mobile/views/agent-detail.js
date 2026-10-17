@@ -31,6 +31,7 @@ import { agentOpsSupported, getHubCapabilities } from '../../shared/hub-capabili
 import { recordAgentAccess } from '../../shared/agent-access.js';
 import { readMobileOutputFont, clearTerminalChromeInlineFont } from '../../shared/mobile-appearance.js';
 import {
+  agentDisplayStatus,
   findAgentByIdentity,
   parseAgentRouteHints,
   agentEndpointHints,
@@ -42,10 +43,19 @@ import {
   scrollRichOutputToBottom,
   disposeRichOutput,
 } from '../rich-output.js';
+import { createTerminalKeyComposer } from '../terminal-key-composer.js';
 
 const OUTPUT_MODE_KEY = 'cam_mobile_output_mode';
 const OUTPUT_MODE_DEFAULT_KEY = 'cam_mobile_output_mode_default_v4';
 const OUTPUT_MODE_DEFAULT = 'live';
+
+// Current camc model: alive/dead. Alive may be running or idle; dead reasons
+// are separate metadata. Keep legacy terminal statuses for older hosts, and
+// never hide output/terminal/input behind a running-status whitelist.
+const TERMINAL_AGENT_STATUSES = ['dead', 'completed', 'failed', 'killed', 'timeout', 'stopped'];
+function isTerminalStatus(status) {
+  return TERMINAL_AGENT_STATUSES.includes(status);
+}
 
 function mobileDirectTerminalDefault() {
   return !!(typeof window !== 'undefined'
@@ -145,7 +155,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   let cachedOutput = _prevOutput?.text || '';
   let _outputHash = _prevOutput?.hash || null;
   let agent = resolveAgent(state.get('agents') || []);
-  const isActiveAgent = agent && ['running', 'starting', 'pending'].includes(agent.status);
+  const isActiveAgent = agent && !isTerminalStatus(agent.status);
   // Phone Direct: always open in Terminal + auto SSH attach when entering a live agent.
   if (isActiveAgent && mobileDirectTerminalDefault() && canUseTerminalMode(api)) {
     outputMode = 'terminal';
@@ -157,7 +167,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     useFullOutput = false;
   }
   // Auto-switch to full output for completed agents (live capture returns empty)
-  if (agent && ['completed', 'failed', 'killed', 'timeout'].includes(agent.status)) {
+  if (agent && isTerminalStatus(agent.status)) {
     useFullOutput = true;
     outputMode = 'full';
   } else if (outputMode === 'full') {
@@ -169,6 +179,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   let _attachAttempt = 0;
   // Keep this per-detail-view so opening the native keyboard never collapses keys.
   let keybarExpanded = false;
+  const keyComposer = createTerminalKeyComposer();
   let bottomStatusTimer = null;
   // tmux copy-mode browsing state (terminal mode only). Set from the hub's
   // verified pane_in_mode read-back — mirrors the desktop invariant.
@@ -282,23 +293,30 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
 
   function terminalKeyBarHTML(visible = false) {
     return `
+      <div class="terminal-ime-buffer" id="terminal-ime-buffer">
+        <div class="terminal-buffer-preview" id="terminal-buffer-preview" aria-live="polite"></div>
+        <input type="text" id="terminal-buffer-input" class="terminal-buffer-input" placeholder="Type, then Send" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send">
+        <button type="button" class="btn-secondary btn-sm" id="terminal-buffer-clear">Clear</button>
+        <button type="button" class="btn-primary btn-sm" id="terminal-buffer-send">Send</button>
+      </div>
       <div class="terminal-keybar${visible ? '' : ' hidden'}${keybarExpanded ? ' is-expanded' : ''}" id="terminal-keybar">
         <div class="terminal-keybar-row terminal-keybar-primary">
           <button type="button" class="term-key" data-term-char="/" title="Slash">/</button>
-          <button type="button" class="term-key" data-term-char="y">y</button>
-          <button type="button" class="term-key" data-term-char="1">1</button>
           <button type="button" class="term-key" data-term-key="Enter" title="Enter">\u21b5</button>
           <button type="button" class="term-key" data-term-key="Escape">Esc</button>
           <button type="button" class="term-key" data-term-key="C-c" title="Ctrl-C">^C</button>
           <button type="button" class="term-key" data-term-key="Down" title="Down">\u2193</button>
+          <button type="button" class="term-key" data-term-key="Tab">Tab</button>
+          <button type="button" class="term-key term-key-mod" data-term-mod="shift">Shift</button>
           <button type="button" class="term-key" data-term-key="BSpace" title="Backspace">⌫</button>
           <button type="button" class="term-key term-key-more" data-term-action="more" aria-expanded="${keybarExpanded}" title="${keybarExpanded ? 'Hide extra keys' : 'Show more keys'}">${keybarExpanded ? 'Less' : 'More'}</button>
         </div>
         <div class="terminal-keybar-row terminal-keybar-secondary">
+          <button type="button" class="term-key" data-term-char="y">y</button>
+          <button type="button" class="term-key" data-term-char="1">1</button>
           <button type="button" class="term-key" data-term-char="2">2</button>
           <button type="button" class="term-key" data-term-char="3">3</button>
           <button type="button" class="term-key" data-term-char="4">4</button>
-          <button type="button" class="term-key" data-term-key="Tab">Tab</button>
           <button type="button" class="term-key" data-term-key="BTab">S-Tab</button>
           <button type="button" class="term-key term-key-mod" data-term-mod="ctrl">Ctrl</button>
           <button type="button" class="term-key term-key-mod" data-term-mod="alt">Alt</button>
@@ -376,6 +394,18 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     syncHistoryChrome();
   }
 
+  function openTerminalBuffer() {
+    const controls = container.querySelector('#output-bottom-controls');
+    const input = container.querySelector('#terminal-buffer-input');
+    if (!controls || !input) {
+      focusTerminalForAgent(agentId);
+      return;
+    }
+    controls.classList.add('ime-buffer-active');
+    input.focus();
+    if (_syncVisualViewport) _syncVisualViewport();
+  }
+
   function wireTerminalKeyBar() {
     const keybar = container.querySelector('#terminal-keybar');
     if (!keybar) return;
@@ -398,23 +428,32 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         dropTerminalIme();
       });
     }
-    let ctrlLatch = false;
-    let altLatch = false;
+    const bufferInput = container.querySelector('#terminal-buffer-input');
+    const bufferPreview = container.querySelector('#terminal-buffer-preview');
+    const bufferClear = container.querySelector('#terminal-buffer-clear');
+    const bufferSend = container.querySelector('#terminal-buffer-send');
 
     const syncModButtons = () => {
-      keybar.querySelectorAll('[data-term-mod="ctrl"]').forEach(el => {
-        el.classList.toggle('active', ctrlLatch);
+      const mods = keyComposer.modifiers();
+      keybar.querySelectorAll('[data-term-mod]').forEach(el => {
+        el.classList.toggle('active', !!mods[el.dataset.termMod]);
       });
-      keybar.querySelectorAll('[data-term-mod="alt"]').forEach(el => {
-        el.classList.toggle('active', altLatch);
-      });
+    };
+    const syncComposerPreview = () => {
+      if (!bufferPreview) return;
+      const text = keyComposer.preview();
+      bufferPreview.textContent = text;
+      bufferPreview.classList.toggle('hidden', !text);
+    };
+    const syncComposer = () => {
+      syncModButtons();
+      syncComposerPreview();
     };
 
     const sendRaw = async (data) => {
       if (isTerminalMode() && mobileTerminalInput()) {
         if (!terminalSessionReady(agentId)) {
-          state.toast('Terminal not connected', 'error');
-          return;
+          throw new Error('Terminal not connected');
         }
         // No focusTerminalForAgent here: quick keys must not focus xterm's
         // helper textarea — that pops the soft keyboard on every tap.
@@ -424,42 +463,78 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       await sendAgentInput(data, false);
     };
 
+    const flushBuffer = async (enter) => {
+      const text = bufferInput ? bufferInput.value : '';
+      const bytes = keyComposer.draft(text, enter);
+      if (!bytes) return;
+      try {
+        await sendRaw(bytes);
+        keyComposer.clear();
+        if (bufferInput) bufferInput.value = '';
+      } catch (e) {
+        state.toast(e.message, 'error');
+      } finally {
+        syncComposer();
+      }
+    };
+
+    if (bufferInput) {
+      let composing = false;
+      bufferInput.addEventListener('compositionstart', () => { composing = true; });
+      bufferInput.addEventListener('compositionend', () => { composing = false; });
+      bufferInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !composing) {
+          e.preventDefault();
+          void flushBuffer(true);
+        }
+      });
+    }
+    if (bufferClear) {
+      bufferClear.addEventListener('pointerdown', (e) => e.preventDefault());
+      bufferClear.addEventListener('click', () => {
+        keyComposer.clear();
+        if (bufferInput) bufferInput.value = '';
+        syncComposer();
+      });
+    }
+    if (bufferSend) {
+      bufferSend.addEventListener('pointerdown', (e) => e.preventDefault());
+      bufferSend.addEventListener('click', () => { void flushBuffer(false); });
+    }
+
     keybar.querySelectorAll('[data-term-mod]').forEach(btn => {
       btn.addEventListener('click', () => {
-        const mod = btn.dataset.termMod;
-        if (mod === 'ctrl') {
-          ctrlLatch = !ctrlLatch;
-          if (ctrlLatch) altLatch = false;
-        } else if (mod === 'alt') {
-          altLatch = !altLatch;
-          if (altLatch) ctrlLatch = false;
-        }
-        syncModButtons();
+        keyComposer.toggleModifier(btn.dataset.termMod);
+        syncComposer();
       });
     });
 
     keybar.querySelectorAll('[data-term-key]').forEach(btn => {
       btn.addEventListener('click', () => {
-        void sendAgentKey(btn.dataset.termKey).catch(e => state.toast(e.message, 'error'));
-        ctrlLatch = false;
-        altLatch = false;
-        syncModButtons();
+        const key = btn.dataset.termKey;
+        const hasText = !!(bufferInput && bufferInput.value);
+        if (key === 'Enter' && (hasText || keyComposer.hasModifiers() || keyComposer.hasPending())) {
+          void flushBuffer(true);
+          return;
+        }
+        if (keyComposer.hasModifiers() || keyComposer.hasPending()) {
+          keyComposer.queueKey(key, 'key');
+          syncComposer();
+          return;
+        }
+        void sendAgentKey(key).catch(e => state.toast(e.message, 'error'));
       });
     });
 
     keybar.querySelectorAll('[data-term-char]').forEach(btn => {
       btn.addEventListener('click', () => {
-        let ch = btn.dataset.termChar || '';
-        if (ctrlLatch && ch.length === 1) {
-          const code = ch.toLowerCase().charCodeAt(0);
-          ch = code >= 97 && code <= 122 ? String.fromCharCode(code - 96) : ch;
-        } else if (altLatch && ch.length === 1) {
-          ch = `\x1b${ch}`;
+        const ch = btn.dataset.termChar || '';
+        if (keyComposer.hasModifiers() || keyComposer.hasPending()) {
+          keyComposer.queueKey(ch, 'char');
+          syncComposer();
+          return;
         }
         void sendRaw(ch).catch(e => state.toast(e.message, 'error'));
-        ctrlLatch = false;
-        altLatch = false;
-        syncModButtons();
       });
     });
 
@@ -483,7 +558,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
 
     const host = container.querySelector('#terminal-host');
     if (host) {
-      host.addEventListener('click', () => focusTerminalForAgent(agentId));
+      host.addEventListener('click', () => openTerminalBuffer());
 
       // Swipe gestures, active ONLY in tmux copy mode — outside it the
       // handlers return immediately, so existing touch behavior (selection,
@@ -687,10 +762,9 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   // #content is the parent — we toggle flex layout on it
   const contentEl = document.getElementById('content');
 
-  // ======= visualViewport: keyboard padding only (never pin #app height — resume drift) =======
+  // ======= visualViewport: floating keyboard offset (never pin #app height — resume drift) =======
   let _vvCleanup = null;
   let _syncVisualViewport = null;
-  let _lastVisualKeyboardGap = -1;
   function setupVisualViewport() {
     const vv = window.visualViewport;
     if (!vv) return;
@@ -712,14 +786,10 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       // accessory, so only that wrapper receives the keyboard offset.
       if (inp) inp.style.marginBottom = bottomControls ? '' : (keyboardOpen ? `${gap}px` : '');
       if (bottomControls) {
-        // Status, keys, and the Live composer move as one accessory above the
-        // native keyboard. This preserves More/Less state without overlap.
-        bottomControls.style.marginBottom = keyboardOpen ? `${gap}px` : '';
+        // Move the accessory visually without changing flex layout or the
+        // terminal's measured size. Transform never creates a resize cycle.
+        bottomControls.style.transform = keyboardOpen ? `translateY(-${gap}px)` : '';
         bottomControls.classList.toggle('keyboard-open', keyboardOpen);
-      }
-      if (Math.abs(gap - _lastVisualKeyboardGap) > 1) {
-        _lastVisualKeyboardGap = gap;
-        if (bottomControls && isTerminalMode()) requestAnimationFrame(() => scheduleTerminalFit(agentId));
       }
       if (keyboardOpen && autoScroll) {
         const pane = container.querySelector('#output-pane');
@@ -745,8 +815,9 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       if (inp) inp.style.marginBottom = '';
       const bottomControls = container.querySelector('#output-bottom-controls');
       if (bottomControls) {
-        bottomControls.style.marginBottom = '';
+        bottomControls.style.transform = '';
         bottomControls.classList.remove('keyboard-open');
+        bottomControls.classList.remove('ime-buffer-active');
       }
       _syncVisualViewport = null;
     };
@@ -852,8 +923,9 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     }
     const badge = container.querySelector('.detail-title .badge');
     if (badge) {
-      badge.textContent = updated.status;
-      badge.className = `badge badge-${updated.status}`;
+      const displayStatus = agentDisplayStatus(updated);
+      badge.textContent = displayStatus;
+      badge.className = `badge badge-${displayStatus}`;
     }
     const meta = container.querySelector('#meta-line');
     if (meta && !meta.classList.contains('hidden')) {
@@ -863,7 +935,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   }
 
   function agentIsRunnable() {
-    return agent && ['running', 'starting', 'pending'].includes(agent.status);
+    return agent && !isTerminalStatus(agent.status);
   }
 
   function scheduleAutoAttach() {
@@ -890,7 +962,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         setTerminalViewActive(agentId, true);
         updateTerminalChrome(true);
         await resumeTerminalForAgent(api, agent, terminalHost);
-        focusTerminalForAgent(agentId);
+        openTerminalBuffer();
       }
       updateTerminalMetaBar();
       return { ok: true, reused: true };
@@ -913,7 +985,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       state.toast(`Terminal attach: ${res.error}`, 'error', 6000);
     } else if (res?.ok && isTerminalMode()) {
       scheduleTerminalFit(agentId);
-      focusTerminalForAgent(agentId);
+      openTerminalBuffer();
     }
     updateTerminalMetaBar();
     return res;
@@ -986,7 +1058,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     outputTimer = null;
     updateOutputModeMenu();
     applyOutputMode();
-    const active = agent && ['running', 'starting', 'pending'].includes(agent.status);
+    const active = agent && !isTerminalStatus(agent.status);
     if ((outputMode === 'live' || outputMode === 'rich') && active) {
       void loadOutput();
       restartOutputPoll();
@@ -1026,7 +1098,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       }
     }
 
-    if (agent && ['running', 'starting', 'pending'].includes(agent.status)
+    if (agent && !isTerminalStatus(agent.status)
         && mobileDirectTerminalDefault() && canUseTerminalMode(api)) {
       outputMode = 'terminal';
       useFullOutput = false;
@@ -1037,7 +1109,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       cachedOutput = existingPane.textContent;
     }
 
-    const isActive = ['running', 'starting', 'pending'].includes(agent.status);
+    const isActive = !isTerminalStatus(agent.status);
     const prompt = agent.prompt || '';
     const showTerminalOnRender = isActive && outputMode === 'terminal' && canUseTerminalMode(api);
     const showRichOnRender = outputMode === 'rich' && outputCaptureSupported();
@@ -1051,7 +1123,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           <button class="back-btn" id="back-btn">&larr;</button>
           <div class="detail-title">
             <h2>${escapeHtml(agent.task_name || agent.id.slice(0, 8))}</h2>
-            <span class="badge badge-${agent.status}">${agent.status}</span>
+            <span class="badge badge-${agentDisplayStatus(agent)}">${agentDisplayStatus(agent)}</span>
           </div>
           <div class="detail-actions-inline" style="position:relative;">
             <button class="overflow-menu-btn" id="menu-btn">\u22ee</button>
@@ -1101,7 +1173,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           <button class="back-btn" id="back-btn">&larr;</button>
           <div class="detail-title">
             <h2>${escapeHtml(agent.task_name || agent.id.slice(0, 8))}</h2>
-            <span class="badge badge-${agent.status}">${agent.status}</span>
+            <span class="badge badge-${agentDisplayStatus(agent)}">${agentDisplayStatus(agent)}</span>
           </div>
           <div class="detail-actions-inline" style="position:relative;">
             <button class="overflow-menu-btn" id="menu-btn">\u22ee</button>
@@ -1189,7 +1261,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid #333;flex-shrink:0;">
         <div style="display:flex;align-items:center;gap:8px;">
           <span style="font-weight:600;font-size:14px;">${name}</span>
-          <span class="badge badge-${agent.status}" style="font-size:10px;">${agent.status}</span>
+          <span class="badge badge-${agentDisplayStatus(agent)}" style="font-size:10px;">${agentDisplayStatus(agent)}</span>
         </div>
         <div style="display:flex;gap:4px;">
           <button class="btn-sm" id="fs-refresh">\u21bb</button>
@@ -1982,23 +2054,26 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   // Pass cached agent from state to avoid blocking on a network fetch —
   // the page layout appears instantly, output loads in background.
   render(agent).then(() => {
-    if (!isTerminalMode() && ['running', 'starting', 'pending'].includes(agent?.status) && !useFullOutput) {
+    if (agent && !isTerminalMode() && !isTerminalStatus(agent.status) && !useFullOutput) {
       restartOutputPoll();
     }
   });
 
   const unsub = state.subscribe((data) => {
     const updated = resolveAgent(data.agents || []);
-    if (updated && updated.status !== agent?.status) {
+    if (updated && (updated.status !== agent?.status || updated.state !== agent?.state)) {
+      const statusChanged = updated.status !== agent?.status;
       patchAgentHeader(updated);
       agent = updated;
-      const nowActive = ['running', 'starting', 'pending'].includes(updated.status);
-      if (!nowActive) {
-        void disposeTerminalForAgent(agentId);
-      } else if (nowActive && mobileDirectTerminalDefault() && canUseTerminalMode(api)) {
-        outputMode = 'terminal';
-        useFullOutput = false;
-        applyOutputMode();
+      if (statusChanged) {
+        const nowActive = !isTerminalStatus(updated.status);
+        if (!nowActive) {
+          void disposeTerminalForAgent(agentId);
+        } else if (nowActive && mobileDirectTerminalDefault() && canUseTerminalMode(api)) {
+          outputMode = 'terminal';
+          useFullOutput = false;
+          applyOutputMode();
+        }
       }
     }
   });
