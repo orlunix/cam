@@ -1,16 +1,13 @@
 package com.cam.app;
 
-import android.webkit.WebView;
-
 import com.jcraft.jsch.ChannelExec;
 import com.jcraft.jsch.Session;
 
-import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -21,16 +18,15 @@ public final class MobileTerminalManager {
     private static final int TERM_MIN_COLS = 40;
     private static final int TERM_MIN_ROWS = 4;
     private static final int CONNECT_MS = MobileSshPool.CONNECT_MS;
+    private static final int MAX_PENDING_BYTES = 512 * 1024;
 
     private final MobileEmbeddedHub hub;
-    private final WebView webView;
     private final AtomicInteger seq = new AtomicInteger();
     private final Map<String, Entry> sessions = new ConcurrentHashMap<>();
     private final Map<String, String> agentSessions = new ConcurrentHashMap<>();
 
-    public MobileTerminalManager(MobileEmbeddedHub hub, WebView webView) {
+    public MobileTerminalManager(MobileEmbeddedHub hub) {
         this.hub = hub;
-        this.webView = webView;
     }
 
     private static final class Entry {
@@ -38,20 +34,21 @@ public final class MobileTerminalManager {
         ChannelExec channel;
         OutputStream stdin;
         Thread reader;
+        MobileWebSocket.Connection client;
         volatile boolean active = true;
         volatile boolean streamReady = false;
-        final StringBuilder pendingOut = new StringBuilder();
+        final ByteArrayOutputStream pendingOut = new ByteArrayOutputStream();
         String sessionId;
         String agentId;
         int cols;
         int rows;
     }
 
-    public JSONObject open(String agentId, int cols, int rows, JSONObject hints) {
+    public JSONObject open(String agentId, int cols, int rows, JSONObject hints,
+            MobileWebSocket.Connection client) {
         String aid = agentId != null ? agentId.trim() : "";
-        if (aid.isEmpty()) {
-            return err("invalid_args", "agentId is required");
-        }
+        if (aid.isEmpty()) return err("invalid_args", "agentId is required");
+        if (client == null) return err("invalid_args", "terminal WebSocket is required");
         int c = clampCols(cols);
         int r = clampRows(rows);
         String sessionKey = agentSessionKey(aid, hints);
@@ -60,6 +57,7 @@ public final class MobileTerminalManager {
         if (existing != null && sessions.containsKey(existing)) {
             Entry ent = sessions.get(existing);
             if (ent != null && ent.active && channelAlive(ent)) {
+                replaceClient(ent, client);
                 resizeEntry(ent, c, r);
                 try {
                     return okSession(existing, true);
@@ -82,6 +80,8 @@ public final class MobileTerminalManager {
                 plan.detail != null ? plan.detail : "attach failed");
         }
 
+        Session session = null;
+        ChannelExec channel = null;
         try {
             String command = plan.command;
             String sessionId = "t" + seq.incrementAndGet() + "-" + System.currentTimeMillis();
@@ -89,12 +89,11 @@ public final class MobileTerminalManager {
                 + MobileHubLog.endpoint(plan.auth));
 
             String key = MobileSshPool.poolKey(plan.auth);
-            Session session;
             synchronized (MobileSshPool.lockFor(key)) {
                 session = MobileSshExec.openSession(plan.auth, true);
             }
 
-            ChannelExec channel = (ChannelExec) session.openChannel("exec");
+            channel = (ChannelExec) session.openChannel("exec");
             channel.setCommand(command);
             channel.setPty(true);
             channel.setPtyType("xterm-256color");
@@ -107,6 +106,7 @@ public final class MobileTerminalManager {
             ent.stdin = channel.getOutputStream();
             ent.agentId = aid;
             ent.sessionId = sessionId;
+            ent.client = client;
             ent.cols = c;
             ent.rows = r;
 
@@ -117,22 +117,25 @@ public final class MobileTerminalManager {
             ent.reader.setDaemon(true);
             ent.reader.start();
 
-            // Hold PTY output until JS sends the first resize (final layout).
             MobileHubLog.ssh("terminal open ok session=" + sessionId + " agent=" + aid);
             return okSession(sessionId, false);
         } catch (Exception e) {
+            try { if (channel != null) channel.disconnect(); } catch (Exception ignored) {}
+            try { if (session != null) MobileSshAuth.disconnectFully(session); } catch (Exception ignored) {}
             MobileHubLog.ssh("terminal open fail agent=" + aid + " " + e.getMessage());
             String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-            return err(msg.toLowerCase().contains("auth") ? "auth_failed" : "connect_failed", msg);
+            String error = msg.toLowerCase().contains("host_key_changed") ? "host_key_changed"
+                : (msg.toLowerCase().contains("auth") ? "auth_failed" : "connect_failed");
+            return err(error, msg);
         }
     }
 
-    public JSONObject input(String sessionId, String data) {
+    public JSONObject input(String sessionId, byte[] data) {
         try {
             Entry ent = sessions.get(sessionId);
             if (ent == null || !ent.active) return err("not_found", "terminal session not found");
-            if (data != null && !data.isEmpty()) {
-                ent.stdin.write(data.getBytes(StandardCharsets.UTF_8));
+            if (data != null && data.length > 0) {
+                ent.stdin.write(data);
                 ent.stdin.flush();
             }
             return new JSONObject().put("ok", true);
@@ -147,9 +150,6 @@ public final class MobileTerminalManager {
             if (ent == null || !ent.active) return err("not_found", "terminal session not found");
             int c = clampCols(cols);
             int r = clampRows(rows);
-            if (c < TERM_MIN_COLS || r < TERM_MIN_ROWS) {
-                return new JSONObject().put("ok", true).put("ignored", true);
-            }
             resizeEntry(ent, c, r);
             return new JSONObject().put("ok", true);
         } catch (Exception e) {
@@ -166,8 +166,12 @@ public final class MobileTerminalManager {
         }
     }
 
-    /** tmux copy-mode control (enter/up/cancel) — fast path rides the
-     *  terminal's long-lived SSH session; falls back to a fresh connection. */
+    public void closeClient(String sessionId, MobileWebSocket.Connection client) {
+        Entry ent = sessions.get(sessionId);
+        if (ent != null && ent.client == client) drop(sessionId);
+    }
+
+    /** tmux copy-mode control on the terminal's long-lived SSH session. */
     public JSONObject copyMode(String sessionId, String action) {
         try {
             Entry ent = sessions.get(sessionId);
@@ -191,10 +195,16 @@ public final class MobileTerminalManager {
         return false;
     }
 
-    public void closeAllSessions() {
-        for (String sessionId : sessions.keySet()) {
-            drop(sessionId);
+    public int activeSessionCount() {
+        int count = 0;
+        for (Entry ent : sessions.values()) {
+            if (ent != null && ent.active && channelAlive(ent)) count++;
         }
+        return count;
+    }
+
+    public void closeAllSessions() {
+        for (String sessionId : sessions.keySet()) drop(sessionId);
     }
 
     private static boolean channelAlive(Entry ent) {
@@ -213,26 +223,16 @@ public final class MobileTerminalManager {
                 ent.channel.setPtySize(cols, rows, cols * 8, rows * 16);
             }
         } catch (Exception ignored) {}
-        markStreamReady(ent, ent.sessionId);
+        markStreamReady(ent);
     }
 
     /** First resize from JS: drop pre-layout PTY bytes, then stream live output. */
-    private void markStreamReady(Entry ent, String sessionId) {
-        if (ent == null || sessionId == null || ent.streamReady) return;
+    private void markStreamReady(Entry ent) {
+        if (ent == null || ent.streamReady) return;
         synchronized (ent.pendingOut) {
-            ent.pendingOut.setLength(0);
+            ent.pendingOut.reset();
         }
         ent.streamReady = true;
-    }
-
-    private void flushPending(Entry ent, String sessionId) {
-        if (ent == null || sessionId == null || !ent.streamReady) return;
-        String pending;
-        synchronized (ent.pendingOut) {
-            pending = ent.pendingOut.toString();
-            ent.pendingOut.setLength(0);
-        }
-        if (!pending.isEmpty()) emitDataNow(sessionId, pending);
     }
 
     private void pump(String sessionId, Entry ent) {
@@ -242,13 +242,11 @@ public final class MobileTerminalManager {
             while (ent.active) {
                 int n = in.read(buf);
                 if (n < 0) break;
-                if (n > 0) {
-                    emitData(sessionId, new String(buf, 0, n, StandardCharsets.UTF_8));
-                }
+                if (n > 0) emitData(ent, buf, n);
             }
         } catch (Exception ignored) {
         } finally {
-            emitStatus(sessionId, "closed", 0, null);
+            emitStatus(ent, "closed", 0, null);
             drop(sessionId);
         }
     }
@@ -261,6 +259,12 @@ public final class MobileTerminalManager {
         String port = hints.has("machine_port") && !hints.isNull("machine_port")
             ? hints.optString("machine_port", "22") : "22";
         return agentId + "|" + user + "@" + host + ":" + port;
+    }
+
+    private void replaceClient(Entry ent, MobileWebSocket.Connection client) {
+        MobileWebSocket.Connection previous = ent.client;
+        ent.client = client;
+        if (previous != null && previous != client) previous.close();
     }
 
     private void drop(String sessionId) {
@@ -277,44 +281,36 @@ public final class MobileTerminalManager {
         }
         try { if (ent.channel != null) ent.channel.disconnect(); } catch (Exception ignored) {}
         try { if (ent.session != null) MobileSshAuth.disconnectFully(ent.session); } catch (Exception ignored) {}
+        MobileWebSocket.Connection client = ent.client;
+        ent.client = null;
         ent.session = null;
+        if (client != null) client.close();
     }
 
-    private void emitData(String sessionId, String data) {
-        if (webView == null || data == null || data.isEmpty()) return;
-        Entry ent = sessions.get(sessionId);
-        if (ent != null && !ent.streamReady) {
+    private void emitData(Entry ent, byte[] data, int length) throws Exception {
+        if (data == null || length <= 0) return;
+        if (!ent.streamReady || ent.client == null) {
             synchronized (ent.pendingOut) {
-                if (ent.pendingOut.length() < 512 * 1024) ent.pendingOut.append(data);
+                int remaining = MAX_PENDING_BYTES - ent.pendingOut.size();
+                if (remaining > 0) ent.pendingOut.write(data, 0, Math.min(remaining, length));
             }
             return;
         }
-        emitDataNow(sessionId, data);
+        MobileWebSocket.Connection client = ent.client;
+        if (client != null) client.sendBinary(data, 0, length);
     }
 
-    private void emitDataNow(String sessionId, String data) {
-        if (webView == null || data == null || data.isEmpty()) return;
+    private void emitStatus(Entry ent, String kind, int code, String signal) {
         try {
+            MobileWebSocket.Connection client = ent.client;
+            if (client == null) return;
             JSONObject msg = new JSONObject();
-            msg.put("sessionId", sessionId);
-            msg.put("data", data);
-            final String js = "window.__camTermEvent&&window.__camTermEvent('data',"
-                + JSONObject.quote(msg.toString()) + ")";
-            webView.post(() -> webView.evaluateJavascript(js, null));
-        } catch (Exception ignored) {}
-    }
-
-    private void emitStatus(String sessionId, String kind, int code, String signal) {
-        if (webView == null) return;
-        try {
-            JSONObject msg = new JSONObject();
-            msg.put("sessionId", sessionId);
+            msg.put("type", "status");
+            msg.put("sessionId", ent.sessionId);
             msg.put("kind", kind);
             if (code != 0) msg.put("code", code);
             if (signal != null) msg.put("signal", signal);
-            final String js = "window.__camTermEvent&&window.__camTermEvent('status',"
-                + JSONObject.quote(msg.toString()) + ")";
-            webView.post(() -> webView.evaluateJavascript(js, null));
+            client.sendText(msg.toString());
         } catch (Exception ignored) {}
     }
 
