@@ -63,8 +63,6 @@ sed -i "s/android:versionName=\"[^\"]*\"/android:versionName=\"${VERSION}\"/" "$
 # Web assets: stamp CamUI V2 entry
 sed -i "s/content=\"v[^\"]*\"/content=\"v${VERSION}\"/" "$WEB_DIR/mobile.html"
 sed -i "s/?v=[0-9][^\"']*/?v=${VERSION}/g" "$WEB_DIR/mobile.html"
-sed -i "s/?v=[0-9][^\"']*/?v=${VERSION}/g" "$WEB_DIR/js/mobile/app.js"
-sed -i "s/?v=[0-9][^\"']*/?v=${VERSION}/g" "$WEB_DIR/js/mobile/settings.js"
 sed -i "s/?v=[0-9][^\"']*/?v=${VERSION}/g" "$WEB_DIR/css/mobile.css" 2>/dev/null || true
 
 # Clean
@@ -112,14 +110,17 @@ echo "[2/6] Linking resources..."
     "$BUILD_DIR"/compiled/*.flat
 
 echo "[3/6] Compiling Java..."
-# mwiede JSch 0.2.x (com.github.mwiede:jsch) — required for OpenSSH 9.x KEX on corporate hosts.
+# mwiede JSch 0.2.x + BouncyCastle (ed25519) are required runtime dependencies.
 JSCH_JAR="$PROJ_DIR/libs/jsch.jar"
+BCPROV_JAR="$PROJ_DIR/libs/bcprov.jar"
 CLASSPATH="$PLATFORM"
-if [ -f "$JSCH_JAR" ]; then
-    CLASSPATH="$CLASSPATH:$JSCH_JAR"
-else
-    echo "WARNING: $JSCH_JAR missing — Sync Host SSH will not build"
-fi
+for REQUIRED_JAR in "$JSCH_JAR" "$BCPROV_JAR"; do
+    if [ ! -f "$REQUIRED_JAR" ]; then
+        echo "ERROR: missing required dependency $REQUIRED_JAR"
+        exit 1
+    fi
+    CLASSPATH="$CLASSPATH:$REQUIRED_JAR"
+done
 javac \
     -source 17 -target 17 \
     -classpath "$CLASSPATH" \
@@ -129,6 +130,7 @@ javac \
     "$SRC_DIR/java/com/cam/app/CamAssetLoader.java" \
     "$SRC_DIR/java/com/cam/app/CamJsBridge.java" \
     "$SRC_DIR/java/com/cam/app/MobileEmbeddedHub.java" \
+    "$SRC_DIR/java/com/cam/app/MobileHostKeyRepository.java" \
     "$SRC_DIR/java/com/cam/app/MobileCredentialStore.java" \
     "$SRC_DIR/java/com/cam/app/MobileHubLog.java" \
     "$SRC_DIR/java/com/cam/app/MobileSshAuth.java" \
@@ -136,44 +138,47 @@ javac \
     "$SRC_DIR/java/com/cam/app/MobileSshExec.java" \
     "$SRC_DIR/java/com/cam/app/MobileAgentOutputSessions.java" \
     "$SRC_DIR/java/com/cam/app/MobileTerminalManager.java" \
+    "$SRC_DIR/java/com/cam/app/MobileTerminalService.java" \
+    "$SRC_DIR/java/com/cam/app/MobileWebSocket.java" \
     "$BUILD_DIR/gen/com/cam/app/R.java"
 
 echo "[4/6] Dexing..."
 D8_INPUT=$(find "$BUILD_DIR/classes" -name "*.class")
-JSCH_DEX="$JSCH_JAR"
-if [ -f "$JSCH_JAR" ]; then
-    # mwiede 0.2.16+ ships multi-release classes that d8 rejects — strip for dex.
-    STRIP_DIR="$BUILD_DIR/jsch-strip"
-    STRIPPED="$BUILD_DIR/jsch-android.jar"
-    rm -rf "$STRIP_DIR" "$STRIPPED"
-    mkdir -p "$STRIP_DIR"
-    (cd "$STRIP_DIR" && jar xf "$JSCH_JAR" && rm -rf META-INF/versions && jar cf "$STRIPPED" .)
-    JSCH_DEX="$STRIPPED"
-fi
-if [ -f "$JSCH_DEX" ]; then
-    "$BUILD_TOOLS/d8" \
-        --lib "$PLATFORM" \
-        --output "$BUILD_DIR/dex" \
-        $D8_INPUT \
-        "$JSCH_DEX"
-else
-    "$BUILD_TOOLS/d8" \
-        --lib "$PLATFORM" \
-        --output "$BUILD_DIR/dex" \
-        $D8_INPUT
-fi
+# Both dependencies ship multi-release classes that d8 rejects — strip for dex.
+STRIP_DIR="$BUILD_DIR/android-deps-strip"
+STRIPPED="$BUILD_DIR/dependencies-android.jar"
+rm -rf "$STRIP_DIR" "$STRIPPED"
+mkdir -p "$STRIP_DIR/jsch" "$STRIP_DIR/bcprov"
+(cd "$STRIP_DIR/jsch" && jar xf "$JSCH_JAR" && rm -rf META-INF/versions)
+(cd "$STRIP_DIR/bcprov" && jar xf "$BCPROV_JAR" && rm -rf META-INF/versions)
+jar cf "$STRIPPED" -C "$STRIP_DIR/jsch" . -C "$STRIP_DIR/bcprov" .
+"$BUILD_TOOLS/d8" \
+    --lib "$PLATFORM" \
+    --output "$BUILD_DIR/dex" \
+    $D8_INPUT \
+    "$STRIPPED"
 
 echo "[5/6] Packaging APK..."
-# Add dex to the APK
+# Add dex to the APK. Python is already a build dependency, so packaging does
+# not depend on a platform zip binary.
 cp "$BUILD_DIR/app.unsigned.apk" "$BUILD_DIR/app.tmp.apk"
-cd "$BUILD_DIR/dex"
-zip -u "$BUILD_DIR/app.tmp.apk" classes.dex
-cd "$PROJ_DIR"
+python3 - "$BUILD_DIR/app.tmp.apk" "$BUILD_DIR/dex/classes.dex" <<'PY'
+import sys
+import zipfile
+apk, dex = sys.argv[1:]
+with zipfile.ZipFile(apk, "a", compression=zipfile.ZIP_DEFLATED) as out:
+    out.write(dex, "classes.dex")
+PY
 
 # Bundle web app into assets/web/ and camc into assets/camc/.
 echo "  Bundling web assets..."
 mkdir -p "$BUILD_DIR/assets_staging/assets/web"
-rsync -a --exclude='*.apk' "$WEB_DIR/" "$BUILD_DIR/assets_staging/assets/web/"
+python3 - "$WEB_DIR" "$BUILD_DIR/assets_staging/assets/web" <<'PY'
+import shutil
+import sys
+src, dst = sys.argv[1:]
+shutil.copytree(src, dst, dirs_exist_ok=True, ignore=shutil.ignore_patterns("*.apk"))
+PY
 CAMC_DIST="$PROJ_DIR/../../dist/camc"
 if [ ! -f "$CAMC_DIST" ]; then
     echo "ERROR: Missing bundled camc at $CAMC_DIST"
@@ -183,16 +188,19 @@ mkdir -p "$BUILD_DIR/assets_staging/assets/camc"
 cp "$CAMC_DIST" "$BUILD_DIR/assets_staging/assets/camc/camc"
 chmod 700 "$BUILD_DIR/assets_staging/assets/camc/camc"
 
-# Bundle built-in extensions (SPEC v2 type-B packages)
-EXT_SRC="$PROJ_DIR/../../extensions/examples"
-if [ -d "$EXT_SRC/agent-doctor" ]; then
-  mkdir -p "$BUILD_DIR/assets_staging/assets/extensions"
-  cp -r "$EXT_SRC/agent-doctor" "$BUILD_DIR/assets_staging/assets/extensions/"
-fi
+# Extensions disabled for the 2.4.105 isolation build: no bundled agent-doctor.
 
-cd "$BUILD_DIR/assets_staging"
-zip -r -u "$BUILD_DIR/app.tmp.apk" assets/
-cd "$PROJ_DIR"
+python3 - "$BUILD_DIR/app.tmp.apk" "$BUILD_DIR/assets_staging" <<'PY'
+import pathlib
+import sys
+import zipfile
+apk, root = sys.argv[1:]
+root = pathlib.Path(root)
+with zipfile.ZipFile(apk, "a", compression=zipfile.ZIP_DEFLATED) as out:
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            out.write(path, path.relative_to(root).as_posix())
+PY
 
 # Zipalign
 "$BUILD_TOOLS/zipalign" -f 4 \

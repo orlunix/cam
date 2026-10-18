@@ -1,23 +1,15 @@
 /** Android CamBridge shims (Direct Hub + file picker).
  *
- * Pending-callback state lives on window.__camBridgeShared, NOT in module
- * instance state: mobile.html loads app.js with a ?v= stamp while views
- * import it bare, so this module can be evaluated as two instances, and the
- * shim is reinstalled on every agent-detail entry / onPageFinished. With
- * instance-private state, a reinstall orphaned in-flight callbacks — the
- * promise never settled and the UI wedged in the "Connecting via SSH…"
- * dead state until a manual page refresh.
+ * Pending-callback state lives on window.__camBridgeShared so reinstalling the
+ * shim cannot orphan in-flight native responses. Terminal bytes use /term
+ * WebSocket frames and never cross this string callback bridge.
  */
 
 const _sh = (() => {
   const fresh = () => ({
     dhSeq: 0,
-    termSeq: 0,
     dhPending: {},
-    termPending: {},
     filesPending: {},
-    termDataHandlers: new Set(),
-    termStatusHandlers: new Set(),
   });
   if (typeof window === 'undefined') return fresh();
   window.__camBridgeShared = window.__camBridgeShared || fresh();
@@ -28,7 +20,6 @@ const _sh = (() => {
 // is lost (or an SSH connect stalls), reject after a timeout instead of
 // hanging forever. A late native response for a timed-out id is dropped
 // harmlessly (the pending entry is already gone).
-const TERM_TIMEOUT_MS = { open: 60000, input: 10000, resize: 10000, close: 15000, copymode: 30000 };
 const HUB_OP_TIMEOUT_MS = 60000;      // start/stop/restart/check/logs/getProfile
 const HUB_REQUEST_TIMEOUT_MS = 90000; // hub API requests (SSH-backed, serialized)
 
@@ -37,71 +28,16 @@ function _armTimeout(pendingMap, id, ms, label) {
     const p = pendingMap[id];
     if (!p) return;
     delete pendingMap[id];
+    if (p.cleanup) p.cleanup();
     console.warn(`[mobile-bridge] ${label} timed out after ${ms}ms (id=${id})`);
     p.reject(new Error(`${label} timed out — no response from native side`));
   }, ms);
-}
-
-function invokeTerm(method, payload = {}) {
-  return new Promise((resolve, reject) => {
-    const bridge = nativeBridge();
-    if (!bridge || typeof bridge['term_' + method] !== 'function') {
-      reject(new Error('Terminal bridge unavailable'));
-      return;
-    }
-    const id = 'tm' + (++_sh.termSeq);
-    _sh.termPending[id] = { resolve, reject };
-    _sh.termPending[id].timer = _armTimeout(
-      _sh.termPending, id, TERM_TIMEOUT_MS[method] || 30000, `term_${method}`);
-    try {
-      bridge['term_' + method](id, JSON.stringify(payload || {}));
-    } catch (err) {
-      clearTimeout(_sh.termPending[id] && _sh.termPending[id].timer);
-      delete _sh.termPending[id];
-      reject(err);
-    }
-  });
-}
-
-function buildTermBridge() {
-  return {
-    open(payload) { return invokeTerm('open', payload); },
-    input(payload) { return invokeTerm('input', payload); },
-    resize(payload) { return invokeTerm('resize', payload); },
-    close(payload) { return invokeTerm('close', payload); },
-    copymode(payload) { return invokeTerm('copymode', payload); },
-    onData(cb) {
-      _sh.termDataHandlers.add(cb);
-      return () => _sh.termDataHandlers.delete(cb);
-    },
-    onStatus(cb) {
-      _sh.termStatusHandlers.add(cb);
-      return () => _sh.termStatusHandlers.delete(cb);
-    },
-  };
 }
 
 function nativeBridge() {
   const b = typeof window !== 'undefined' ? window.CamBridge : null;
   if (!b || typeof b.directHub_start !== 'function') return null;
   return b;
-}
-
-function nativeTermHost() {
-  const b = typeof window !== 'undefined' ? window.CamBridge : null;
-  if (!b || typeof b.term_open !== 'function') return null;
-  return b;
-}
-
-export function hasNativeTermApi() {
-  return !!nativeTermHost();
-}
-
-/** Android WebView cannot attach properties to the Java CamBridge object — keep term here. */
-function nativeTermBridge() {
-  if (typeof window !== 'undefined' && window.__camNativeTerm) return window.__camNativeTerm;
-  const b = typeof window !== 'undefined' && window.CamBridge && window.CamBridge.term;
-  return b || null;
 }
 
 function invokeDirectHub(method) {
@@ -157,21 +93,44 @@ function hubErr(data) {
   return err;
 }
 
-function invokeDirectHubRequest(method, path, body, token) {
+function invokeDirectHubRequest(method, path, body, token, signal) {
   return new Promise((resolve, reject) => {
     const bridge = nativeBridge();
     if (!bridge || typeof bridge.directHub_request !== 'function') {
       reject(new Error('Embedded Hub API bridge unavailable'));
       return;
     }
+    if (signal?.aborted) {
+      const err = new Error('Request aborted');
+      err.name = 'AbortError';
+      reject(err);
+      return;
+    }
     const id = 'dh' + (++_sh.dhSeq);
+    let onAbort = null;
     _sh.dhPending[id] = {
       resolve: (res) => {
         if (res && res.ok) resolve(res.data);
         else reject(hubErr(res));
       },
       reject,
+      cleanup: () => {
+        if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+      },
     };
+    if (signal) {
+      onAbort = () => {
+        const pending = _sh.dhPending[id];
+        if (!pending) return;
+        clearTimeout(pending.timer);
+        delete _sh.dhPending[id];
+        pending.cleanup();
+        const err = new Error('Request aborted');
+        err.name = 'AbortError';
+        reject(err);
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
     _sh.dhPending[id].timer = _armTimeout(
       _sh.dhPending, id, HUB_REQUEST_TIMEOUT_MS, `hub ${method} ${path}`);
     try {
@@ -179,7 +138,9 @@ function invokeDirectHubRequest(method, path, body, token) {
       bridge.directHub_request(id, method, path || '/', bodyJson, token || '');
     } catch (err) {
       clearTimeout(_sh.dhPending[id] && _sh.dhPending[id].timer);
+      const pending = _sh.dhPending[id];
       delete _sh.dhPending[id];
+      if (pending?.cleanup) pending.cleanup();
       reject(err);
     }
   });
@@ -193,49 +154,19 @@ function buildDirectHubApi() {
     restart: () => invokeDirectHub('restart'),
     logs: () => invokeDirectHub('logs'),
     getProfile: () => invokeDirectHub('getProfile'),
-    request: (method, path, body, token) => invokeDirectHubRequest(method, path, body, token),
+    request: (method, path, body, token, signal) => invokeDirectHubRequest(method, path, body, token, signal),
   };
 }
 
 export function installMobileCamBridgeShim() {
   if (typeof window === 'undefined') return false;
 
-  window.__camTermCb = (id, json) => {
-    const p = _sh.termPending[id];
-    clearTimeout(p && p.timer);
-    delete _sh.termPending[id];
-    if (!p) return;
-    let data = null;
-    if (json != null && json !== 'null') {
-      try { data = typeof json === 'string' ? JSON.parse(json) : json; } catch { data = null; }
-    }
-    if (data && data.ok === false) {
-      p.reject(new Error(data.detail || data.error || 'terminal failed'));
-    } else {
-      p.resolve(data);
-    }
-  };
-
-  window.__camTermEvent = (kind, json) => {
-    let msg = null;
-    try { msg = typeof json === 'string' ? JSON.parse(json) : json; } catch { return; }
-    if (!msg) return;
-    if (kind === 'data') {
-      for (const h of _sh.termDataHandlers) {
-        try { h(msg); } catch { /* noop */ }
-      }
-    } else if (kind === 'status') {
-      for (const h of _sh.termStatusHandlers) {
-        try { h(msg); } catch { /* noop */ }
-      }
-    }
-  };
-
   window.__camDirectHubCb = (id, ok, json) => {
     const p = _sh.dhPending[id];
     clearTimeout(p && p.timer);
     delete _sh.dhPending[id];
     if (!p) return;
+    if (p.cleanup) p.cleanup();
     let data = null;
     if (json != null && json !== 'null') {
       if (typeof json === 'string') {
@@ -280,14 +211,6 @@ export function installMobileCamBridgeShim() {
   };
 
   let ok = false;
-  const termHost = nativeTermHost();
-  if (termHost) {
-    const termApi = buildTermBridge();
-    window.__camNativeTerm = termApi;
-    try { window.CamBridge.term = termApi; } catch {}
-    ok = true;
-  }
-
   const bridge = nativeBridge();
   if (bridge) {
     const api = buildDirectHubApi();

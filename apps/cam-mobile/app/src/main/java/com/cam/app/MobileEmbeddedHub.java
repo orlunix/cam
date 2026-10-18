@@ -30,8 +30,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.TimeZone;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -52,8 +54,10 @@ public final class MobileEmbeddedHub {
     private static final String PRODUCT_VERSION = "cam-mobile-embedded-1";
 
     private final Context appContext;
-    private final ExecutorService executor = Executors.newCachedThreadPool();
+    private ExecutorService executor = Executors.newCachedThreadPool();
     private final AtomicBoolean acceptRunning = new AtomicBoolean(false);
+    private final MobileTerminalManager terminalManager;
+    private final Set<Socket> clientSockets = ConcurrentHashMap.newKeySet();
 
     private ServerSocket serverSocket;
     private int port = -1;
@@ -97,6 +101,7 @@ public final class MobileEmbeddedHub {
 
     public MobileEmbeddedHub(Context ctx) {
         this.appContext = ctx.getApplicationContext();
+        this.terminalManager = new MobileTerminalManager(this);
         MobileHubLog.setSink(this::log);
     }
 
@@ -158,6 +163,7 @@ public final class MobileEmbeddedHub {
             owned = true;
             startedAt = System.currentTimeMillis();
             acceptRunning.set(true);
+            if (executor.isShutdown()) executor = Executors.newCachedThreadPool();
             executor.execute(this::runAcceptLoop);
             log("info", "embedded Hub listening on 127.0.0.1:" + port);
             return okStart(false);
@@ -195,10 +201,16 @@ public final class MobileEmbeddedHub {
 
     public synchronized JSONObject stop() {
         acceptRunning.set(false);
+        terminalManager.closeAllSessions();
         if (serverSocket != null) {
             try { serverSocket.close(); } catch (IOException ignored) {}
             serverSocket = null;
         }
+        for (Socket client : clientSockets) {
+            try { client.close(); } catch (IOException ignored) {}
+        }
+        clientSockets.clear();
+        executor.shutdownNow();
         port = -1;
         token = null;
         owned = false;
@@ -311,6 +323,18 @@ public final class MobileEmbeddedHub {
         return port;
     }
 
+    public boolean hasActiveTerminalSessions() {
+        return terminalManager.hasActiveSessions();
+    }
+
+    public int activeTerminalSessionCount() {
+        return terminalManager.activeSessionCount();
+    }
+
+    public void closeTerminalSessions() {
+        terminalManager.closeAllSessions();
+    }
+
     private JSONObject okStart(boolean reused) {
         try {
             JSONObject out = new JSONObject();
@@ -343,7 +367,14 @@ public final class MobileEmbeddedHub {
         while (acceptRunning.get() && serverSocket != null && !serverSocket.isClosed()) {
             try {
                 Socket client = serverSocket.accept();
-                executor.execute(() -> handleClient(client));
+                clientSockets.add(client);
+                executor.execute(() -> {
+                    try {
+                        handleClient(client);
+                    } finally {
+                        clientSockets.remove(client);
+                    }
+                });
             } catch (IOException e) {
                 if (acceptRunning.get()) log("warn", "accept error: " + e.getMessage());
                 break;
@@ -370,6 +401,8 @@ public final class MobileEmbeddedHub {
 
             int contentLength = 0;
             String auth = null;
+            String upgrade = null;
+            String webSocketKey = null;
             String line;
             while ((line = reader.readLine()) != null && !line.isEmpty()) {
                 String lower = line.toLowerCase(Locale.US);
@@ -377,7 +410,25 @@ public final class MobileEmbeddedHub {
                     contentLength = Integer.parseInt(line.substring(15).trim());
                 } else if (lower.startsWith("authorization:")) {
                     auth = line.substring(14).trim();
+                } else if (lower.startsWith("upgrade:")) {
+                    upgrade = line.substring(8).trim();
+                } else if (lower.startsWith("sec-websocket-key:")) {
+                    webSocketKey = line.substring(18).trim();
                 }
+            }
+
+            if ("GET".equals(method) && "/term".equals(path)
+                && "websocket".equalsIgnoreCase(upgrade)) {
+                String ticket = queryValue(query, "token");
+                if (!checkBearer("Bearer " + ticket)) {
+                    out.write(jsonResponse(401, new JSONObject().put("error", "unauthorized")));
+                    out.flush();
+                    return;
+                }
+                c.setSoTimeout(0);
+                MobileWebSocket.Connection ws = MobileWebSocket.upgrade(c, in, out, webSocketKey);
+                handleTerminalClient(ws);
+                return;
             }
 
             byte[] bodyBytes = new byte[0];
@@ -391,6 +442,97 @@ public final class MobileEmbeddedHub {
         } catch (Exception e) {
             log("warn", "client error: " + e.getMessage());
         }
+    }
+
+    private static String queryValue(String query, String wanted) throws Exception {
+        for (String pair : (query != null ? query : "").split("&")) {
+            int eq = pair.indexOf('=');
+            String key = URLDecoder.decode(eq >= 0 ? pair.substring(0, eq) : pair, "UTF-8");
+            if (wanted.equals(key)) {
+                return URLDecoder.decode(eq >= 0 ? pair.substring(eq + 1) : "", "UTF-8");
+            }
+        }
+        return "";
+    }
+
+    private void handleTerminalClient(MobileWebSocket.Connection ws) {
+        String sessionId = null;
+        try {
+            while (ws.isOpen()) {
+                MobileWebSocket.Message message = ws.readMessage();
+                if (message == null) break;
+                if (message.opcode == MobileWebSocket.OP_BINARY) {
+                    if (sessionId != null) {
+                        JSONObject res = terminalManager.input(sessionId, message.payload);
+                        if (!res.optBoolean("ok", false)) sendTerminalError(ws, sessionId, res);
+                    }
+                    continue;
+                }
+                if (message.opcode != MobileWebSocket.OP_TEXT) continue;
+                JSONObject p = new JSONObject(new String(message.payload, StandardCharsets.UTF_8));
+                String action = p.optString("action", "");
+                String requestId = p.optString("requestId", "");
+                if ("open".equals(action)) {
+                    if (sessionId != null) {
+                        sendTerminalResult(ws, requestId, action,
+                            new JSONObject().put("ok", false).put("error", "already_open"));
+                        continue;
+                    }
+                    JSONObject hints = new JSONObject();
+                    if (p.has("machine_host") && !p.optString("machine_host", "").isEmpty()) {
+                        hints.put("machine_host", p.optString("machine_host", ""));
+                    }
+                    if (p.has("machine_user")) hints.put("machine_user", p.optString("machine_user", ""));
+                    if (p.has("machine_port") && !p.isNull("machine_port")) {
+                        hints.put("machine_port", p.optString("machine_port", ""));
+                    }
+                    JSONObject res = terminalManager.open(
+                        p.optString("agentId", ""), p.optInt("cols", 80), p.optInt("rows", 24),
+                        hints.length() > 0 ? hints : null, ws);
+                    if (res.optBoolean("ok", false)) sessionId = res.optString("sessionId", "");
+                    sendTerminalResult(ws, requestId, action, res);
+                } else if ("resize".equals(action) && sessionId != null) {
+                    sendTerminalResult(ws, requestId, action, terminalManager.resize(
+                        sessionId, p.optInt("cols", 80), p.optInt("rows", 24)));
+                } else if ("copymode".equals(action) && sessionId != null) {
+                    sendTerminalResult(ws, requestId, action,
+                        terminalManager.copyMode(sessionId, p.optString("mode", "")));
+                } else if ("close".equals(action)) {
+                    sendTerminalResult(ws, requestId, action, new JSONObject().put("ok", true));
+                    if (sessionId != null) terminalManager.close(sessionId);
+                    sessionId = null;
+                    ws.close();
+                } else {
+                    sendTerminalResult(ws, requestId, action,
+                        new JSONObject().put("ok", false).put("error", "invalid_request"));
+                }
+            }
+        } catch (Exception e) {
+            MobileHubLog.ssh("terminal WebSocket closed: " + e.getMessage());
+        } finally {
+            if (sessionId != null) terminalManager.closeClient(sessionId, ws);
+            ws.close();
+        }
+    }
+
+    private static void sendTerminalResult(MobileWebSocket.Connection ws, String requestId,
+            String action, JSONObject res) throws Exception {
+        JSONObject out = new JSONObject(res != null ? res.toString() : "{}");
+        out.put("type", "result");
+        out.put("requestId", requestId != null ? requestId : "");
+        out.put("action", action != null ? action : "");
+        ws.sendText(out.toString());
+    }
+
+    private static void sendTerminalError(MobileWebSocket.Connection ws, String sessionId,
+            JSONObject res) throws Exception {
+        JSONObject out = new JSONObject();
+        out.put("type", "status");
+        out.put("kind", "error");
+        out.put("sessionId", sessionId);
+        out.put("error", res != null ? res.optString("error", "input_failed") : "input_failed");
+        out.put("detail", res != null ? res.optString("detail", "") : "");
+        ws.sendText(out.toString());
     }
 
     private static final String CORS =
@@ -414,6 +556,22 @@ public final class MobileEmbeddedHub {
                 }
             } else if (!path.isEmpty() && !"/".equals(path)) {
                 return jsonResponse(404, new JSONObject().put("error", "not_found"));
+            }
+
+            if ("DELETE".equals(method) && "/api/system/ssh-host-key".equals(path)) {
+                JSONObject body = bodyBytes.length > 0
+                    ? new JSONObject(new String(bodyBytes, StandardCharsets.UTF_8))
+                    : new JSONObject();
+                String host = body.optString("host", "").trim();
+                if (host.isEmpty()) {
+                    return jsonResponse(400, new JSONObject().put("error", "missing_host"));
+                }
+                MobileSshAuth.Options opts = new MobileSshAuth.Options();
+                opts.host = host;
+                opts.port = body.optInt("port", 22);
+                opts.hostKeyStoreFile = new File(dataDir, "ssh-known-hosts.properties");
+                MobileSshAuth.forgetHostKey(opts);
+                return jsonResponse(200, new JSONObject().put("ok", true));
             }
 
             if ("GET".equals(method) && "/api/contexts".equals(path)) {
@@ -474,18 +632,6 @@ public final class MobileEmbeddedHub {
                 return jsonResponse(200, new JSONObject()
                     .put("version", PRODUCT_VERSION)
                     .put("data_dir", dataDir != null ? dataDir.getAbsolutePath() : JSONObject.NULL));
-            }
-
-            if ("GET".equals(method) && "/api/ext/list".equals(path)) {
-                return jsonResponse(200, new JSONObject().put("extensions", listExtensions()));
-            }
-
-            if ("POST".equals(method) && "/api/ext/call".equals(path)) {
-                JSONObject body = bodyBytes.length > 0
-                    ? new JSONObject(new String(bodyBytes, StandardCharsets.UTF_8))
-                    : new JSONObject();
-                JSONObject res = extCall(body);
-                return jsonResponse(extCallHttpStatus(res), res);
             }
 
             if ("GET".equals(method) && "/api/system/ssh-config".equals(path)) {
@@ -830,7 +976,7 @@ public final class MobileEmbeddedHub {
             JSONObject sent = sendAgentInput(agentId, text, sendEnter, body);
             if (sent.has("error") && !sent.optBoolean("ok", false)) {
                 String err = sent.optString("error", "send_failed");
-                int status = "agent_not_found".equals(err) ? 404
+                int status = "agent_not_found".equals(err) ? 502
                     : ("missing_text".equals(err) || "invalid_key".equals(err) ? 400 : 502);
                 return jsonResponse(status, sent);
             }
@@ -2888,6 +3034,8 @@ public final class MobileEmbeddedHub {
         caps.put("agent_list", true);
         caps.put("agent_ops", true);
         caps.put("agent_terminal", true);
+        caps.put("agent_terminal_ws", true);
+        caps.put("event_stream", false);
         caps.put("skillm", false);
         caps.put("ssh_config_import", false);
         return new JSONObject()

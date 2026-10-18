@@ -4,7 +4,7 @@
  * Relay/workstation Hubs without a capabilities block are treated as full.
  */
 
-/** @typedef {{ context_crud: boolean, context_sync: boolean, agent_list: boolean, agent_ops: boolean, agent_terminal: boolean, skillm: boolean, ssh_config_import: boolean, runtime: string }} HubCapabilities */
+/** @typedef {{ context_crud: boolean, context_sync: boolean, agent_list: boolean, agent_ops: boolean, agent_terminal: boolean, agent_terminal_ws: boolean, event_stream: boolean, skillm: boolean, ssh_config_import: boolean, runtime: string }} HubCapabilities */
 
 export const HUB_CAP_FULL = Object.freeze({
   context_crud: true,
@@ -12,6 +12,8 @@ export const HUB_CAP_FULL = Object.freeze({
   agent_list: true,
   agent_ops: true,
   agent_terminal: true,
+  agent_terminal_ws: false,
+  event_stream: true,
   skillm: true,
   ssh_config_import: true,
   runtime: 'embedded-full',
@@ -23,6 +25,8 @@ export const HUB_CAP_MOBILE_EMBEDDED = Object.freeze({
   agent_list: true,
   agent_ops: true,
   agent_terminal: true,
+  agent_terminal_ws: true,
+  event_stream: false,
   skillm: false,
   ssh_config_import: false,
   runtime: 'mobile-embedded',
@@ -43,6 +47,8 @@ export function parseHubCapabilities(healthOrConfig) {
     agent_list: raw.agent_list !== false,
     agent_ops: !!raw.agent_ops,
     agent_terminal: !!raw.agent_terminal,
+    agent_terminal_ws: !!raw.agent_terminal_ws,
+    event_stream: raw.event_stream !== false,
     skillm: !!raw.skillm,
     ssh_config_import: !!raw.ssh_config_import,
     runtime: String(raw.runtime || 'unknown'),
@@ -70,6 +76,11 @@ export function agentOpsSupported(caps = _cached) {
 export function terminalSupported(caps = _cached) {
   if (!caps) return true;
   return !!caps.agent_terminal || !!caps.agent_ops;
+}
+
+export function terminalWebSocketSupported(caps = _cached) {
+  if (!caps) return false;
+  return !!caps.agent_terminal_ws;
 }
 
 export function isMobileEmbeddedHub(caps = _cached) {

@@ -1,222 +1,161 @@
 # Mobile V2 — Stability Status & Roadmap
 
 **Living document.** Current line: branch `camui-desktop-v2`, version
-2.4.75 (2026-08-04). This file supersedes the older `docs/mobile/*`
-plans, which are stale (last touched 2026-06-28) — see §6 for what to
-trust where.
+2.4.111 (2026-10-18). This file supersedes the older `docs/mobile/*`
+plans — see §5 for what to trust where.
 
-## 1. Fixed recently (2.4.52–2.4.68)
+## 1. Stability fixes in 2.4.111
 
-- **ProxyJump chain hang root-caused and fixed** (2.4.96): on slow
-  links, the target's SSH banner could arrive with the channel-open
-  confirmation and was silently dropped — JSch's
-  `Channel.getInputStream()` *replaces* the channel data sink when
-  called after `connect()`. Fix: capture in/out streams before
-  connecting. Diagnosed via step-timing logs (2.4.95) that showed
-  `jump channel open ok` followed by a 120s handshake stall; desktop
-  (ssh2 forwardOut) working on the same bastion+target proved the
-  network was fine. Lesson: probe ordering side effects don't show on
-  fast local links — test chains under artificial delay.
-- **Desktop-parity batch** (2.4.66–2.4.71): agent stop/remove routes
-  (DELETE `/api/agents/:id[/history]`, force kill, terminal-state
-  no_op, local mirror); **sync live steps** (`syncProgress` map +
-  `/sync-status`, steps connecting → checking camc → uploading camc
-  (chunked SFTP %) → listing agents → importing) and **deploy
-  robustness** (version probe vs bundled `__version__`, python3 gate,
-  `camc_unrunnable`, 120s upload budget); **ProxyJump** (machine.jump
-  validation/resolution, JSch ChannelDirectTCPIP chain, pool lock
-  prefixes); **ssh_config import/export** (parse endpoint + paste
-  fallback UI, Export via Android share sheet, Import via SAF
-  Browse… → app-storage `?path=` — the desktop flow working unchanged;
-  picker MIME `*/*` so `.sshconfig` is selectable). Discoverability
-  fixes (2.4.69): Nodes Export button, unhidden Import tab, slimmed
-  agent overflow menu (dropped Scroll mode / Text ± / Scroll to
-  bottom), Delete for running agents. **Relay deprecation step 1**
-  (2.4.67): Direct is the default Settings tab, Relay labeled
-  deprecated — code untouched, removal comes later.
-- **Hub global lock** (2.4.54): `MobileEmbeddedHub.apiRequest` was globally
-  `synchronized` — one blackhole host's SSH attempt stalled every Direct
-  request (measured 117s in the repro). Removed the global monitor;
-  per-host ordering stays where it belongs (the SSH layer's
-  `MobileSshPool.lockFor()`); `ensureStoreLoaded`/`saveStore`
-  synchronized. Regression test: `apps/cam-mobile/test/lockrepro/` (real hub
-  classes on the JVM + Android stubs; `run.sh`).
-- **Copy-mode browsing UX, final form** (2.4.56–2.4.64): terminal
-  History button (`⤒` left / `⤓` right in the floating status row)
-  enters tmux copy mode via key-stream (`C-b [` — camc tmux.conf sets
-  no prefix); **vertical drag** on the terminal maps distance to line
-  counts over the live PTY (webpage-like scrolling, gated on
-  copyModeActive so selection/taps are untouched); **horizontal
-  swipes** jump cursor to top/bottom line of the current screen
-  (`send-keys -X top-line|bottom-line` via hub exec, stays in copy
-  mode); `⤓` tap exits (`q`). A fling/velocity experiment (2.4.61–63)
-  was tried and reverted — final model has no velocity detection.
-  Buttons + status pill use a 30% dark tint, no blur, light outline
-  (iterated 2.4.57–59 on-device). The verified command path
-  (`MobileEmbeddedHub.terminalCopyMode`: enter|up|cancel|top|bottom,
-  pane state read back via `#{pane_in_mode}`) remains available.
-- **"Connecting via SSH…" dead state** (2.4.52–2.4.53): native-bridge pending
-  callback maps were module-instance state and got orphaned on every
-  shim reinstall; with no timeout, the attach promise never settled and
-  only a manual page refresh recovered. Fixed by moving pending
-  maps/seq/handler sets to `window.__camBridgeShared` and adding
-  timeouts to every native bridge call (term_open 60s, input/resize
-  10s, close 15s, hub ops 60s, hub API 90s, with `console.warn`
-  diagnostics).
-- **Duplicate `init()`** (048a3e3): `app.js` is evaluated twice
-  (`?v=` entry + bare imports from views). Added an exactly-once guard,
-  deferred via microtask — the bare instance evaluates before the view
-  modules settle (TDZ), which caused the 2.4.52 black-screen
-  regression when the guard was first added without the defer.
-- Side effect observed on device: post-screenshot viewport drift no
-  longer reproduces (likely the duplicated layout-reset sequences were
-  fighting each other; root cause still unproven — see §5).
+The remaining items from the old §2 backlog were closed as one coordinated
+release. The 2.4.110 native whole-view IME translation is retained.
 
-## 2. Remaining issues
+### Terminal transport and lifecycle
 
-### 2.1 Bridge layer (JavascriptInterface string bridge) — structural
+- **Loopback binary WebSocket** — Android Direct PTY traffic now uses
+  `ws://127.0.0.1:<hub>/term?token=…`. `open/resize/copymode/close` are
+  ordered JSON control messages; input and output are binary frames. The old
+  `term_open/term_input/...` JavascriptInterface calls and the per-chunk
+  `evaluateJavascript` data path are gone.
+- **Backpressure and byte correctness** — each terminal has its own socket
+  and PTY reader. A slow client blocks only that reader/socket, providing TCP
+  backpressure instead of an unbounded JS callback queue. JS uses incremental
+  UTF-8 decoding, so characters split across frames are preserved. Input is
+  serialized by the socket reader, not one raw thread per keystroke.
+- **Foreground service** — active terminals no longer die at the old 10-minute
+  background timeout. A persistent notification keeps terminal transports
+  alive; without a terminal the normal WebView pause path is restored.
+- **Cleanup** — mode changes, hub stop/restart, and `MainActivity.onDestroy`
+  close WebSockets, PTYs, client sockets, and the executor. Relay capture
+  bridges are cached per `CamApi`, so revisiting a view cannot leak their 2s
+  poll timers.
 
-These are inherent to the string-callback bridge, not bugs with a
-local fix:
+### Direct, API, and web stability
 
-1. **String-only transport** — terminal byte stream crosses as
-   strings (binary needs base64: +33% size, CPU on both ends).
-   Throughput ceiling; heat/jank under heavy tmux output.
-2. **No backpressure** — a fast native reader can flood the WebView
-   JS thread; no flow control.
-3. **`term_input` spawns a raw `Thread` per keystroke with
-   unsynchronized stream writes** (`CamJsBridge.java`) — fast typing
-   can interleave bytes. Easy fix: single-thread executor.
-4. **JS timeout cannot cancel native work** — a timed-out `term_open`
-   keeps running natively; the session may appear later unattributed
-   (10-min idle reaper is the backstop).
-5. **Background bridge delivery suspension** — WebView `onPause`
-   suspends callback delivery; currently propped up by the 10-min
-   grace + keep-alive. A real fix means a foreground service
-   (Termius-style persistent notification) — product decision.
-6. Cleanup tails — Relay↔Direct mode switches don't close native
-   terminal sessions; `MainActivity.onDestroy` doesn't stop the
-   embedded hub (ServerSocket/thread-pool leak until process death).
+- **Direct auto-refresh** — the single app scheduler polls both Direct and
+  Relay. It is visibility-gated and has an in-flight guard; idle agents are
+  refreshed less often and foregrounding refreshes immediately.
+- **Hub drift contract** — `apps/cam-mobile/test/hub-contract/contract.json`
+  drives both the real Android `MobileEmbeddedHub` and the real desktop
+  `embedded-hub.cjs`. Health/capabilities, context CRUD/sync-status, agent
+  list, and output/input/key/upload status/error shapes must match.
+- **Canonical module URLs** — mobile local ES modules and the HTML module
+  entry use query-free canonical URLs. The old stamped-vs-bare duplicate
+  module instance class is removed by construction; the exactly-once init
+  guard remains as an invariant.
+- **Relay recovery** — socket identity checks prevent a stale close from
+  killing its healthy replacement. Reconnect uses visibility-aware exponential
+  backoff and refetches data; one request timeout no longer closes the whole
+  Relay socket.
+- **Request cancellation and cleanup** — optional `AbortSignal` reaches direct
+  HTTP, Relay, and the Android native Hub shim. Pending callbacks are removed
+  on abort and late replies are ignored. Agent output polling stops at a
+  terminal agent state; document/viewport listeners have explicit cleanup.
+- **Cache coherence** — successful mutations invalidate `cam_cache:*`.
+  Mobile identifies `_cached/_cachedAt` responses as cached data instead of
+  presenting them as live.
 
-### 2.2 Direct mode (phone-hosted hub)
+### SSH and platform security
 
-1. ~~**Global `synchronized apiRequest`** (`MobileEmbeddedHub.java`) —
-   one unreachable host stalls ALL Direct UI.~~ **Fixed in 2.4.54** (see
-   §1). Repro preserved in `apps/cam-mobile/test/lockrepro/`.
-2. **No agents auto-refresh** — Direct has neither agents polling nor
-   an event stream (`/api/ws` unimplemented in the hub, disabled
-   after 3 failures): dashboard state goes stale until manual refresh.
-3. **Drift risk** — `MobileEmbeddedHub.java` (~2.3k lines) reimplements
-   `embedded-hub.cjs`; no shared spec, behavior will drift.
-4. **ed25519 SSH keys unsupported** (found 2026-08-04 during the
-   ProxyJump two-hop test): the bundled mwiede JSch recognizes but
-   cannot *sign* with ed25519 — it needs a crypto provider (JDK 15+
-   EdDSA or BouncyCastle) and the APK ships neither. JSch's own log:
-   `ssh-ed25519 is not available` /
-   `Signature algorithms unavailable for non-agent identities =
-   [ssh-ed25519, ssh-ed448]`. Symptom: nodes with ed25519 keys fail
-   with `auth_failed`; RSA/ECDSA keys and password auth are fine.
-   Desktop is unaffected (ssh2 handles ed25519 natively). **Fix**:
-   bundle `bcprov` (BouncyCastle, ~4MB) in `apps/cam-mobile/libs/` and add it
-   to the javac/d8 classpath in `build.sh`, then verify ed25519
-   direct + chained connect in the JVM harness. **Workaround until
-   then**: use RSA keys or password auth.
+- **ed25519** — BouncyCastle is bundled beside mwiede JSch. Real sshd tests
+  cover ed25519 direct and two-hop ProxyJump authentication.
+- **Persistent TOFU host keys** — `StrictHostKeyChecking=yes` is backed by an
+  app-private trust store. First contact records the key; a later change is
+  rejected as `host_key_changed`. Nodes → Reset Host Key clears one host/port
+  after out-of-band verification. Every ProxyJump hop is checked.
+- **Release WebView** — remote debugging is off and unrestricted mixed content
+  is off. Only the user-enabled Android Direct loopback profile temporarily
+  selects Chromium compatibility mode for its `ws://127.0.0.1` terminal.
+- **XSS and dead installer cleanup** — hub-supplied status/tool/id/meta fields
+  are escaped or constrained to known class tokens. The unused `installApk`
+  bridge and its install permission were removed.
 
-### 2.3 Web layer
+## 2. Verification protocol
 
-1. **Module specifier split (P0 cluster, band-aided)** — `?v=` stamps
-   cover only 4 files (`build.sh` sed); the rest import bare. Still
-   live: `hub-capabilities.js` double instance breaks capability
-   gating in Relay mode (reads hit the empty bare instance);
-   `mobile-bridge.js` double instance made harmless by the shared
-   table. Real fix: consistent specifiers everywhere + build.sh sed
-   coverage (Batch 2).
-2. **App-level 10s loop** — no `document.hidden` check (polls while
-   backgrounded), no in-flight guard (slow-network ticks overlap and
-   `connect()` calls clobber each other).
-3. **agent-detail** — output polling continues after the agent reaches
-   a terminal state; the Cancel affordance is dead code
-   (`_inflightAbort` never assigned an `AbortController`); a
-   `document` click listener leaks per render.
-4. **localStorage `cam_cache:*`** — never invalidated on mutations;
-   `_cached` flag only consumed by desktop.
-5. ~~Relay reconnect (fixed 1s, no backoff, no socket-identity
-   check)~~ — **deprioritized: Relay is retiring.**
+### Automated gates
 
-### 2.4 Security surface (hardening, not urgent)
+Run from the repository root unless noted:
 
-- `setWebContentsDebuggingEnabled(true)` unconditionally (release too);
-  `MIXED_CONTENT_ALWAYS_ALLOW`; SSH `StrictHostKeyChecking=no`; a few
-  unescaped innerHTML insertions of hub-supplied values
-  (`dashboard.js` tool/machine/id/status, `agent-detail.js` status).
+```sh
+PATH="$HOME/tools/jdk17/bin:$PATH" bash apps/cam-mobile/test/lockrepro/run.sh
+cd apps/cam-desktop
+$HOME/tools/node/bin/node test/mobile-stability.test.cjs
+$HOME/tools/node/bin/node test/api-stability.test.cjs
+$HOME/tools/node/bin/node test/terminal-ws.test.cjs
+$HOME/tools/node/bin/node test/mobile-hub-contract.test.cjs
+$HOME/tools/node/bin/node test/mobile-nodes-form.test.cjs
+$HOME/tools/node/bin/node test/mobile-rich-output-isolation.test.cjs
+$HOME/tools/node/bin/node test/mobile-sync-host-timing.test.cjs
+$HOME/tools/node/bin/node test/terminal-follow.test.cjs
+$HOME/tools/node/bin/node test/tmux-controls.test.cjs
+$HOME/tools/node/bin/node test/hub.test.cjs
+```
 
-## 3. Roadmap
+The JVM suite also starts real user-level sshd instances when available. It
+covers WebSocket framing/backpressure-sensitive transport code, hub restart,
+blackhole concurrency, the shared contract, ed25519 direct/jump, changed-host
+key rejection, and explicit retrust.
 
-**Batch 1 — Direct daily-use (next release)**
-- ~~Un-serialize the hub~~ — **done in 2.4.54**.
-- Direct-mode agents polling in `refreshAgents` (~30s, visibility
-  gated) until `/api/ws` exists in the hub.
-- Quick wins: 10s loop visibility check + in-flight guard; stop output
-  polling in terminal state; wire `_inflightAbort`; `term_input`
-  single-thread executor (§2.1.3).
-- **Bundle BouncyCastle for ed25519 key auth** (§2.2.4) — add
-  `bcprov` to `apps/cam-mobile/libs/` + classpath in `build.sh`; verify with
-  ed25519 direct + chained connects in the JVM harness.
+`apps/cam-mobile/build.sh` performs the full mobile JS syntax gate, javac/d8,
+APK zipalign, signing, and signature verification. Packaging uses Python; a
+host `zip` or `rsync` binary is not required.
 
-**Batch 2 — module specifier unification (kills the P0 cluster)**
-- Consistent import specifiers across all of `web/js/mobile/**` and
-  `web/js/shared/**`; extend `build.sh` version stamping to cover
-  every stamped file. Acceptance: single evaluation of every module
-  (init guard's `console.warn` never fires), capability gating works
-  in Relay mode.
+### Required on-device smoke pass before release upload
 
-**Batch 3 — Plan B: terminal over loopback WebSocket (structural)**
-- Add a `/term` WebSocket endpoint to `MobileEmbeddedHub`; xterm.js
-  attaches via `ws://127.0.0.1` with binary frames. Replaces the
-  `term_*` string bridge — removes §2.1 items 1, 2, 4 and the whole
-  pending-callback failure class by mechanism. Unifies with Relay
-  mode's WS path (one terminal transport). Gate via hub capabilities;
-  keep the string bridge as fallback for one release.
-- Plan A (native terminal view via a `terminal-emulator` library,
-  ConnectBot/Termux style) remains the escape hatch if B still can't
-  meet the bar for long-running ops sessions.
+1. Fresh launch → dashboard loads (no black screen or duplicate init).
+2. Open agent detail → output streams; attach terminal → interactive input,
+   resize, copy mode, and sustained large output all work.
+3. Background an active terminal for more than 10 minutes → the persistent
+   notification remains and the same session resumes without reattach.
+4. Direct dashboard auto-refreshes. Sync a blackhole host → other hosts stay
+   usable and background ticks do not overlap.
+5. Verify ed25519 direct and ProxyJump nodes. A changed host key must fail;
+   after checking the new fingerprint out of band, Reset Host Key must recover.
+6. Screenshot ×5 + Home/resume ×5 → no viewport drift. Open/close the IME in
+   terminal and Nodes forms → the whole view translates correctly.
+7. Use `adb logcat` for release diagnostics (remote WebView debugging is off):
+   no `[mobile] init failed`, duplicate-init warning, or unexpected native Hub
+   timeout. Relay, if used, must use an HTTPS/WSS endpoint.
 
-**Deferred / product decisions**
-- Foreground service for background keep-alive (persistent
-  notification) vs. the current 10-min grace workaround.
-- `apps/cam-mobile/probe/` A/B/C root-causing of viewport drift (§5) if it
-  resurfaces.
+## 3. Current invariants and non-goals
 
-## 4. Verification protocol (lesson from the 2.4.52 regression)
+- The Android terminal has no silent fallback to the removed string bridge;
+  Relay capture remains a separate, explicitly selected path.
+- The shared contract allows documented capability differences (for example
+  mobile `agent_terminal_ws=true`, `event_stream=false`, `skillm=false`), but
+  not accidental route/status/response-shape drift.
+- TOFU detects every key change after first contact. It does not prove the
+  first key by itself; verify a new host's fingerprint out of band when that
+  threat matters.
+- Relay is still deprecated. The remaining work is product migration, not a
+  reason to reintroduce its old reconnect or polling bugs.
+- The iOS port remains a plan, not part of this Android release.
 
-No upload without an on-device smoke pass:
+No item from the old backlog is intentionally left open in 2.4.111. A new
+issue should be recorded here with a repro and an automated regression test
+before calling the release complete.
 
-1. Fresh launch → dashboard loads (no black screen).
-2. Open agent detail → output streams; attach terminal → interactive.
-3. Screenshot ×5 + Home/resume ×5 → no viewport drift.
-4. Nodes → sync a blackhole host → other hosts stay usable.
-5. `chrome://inspect` console: no `[mobile] init failed`, no
-   unexpected `[mobile-bridge] … timed out` warnings.
+## 4. Historical context
 
-## 5. Historical context
+- The global Direct Hub monitor (`synchronized apiRequest`) was removed in
+  2.4.54; the blackhole regression remains in `lockrepro` and must stay green.
+- ProxyJump banner loss on slow links was fixed in 2.4.96 by capturing channel
+  streams before `connect()`. The real two-hop test remains mandatory.
+- Viewport drift was a long-running WebView problem. The 2.4.110 model is
+  `adjustNothing` plus native decor-inset translation of the entire WebView,
+  with no JavaScript keyboard-offset or terminal-dimension changes.
+- Older documents describing `term_*`, a 10-minute background kill, missing
+  ed25519, disabled Direct refresh, or mixed/stamped module URLs are historical.
 
-Viewport drift (screenshot/app-switch scale/scroll corruption) was the
-long-standing issue: mitigations went native-chrome + WebView
-destroy/recreate (2.1.x) → single height model + layout resets
-(2.2.x–2.4.x). Root cause never isolated; `apps/cam-mobile/probe/` exists for
-it. As of 2.4.53 it no longer reproduces on the test device (see §1) —
-treat as "dormant, unproven".
-
-## 6. Doc trust map (as of 2026-07-25)
+## 5. Doc trust map
 
 | Doc | Status |
 |---|---|
 | **this file** | **authoritative** |
-| `ios-plan.md` | **authoritative** (iOS port plan, pending decisions) |
-| `web/AGENTS.md`, `apps/cam-mobile/AGENTS.md` | authoritative (agent onboarding) |
-| `README.md` | stale: "Relay only", resume section |
-| `native-plan.md`, `webview-resume.md` | historical (native line archived) |
-| `webview-probe.md` | method still valid; "fixed in 2.2.1+" claims predate reality |
-| `direct-mode.md`, `android-direct-hub-port-plan.md` | "current gap" sections predate MobileEmbeddedHub |
-| `desktop-parity-review.md` | feature matrix stale (Direct is full-capability now) |
-| `relay-first-plan.md` | historical (Relay retiring) |
+| `ios-plan.md` | **authoritative plan** (iOS not implemented) |
+| `web/AGENTS.md`, `apps/cam-mobile/AGENTS.md` | authoritative onboarding |
+| `README.md` | stale: Relay-only and resume descriptions |
+| `native-plan.md`, `webview-resume.md` | historical; native Kotlin line archived |
+| `webview-probe.md` | debugging method only; old fixed-version claims are stale |
+| `direct-mode.md`, `android-direct-hub-port-plan.md` | historical gap lists |
+| `desktop-parity-review.md` | use the executable shared contract instead |
+| `relay-first-plan.md` | historical; Relay is retiring |

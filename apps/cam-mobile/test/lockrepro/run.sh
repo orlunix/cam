@@ -16,15 +16,18 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 APP_SRC="$HERE/../../app/src/main/java/com/cam/app"
 JSCH_JAR="$HERE/../../libs/jsch.jar"
+BCPROV_JAR="$HERE/../../libs/bcprov.jar"
 WORK="$HERE/build"
 JSON_JAR="$WORK/json.jar"
 JAVAC="${JAVAC:-javac}"
 JAVA="${JAVA:-java}"
 
-if [ ! -f "$JSCH_JAR" ]; then
-    echo "ERROR: missing $JSCH_JAR"
-    exit 1
-fi
+for REQUIRED_JAR in "$JSCH_JAR" "$BCPROV_JAR"; do
+    if [ ! -f "$REQUIRED_JAR" ]; then
+        echo "ERROR: missing $REQUIRED_JAR"
+        exit 1
+    fi
+done
 mkdir -p "$WORK/real/com/cam/app" "$WORK/classes"
 
 # org.json jar (not in the Android build — android provides it in-framework)
@@ -34,41 +37,53 @@ if [ ! -f "$JSON_JAR" ]; then
 fi
 
 # Real classes under test — copied fresh so the test always reflects the tree.
-for f in MobileEmbeddedHub MobileSshAuth MobileSshPool MobileSshExec MobileHubLog MobileAgentOutputSessions; do
+for f in MobileEmbeddedHub MobileSshAuth MobileSshPool MobileSshExec MobileHubLog MobileAgentOutputSessions MobileTerminalManager MobileWebSocket MobileHostKeyRepository; do
     cp "$APP_SRC/$f.java" "$WORK/real/com/cam/app/"
 done
 
 SOURCES=$(find "$HERE/stubs" "$HERE/tests" "$WORK/real" -name "*.java")
-"$JAVAC" -cp "$JSCH_JAR:$JSON_JAR" -d "$WORK/classes" $SOURCES
+"$JAVAC" -cp "$JSCH_JAR:$BCPROV_JAR:$JSON_JAR" -d "$WORK/classes" $SOURCES
+
+echo "=== TestMobileWebSocket ==="
+"$JAVA" -cp "$WORK/classes:$JSCH_JAR:$BCPROV_JAR:$JSON_JAR" com.cam.app.TestMobileWebSocket
+
+echo "=== TestHubLifecycle ==="
+rm -rf "$WORK/lifecycle-data"
+"$JAVA" -cp "$WORK/classes:$JSCH_JAR:$BCPROV_JAR:$JSON_JAR" TestHubLifecycle "$WORK/lifecycle-data"
 
 echo "=== TestHubLock ==="
 rm -rf "$WORK/data"   # fresh store per run — the test seeds its own context
-"$JAVA" -cp "$WORK/classes:$JSCH_JAR:$JSON_JAR" TestHubLock "$WORK/data"
+"$JAVA" -cp "$WORK/classes:$JSCH_JAR:$BCPROV_JAR:$JSON_JAR" TestHubLock "$WORK/data"
 
 echo "=== TestAgentOps ==="
 rm -rf "$WORK/agentops-data"
 mkdir -p "$WORK/agentops-data/assets/extensions"
 cp -r "$HERE/../../../../extensions/examples/agent-doctor" "$WORK/agentops-data/assets/extensions/"
-"$JAVA" -cp "$WORK/classes:$JSCH_JAR:$JSON_JAR" TestAgentOps "$WORK/agentops-data"
+"$JAVA" -cp "$WORK/classes:$JSCH_JAR:$BCPROV_JAR:$JSON_JAR" TestAgentOps "$WORK/agentops-data"
+
+echo "=== TestHubContract ==="
+rm -rf "$WORK/contract-data"
+"$JAVA" -cp "$WORK/classes:$JSCH_JAR:$BCPROV_JAR:$JSON_JAR" TestHubContract "$WORK/contract-data" "$HERE/../hub-contract/contract.json"
 
 echo "=== TestProxyJump ==="
 rm -rf "$WORK/jump-data"
-"$JAVA" -cp "$WORK/classes:$JSCH_JAR:$JSON_JAR" TestProxyJump "$WORK/jump-data"
+"$JAVA" -cp "$WORK/classes:$JSCH_JAR:$BCPROV_JAR:$JSON_JAR" TestProxyJump "$WORK/jump-data"
 
 echo "=== TestSshConfig ==="
 rm -rf "$WORK/sshconfig-data"
-"$JAVA" -cp "$WORK/classes:$JSCH_JAR:$JSON_JAR" TestSshConfig "$WORK/sshconfig-data"
+"$JAVA" -cp "$WORK/classes:$JSCH_JAR:$BCPROV_JAR:$JSON_JAR" TestSshConfig "$WORK/sshconfig-data"
 
-# Real two-hop ProxyJump test: two user-level sshd instances (jump 22221,
-# target 22222), RSA key auth on both hops. Skipped when sshd is missing.
+# Real sshd tests: RSA ProxyJump plus ed25519 direct and two-hop auth.
 if [ -x /usr/sbin/sshd ]; then
-  echo "=== TestJumpConnect (real two-hop sshd) ==="
+  echo "=== TestJumpConnect (real sshd) ==="
   JT=/tmp/jumptest
   rm -rf "$JT"
   mkdir -p "$JT"/{jump,target}
+  trap 'pkill -f "sshd -f /tmp/jumptest/" 2>/dev/null || true' EXIT
   ssh-keygen -t rsa -b 3072 -N '' -f "$JT/id_rsa_test" -q
-  cat "$JT/id_rsa_test.pub" > "$JT/authorized_keys"
-  chmod 600 "$JT/authorized_keys" "$JT/id_rsa_test"
+  ssh-keygen -t ed25519 -N '' -f "$JT/id_ed25519_test" -q
+  cat "$JT/id_rsa_test.pub" "$JT/id_ed25519_test.pub" > "$JT/authorized_keys"
+  chmod 600 "$JT/authorized_keys" "$JT/id_rsa_test" "$JT/id_ed25519_test"
   ssh-keygen -t rsa -N '' -f "$JT/jump/hostkey" -q
   ssh-keygen -t rsa -N '' -f "$JT/target/hostkey" -q
   for inst in jump:22221 target:22222; do
@@ -88,10 +103,17 @@ EOF
     /usr/sbin/sshd -f "$JT/$name/sshd_config"
   done
   sleep 1
-  "$JAVA" -cp "$WORK/classes:$JSCH_JAR:$JSON_JAR" TestJumpConnect
-  RC=$?
+  "$JAVA" -cp "$WORK/classes:$JSCH_JAR:$BCPROV_JAR:$JSON_JAR" TestJumpConnect
+  "$JAVA" -cp "$WORK/classes:$JSCH_JAR:$BCPROV_JAR:$JSON_JAR" TestJumpConnect "$JT/id_ed25519_test" direct
+  "$JAVA" -cp "$WORK/classes:$JSCH_JAR:$BCPROV_JAR:$JSON_JAR" TestJumpConnect "$JT/id_ed25519_test"
+  pkill -f "sshd -f $JT/target/sshd_config" 2>/dev/null || true
+  rm -f "$JT/target/hostkey" "$JT/target/hostkey.pub"
+  ssh-keygen -t rsa -N '' -f "$JT/target/hostkey" -q
+  /usr/sbin/sshd -f "$JT/target/sshd_config"
+  sleep 1
+  "$JAVA" -cp "$WORK/classes:$JSCH_JAR:$BCPROV_JAR:$JSON_JAR" TestJumpConnect "$JT/id_ed25519_test" changed
   pkill -f "sshd -f $JT/" 2>/dev/null || true
-  [ "$RC" -eq 0 ] || exit "$RC"
+  trap - EXIT
 else
   echo "=== TestJumpConnect SKIPPED (no /usr/sbin/sshd) ==="
 fi

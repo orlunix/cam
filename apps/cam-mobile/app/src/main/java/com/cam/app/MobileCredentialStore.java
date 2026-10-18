@@ -33,13 +33,19 @@ public final class MobileCredentialStore {
     private static final int GCM_TAG_BITS = 128;
 
     private final File storePath;
+    private final File dataDir;
     private JSONObject store;
 
     public MobileCredentialStore(File dataDir) {
         File dir = dataDir != null ? dataDir : new File(".");
         if (!dir.exists()) dir.mkdirs();
+        this.dataDir = dir;
         storePath = new File(dir, "embedded-hub-credentials.json");
         load();
+    }
+
+    public File getDataDir() {
+        return dataDir;
     }
 
     public boolean available() {

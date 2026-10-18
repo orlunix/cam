@@ -2,7 +2,7 @@
  * Direct Settings — mobile workflow: Enable → add Nodes → Connect.
  */
 import { api, state, navigate } from './app.js';
-import { ensureMobileCamBridgeShim } from './mobile-bridge.js?v=2.3.39';
+import { ensureMobileCamBridgeShim } from './mobile-bridge.js';
 import { bridgeDirectHub } from '../shared/direct-settings.js';
 import {
   refreshHubCapabilities,
@@ -38,6 +38,14 @@ function setProfileKindDirect() {
   try { localStorage.setItem(PROFILE_KIND_KEY, 'direct'); } catch {}
 }
 
+function setLoopbackMixedContent(enabled) {
+  try {
+    if (window.CamBridge && typeof window.CamBridge.setLoopbackMixedContentEnabled === 'function') {
+      window.CamBridge.setLoopbackMixedContentEnabled(enabled);
+    }
+  } catch {}
+}
+
 export async function connectMobileDirect() {
   try {
     await healDirectHub();
@@ -47,6 +55,7 @@ export async function connectMobileDirect() {
   const cfg = readDirectConfig();
   if (!cfg.serverUrl || !cfg.token) return 'disconnected';
 
+  setLoopbackMixedContent(true);
   api.configure({
     serverUrl: cfg.serverUrl,
     token: cfg.token,
@@ -533,6 +542,7 @@ export function renderDirectSettings(container) {
     saveDirectConfig({ serverUrl: '', token: '', relayUrl: '', relayToken: '' });
     try { localStorage.removeItem(PROFILE_KIND_KEY); } catch {}
     api.disconnect();
+    setLoopbackMixedContent(false);
     state.set('connectionMode', 'disconnected');
     state.set('agents', []);
     state.set('contexts', []);

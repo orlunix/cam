@@ -8,8 +8,11 @@ import java.util.concurrent.ConcurrentHashMap;
 /** JVM stub: in-memory credential store with the real class's API surface. */
 public final class MobileCredentialStore {
     private final ConcurrentHashMap<String, String> map = new ConcurrentHashMap<>();
+    private final File dataDir;
 
-    public MobileCredentialStore(File dataDir) {}
+    public MobileCredentialStore(File dataDir) { this.dataDir = dataDir; }
+
+    public File getDataDir() { return dataDir; }
 
     public boolean available() { return true; }
 

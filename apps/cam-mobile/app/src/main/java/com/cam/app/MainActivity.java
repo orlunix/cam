@@ -1,19 +1,21 @@
 package com.cam.app;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.os.StrictMode;
 import android.util.Base64;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewTreeObserver;
 import android.view.Window;
+import android.view.WindowInsets;
+import android.view.WindowInsetsAnimation;
 import android.view.WindowManager;
 import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
@@ -35,6 +37,7 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.List;
 
 public class MainActivity extends Activity {
 
@@ -42,10 +45,10 @@ public class MainActivity extends Activity {
     private static final int FILE_CHOOSER_REQUEST = 1001;
     private static final int KEY_PICK_REQUEST = 1002;
     private static final int CONFIG_PICK_REQUEST = 1003;
+    private static final int NOTIFICATION_REQUEST = 1004;
     private static final int CONFIG_PICK_MAX_BYTES = 1024 * 1024;
     private static final int KEY_PICK_MAX_BYTES = 256 * 1024;
     private static final int CAM_BG = Color.parseColor("#111111");
-    private static final long TERMINAL_BACKGROUND_GRACE_MS = 10 * 60 * 1000L;
     private static final String RESET_LAYOUT_JS =
         "if(window.__camScheduleLayoutResets){window.__camScheduleLayoutResets();}"
         + "else if(window.__camResetLayout){window.__camResetLayout();}else{"
@@ -64,14 +67,9 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> fileUploadCallback;
     private int lastLayoutW = -1;
     private int lastLayoutH = -1;
+    private int lastKeyboardTranslationPx = 0;
     private boolean activityPaused;
-    private final Handler lifecycleHandler = new Handler(Looper.getMainLooper());
-    private final Runnable pauseTerminalTimersAfterGrace = () -> {
-        if (!activityPaused || webView == null) return;
-        if (camJsBridge != null) camJsBridge.stopTerminalForBackgroundTimeout();
-        webView.onPause();
-        webView.pauseTimers();
-    };
+    private boolean notificationPermissionRequested;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -93,7 +91,7 @@ public class MainActivity extends Activity {
         }
 
         setContentView(R.layout.activity_main);
-        WebView.setWebContentsDebuggingEnabled(true);
+        WebView.setWebContentsDebuggingEnabled(false);
 
         assetLoader = new CamAssetLoader(this, "web");
         embeddedHub = new MobileEmbeddedHub(this);
@@ -108,7 +106,7 @@ public class MainActivity extends Activity {
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
-        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setDatabaseEnabled(true);
         settings.setSupportZoom(false);
@@ -119,6 +117,32 @@ public class MainActivity extends Activity {
         settings.setTextZoom(100);
         settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(false);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            View decorView = window.getDecorView();
+            decorView.setOnApplyWindowInsetsListener((v, insets) -> {
+                updateKeyboardInset(insets);
+                v.onApplyWindowInsets(insets);
+                return insets;
+            });
+            decorView.setWindowInsetsAnimationCallback(
+                new WindowInsetsAnimation.Callback(
+                    WindowInsetsAnimation.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
+                    @Override
+                    public WindowInsets onProgress(WindowInsets insets,
+                            List<WindowInsetsAnimation> runningAnimations) {
+                        updateKeyboardInset(insets);
+                        return insets;
+                    }
+                });
+        } else {
+            View content = findViewById(android.R.id.content);
+            content.setOnApplyWindowInsetsListener((v, insets) -> {
+                updateKeyboardInset(insets);
+                v.onApplyWindowInsets(insets);
+                return insets;
+            });
+        }
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
@@ -200,6 +224,34 @@ public class MainActivity extends Activity {
             url = url + (route.startsWith("#") ? route : "#" + route);
         }
         webView.loadUrl(url);
+    }
+
+    private void updateKeyboardInset(WindowInsets insets) {
+        int keyboardPx;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            boolean visible = insets.isVisible(WindowInsets.Type.ime());
+            keyboardPx = visible
+                ? insets.getInsets(WindowInsets.Type.ime()).bottom
+                    - insets.getInsets(WindowInsets.Type.navigationBars()).bottom
+                : 0;
+        } else {
+            keyboardPx = insets.getSystemWindowInsetBottom() - insets.getStableInsetBottom();
+        }
+        int translationPx = Math.max(0, keyboardPx);
+        if (translationPx == lastKeyboardTranslationPx) return;
+        lastKeyboardTranslationPx = translationPx;
+        if (webView != null) webView.setTranslationY(-translationPx);
+    }
+
+    private void syncKeyboardTranslation() {
+        if (webView == null) return;
+        WindowInsets insets = getWindow().getDecorView().getRootWindowInsets();
+        if (insets != null) {
+            updateKeyboardInset(insets);
+        } else {
+            lastKeyboardTranslationPx = 0;
+        }
+        webView.setTranslationY(-lastKeyboardTranslationPx);
     }
 
     private void notifyKeyPickError(String message) {
@@ -286,6 +338,13 @@ public class MainActivity extends Activity {
         resetWebLayout();
     }
 
+    void setLoopbackMixedContentEnabled(boolean enabled) {
+        if (webView == null) return;
+        webView.getSettings().setMixedContentMode(enabled
+            ? WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+            : WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+    }
+
     void openPrivateKeyPicker() {
         try {
             Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -367,6 +426,7 @@ public class MainActivity extends Activity {
         webView.post(() -> {
             webView.requestLayout();
             webView.invalidate();
+            syncKeyboardTranslation();
         });
         webView.postDelayed(this::resetWebLayoutOnce, 50);
         webView.postDelayed(this::resetWebLayoutOnce, 200);
@@ -378,6 +438,7 @@ public class MainActivity extends Activity {
         if (webView == null) return;
         webView.evaluateJavascript(RESET_LAYOUT_JS, null);
         webView.requestLayout();
+        syncKeyboardTranslation();
     }
 
     @Override
@@ -423,11 +484,25 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
     }
 
+    void syncTerminalForegroundState() {
+        boolean keepAlive = camJsBridge != null && camJsBridge.shouldKeepTerminalAliveInBackground();
+        if (keepAlive && Build.VERSION.SDK_INT >= 33 && !notificationPermissionRequested
+            && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notificationPermissionRequested = true;
+            requestPermissions(new String[] { Manifest.permission.POST_NOTIFICATIONS }, NOTIFICATION_REQUEST);
+        }
+        if (keepAlive) {
+            MobileTerminalService.start(this);
+        } else {
+            MobileTerminalService.stop(this);
+        }
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
         activityPaused = false;
-        lifecycleHandler.removeCallbacks(pauseTerminalTimersAfterGrace);
+        syncTerminalForegroundState();
         webView.onResume();
         webView.resumeTimers();
         webView.requestFocus(View.FOCUS_DOWN);
@@ -437,15 +512,9 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         activityPaused = true;
-        lifecycleHandler.removeCallbacks(pauseTerminalTimersAfterGrace);
-        if (camJsBridge != null && camJsBridge.shouldKeepTerminalAliveInBackground()) {
-            // Do not pause the WebView while terminal transport is active:
-            // WebView.onPause can suspend bridge delivery and cause a fresh
-            // camc attach on return. The 10-minute timeout below performs the
-            // full pause and closes the native session instead.
-            lifecycleHandler.postDelayed(
-                pauseTerminalTimersAfterGrace, TERMINAL_BACKGROUND_GRACE_MS);
-        } else {
+        boolean keepAlive = camJsBridge != null && camJsBridge.shouldKeepTerminalAliveInBackground();
+        syncTerminalForegroundState();
+        if (!keepAlive && webView != null) {
             webView.onPause();
             webView.pauseTimers();
         }
@@ -454,8 +523,14 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        lifecycleHandler.removeCallbacks(pauseTerminalTimersAfterGrace);
-        webView.destroy();
+        activityPaused = true;
+        MobileTerminalService.stop(this);
+        if (embeddedHub != null) embeddedHub.stop();
+        if (webView != null) {
+            webView.removeJavascriptInterface("CamBridge");
+            webView.destroy();
+            webView = null;
+        }
         super.onDestroy();
     }
 }

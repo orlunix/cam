@@ -5,22 +5,22 @@ import {
 } from '../shared/agent-helpers.js';
 import {
   parsePromptSections, composePromptSections, renderChecklistPreviewHtml,
-} from '../shared/prompt-sections.js?v=2.3.0';
+} from '../shared/prompt-sections.js';
 import {
   parseWorkflowYamlV0, serializeWorkflowYaml, validateWorkflow,
   workflowVerifyLabel, workflowRunLabel, nextWorkflowNodeId, applyWorkflowField,
-} from '../shared/workflow-yaml.js?v=2.3.0';
+} from '../shared/workflow-yaml.js';
 import {
   loopTemplateById, buildLoopPrompt, fillLoopTemplateSelect,
   resolvePromptSectionsForAgent, applyLoopTemplateDefaults,
   listLoopTemplates,
   saveCustomLoopTemplate, deleteCustomLoopTemplate,
-} from '../shared/loop-templates.js?v=2.3.2';
+} from '../shared/loop-templates.js';
 import {
   fillWorkflowTemplateSelect, applyWorkflowTemplate,
   listCustomWorkflowTemplates, saveCustomWorkflowTemplate,
   deleteCustomWorkflowTemplate,
-} from '../shared/workflow-templates.js?v=2.3.2';
+} from '../shared/workflow-templates.js';
 
 const TABS = ['attributes', 'prompt', 'automation', 'workflow'];
 

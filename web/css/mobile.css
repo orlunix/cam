@@ -418,49 +418,6 @@ body.camui-v2 #content.agent-detail-active .output-bottom-controls {
   min-height: 0;
   padding-bottom: env(safe-area-inset-bottom, 0px);
   background: #1c2128;
-  transition: transform 120ms ease-out;
-}
-
-body.camui-v2 #content.agent-detail-active .output-bottom-controls.keyboard-open {
-  position: relative;
-  z-index: 20;
-  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.25);
-}
-
-body.camui-v2 #content.agent-detail-active .terminal-ime-buffer {
-  display: none;
-}
-
-body.camui-v2 #content.agent-detail-active .output-bottom-controls.ime-buffer-active .terminal-ime-buffer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 4px;
-  padding: 4px;
-  border-bottom: 1px solid var(--border);
-}
-
-body.camui-v2 #content.agent-detail-active .terminal-buffer-preview {
-  grid-column: 1 / -1;
-  overflow-x: auto;
-  color: var(--text-dim);
-  font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  white-space: nowrap;
-}
-
-body.camui-v2 #content.agent-detail-active .terminal-buffer-preview.hidden {
-  display: none;
-}
-
-body.camui-v2 #content.agent-detail-active .terminal-buffer-input {
-  box-sizing: border-box;
-  min-width: 0;
-  min-height: 30px;
-  padding: 4px 6px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--bg-input);
-  color: var(--text);
-  font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 body.camui-v2 #content.agent-detail-active .output-wrap {

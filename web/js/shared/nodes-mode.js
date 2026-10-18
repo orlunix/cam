@@ -611,6 +611,9 @@ export function mountNodesMode({
       acts.push(
         `<button type="button" class="btn-sm host-edit-btn"  data-key="${esc(node.key)}">Edit Host</button>`,
       );
+      if (mobileForm) {
+        acts.push(`<button type="button" class="btn-sm host-forget-key-btn" data-key="${esc(node.key)}">Reset Host Key</button>`);
+      }
       if (canSyncHost()) {
         // Re-entry guard: while this node's sync runs, the button shows
         // progress instead of offering another click. Clicking mid-sync
@@ -859,6 +862,26 @@ export function mountNodesMode({
         const node = hosts.find(n => n.key === btn.dataset.key);
         if (!node || node.enabled === false) return;
         if (typeof panel._openEditHost === 'function') panel._openEditHost(node);
+      });
+    });
+
+    listEl.querySelectorAll('.host-forget-key-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const node = hosts.find(n => n.key === btn.dataset.key);
+        if (!node) return;
+        const endpoint = `${node.user || ''}@${node.host}:${node.port || 22}`;
+        if (!window.confirm(`Reset the trusted SSH host key for ${endpoint}?\n\nThe next connection will trust the key presented then. Only do this after verifying the host out of band.`)) return;
+        btn.disabled = true;
+        try {
+          await requireNodesConnected('Reset host key');
+          await api.forgetSshHostKey(node.host, node.port || 22);
+          showToast(`Host key trust reset for ${endpoint}`, 'success', 4000);
+        } catch (err) {
+          showToast(`Reset host key failed: ${err.message}`, 'error', 5000);
+        } finally {
+          btn.disabled = false;
+        }
       });
     });
 
@@ -1165,7 +1188,7 @@ export function mountNodesMode({
     }
   });
 
-  mountNodesActions({
+  const cleanupActions = mountNodesActions({
     panel, api, state, showToast, setStatus,
     loadContextsAndAdapters, loadAgents, requireNodesConnected,
     isReadOnly, mobileForm, formLabels, relaxPasswordRemember,
@@ -1173,7 +1196,10 @@ export function mountNodesMode({
     persistReady, persistCreate, persistUpdate, persistDelete, formatOpError,
   });
 
-  return () => { unsub(); };
+  return () => {
+    unsub();
+    if (typeof cleanupActions === 'function') cleanupActions();
+  };
 }
 
 /* ─────────── Add Host manage panel (CAM-DESK-DIRECT-014..018) ───────────
@@ -1210,6 +1236,7 @@ function mountNodesActions({
   ensureHubForSave, hubCreateContext, hubUpdateContext, hubDeleteContext, formDraftKey,
   persistReady, persistCreate, persistUpdate, persistDelete, formatOpError,
 }) {
+  let cleanupViewportListeners = null;
   function readOnly() {
     return typeof isReadOnly === 'function' && isReadOnly();
   }
@@ -1435,8 +1462,14 @@ function mountNodesActions({
         : '';
     };
     if (window.visualViewport) {
-      window.visualViewport.addEventListener('resize', syncFooterInset);
-      window.visualViewport.addEventListener('scroll', syncFooterInset);
+      const vv = window.visualViewport;
+      vv.addEventListener('resize', syncFooterInset);
+      vv.addEventListener('scroll', syncFooterInset);
+      cleanupViewportListeners = () => {
+        vv.removeEventListener('resize', syncFooterInset);
+        vv.removeEventListener('scroll', syncFooterInset);
+        if (footer) footer.style.paddingBottom = '';
+      };
     }
   }
 
@@ -2347,4 +2380,8 @@ function mountNodesActions({
       });
     });
   }
+
+  return () => {
+    if (cleanupViewportListeners) cleanupViewportListeners();
+  };
 }

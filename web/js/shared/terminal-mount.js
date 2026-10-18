@@ -29,7 +29,7 @@ let statusTimer = null;
 function isAndroidWebView() {
   return !!(typeof window !== 'undefined'
     && window.CamBridge
-    && typeof window.CamBridge.term_open === 'function');
+    && typeof window.CamBridge.directHub_start === 'function');
 }
 
 /** Keep Android's WebView timers running only while a terminal is attached. */
@@ -477,6 +477,9 @@ function refreshAllTerminalAppearance() {
 
 if (typeof window !== 'undefined') {
   window.addEventListener('cam-mobile-appearance', refreshAllTerminalAppearance);
+  window.addEventListener('cam-api-disconnect', () => {
+    void closeAllTerminalSessions();
+  });
   window.addEventListener('cam-node-host-meta-changed', () => {
     for (const [agentId, ent] of [...terminalSessions.entries()]) {
       const ag = ent?.agentRef;

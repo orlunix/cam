@@ -13,6 +13,12 @@
 // an idle timer would kill their healthy-but-silent long ops.
 const _syncIdleWatchers = new Set();
 
+function requestAbortError() {
+  const err = new Error('Request aborted');
+  err.name = 'AbortError';
+  return err;
+}
+
 export class CamApi {
   // Called by the Nodes sync-status poller on every observed backend
   // progress change; resets the idle timer of every in-flight context
@@ -28,13 +34,14 @@ export class CamApi {
     this.relayUrl = '';
     this.relayToken = '';
     this.ws = null;
+    this._relayConnecting = null;
     this._requestMap = new Map();
     this._reqCounter = 0;
     this._eventHandlers = [];
     this._reconnectTimer = null;
+    this._reconnectAttempt = 0;
     this._eventWs = null;
     this._pingTimer = null;
-    this._consecutiveTimeouts = 0;
     this._relayHttp = false;
     this.lastConnectError = '';
     this.lastConnectDiagnostics = null;
@@ -171,12 +178,28 @@ export class CamApi {
     this.mode = 'disconnected';
     this._relayHttp = false;
     clearTimeout(this._reconnectTimer);
+    this._reconnectTimer = null;
+    this._reconnectAttempt = 0;
     clearInterval(this._pingTimer);
     this._pingTimer = null;
-    if (this._eventWs) { try { this._eventWs.close(); } catch {} this._eventWs = null; }
-    if (this.ws) { try { this.ws.close(); } catch {} this.ws = null; }
-    this._requestMap.forEach(({ reject }) => reject(new Error('disconnected')));
+    const eventWs = this._eventWs;
+    this._eventWs = null;
+    if (eventWs) { try { eventWs.close(); } catch {} }
+    const ws = this.ws;
+    this.ws = null;
+    if (ws) { try { ws.close(); } catch {} }
+    const connecting = this._relayConnecting;
+    this._relayConnecting = null;
+    if (connecting && connecting !== ws) { try { connecting.close(); } catch {} }
+    this._requestMap.forEach(({ reject, timer, cleanup }) => {
+      clearTimeout(timer);
+      if (cleanup) cleanup();
+      reject(new Error('disconnected'));
+    });
     this._requestMap.clear();
+    if (typeof window !== 'undefined') {
+      try { window.dispatchEvent(new CustomEvent('cam-api-disconnect')); } catch {}
+    }
   }
 
   // --- Request dispatch (with retry + cache) ---
@@ -221,8 +244,21 @@ export class CamApi {
     }
   }
 
-  async request(method, path, body = null) {
+  _invalidateCache() {
+    const prefix = 'cam_cache:';
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(prefix)) keys.push(key);
+    }
+    for (const key of keys) {
+      try { localStorage.removeItem(key); } catch {}
+    }
+  }
+
+  async request(method, path, body = null, options = {}) {
     const isGet = method === 'GET';
+    const signal = options && options.signal;
     const cacheKey = (isGet && this._isCacheable(path)) ? `cam_cache:${path}` : null;
 
     const isRealtimeGet = isGet && (
@@ -239,11 +275,13 @@ export class CamApi {
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
+        if (signal?.aborted) throw requestAbortError();
         let data;
-        if (this.mode === 'direct') data = await this._directRequest(method, path, body);
-        else if (this.mode === 'relay') data = await this._relayRequest(method, path, body);
+        if (this.mode === 'direct') data = await this._directRequest(method, path, body, options);
+        else if (this.mode === 'relay') data = await this._relayRequest(method, path, body, options);
         else throw new Error('Not connected');
 
+        if (!isGet) this._invalidateCache();
         // Cache successful GET responses (lightweight endpoints only)
         if (cacheKey) {
           try {
@@ -254,6 +292,7 @@ export class CamApi {
         return data;
       } catch (e) {
         lastError = e;
+        if (e?.name === 'AbortError') throw e;
         // Don't retry on 4xx (client errors) or mutations
         if (e.status && e.status >= 400 && e.status < 500) throw e;
         if (attempt < maxRetries) {
@@ -278,7 +317,8 @@ export class CamApi {
     throw lastError;
   }
 
-  async _directRequest(method, path, body) {
+  async _directRequest(method, path, body, options = {}) {
+    const externalSignal = options && options.signal;
     const loopback = (() => {
       try {
         const h = new URL(this.serverUrl).hostname;
@@ -287,7 +327,7 @@ export class CamApi {
     })();
     const hub = typeof window !== 'undefined' ? window.__camDirectHub : null;
     if (loopback && hub && typeof hub.request === 'function') {
-      return hub.request(method, path, body, this.token);
+      return hub.request(method, path, body, this.token, externalSignal);
     }
 
     const url = `${this.serverUrl}${path}`;
@@ -309,25 +349,28 @@ export class CamApi {
     const SYNC_IDLE_MS = 45000;
     const reqTimeoutMs = slowOp ? 120000 : 15000;
 
-    let syncController = null;
+    const controller = new AbortController();
     let syncWatcher = null;
-    let signal;
+    let requestTimer = null;
+    const onExternalAbort = () => controller.abort();
+    if (externalSignal) {
+      if (externalSignal.aborted) throw requestAbortError();
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
     if (isSync) {
-      syncController = new AbortController();
       syncWatcher = {
         tm: null,
         reset() {
           clearTimeout(this.tm);
-          this.tm = setTimeout(() => syncController.abort(), SYNC_IDLE_MS);
+          this.tm = setTimeout(() => controller.abort(), SYNC_IDLE_MS);
         },
       };
       syncWatcher.reset();
       _syncIdleWatchers.add(syncWatcher);
-      signal = syncController.signal;
     } else {
       // Never let a request hang forever: an accepted-but-unanswered
       // connection would otherwise spin the loading state indefinitely.
-      signal = AbortSignal.timeout(reqTimeoutMs);
+      requestTimer = setTimeout(() => controller.abort(), reqTimeoutMs);
     }
 
     let resp;
@@ -336,9 +379,10 @@ export class CamApi {
         method,
         headers,
         body: body != null ? JSON.stringify(body) : undefined,
-        signal,
+        signal: controller.signal,
       });
     } catch (e) {
+      if (externalSignal?.aborted) throw requestAbortError();
       const aborted = e && (e.name === 'AbortError' || e.name === 'TimeoutError');
       const raw = aborted
         ? (isSync
@@ -368,6 +412,8 @@ export class CamApi {
       err.cause = e;
       throw err;
     } finally {
+      clearTimeout(requestTimer);
+      if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
       if (syncWatcher) {
         clearTimeout(syncWatcher.tm);
         _syncIdleWatchers.delete(syncWatcher);
@@ -386,13 +432,19 @@ export class CamApi {
     return data;
   }
 
-  _relayRequest(method, path, body) {
+  _relayRequest(method, path, body, options = {}) {
     if (this._relayHttp && this.serverUrl) {
-      return this._directRequest(method, path, body);
+      return this._directRequest(method, path, body, options);
     }
+    const signal = options && options.signal;
     return new Promise((resolve, reject) => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      const ws = this.ws;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
         reject(new Error('Relay not connected'));
+        return;
+      }
+      if (signal?.aborted) {
+        reject(requestAbortError());
         return;
       }
       const id = `req-${++this._reqCounter}`;
@@ -404,18 +456,26 @@ export class CamApi {
       // request-level retries for realtime GETs in request() so one slow poll
       // costs at most this timeout, not timeout * 3.
       const timeout = isSlowMutation ? 120000 : 30000;
+      let onAbort = null;
+      const cleanup = () => {
+        if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+      };
       const timer = setTimeout(() => {
         this._requestMap.delete(id);
-        this._consecutiveTimeouts++;
-        if (!isSlowMutation || this._consecutiveTimeouts >= 2) {
-          console.warn('Relay: request timeout, forcing reconnect');
-          this._consecutiveTimeouts = 0;
-          if (this.ws) { try { this.ws.close(); } catch {} }
-        }
+        cleanup();
         reject(new Error('Relay request timeout'));
       }, timeout);
+      if (signal) {
+        onAbort = () => {
+          clearTimeout(timer);
+          this._requestMap.delete(id);
+          cleanup();
+          reject(requestAbortError());
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
 
-      this._requestMap.set(id, { resolve, reject, timer });
+      this._requestMap.set(id, { resolve, reject, timer, cleanup });
 
       const frame = {
         id,
@@ -425,7 +485,14 @@ export class CamApi {
         body: body != null ? JSON.stringify(body) : '',
       };
       if (this.token) frame.headers['authorization'] = `Bearer ${this.token}`;
-      this.ws.send(JSON.stringify(frame));
+      try {
+        ws.send(JSON.stringify(frame));
+      } catch (e) {
+        clearTimeout(timer);
+        this._requestMap.delete(id);
+        cleanup();
+        reject(e);
+      }
     });
   }
 
@@ -440,40 +507,54 @@ export class CamApi {
       const url = `${this.relayUrl.replace(/^http/, 'ws')}/client?token=${encodeURIComponent(this.relayToken)}`;
       const ws = new WebSocket(url);
       let opened = false;
+      let settled = false;
+      this._relayConnecting = ws;
 
+      const failBeforeOpen = (err) => {
+        if (opened || settled) return;
+        settled = true;
+        clearTimeout(connectTimer);
+        if (this._relayConnecting === ws) this._relayConnecting = null;
+        reject(err);
+      };
       // Timeout: reject if WS doesn't open within 8s
       const connectTimer = setTimeout(() => {
-        if (!opened) {
-          try { ws.close(); } catch {}
-          reject(new Error('Relay connect timeout'));
-        }
+        failBeforeOpen(new Error('Relay connect timeout'));
+        try { ws.close(); } catch {}
       }, 8000);
 
       ws.onopen = () => {
+        if (this._relayConnecting !== ws) {
+          failBeforeOpen(new Error('Relay connect superseded'));
+          try { ws.close(); } catch {}
+          return;
+        }
         opened = true;
+        settled = true;
         clearTimeout(connectTimer);
+        this._relayConnecting = null;
         this.ws = ws;
-        this._consecutiveTimeouts = 0;
         // Heartbeat: ping every 25s to detect dead connections
         clearInterval(this._pingTimer);
         this._pingTimer = setInterval(() => {
-          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            try { this.ws.send(JSON.stringify({ ping: true })); } catch {}
+          if (this.ws === ws && ws.readyState === WebSocket.OPEN) {
+            try { ws.send(JSON.stringify({ ping: true })); } catch {}
           }
         }, 25000);
         resolve();
       };
 
       ws.onmessage = (evt) => {
+        if (this.ws !== ws) return;
         let data;
         try { data = JSON.parse(evt.data); } catch { return; }
 
         // Response to a pending request
         if (data.id && this._requestMap.has(data.id)) {
-          const { resolve: res, reject: rej, timer } = this._requestMap.get(data.id);
+          const { resolve: res, reject: rej, timer, cleanup } = this._requestMap.get(data.id);
           clearTimeout(timer);
+          if (cleanup) cleanup();
           this._requestMap.delete(data.id);
-          this._consecutiveTimeouts = 0; // Got a response — connection is alive
 
           if (data.status !== undefined) {
             // HTTP response from relay
@@ -501,35 +582,62 @@ export class CamApi {
         }
       };
 
-      ws.onerror = () => { if (!opened) reject(new Error('Relay connect failed')); };
+      ws.onerror = () => failBeforeOpen(new Error('Relay connect failed'));
       ws.onclose = () => {
+        clearTimeout(connectTimer);
+        if (!opened) failBeforeOpen(new Error('Relay connection closed'));
+        if (this.ws !== ws) return;
+        this.ws = null;
         clearInterval(this._pingTimer);
         this._pingTimer = null;
         // Reject all pending requests — their responses will never arrive
-        this._requestMap.forEach(({ reject: rej, timer }) => {
+        this._requestMap.forEach(({ reject: rej, timer, cleanup }) => {
           clearTimeout(timer);
+          if (cleanup) cleanup();
           rej(new Error('Relay connection lost'));
         });
         this._requestMap.clear();
 
-        if (this.mode === 'relay') {
-          this._scheduleReconnect();
-        }
+        if (this.mode === 'relay') this._scheduleReconnect();
       };
     });
   }
 
+  _ensureVisibilityHandler() {
+    if (this._visHandler || typeof document === 'undefined') return;
+    this._visHandler = () => {
+      if (document.hidden) return;
+      if (this.mode === 'relay' && (!this.ws || this.ws.readyState !== WebSocket.OPEN)) {
+        this._reconnectAttempt = 0;
+        this._scheduleReconnect();
+      }
+      if (this.mode === 'direct' && !this._eventWs) {
+        this._wsFailCount = 0;
+        this._connectEventStream();
+      }
+    };
+    document.addEventListener('visibilitychange', this._visHandler);
+  }
+
   _scheduleReconnect() {
-    clearTimeout(this._reconnectTimer);
+    this._ensureVisibilityHandler();
+    if (this._reconnectTimer || this.mode !== 'relay') return;
+    if (typeof document !== 'undefined' && document.hidden) return;
+    const delay = Math.min(60000, 1000 * Math.pow(2, this._reconnectAttempt));
+    this._reconnectAttempt++;
     this._reconnectTimer = setTimeout(async () => {
+      this._reconnectTimer = null;
+      if (this.mode !== 'relay' || (typeof document !== 'undefined' && document.hidden)) return;
       try {
         await this._connectRelay();
         this.mode = 'relay';
+        this._reconnectAttempt = 0;
         this._requestRelayEventStream();
+        this._dispatchEvent({ type: 'connection_restored', mode: 'relay' });
       } catch {
         this._scheduleReconnect();
       }
-    }, 1000);
+    }, delay);
   }
 
   // --- Event stream ---
@@ -549,7 +657,14 @@ export class CamApi {
 
   _connectEventStream() {
     if (this.mode !== 'direct') return;
-    if (this._eventWs) { try { this._eventWs.close(); } catch {} this._eventWs = null; }
+    const androidDirect = typeof window !== 'undefined'
+      && window.CamBridge && typeof window.CamBridge.directHub_start === 'function'
+      && /^(127\.0\.0\.1|localhost|::1)$/.test(new URL(this.serverUrl).hostname);
+    if (androidDirect) return;
+    this._ensureVisibilityHandler();
+    const previous = this._eventWs;
+    this._eventWs = null;
+    if (previous) { try { previous.close(); } catch {} }
 
     // Don't open WS if page is hidden (mobile background)
     if (document.hidden) return;
@@ -560,13 +675,16 @@ export class CamApi {
     const wsUrl = `${this.serverUrl.replace(/^http/, 'ws')}/api/ws?token=${encodeURIComponent(this.token)}`;
     const ws = new WebSocket(wsUrl);
     const openedAt = Date.now();
+    this._eventWs = ws;
 
     ws.onopen = () => {
+      if (this._eventWs !== ws) { try { ws.close(); } catch {} return; }
       // Reset fail count on successful long-lived connection (>30s)
       this._wsStableTimer = setTimeout(() => { this._wsFailCount = 0; }, 30000);
     };
 
     ws.onmessage = (evt) => {
+      if (this._eventWs !== ws) return;
       try {
         const data = JSON.parse(evt.data);
         this._dispatchEvent(data);
@@ -574,6 +692,7 @@ export class CamApi {
     };
 
     ws.onclose = () => {
+      if (this._eventWs !== ws) return;
       this._eventWs = null;
       clearTimeout(this._wsStableTimer);
 
@@ -592,20 +711,6 @@ export class CamApi {
         setTimeout(() => this._connectEventStream(), delay);
       }
     };
-
-    this._eventWs = ws;
-
-    // Reconnect on visibility change (mobile foreground/background)
-    if (!this._visHandler) {
-      this._visHandler = () => {
-        if (document.hidden) return;
-        if (this.mode === 'direct' && !this._eventWs) {
-          this._wsFailCount = 0; // Reset on foreground — user is active
-          this._connectEventStream();
-        }
-      };
-      document.addEventListener('visibilitychange', this._visHandler);
-    }
   }
 
   _requestRelayEventStream() {
@@ -661,8 +766,8 @@ export class CamApi {
   deleteAgentCronJob(id, jobKey) { return this.request('DELETE', `/api/agents/${id}/cron/${encodeURIComponent(jobKey)}`); }
   restartAgent(id) { return this.request('POST', `/api/agents/${id}/restart`); }
   deleteAgentHistory(id) { return this.request('DELETE', `/api/agents/${id}/history`); }
-  agentLogs(id, tail = 100) { return this.request('GET', `/api/agents/${id}/logs?tail=${tail}`); }
-  agentOutput(id, lines = 80, hash = null, format = null, hints = null) {
+  agentLogs(id, tail = 100, signal = null) { return this.request('GET', `/api/agents/${id}/logs?tail=${tail}`, null, { signal }); }
+  agentOutput(id, lines = 80, hash = null, format = null, hints = null, signal = null) {
     const qs = new URLSearchParams();
     qs.set('lines', String(lines));
     if (hash) qs.set('hash', hash);
@@ -674,29 +779,29 @@ export class CamApi {
         qs.set('machine_port', String(hints.machine_port));
       }
     }
-    return this.request('GET', `/api/agents/${encodeURIComponent(id)}/output?${qs.toString()}`);
+    return this.request('GET', `/api/agents/${encodeURIComponent(id)}/output?${qs.toString()}`, null, { signal });
   }
-  agentFullOutput(id, offset = 0, format = null) {
+  agentFullOutput(id, offset = 0, format = null, signal = null) {
     const fmt = format ? `&format=${encodeURIComponent(format)}` : '';
-    return this.request('GET', `/api/agents/${id}/fulloutput?offset=${offset}${fmt}`);
+    return this.request('GET', `/api/agents/${id}/fulloutput?offset=${offset}${fmt}`, null, { signal });
   }
-  sendInput(id, text, sendEnter = true, hints = null) {
+  sendInput(id, text, sendEnter = true, hints = null, signal = null) {
     const body = { text, send_enter: sendEnter };
     if (hints && hints.machine_host) {
       body.machine_host = hints.machine_host;
       if (hints.machine_user) body.machine_user = hints.machine_user;
       if (hints.machine_port != null && hints.machine_port !== '') body.machine_port = hints.machine_port;
     }
-    return this.request('POST', `/api/agents/${encodeURIComponent(id)}/input`, body);
+    return this.request('POST', `/api/agents/${encodeURIComponent(id)}/input`, body, { signal });
   }
-  sendKey(id, key, hints = null) {
+  sendKey(id, key, hints = null, signal = null) {
     const body = { key };
     if (hints && hints.machine_host) {
       body.machine_host = hints.machine_host;
       if (hints.machine_user) body.machine_user = hints.machine_user;
       if (hints.machine_port != null && hints.machine_port !== '') body.machine_port = hints.machine_port;
     }
-    return this.request('POST', `/api/agents/${encodeURIComponent(id)}/key`, body);
+    return this.request('POST', `/api/agents/${encodeURIComponent(id)}/key`, body, { signal });
   }
   async uploadFile(id, filename, base64data) {
     const path = `/api/agents/${encodeURIComponent(id)}/upload`;
@@ -789,6 +894,10 @@ export class CamApi {
   // Key file values are paths only; key contents are never returned.
   // Hubs that do not implement this (e.g. external CAM server, relay)
   // will 404; the renderer treats that as "import unavailable".
+  forgetSshHostKey(host, port = 22) {
+    return this.request('DELETE', '/api/system/ssh-host-key', { host, port });
+  }
+
   sshConfigHosts(filePath) {
     const q = filePath ? `?path=${encodeURIComponent(filePath)}` : '';
     return this.request('GET', `/api/system/ssh-config${q}`);

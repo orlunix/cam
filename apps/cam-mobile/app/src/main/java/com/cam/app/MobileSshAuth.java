@@ -24,6 +24,7 @@ public final class MobileSshAuth {
         public String keyFile = "";
         public String password = "";
         public String passphrase = "";
+        public File hostKeyStoreFile;
         /** ProxyJump chain (desktop parity): next hop; resolved by the hub. */
         public Options jump;
     }
@@ -45,6 +46,9 @@ public final class MobileSshAuth {
         o.user = machine.optString("user", "").trim();
         o.authMethod = machine.optString("auth_method", "key");
         o.keyFile = machine.optString("key_file", "").trim();
+        if (creds != null && creds.getDataDir() != null) {
+            o.hostKeyStoreFile = new File(creds.getDataDir(), "ssh-known-hosts.properties");
+        }
         if (machine.optBoolean("credential_saved", false) && creds != null) {
             String ref = machine.optString("credential_ref", "").trim();
             if (!ref.isEmpty()) {
@@ -68,8 +72,12 @@ public final class MobileSshAuth {
         if (opts == null) throw new IllegalArgumentException("opts required");
         if (opts.host.isEmpty()) throw new IllegalArgumentException("host is required");
         if (opts.user.isEmpty()) throw new IllegalArgumentException("user is required");
+        if (opts.hostKeyStoreFile == null) {
+            throw new IllegalArgumentException("host_key_store_missing: persistent SSH trust store is required");
+        }
 
         JSch jsch = new JSch();
+        jsch.setHostKeyRepository(new MobileHostKeyRepository(opts.hostKeyStoreFile));
         String method = opts.authMethod != null ? opts.authMethod : "key";
         if ("password".equals(method)) {
             if (opts.password == null || opts.password.isEmpty()) {
@@ -90,7 +98,7 @@ public final class MobileSshAuth {
 
         Session session = jsch.getSession(opts.user, opts.host, opts.port > 0 ? opts.port : 22);
         Properties cfg = new Properties();
-        cfg.put("StrictHostKeyChecking", "no");
+        cfg.put("StrictHostKeyChecking", "yes");
         cfg.put("enable_server_sig_algs", "yes");
         if ("password".equals(method)) {
             cfg.put("PreferredAuthentications", "password,keyboard-interactive,publickey");
@@ -119,6 +127,11 @@ public final class MobileSshAuth {
         } catch (Exception e) {
             MobileHubLog.ssh("connect fail " + (System.currentTimeMillis() - t0) + "ms "
                 + MobileHubLog.endpoint(opts) + " " + e.getMessage());
+            String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            String lower = msg.toLowerCase();
+            if (lower.contains("hostkey has been changed") || lower.contains("host key has been changed")) {
+                throw new Exception("host_key_changed: " + msg, e);
+            }
             throw e;
         }
 
@@ -207,6 +220,13 @@ public final class MobileSshAuth {
             throw new Exception("target_handshake_failed via "
                 + MobileHubLog.endpoint(opts.jump) + ": " + msg, e);
         }
+    }
+
+    public static void forgetHostKey(Options opts) {
+        if (opts == null || opts.hostKeyStoreFile == null) {
+            throw new IllegalArgumentException("host_key_store_missing");
+        }
+        MobileHostKeyRepository.forget(opts.hostKeyStoreFile, opts.host, opts.port);
     }
 
     /** Disconnect a session and, when chained, its jump session too. */
