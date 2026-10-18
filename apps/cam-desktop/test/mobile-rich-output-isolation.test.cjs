@@ -50,11 +50,12 @@ ok("Rich output renders separators with a dedicated divider class", rich.include
 ok("Terminal core remains without Rich output coupling", !terminalMount.includes("rich-output") && !terminalMount.includes("Rich output"));
 ok("Raw/Rich output input uses camc API with Terminal-only terminal input", detail.includes("if (isTerminalMode() && mobileTerminalInput() && terminalSessionReady(agentId))") && !detail.includes("function canUseAttachedTerminalInput()"));
 ok("Rich output uses the Raw capture fetch path", !detail.includes("if (isTerminalMode() || isRichOutputMode()) return;") && detail.includes("if (isRichOutputMode())") && detail.includes("renderRichOutput(agentId, container.querySelector('#rich-output-host'), data.output)"));
-ok("Rich output polling is allowed", detail.includes("if (isTerminalMode() || useFullOutput) return;") && !detail.includes("if (isTerminalMode() || isRichOutputMode() || useFullOutput) return;"));
+ok("Rich output polling is allowed", detail.includes("isTerminalMode() || useFullOutput") && !detail.includes("isRichOutputMode() || useFullOutput"));
 ok("Raw/Rich output polls every 2s", detail.includes("let _outputPollMs = 2000") && detail.includes("if (_outputPollMs !== 2000)"));
 ok("Output fetch keeps the existing loadOutput call path", detail.includes("await _tracked('Fetching output'"));
 ok("Fetching output status is suppressed at the tracker boundary",
-  detail.includes("if (label === 'Fetching output') return await fn();"));
+  detail.includes("const background = label === 'Fetching output';")
+    && detail.includes("const id = background ? null"));
 ok("Rich output switching restarts output polling", detail.includes("if ((outputMode === 'live' || outputMode === 'rich') && active)"));
 ok("Rich output does not use Terminal stream sync", !detail.includes("syncRichOutputStream") && !detail.includes("refreshRichOutput"));
 

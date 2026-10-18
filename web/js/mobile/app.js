@@ -1,32 +1,30 @@
 /**
  * CamUI Mobile V2 — Relay entry (v2.2.0) + additive Direct mode hooks.
  */
-import { api } from '../api.js?v=2.4.103';
-import { state } from '../state.js?v=2.4.103';
-import { renderDashboard } from './views/dashboard.js?v=2.4.103';
-import { renderAgentDetail } from './views/agent-detail.js?v=2.4.103';
-import { renderStartAgent } from './views/start-agent.js?v=2.4.103';
-import { renderSettings } from './settings.js?v=2.4.103';
-import { readRelayConfig, hasRelayConfig } from './settings-relay.js?v=2.4.103';
-import { renderFileBrowser, renderAgentFileBrowser } from './views/file-browser.js?v=2.4.103';
-import { renderNodes } from './nodes-page.js?v=2.4.103';
-import { renderSkills } from './skills.js?v=2.4.103';
-import { renderTodos } from './todos.js?v=2.4.103';
-import { renderAgentSettings } from './agent-settings.js?v=2.4.103';
-import { renderAgentExtensions } from './ext-view.js?v=2.4.103';
-import { maybeInitDirectMode } from './direct-init.js?v=2.4.103';
-import { installMobileCamBridgeShim } from './mobile-bridge.js?v=2.4.103';
-import { refreshHubCapabilities, setHubCapabilities, HUB_CAP_FULL } from '../shared/hub-capabilities.js?v=2.4.103';
-import { loadAgentFilters } from '../shared/agent-filters.js?v=2.4.103';
-import { applyMobileAppearance } from '../shared/mobile-appearance.js?v=2.4.103';
-import { filterAgentsOnEnabledHosts } from '../shared/node-host-meta.js?v=2.4.103';
+import { api } from '../api.js';
+import { state } from '../state.js';
+import { renderDashboard } from './views/dashboard.js';
+import { renderAgentDetail } from './views/agent-detail.js';
+import { renderStartAgent } from './views/start-agent.js';
+import { renderSettings } from './settings.js';
+import { readRelayConfig, hasRelayConfig } from './settings-relay.js';
+import { renderFileBrowser, renderAgentFileBrowser } from './views/file-browser.js';
+import { renderNodes } from './nodes-page.js';
+import { renderSkills } from './skills.js';
+import { renderTodos } from './todos.js';
+import { renderAgentSettings } from './agent-settings.js';
+import { maybeInitDirectMode } from './direct-init.js';
+import { installMobileCamBridgeShim } from './mobile-bridge.js';
+import { refreshHubCapabilities, setHubCapabilities, HUB_CAP_FULL } from '../shared/hub-capabilities.js';
+import { loadAgentFilters } from '../shared/agent-filters.js';
+import { applyMobileAppearance } from '../shared/mobile-appearance.js';
+import { filterAgentsOnEnabledHosts } from '../shared/node-host-meta.js';
 
 const PROFILE_KIND_KEY = 'cam_profile_kind';
 
 const routes = [
   { pattern: /^\/$/, view: renderDashboard, nav: '/' },
   { pattern: /^\/agent\/([^/]+)\/settings(?:\/([^/]+))?$/, view: renderAgentSettings, nav: null },
-  { pattern: /^\/agent\/([^/]+)\/extensions$/, view: renderAgentExtensions, nav: null },
   { pattern: /^\/agent\/([^/]+)\/files(.*)$/, view: renderAgentFileBrowser, nav: null },
   { pattern: /^\/agent\/([^/]+)$/, view: renderAgentDetail, nav: null },
   { pattern: /^\/context\/([^/]+)\/files(.*)$/, view: renderFileBrowser, nav: null },
@@ -195,7 +193,10 @@ async function init() {
       updateConnectionDot('disconnected');
       await maybeInitDirectMode(updateConnectionDot);
       if (state.get('connectionMode') === 'disconnected') {
-        location.hash = '#/settings';
+        // A transient boot failure must not strand the user on Settings after
+        // a later reconnect turns the dot green. Keep the current route and
+        // let the background reconnect loop recover.
+        state.toast('Not connected yet — retrying in background', 'warning', 8000);
       }
       route();
       startReconnectLoop();
@@ -212,19 +213,43 @@ async function init() {
   }
 }
 
+let _reconnectLoopStarted = false;
+let _reconnectTimer = null;
+let _reconnectInFlight = false;
+
 function startReconnectLoop() {
-  setInterval(async () => {
-    const c = readRelayConfig();
-    if (state.get('connectionMode') === 'disconnected') {
-      if (hasRelayConfig(c)) {
-        await _connectRelay(c);
-        return;
-      }
-      await maybeInitDirectMode(updateConnectionDot);
+  if (_reconnectLoopStarted) return;
+  _reconnectLoopStarted = true;
+
+  const tick = async () => {
+    if (document.hidden) {
+      _reconnectTimer = setTimeout(tick, 10000);
       return;
     }
-    await refreshAgents();
-  }, 10000);
+    if (_reconnectInFlight) return;
+    _reconnectInFlight = true;
+    try {
+      const c = readRelayConfig();
+      if (state.get('connectionMode') === 'disconnected') {
+        if (hasRelayConfig(c)) await _connectRelay(c);
+        else await maybeInitDirectMode(updateConnectionDot);
+      } else {
+        await refreshAgents();
+      }
+    } catch (e) {
+      console.warn('[mobile] background refresh failed', e);
+    } finally {
+      _reconnectInFlight = false;
+      _reconnectTimer = setTimeout(tick, 10000);
+    }
+  };
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    clearTimeout(_reconnectTimer);
+    void tick();
+  });
+  _reconnectTimer = setTimeout(tick, 10000);
 }
 
 async function _connectRelay(cfg) {
@@ -233,6 +258,11 @@ async function _connectRelay(cfg) {
     updateConnectionDot('disconnected');
     return;
   }
+  try {
+    if (window.CamBridge && typeof window.CamBridge.setLoopbackMixedContentEnabled === 'function') {
+      window.CamBridge.setLoopbackMixedContentEnabled(false);
+    }
+  } catch {}
   api.configure({ serverUrl: '', token: '', relayUrl: cfg.relayUrl, relayToken: cfg.relayToken });
   try {
     const mode = await api.connect();
@@ -292,6 +322,10 @@ async function loadData() {
     state.set('agents', filterAgentsOnEnabledHosts(agentsResp.agents || []));
     state.set('contexts', contextsResp.contexts || []);
     if (healthResp?.adapters) state.set('adapters', healthResp.adapters);
+    const cachedAt = Math.max(agentsResp._cachedAt || 0, contextsResp._cachedAt || 0);
+    if ((agentsResp._cached || contextsResp._cached) && cachedAt) {
+      state.toast(`Showing cached data from ${new Date(cachedAt).toLocaleTimeString()}`, 'warning', 5000);
+    }
   } catch (e) {
     console.error('Failed to load data:', e);
     if (api.mode === 'relay') {
@@ -307,7 +341,8 @@ async function loadData() {
 
 let _idlePollCount = 0;
 async function refreshAgents() {
-  if (state.get('connectionMode') !== 'relay') return;
+  const mode = state.get('connectionMode');
+  if (mode !== 'relay' && mode !== 'direct') return;
   const current = state.get('agents') || [];
   const hasActive = current.length === 0 || current.some(a => ['running', 'starting', 'pending'].includes(a.status));
   if (!hasActive) {
@@ -317,6 +352,11 @@ async function refreshAgents() {
     _idlePollCount = 0;
   }
   try {
+    if (mode === 'direct') {
+      const full = await api.listAgents({ limit: 50, refresh: true });
+      state.set('agents', filterAgentsOnEnabledHosts(full.agents || []));
+      return;
+    }
     const resp = await api.listAgents({ status: 'running', limit: 50, refresh: true });
     const running = resp.agents || [];
     const map = new Map(current.map(a => [a.id, a]));
@@ -335,7 +375,9 @@ async function refreshAgents() {
 }
 
 function handleEvent(event) {
-  if (event.type === 'status_update') {
+  if (event.type === 'connection_restored') {
+    void loadData();
+  } else if (event.type === 'status_update') {
     state.updateAgent(event.agent_id, {
       status: event.status,
       state: event.state,
@@ -383,16 +425,9 @@ export { api, state };
 window.__camApi = api;
 window.__camState = state;
 
-// Guard against double module instances: mobile.html loads this file with a
-// ?v= stamp while views import it bare, so it can be evaluated twice. Only
-// one instance may run init() — otherwise every listener, poll loop, and
-// connect() call is duplicated.
-//
-// init() MUST be deferred: the bare instance is evaluated before the stamped
-// one (cyclic imports via the views), and at that point the view modules are
-// still mid-evaluation (their const bindings are in TDZ), so calling init()
-// synchronously fails. A microtask runs after the whole module graph has
-// settled, making init() safe regardless of which instance schedules it.
+// All local modules use canonical, query-free URLs. Keep the exactly-once
+// guard as a final invariant against duplicate initialization, and defer past
+// cyclic view imports so their const bindings have left TDZ.
 function scheduleInit() {
   if (window.__camMobileV2) {
     console.warn('[mobile] duplicate app.js instance detected — skipping init()');
