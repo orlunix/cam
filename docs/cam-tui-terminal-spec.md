@@ -2,7 +2,7 @@
 
 日期：2026-10-19。开发分支：`cam-tui`。
 
-状态：界面与功能范围已记录，Desktop 源码参考已检查；Rust TUI、Server 状态订阅与交互终端通道尚未实现。现有 Router、forwarding 参考组件和 agent 操作 SDK 可作为接入基础。
+状态：界面与功能范围已记录，Desktop 源码参考已检查；Rust TUI、本地 Client daemon、Server 状态订阅与交互终端通道尚未实现。现有 Router、forwarding 参考组件和 agent 操作 SDK 可作为接入基础。
 本文补充 [Client / Server Spec](cam-client-server-spec.md) 与
 [Server / TUI 早期计划](superpowers/plans/2026-10-14-cam-server-and-tui.md)。
 
@@ -46,6 +46,12 @@
 - 点击 tab 后，左侧同步标记对应 agent；列表筛选只影响列表可见项，不关闭 tab、不停止 agent，也不切换当前终端。
 - 关闭 tab 只关闭该客户端视图，不代表停止 agent；stop/kill/rm 使用独立、明确的操作。
 - 左栏宽度与右侧终端区域相互独立；布局变化只 resize 当前可见终端，保持其它 tab 的历史和选区。
+
+### 1.2 本地常驻后台
+
+TUI 通过本地 Rust Client daemon（暂称 `cam-clientd`）管理跨 Node 连接、agent list/status、定时任务、engineering loop、forwarding 与健康检查。多个窗口共用一个 daemon；关闭 TUI 后这些后台工作继续运行。它属于 Client，不是另一个 CAM Server，也不接管远端 agent 的权威状态或 monitor。
+
+职责、注册/调度规则与验收见 [CAM Client 本地守护进程 Spec](cam-client-daemon-spec.md)。终端显示、输入 trap、viewport、选区和剪贴板仍在 TUI。
 
 ## 2. 已有 Desktop 参考
 
@@ -147,7 +153,7 @@ Desktop 的 `sanitizeTerminalStream` 通过过滤备用屏幕切换来保留 xte
 
 ## 8. 必须实现的运行功能
 
-CAM TUI 不只是终端布局，还必须接入以下四项。状态与业务所有权遵守 [Client / Server Spec](cam-client-server-spec.md)；转发遵守 [Client Forwarding Spec](cam-client-forwarding-spec.md)。
+CAM TUI 不只是终端布局，还必须接入以下能力。状态与业务所有权遵守 [Client / Server Spec](cam-client-server-spec.md)；转发遵守 [Client Forwarding Spec](cam-client-forwarding-spec.md)。下表中的客户端后台工作由本地 daemon 运行，TUI 提供操作与展示。
 
 | 功能 | Server/后端职责 | CAM TUI 职责 |
 | --- | --- | --- |
@@ -155,12 +161,14 @@ CAM TUI 不只是终端布局，还必须接入以下四项。状态与业务所
 | Agent operation | 对具体 agent 执行操作、检查能力与权限、去重、保存进度与结果 | 提供操作入口，绑定明确 Node/agent，显示进度、结果与错误 |
 | Nodes operation | 提供真实 Node 身份、Server 能力、连接/路由诊断 | 管理本客户端的 Node 配置、连接与断线重连，展示各 Node 状态 |
 | Forwarding | 两端负责持久消息、选路、去重与业务结果关联 | 后台维护专用转发通道，按目标 Node 转发原消息，不等待业务回复 |
+| 定时任务与 engineering loop | 核验目标状态、权限与调度权，执行已开放的 agent 操作 | daemon 持久注册并调度；TUI 管理计划、查看运行与延后原因 |
+| 健康检查 | 提供可协商的连接/路由、监控与探测能力 | daemon 检查 tunnel alive、forwarding、状态同步、调度/loop；TUI 分层显示证据、时间与原因 |
 
 ### 8.1 Agent loop：状态更新与监控
 
-这里的 loop 指持续状态同步与监控，不是自动给 agent 发送任务的 prompt loop。
+这里的 loop 指持续状态同步与监控；定时触发工程任务的 engineering loop 另见第 8.5 节，两者都需要实现。
 
-- TUI 初次连接读取 agent 快照，随后订阅带序号的增量事件；重连、Server 代次变化或检测到序号缺口时重新同步。
+- daemon 连接各 Node 时读取 agent 快照，随后订阅带序号的增量事件；重连、Server 代次变化或检测到序号缺口时重新同步。各 TUI 订阅本地 daemon，不重复轮询所有 Node。
 - Agent 缓存以 `(owner_node_id, agent_id)` 为键，与 forwarding 的名称/ID 定位共用，不再建立另一份权威 registry。更新包含来源、版本/时间和新鲜度。
 - Agent 状态沿用简化模型：`alive` 下为 `idle / running`，启动中的 `running` 标注 `initializing / started`；`dead` 下为 `stopped / failed / killed`。不引入 completed、planning、editing 等工作阶段。
 - Node 断线、缓存过期与 agent 状态分开显示；失联不能将所有 agent 改成 dead，也不能继续把缓存标为实时状态。
@@ -192,7 +200,7 @@ CAM TUI 不只是终端布局，还必须接入以下四项。状态与业务所
 
 ### 8.4 Forwarding
 
-复用现有 Rust Client forwarding 组件，将其作为 TUI 后台能力接入，不新增 Hub 产品或第二套路由规则。
+复用现有 Rust Client forwarding 组件，将其放入本地 Client daemon，不新增 Hub 产品或第二套路由规则；TUI 退出后 daemon 仍保持转发。
 
 - 每个已连接 Server 保持专用双向 forwarding 通道，与终端输出和状态订阅隔离；tab 切换、浏览历史或关闭交互视图不暂停转发。
 - 通告真实、已认证且获准中继的直连 Node；断开立即撤回，定期刷新，旧代次事件不能覆盖新连接。一个 Server 可经多个 Client 到达同一目标。
@@ -202,24 +210,40 @@ CAM TUI 不只是终端布局，还必须接入以下四项。状态与业务所
 - 慢目标使用有界队列和背压，不能阻塞其它 Node 或 UI。明确区分未转发与结果未知，由两端 Server 决定恢复和去重。
 - `Nodes` 可查看通道、路由、排队、最后错误与耗时；默认日志只记录必要元数据，不记录消息正文或凭据。
 
+### 8.5 定时任务与 engineering loop
+
+本地 daemon 提供近似 camc cron 的定期/一次性任务，并可给指定 Node/agent 注册 engineering loop。持续更新所有已知 agent 的 status，但只对已注册目标触发 continuation prompt；busy/initializing/stale/offline 时延后，不中断工作、不堆积提示。Goal 是否达成依据明确的 Verify 证据，不能由 idle 推断。
+
+注册记录、触发去重、多 Client 调度权、管理入口及完整验收见 [本地守护进程 Spec](cam-client-daemon-spec.md)。本轮不自动迁移或双跑现有 camc cron/loop。
+
+### 8.6 健康检查
+
+本地 daemon 统一检查自身、tunnel/Server 连接、按需启用的 forwarding、agent 状态同步、调度器、engineering loop 与已打开终端。进程存在、连接可响应和功能端到端可用分别验证；过期/缺少能力显示 stale/unknown 或不适用，不误报健康。`Nodes` 与 `Settings` 提供状态和按需重查，检查不向用户 agent 注入命令、不改变 agent 生命周期。
+
+检查证据、主动 probe、恢复边界和验收见 [本地守护进程 Spec](cam-client-daemon-spec.md#6-分层健康检查)。
+
 ## 9. 实施顺序与完成边界
 
-在现有 Rust workspace 中增加 `cam-tui`，复用共享协议和 forwarding 组件，不另起一个独立 Server 或 Hub。
+在现有 Rust workspace 中增加 `cam-tui` 与本地 Client daemon，复用共享协议和 forwarding 组件，不另起一个独立 Server 或 Hub。
 
-1. 建立四区布局、Nodes 连接管理和后台 forwarding；验证两个 Server、一个 TUI 的连接与转发不依赖当前选中 tab。
-2. 增加 Server agent 快照/事件能力，接入 Agent loop、筛选和状态展示；先只读接入 legacy 信息，验证断线与重同步。
+1. 建立本地 daemon、四区布局、Nodes 连接管理和后台 forwarding；验证两个 TUI 共用一个 daemon，关闭窗口后转发继续。
+2. 增加 Server agent 快照/事件能力，接入 daemon 状态缓存、Agent loop、筛选和状态展示；先只读接入 legacy 信息，验证断线与重同步。
 3. 接入 agent operation 和交互 tab，验证真实 run/reboot 护航与失败反馈，以及操作只作用于固定目标。
 4. 完成终端模型、历史、鼠标、选区、复制粘贴及重连；通过第 7 节的真实终端验收。
-5. 通过多 Node、多 Client、双向并发与换路径回复验收；清理全部临时 agent、进程、连接与 allocation。
+5. 完成持久定时任务与 engineering loop 注册/调度，以及分层健康检查；通过 idle gate、调度权、重启、去重与故障注入验收。
+6. 通过多 Node、多 Client、双向并发与换路径回复验收；清理全部临时 agent、进程、连接与 allocation。
 
 当前实现边界：
 
 | 项目 | 已有基础 | 尚需完成 |
 | --- | --- | --- |
+| 本地 Client daemon | forwarding 参考组件、camc cron/loop 行为参考 | 独立常驻进程、本机 IPC、持久调度与多窗口共享 |
 | 四区界面与交互终端 | Desktop 源码参考、本 Spec | Rust TUI、终端流协议、历史和剪贴板验收 |
 | Agent loop | legacy runtime/monitor | Server 快照/事件 API、TUI 订阅与集中监控的受控迁移 |
 | Agent operation | Server 原生 SDK 适配的十项操作 | TUI 操作入口、进度与结果展示、真实工具验收 |
 | Nodes operation | 参考 Client 的多 endpoint 连接/重连 | TUI 配置管理、状态及诊断面板 |
-| Forwarding | Rust Router 与 headless Client 参考组件 | TUI 后台集成及多 Client 验收 |
+| Forwarding | Rust Router 与 headless Client 参考组件 | 本地 daemon 集成及多 Client 验收 |
+| 定时任务与 engineering loop | camc 的现有调度、idle gate 与 Goal/Checklist/Verify 约定 | daemon 注册/调度、Server 状态与调度权检查、真实 agent 验收 |
+| 健康检查 | Router/参考 Client 的连接、路由与错误记录 | daemon 统一检查、协议探测能力、TUI 展示与故障验收 |
 
 Spec 和参考组件完成不等于 CAM TUI 已实现；上述功能及真实交互验收都通过后，才能报告 TUI 可用。

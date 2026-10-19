@@ -22,6 +22,7 @@ CAM 的产品架构只有 **Client** 与 **Server** 两种角色。每台纳入�
 
 - [CAM Client Forwarding Spec](cam-client-forwarding-spec.md)：Client 专用转发通道、可达通告、统一消息转发、恢复及逐项验收要求；属于本文 Router 阶段的 Client 侧契约。
 - [camc Server 接入](camc-server-integration.md)：已实现的本机 IPC、原生 SDK 后端与验收边界。
+- [CAM Client 本地守护进程 Spec](cam-client-daemon-spec.md)：TUI 常驻后台、状态缓存、定时任务、engineering loop、forwarding 与健康检查的职责边界；尚未实现。
 - [Rust Router 使用与构建](../components/cam-router/README.md)：独立服务、Client 参考组件、通道配置、持久队列和通用 Linux 静态构建；Python 包旧入口暂不替换。
 - [camc spec](camc-spec.md)：legacy camc 当前行为与兼容约束。
 - [Bridge Protocol v1](desktop/bridge-protocol-v1.md)、[camb 实现笔记](desktop/camb-bridge.md)：现有桥接协议与实现，迁移期通过适配器兼容。
@@ -100,6 +101,14 @@ Client forwarding 的必做清单、通道和验收以 [CAM Client Forwarding Sp
 - 负责 UI 布局、终端显示、PageUp/PageDown、历史 viewport、鼠标选区和用户本机剪贴板。UI 状态不成为 agent 运行状态的权威。
 
 新 Server API 已覆盖的能力，由 Client 直接调用；其余保留现有 legacy 操作路径。纯中继不执行 camc CLI、不维护 agent 生命周期，也不因自身断线重新发起结果未知的修改操作。legacy fallback 按下节的管理后端边界保留。
+
+#### 4.2.1 TUI 的本地 Client daemon
+
+CAM TUI 使用独立的本地常驻后台，暂称 `cam-clientd`，每台客户端机器、每个用户一份；多个 TUI 窗口共用。它负责连接多个 Server、持续汇总 agent list/status、运行用户注册的定时任务和 engineering loop，并承载 Client forwarding 与分层健康检查（含 tunnel alive 和按需 forwarding 验证）。TUI 退出不结束这些后台工作。
+
+daemon 属于 Client 角色；不是每个 Node 上的第二个 CAM Server，不持有 agent runtime 的权威状态、不新增第二套 monitor。Server/实际管理后端提供状态与操作，daemon 订阅、缓存、调度，TUI 显示和交互。状态同步 loop 与 idle-gated engineering prompt loop 是两项不同能力。
+
+纯 forwarding 与 daemon 主动注册的业务调度分离：前者不保存业务回程表，后者可持久保存自己的任务计划与触发记录。两端 Server 仍负责消息去重、执行结果关联及 loop 最终交付时的状态/调度权检查。单 daemon 多窗口、跨 daemon 多路径、调度权交接与未知结果恢复详见 [本地守护进程 Spec](cam-client-daemon-spec.md)。此项为后续设计，不改变当前 Router 的能力范围。
 
 ### 4.3 Legacy camc、新 Client 与 fallback
 
