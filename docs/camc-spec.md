@@ -7,6 +7,8 @@
 > Target architecture (2026-10-18): [CAM Client / Server Spec](cam-client-server-spec.md)
 > defines camc as the legacy Client and retained fallback, with agent information
 > management and runtime ownership migrating gradually into CAM Server.
+> The first new Server scope is routing only; current camc agent information,
+> lifecycle, runtime and existing Desktop/Mobile operation paths stay unchanged.
 > This document describes the existing standalone implementation and its compatibility
 > contract; it must not be read as the new architecture's dependency direction.
 

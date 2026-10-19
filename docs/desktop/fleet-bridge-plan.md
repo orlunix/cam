@@ -8,6 +8,8 @@ v1 实现（camb + desktop bridge worker + UI 开关）已完成、测试全绿�
 > Client 定位、单 Node 单 Server 及多 Client 路径，以
 > [CAM Client / Server Spec](../cam-client-server-spec.md) 为准；下文的
 > “Server 经 SSH 调用 camc”不作为新架构的实现要求。
+> 当前新增 Server 先实现 Router，旧 Client/camc 业务路径保持；agent 信息和管理
+> 能力随后逐项迁移，最终由 TUI/Desktop/Mobile 直接使用 Server API 并退役 camc。
 
 关联文档：
 - 协议规范（schema/语义的唯一权威）：[`bridge-protocol-v1.md`](./bridge-protocol-v1.md)
