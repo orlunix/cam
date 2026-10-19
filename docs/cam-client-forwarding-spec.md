@@ -1,85 +1,63 @@
 # CAM Client Forwarding Spec
 
-日期：2026-10-18
+日期：2026-10-19
 
-状态：设计草案；本文列出 Client 必须实现的行为，不表示当前代码已经具备这些能力。
+状态：设计草案；已按统一 message 路由简化，实现与验收尚未完成。
 
-范围：Desktop、TUI、Mobile 连接后台的专用 forwarding 通道。架构角色、Server 单实例与 Router 先行原则以 [CAM Client / Server Spec](cam-client-server-spec.md) 为准。
+范围：Desktop、TUI、Mobile 连接后台的专用 forwarding 通道。角色、Server 单实例和 Router 先行原则以 [CAM Client / Server Spec](cam-client-server-spec.md) 为准。
 
-## 1. 目标与职责
+## 1. 核心规则
 
-一个 Client 可以同时连接多个 CAM Server，并将不同来源 Server 的请求转给目标 Server 上的已注册接收端；目标是 camc agent 时，由目标机器的本机消息适配层完成投递。请求有响应时，Client 沿原请求经过的连接反向转发。
+**request 与 response 都是一条普通 message，使用同一套发送、路由和投递流程。** 回复具有新的 `message_id`，通过 `reply_to` 关联被回复的消息。Client 对两者执行相同的转发，不等待业务结果，也不维护业务回程表。该通道也承载 capture、list、run、stop/kill/rm 等结构化操作及其结果。
 
-```mermaid
-sequenceDiagram
-    participant X as Node A 的 agent-a / camc
-    participant A as Server A
-    participant C as Client forwarding
-    participant B as Server B
-    participant Y as B 的消息适配层 / agent-b
-    C->>A: 建立 forwarding 通道
-    C->>B: 建立 forwarding 通道，确认 Node B 身份
-    C->>A: 通告可直接到达 B
-    X->>A: 请求，目标 B/agent-b
-    A->>C: 选定路径，发送请求
-    C->>B: 保留请求身份与正文，转发
-    B->>Y: 记录并交付
-    Y-->>B: 投递确认
-    B-->>C: delivered ACK
-    C-->>A: 原路转回 ACK
-    Y->>B: agent-b 稍后显式回复
-    B->>C: 与原请求关联的 response
-    C->>A: 原路转回 response
-    A->>X: 保存回复，通知原发送方
-    A->>C: 持久保存后的 result_ack
-    C->>B: 转交结果确认
+```text
+请求：camc A → Server A → Client C1 → Server B → agent B
+回复：camc B → Server B → Client C2 → Server A → agent A
 ```
 
-| 组件 | 必须负责 |
+C1 和 C2 可以是同一个 Client，也可以不同。每条消息独立选路；不要求回复经过原 Client、原连接或原端口。请求发出后，连接立即继续承载其它消息；回复可以乱序到达。
+
+## 2. 本机优先与端到端职责
+
+| 步骤/组件 | 必须完成的工作 |
 | --- | --- |
-| 来源 Server A | 认证本机调用方、保存请求、选择 Client 路径、超时与恢复、把响应交给原调用方 |
-| Client forwarding | 管理专用连接、通告直连目标、转发请求、维护回程映射、转发 ACK/响应/通道错误 |
-| 目标 Server B | 校验来源和授权、持久化去重与结果、向本机接收端交付、保存回复及恢复依据 |
-| 本机消息适配层 | 沿用 camc 的本机 mailbox/消息通知机制，关联本机 thread 与跨 Node 请求，把显式回复交回本机 Server |
+| camc 发送 | 定向 agent 操作先按现有规则处理本机目标；本机不存在目标或显式指定远端时交本机 Server；run/list 按明确的目标 Node 和 scope 处理 |
+| 本机 Server | 保存待发送消息，根据目标 Node 选择可直达它的 Client |
+| Client | 根据 `target.node_id` 找到连接，转发完整 message |
+| 目标 Server | 认证、去重并交给已注册的本机消息接收端 |
+| 本机消息适配层 | 沿用 camc 的 mailbox/通知机制，找到目标 agent 并完成本机投递 |
+| agent 回复 | camc 创建新 message，收发地址对调并填写 `reply_to`，重新走上述流程 |
 
-Client forwarding 是 Client 的后台模块，即架构中的 Hub 能力，不是一个新的独立 Hub 产品。它不接管 agent registry、monitor、tmux 或生命周期；纯转发不执行 camc CLI 或拼接远程命令。
+显式指定远端 `Node:agent` 时，直接交给本机 Server，不能命中本机同名 agent。已找到本机 agent 但投递失败时返回本机错误，不能把相同名称的远端 agent 当作替代目标。
 
-## 2. Client 必做清单
+远端转发前必须确定目标 Node；只有 agent 名而尚未定位时返回 `TARGET_UNRESOLVED`，不广播执行业务。Router 首版不增加全网 agent 目录；Client 不做 agent 查找。目标定位能力与 agent 信息后续迁移分开接入。
 
-以下项目都是第一版 forwarding 的必选行为；实现和验收按编号逐项对应。
+Router 先行：现有本机管理、launcher、monitor、attach 和 legacy Desktop/Mobile 路径保持。Server 使用本机接收端或共享消息模块，不启动 camc CLI 或第二个 camc 接收守护进程。camc 消息接入必须单独实现和验证。
 
-| 编号 | Client 必须做的事 |
+## 3. Client 首版必做清单
+
+| 编号 | 必须做的事 |
 | --- | --- |
-| CF-01 | 每个 Client 后台有稳定 `client_id`；每条已认证 Server 连接绑定真实 `node_id`、Server epoch 和当前连接代次 |
-| CF-02 | 每个 Server 建立独立的双向 forwarding 长连接，支持 Server 主动推送；与终端 attach/输出及 UI 请求分开 |
-| CF-03 | 维护 `node_id → 已就绪连接`；同时支持多个 Server、多个并发请求及相反方向的流量 |
-| CF-04 | 向已连接 Server 通告获准中继且实际直连的目标；连接变化立即更新，定期刷新，有序列号和有效期 |
-| CF-05 | 接收来源 Server 请求，校验连接身份、授权、信封、目标和期限，按明确的目标 `node_id` 转发一次 |
-| CF-06 | 保留业务请求的来源、目标、request ID、operation 和 params；维护与业务内容分开的回程记录 |
-| CF-07 | 把目标的 ACK、pending、最终 response 与原请求关联，沿原来源连接返回；校验响应确实来自该目标 |
-| CF-08 | 明确区分传输接收、消息投递确认、业务回复和路径失败；不能用 ACK 或写 socket 成功代替业务结果 |
-| CF-09 | 检测断线、撤回路径、退避重连；通知可确认的失败与不确定交付，恢复时配合 Server 查询原请求 |
-| CF-10 | 对每连接与总体限制帧大小、排队字节数和请求数；隔离慢连接，处理背压，限制过期回程记录 |
-| CF-11 | 提供每条通道、可达目标和请求转发的简短状态/日志；默认隐藏 token、正文和其它敏感值 |
-| CF-12 | forwarding 在连接后台运行；UI 页面刷新、切换 agent、关闭终端标签不能中断它；后台退出明确使路径失效 |
+| CF-01 | 维护每个 Server 的专用双向 forwarding 通道；认证真实 Node 与 Client 身份，复用连接层的认证、心跳和重连 |
+| CF-02 | 通告获准中继且当前直连的目标 Node；连接变化立即更新，定期刷新，断线或过期即失效 |
+| CF-03 | 解析协议帧及信封，检查来源、目标、消息 ID、期限和转发权限；正文按原内容转发 |
+| CF-04 | 按目标 Node 选择已就绪连接；request、reply、投递状态使用相同转发入口，不另做业务回程协议 |
+| CF-05 | 一条通道并发承载多个消息，允许不同目标和相反方向流量；单帧写入排队，不锁住连接等待回复 |
+| CF-06 | 报告路径失败及交付是否确定，撤回失效路径；消息保存、去重、重试和业务关联归两端 Server/camc |
+| CF-07 | 限制帧大小、发送队列和写入并发，隔离慢目标，明确背压，不静默丢消息 |
+| CF-08 | forwarding 在后台运行；提供通道、可达目标、队列、错误与耗时状态，默认日志不记录正文或凭据 |
 
-“支持 forwarding”表示上表全部完成，而不是仅能建立 SSH、打开端口或收到注册响应。
+Client 只需维护 `node_id → 当前连接`、通道状态和有界发送队列。Server 保存 `目标 Node → 可用 Client 集合`；Client 不保存等待 agent 回复的 pending 表、对话历史或权威消息数据库。
 
-## 3. 专用通道与连接身份
+通用操作的名称、目标和返回约定见总 Spec 的 [远端操作范围](cam-client-server-spec.md#61-远端操作范围)。Client 不解析每个命令的参数；目标机器须已注册对应能力。run/list 不套用“先查某个已有 agent，没找到才远端”的规则。
 
-每个启用 forwarding 的 Client–Server 对维护一条独立的双向协议连接。它可以复用既有 SSH transport，但不能借用终端 PTY、shell stdin/stdout 或终端画面作为消息通道。建议采用 WebSocket，必要时承载于 SSH tunnel；具体 transport、地址和 wire 编码在共享协议实施时确定，行为必须符合本文。
+## 4. 专用通道与可达通告
 
-一条通道承载多个请求及 route/ACK/response 控制帧。不能为每个请求启动一次 SSH 或 camc。Client 发起连接后，Server 可以随时沿该连接发送请求。
+每个 Client–Server 对建立独立的双向 forwarding 逻辑通道，与终端 PTY/attach 输出分开。可以复用已有 SSH transport 的独立 channel，或使用 WebSocket；具体地址与 wire 编码在实现时确定。握手协商版本、Node/Client 身份及可中继范围，不为每条消息新建 SSH 或启动命令。
 
-握手必须协商协议版本、`forwarding` 能力及允许中继的 Node/operation 范围，并认证两端身份。通过配置别名连接后，仍以握手确认的 `node_id` 绑定通道；身份与配置预期不符时失败，不把别名当作节点身份。
+Client 只有在与 B 认证成功且 forwarding 就绪时，才向 A 宣告可直达 B。配置项、过期缓存和其它节点的路由通告都不能当作直连证据。
 
-Client 为每次新连接保存独立代次，旧连接事件不能更新或撤销新连接状态。一个后台的多个 UI 页面共享 `client_id` 和连接管理；独立 Desktop/TUI/连接后台使用各自的 `client_id`。
-
-## 4. 可达通告：Server A 如何知道能经 Client 到 B
-
-Client 只有在与 B 认证成功、forwarding 就绪且获准中继时，才向 A 通告 B。配置中存在 B、旧缓存显示 B、或从另一个 Server 听说 B，都不构成直连。
-
-逻辑消息示例；字段表示必需语义，不固定最终 wire 编码：
+逻辑快照示例：
 
 ```json
 {
@@ -91,157 +69,109 @@ Client 只有在与 B 认证成功、forwarding 就绪且获准中继时，才�
 }
 ```
 
-- `session_id` 绑定当前已认证通道，`seq` 在该通道内递增；A 忽略旧代次及旧序号的通告。
-- `reachable` 是发给 A 的完整快照，省略的目标视为撤回；不包含 A 自身，也不包含任何间接路由。
-- 建连后立即发送；目标连上、断开或授权改变时立即重发；没有目标时发送空快照。
-- 正常连接也须周期刷新；刷新间隔必须小于双方协商的 TTL。示例的 30 秒不是固定默认值。
-- A 按本机接收时间计算有效期，并对 TTL 设置上限；与 Client 的通道断开时立即失效，无须等 TTL。
-- A 据此维护 `目标 node_id → 已授权 Client 连接集合`。同一个 B 可有 C1、C2 两条候选路径，选路归 A。
+- A 根据当前已认证连接识别 Client；快照是完整集合，省略目标视为撤回，不宣告 A 自身或间接路由。
+- 建连及连接变化时立即更新，周期刷新间隔小于协商 TTL。示例 30 秒不固定为默认值。
+- A 按本机接收时间计算有效期并设置上限；Client 通道断开立即使该路径失效。
+- `session_id`/`seq` 区分连接代次及先后，旧连接事件和旧快照不能覆盖新状态。
+- 同一 B 可同时经 C1、C2 到达；每条消息由来源 Server 选一条路径。首版不做 Client 连锁中继或路径评分。
 
-Client 不交换或宣告传递路由。第一版仅支持 `A → 一个 Client → B`。
+## 5. 统一消息与 Client 转发步骤
 
-## 5. 请求与回程：Client 如何转发
-
-共享协议至少需要以下逻辑消息；字段应复用总 Spec 的请求/响应信封，避免建立另一套业务 API。
-
-| 逻辑消息 | 用途 |
-| --- | --- |
-| `routes.snapshot` | 当前通道的直连可达完整快照 |
-| `forward.request` | 转发原业务请求，内含总 Spec 的 request 信封 |
-| `forward.query` | 查询指定目标上原来源身份/request ID 的处理状态或结果，不重新执行业务 |
-| `forward.ack` | 携带原来源身份与 request ID、ACK 产生端身份及阶段；`received` 可逐跳产生，`delivered` 仅由目标产生 |
-| `forward.response` | 携带原来源身份及总 Spec 的 response；可为 pending、ok、error、unknown |
-| `forward.error` | 路径/通道错误及交付是否确定；不冒充目标的最终业务响应 |
-| `forward.result_ack` | 来源 Server 已持久保存最终结果的确认，由 Client 原路转交目标 |
-
-后续接入 agent 消息时，业务 request 可具有如下扩展。只有目标已注册相应接收端并宣告 `message.send` 能力时才可使用；Router 本身不实现该业务。
+业务消息统一使用 `type=message`。以下为必需语义的示例，最终 wire schema 由共享协议落实：
 
 ```json
 {
   "version": 1,
-  "type": "request",
-  "request_id": "req-123",
-  "source": {"kind": "node", "id": "node-a", "agent_id": "agent-a"},
+  "type": "message",
+  "message_id": "msg-1",
+  "source": {"node_id": "node-a", "agent_id": "agent-a"},
   "target": {"node_id": "node-b", "agent_id": "agent-b"},
   "operation": "message.send",
-  "params": {
-    "thread_id": "thread-456",
-    "seq": 1,
-    "expect_response": true,
-    "text": "请检查这个问题"
-  },
-  "deadline_at": "2026-10-18T21:00:30Z"
+  "payload": {"text": "请检查这个问题"},
+  "expires_at": "2026-10-19T21:00:30Z"
 }
 ```
 
-通用 Router 验收仍使用总 Spec 的 `test.echo` 接收端，不以迁移 agent 管理或消息能力为前置条件。
+回复仍使用同一种 message：
 
-### 5.1 收到请求
-
-1. 核对入站 Server 已认证、允许发送该来源的请求，且中继范围覆盖目标及 operation；B 仍需独立核验来源与中继授权。
-2. 核对信封合法、未过发送期限、目标为另一个直接连接的 Node。agent 名称/短 ID 解析由目标接收端负责，Client 不扫描 agent 信息。
-3. 保存回程项，再把原请求写入目标 B 的 forwarding 通道。没有就绪连接或容量不足时，返回明确路径错误；不另找 Client、不广播、不 exec camc。
-4. 重复请求保持原 ID。Client 可复用同一转发中的关联，但最终去重仍由 B 负责；同键不同目标或内容不能覆盖原回程记录，返回冲突。
-
-回程项至少包括：
-
-```text
-key = (认证后的 source.kind, source.id, request_id)
-value = 来源 Node/连接代次、目标 Node/连接代次、请求摘要、交付阶段、保留期限
+```json
+{
+  "version": 1,
+  "type": "message",
+  "message_id": "msg-2",
+  "reply_to": "msg-1",
+  "source": {"node_id": "node-b", "agent_id": "agent-b"},
+  "target": {"node_id": "node-a", "agent_id": "agent-a"},
+  "operation": "message.send",
+  "payload": {"text": "检查结果如下"},
+  "expires_at": "2026-10-19T22:00:30Z"
+}
 ```
 
-客户端可以同时处理 A→B、B→C、C→A。不同来源使用相同 request ID 也不能串线；`thread_id` 不用作本次转发的唯一键。
+同一条消息重试保持 ID、地址和内容；回复是新消息，有自己的期限。`reply_to`/可选 thread 关联保存在两端消息记录中，Client 不靠它们决定路径。Router 测试可以用 `receiver_id=test.echo` 的已注册接收端替代 agent，回复仍是新消息。
 
-### 5.2 收到响应
+capture/list/run/stop/kill/rm 等操作同样使用该 message 信封：`operation` 标识结构化操作，目标指定 agent 或已注册本机操作接收端，参数放在 payload。接收端返回新的 `operation.result` message，其 `reply_to` 指向原操作的 message ID，并携带明确结果/错误；Client 沿相同入口转发。具体业务能力逐项接入，不代表当前已支持全部 camc 命令。
 
-1. 从响应携带的原来源身份和 request ID 找回程项；核对入站 Node 与 response 的 `owner_node_id` 都是该请求的目标 B。ACK 也须核对产生端与阶段，不能把 Client 的接收确认当作目标投递确认。
-2. 把 ACK、pending 或 response 转给该项记录的来源 A。连接已更换时，不把旧连接代次当作新连接；通过恢复查询重新建立关联。
-3. 终态响应必须是 B/接收端提供的业务结果。Client 只转发，不因写 socket 成功生成 `ok`，也不从 agent 终端画面抓取答案。
-4. A 持久保存最终结果后发送 `forward.result_ack`，Client 转给 B；Client 自己“收到响应”不能替代此确认。
-5. 原路不可用或找不到回程项时，向 B 报告回程不可达；B 保留结果供后续恢复查询。Client 不随意把回复发给另一个 Node 或页面。
+Client 对每条 message 只执行以下步骤：
 
-来源通过当前可用路径发送 `forward.query` 时，Client 为原来源身份/request ID 建立当前连接的回程项；B 返回原记录状态或已保存结果。查询是独立的协议控制消息，不把原 request 的 operation/params 改成另一种业务操作，也不触发重新执行。在结果保留期内，查询不能仅因原请求发送 deadline 已过而拒绝。正常流程在结果确认后释放回程项；有界过期清理必须保留由两端 Server 恢复的途径。
+1. 校验入站连接、帧格式/大小、来源授权及期限。来源 Node 必须匹配已认证入站 Server；目标 Server 仍独立校验授权。
+2. 按 `target.node_id` 查找自己直接连接且允许转发的目标；没有连接就报告路径错误，不递归交给其它 Client。
+3. 将原消息放入该目标的有界发送队列，保持地址、ID、`reply_to`、operation 和 payload 内容不变。
+4. 按消息边界写入目标通道，随后继续处理下一条。短期传输确认可由连接层处理；不等待业务回复。
 
-正常情况下，原路返回就是 `B → 原 Client → A`；不是要求在已断开的连接上继续发送。
+隧道连接和分帧由传输库处理。Client 解析信封用于选路、权限和容量检查，不解释 payload 中的 agent 对话或 tool 选项，也不从终端画面提取回复。
 
-## 6. ACK、业务回复与 camc 消息接入
+## 6. 投递、回复与恢复边界
 
-| 信号 | 表示什么 | 不能据此推断 |
-| --- | --- | --- |
-| `received` ACK | 某一跳接收了帧 | 消息已落目标 mailbox 或 agent 已处理 |
-| `delivered` ACK | 目标接收端已持久接收，并完成其定义的投递步骤 | agent 已阅读、理解或回答 |
-| `pending` | 请求仍在等待或处理，尚无最终结果 | agent 生命周期或任务是否完成 |
-| `response` 的 ok/error | 目标接收端给出的最终业务结果 | 单纯通道连通就已得到这个结果 |
+**投递状态与 agent 的业务回复分开。** 写 socket 成功只能证明本次写入；目标 mailbox 的持久接收由目标接收端确认，不能据此声称 agent 已阅读或回答。
 
-`expect_response=true` 的 agent 消息，delivered ACK 之后仍可等待显式业务回复。适配层需要声明其投递和回复契约；不期待回复的消息可以在目标的投递契约满足后终结，不能伪造一段 agent 回答。
+如需投递回执，目标 Server 可产生普通状态 message，携带新 ID 和 `reply_to`，经同一路由入口发给来源 Server 的状态接收端。回执不触发更多回执，不注入为 agent 的回答。Client 不需要单独的 `forward.request/query/response/result_ack` 业务协议。
 
-camc 消息接入的必要配套由两端 Server/本机适配层完成：
-
-- 来源调用接入本机 Server，并绑定真实的来源 agent 身份；请求先保存，再选择中继。
-- 目标适配层保存跨 Node 来源、目标 agent、thread/seq 与 request ID 的对应关系，再沿用 camc 的 mailbox 和通知机制。
-- 目标 agent 显式 `camc msg reply` 时，适配层把回复交回本机 Server，关联原请求；目标 Server 保存回复并经原 Client 返回。
-- `thread_id` 标识对话，`request_id` 标识一次独立投递及其结果。后续独立 turn 使用新的 request ID；同一 turn 重试保持原 ID，适配层维护稳定的 thread/seq 映射。
-- 来源 Server 将回复保存并交给原来源 agent，即使原 CLI 等待进程或 UI 已退出也可恢复读取。
-
-这些接入点尚需实现，不能因 Client 已能转发就宣称跨机器 agent 对话已完成。Server 使用已注册本机接收端或共享消息模块；不通过启动 camc CLI 实现投递/回信，不要求常驻第二个 camc 接收守护进程。
-
-## 7. 断线、超时与恢复
-
-| 情况 | Client 必须采取的行为 |
+| 情况 | 处理责任 |
 | --- | --- |
-| 明确尚未写入目标连接 | 返回 `not_forwarded` 路径错误，来源可决定按原 ID 重试 |
-| 已写出或部分写出，尚无目标确认 | 报告交付 `unknown`，不能声称未执行或自行重新发起业务 |
-| B 断开 | 立即撤回 B 的可达性；通知关联来源，保留必要关联供有界恢复 |
-| A 断开，B 尚在处理或已回复 | 告知 B 回程不可达；目标持久保留结果，不能以 Client 内存为唯一副本 |
-| Client 崩溃或重启 | 重建连接并发送新快照；未决请求由 Server 按原 ID 查询/恢复，不依赖 Client 旧内存 |
-| 原 Client 不可用，另一个 Client 可到 B | A 选择新路径查询原请求，B 返回已保存结果；新 Client 建立新的回程项 |
-| agent 很久才回复 | 按双方业务等待/保留策略处理；连接存活不依赖某个同步 CLI 一直阻塞 |
+| 明确未向目标写入 | Client 报告 `not_forwarded`；来源 Server 决定重试或换路径 |
+| 已写出/部分写出但没有目标确认 | Client 报告 `unknown`；来源 Server 按原 ID 查询或恢复，不新建业务副本 |
+| B 或 Client 断开 | 路径失效；来源 Server 保留待发消息，不依赖 Client 内存恢复 |
+| 原 C1 消失后 agent 才回复 | B 保存新的回复消息，重新选可达 A 的 C2，正常投递 |
+| A 暂时离线 | B 的待发队列保留回复，按消息期限恢复投递；不能因原请求已投递就丢回复 |
+| agent 没有回复或回复超时 | 由 camc/业务调用方记录等待状态，不占 Client 连接，不重发原任务催出副作用 |
 
-连接重试采用有上限的退避，正常连接以心跳检测失效；重连不新建业务 request ID，不重新启动 agent。发送 deadline 限制尚未开始的请求；请求已处理或有副作用时，超时不能解释为未执行。
+两端 Server 按认证来源和 `message_id` 去重，并核对目标与内容摘要；同键不同内容拒绝。去重与待发队列必须持久化，保留期覆盖重试窗口；接收端未知是否已经处理时返回不确定状态，不盲目再次投递。状态查询属于 Server 接口，Client 不维护端到端业务等待记录。
 
-Client 不需要权威持久消息数据库。来源 Server 保存请求，目标 Server 保存投递及结果；Client 回程表和缓冲可放内存，但必须有容量与回收规则。超时/清理映射不代表删除目标结果；后续查询可重新建立回程。业务请求去重与结果保留期限以总 Spec 为准。
+camc 适配层维护本机 thread/seq 与跨 Node `message_id`、`reply_to`、收发地址的稳定映射。现有 camc 的 thread ID 不能直接作为每个 turn 的消息 ID。本机 `msg reply` 接入该映射后创建独立回复，复用本机优先发送流程；不能因 Router 连接成功就宣称该适配已完成。
 
-## 8. 容量、权限与可观测性
+## 7. 容量、后台与诊断
 
-- 每个连接及全 Client 都限制帧大小、排队字节数、并发/未决请求数和回程表容量；具体数值在实现配置中列明，不能无限增长。
-- 达到容量上限时，对尚未接收的请求返回背压/容量错误。已接收的请求不能静默丢弃；慢 B 不能阻塞 A→C 或其它目标。
-- 心跳、路由撤回、ACK 和结果转发须及时处理；大量终端输出使用独立通道。frame 长度或格式错误必须明确拒绝。
-- 按已认证连接和授权校验来源、目标与回复；Client 对身份的声明不能替代 B 的授权检查。伪造响应、无对应请求的响应和递归转发都应拒绝或报告。
-- UI/诊断接口至少显示：每 Server 通道状态、实际 Node、最后活动/错误、当前可中继目标、队列与未决数量、最近转发结果及耗时。可查询某 request 的当前转发阶段。
-- 默认日志仅记录来源/目标 Node、request ID、连接代次、阶段、错误原因和耗时；不记录正文、token 或完整环境。
-- 页面刷新/切换不影响后台 forwarding。整个后台退出或操作系统暂停时，该路径会失效；明确展示并依靠其它 Client 或 Server 恢复，不承诺已退出的 Client 仍在转发。
+每个连接与整个 Client 都限制帧大小、排队字节数和写入并发。尚未接收的消息可明确拒绝；已接收消息不能静默丢弃。一个慢目标不能阻塞其它目标，队列不能无限增长。
 
-## 9. 必须通过的验收
+UI 刷新、切换 agent、关闭终端标签不影响后台 forwarding；后台退出或系统暂停会使路径失效，但不停止 agent。状态至少显示实际 Node、通道状态、可达目标、队列大小、最后错误和最近转发耗时。日志仅记录来源/目标 Node、message ID、连接及错误元数据，不记录正文、token 或完整环境。
 
-至少使用两个独立 Server、两个独立 Client 后台验证多路径；再增加第三个 Server 验证多目标与并发。两个页面共用后台不算两个 Client。
+## 8. 必须通过的验收
 
-| 场景 | 预期结果 | 对应清单 |
+至少使用 A、B 两个独立 Server 和 C1、C2 两个独立 Client 后台；再增加第三个 Server 验证并发多目标。两个 UI 页面共用后台不算双路径。
+
+| 场景 | 必须观察到的结果 | 对应清单 |
 | --- | --- | --- |
-| C 连接 A、B 并完成认证 | A 得到经 C 到 B 的有效通告，B 同样可得到 A | CF-01～04 |
-| B 只在配置中，尚未连接或身份不匹配 | 不通告 B，不使用错误 Node | CF-01、04 |
-| B 断开、C 断开、通告过期 | 路径分别及时撤回/失效，旧快照不能复活路径 | CF-04、09 |
-| A→B、B→A、A→第三个 Server 并发 | 每个请求只到指定目标，响应不串线 | CF-03、05～07 |
-| 不同来源复用同一 request ID | 回程仍准确，互不覆盖 | CF-06、07 |
-| delivered ACK 后 agent 稍后回复 | ACK 与实际回复分别呈现，正文沿原路回到来源 agent | CF-07、08 |
-| 消息明确不期待回复 | 按目标投递契约终结，不等待或伪造 agent 回答 | CF-08 |
-| A 断开后 B 才回复 | B 保存结果；A 恢复后可按原 ID 取得 | CF-07、09 |
-| Client 收到 response，但 A 尚未确认就断开 | B 不因 Client 已接收而清理结果；A 恢复后仍可查询 | CF-07、09 |
-| Client 在请求写出后崩溃 | 来源不把结果未知当作未执行；Server 可查询恢复 | CF-08、09 |
-| C1 断开，A 改经 C2 查询 | 得到原结果，目标处理计数仍为一次 | CF-06、09 |
-| C1/C2 送达同一请求、同 ID 换正文 | 相同请求由 B 去重；不同内容返回冲突，不覆盖回程 | CF-06、07 |
-| 伪造来源/响应、目标不授权、递归请求 | 明确拒绝，不投递给其它 agent/Node | CF-05、07 |
-| 帧过大、队列满、B 长时间阻塞 | 有界拒绝/背压，无静默丢弃，其它目标可继续通信 | CF-10 |
-| 刷新页面、切换 agent、关闭终端标签 | forwarding 继续工作，状态仍可查询 | CF-11、12 |
-| 停止 Client 后台 | 路径失效，agent 本身仍正常运行 | CF-09、12 |
-| Router 与真实 camc 接入分开测试 | 先用独立 echo 接收端验路由；真实 agent 再验证 mailbox、显式 reply 及回收 | CF-05～09 |
+| C 连接 A、B，B 随后断开/重连 | 只通告真实直连；及时撤回；旧快照不覆盖新连接 | CF-01、02 |
+| 本机 agent 存在、本机未命中、显式远端同名目标 | 分别本机投递、交本机 Server、精确远端；本机投递错误不换目标 | CF-03、04 |
+| A→B、B→A、A→第三节点同时发送多条消息 | 各到目标，允许乱序，等待回复不占通道 | CF-03、04、05 |
+| 请求经 C1，业务回复经 C2 | 回复有新 ID 和正确 reply_to；来源 agent 收到，C2 没有旧请求记录也能转发 | CF-04、05、06 |
+| capture/list/run/stop/kill/rm 的目标能力已注册 | 参数保持不变，结果/错误使用新 message 返回；Client 不执行命令或等待结果 | CF-03、04、05 |
+| 请求投递后 C1 退出，agent 很久后才回复 | B 独立保存并发送回复，无业务回程表依赖 | CF-05、06 |
+| A 暂时离线，稍后恢复 | B 按回复自己的 ID/期限恢复投递，不重新执行原任务 | CF-06 |
+| 消息重试、多 Client 重复送达、同 ID 改正文 | 相同消息目标只投递一次；内容冲突被拒绝 | CF-03、06 |
+| 收到投递回执，尚无 agent 回答 | 回执与业务回复分开呈现，无回执循环或假回答 | CF-04、06 |
+| 部分写入后断线 | 报告 unknown；Server 保存恢复依据，不静默丢失或新建副本 | CF-06 |
+| 目标无连接、来源伪造、目标无授权、递归中继 | 明确拒绝，无错误目标投递 | CF-01、03、04 |
+| 帧过大、队列满、一个目标阻塞 | 有界背压与错误，其它目标继续工作 | CF-07 |
+| 页面刷新/关终端标签、退出后台 | 前者不中断 forwarding；后者路径失效且 agent 继续运行 | CF-08 |
 
-协议测试应覆盖关联、快照失效、错误分类、背压及权限。端到端验收要经过真实 transport；Desktop 的连接层改动还必须在打包的 Electron runtime 验证。测试 Server、连接及专门创建的 agent/allocation 全部回收，不回收复用的用户会话。
+协议、真实 transport 和本机消息适配分开验证。Router 先用独立 echo 接收端验通，再接真实 agent 的 mailbox 与显式回复。Desktop 连接层必须在打包的 Electron runtime 验证。专为测试创建的 agent、Server、连接与 allocation 全部回收，不回收复用的用户会话。
 
-## 10. 实施顺序与完成定义
+## 9. 实施顺序与完成定义
 
-1. 在共享协议中落实握手、专用通道、路由快照、请求/响应、错误分类和结果确认的 wire schema、容量及时间参数。
-2. Client 实现 CF-01～12，Server 提供对应接入；先以独立 echo 接收端通过双 Server、双 Client 的验收。
-3. 接入 camc 本机消息适配层，验证跨 Node 来源、mailbox 投递、延迟显式回复、断线恢复和多轮对话。
-4. Desktop/TUI/Mobile 后台逐个接入同一契约；各自完成真实 transport 验证，原有 legacy 业务路径继续可用。
+1. 共享协议落实统一 message 信封、可达快照、连接层错误和容量/时间参数；Server 保存/去重并提供本机接收端入口。
+2. Client 完成 CF-01～08，通过多 Server/多 Client 的普通消息转发验收，不增加业务回程表或长时间 RPC 等待。
+3. 接入 camc 本机优先发送和跨 Node 消息映射，验证显式回复、换 Client 返回及离线恢复；原有管理流程保持。
 
-完成报告必须分别列出协议/Client forwarding、Server 配套、camc 消息接入和各平台验收的状态。仅实现其中一层，不得标记整条跨机器 agent 通信已完成。
+完成报告分别说明 Client 转发、Server 配套、camc 消息适配及各平台验收状态。首版按统一 message 模型验收；未验证的能力不能标记完成。
