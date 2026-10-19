@@ -4,6 +4,12 @@
 > Scope: the `camc` standalone agent manager (`src/camc_pkg/`, built to `dist/camc`).
 > See [Doc map](#doc-map) at the bottom for how this relates to other docs.
 
+> Target architecture (2026-10-18): [CAM Client / Server Spec](cam-client-server-spec.md)
+> defines camc as the legacy Client and retained fallback, with agent information
+> management and runtime ownership migrating gradually into CAM Server.
+> This document describes the existing standalone implementation and its compatibility
+> contract; it must not be read as the new architecture's dependency direction.
+
 `camc` is the per-machine, single-file, stdlib-only Python CLI that owns the
 local lifecycle of AI coding agents (Claude Code, Codex, Cursor, …). It is the
 **source of truth** for agent execution on its host. The optional `cam` server
