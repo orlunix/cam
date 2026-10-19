@@ -4,7 +4,7 @@ description: >
   Manage AI coding agents (Claude Code, Codex, Cursor, Pi) on a single
   machine with camc — the standalone, stdlib-only Python CLI. Use when
   the user wants to start an agent, send it a prompt, capture its
-  output, attach to it, resume / reboot / move it, or clean up records.
+  output, attach to it, resume / reboot it, or clean up records.
   For inter-agent messaging use the camc-messaging skill. For cron/loops use
   camc-cron-loop. For diagnosing stuck agents use camc-diagnose.
   Cross-machine fleet operations are outside this built-in skill.
@@ -27,14 +27,14 @@ allowed-tools: Bash Read Glob Grep
 camc starts AI coding agents (claude / codex / cursor / pi) inside tmux
 sessions, lets you send them prompts and read their output, and tracks
 each agent's lifecycle. Every agent has its own tmux session, monitor
-process, and Claude session-id, so multiple agents in the same
-workspace are fully isolated at the conversation level.
+process, and tool conversation identity. Reboot preserves the agent ID
+but starts a new tool conversation.
 
 > **When in doubt, run `--help` first — never guess.** Flags drift
 > between releases; the binary is the source of truth. `~/.cam/camc --help`
 > for subcommands; `camc <subcommand> --help` for flags.
 
-Agents are addressable by name, ID prefix, or `#N` (1-based from `~/.cam/camc list`).
+Agents are addressable by name, ID prefix, or a numeric index (1-based from `~/.cam/camc list`).
 
 ## Quick Reference
 
@@ -50,14 +50,14 @@ Agents are addressable by name, ID prefix, or `#N` (1-based from `~/.cam/camc li
 | Send text only | `~/.cam/camc send <agent> --text "..." --no-enter` |
 | Send special key | `~/.cam/camc key <agent> --key Escape` |
 | Attach interactively | `~/.cam/camc attach <agent>` (Ctrl+B D to detach) |
-| Logs | `camc logs <agent> -f` |
-| Reboot (resume session) | `camc reboot <agent>` |
-| Reboot through LSF | `camc reboot <agent> --tool-launcher auto` |
-| Update name/tag | `camc update <agent> --name x --tag T` |
-| Stop (graceful) | `~/.cam/camc stop <agent>` |
+| Logs | `~/.cam/camc logs <agent> -f` |
+| Reboot (fresh session, same agent ID) | `~/.cam/camc reboot <agent>` |
+| Reboot through LSF | `~/.cam/camc reboot <agent> --tool-launcher auto` |
+| Update name/tag | `~/.cam/camc update <agent> --name x --tag T` |
+| Stop pane 0 (keep tmux) | `~/.cam/camc stop <agent>` |
 | Kill (force) | `~/.cam/camc kill <agent>` |
 | Remove | `~/.cam/camc rm <agent>` (always kills tmux; `--archive` to save first) |
-| Bulk cleanup | `camc prune --orphans` |
+| Bulk cleanup | `~/.cam/camc prune --orphans` |
 | Start with system prompt | `~/.cam/camc run "task" -n name --system-prompt "..."` or `--system-file <path>` |
 | Run with an API profile | `~/.cam/camc run -t codex --api <name> --tool-launcher none -n <name> "task"` |
 | Check/list API profiles | `~/.cam/camc api check` / `~/.cam/camc api list` |
@@ -78,7 +78,8 @@ Agents are addressable by name, ID prefix, or `#N` (1-based from `~/.cam/camc li
 
 `--api NAME` explicitly selects a profile from `~/.cam/api-models.json` for
 Claude or Codex. Run `~/.cam/camc api check` before relying on a profile.
-API profiles require `--tool-launcher none` because their proxy is local.
+API profiles normally require `--tool-launcher none` because their proxy is
+local. Verified current-allocation direct execution also supports that proxy.
 API defaults are per-tool and opt-in: `api default set` makes ordinary runs
 use that profile; `api default show` displays the selection.
 
@@ -101,16 +102,55 @@ clear one (`fix-ecc`, `bug5893270`, `regr-fn100`).
 ~/.cam/camc run "add tests" -t claude -n add-tests
 ~/.cam/camc run "review this tree" -t pi -n pi-review
 ~/.cam/camc run -n debug-mem                                   # interactive (no prompt)
-~/.cam/camc run "build" -a -n nightly                          # auto-exit on completion
 ~/.cam/camc run "x" -n x --tag NR10 --tag WORK
 ~/.cam/camc run "..." -t claude -n redo --resume <session-id>            # resume Claude session
 ~/.cam/camc run "x" -p /path/to/proj -n proj-dev               # explicit path (default: CWD)
 ~/.cam/camc run "x" -n y --system-prompt "You are a reviewer." # inject system prompt inline
 ~/.cam/camc run "x" -n y --system-file path/to/SKILL.md        # inject system prompt from file
 ~/.cam/camc run "x" -n y --isolate-tool-home 0               # override adapter home-isolation default
-~/.cam/camc run "x" -n auto                                   # direct -> battach -> SSH -> qsub -> local
+~/.cam/camc run "x" -n auto                                   # direct -> battach -> SSH -> qsub
 ~/.cam/camc run "x" -n batch --tool-launcher 'qsub -q o_cpu_4G -m rel8x -app r89docker --qsla autorun_sla -app affinity -Is'
 ```
+
+### Startup supervision is part of the task
+
+A successful `~/.cam/camc run` command only means tmux was created. **Do not stop
+there or report success while `phase=initializing`.** The assistant launching
+the agent owns startup supervision through `status=alive, phase=started`.
+The same requirement applies after `reboot` or an explicit Claude resume.
+
+1. Keep the returned agent ID and poll its status and visible pane:
+   ```bash
+   ~/.cam/camc --json status <agent-id>
+   ~/.cam/camc capture <agent-id> --lines 80
+   ```
+2. If initialization is waiting on workspace trust, first-run confirmations,
+   theme/editor selection, or another routine startup choice, inspect the
+   visible choices and select the appropriate one yourself. Trust the
+   workspace the user asked you to run in; use the normal/default choice
+   when the user gave no preference. Do not send the choice back to the user
+   merely because the tool asks for it. Use the actual UI's key sequence:
+   ```bash
+   ~/.cam/camc key <agent-id> --key Enter
+   ~/.cam/camc key <agent-id> --key Down
+   ~/.cam/camc send <agent-id> --text "1"   # only if the visible menu accepts 1 + Enter
+   ```
+   Re-capture after each action; never blindly loop Enter/1. If the monitor
+   already handled the screen, do not duplicate its input. Launcher autorun
+   flags do not guarantee that first-run trust/onboarding screens disappear.
+3. Continue through launcher/queue waiting and tool boot. Verify both the
+   recorded `phase=started` and an actual ready input UI or tool activity.
+   Do not send the initial task again when it was already passed on startup.
+4. For missing credentials, unavailable resources, or an error that cannot be
+   resolved within the requested scope, report the agent ID, exact blocker,
+   and recorded failure reason. Do not claim started or force it into the
+   registry. Authentication requiring the user remains a real blocker.
+
+The worker has an overall launcher/tool startup deadline (at least 600s);
+the adapter also has a boot-readiness timeout after transport starts. Queue
+waiting does not consume that adapter timer. An early exit or timeout is
+`dead/failed`, with `exit_reason`. Keep the failed pane available for diagnosis.
+Report success only with the final agent ID and observed started state.
 
 When `nvprojectname` is available, every tool defaults to
 `--tool-launcher auto`, including custom PATH tools. Outside that NVIDIA
@@ -120,6 +160,12 @@ prefix (for example, submitting its own qsub command); camc appends the tool
 command. `none` is the local direct-launch sentinel, not a separate remote
 launcher mode. Pass `--tool-launcher auto` to opt into the automatic path
 explicitly.
+Run uses an explicit launcher or the environment default. Reboot uses an
+explicit override, otherwise the saved launcher (including a custom prefix),
+and falls back to the environment default only for records without one.
+All managed launches, including `--tool-launcher none`, use the adapter's
+native autorun arguments: Claude `--dangerously-skip-permissions`, Codex
+`--yolo`, Cursor `--force`, and Pi `--approve`. Workspace settings remain.
 With `auto`, camc first checks whether this process is inside its own RUN
 interactive `autorun_sla` allocation. It verifies `LSB_JOBID` against
 the LSF record, current user, service class, and local execution host. When
@@ -138,14 +184,21 @@ SSH uses batch authentication and bounded connection timeouts; missing public
 keys advance to qsub. SSH reaches the host shell and does not claim to enter
 the job's container or cgroup. The tool must pass its version check in that
 host environment before SSH is selected.
-The order is current allocation direct -> battach -> SSH -> qsub -> local.
+The order is current allocation direct -> battach -> SSH -> qsub. If none
+can start the tool, the launch fails; it never silently starts locally.
+
+Auto startup prints brief `[launcher]` progress to stdout: self allocation
+check, battach/SSH probes, qsub preparation, and final launch failure.
+Messages show job/host and exit codes without raw commands or credentials.
+After the detached tmux pane starts, actual transport attempts and fallback
+messages appear in that pane; qsub submission/dispatch output stays there.
 The qsub project is resolved and validated from the requested workdir with
 `nvprojectname`, with the existing missing-project save policy. This save is
 deferred until qsub is actually needed. Connection/submission failures before
 the tool starts advance the chain, including qsub failures. Once a tool has
 started, its exit ends the run; camc does not start a second agent on failure.
-The final local fallback adds no adapter autorun arguments or monitor
-auto-confirm. Explicit user tool arguments remain authoritative.
+Use an explicit `--tool-launcher none` for local execution. Explicit user
+tool arguments remain authoritative.
 Selection and fallback decisions are printed and safe structural metadata is
 recorded.
 
@@ -178,16 +231,15 @@ command as one argv. A single standalone `{command}` remains accepted for
 older templates. camc does not use `eval`. The launcher executable is checked
 locally, while the tool name is deliberately left unresolved for the
 qsub/SSH target environment.
-Claude launcher runs add `--dangerously-skip-permissions` (without the local
-`--permission-mode auto`); Codex launcher runs add `--yolo`; Pi launcher runs
-add `--approve` so project-local resources cannot block in a remote trust TUI.
-Cursor and custom tools add no launcher autorun option unless their adapter
-config declares one.
+Managed Claude runs add `--dangerously-skip-permissions`; Codex adds `--yolo`,
+Cursor adds `--force`, and Pi adds `--approve`. These same adapter options
+apply to local, current-allocation, and remote launches. Custom tools only
+receive autorun options if their adapter declares them.
 Remote-launcher and verified current-allocation autorun runs disable the local
 monitor's `auto_confirm`; the adapter's autorun option is the sole
 confirmation policy in those modes.
-With `--tool-launcher none`, ordinary local startup and Codex requirements-based autorun policy
-are unchanged. A launcher/tool failure records its exit status and retains the
+With `--tool-launcher none`, tools run locally with native autorun. A
+launcher/tool failure records its exit status and retains the
 tmux shell for inspection.
 
 `--isolate-tool-home 1|0` overrides the selected adapter's Boolean
@@ -224,7 +276,7 @@ trailing Enter submits it. Use `--no-enter` to type without submitting.
 ~/.cam/camc capture <agent>                    # last 100 lines (default)
 ~/.cam/camc capture <agent> --lines 500        # more
 ~/.cam/camc capture <agent> --lines 0          # full scrollback (60s timeout)
-camc --json capture <agent>             # JSON with content hash
+~/.cam/camc --json capture <agent>             # JSON with content hash
 ```
 
 Capture reads the tmux pane buffer — exactly what a user attached to
@@ -280,58 +332,74 @@ Full protocol, wire format, and patterns: see the camc-messaging skill.
 ```bash
 ~/.cam/camc list                          # all agents on this host
 ~/.cam/camc status <agent>                # detailed JSON-like state
-camc logs <agent> -f               # follow monitor log
+~/.cam/camc logs <agent> -f               # follow monitor log
 ```
 
-### Reboot / move
+### Reboot
 
 ```bash
-camc reboot <agent>                # inherit saved launcher, otherwise NV auto / non-NV local
-camc reboot <agent> --tool-launcher auto # resume through direct/battach/SSH/qsub; no local fallback
-camc reboot <agent> --tool-launcher none # explicitly resume locally
-camc reboot <agent> --tool-launcher 'qsub -q o_cpu_4G --qsla autorun_sla -Is'
+~/.cam/camc reboot <agent>                # reuse saved launch settings
+~/.cam/camc reboot <agent> --tool-launcher auto
+~/.cam/camc reboot <agent> --tool-launcher none
+~/.cam/camc reboot <agent> --tool-launcher 'qsub -q o_cpu_4G --qsla autorun_sla -Is'
 ```
 
-Reboot resolves the launcher before stopping the old agent. A saved `auto` or
-`none` selection is inherited; legacy records use the environment default.
-Custom prefixes must be supplied again, so secrets in templates are not saved.
-Auto reboot never falls back to a local tool; a failed remote chain reports
-failure. Local API profiles require an explicit local override unless already
-inside a verified current allocation.
+Reboot destroys this agent's entire old tmux session (all windows/panes), then
+creates a new tmux and starts a **fresh tool session with the same agent ID**.
+It works with Claude, Codex, Cursor, Pi, and arbitrary tool executables, including
+stopped agents whose tmux is gone. It does not recover or resume conversations,
+reuse session UUIDs, or replay the previous task prompt. Old scrollback is lost.
+Name, tool, working directory, tags, system prompt, API profile and tool-home
+isolation policy are retained. Preparation and launcher progress run in the new
+pane, just as for `run`; attach to see failures after terminal creation.
 
-Remote Codex sessions without a local PID binding can be recovered only from
-an idle pane with no pending input: reboot queries `/status` and validates that
-exact UUID's transcript, workdir, and creation time. Managed Codex home
-snapshots disable `check_for_update_on_startup` without changing the donor.
+Reboot reuses `tool_launcher` (including custom prefixes), `tool_env`,
+`tool_dir`, `tool_args`, and `use_env_tool` from `runtime.custom_launch` in
+`agents.json` (mode 0600). Environment entries and launcher prefixes are saved
+verbatim, including any secrets; environment references expand again at launch.
+Explicit `--tool-env` overrides merge by variable name; `--tool-args` replaces
+the saved argument list. Legacy records that lack values need them supplied once.
+Auto reboot still fails if
+the remote chain fails, without local fallback. Killing the local tmux does not
+cancel a reused LSF allocation or prove that a detached remote process exited.
+`migrate` remains an alias; `--to` is rejected (use a launcher instead).
 
 ### Update
 
 ```bash
-camc update <agent> --name new-name
-camc update <agent> --tag SMOKE
+~/.cam/camc update <agent> --name new-name
+~/.cam/camc update <agent> --tag SMOKE
 ```
 
 ### Stop / kill / remove
 
 ```bash
-~/.cam/camc stop <agent>           # graceful: sends /exit; tmux stays alive (resumable)
+~/.cam/camc stop <agent>           # reset pane 0 to an empty shell; tmux stays alive
 ~/.cam/camc kill <agent>           # force: tears down tmux session
 ~/.cam/camc rm <agent>             # remove record + always kills tmux + unlinks socket
 ~/.cam/camc rm <agent> --archive   # also tar.gz the history under ~/.cam/archives/
 ```
 
+`stop` uses `respawn-pane -k` on window 0 / pane 0, independent of tool
+type. It replaces the pane's program with an empty shell and marks the
+agent `dead/stopped` only after tmux succeeds. Other panes are retained; the
+reset pane's screen and scrollback are cleared. Capture/archive first if
+needed. For remote launchers this stops the local pane/transport; it does
+not confirm that detached remote processes have exited or cancel a reused
+LSF allocation. Use `exit` when a graceful tool exit is wanted.
+
 ### Bulk cleanup
 
 ```bash
-camc prune                  # drift-fix ONLY (status wrong but tmux alive)
-camc prune --orphans        # actually delete dead-tmux records + stale files
-camc prune --orphans --dry-run
+~/.cam/camc prune                  # preserve recorded lifecycle; no automatic revival
+~/.cam/camc prune --orphans        # actually delete dead-tmux records + stale files
+~/.cam/camc prune --orphans --dry-run
 ```
 
 ### Adopt an existing tmux session
 
 ```bash
-camc add my-existing-session --tool claude --name my-agent
+~/.cam/camc add my-existing-session --tool claude --name my-agent
 ```
 
 ## Files
@@ -339,13 +407,11 @@ camc add my-existing-session --tool claude --name my-agent
 ```
 ~/.cam/
 ├── agents.json                          # agent registry
-├── machines.json
-├── contexts.json
 ├── messages.jsonl                       # inter-agent mailbox ledger
 ├── events.jsonl                         # append-only event log (auto-rotates 30d)
 ├── logs/monitor-<id>.log                # monitor stdout
 ├── pids/<id>.pid
-├── archives/                            # tar.gz from `camc archive`
+├── archives/                            # tar.gz from `~/.cam/camc archive`
 ├── cron/jobs.d/<job_id>.json            # host cron job files
 └── loops/<agent_id>/
     ├── agent.loop.json                  # per-agent prompt loop registry
@@ -357,16 +423,33 @@ camc add my-existing-session --tool claude --name my-agent
 
 | Symptom | First thing to try |
 |---|---|
-| Status says `running` but tmux is dead | `~/.cam/camc heal` |
+| Status says `alive` but tmux is dead | `~/.cam/camc heal` |
 | Need to replace a healthy local monitor | `~/.cam/camc heal --restart` |
 | Need to refresh the managed tmux configuration | `~/.cam/camc heal --tmux` |
 | Agent not responding to `send` | `~/.cam/camc capture <agent> --lines 30` to see; then `~/.cam/camc attach` for manual |
 | Want to find an agent's Claude JSONL | `~/.claude/projects/<encoded-cwd>/<sid>.jsonl` — see `reference/sessions.md` |
 
+### Agent lifecycle
+
+- `status`: `alive` or `dead`.
+- `state`: alive → `idle`/`running`; dead → `stopped`/`failed`/`killed`.
+- `phase`: `initializing` until readiness, then `started`; dead → null.
+- `run` returns after creating tmux. The pane worker supervises startup;
+  early exit or timeout becomes `dead/failed` with `exit_reason`.
+- Work finishing returns to idle, not completed. Monitor errors alone do
+  not imply the tool is dead.
+
 ### Heal modes
 
 - `~/.cam/camc heal` and `~/.cam/camc heal --monitor` are the default monitor heal: they
-  recover dead monitors without forcing healthy monitors to restart.
+  inspect local tool processes even for terminal records. A verified live tool
+  repairs stale `complete`/`completed`/`stopped`/`failed`/`killed` labels to
+  `alive/running` or `alive/idle`, with `phase=started`. Empty tmux shells and
+  SSH/qsub/battach processes alone do not prove a live tool. Then heal recovers
+  missing monitors without forcing healthy ones to restart.
+  Use `~/.cam/camc reboot <agent>` to start the tool again.
+  Cron repair, event maintenance, and same-HOME orphan discovery also run
+  when no agent is currently running.
 - `~/.cam/camc heal --restart` restarts verified local monitors one at a time, then
   runs the normal monitor heal.
 - `~/.cam/camc heal --tmux` rewrites CAMC's managed `tmux.conf` and sources it in
@@ -379,17 +462,17 @@ camc add my-existing-session --tool claude --name my-agent
 For deeper diagnosis (stuck agents, exit reasons, heal details):
 use the **camc-diagnose** skill.
 
-## When NOT to use camc
+## Host scope
 
-camc only manages agents on its own host. Cross-machine operations require
-the separate `cam` tooling and are outside this built-in skill.
+Run camc on the host that owns the tmux sessions. Shared agents.json does not
+make another host’s processes local. Remote launcher execution is supported;
+fleet/server management is outside this skill. The old `cam` CLI is retired.
 
 ## Reference (deep-dives — load on demand)
 
 | File | When to read |
 |---|---|
 | `reference/sessions.md` | Find / resume a Claude session JSONL |
-| `reference/machines-and-contexts.md` | Add SSH host, debug `env_setup` |
 
 ### Other skills
 

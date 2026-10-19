@@ -30,7 +30,7 @@ def test_rm_resolves_one_exact_target_and_cleans_only_owned_resources(
     monkeypatch.setattr(cli, "_kill_monitor",
                         lambda agent: calls.append(("monitor", agent["id"])))
     monkeypatch.setattr(cli, "_stop_agent_api_proxy",
-                        lambda agent: calls.append(("proxy", agent["id"])))
+                        lambda agent, **kwargs: calls.append(("proxy", agent["id"])))
     monkeypatch.setattr(cli, "tmux_kill_session",
                         lambda session: calls.append(("tmux", session)) or True)
     monkeypatch.setattr(cli, "_find_tmux_socket",
@@ -58,8 +58,8 @@ def test_rm_archives_only_when_requested(
     calls = []
     monkeypatch.setattr(cli, "cmd_archive",
                         lambda args: calls.append(args.id))
-    monkeypatch.setattr(cli, "_kill_monitor", lambda agent: None)
-    monkeypatch.setattr(cli, "_stop_agent_api_proxy", lambda agent: None)
+    monkeypatch.setattr(cli, "_kill_monitor", lambda agent, **kwargs: None)
+    monkeypatch.setattr(cli, "_stop_agent_api_proxy", lambda agent, **kwargs: None)
     monkeypatch.setattr(cli, "tmux_kill_session", lambda session: True)
     monkeypatch.setattr(cli, "_find_tmux_socket", lambda session: None)
 
@@ -110,8 +110,8 @@ def test_rm_can_remove_the_last_registry_record(
         invoke_cli, isolated_cam_home, monkeypatch):
     store = storage.AgentStore(str(isolated_cam_home.agents))
     store.save(_agent("aaa11111", "only-agent"))
-    monkeypatch.setattr(cli, "_kill_monitor", lambda agent: None)
-    monkeypatch.setattr(cli, "_stop_agent_api_proxy", lambda agent: None)
+    monkeypatch.setattr(cli, "_kill_monitor", lambda agent, **kwargs: None)
+    monkeypatch.setattr(cli, "_stop_agent_api_proxy", lambda agent, **kwargs: None)
     monkeypatch.setattr(cli, "tmux_kill_session", lambda session: True)
     monkeypatch.setattr(cli, "_find_tmux_socket", lambda session: None)
 

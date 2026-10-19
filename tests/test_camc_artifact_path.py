@@ -12,9 +12,6 @@ def test_desktop_and_cam_sync_use_dist_camc():
     resources = desktop["build"]["extraResources"]
     assert {item["from"] for item in resources} >= {"../../dist/camc"}
 
-    remote_source = (ROOT / "src/camc_pkg/remote.py").read_text()
-    assert '"dist", "camc"' in remote_source
-
     manager_source = (ROOT / "src/cam/core/agent_manager.py").read_text()
     assert '"dist" / "camc"' in manager_source
     assert 'parent.parent / "camc.py"' not in manager_source

@@ -59,25 +59,12 @@ def _c(text, color):
 # Status / state styling
 # ---------------------------------------------------------------------------
 
-_STATUS_STYLE = {
-    "running": ("green", "▶"),
-    "completed": ("green", "✓"),
-    "failed": ("red", "✗"),
-    "stopped": ("yellow", "■"),
-    "killed": ("red", "☠"),
-    "pending": ("yellow", "⏳"),
-    "starting": ("yellow", "🚀"),
-    "timeout": ("red", "⏱"),
-    "retrying": ("yellow", "↻"),
-}
-
+_STATUS_STYLE = {"alive": ("green", "▶"), "dead": ("dim", "■")}
 _STATE_STYLE = {
-    "initializing": ("dim", "..."),
-    "planning": ("cyan", "🧠"),
-    "editing": ("blue", "✏"),
-    "testing": ("magenta", "🧪"),
-    "committing": ("green", "📦"),
-    "idle": ("dim", "💤"),
+    "running": ("green", "▶"), "idle": ("dim", "💤"),
+    "stopped": ("yellow", "■"), "failed": ("red", "✗"),
+    "killed": ("red", "☠"), "initializing": ("yellow", "..."),
+    "started": ("green", "▶"),
 }
 
 

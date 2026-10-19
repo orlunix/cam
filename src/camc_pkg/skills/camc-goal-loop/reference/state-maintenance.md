@@ -4,8 +4,8 @@ Use this when the user asks whether `AGENTS.md`, `CLAUDE.md`, or another project
 
 ## Core Model
 
-- The auto-load file (`CLAUDE.md` for claude, `AGENTS.md` for codex/cursor) is the current source of truth.
-- The history file (`CLAUDE.history.md` for claude, `AGENTS.history.md` for codex/cursor) records important decisions and structural changes.
+- The auto-load file (`CLAUDE.md` for claude, `AGENTS.md` for codex/cursor/pi) is the current source of truth.
+- The history file (`CLAUDE.history.md` for claude, `AGENTS.history.md` for codex/cursor/pi) records important decisions and structural changes.
 - Git history records the complete edit history.
 
 Keep the auto-load file short, current, and actionable. Do not turn it into a changelog.

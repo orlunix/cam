@@ -126,7 +126,7 @@ def test_agent_to_cam_json_emits_dynamic_updated_at(monkeypatch):
     rec = {
         "id": "aaaa1111",
         "task": {"name": "x", "tool": "claude"},
-        "status": "running",
+        "status": "alive",
         "tmux_session": "cam-aaaa1111",
         "started_at": "2026-06-01T00:00:00Z",
     }

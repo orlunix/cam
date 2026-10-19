@@ -1,8 +1,7 @@
-# Claude Code adapter — interactive mode with default permissions.
+# Claude Code adapter — interactive mode with managed autorun.
 #
-# Runs in interactive mode (not headless -p). Ordinary launches keep the
-# permission behavior configured by Claude Code; autorun launches opt into
-# the explicit bypass below.
+# Runs in interactive mode (not headless -p), with native autorun enabled
+# for both local and launcher-managed agents.
 # Permission prompts use numbered menus:
 #   "1. Yes  2. Yes, don't ask again  3. No" — send "1" without Enter.
 # Trust dialogs (v2.1+) use Ink select menus:
@@ -12,7 +11,6 @@
 #   Ready prompt:     ❯ (start of line)
 #   Tool call:        ● Read(...), ● Bash(...)
 #   Task summary:     ✻ Crunched for 1m 11s
-#   Completion:       Two ❯ lines = task done (prompt echo + return to input)
 
 [adapter]
 name = "claude"
@@ -26,8 +24,7 @@ isolate_tool_home = false
 # so this works identically under bash / zsh / csh / tcsh / fish / dash
 # login shells — /usr/bin/env is the single source of truth.
 command = ["env", "CLAUDE_CODE_DISABLE_MOUSE=1", "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1", "claude"]
-# A remote/current autorun launch cannot rely on camc's local permission UI,
-# so only that path adds Claude's autorun permission option.
+# Used by every managed launch, including explicit local execution.
 launcher_autorun_args = ["--dangerously-skip-permissions"]
 prompt_after_launch = true
 startup_wait = 90.0
@@ -37,46 +34,6 @@ strip_ansi = true
 ready_pattern = "^[❯>](?!\\s*\\d+\\.)"
 ready_flags = ["MULTILINE"]
 
-[state]
-strategy = "last"
-recent_chars = 2000
-
-[[state.patterns]]
-state = "planning"
-pattern = "(● Read\\(|● Glob\\(|● Grep\\(|● WebFetch\\(|● WebSearch\\(|Thinking|Analyzing)"
-flags = ["IGNORECASE"]
-
-[[state.patterns]]
-state = "editing"
-pattern = "(● Edit\\(|● Write\\(|● NotebookEdit\\()"
-
-[[state.patterns]]
-state = "testing"
-pattern = "(● Bash\\(|Running tests|pytest|npm test|npm run)"
-flags = ["IGNORECASE"]
-
-[[state.patterns]]
-state = "committing"
-pattern = "(git commit|git push|gh pr create)"
-flags = ["IGNORECASE"]
-
-[completion]
-strategy = "prompt_count"
-
-prompt_pattern = "^[❯>]"
-prompt_flags = ["MULTILINE"]
-prompt_count_threshold = 2
-
-# Fallback: single ❯ plus task summary (✻ verb for time) = completion
-# Claude rotates verbs (Crunched, Sautéed, Whisked, Baked, etc.)
-fallback_summary_pattern = "✻ .+ for \\d+"
-
-# (2026-06-11 trim) Rules removed: "Do you want to proceed",
-# "Allow once/always", and the v2.1 trust-dialog Enter rule. All three
-# false-fired on scrollback prose, and the trust-dialog one fired on
-# this very documentation block. The single remaining numbered-menu
-# rule below requires the active cursor ❯ at line start, so it can ONLY
-# match when Claude has actually drawn the menu.
 [[confirm]]
 # Numbered permission menu — "❯ 1. Yes" / "❯ 1. Allow". The cursor ❯
 # is what Ink draws when the menu is active and highlighting option 1.

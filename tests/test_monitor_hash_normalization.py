@@ -308,56 +308,17 @@ class TestSnapshotShapeAndAutoConfirm:
         assert rt.last_change_hash1 == 42.0
         assert rt.prev_hash1 == ""
 
-    def test_left_initializing_latches_on_first_busy_and_blocks_fallback(self):
-        """Addendum: once the screen has been busy at least once, the
-        state detector must refuse to fall back to 'initializing'."""
-        # Build a config that maps a specific marker to 'initializing'.
-        # Use the real AdapterConfig path so detect_state() sees the
-        # state patterns we declare.
-        from camc_pkg.adapters import AdapterConfig
-        cfg = AdapterConfig({
-            "adapter": {"name": "x", "display_name": "X"},
-            "state": {
-                "strategy": "first",
-                "recent_chars": 2000,
-                "patterns": [
-                    {"state": "initializing", "pattern": r"INIT_MARKER"},
-                    {"state": "editing",      "pattern": r"EDIT_MARKER"},
-                ],
-            },
-            "monitor": {},
-        })
+    def test_semantic_output_cannot_reenter_initializing(self):
+        cfg = _Cfg()
         rt = _mf.MonitorRuntime("aid", cfg, now=0.0)
+        rt.current_state = "running"
+        rt.left_initializing = True
         feat = _mf.StateManagerFeature()
-
-        # Cycle 1: screen says INIT_MARKER. left_initializing still
-        # False → transition to initializing is allowed.
-        snap1 = _mk_snap(output="INIT_MARKER", screen_busy=False, now=1.0)
-        feat.after_confirm(snap1, rt)
-        assert rt.current_state == "initializing"
-        assert rt.left_initializing is False
-
-        # Cycle 2: screen goes busy → latch fires.
-        snap2 = _mk_snap(output="ignored", screen_busy=True, now=2.0)
-        feat.before_confirm(snap2, rt)
-        assert rt.left_initializing is True
-
-        # Cycle 3: detect_state() would say "initializing" again, but
-        # the latch must SUPPRESS the fallback — state stays whatever
-        # it last was (here: still 'initializing' from cycle 1, but
-        # crucially no new store_update / event is emitted).
-        rt.current_state = "editing"  # pretend we'd moved to editing
-        snap3 = _mk_snap(output="INIT_MARKER", screen_busy=False, now=3.0)
-        actions = feat.after_confirm(snap3, rt)
-        kinds = [a.get("kind") for a in actions]
-        # No state_change event, no store_update for state.
-        assert not any(
-            a.get("kind") == "store_update"
-            and "state" in (a.get("fields") or {})
-            for a in actions
-        )
-        # current_state must NOT have been clobbered back to initializing.
-        assert rt.current_state == "editing"
+        actions = feat.after_confirm(
+            _mk_snap(output="INIT_MARKER Planning Editing Testing", now=1.0), rt)
+        assert rt.current_state == "running"
+        assert not rt.in_initializing
+        assert not [a for a in actions if a.get("fields", {}).get("phase") == "initializing"]
 
     def test_auto_confirm_unchanged_by_normalization_changes(self):
         # A matching [[confirm]] rule must still fire — the new hash

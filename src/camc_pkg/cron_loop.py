@@ -485,8 +485,8 @@ def _check_owner_ready(owner_id, _store=None):
     Returns (ready: bool, reason_or_none: str|None).
 
     A loop only fires when its owner agent is present in the agent
-    store, currently ``status=running``, and currently ``state=idle``.
-    Anything else (missing record, busy, completed, killed, etc.)
+    store, currently ``status=alive``, and currently ``state=idle``.
+    Anything else (missing record, busy, dead, etc.)
     defers the loop until the next tick — neither attempts nor
     next_due_at advance. This matches the spec's "busy_policy:defer".
     """
@@ -506,7 +506,7 @@ def _check_owner_ready(owner_id, _store=None):
     if rec is None:
         return False, "owner_not_found"
     status = (rec.get("status") or "").lower()
-    if status != "running":
+    if status != "alive":
         return False, "owner_status_%s" % (status or "unknown")
     state = (rec.get("state") or "").lower()
     if state != "idle":
@@ -537,8 +537,8 @@ def tick_loops(now=None, dispatch=None, root=None, agent_store=None):
     for the owner-idle guard.
 
     Guard: a due loop is dispatched ONLY when its owner agent is
-    currently ``status=running`` AND ``state=idle``. Other states
-    (missing record, busy, completed) produce a ``loop_deferred``
+    currently ``status=alive`` AND ``state=idle``. Other states
+    (missing record, busy, dead) produce a ``loop_deferred``
     event with the reason and leave the loop's ``next_due_at`` and
     ``state.attempts`` untouched, so a busy agent doesn't burn the
     retry budget and the prompt is delivered as soon as the agent

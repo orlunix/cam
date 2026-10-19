@@ -27,15 +27,14 @@ camc cron tick
 camc cron run <run_id>
 ```
 
-`tick` is the scheduler entrypoint. It is called by the OS cron daemon,
-or in the future by the camc monitor loop. `tick` must stay lightweight:
+`tick` is the scheduler entrypoint, called by the node-local camc scheduler. `tick` must stay lightweight:
 it scans jobs, claims due work, records a run, starts `camc cron run
 <run_id>`, and exits. `cron run` owns actual command execution.
 
 ## Design Rules
 
 - One host has one cron executor.
-- One host installs one camc cron tick block.
+- One host runs one camc cron scheduler daemon.
 - Any human or agent on that host may create jobs through `camc cron add`.
 - A job defaults to `host = current hostname`.
 - Only the same host's tick may execute that job.
@@ -64,7 +63,7 @@ it scans jobs, claims due work, records a run, starts `camc cron run
 - No raw cron expression UI in P0.
 - No direct user editing of canonical job JSON in the normal path.
 - No separate crontab line per job.
-- No requirement for an always-running camc daemon.
+- No requirement for system crontab access.
 - No parsing of action-specific semantics inside cron.
 
 ### Agent Loop Integration (V0, 2026-06-12, CAM-DESK-CRON-010)
@@ -79,7 +78,7 @@ to the owner agent via `camc msg send`, and dispatch defers when
 the owner is not currently `status=running, state=idle`.
 
 This integration is additive: the host job surface
-(`jobs.d/<job_id>.json`, `cron run <run_id>`, the crontab block
+(`jobs.d/<job_id>.json`, `cron run <run_id>`, the node scheduler
 spec below) is unchanged. Loop dispatch never reads `jobs.d/` and
 host-job dispatch never reads `loops/`.
 
@@ -143,24 +142,17 @@ Behavior:
 4. Reject duplicate active job names on the same host.
 5. Build the normalized job record.
 6. Write `jobs.d/<job_id>.json` atomically.
-7. Ensure the single system cron tick block exists.
-8. Print the job id and tick state.
+7. Ensure the node-local scheduler is running.
+8. Print the job id.
 
 Output:
 
 ```text
 added cron job daily-review (a1b2c3d4)
-tick: installed
 ```
 
-If the crontab update fails, the job remains saved and the command exits
-non-zero with a repair hint:
-
-```text
-added cron job daily-review (a1b2c3d4)
-ERROR: failed to install system cron tick: <reason>
-Run `camc heal` after fixing crontab access.
-```
+The saved job remains available if scheduler startup fails. Diagnose the
+node scheduler before retrying; system crontab is not used.
 
 ### `camc cron rm <job-id-or-name>`
 
@@ -171,7 +163,7 @@ Behavior:
 1. Resolve by exact id, exact name, or unique id prefix.
 2. Move the job file from `jobs.d/` to `archive/`.
 3. Append `job_removed` to `runs.jsonl`.
-4. If no enabled jobs remain on this host, remove the camc crontab block.
+4. Leave the user's system crontab untouched.
 
 Ambiguous prefixes are rejected without changing files.
 
@@ -232,7 +224,7 @@ Empty JSON output is `{"count": 0, "jobs": []}`.
 
 ### `camc cron tick`
 
-This command is installed into the user's crontab and is not the primary
+This command is invoked by the node-local scheduler and is not the primary
 human workflow.
 
 Behavior:
@@ -254,7 +246,7 @@ Behavior:
 8. Exit quickly.
 
 `tick` must not execute the saved action inline. Its output and errors go
-to `cron.log` through the system crontab block.
+to `cron.log` through the scheduler.
 
 ### `camc cron run <run_id>`
 
@@ -285,53 +277,13 @@ completion:
 camc msg send <agent> -t "..." --no-wait --expect-reply
 ```
 
-## System Crontab Block
+## Scheduler and Heal Integration
 
-camc owns exactly one marked block in the current user's crontab.
-
-```cron
-# camc cron begin
-* * * * HOME=/home/hren PATH=/home/prgn_share/bin:/home/hren/.cam:/usr/local/bin:/usr/bin:/bin /home/prgn_share/bin/camc cron tick >> /home/hren/.cam/cron/cron.log 2>&1
-# camc cron end
-```
-
-Rules:
-
-- Only modify text between `# camc cron begin` and `# camc cron end`.
-- Never rewrite unrelated user crontab lines.
-- If the block exists with an old camc path, replace the block.
-- If active enabled jobs exist for this host and the block is missing,
-  install it.
-- If no enabled jobs remain for this host after `cron rm`, remove it.
-- Use a short stable PATH in the crontab line. Do not copy an arbitrarily
-  long login-shell PATH into crontab.
-
-## Heal Integration
-
-`camc heal` keeps existing agent monitor repair behavior and adds one
-cron repair check:
-
-```text
-if jobs.d/ has at least one enabled active job for current host:
-    ensure the system cron tick block exists and is current
-else:
-    do not install tick
-```
-
-Repair output:
-
-```text
-Cron: installed missing tick entry (3 enabled job(s))
-```
-
-Failure output:
-
-```text
-Cron: repair failed: crontab command not available
-```
-
-No other camc command should auto-install cron except `cron add` and
-`heal`.
+`ensure_cron_scheduler()` starts or checks the node-local daemon. The
+maintenance phase of `camc heal` can repair it for local scheduled work.
+`cron tick` remains callable manually and retains its non-blocking lock.
+System crontab install, removal and repair are no longer provided. Existing
+system entries are not modified by this change.
 
 ## Job Schema
 
@@ -671,8 +623,8 @@ reason = manual_remove
 }
 ```
 
-This is the cron health signal. A stale heartbeat means the system cron
-entry is missing, cron daemon is not running, the camc path is bad, or
+This is the cron health signal. A stale heartbeat can mean the node
+scheduler is not running, the camc path is bad, or
 `tick` fails before updating state.
 
 ## Failure Handling
@@ -682,7 +634,7 @@ entry is missing, cron daemon is not running, the camc path is bad, or
 - Corrupt `config.json`: tick fails closed.
 - Corrupt job file: mutating commands refuse to overwrite it; list fails
   closed; tick warns/skips and records the corrupt path.
-- Crontab install failure: job remains saved, add exits non-zero.
+- Scheduler startup failure: the job remains saved for repair.
 - Tick lock held: tick exits 0 and writes `tick_skipped_locked`.
 - Duplicate `job_id + due_at`: no duplicate run is queued.
 - Worker command exits non-zero: write `run_failed`; update attempts.
@@ -705,7 +657,7 @@ Responsibilities:
 - `CronConfig`: read/write config with defaults.
 - `CronJobStore`: scan/read/write one job per file under `jobs.d/`.
 - Schedule parser, `next_due_at` calculation, and due computation.
-- Crontab block install/remove/ensure.
+- Node-local scheduler startup, liveness and restart.
 - `tick`: scheduler, run queueing, detached worker spawn.
 - `run`: execute one recorded run, write logs, update job state.
 - Archive/recycle.
@@ -720,7 +672,7 @@ Responsibilities:
 - `camc cron list [--json]`
 - internal `camc cron tick`
 - internal `camc cron run <run_id>`
-- call `cron.ensure_tick_if_needed()` from `cmd_heal`
+- call `ensure_cron_scheduler()` from the heal maintenance phase
 
 ### Build Sync
 
@@ -738,13 +690,12 @@ tests/test_cron.py
 ## Acceptance Tests
 
 1. `cron add --every 30m -- ...` writes `jobs.d/<job_id>.json`, creates
-   config, and installs exactly one crontab block.
+   config, and ensures a node-local scheduler.
 2. Duplicate active job name on the same host fails without changing job
    files.
-3. `cron rm` archives the job file and removes the tick block when no
-   enabled jobs remain for this host.
-4. `heal` repairs a missing tick block when enabled current-host jobs exist.
-5. `heal` does not install tick when no enabled current-host jobs exist.
+3. `cron rm` archives the job file without changing system crontab.
+4. Heal maintenance repairs the node scheduler for enabled local work.
+5. `heal` preserves terminal agent states and never edits system crontab.
 6. `cron list` is read-only and emits stable human/JSON output.
 7. Corrupt job file makes `list` fail closed and does not overwrite data.
 8. `tick` takes a non-blocking lock; concurrent tick exits without
@@ -767,9 +718,8 @@ tests/test_cron.py
 20. On shared NFS, a different host seeing the job file does not execute it.
 21. `runs.jsonl`, `state.json`, `cron.log`, and `logs/<run_id>.log` are
     written in expected locations.
-22. The crontab PATH is short and stable; long login-shell PATH values do
-    not create an overlong crontab command.
-23. `src/camc` and `dist/camc` are rebuilt and byte-identical.
+22. Cron commands do not invoke the system crontab program.
+23. The source package and `dist/camc` pass the same command contracts.
 
 ## Open Questions
 

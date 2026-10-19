@@ -40,91 +40,6 @@ from camc_pkg.adapters import load_config  # noqa: E402
 from camc_pkg import transport               # noqa: E402
 
 
-def test_codex_autorun_condition_eval_enables_declared_args(tmp_path):
-    config_path = tmp_path / "autorun" / "requirements.toml"
-    config_path.parent.mkdir()
-    config_path.write_text("[features]\nhooks = true\n")
-    config = camc_cli._load_config("codex")
-    config.auto_run.update({
-        "autorun_config": str(config_path),
-        "autorun_condition": (
-            "'autorun' in path_parts and "
-            "config.get('features', {}).get('hooks') is True"
-        ),
-        "autorun_args": ["--yolo"],
-    })
-
-    assert camc_cli._auto_run_args(config) == config.auto_run["autorun_args"]
-
-
-def test_codex_builtin_autorun_uses_yolo_only():
-    config = camc_cli._load_config("codex")
-    assert config.auto_run["autorun_args"] == ["--yolo"]
-
-
-def test_codex_auto_run_falls_back_when_global_config_missing(tmp_path):
-    config = camc_cli._load_config("codex")
-    config.auto_run["autorun_config"] = str(tmp_path / "missing.toml")
-
-    assert camc_cli._auto_run_args(config) == []
-
-
-def test_codex_auto_run_falls_back_when_danger_full_access_is_not_enabled(tmp_path):
-    config_path = tmp_path / "codex.toml"
-    config_path.write_text('allowed_sandbox_modes = ["workspace-write"]\n')
-    config = camc_cli._load_config("codex")
-    config.auto_run.update({
-        "autorun_config": str(config_path),
-        "autorun_condition": (
-            "'danger-full-access' in "
-            "config.get('allowed_sandbox_modes', [])"
-        ),
-        "autorun_args": ["--autorun"],
-    })
-
-    assert camc_cli._auto_run_args(config) == []
-
-
-def test_codex_auto_run_accepts_modern_permission_profile_allowlist(tmp_path):
-    config_path = tmp_path / "requirements.toml"
-    config_path.write_text(
-        '[allowed_permission_profiles]\n":danger-full-access" = true\n')
-    config = camc_cli._load_config("codex")
-    config.auto_run.update({
-        "autorun_config": str(config_path),
-        "autorun_condition": (
-            "config.get('allowed_permission_profiles', {}).get("
-            "':danger-full-access') is True"
-        ),
-        "autorun_args": ["--autorun"],
-    })
-
-    assert camc_cli._auto_run_args(config) == ["--autorun"]
-
-
-def test_codex_autorun_condition_errors_fallback(tmp_path):
-    config_path = tmp_path / "requirements.toml"
-    config_path.write_text("[features]\nhooks = true\n")
-    config = camc_cli._load_config("codex")
-    config.auto_run.update({
-        "autorun_config": str(config_path),
-        "autorun_condition": "1 / 0",
-        "autorun_args": ["--autorun"],
-    })
-
-    assert camc_cli._auto_run_args(config) == []
-
-
-def test_codex_builtin_autorun_condition_denies_empty_allowlist(tmp_path):
-    config_path = tmp_path / "autorun" / "requirements.toml"
-    config_path.parent.mkdir()
-    config_path.write_text("allowed_sandbox_modes = []\n")
-    config = camc_cli._load_config("codex")
-    config.auto_run["autorun_config"] = str(config_path)
-
-    assert camc_cli._auto_run_args(config) == []
-
-
 def test_load_config_dispatches_toml_and_json(tmp_path):
     toml_path = tmp_path / "policy.toml"
     json_path = tmp_path / "policy.json"
@@ -186,13 +101,15 @@ def test_build_runtime_env_strips_nest_markers(monkeypatch):
     # os.environ, then assert the strip happened.
     def _bad(shell=None, env_setup=None, timeout=5):
         return {"PATH": "/usr/bin", "TMUX": "/tmp/tmux", "TMUX_PANE": "%0",
-                "CLAUDECODE": "1", "NO_COLOR": "1", "HOME": "/home/x"}, ["forced for test"]
+                "CLAUDECODE": "1", "NO_COLOR": "1", "NODE_DISABLE_COLORS": "1",
+                "HOME": "/home/x"}, ["forced for test"]
     monkeypatch.setattr(re_mod, "load_login_shell_env", _bad)
     rt = re_mod.build_runtime_env()
     assert "TMUX" not in rt.env
     assert "TMUX_PANE" not in rt.env
     assert "CLAUDECODE" not in rt.env
     assert "NO_COLOR" not in rt.env
+    assert "NODE_DISABLE_COLORS" not in rt.env
     assert rt.env.get("PATH") == "/usr/bin"
     # Capture warnings flow through to the RuntimeEnv.
     assert rt.warnings == ["forced for test"]
@@ -723,9 +640,8 @@ def test_preflight_returns_issues_and_resolved_tuple(tmp_path, monkeypatch):
     assert "tool" in resolved
 
 
-def test_cmd_run_does_not_create_tmux_session_on_readiness_error(tmp_path, monkeypatch, capsys):
-    """When _preflight reports an error, cmd_run must SystemExit
-    BEFORE invoking create_tmux_session."""
+def test_preparation_does_not_create_tmux_session_on_readiness_error(tmp_path, monkeypatch, capsys):
+    """Preflight failure leaves the existing pane for inspection."""
     home = tmp_path / "home"
     home.mkdir()
     # No ~/.claude.json → blocking auth error.
@@ -753,7 +669,7 @@ def test_cmd_run_does_not_create_tmux_session_on_readiness_error(tmp_path, monke
         tag = []
         json = False
     with pytest.raises(SystemExit):
-        camc_cli.cmd_run(_Args())
+        camc_cli._cmd_run_prepared(_Args(), "abc12345", {})
     assert called["count"] == 0, "create_tmux_session must NOT run on readiness error"
 
 
@@ -878,7 +794,7 @@ def test_cmd_run_ignores_context_env_setup(tmp_path, monkeypatch):
         api_token = None
 
     with pytest.raises(SystemExit):
-        camc_cli.cmd_run(_Args())
+        camc_cli._cmd_run_prepared(_Args(), "abc12345", {})
     assert captured["build_env_setup"] is None
     assert captured["preflight_env_setup"] is None
 
@@ -915,17 +831,9 @@ def test_cmd_run_loads_context_for_metadata_only_after_launch(tmp_path, monkeypa
                                 "warnings": []},
         }
 
-    def _fake_create(session, launch_cmd, workdir, **kwargs):
-        captured["launch_cmd"] = list(launch_cmd)
-        captured["create_env_setup"] = kwargs.get("env_setup")
-        captured["create_env"] = kwargs.get("env")
-        return True
-
-    class _Store(object):
-        def save(self, rec):
-            captured["agent_rec"] = rec
-        def update(self, agent_id, **kwargs):
-            captured["update"] = (agent_id, kwargs)
+    from camc_pkg.storage import AgentStore
+    store = AgentStore(str(tmp_path / "agents.json"))
+    store.save({"id": "abc12345", "status": "alive"})
 
     class _Proc(object):
         pid = 12345
@@ -954,56 +862,30 @@ def test_cmd_run_loads_context_for_metadata_only_after_launch(tmp_path, monkeypa
     monkeypatch.setattr(camc_cli, "_gen_agent_id", lambda: "abc12345")
     monkeypatch.setattr(camc_cli, "_build_command",
                         lambda config, prompt, workdir: ["claude", prompt])
-    monkeypatch.setattr(camc_cli, "_auto_run_args",
-                        lambda config, env: ["--adapter-auto-run"])
-    monkeypatch.setattr(camc_cli, "create_tmux_session", _fake_create)
+    monkeypatch.setattr(camc_cli, "create_tmux_session",
+                        lambda *_a, **_kw: pytest.fail("preparation created another tmux"))
     monkeypatch.setattr(transport, "ensure_camc_tmux_config",
                         lambda: str(tmp_path / "tmux.conf"))
     monkeypatch.setattr(camc_cli.subprocess, "check_output",
                         lambda *a, **kw: b"tmux 2.7")
     monkeypatch.setattr(camc_cli.subprocess, "Popen",
                         lambda *a, **kw: _Proc())
-    monkeypatch.setattr(camc_cli, "AgentStore", lambda: _Store())
+    monkeypatch.setattr(camc_cli, "AgentStore", lambda: store)
 
-    camc_cli.cmd_run(_Args())
+    launch = {}
+    camc_cli._cmd_run_prepared(_Args(), "abc12345", launch)
     assert captured["build_env_setup"] is None
     assert captured["preflight_env_setup"] is None
-    assert captured["create_env_setup"] is None
-    rec = captured["agent_rec"]
+    rec = store.get("abc12345")
     assert rec["context_name"] == "ctx-pdx"
     assert rec["transport_type"] == "ssh"
     assert rec["id"] == "abc12345"
     # Binary rewriting and generated session flags are covered by the public
     # run contract. This test only needs to prove context metadata does not
     # alter the launch payload or runtime environment.
-    assert captured["launch_cmd"][0] == "/bin/claude"
-    assert captured["launch_cmd"][1:3] == ["hello", "--adapter-auto-run"]
+    assert launch["command"][0] == "/bin/claude"
+    assert launch["command"][1:3] == ["hello", "--dangerously-skip-permissions"]
 
-
-def test_scheduler_launch_ignores_context_env_setup(tmp_path, monkeypatch):
-    """Scheduler-launched agents follow the same rule: context.json is
-    metadata and must not inject env_setup into create_tmux_session."""
-    from camc_pkg import scheduler as camc_scheduler
-
-    captured = {}
-    monkeypatch.setattr(camc_scheduler, "_load_default_context",
-                        lambda: {"name": "ctx", "host": None,
-                                 "env_setup": "source /home/hren/.bashrc"})
-
-    def _fake_create(session, launch_cmd, workdir, env_setup=None,
-                     inherit_env=True, **kwargs):
-        captured["env_setup"] = env_setup
-        captured["inherit_env"] = inherit_env
-        return False
-
-    monkeypatch.setattr(camc_scheduler, "create_tmux_session", _fake_create)
-    out = camc_scheduler._launch_agent(
-        {"tool": "claude", "prompt": "", "name": "sched"},
-        str(tmp_path),
-    )
-    assert out is None
-    assert captured["env_setup"] is None
-    assert captured["inherit_env"] is True
 
 # ---------------------------------------------------------------------------
 # Adapter-owned readiness (preferred over hardcoded _TOOL_SPECS fallback)
@@ -1221,7 +1103,7 @@ def test_cmd_run_passes_adapter_readiness_to_check(tmp_path, monkeypatch):
         tag = []
         json = False
     with pytest.raises(SystemExit):
-        camc_cli.cmd_run(_Args())
+        camc_cli._cmd_run_prepared(_Args(), "abc12345", {})
     assert captured.get("tool") == "claude"
     rd = captured.get("readiness")
     assert rd is not None, "cmd_run must pass adapter readiness, got None"

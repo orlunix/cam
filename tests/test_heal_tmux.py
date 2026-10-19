@@ -99,7 +99,7 @@ class TestHealTmux(unittest.TestCase):
 
     def test_restart_stops_one_local_monitor_before_starting_replacement(self):
         host = cli._sock.gethostname()
-        agent = {"id": "abcd1234", "status": "running", "hostname": host,
+        agent = {"id": "abcd1234", "status": "alive", "hostname": host,
                  "tmux_session": "cam-abcd1234-m"}
         events = []
         alive = {101: True}
@@ -146,13 +146,14 @@ class TestHealTmux(unittest.TestCase):
         calls = []
         with patch.object(cli, "_restart_local_monitors",
                           side_effect=lambda: calls.append("restart") or (1, 0, 0)), \
-             patch.object(cli, "_do_heal", side_effect=lambda: calls.append("heal")), \
+             patch.object(cli, "_do_heal", side_effect=lambda restart_cron=False:
+                          calls.append(("heal", restart_cron))), \
              patch.object(cli, "_refresh_embedded_skills_after_heal",
                           side_effect=lambda: calls.append("skills")):
             cli.cmd_heal(SimpleNamespace(restart=True, tmux=False,
                                          agents=False, upgrade=False))
 
-        self.assertEqual(["restart", "heal", "skills"], calls)
+        self.assertEqual(["restart", ("heal", True), "skills"], calls)
 
     def test_top_level_help_hides_legacy_upgrade(self):
         output = StringIO()

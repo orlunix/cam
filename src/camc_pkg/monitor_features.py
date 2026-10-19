@@ -5,7 +5,7 @@ coarser-grained, 3-phase feature pipeline:
 
     Phase A (before_confirm) — busy/done signals.
     Phase B (confirm)        — auto-confirm rules, may halt the cycle.
-    Phase C (after_confirm)  — state detect, output-change reset, idle detect.
+    Phase C (after_confirm)  — output-change reset, idle detect.
 
 Registered features:
 
@@ -13,8 +13,7 @@ Registered features:
       used to live across ScreenStateStep + StateDetectStep +
       OutputChangeStep + IdleDetectStep. Implements:
           before_confirm(): _update_screen_signals()
-          after_confirm():  _detect_state_change()
-                            _update_output_change()
+          after_confirm():  _update_output_change()
                             _detect_idle()
       The phase split is what preserves the legacy ordering exactly: a
       halt_cycle from AutoConfirmationFeature.confirm() skips the
@@ -28,20 +27,10 @@ Registered features:
       confirm. The legacy bare_prompt skip and 1-spam guard were
       removed on 2026-06-10 (see docs/legacy/monitor-auto-confirm-v1.md).
 
-    * MailboxFeature (order 30) — PLACEHOLDER, disabled by default,
-      no-op. Reserved for a future slice that wires the camc msg
-      mailbox into the monitor. Does NOT read / write the ledger, does
-      NOT inject into tmux, does NOT call store.
-
     * FinalStaticFallbackFeature (order 35) — a strict, bounded
       last-resort retry for a previously selected confirmation or a
       CAMC-owned pending message. It requires both screen hashes to be
       stable for a long interval and stops after three no-feedback tries.
-
-    * CronFeature (order 40) — PLACEHOLDER, disabled by default,
-      no-op. Reserved for a future slice that wires camc cron checks
-      into the monitor. Does NOT consult jobs.json, does NOT spawn
-      jobs, does NOT call store.
 
 Action protocol is unchanged from the step-pipeline era:
 
@@ -249,13 +238,13 @@ def _screen_tail_str(output, n=3):
 
 
 # ===========================================================================
-# StateManagerFeature — owns busy/done + state detect + output change + idle
+# StateManagerFeature — owns busy/done + output change + idle
 # ===========================================================================
 
 @register_feature
 class StateManagerFeature(MonitorFeature):
     """Phase A: busy/done signals (legacy step 2b).
-    Phase C: detect_state (3) → output_change reset (5) → idle_detect (6).
+    Phase C: screen activity → running; stable input prompt → idle.
 
     Auto-confirm sits in between (phase B, owned by
     AutoConfirmationFeature). A halt_cycle from phase B skips phase C
@@ -271,7 +260,6 @@ class StateManagerFeature(MonitorFeature):
     def after_confirm(self, snap, runtime):
         actions = []
         if not runtime.in_initializing:
-            actions.extend(self._detect_state_change(snap, runtime))
             actions.extend(self._update_output_change(snap, runtime))
             actions.extend(self._detect_idle(snap, runtime))
         return actions
@@ -300,49 +288,28 @@ class StateManagerFeature(MonitorFeature):
                             "msg": "Done signal detected, has_worked=True"})
         return actions
 
-    def _detect_state_change(self, snap, runtime):
-        """detect_state(output, config) → emit state_change event +
-        store_update(state=ns) + mark has_worked unless transitioning
-        to 'initializing'.
-
-        2026-06-10 boundary: once ``runtime.left_initializing`` has
-        latched True (first busy seen), refuse to fall back to
-        'initializing'. The first prompt is always delivered before
-        the monitor subprocess starts, so the busy-seen latch is the
-        only remaining gate for the boundary."""
-        from camc_pkg.detection import detect_state
-        actions = []
-        ns = detect_state(snap.output, runtime.config)
-        if ns == "initializing" and runtime.left_initializing:
-            return actions
-        if ns and ns != runtime.current_state:
-            if ns != "initializing":
-                runtime.has_worked = True
-            actions.append({"kind": "log", "level": "info",
-                            "msg": "State: %s -> %s" % (runtime.current_state, ns)})
-            actions.append({"kind": "event", "name": "state_change",
-                            "detail": {"from": runtime.current_state, "to": ns}})
-            runtime.current_state = ns
-            actions.append({"kind": "store_update", "fields": {"state": ns}})
-        return actions
-
     def _update_output_change(self, snap, runtime):
         """Legacy step 5. snap.changed → reset last_change + clear
         idle_confirmed + emit Output-changed debug log."""
         actions = []
-        if snap.changed:
+        if snap.changed or snap.screen_busy:
             actions.append({"kind": "log", "level": "debug",
                             "msg": "[%d] Output changed (hash %s -> %s), reset idle timer"
                                    % (snap.cycle, snap.prev_hash, snap.hash)})
             runtime.last_change = snap.now
             runtime.idle_confirmed = False
+            if runtime.current_state != "running":
+                actions.append({"kind": "event", "name": "state_change",
+                                "detail": {"from": runtime.current_state, "to": "running"}})
+                runtime.current_state = "running"
+                actions.append({"kind": "store_update", "fields": {"state": "running", "phase": "started"}})
         return actions
 
     def _detect_idle(self, snap, runtime):
         """Idle = hash0 (normalized printable ASCII + CJK) stable for
         ``cfg.idle_stable_seconds`` (default 60s — preserves the prior
         hardcoded threshold). Fast-track 5s when ``screen_done`` AND
-        ``bare_prompt`` are both set. Requires ``has_worked`` AND not
+        ``bare_prompt`` are both set. Requires not
         ``idle_confirmed`` AND ``snap.idle_for >= idle_threshold`` AND
         ``prompt_visible``.
 
@@ -358,9 +325,10 @@ class StateManagerFeature(MonitorFeature):
         actions = []
         idle_stable = getattr(runtime.config, "idle_stable_seconds", 60.0)
         idle_threshold = 5 if (snap.screen_done and snap.bare_prompt) else idle_stable
-        if runtime.has_worked and not runtime.idle_confirmed and snap.idle_for >= idle_threshold:
+        if not runtime.idle_confirmed and snap.idle_for >= idle_threshold:
             if snap.prompt_visible:
                 runtime.idle_confirmed = True
+                runtime.current_state = "idle"
                 if idle_threshold < idle_stable:
                     actions.append({"kind": "log", "level": "info",
                                     "msg": "Idle confirmed (done signal + prompt, %.0fs stable)"
@@ -371,7 +339,7 @@ class StateManagerFeature(MonitorFeature):
                                            % snap.idle_for})
                 actions.append({"kind": "event", "name": "idle_confirmed",
                                 "detail": {"idle_for": snap.idle_for}})
-                actions.append({"kind": "store_update", "fields": {"state": "idle"}})
+                actions.append({"kind": "store_update", "fields": {"state": "idle", "phase": "started"}})
             else:
                 actions.append({"kind": "log", "level": "debug",
                                 "msg": "[%d] Idle candidate (%.0fs stable) but prompt not visible"
@@ -393,6 +361,8 @@ class BootPromptFeature(MonitorFeature):
     def after_confirm(self, snap, runtime):
         if not runtime.in_initializing or runtime.boot_prompt_sent:
             return []
+        if runtime.feature_state.get("waiting_for_launcher"):
+            return []
         from camc_pkg.detection import is_ready_for_boot
         actions = []
         boot_cfg = runtime.boot_config
@@ -400,13 +370,15 @@ class BootPromptFeature(MonitorFeature):
         boot_wait = boot_cfg.startup_wait if boot_cfg else tool_cfg.startup_wait
         if snap.now > runtime.boot_deadline:
             actions.append({"kind": "log", "level": "warning",
-                            "msg": "Boot timeout (%.0fs) — leaving initializing" % boot_wait})
-            actions.append({"kind": "store_update", "fields": {"state": "idle"}})
+                            "msg": "Tool startup timed out after %.0fs" % boot_wait})
+            actions.append({"kind": "store_update", "fields": {
+                "status": "dead", "state": "failed",
+                "exit_reason": "Tool startup timed out before readiness (%.0fs)" % boot_wait}})
             runtime.boot_prompt_sent = True
             runtime.in_initializing = False
             runtime.left_initializing = True
             return actions
-        if not is_ready_for_boot(snap.output, boot_cfg, tool_cfg,
+        if not snap.screen_busy and not is_ready_for_boot(snap.output, boot_cfg, tool_cfg,
                                  stable_for=snap.idle_for,
                                  cursor_flag=snap.cursor_flag):
             return actions
@@ -422,7 +394,7 @@ class BootPromptFeature(MonitorFeature):
                             # and later boot retries can run.
                             "ready_timeout": 0.0,
                             "boot_prompt": True})
-            # The monitor action adapter commits the initializing -> idle
+            # The monitor action adapter commits the initializing -> started
             # transition only after insert_prompt reports acknowledgement.
             return actions
         else:
@@ -431,7 +403,8 @@ class BootPromptFeature(MonitorFeature):
         runtime.boot_prompt_sent = True
         runtime.in_initializing = False
         runtime.left_initializing = True
-        actions.append({"kind": "store_update", "fields": {"state": "idle"}})
+        actions.append({"kind": "store_update", "fields": {
+            "state": "running" if snap.screen_busy else "idle", "phase": "started"}})
         actions.append({"kind": "event", "name": "boot_ready",
                         "detail": {"prompt_sent": bool(prompt)}})
         return actions
@@ -571,27 +544,6 @@ class AutoConfirmationFeature(MonitorFeature):
         return actions
 
 
-# ===========================================================================
-# Placeholders — registered but disabled. Reserved for future slices.
-# ===========================================================================
-
-@register_feature
-class MailboxFeature(MonitorFeature):
-    """PLACEHOLDER, disabled by default. A future slice will wire the
-    camc msg mailbox here so the monitor can react to incoming
-    inter-agent messages. Until then: registered for discoverability +
-    ordering, but ``enabled=False`` and every phase hook is a no-op.
-
-    This deliberately does NOT read or write the messages.jsonl ledger,
-    does NOT inject into the tmux pane, and does NOT touch the agent
-    store. The driver skips disabled features entirely; this class
-    exists purely as a public contract."""
-
-    name = "mailbox"
-    order = 30
-    enabled = False
-
-
 @register_feature
 class FinalStaticFallbackFeature(MonitorFeature):
     name = "final_static_fallback"
@@ -658,19 +610,3 @@ class FinalStaticFallbackFeature(MonitorFeature):
             except Exception:
                 pass
         return actions
-
-
-@register_feature
-class CronFeature(MonitorFeature):
-    """PLACEHOLDER, disabled by default. A future slice will wire camc
-    cron checks here so per-agent recurring jobs can land inside the
-    monitor loop. Until then: registered for discoverability +
-    ordering, but ``enabled=False`` and every phase hook is a no-op.
-
-    This deliberately does NOT consult jobs.json, does NOT spawn jobs,
-    and does NOT call the store. The driver skips disabled features
-    entirely; this class exists purely as a public contract."""
-
-    name = "cron"
-    order = 40
-    enabled = False

@@ -12,7 +12,7 @@ The real architectural issue is that `camc` currently mixes three different role
 
 | Role | Examples | Runtime shape | Current issue |
 |---|---|---|---|
-| Control plane | `run`, `rm`, `heal`, `cron add`, `api`, `machine`, `context` | Full Python CLI is acceptable | `cli.py` still owns too much feature logic |
+| Control plane | `run`, `rm`, `heal`, `cron add`, `api`, `env` | Full Python CLI is acceptable | `cli.py` still owns too much feature logic |
 | Data plane / hot path | `capture`, simple `send --text`, possible future status-lite/mailbox-lite | Should be near raw tmux / file-index cost | Full Python startup is too expensive for tiny repeated operations |
 | Long-running agents | monitor loop, cron tick/run workers | Should run in-process or as owned subprocesses | Lifecycle and ownership need clear boundaries |
 
@@ -114,7 +114,7 @@ Required release checks:
 Control-plane commands should stay in normal Python:
 
 - lifecycle: `run`, `rm`, `kill`, `reboot`, `heal`, `prune`
-- configuration: `api`, `machine`, `context`, `sync`, `env`
+- configuration: `api`, `env`
 - scheduling writes: `cron add/rm`, loop add/rm
 - complex protocols: `msg send/reply`, archive, migrate
 
@@ -174,7 +174,6 @@ src/camc_pkg/messaging.py            # mailbox/thread service + ledger store
 src/camc_pkg/commands/cron.py        # cron parser + command shims
 src/camc_pkg/commands/api.py         # API command shims
 src/camc_pkg/commands/archive.py     # archive command shims
-src/camc_pkg/commands/machine.py     # machine/context/sync command shims
 ```
 
 Refactor rule:
@@ -193,9 +192,7 @@ Deletion must be evidence-based. Candidate list for review, not immediate remova
 
 | Candidate | Why it may be removable | Required check before removal |
 |---|---|---|
-| `camc apply` / `scheduler.py` | DAG scheduling may belong to camflow, not camc | Search docs/tests/users; provide replacement path |
 | Legacy `msg show/list/wait` | V0 mailbox API prefers `msg read/reply` | Keep one compatibility window; update skills/docs first |
-| `machine/context/sync` | May overlap with newer remote/deploy flow | Confirm Desktop/remote workflows still depend on it |
 | Archive summary/show internals | Large and specialized | Confirm UI/scripts/skills usage |
 | Old migration helpers | One-time migration code may be stale | Confirm no active deployments need migration |
 
@@ -243,7 +240,7 @@ Suggested order:
 2. `commands/cron.py` because cron/loop already have service modules.
 3. `commands/api.py` because direct API profile logic is already mostly modular.
 4. `commands/archive.py` because it is bulky and separable.
-5. `commands/machine.py` / `commands/context.py` / `commands/capture.py`.
+5. `commands/capture.py`.
 
 Exit criteria:
 
@@ -260,7 +257,7 @@ Exit criteria:
 
 Exit criteria:
 
-- `AgentStore`, cron job stores, machine/context stores use consistent locking patterns where practical.
+- `AgentStore` and cron job stores use consistent locking patterns where practical.
 - Message ledger operations are service-level APIs.
 
 ### P4 — Measure before adding more fast paths

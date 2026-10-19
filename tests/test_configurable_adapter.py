@@ -163,34 +163,6 @@ class TestCodexToml:
 
     # ── detect_state ──
 
-    @pytest.mark.parametrize("output,expected", [
-        ("Thinking about the code...", AgentState.PLANNING),
-        ("Planning the approach", AgentState.PLANNING),
-        ("Analyzing the repo", AgentState.PLANNING),
-        ("Reading the file", AgentState.PLANNING),
-        ("Searching for matches", AgentState.PLANNING),
-        ("Reviewing changes", AgentState.PLANNING),
-        ("Editing main.py", AgentState.EDITING),
-        ("Writing new file", AgentState.EDITING),
-        ("Creating test.py", AgentState.EDITING),
-        ("Modifying config", AgentState.EDITING),
-        ("Applying patch", AgentState.EDITING),
-        ("Patching file", AgentState.EDITING),
-        ("Running tests", AgentState.TESTING),
-        ("Testing the feature", AgentState.TESTING),
-        ("Executing command", AgentState.TESTING),
-        ("Verifying output", AgentState.TESTING),
-        ("npm test", AgentState.TESTING),
-        ("pytest tests/", AgentState.TESTING),
-        ("cargo test", AgentState.TESTING),
-        ("Committing changes", AgentState.COMMITTING),
-        ("Pushing to remote", AgentState.COMMITTING),
-        ("git commit -m 'fix'", AgentState.COMMITTING),
-        ("git push origin main", AgentState.COMMITTING),
-        ("some random output", None),
-    ])
-    def test_detect_state(self, codex_adapter, output, expected):
-        assert codex_adapter.detect_state(output) == expected
 
     # ── should_auto_confirm ──
 
@@ -249,17 +221,8 @@ class TestCodexToml:
 
     # ── detect_completion (prompt_count strategy) ──
 
-    def test_completion_two_prompts(self, codex_adapter):
-        output = "› say hello\n• Hello!\n› "
-        assert codex_adapter.detect_completion(output) == AgentStatus.COMPLETED
 
-    def test_completion_single_prompt_not_done(self, codex_adapter):
-        output = "› say hello\n• Working..."
-        assert codex_adapter.detect_completion(output) is None
 
-    def test_completion_no_prompt(self, codex_adapter):
-        output = "Working on things..."
-        assert codex_adapter.detect_completion(output) is None
 
 
 # ── Cursor adapter tests ──────────────────────────────────────────
@@ -278,43 +241,14 @@ class TestCursorAdapter:
         assert cursor_adapter.is_ready_for_input("→ Plan, search, build anything") is True
         assert cursor_adapter.is_ready_for_input("Loading...") is False
 
-    def test_detect_state_planning(self, cursor_adapter):
-        assert cursor_adapter.detect_state("⬢ Read /tmp/test/main.py") == AgentState.PLANNING
-        assert cursor_adapter.detect_state("⬢ Grep something") == AgentState.PLANNING
-        assert cursor_adapter.detect_state("Analyzing the code") == AgentState.PLANNING
 
-    def test_detect_state_editing(self, cursor_adapter):
-        assert cursor_adapter.detect_state("⬢ Edit /tmp/test/main.py") == AgentState.EDITING
-        assert cursor_adapter.detect_state("⬢ Write /tmp/test/new.py") == AgentState.EDITING
 
-    def test_detect_state_testing(self, cursor_adapter):
-        assert cursor_adapter.detect_state("$ python3 test.py 5s in /tmp") == AgentState.TESTING
-        assert cursor_adapter.detect_state("$ pytest tests/ 2s in /project") == AgentState.TESTING
 
-    def test_detect_state_committing(self, cursor_adapter):
-        assert cursor_adapter.detect_state("git commit -m fix") == AgentState.COMMITTING
 
-    def test_detect_state_last_wins(self, cursor_adapter):
-        """Last match wins (strategy=last), like Claude adapter."""
-        output = "⬢ Read config.py\nAnalyzing...\n⬢ Edit config.py\nDone"
-        assert cursor_adapter.detect_state(output) == AgentState.EDITING
 
-    def test_detect_state_none(self, cursor_adapter):
-        assert cursor_adapter.detect_state("random stuff") is None
 
-    def test_completion_two_prompts(self, cursor_adapter):
-        # Two → = task prompt + return to input = completed
-        output = "→ Fix the bug\n⬢ Read main.py\nFixed it.\n→ Add a follow-up"
-        assert cursor_adapter.detect_completion(output) == AgentStatus.COMPLETED
 
-    def test_completion_single_prompt_not_done(self, cursor_adapter):
-        output = "→ Fix the bug\n⬢ Read main.py\nWorking..."
-        assert cursor_adapter.detect_completion(output) is None
 
-    def test_completion_fallback_with_percentage(self, cursor_adapter):
-        # Single → + usage percentage = completion
-        output = "Fixed it.\n→ Add a follow-up\nClaude 4.6 Opus (Thinking) · 6.7%"
-        assert cursor_adapter.detect_completion(output) == AgentStatus.COMPLETED
 
     # test_auto_confirm_run_once and test_auto_confirm_run_always were
     # removed on 2026-06-11 along with the two loose substring rules

@@ -48,11 +48,15 @@ from camc_pkg.transport import (
     tmux_kill_session, tmux_is_attached, insert_prompt,
     tmux_cursor_flag,
 )
-from camc_pkg.detection import detect_completion, is_ready_for_input, is_ready_for_boot
+from camc_pkg.detection import is_ready_for_input, is_ready_for_boot
 from camc_pkg.monitor_features import (
     MonitorSnapshot, MonitorRuntime, build_features,
 )
-from camc_pkg.api_proxy import stop_agent_api_proxy
+
+
+def stop_agent_api_proxy(agent, cleanup_home=True):
+    from camc_pkg.api_proxy import stop_agent_api_proxy as _api_proxy_stop
+    return _api_proxy_stop(agent, cleanup_home=cleanup_home)
 
 
 _AUTO_CONFIRM_REFRESH_SECONDS = 10.0
@@ -193,7 +197,8 @@ def _apply_action(action, *, session, agent_id, store, events_fn,
             runtime.boot_prompt_sent = True
             runtime.in_initializing = False
             runtime.left_initializing = True
-            store.update(agent_id, state="idle")
+            store.update(agent_id, state="running", phase="started",
+                         expected_launch_id=getattr(runtime, "launch_id", None))
             events_fn("boot_ready", {
                 "prompt_sent": True,
                 "phase": result.get("phase"),
@@ -203,7 +208,10 @@ def _apply_action(action, *, session, agent_id, store, events_fn,
     elif kind == "sleep":
         time.sleep(float(action.get("seconds", 0) or 0))
     elif kind == "store_update":
-        store.update(agent_id, **action.get("fields", {}))
+        fields = dict(action.get("fields", {}))
+        if fields.get("status") == "dead":
+            fields["completed_at"] = _now_iso()
+        store.update(agent_id, expected_launch_id=getattr(runtime, "launch_id", None), **fields)
     elif kind == "event":
         events_fn(action["name"], action.get("detail"))
     elif kind == "halt_cycle":
@@ -220,7 +228,8 @@ def _task_prompt(agent):
 
 def _refresh_boot_runtime(runtime, store, agent_id, boot_config):
     rec = store.get(agent_id) or {}
-    runtime.in_initializing = rec.get("state") == "initializing"
+    runtime.in_initializing = rec.get("phase") == "initializing"
+    runtime.feature_state["waiting_for_launcher"] = False
     if runtime.in_initializing:
         task = rec.get("task") or {}
         runtime.boot_prompt = ("" if task.get("prompt_in_command") else
@@ -241,6 +250,8 @@ def _refresh_boot_runtime(runtime, store, agent_id, boot_config):
             runtime.boot_deadline = time.time() + boot_wait
             if started in ("battach", "ssh", "qsub", "local"):
                 runtime.feature_state["launcher_started"] = True
+            else:
+                runtime.feature_state["waiting_for_launcher"] = True
         if not runtime.boot_deadline:
             boot_wait = (boot_config.startup_wait if boot_config
                          else runtime.config.startup_wait)
@@ -289,11 +300,13 @@ def _consume_custom_launch_exit(store, agent_id, events_fn):
         os.unlink(status_path)
     except OSError:
         pass
-    failed = code != 0
-    reason = "Tool exited with code %d (tmux retained)" % code
+    failed = code != 0 or rec.get("phase") == "initializing"
+    reason = ("Tool exited before startup readiness (code %d)" % code
+              if rec.get("phase") == "initializing" else
+              "Tool exited with code %d (tmux retained)" % code)
     store.update(agent_id,
-                 status="failed" if failed else "completed",
-                 state="failed" if failed else "idle",
+                 expected_launch_id=rec.get("launch_id"),
+                 status="dead", state="failed" if failed else "stopped",
                  exit_reason=reason,
                  completed_at=_now_iso())
     events_fn("tool_exit", {"code": code, "failed": failed})
@@ -319,11 +332,10 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
 
     # Build the per-tick feature pipeline once. Stuck-fallback /
     # auto-exit / health-check are NOT in the pipeline yet — they
-    # remain inline below per the v1 scope. Disabled features
-    # (currently MailboxFeature + CronFeature) are still in the list
-    # so test code can introspect them, but the driver skips them.
+    # remain inline below per the v1 scope.
     runtime = MonitorRuntime(agent_id, config, now=time.time())
     runtime.store = store
+    runtime.launch_id = (store.get(agent_id) or {}).get("launch_id")
     runtime.boot_config = boot_config
     runtime.prompt_after_launch = bool(config.prompt_after_launch)
     boot_wait = (boot_config.startup_wait if boot_config else config.startup_wait)
@@ -357,6 +369,9 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
 
     try:
         while running[0]:
+            current = store.get(agent_id) or {}
+            if current.get("status") != "alive" or current.get("launch_id") != runtime.launch_id:
+                return
             now = time.time()
             runtime.cycle += 1
             cycle = runtime.cycle
@@ -385,21 +400,19 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                             break
                     if not confirmed_dead:
                         continue
-                    if prev_output:
-                        done = detect_completion(prev_output, config)
-                        status = "completed" if (done or runtime.has_worked) else "failed"
-                    else:
-                        status = "completed" if runtime.has_worked else "failed"
-                    reason = "Session ended cleanly" if status == "completed" else "Session exited before agent started working"
-                    log.info("Session gone (confirmed after retries) -> %s (%s) [has_worked=%s]",
-                             status, reason, runtime.has_worked)
-                    log.info("Last screen: %s", _screen_tail(prev_output, 5))
-                    store.update(agent_id, status=status,
+                    from camc_pkg.transport import _find_tmux_socket, _tmux_server_pid_for_socket
+                    sock = _find_tmux_socket(session)
+                    if sock and _tmux_server_pid_for_socket(sock):
+                        log.warning("Tmux query failed but server remains alive; retaining agent state")
+                        continue
+                    reason = "Tmux session disappeared without a tool exit receipt"
+                    store.update(agent_id, expected_launch_id=runtime.launch_id,
+                                 status="dead", state="failed",
                                  exit_reason=reason, completed_at=_now_iso())
                     agent_rec = store.get(agent_id)
-                    if agent_rec:
+                    if agent_rec and agent_rec.get("launch_id") == runtime.launch_id:
                         stop_agent_api_proxy(agent_rec)
-                    _event("completed", {"status": status, "reason": reason})
+                    _event("tool_exit", {"status": "dead", "state": "failed", "reason": reason})
                     return
 
             # --- 2. Capture screen ---
@@ -555,15 +568,15 @@ def run_monitor_loop(session, agent_id, config, store, pid_path=None, events=Non
                                     break
                             else:
                                 tmux_kill_session(session)
-                        store.update(agent_id, status="completed",
+                        store.update(agent_id, expected_launch_id=runtime.launch_id, status="dead", state="stopped",
                                      exit_reason="Task completed (auto-exit)",
                                      completed_at=_now_iso())
                         agent_rec = store.get(agent_id)
-                        if agent_rec:
+                        if agent_rec and agent_rec.get("launch_id") == runtime.launch_id:
                             stop_agent_api_proxy(
                                 agent_rec,
                                 cleanup_home=not tmux_session_exists(session))
-                        _event("completed", {"status": "completed", "reason": "auto-exit"})
+                        _event("tool_exit", {"status": "dead", "state": "stopped", "reason": "auto-exit"})
                         return
                     else:
                         log.debug("[%d] Idle but auto_exit disabled", cycle)
@@ -617,6 +630,7 @@ def _run_monitor(agent_id):
         pass
     pid_path = os.path.join(PIDS_DIR, "%s.pid" % agent_id)
 
+    launch_id = agent.get("launch_id")
     max_restarts = 5
     for attempt in range(max_restarts + 1):
         try:
@@ -627,12 +641,13 @@ def _run_monitor(agent_id):
             log.error("Monitor crashed (attempt %d/%d): %s", attempt + 1, max_restarts, e, exc_info=True)
             if attempt >= max_restarts:
                 log.error("Max restarts reached, giving up")
-                store.update(agent_id, status="failed", exit_reason="Monitor crashed: %s" % e,
-                             completed_at=_now_iso())
+                store.update(agent_id, expected_launch_id=launch_id,
+                             monitor_error="Monitor exhausted restart attempts", pid=None)
                 break
             time.sleep(5 * (attempt + 1))
             agent = store.get(agent_id)
-            if not agent or agent.get("status") != "running":
+            if (not agent or agent.get("status") != "alive"
+                    or agent.get("launch_id") != launch_id):
                 log.info("Agent no longer running, stopping monitor")
                 break
             log.info("Restarting monitor...")

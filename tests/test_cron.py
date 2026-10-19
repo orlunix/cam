@@ -25,6 +25,11 @@ from camc_pkg import cron as _cron
 @pytest.fixture
 def home(monkeypatch, tmp_path):
     """Repoint every ~/.cam/cron-* path at tmp_path."""
+    real_run = _cron.subprocess.run
+    def guard_crontab(argv, *args, **kwargs):
+        assert os.path.basename(argv[0]) != "crontab", "camc must not manage system crontab"
+        return real_run(argv, *args, **kwargs)
+    monkeypatch.setattr(_cron.subprocess, "run", guard_crontab)
     cam = tmp_path / ".cam"
     cron_dir = cam / "cron"
     cron_dir.mkdir(parents=True)
@@ -404,104 +409,8 @@ class TestIsDue:
 
 
 # ---------------------------------------------------------------------------
-# Crontab block management
+# Cron execution
 # ---------------------------------------------------------------------------
-
-class _FakeCrontab(object):
-    def __init__(self, current=""):
-        self.current = current
-        self.calls = []
-
-    def __call__(self, args, **kw):
-        self.calls.append((args, kw))
-        if args[:2] == ["crontab", "-l"]:
-            if not self.current:
-                return subprocess.CompletedProcess(
-                    args, 1, "", "no crontab for tester\n")
-            return subprocess.CompletedProcess(args, 0, self.current, "")
-        if args[:2] == ["crontab", "-"]:
-            self.current = kw.get("input", "")
-            return subprocess.CompletedProcess(args, 0, "", "")
-        raise AssertionError("unexpected subprocess call: %r" % (args,))
-
-
-class TestCrontabBlock:
-    def test_install_replaces_existing_block(self, home):
-        ct = _FakeCrontab("# user line\n%s\n%s\n%s\n# user 2\n" % (
-            _cron.CRON_BEGIN, "0 0 * * * old line", _cron.CRON_END))
-        _cron.install_tick(camc_path="/usr/local/bin/camc", runner=ct)
-        assert "old line" not in ct.current
-        assert _cron.CRON_BEGIN in ct.current
-        assert "# user line" in ct.current
-        assert "# user 2" in ct.current
-
-    def test_install_into_empty_crontab(self, home):
-        ct = _FakeCrontab("")
-        _cron.install_tick(camc_path="/usr/local/bin/camc", runner=ct)
-        assert _cron.CRON_BEGIN in ct.current
-        assert "/usr/local/bin/camc cron tick" in ct.current
-
-    def test_remove_strips_block_preserves_other_lines(self, home):
-        ct = _FakeCrontab("# user A\n%s\nLINE\n%s\n# user B\n" % (
-            _cron.CRON_BEGIN, _cron.CRON_END))
-        removed = _cron.remove_tick(runner=ct)
-        assert removed
-        assert _cron.CRON_BEGIN not in ct.current
-        assert "# user A" in ct.current
-        assert "# user B" in ct.current
-
-    def test_ensure_tick_installs_when_jobs_exist(self, home):
-        store = _cron.CronJobStore()
-        store.add(_cron.build_job("j", _cron.parse_every("30m"), _make_argv_cmd()))
-        ct = _FakeCrontab("")
-        result = _cron.ensure_tick_if_needed(
-            runner=ct, camc_path="/usr/local/bin/camc")
-        assert result == "installed"
-        assert _cron.CRON_BEGIN in ct.current
-
-    def test_ensure_tick_removes_when_no_jobs(self, home):
-        ct = _FakeCrontab("# u\n%s\nline\n%s\n" % (
-            _cron.CRON_BEGIN, _cron.CRON_END))
-        result = _cron.ensure_tick_if_needed(runner=ct)
-        assert result == "removed"
-        assert _cron.CRON_BEGIN not in ct.current
-
-    def test_ensure_tick_keeps_block_when_enabled_loops_exist(self, home):
-        """Isolated LOOPS_DIR: enabled loops count like cron jobs for tick."""
-        from camc_pkg import cron_loop as _cron_loop
-
-        owner = {"id": "owner1", "task": {"name": "owner1"}}
-        store = _cron_loop.LoopStore("owner1")
-        store.add(_cron_loop.build_loop(
-            "tick-loop", _cron.parse_every("30m"), "nudge", owner))
-
-        ct = _FakeCrontab("# u\n%s\nline\n%s\n" % (
-            _cron.CRON_BEGIN, _cron.CRON_END))
-        result = _cron.ensure_tick_if_needed(runner=ct)
-        assert result == "repaired"
-        assert _cron.CRON_BEGIN in ct.current
-
-    def test_ensure_tick_refuses_to_touch_corrupt(self, home):
-        ct = _FakeCrontab("")
-        _cron.CronJobStore().add(_cron.build_job(
-            "ok", _cron.parse_every("30m"), _make_argv_cmd()))
-        # Add a corrupt file alongside.
-        bad = os.path.join(_cron.CRON_JOBS_DIR, "bad.json")
-        with open(bad, "w") as f:
-            f.write("not json")
-        result = _cron.ensure_tick_if_needed(runner=ct)
-        assert isinstance(result, tuple)
-        assert result[0] == "cron_json_corrupt"
-
-    def test_crontab_path_is_short_and_stable(self, home, monkeypatch):
-        # Inject an absurdly-long login PATH and confirm it does NOT
-        # leak into the crontab block. Spec demands a short stable PATH.
-        long_path = ":".join("/x/%d/bin" % i for i in range(40))
-        monkeypatch.setenv("PATH", long_path)
-        block = _cron._build_tick_block(camc_path="/usr/local/bin/camc")
-        line = block.splitlines()[1]
-        assert "/x/0/bin" not in line
-        assert "/usr/local/bin:/usr/bin:/bin" in line
 
 
 # ---------------------------------------------------------------------------
@@ -783,25 +692,14 @@ class TestCmdCron:
 
     def test_add_writes_job_without_touching_crontab(self, home, monkeypatch):
         from camc_pkg import cli
-        ct = _FakeCrontab("")
-        monkeypatch.setattr(_cron, "_read_user_crontab",
-                            lambda runner=None: ct(["crontab", "-l"]).stdout)
-        monkeypatch.setattr(_cron, "_write_user_crontab",
-                            lambda text, runner=None: ct(["crontab", "-"], input=text))
         with pytest.raises(SystemExit) as ei:
             cli.cmd_cron_add(self._add())
         assert ei.value.code == 0
         files = os.listdir(_cron.CRON_JOBS_DIR)
         assert len(files) == 1
-        assert ct.current == ""
 
     def test_add_duplicate_name_rejected(self, home, monkeypatch):
         from camc_pkg import cli
-        ct = _FakeCrontab("")
-        monkeypatch.setattr(_cron, "_read_user_crontab",
-                            lambda runner=None: ct(["crontab", "-l"]).stdout)
-        monkeypatch.setattr(_cron, "_write_user_crontab",
-                            lambda text, runner=None: ct(["crontab", "-"], input=text))
         with pytest.raises(SystemExit):
             cli.cmd_cron_add(self._add(name="dup"))
         before = sorted(os.listdir(_cron.CRON_JOBS_DIR))
@@ -821,11 +719,6 @@ class TestCmdCron:
 
     def test_add_argv_preserves_embedded_separator_tokens(self, home, monkeypatch):
         from camc_pkg import cli
-        ct = _FakeCrontab("")
-        monkeypatch.setattr(_cron, "_read_user_crontab",
-                            lambda runner=None: ct(["crontab", "-l"]).stdout)
-        monkeypatch.setattr(_cron, "_write_user_crontab",
-                            lambda text, runner=None: ct(["crontab", "-"], input=text))
         argv = ["--", "echo", "--", "after-sep"]
         with pytest.raises(SystemExit):
             cli.cmd_cron_add(self._add(cmd_argv=argv))
@@ -834,11 +727,6 @@ class TestCmdCron:
 
     def test_add_shell_mode_stores_shell(self, home, monkeypatch):
         from camc_pkg import cli
-        ct = _FakeCrontab("")
-        monkeypatch.setattr(_cron, "_read_user_crontab",
-                            lambda runner=None: ct(["crontab", "-l"]).stdout)
-        monkeypatch.setattr(_cron, "_write_user_crontab",
-                            lambda text, runner=None: ct(["crontab", "-"], input=text))
         with pytest.raises(SystemExit):
             cli.cmd_cron_add(self._add(shell_cmd="echo hi", cmd_argv=[]))
         jobs = _cron.CronJobStore().jobs()
@@ -887,14 +775,8 @@ class TestCmdCron:
 
     def test_rm_archives_without_touching_legacy_crontab(self, home, monkeypatch):
         from camc_pkg import cli
-        ct = _FakeCrontab("")
-        monkeypatch.setattr(_cron, "_read_user_crontab",
-                            lambda runner=None: ct(["crontab", "-l"]).stdout)
-        monkeypatch.setattr(_cron, "_write_user_crontab",
-                            lambda text, runner=None: ct(["crontab", "-"], input=text))
         with pytest.raises(SystemExit):
             cli.cmd_cron_add(self._add(name="bye"))
-        assert ct.current == ""
         with pytest.raises(SystemExit) as ei:
             cli.cmd_cron_rm(argparse.Namespace(id_or_name="bye"))
         assert ei.value.code == 0
@@ -904,14 +786,9 @@ class TestCmdCron:
             events = [json.loads(l) for l in f if l.strip()]
         assert any(e.get("event") == "job_removed" for e in events)
 
-    def test_rm_leaves_existing_legacy_crontab_untouched(self, home, monkeypatch):
+    def test_rm_keeps_other_hosts_jobs(self, home, monkeypatch):
         from camc_pkg import cli
-        ct = _FakeCrontab("")
         monkeypatch.setattr(_cron, "_hostname", lambda: "thishost")
-        monkeypatch.setattr(_cron, "_read_user_crontab",
-                            lambda runner=None: ct(["crontab", "-l"]).stdout)
-        monkeypatch.setattr(_cron, "_write_user_crontab",
-                            lambda text, runner=None: ct(["crontab", "-"], input=text))
         store = _cron.CronJobStore()
         mine = _cron.build_job("mine", _cron.parse_every("30m"),
                                _make_argv_cmd(), host="thishost")
@@ -919,14 +796,11 @@ class TestCmdCron:
                                 _make_argv_cmd(), host="otherhost")
         store.add(mine)
         store.add(other)
-        _cron.install_tick()
-        assert _cron.CRON_BEGIN in ct.current
         with pytest.raises(SystemExit) as ei:
             cli.cmd_cron_rm(argparse.Namespace(id_or_name="mine"))
         assert ei.value.code == 0
         remaining = _cron.CronJobStore().jobs()
         assert [j["name"] for j in remaining] == ["other"]
-        assert _cron.CRON_BEGIN in ct.current
 
 
 # ---------------------------------------------------------------------------

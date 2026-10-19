@@ -309,37 +309,11 @@ P0 misfire policy is `skip`: if a loop was due many times while the
 agent was busy or offline, dispatch once when eligible and advance from
 current time. Do not enqueue a backlog.
 
-## Monitor Execution
+## Loop Execution
 
-Implement a real monitor feature by replacing or renaming the placeholder
-`CronFeature` in `src/camc_pkg/monitor_features.py`.
-
-Preferred class:
-
-```python
-@register_feature
-class AgentLoopFeature(MonitorFeature):
-    name = "agent_loop"
-    order = 40
-    enabled = True
-```
-
-If preserving the placeholder name is less invasive, `CronFeature` may be
-implemented with `name = "cron"`, but logs and docs should call the
-behavior "agent loop" to avoid confusion with host cron.
-
-### Hook Point
-
-Use `after_confirm()`.
-
-Reasoning:
-
-- `StateManagerFeature.after_confirm()` runs first and updates
-  `runtime.idle_confirmed`.
-- `AutoConfirmationFeature.confirm()` can halt a cycle; if it does,
-  loop dispatch is skipped that cycle.
-- Dispatching only after confirm prevents sending loop prompts while a
-  permission/trust dialog is active.
+The node-local cron scheduler calls `tick_loops()` in `cron_loop.py`.
+Loop dispatch is separate from the per-agent monitor feature pipeline;
+there is no reserved mailbox or cron placeholder feature.
 
 ### Eligibility
 

@@ -18,6 +18,8 @@ Disable when building::
 import argparse
 import os
 import re
+import shlex
+import symtable
 import subprocess
 import sys
 from datetime import datetime
@@ -35,10 +37,9 @@ MODULE_ORDER = [
     "transport",
     "detection",
     "storage",
+    # Internal tunnel dependencies; retired machine/context CLI stays absent.
     "machine_store",
-    "context_store",
     "remote",
-    "migrate",
     "formatters",
     # Centralized launcher policy is consumed by monitor + cli.
     "tool_launcher",
@@ -51,7 +52,6 @@ MODULE_ORDER = [
     # absorbed the 4 small steps).
     "monitor_features",
     "monitor",
-    "scheduler",
     "cron",
     # cron_loop must follow cron (imports helpers from it). Both are
     # consumed by cli.py for the --loop CLI surface.
@@ -314,12 +314,34 @@ def _build_stamp():
 
 
 
-def _render_shell_prelude():
+def _render_shell_prelude(version_line=None, tools=()):
     """Load registered prelude hooks from camc_pkg.prelude.registry."""
     if SRC_DIR not in sys.path:
         sys.path.insert(0, SRC_DIR)
     from camc_pkg.prelude.registry import render_prelude
-    return render_prelude()
+    lines = render_prelude()
+    if (version_line is not None and
+            os.environ.get("CAMC_PRELUDE_DISABLE", "").strip().lower() != "all"):
+        # Shell builtins avoid parsing the entire Python artifact for a
+        # read-only version query. No tmux, registry or storage startup.
+        fast = [
+            'if [ "$#" -eq 1 ] && [ "$1" = version ] && [ -n "${HOME:-}" ]; then',
+            "    printf '%s\\n' %s" % ("%s", shlex.quote(version_line)),
+            "    printf '\\nSupported tools:\\n'",
+            '    _camc_configs="${HOME}/.cam/configs"',
+            "    for _camc_tool in %s; do" % " ".join(shlex.quote(t) for t in tools),
+            '        _camc_config="$_camc_configs/$_camc_tool.toml"',
+            '        if [ -e "$_camc_config" ]; then',
+            '            printf "  %s (config: %s)\\n" "$_camc_tool" "$_camc_config"',
+            "        else",
+            '            printf "  %s (embedded)\\n" "$_camc_tool"',
+            "        fi",
+            "    done",
+            "    exit 0",
+            "fi",
+        ]
+        lines[1:1] = fast
+    return lines
 
 
 def build():
@@ -328,6 +350,9 @@ def build():
 
     # Stamp __build__ with git hash + date
     stamp = _build_stamp()
+    version = _VERSION_RE.search(init_src).group(0).split('"')[1]
+    config_names = tuple(name for name in sorted(os.listdir(TOML_DIR))
+                         if name.endswith(".toml") and not name.endswith(".boot.toml"))
     init_src = init_src.replace(
         '__build__ = ""  # populated by build_camc.py: "git-hash date"',
         '__build__ = "%s"' % stamp,
@@ -340,7 +365,8 @@ def build():
     module_sources = {}
     for mod in MODULE_ORDER:
         src = read_module(mod)
-        all_imports.update(collect_stdlib_imports(src))
+        if mod != "api_proxy":
+            all_imports.update(collect_stdlib_imports(src))
         module_sources[mod] = src
 
     # 3. Build the single file
@@ -348,13 +374,24 @@ def build():
 
     # Shebang/polyglot preamble and docstring
     parts.append('#!/bin/sh')
-    parts.extend(_render_shell_prelude())
+    parts.extend(_render_shell_prelude(
+        "camc v%s (%s)" % (version, stamp),
+        [name.replace(".toml", "") for name in config_names]))
     parts.append('"""camc — Standalone coding agent manager (single-file build).')
     parts.append('')
     parts.append('Auto-generated from camc_pkg/ package. Do not edit directly.')
     parts.append('Edit the source in src/camc_pkg/ and rebuild with build_camc.py.')
     parts.append('"""')
     parts.append('')
+
+    with open(os.path.join(PKG_DIR, "fast_version.py")) as handle:
+        version_src = strip_imports(strip_docstring(handle.read()), "fast_version")
+    parts.append(version_src)
+    parts.append("_fast_version_exit = early_version_main(version=%r, build=%r, config_names=%r)" %
+                 (version, stamp, config_names))
+    parts.append("if _fast_version_exit is not None:")
+    parts.append("    raise SystemExit(_fast_version_exit)")
+    parts.append("")
 
     # Early capture fast path. Keep this before consolidated imports and the
     # inlined package body so `camc capture <exact-id>` avoids
@@ -393,6 +430,34 @@ def build():
     for mod in MODULE_ORDER:
         src = module_sources[mod]
         body = strip_imports(src, mod)
+        if mod == "api_proxy":
+            # API server classes require HTTP imports at definition time.
+            # Keep their complete initialization behind one loader, rather
+            # than hoisting their imports into every standalone command.
+            symbols = symtable.symtable(body, "api_proxy", "exec").get_symbols()
+            bindings = sorted(symbol.get_name() for symbol in symbols
+                              if symbol.is_assigned() or symbol.is_imported())
+            parts.extend([
+                "_camc_api_proxy_loaded = False",
+                "_camc_api_proxy_lock = __import__('threading').RLock()",
+                "def _camc_load_api_proxy():",
+                "    global _camc_api_proxy_loaded, " + ", ".join(bindings),
+                "    with _camc_api_proxy_lock:",
+                "        if _camc_api_proxy_loaded:",
+                "            return",
+            ])
+            parts.extend("        " + line if line else "" for line in body.splitlines())
+            parts.extend([
+                "        _camc_api_proxy_loaded = True",
+                "def _api_proxy_run(*args, **kwargs):",
+                "    _camc_load_api_proxy()",
+                "    return run_api_proxy(*args, **kwargs)",
+                "def _api_proxy_stop(*args, **kwargs):",
+                "    _camc_load_api_proxy()",
+                "    return stop_agent_api_proxy(*args, **kwargs)",
+                "",
+            ])
+            continue
         body = strip_stdlib_imports(body)
         body = strip_docstring(body)
         parts.append('')

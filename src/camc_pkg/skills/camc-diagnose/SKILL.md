@@ -2,9 +2,9 @@
 name: camc-diagnose
 description: >
   Diagnose and fix stuck, exited, failed, or unresponsive camc agents.
-  Use when an agent's status shows running but it's not responding,
-  the monitor died, capture is empty, or you need to resume a dead
-  agent's Claude session. Covers heal, monitor self-healing, and
+  Use when an agent's status shows alive but it's not responding,
+  the monitor died, capture is empty, or a recorded terminal agent may
+  still be alive. Covers heal, monitor self-healing, and
   common failure modes with step-by-step fixes.
 compatibility: Requires ~/.cam/camc deployed by the camc release.
 metadata:
@@ -25,7 +25,7 @@ allowed-tools: Bash Read Glob Grep
 ```bash
 ~/.cam/camc list                              # all agents on this host
 ~/.cam/camc status <agent>                    # detailed state: status, state, exit_reason, pid, session
-camc logs <agent> -f                   # follow monitor log for live errors
+~/.cam/camc logs <agent> -f                   # follow monitor log for live errors
 ~/.cam/camc capture <agent> --lines 30        # see what's on screen
 ```
 
@@ -33,21 +33,22 @@ camc logs <agent> -f                   # follow monitor log for live errors
 
 | Symptom | Fix |
 |---------|-----|
-| Status says `running` but tmux is dead | `~/.cam/camc heal` |
+| Status says `alive` but tmux is dead | `~/.cam/camc heal` |
 | Need to replace a healthy local monitor too | `~/.cam/camc heal --restart` |
 | tmux settings need a refresh | `~/.cam/camc heal --tmux` |
 | Agent stuck (idle but not responding) | `~/.cam/camc key <agent> --key Escape`, then `~/.cam/camc send <agent> --text "..."` |
-| Agent `exited` or `failed` | Check `~/.cam/camc status <agent>` for `exit_reason`; `camc reboot <agent>` to retry with same session |
+| Agent `dead/failed` | Check `~/.cam/camc status <agent>` for `exit_reason`; `~/.cam/camc reboot <agent>` to launch a fresh tool with the same agent ID |
 | Capture empty / attach hangs | `~/.cam/camc capture <agent> --lines 0` to verify; if still blank check `~/.cam/camc status <agent>` for `tmux_session` alive |
-| Agent `state = error` | `camc logs <agent>` for tracebacks; `camc reboot <agent>` to restart |
+| Agent `state = error` | `~/.cam/camc logs <agent>` for tracebacks; `~/.cam/camc reboot <agent>` to restart |
 | Many agents stopped responding | `~/.cam/camc heal` restarts all dead monitors |
 | Stale sockets in /tmp/cam-sockets/ | `~/.cam/camc heal` auto-cleans |
 
 ## `~/.cam/camc heal` — what it does
 
-Walks every running agent on the current host:
+Inspects local agents, including records marked dead:
 
-- Restarts agents whose monitor PID is dead
+- Repairs stale terminal/activity states only when pane 0 has a verified live tool
+- Restarts missing monitors; does not reboot tools as part of status repair
 - Cleans stale socket files at `/tmp/cam-sockets/` whose tmux server is gone
 - Adopts orphan tmux sessions into agents.json
 - Filters by hostname — on NFS-shared `~/.cam/agents.json` clusters,
@@ -69,40 +70,40 @@ when a deliberate local monitor restart is needed.
 
 | Trigger | Command |
 |---------|---------|
-| `~/.cam/camc list` shows running but nothing's happening | `~/.cam/camc heal` |
+| `~/.cam/camc list` shows alive but nothing's happening | `~/.cam/camc heal` |
 | Need to deliberately restart healthy local monitors | `~/.cam/camc heal --restart` |
 | Need the managed tmux template on active local servers | `~/.cam/camc heal --tmux` |
 | Many agents stopped responding to send/key | `~/.cam/camc heal` |
 | Sockets piling up in `/tmp/cam-sockets/` | `~/.cam/camc heal` (auto-cleans) |
 
-### Cron suggestion
+### Startup stalled in initializing
 
-```bash
-# Every 30 minutes
-*/30 * * * * /home/hren/.cam/camc heal >/dev/null 2>&1
-```
-
-`cam sync` deploys this cron entry automatically (best-effort).
+Follow the startup supervision procedure in **managing-camc**: capture the
+pane, handle workspace trust and routine onboarding choices yourself, and
+continue until `alive` with `phase=started` or a concrete failure/blocker.
+Do not treat a returned run command, a live tmux shell, or a submitted LSF job
+as proof that the tool is ready. Use `status` to read `exit_reason`; preserve
+failed panes for inspection. Reboot is a fresh conversation, not resume.
 
 ## Monitor self-healing
 
 Every running agent has a background **monitor** that:
 
 - Captures the tmux pane every ~1s
-- Detects state (planning/editing/testing/committing/idle)
+- Tracks alive agents as idle/running and startup as initializing/started
 - Auto-confirms permission dialogs
-- Detects completion
+- Records process exit as dead/stopped, dead/failed, or dead/killed
 - Updates `~/.cam/agents.json` and `~/.cam/events.jsonl`
 
 The monitor wraps its main loop in `try/except` with restart-on-error.
 Common exceptions handled:
 
-- `database is locked` (SQLite contention)
 - `OSError` from flaky NFS read on `agents.json`
 - `tmux server died` mid-capture
 
-After 5 consecutive failures the monitor exits and `~/.cam/camc heal` is
-expected to restart it on the next sweep.
+The monitor retries up to five times after its initial failure, then records
+`monitor_error`. That alone does not mark the tool dead; `heal` can restart
+the monitor. Old monitor generations must not overwrite rebooted agents.
 
 Logs: `~/.cam/logs/monitor-<id>.log` (stdout), `monitor-<id>.stderr`.
 PID file: `~/.cam/pids/<id>.pid`.
@@ -114,7 +115,7 @@ resume the conversation in a fresh agent:
 
 ```bash
 # Find the session id from the old agent record
-camc --json list | python3 -c "
+~/.cam/camc --json list | python3 -c "
 import json, sys
 for a in json.load(sys.stdin):
     sid = a.get('session_id','')
@@ -131,8 +132,7 @@ for a in json.load(sys.stdin):
 rebuilds the agent's full memory. The new agent gets a new agent ID and
 tmux session, but inherits the old conversation history.
 
-For session JSONL paths and inspection, see managing-camc's
-`reference/sessions.md`.
+For session JSONL paths and inspection, see [managing-camc session reference](../managing-camc/reference/sessions.md).
 
 ## Reference
 

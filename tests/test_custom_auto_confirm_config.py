@@ -139,24 +139,13 @@ class TestCustomConfirmRuleLoads:
         assert len(oe) == len(set(oe)), \
             "readiness.optional_env duplicated on merge: %r" % oe
 
-    def test_full_template_does_not_duplicate_state_patterns(
-            self, tmp_path, monkeypatch):
-        """State patterns are also a list under a non-`confirm` key.
-        They must override (not double) when a full embedded snapshot
-        is present as the user-side template."""
+    def test_legacy_state_config_is_ignored(self, tmp_path, monkeypatch):
         monkeypatch.setattr(_adapters, "CONFIGS_DIR", str(tmp_path))
         (tmp_path / "claude.toml").write_text(
             _adapters._EMBEDDED_CONFIGS["claude.toml"])
-
         cfg = _adapters._load_config("claude")
-        # state_patterns is parsed into a list of (name, pattern) tuples
-        # whose 'name' values must remain unique-per-occurrence; in
-        # particular, the embedded set must not appear twice.
-        state_names = [name for name, _pat in cfg.state_patterns]
-        # The embedded claude.toml declares 4 distinct states; with the
-        # old buggy merge, we'd see each appear twice (8 entries).
-        assert len(state_names) == len(set(state_names)), (
-            "state_patterns duplicated on merge: %r" % state_names)
+        assert not hasattr(cfg, "state_patterns")
+        assert not hasattr(cfg, "completion_strategy")
 
     def test_full_template_plus_custom_confirm_appends_only_confirm(
             self, tmp_path, monkeypatch):
@@ -244,10 +233,6 @@ class TestHealUpgradeInstallsTemplates:
         from camc_pkg import storage as _storage
         monkeypatch.setattr(_storage, "AGENTS_FILE",
                             str(cam_dir / "agents.json"))
-        # Cron tick hook short-circuit.
-        from camc_pkg import cron as _cron
-        monkeypatch.setattr(_cron, "ensure_tick_if_needed",
-                            lambda *a, **kw: "noop")
         # Don't actually kill anything when --upgrade fires.
         monkeypatch.setattr(_cli, "_kill_all_monitors", lambda: 0)
 
@@ -273,9 +258,6 @@ class TestHealUpgradeInstallsTemplates:
         from camc_pkg import storage as _storage
         monkeypatch.setattr(_storage, "AGENTS_FILE",
                             str(cam_dir / "agents.json"))
-        from camc_pkg import cron as _cron
-        monkeypatch.setattr(_cron, "ensure_tick_if_needed",
-                            lambda *a, **kw: "noop")
         monkeypatch.setattr(_cli, "_kill_all_monitors", lambda: 0)
 
         _cli.cmd_heal(argparse.Namespace(upgrade=True))

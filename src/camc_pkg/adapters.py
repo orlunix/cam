@@ -270,66 +270,11 @@ class AdapterConfig(object):
             str(value) for value in
             (launch.get("launcher_autorun_args") or [])
         ]
-        auto_run = launch.get("auto_run")
-        if isinstance(auto_run, dict):
-            autorun_config = (auto_run.get("autorun_config") or
-                              auto_run.get("config_path") or "")
-            autorun_args = (auto_run.get("autorun_args") or
-                            auto_run.get("args") or [])
-            enabled_keys = auto_run.get("enabled_keys") or []
-            if not enabled_keys and auto_run.get("enabled_key"):
-                enabled_keys = [auto_run.get("enabled_key")]
-            self.auto_run = {
-                "autorun_config": str(autorun_config),
-                "autorun_condition": str(
-                    auto_run.get("autorun_condition") or ""),
-                "autorun_args": [str(v) for v in autorun_args],
-                # Keep the old keys available to external adapters while
-                # they migrate to the explicit autorun_* names.
-                "config_path": str(autorun_config),
-                "enabled_keys": [str(v) for v in enabled_keys],
-                "enabled_values": [str(v) for v in
-                                   (auto_run.get("enabled_values") or [])],
-                "args": [str(v) for v in autorun_args],
-            }
-        else:
-            self.auto_run = None
-
         rp = launch.get("ready_pattern")
         self.ready_pattern = compile_pattern(rp, launch.get("ready_flags")) if rp else None
         self.prompt_after_launch = launch.get("prompt_after_launch", False)
         self.startup_wait = float(launch.get("startup_wait", 2.0))
         self.prompt_submit_delay = float(launch.get("prompt_submit_delay", 0.0))
-
-        state_cfg = config.get("state", {})
-        self.state_strategy = state_cfg.get("strategy", "first")
-        self.state_recent_chars = state_cfg.get("recent_chars", 2000)
-        self.state_patterns = []
-        for entry in state_cfg.get("patterns", []):
-            self.state_patterns.append((
-                entry["state"],
-                compile_pattern(entry["pattern"], entry.get("flags")),
-            ))
-
-        comp = config.get("completion", {})
-        self.completion_strategy = comp.get("strategy", "process_exit")
-        self.completion_recent_chars = comp.get("recent_chars", 500)
-        self.min_output_length = comp.get("min_output_length", 100)
-
-        cp = comp.get("completion_pattern")
-        self.completion_pattern = compile_pattern(cp, comp.get("completion_flags")) if cp else None
-        ep = comp.get("error_pattern")
-        self.error_pattern = compile_pattern(ep, comp.get("error_flags")) if ep else None
-        self.error_search_full = comp.get("error_search_full", True)
-
-        sp = comp.get("shell_prompt_pattern")
-        self.shell_prompt_pattern = compile_pattern(sp, comp.get("shell_prompt_flags")) if sp else None
-
-        pp = comp.get("prompt_pattern")
-        self.prompt_pattern = compile_pattern(pp, comp.get("prompt_flags")) if pp else None
-        self.prompt_count_threshold = comp.get("prompt_count_threshold", 2)
-        fp = comp.get("fallback_summary_pattern")
-        self.fallback_summary_pattern = compile_pattern(fp, comp.get("fallback_summary_flags")) if fp else None
 
         self.confirm_rules = []
         for rule in config.get("confirm", []):

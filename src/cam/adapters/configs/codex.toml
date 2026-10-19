@@ -4,7 +4,6 @@
 # TUI markers:
 #   Input prompt:  › (start of line)
 #   Working:       • Thinking / Exploring / etc.
-#   Completion:    Two › lines = task done (echoed prompt + return to idle)
 
 [adapter]
 name = "codex"
@@ -48,9 +47,7 @@ allow_login_shell = false
 [launch]
 command = ["codex"]
 trust_workspace = true
-# Launcher jobs cannot rely on camc's local confirmation loop reaching the
-# target process.  Ordinary launches use the same --yolo alias only when the
-# conditional /etc/codex/requirements.toml policy below matches.
+# Used by every managed launch, including explicit local execution.
 launcher_autorun_args = ["--yolo"]
 prompt_after_launch = true
 startup_wait = 20.0
@@ -63,52 +60,6 @@ ready_pattern = "^[❯›>]"
 ready_flags = ["MULTILINE"]
 prompt_submit_delay = 0.5
 
-# Auto-run is enabled only for the managed autorun profile when its
-# requirements policy matches. The condition is fail-closed; syntax/runtime
-# errors keep the ordinary command.
-[launch.auto_run]
-autorun_config = "/etc/codex/requirements.toml"
-autorun_condition = "'autorun' in path_parts and (('allowed_sandbox_modes' not in config and 'allowed_permission_profiles' not in config) or 'danger-full-access' in config.get('allowed_sandbox_modes', []) or config.get('allowed_permission_profiles', {}).get(':danger-full-access') is True)"
-autorun_args = ["--yolo"]
-
-[state]
-strategy = "first"
-recent_chars = 2000
-
-[[state.patterns]]
-state = "planning"
-pattern = "(Thinking|Planning|Analyzing|Reading|Searching|Reviewing)"
-flags = ["IGNORECASE"]
-
-[[state.patterns]]
-state = "editing"
-pattern = "(Editing|Writing|Creating|Modifying|Applying|Patching)"
-flags = ["IGNORECASE"]
-
-[[state.patterns]]
-state = "testing"
-pattern = "(Running|Testing|Executing|Verifying|npm test|pytest|cargo test)"
-flags = ["IGNORECASE"]
-
-[[state.patterns]]
-state = "committing"
-pattern = "(Committing|Pushing|git commit|git push|Creating PR)"
-flags = ["IGNORECASE"]
-
-[completion]
-strategy = "prompt_count"
-
-prompt_pattern = "^›"
-prompt_flags = ["MULTILINE"]
-prompt_count_threshold = 2
-
-error_pattern = "(Error:|error:|FAILED|fatal:|Exception|command not found)"
-error_flags = ["IGNORECASE"]
-
-# (2026-06-11 trim) Rules 2, 3, 4 removed (trust-dialog DOTALL variants,
-# bottom-menu variant, sandbox-retry). They each used broad anchors that
-# false-fired on scrollback prose. The single rule below requires the
-# active cursor › at line start — only matches when the menu is drawn.
 [[confirm]]
 # Numbered menu — cursor at line start, then "1. Yes, ...".
 # The comma distinguishes the menu from a user's stable input such as

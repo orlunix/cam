@@ -21,7 +21,7 @@ This is a continuation mechanism, not an external verifier or a task DSL.
 ## Create exactly two task artifacts
 
 1. Render `reference/prompt.md` into the project auto-load file:
-   `CLAUDE.md` for Claude, `AGENTS.md` for Codex or Cursor. Fill its Goal,
+   `CLAUDE.md` for Claude, `AGENTS.md` for Codex, Cursor, or Pi. Fill its Goal,
    Checklist, and Verify sections with concrete project facts.
 2. Render `reference/loop.md` into a short continuation message. Replace the
    owner ID, loop name, and auto-load filename with their actual values.
@@ -40,8 +40,11 @@ display name, then register the rendered continuation file:
 ~/.cam/camc cron list --loop --owner <agent-id>
 ```
 
-The owner must be running and idle before CAMC delivers a due prompt. Busy
-owners are deferred; messages do not interrupt work.
+The owner must be `status=alive`, `state=idle`, `phase=started` before CAMC
+delivers a due prompt. Busy, initializing, or dead owners are deferred. For a
+new owner, follow managing-camc startup supervision through started first.
+Checklist states belong to this task file, not the agent lifecycle; achieving
+the goal removes its loop and leaves the tool idle unless stopping it was requested.
 
 ## Per-turn rule
 

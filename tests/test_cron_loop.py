@@ -31,6 +31,11 @@ from camc_pkg import cli as _cli
 @pytest.fixture
 def home(monkeypatch, tmp_path):
     """Redirect every cron/loop disk path into tmp_path."""
+    real_run = _cron.subprocess.run
+    def guard_crontab(argv, *args, **kwargs):
+        assert os.path.basename(argv[0]) != "crontab", "camc must not manage system crontab"
+        return real_run(argv, *args, **kwargs)
+    monkeypatch.setattr(_cron.subprocess, "run", guard_crontab)
     cam = tmp_path / ".cam"
     cron_dir = cam / "cron"
     loops_dir = cam / "loops"
@@ -61,7 +66,7 @@ def _owner_rec(agent_id="f1a1a661", name="cam-dev"):
         "id": agent_id,
         "task": {"name": name, "tool": "claude"},
         "tmux_session": "cam-" + agent_id,
-        "status": "running",
+        "status": "alive",
         "state": "idle",
         "hostname": "local-node",
     }
@@ -234,7 +239,7 @@ class TestTickLoops:
         def fake_dispatch(L):
             calls.append(L["id"])
             return True, "msg12345"
-        idle = _FakeStore([{"id": "ownerT", "status": "running",
+        idle = _FakeStore([{"id": "ownerT", "status": "alive",
                             "state": "idle", "hostname": _loop._hostname()}])
         n = _loop.tick_loops(dispatch=fake_dispatch, agent_store=idle)
         assert n == 1
@@ -269,7 +274,7 @@ class TestTickLoops:
             store.replace_envelope(env)
         def bad_dispatch(L):
             return False, "rpc error"
-        idle = _FakeStore([{"id": owner, "status": "running",
+        idle = _FakeStore([{"id": owner, "status": "alive",
                             "state": "idle", "hostname": _loop._hostname()}])
         cycle(0); _loop.tick_loops(dispatch=bad_dispatch, agent_store=idle)
         cycle(1); _loop.tick_loops(dispatch=bad_dispatch, agent_store=idle)
@@ -284,7 +289,7 @@ class TestTickLoops:
         loop = self._seed_due("ownerB", home, name="defer-me")
         nda_before = loop["schedule"]["next_due_at"]
         attempts_before = loop["state"]["attempts"]
-        busy_rec = {"id": "ownerB", "status": "running", "state": "editing"}
+        busy_rec = {"id": "ownerB", "status": "alive", "state": "running"}
         store = _FakeStore([busy_rec])
         calls = []
         def fake_dispatch(L):
@@ -304,7 +309,7 @@ class TestTickLoops:
             events = [json.loads(l) for l in f if l.strip()]
         deferred = [e for e in events if e["event"] == "loop_deferred"]
         assert len(deferred) == 1
-        assert "owner_state_editing" in deferred[0]["reason"]
+        assert "owner_state_running" in deferred[0]["reason"]
 
     def test_owner_missing_defers_dispatch(self, home):
         """F1: a due loop with no owner record must defer (not crash,
@@ -370,7 +375,7 @@ class TestCronTickServicesLoops:
         loop_calls = []
         monkeypatch.setattr(_loop, "dispatch_loop",
                             lambda L: (loop_calls.append(L["id"]), (True, "msgX"))[1])
-        idle = _FakeStore([{"id": "ownerJ", "status": "running",
+        idle = _FakeStore([{"id": "ownerJ", "status": "alive",
                             "state": "idle", "hostname": _loop._hostname()}])
         # Patch the default AgentStore the loop tick consults when no
         # agent_store kwarg is plumbed through cron.tick().
@@ -416,11 +421,6 @@ class TestCliLoop:
         return argparse.Namespace(**d)
 
     def test_add_loop_persists(self, home, cli_owner, monkeypatch, capsys):
-        # Stub crontab so the install_tick call at end is a no-op success.
-        monkeypatch.setattr(_cron, "_read_user_crontab",
-                            lambda runner=None: "")
-        monkeypatch.setattr(_cron, "_write_user_crontab",
-                            lambda text, runner=None: None)
         with pytest.raises(SystemExit) as ei:
             _cli.cmd_cron_add(self._add_args())
         assert ei.value.code == 0
@@ -435,22 +435,6 @@ class TestCliLoop:
         assert env["loops"][0]["name"] == "loopA"
         assert env["loops"][0]["action"]["text"] == "hello world"
 
-    def test_add_loop_does_not_require_crontab(
-            self, home, cli_owner, monkeypatch, capsys):
-        """Scheduler fallback makes a persisted loop runnable without crontab."""
-        def _fail(*a, **kw):
-            raise _cron.CrontabUnavailable("crontab intentionally unavailable")
-        monkeypatch.setattr(_cron, "install_tick", _fail)
-        monkeypatch.setattr(_cli, "install_tick", _fail)
-        with pytest.raises(SystemExit) as ei:
-            _cli.cmd_cron_add(self._add_args(name="failtick"))
-        assert ei.value.code == 0
-        # Loop is persisted and no crontab error is surfaced.
-        path = os.path.join(_loop.LOOPS_DIR, "f1a1a661", "agent.loop.json")
-        assert os.path.exists(path)
-        with open(path) as f:
-            env = json.load(f)
-        assert any(L["name"] == "failtick" for L in env["loops"])
 
     def test_add_loop_rejects_argv(self, home, cli_owner, capsys):
         args = self._add_args(cmd_argv=["--", "echo", "hi"])
@@ -564,10 +548,6 @@ class TestCliLoop:
 
 class TestHostCronIntact:
     def test_normal_cron_add_still_works(self, home, monkeypatch, capsys):
-        monkeypatch.setattr(_cron, "_read_user_crontab",
-                            lambda runner=None: "")
-        monkeypatch.setattr(_cron, "_write_user_crontab",
-                            lambda text, runner=None: None)
         args = argparse.Namespace(
             name="normal", loop=False, owner=None,
             prompt=None, prompt_file=None,

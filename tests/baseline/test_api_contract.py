@@ -1,6 +1,7 @@
 """Public API-profile and `run --api` baseline contract."""
 
 import json
+import urllib.request
 
 import pytest
 
@@ -24,7 +25,7 @@ def test_api_list_check_and_default_commands_are_local_and_durable(
     monkeypatch.setattr(api_store, "sync_metadata_in_data",
                         lambda data, provider, cost_map=None: 0)
     monkeypatch.setattr(
-        api_store.urllib.request, "urlopen",
+        urllib.request, "urlopen",
         lambda *args, **kwargs: pytest.fail("api check attempted real network"),
     )
 
@@ -67,10 +68,12 @@ def test_api_rejects_invalid_incompatible_and_disabled_profiles_before_launch(
         "--api-token", "secret", "--path", str(isolated_cam_home.work),
     )
 
-    assert code == 1
+    assert code == 0
+    assert run_spy.run_worker() == 1
     assert expected in capsys.readouterr().err
-    assert run_spy.sessions == []
-    assert storage.AgentStore(str(isolated_cam_home.agents)).list() == []
+    assert run_spy.launches == []
+    assert run_spy.monitors == []
+    assert storage.AgentStore(str(isolated_cam_home.agents)).list()[0]["state"] == "failed"
 
 
 def test_api_alias_and_cli_secret_precedence_reach_run_without_secret_output(
@@ -94,14 +97,14 @@ def test_api_alias_and_cli_secret_precedence_reach_run_without_secret_output(
         "run", "api baseline", "--tool", "codex", "--api", "glm",
         "--api-token", "cli-secret", "--path", str(isolated_cam_home.work),
     )
-    output = capsys.readouterr()
-
     assert code == 0
+    assert run_spy.run_worker() == 0
+    output = capsys.readouterr()
     assert "cli-secret" not in output.out + output.err
     assert "environment-secret" not in output.out + output.err
-    _session, _command, _workdir, kwargs = run_spy.sessions[0]
-    assert kwargs["env"][api_resolver.CODEX_API_ENV_KEY] == "cli-secret"
-    assert kwargs["env"]["CODEX_HOME"].endswith(
+    launch = run_spy.launches[0]
+    assert launch["env"][api_resolver.CODEX_API_ENV_KEY] == "cli-secret"
+    assert launch["env"]["CODEX_HOME"].endswith(
         "/.codex/a1b2c3d4")
     record = storage.AgentStore(str(isolated_cam_home.agents)).list()[0]
     assert record["api"]["name"] == "glm-5.2"

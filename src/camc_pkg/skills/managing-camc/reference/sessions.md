@@ -1,6 +1,6 @@
 # Finding the Claude session for an agent
 
-Each agent's conversation history lives in a Claude session JSONL at:
+A Claude agent normally stores its conversation JSONL at:
 
 ```
 ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl
@@ -21,13 +21,15 @@ ENCODED=$(echo "/home/hren/.openclaw/workspace/camflow" | sed 's/[/._]/-/g')
 ls -lt ~/.claude/projects/$ENCODED/*.jsonl
 ```
 
-Most recently modified = most recently active. Each file is one session;
+Check the agent’s recorded session ID and runtime home first. Isolated/API
+homes may place projects under a different root. Modification time alone
+cannot bind a transcript when multiple agents share a workspace. Each file is one session;
 its name is the session-id (UUID).
 
 ## Map agent → session-id (camc-managed agents)
 
 ```bash
-camc --json list | python3 -c "
+~/.cam/camc --json list | python3 -c "
 import json, sys, os
 for a in json.load(sys.stdin):
     sid = a.get('session_id') or '?'
@@ -53,7 +55,7 @@ tail -1 ~/.claude/projects/$ENCODED/$SID.jsonl | python3 -m json.tool | head -30
 Or extract the conversation in Q/A order via:
 
 ```bash
-camc archive show <archive-name> | less
+~/.cam/camc archive show <archive-name> | less
 ```
 
 ## Resume a session in a fresh agent
@@ -76,3 +78,6 @@ conversation history is the old one.
 one per session that's ever run there. They don't overwrite each other
 because each has a unique session-id. `claude --resume` without an
 explicit ID picks the most recent.
+
+After explicit resume, supervise startup through alive/started as described in
+managing-camc. `reboot` starts a fresh tool conversation and does not resume.

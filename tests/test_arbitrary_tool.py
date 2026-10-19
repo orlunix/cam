@@ -104,15 +104,18 @@ def test_unknown_tool_run_keeps_monitor_but_disables_automation(tmp_path, monkey
     tool.write_text("#!/bin/sh\nexit 0\n")
     tool.chmod(0o755)
 
-    class Store:
-        def save(self, record):
-            captured["record"] = record
-
-        def update(self, *_args, **_kwargs):
-            captured["update"] = (_args, _kwargs)
+    from camc_pkg.storage import AgentStore
+    store = AgentStore(str(tmp_path / "agents.json"))
+    store.save({"id": "abc12345", "status": "alive"})
 
     class Proc:
         pid = 4321
+
+        def poll(self):
+            return 0
+
+        def wait(self):
+            return 0
 
     class Args:
         tool = "my-agent"
@@ -158,11 +161,6 @@ def test_unknown_tool_run_keeps_monitor_but_disables_automation(tmp_path, monkey
     monkeypatch.setattr(cli, "LOGS_DIR", str(tmp_path / "logs"))
     monkeypatch.setattr(cli, "PIDS_DIR", str(tmp_path / "pids"))
 
-    def _fake_create(session, command, workdir, **kwargs):
-        captured["launch"] = (session, command, workdir, kwargs)
-        return True
-
-    monkeypatch.setattr(cli, "create_tmux_session", _fake_create)
     monkeypatch.setattr(transport, "ensure_camc_tmux_config", lambda: "")
     monkeypatch.setattr(cli.subprocess, "check_output", lambda *_a, **_kw: b"tmux 3.0")
     monkeypatch.setattr(
@@ -176,18 +174,21 @@ def test_unknown_tool_run_keeps_monitor_but_disables_automation(tmp_path, monkey
     monkeypatch.setattr(
         cli.time, "sleep", lambda seconds: captured.setdefault("sleep", seconds),
     )
-    monkeypatch.setattr(cli, "AgentStore", lambda: Store())
+    monkeypatch.setattr(cli, "AgentStore", lambda: store)
 
-    cli.cmd_run(Args())
+    launch = {}
+    cli._cmd_run_prepared(Args(), "abc12345", launch)
+    assert "send" not in captured
+    assert cli._run_foreground_tool("abc12345", launch) == 0
 
-    record = captured["record"]
+    record = store.get("abc12345")
     assert record["task"]["tool"] == "others"
     assert record["task"]["requested_tool"] == "my-agent"
     assert record["task"]["auto_confirm"] is False
     assert record["task"]["auto_exit"] is False
     assert record["task"]["auto_exit_enable"] is False
-    assert record["state"] == "idle"
-    assert captured["update"] == (("abc12345",), {"pid": 4321})
+    assert record["state"] == "running"
+    assert record["pid"] == 4321
     assert "_monitor" in captured["monitor"][0][0]
     assert captured["sleep"] == 2.0
     assert captured["send"] == (
@@ -195,8 +196,6 @@ def test_unknown_tool_run_keeps_monitor_but_disables_automation(tmp_path, monkey
     )
     assert captured["preflight_runtime"].env["TOOL_MODE"] == "review"
     assert captured["preflight_runtime"].env["PATH"] == "/custom/bin:/usr/bin"
-    assert captured["launch"][1] == [str(tool), "--mode", "safe mode"]
-    assert captured["launch"][3]["exit_status_path"] == str(
-        tmp_path / "pids" / "abc12345.tool-exit")
+    assert launch["command"] == [str(tool), "--mode", "safe mode"]
     assert record["runtime"]["custom_launch"]["exit_status_path"] == str(
         tmp_path / "pids" / "abc12345.tool-exit")

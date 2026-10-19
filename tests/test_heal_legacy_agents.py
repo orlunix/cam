@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 
 from camc_pkg import cli
-from camc_pkg.storage import AgentStore
+from camc_pkg.storage import AgentStore, normalize_agent
 
 
 def test_migrate_legacy_agent_renames_live_session_and_preserves_current_record(
@@ -16,13 +16,13 @@ def test_migrate_legacy_agent_renames_live_session_and_preserves_current_record(
         "task": {"name": "keep", "tool": "codex", "prompt": "unchanged"},
         "context_path": "/work/current",
         "transport_type": "local",
-        "status": "running", "state": "idle",
+        "status": "alive", "state": "idle",
         "tmux_session": "cam-current01", "hostname": "host",
     }
     legacy = {
         "id": "old-id", "name": "old-agent", "tool": "claude",
         "prompt": "continue", "path": "/work/legacy", "session": "legacy-pane",
-        "monitor_pid": 4321, "hostname": "host", "status": "running",
+        "monitor_pid": 4321, "hostname": "host", "status": "alive",
     }
     path.write_text(json.dumps([current, legacy]))
     store = AgentStore(str(path))
@@ -39,7 +39,7 @@ def test_migrate_legacy_agent_renames_live_session_and_preserves_current_record(
     assert backup and backup.exists()
     assert json.loads(backup.read_text()) == [current, legacy]
     records = store.list()
-    assert records[0] == current
+    assert records[0] == normalize_agent(current)
     assert len(records) == 2
     restored = records[1]
     assert restored["id"] == "a1b2c3d4"
@@ -61,7 +61,7 @@ def test_migrate_legacy_agent_leaves_dead_session_untouched(tmp_path, monkeypatc
     migrated, skipped, backup = cli._migrate_legacy_agents(store)
 
     assert (migrated, skipped, backup) == (0, 1, None)
-    assert store.list() == [legacy]
+    assert store.list() == [normalize_agent(legacy)]
 
 
 def test_heal_agents_only_runs_legacy_migration(monkeypatch):

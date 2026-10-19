@@ -1679,7 +1679,7 @@ class TestAgentStore:
         assert store.get("abc")["id"] == "abc12345"
 
     def test_update(self, store):
-        store.save({"id": "abc12345", "status": "running"})
+        store.save({"id": "abc12345", "status": "alive"})
         store.update("abc12345", status="completed")
         assert store.get("abc12345")["status"] == "completed"
 
@@ -1745,7 +1745,7 @@ class TestCmdStatus:
     def test_status_returns_agents(self, tmp_path, capsys, monkeypatch):
         store_path = str(tmp_path / "agents.json")
         store = AgentStore(store_path)
-        store.save({"id": "abc123", "status": "running"})
+        store.save({"id": "abc123", "status": "alive"})
 
         # Monkey-patch the module-level AGENTS_FILE
         import cam.client as cl
@@ -1762,7 +1762,7 @@ class TestCmdStatus:
     def test_status_hash_match(self, tmp_path, capsys, monkeypatch):
         store_path = str(tmp_path / "agents.json")
         store = AgentStore(store_path)
-        store.save({"id": "abc123", "status": "running"})
+        store.save({"id": "abc123", "status": "alive"})
 
         import cam.client as cl
         monkeypatch.setattr(cl, "AGENTS_FILE", store_path)
@@ -1784,7 +1784,7 @@ class TestCmdStatus:
     def test_status_hash_mismatch(self, tmp_path, capsys, monkeypatch):
         store_path = str(tmp_path / "agents.json")
         store = AgentStore(store_path)
-        store.save({"id": "abc123", "status": "running"})
+        store.save({"id": "abc123", "status": "alive"})
 
         import cam.client as cl
         monkeypatch.setattr(cl, "AGENTS_FILE", store_path)
