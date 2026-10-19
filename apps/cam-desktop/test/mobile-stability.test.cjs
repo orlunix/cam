@@ -70,6 +70,19 @@ ok("agent detail stops terminal output polling and wires cancellation",
   detail.includes("isTerminalStatus(agent.status) || isTerminalMode()")
     && detail.includes("fn(controller.signal)")
     && detail.includes("document.removeEventListener('click', _documentMenuClickHandler)"));
+const autoAttach = detail.slice(
+  detail.indexOf("async function ensureAgentTerminalAttach"),
+  detail.indexOf("function applyOutputMode"));
+ok("terminal attach leaves the Android IME closed until the user taps",
+  !autoAttach.includes("focusTerminalForAgent(")
+    && detail.includes("host.addEventListener('click', () => focusTerminalForAgent(agentId))"));
+const terminalMount = source("web/js/shared/terminal-mount.js");
+const showTerminalEntry = terminalMount.slice(
+  terminalMount.indexOf("function showTerminalEntry"),
+  terminalMount.indexOf("function prepareThenShowTerminalEntry"));
+ok("shared terminal show only auto-focuses outside Android",
+  showTerminalEntry.includes("if (!isAndroidWebView())")
+    && showTerminalEntry.indexOf("if (!isAndroidWebView())") < showTerminalEntry.indexOf("ent.term?.focus()"));
 const nodes = source("web/js/shared/nodes-mode.js");
 ok("Nodes viewport listeners are removed by route cleanup",
   nodes.includes("cleanupViewportListeners") && nodes.includes("vv.removeEventListener('resize', syncFooterInset)"));

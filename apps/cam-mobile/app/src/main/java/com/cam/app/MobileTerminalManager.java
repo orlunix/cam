@@ -57,11 +57,12 @@ public final class MobileTerminalManager {
         if (existing != null && sessions.containsKey(existing)) {
             Entry ent = sessions.get(existing);
             if (ent != null && ent.active && channelAlive(ent)) {
-                replaceClient(ent, client);
-                resizeEntry(ent, c, r);
                 try {
+                    replaceClient(ent, client);
+                    resizeEntry(ent, c, r);
                     return okSession(existing, true);
                 } catch (Exception e) {
+                    drop(existing);
                     return err("internal_error", e.getMessage());
                 }
             }
@@ -153,6 +154,7 @@ public final class MobileTerminalManager {
             resizeEntry(ent, c, r);
             return new JSONObject().put("ok", true);
         } catch (Exception e) {
+            drop(sessionId);
             return err("resize_failed", e.getMessage());
         }
     }
@@ -215,7 +217,7 @@ public final class MobileTerminalManager {
         }
     }
 
-    private void resizeEntry(Entry ent, int cols, int rows) {
+    private void resizeEntry(Entry ent, int cols, int rows) throws Exception {
         ent.cols = cols;
         ent.rows = rows;
         try {
@@ -226,13 +228,20 @@ public final class MobileTerminalManager {
         markStreamReady(ent);
     }
 
-    /** First resize from JS: drop pre-layout PTY bytes, then stream live output. */
-    private void markStreamReady(Entry ent) {
+    /** First resize from JS: flush buffered PTY bytes before live output. */
+    private void markStreamReady(Entry ent) throws Exception {
         if (ent == null || ent.streamReady) return;
         synchronized (ent.pendingOut) {
-            ent.pendingOut.reset();
+            if (ent.streamReady) return;
+            MobileWebSocket.Connection client = ent.client;
+            if (client == null) return;
+            if (ent.pendingOut.size() > 0) {
+                byte[] pending = ent.pendingOut.toByteArray();
+                client.sendBinary(pending, 0, pending.length);
+                ent.pendingOut.reset();
+            }
+            ent.streamReady = true;
         }
-        ent.streamReady = true;
     }
 
     private void pump(String sessionId, Entry ent) {
@@ -289,15 +298,15 @@ public final class MobileTerminalManager {
 
     private void emitData(Entry ent, byte[] data, int length) throws Exception {
         if (data == null || length <= 0) return;
-        if (!ent.streamReady || ent.client == null) {
-            synchronized (ent.pendingOut) {
+        synchronized (ent.pendingOut) {
+            MobileWebSocket.Connection client = ent.client;
+            if (!ent.streamReady || client == null) {
                 int remaining = MAX_PENDING_BYTES - ent.pendingOut.size();
                 if (remaining > 0) ent.pendingOut.write(data, 0, Math.min(remaining, length));
+                return;
             }
-            return;
+            client.sendBinary(data, 0, length);
         }
-        MobileWebSocket.Connection client = ent.client;
-        if (client != null) client.sendBinary(data, 0, length);
     }
 
     private void emitStatus(Entry ent, String kind, int code, String signal) {

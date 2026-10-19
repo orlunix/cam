@@ -306,7 +306,15 @@ function updateTerminalSizeHint(ent, ttl = 2500) {
 function clampTerminalGrid() { /* legacy no-op */ }
 
 function fitTerminalEntry(ent, { notifyRemote = true } = {}) {
-  if (!ent?.term || !ent.container) return false;
+  if (!ent?.term || !ent.container || ent.viewActive === false) return false;
+  const android = isAndroidWebView();
+  if (android && typeof document !== 'undefined' && document.hidden) return false;
+  if (android && ent.hasConnected && !ent.refitRequested) return false;
+  if (android && ent.hasConnected) {
+    const hostWidth = ent.hostEl?.clientWidth || 0;
+    const hostHeight = ent.hostEl?.clientHeight || 0;
+    if (hostWidth < 80 || hostHeight < 60) return false;
+  }
   const vp = terminalViewportPixels(ent);
   if (vp.width < TERMINAL_MIN_NOTIFY_WIDTH || vp.height < 40) return false;
 
@@ -344,6 +352,7 @@ function fitTerminalEntry(ent, { notifyRemote = true } = {}) {
   if (vp.width < TERMINAL_MIN_NOTIFY_WIDTH || desiredCols < 20 || desiredRows < 4) {
     return false;
   }
+  if (android) ent.refitRequested = false;
   try {
     window.dispatchEvent(new CustomEvent('cam-terminal-fit', { detail: { agentId: ent.agentId } }));
   } catch { /* noop */ }
@@ -434,9 +443,11 @@ function showTerminalEntry(agentId, hostEl, opts = {}) {
     ent.container.style.visibility = '';
   }
   scheduleTerminalFitDeferred(ent, { keepBottom: opts.keepBottom !== false });
-  requestAnimationFrame(() => {
-    try { ent.term?.focus(); } catch { /* noop */ }
-  });
+  if (!isAndroidWebView()) {
+    requestAnimationFrame(() => {
+      try { ent.term?.focus(); } catch { /* noop */ }
+    });
+  }
   return ent;
 }
 
@@ -796,6 +807,7 @@ export function clearTerminalScrollback(agentId) {
 export function resetTerminalSize(agentId) {
   const ent = terminalSessions.get(agentId);
   if (!ent) return false;
+  ent.refitRequested = true;
   scheduleTerminalFitDeferred(ent, { keepBottom: true });
   updateTerminalSizeHint(ent, 3000);
   return true;
@@ -911,9 +923,10 @@ export async function openTerminalForAgent(api, agent, hostEl, opts = {}) {
     ent.sessionId = null;
     ent.bytesReceived = 0;
     ent.liveText = '';
-    ent.hasConnected = false;
   }
 
+  ent.hasConnected = false;
+  ent.refitRequested = false;
   ent.opening = true;
   ent.attachState = 'connecting';
   syncMobileTerminalBackgroundKeepAlive();
@@ -1030,23 +1043,21 @@ export function waitForTerminalLayout(hostEl, timeoutMs = 3000) {
 
 async function revealTerminalBuffer(ent, hostEl) {
   if (!ent?.term) return;
-  ent.liveText = '';
-  ent.bytesReceived = 0;
-  try { ent.term.clear(); } catch { /* noop */ }
+  if (isAndroidWebView()) ent.refitRequested = true;
   fitTerminalEntry(ent, { notifyRemote: true });
   await new Promise((r) => setTimeout(r, 120));
   fitTerminalEntry(ent, { notifyRemote: true });
   await new Promise((r) => setTimeout(r, 200));
-  const fresh = ent.liveText || '';
+  const buffered = ent.liveText || '';
   ent.suppressDisplay = false;
   try { ent.term.clear(); } catch { /* noop */ }
-  if (fresh) {
-    try { ent.term.write(fresh, () => terminalScrollToBottom(ent)); } catch { /* noop */ }
+  if (buffered) {
+    try { ent.term.write(buffered, () => terminalScrollToBottom(ent)); } catch { /* noop */ }
   }
   try { ent.term.refresh(0, Math.max(0, (ent.term.rows || 24) - 1)); } catch { /* noop */ }
   setTerminalConnecting(hostEl, false);
   ent.attachState = 'ready';
-  if (ent.bytesReceived > 0 || fresh) {
+  if (ent.bytesReceived > 0 || buffered) {
     terminalScrollToBottom(ent);
     setTerminalStatus(hostEl, '', 'info');
     updateTerminalSizeHint(ent, 2500);
