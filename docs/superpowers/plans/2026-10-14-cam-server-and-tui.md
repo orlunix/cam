@@ -2,9 +2,14 @@
 
 **日期：** 2026-10-14
 
-**状态：** 已确定架构方向；尚未实现
+**状态：** Router 与 camc SDK 接入已实现；TUI、Server 状态订阅与交互终端通道尚未实现
 
 **范围：** 独立开发 Rust `cam-server`、`cam-tui` 和共享协议，参考 Herdr；现有 camc 继续使用。
+
+> 2026-10-19 交互细化：CAM TUI 开发使用 `cam-tui` 分支。
+> 四区布局、多 tab、PageUp/PageDown、滚轮、选区与复制粘贴，以及当前 Desktop 的源码参考，
+> 详见 [CAM TUI 功能与交互 Spec](../../cam-tui-terminal-spec.md)。
+> 功能范围同时包含 Agent loop（状态更新/监控）、Agent operation、Nodes operation 和后台 forwarding；职责与实施顺序以该细化 Spec 为准。
 
 > 2026-10-18 架构更新：角色、camc 的 legacy Client 定位、Server runtime ownership
 > 和多 Client 中继拓扑以 [CAM Client / Server Spec](../../cam-client-server-spec.md)
