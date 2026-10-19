@@ -12,6 +12,8 @@
 > 隔离要求，不排除新 Spec 规定的受控迁移与最终替代。
 > 迁移采用渐进方式：agent 信息管理和执行能力逐步进入 Server，camc 保留 fallback；
 > TUI/Desktop/Mobile 按能力切换，不先删除旧工作流。
+> 当前范围进一步明确为 Router 先行：先完成连接、路由、投递与回包，其它不变；
+> agent 信息/管理随后迁入 Server，最终由新 Client 流程替代并退役 camc。
 
 ## 1. 已确定的目标
 
