@@ -82,7 +82,7 @@ phone client for monitoring and controlling those agents.
   is shared with `apps/cam-desktop/test/mobile-hub-contract.test.cjs`;
   update both runners whenever a shared API contract changes.
 
-### Current stability invariants (2.4.111)
+### Current stability invariants (2.4.117)
 
 - One app init and one visibility-aware, in-flight-guarded refresh
   scheduler. Direct and Relay both auto-refresh; no background polling.
@@ -95,8 +95,12 @@ phone client for monitoring and controlling those agents.
 - Agent output polling stops at terminal state. Route cleanup removes
   document, viewport, resize, and terminal listeners/timers.
 - `shared/term-bridge.js` caches Relay bridges per `CamApi`; mode changes
-  close all terminal sessions. Android terminal PTY streams use bounded,
-  backpressured loopback WebSockets with incremental UTF-8 decoding.
+  close all terminal sessions. Android terminal PTY streams flush the initial
+  ready-gate buffer in order and use bounded, backpressured loopback
+  WebSockets with incremental UTF-8 decoding. Parked entries never resize
+  locally. Android allows one attach-time ready resize, then keeps the grid
+  fixed across background recovery and agent switches; only explicit Fit or a
+  new attach may resize the local terminal or remote PTY.
 - Hub-provided status/tool/id/meta strings are escaped or constrained to
   known class tokens before entering HTML.
 - Release WebView debugging and unrestricted mixed content are off.

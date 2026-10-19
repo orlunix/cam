@@ -57,8 +57,9 @@ modes, boundaries, and known issues are documented in
   per-host reset exposed by Nodes → Reset Host Key.
 - `test/lockrepro/` compiles the real hub/SSH/WebSocket classes with minimal
   Android stubs. It covers blackhole concurrency, lifecycle/restart, shared
-  Hub API contract, WebSocket frames, real sshd RSA/ed25519 direct/ProxyJump,
-  and host-key change/retrust. Run with:
+  Hub API contract, WebSocket frames, terminal ready-gate ordering and flush
+  failure cleanup, real sshd RSA/ed25519 direct/ProxyJump, and host-key
+  change/retrust. Run with:
   `PATH="$HOME/tools/jdk17/bin:$PATH" bash apps/cam-mobile/test/lockrepro/run.sh`.
 - **Signing keystore**: `cam-release.keystore` (gitignored) is the release
   signature — losing it means every install becomes uninstall+reinstall.

@@ -47,6 +47,9 @@ SOURCES=$(find "$HERE/stubs" "$HERE/tests" "$WORK/real" -name "*.java")
 echo "=== TestMobileWebSocket ==="
 "$JAVA" -cp "$WORK/classes:$JSCH_JAR:$BCPROV_JAR:$JSON_JAR" com.cam.app.TestMobileWebSocket
 
+echo "=== TestMobileTerminalReadyGate ==="
+"$JAVA" -cp "$WORK/classes:$JSCH_JAR:$BCPROV_JAR:$JSON_JAR" com.cam.app.TestMobileTerminalReadyGate
+
 echo "=== TestHubLifecycle ==="
 rm -rf "$WORK/lifecycle-data"
 "$JAVA" -cp "$WORK/classes:$JSCH_JAR:$BCPROV_JAR:$JSON_JAR" TestHubLifecycle "$WORK/lifecycle-data"
