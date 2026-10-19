@@ -217,5 +217,33 @@ ok("Nodes export (ssh_config) + import from a chosen file + ProxyJump import map
     && fs.readFileSync(path.join(root, "web", "desktop.html"), "utf8").includes('id="nodes-export-btn"')
     && fs.readFileSync(path.join(root, "apps", "cam-desktop", "electron", "embedded-hub.cjs"), "utf8").includes("sshConfigHosts(explicit || null)"));
 
+// Node deletion cascades to agents (2026-10-13): deleting a host or a
+// single context first stops/removes every agent on it remotely (camc rm
+// --kill via DELETE /api/agents/:id/history) while the context record
+// still exists for endpoint/credential resolution, then removes the
+// context records. The confirm dialog must say so — it used to promise
+// "No remote cleanup is performed".
+ok("nodes mode cascades agent deletion before context deletion",
+  mode.includes("async function cascadeDeleteAgents")
+    && mode.includes("await api.deleteAgentHistory(a.id)")
+    && mode.indexOf("await cascadeDeleteAgents(") > 0);
+ok("delete-host confirm warns that agents are stopped and deleted",
+  mode.includes("agent(s) on this host will be STOPPED and")
+    && !mode.includes("No remote cleanup is performed."));
+ok("delete-host cascades before deleting context records",
+  mode.indexOf("const cascade = await cascadeDeleteAgents(hostAgents);")
+    < mode.indexOf("await persistDelete(ctx.id || ctx.name);"));
+ok("delete-context confirm counts the context's agents",
+  mode.includes("const ctxAgents = agentsOnContext(name)")
+    && mode.includes("agent(s) imported under this context will "));
+const machinesView = fs.readFileSync(path.join(root, "web", "js", "mobile", "views", "machines.js"), "utf8");
+const dmStart = machinesView.indexOf("listEl.querySelectorAll('.delete-machine')");
+const deleteMachine = dmStart >= 0 ? machinesView.slice(dmStart) : "";
+ok("mobile delete-machine cascades ALL agents (running included) before contexts",
+  deleteMachine.includes("agent(s) on this node will be STOPPED and DELETED remotely")
+    && deleteMachine.includes("for (const a of machine.agents)")
+    && !deleteMachine.includes("machine.agents.filter")
+    && deleteMachine.indexOf("await api.deleteAgentHistory(a.id)") < deleteMachine.indexOf("await api.deleteContext(ctx.name)"));
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exitCode = fail ? 1 : 0;

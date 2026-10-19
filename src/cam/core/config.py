@@ -97,6 +97,11 @@ class ServerConfig(BaseModel):
     relay_url: str | None = None
     relay_token: str | None = None
     ssh_tunnel: str | None = None  # e.g. "relay.example.com:8001" or "user@host:port"
+    # cam-serve as a bridge host: reverse-tunnel registry + ferry hub
+    tunnel_hub: bool = False
+    tunnel_onboard: bool = False  # actively provision hosts (camb reverse)
+    tunnel_ssh_target: str | None = None  # e.g. "camuser@this-server" for hosts to ssh back to
+    tunnel_http_base: str | None = None   # e.g. "http://this-server:8080" for registration
 
 
 class ToolConfig(BaseModel):
@@ -286,6 +291,10 @@ def _apply_env_vars(config: dict) -> dict:
         "CAM_SERVER_LOG_LEVEL": ("server", "log_level"),
         "CAM_RELAY_URL": ("server", "relay_url"),
         "CAM_RELAY_TOKEN": ("server", "relay_token"),
+        "CAM_TUNNEL_HUB": ("server", "tunnel_hub"),
+        "CAM_TUNNEL_ONBOARD": ("server", "tunnel_onboard"),
+        "CAM_TUNNEL_SSH_TARGET": ("server", "tunnel_ssh_target"),
+        "CAM_TUNNEL_HTTP_BASE": ("server", "tunnel_http_base"),
     }
 
     for env_var, (section, key) in env_mappings.items():
@@ -296,7 +305,7 @@ def _apply_env_vars(config: dict) -> dict:
                 result[section] = {}
 
             # Parse value based on type
-            if key in ("auto_confirm", "color", "unicode", "compact", "encrypt_tokens", "sandbox", "probe_detection"):
+            if key in ("auto_confirm", "color", "unicode", "compact", "encrypt_tokens", "sandbox", "probe_detection", "tunnel_hub", "tunnel_onboard"):
                 # Boolean values
                 value = value.lower() in ("true", "1", "yes", "on")
             elif key in ("poll_interval", "idle_timeout", "health_check_interval", "max_retries", "probe_stable_seconds", "probe_cooldown", "port"):

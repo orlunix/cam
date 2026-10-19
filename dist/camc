@@ -674,6 +674,7 @@ from uuid import uuid4, uuid5, NAMESPACE_DNS as _UUID_NS
 import argparse
 import fnmatch
 import hashlib
+import hmac
 import http.client
 import json
 import json, sys
@@ -684,6 +685,7 @@ import pwd
 import random
 import re
 import re as _re
+import secrets
 import select
 import shlex
 import shutil
@@ -691,6 +693,7 @@ import signal
 import socket
 import socket as _sock
 import socket as _socket
+import socketserver
 import sqlite3
 import subprocess
 import sys
@@ -707,8 +710,8 @@ import uuid
 # Constants and logging
 # ===========================================================================
 
-__version__ = "1.2.162"
-__build__ = "9f90391-dirty 2026-10-12 02:35"
+__version__ = "1.2.185"
+__build__ = "886f323-dirty 2026-10-16 11:47"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -733,6 +736,8 @@ EVENTS_FILE = os.path.join(CAM_DIR, "events.jsonl")
 MACHINES_FILE = os.path.join(CAM_DIR, "machines.json")
 CONTEXTS_FILE = os.path.join(CAM_DIR, "contexts.json")
 PIDS_DIR = os.path.join(CAM_DIR, "pids")
+TUNNEL_DIR = os.path.join(CAM_DIR, "tunnel")
+TUNNELS_DIR = os.path.join(CAM_DIR, "tunnels")
 CONTEXT_FILE = os.path.join(CAM_DIR, "context.json")  # Legacy single-machine context
 SOCKETS_DIR = "/tmp/cam-sockets"
 
@@ -5094,25 +5099,35 @@ def _ssh_control_path(user, host, port):
     return "/tmp/cam-ssh-%s" % conn_hash
 
 
-def _ssh_base_cmd(machine):
-    """Build base SSH command list for a machine."""
-    host = machine.get("host")
-    user = machine.get("user")
+def _ssh_conn_opts(machine, control_path=None):
+    """SSH connection option list for a machine (-p/-i/-o ...).
+
+    control_path overrides the ControlMaster socket location; the default
+    is the shared auto-master path used by ssh_run/scp."""
     port = machine.get("port")
     key_file = machine.get("key_file")
-    control = _ssh_control_path(user, host, port)
-    cmd = ["ssh"]
+    control = control_path or _ssh_control_path(
+        machine.get("user"), machine.get("host"), port)
+    opts = []
     if port:
-        cmd += ["-p", str(port)]
+        opts += ["-p", str(port)]
     if key_file:
-        cmd += ["-i", key_file]
-    cmd += [
+        opts += ["-i", key_file]
+    opts += [
         "-o", "ConnectTimeout=10",
         "-o", "StrictHostKeyChecking=no",
         "-o", "ControlPath=%s" % control,
         "-o", "ControlMaster=auto",
         "-o", "ControlPersist=600",
     ]
+    return opts
+
+
+def _ssh_base_cmd(machine):
+    """Build base SSH command list for a machine."""
+    host = machine.get("host")
+    user = machine.get("user")
+    cmd = ["ssh"] + _ssh_conn_opts(machine)
     target = "%s@%s" % (user, host) if user else host
     return cmd, target
 
@@ -5143,20 +5158,31 @@ def ssh_run(machine, remote_cmd, timeout=30, input_data=None):
         return -1, str(e)
 
 
+def _remote_camc_prefix(machine):
+    """Remote camc invocation prefix, honoring per-machine overrides:
+    camc_path (default ~/.cam/camc) and remote_home (prefixes HOME=<path>
+    so the remote camc reads a different ~/.cam — used for isolated
+    deployments and tests)."""
+    camc_remote = machine.get("camc_path") or "~/.cam/camc"
+    remote_home = machine.get("remote_home")
+    env = "HOME=%s " % shlex.quote(remote_home) if remote_home else ""
+    return env, camc_remote
+
+
 def ssh_camc(machine, args, timeout=30):
     """Run a camc command on a remote machine.
 
     Returns (returncode, stdout_str).
     """
-    camc_remote = "~/.cam/camc"
+    env, camc_remote = _remote_camc_prefix(machine)
     quoted = " ".join(shlex.quote(a) for a in args)
     # Check for non-ASCII args (Chinese prompts etc)
     has_non_ascii = any(not a.isascii() for a in args)
     if has_non_ascii:
-        script = "#!/bin/bash\npython3 %s %s\n" % (camc_remote, quoted)
+        script = "#!/bin/bash\n%spython3 %s %s\n" % (env, camc_remote, quoted)
         return ssh_run(machine, None, timeout=timeout, input_data=script)
     else:
-        remote_cmd = "python3 %s %s" % (camc_remote, quoted)
+        remote_cmd = "%spython3 %s %s" % (env, camc_remote, quoted)
         return ssh_run(machine, remote_cmd, timeout=timeout)
 
 
@@ -5222,10 +5248,16 @@ def sync_camc_to_machine(machine, camc_path=None, configs_dir=None):
     if configs_dir is None:
         configs_dir = CONFIGS_DIR
 
+    # Remote layout: honors remote_home / camc_path overrides (isolated
+    # deployments, tests); defaults to the classic ~/.cam/camc layout.
+    remote_base = "%s/.cam" % machine["remote_home"] if machine.get("remote_home") else "~/.cam"
+    remote_camc = machine.get("camc_path") or "%s/camc" % remote_base
+
     results = {}
 
     # Ensure remote dirs exist
-    ssh_run(machine, "mkdir -p ~/.cam/configs ~/.cam/logs ~/.cam/pids", timeout=10)
+    ssh_run(machine, "mkdir -p %s/configs %s/logs %s/pids"
+            % (remote_base, remote_base, remote_base), timeout=10)
 
     # Compute local hashes
     def _md5(path):
@@ -5240,7 +5272,8 @@ def sync_camc_to_machine(machine, camc_path=None, configs_dir=None):
 
     # Get remote hashes
     rc, remote_hashes_raw = ssh_run(machine,
-        "md5sum ~/.cam/camc ~/.cam/configs/*.toml 2>/dev/null || true", timeout=10)
+        "md5sum %s %s/configs/*.toml 2>/dev/null || true" % (remote_camc, remote_base),
+        timeout=10)
     remote_hashes = {}
     for line in remote_hashes_raw.splitlines():
         parts = line.split()
@@ -5250,8 +5283,8 @@ def sync_camc_to_machine(machine, camc_path=None, configs_dir=None):
     # Sync camc binary
     local_hash = _md5(camc_path)
     if local_hash and local_hash != remote_hashes.get("camc"):
-        if sync_file(machine, camc_path, "~/.cam/camc"):
-            ssh_run(machine, "chmod +x ~/.cam/camc", timeout=5)
+        if sync_file(machine, camc_path, remote_camc):
+            ssh_run(machine, "chmod +x %s" % remote_camc, timeout=5)
             results["camc"] = "deployed"
         else:
             results["camc"] = "failed"
@@ -5266,7 +5299,7 @@ def sync_camc_to_machine(machine, camc_path=None, configs_dir=None):
             local_path = os.path.join(configs_dir, fname)
             lh = _md5(local_path)
             if lh and lh != remote_hashes.get(fname):
-                if sync_file(machine, local_path, "~/.cam/configs/%s" % fname):
+                if sync_file(machine, local_path, "%s/configs/%s" % (remote_base, fname)):
                     results[fname] = "deployed"
                 else:
                     results[fname] = "failed"
@@ -5285,7 +5318,7 @@ def sync_camc_to_machine(machine, camc_path=None, configs_dir=None):
             with os.fdopen(fd, "w") as f:
                 f.write(ctx_json)
             results["context.json"] = (
-                "deployed" if sync_file(machine, tmp_path, "~/.cam/context.json") else "failed")
+                "deployed" if sync_file(machine, tmp_path, "%s/context.json" % remote_base) else "failed")
         finally:
             if tmp_path:
                 try:
@@ -15002,8 +15035,13 @@ def _install_one(name, out_dir, force):
 
 POLL_INTERVAL_S = 0.2
 DEFAULT_TIMEOUT_MS = 30000
+# Coverage cards (~/.cam/camb/hubs/<hub-id>.json) older than this are
+# treated as dead: their coverage stops excluding events from claiming
+# and their claimed leftovers become adoptable by other hubs.
+CARD_TTL_S = 90
 
 _TMUX_SOCK_RE = re.compile(r"^cam-(.+)\.sock$")
+_CLAIMED_RE = re.compile(r"^(.*\.json)\.claimed-([A-Za-z0-9_.-]+)$")
 # Global flags that may precede the subcommand (`camc --json status x`).
 # --json is forwarded after the verb (remote output matters); -v/--verbose
 # only affect local logging and are dropped when ferrying.
@@ -15023,7 +15061,7 @@ def mailbox_deployed():
 
 def _ensure_dirs():
     home = mailbox_home()
-    for sub in ("outbox", "inbox"):
+    for sub in ("outbox", "inbox", "hubs"):
         d = os.path.join(home, sub)
         if not os.path.isdir(d):
             os.makedirs(d, 0o700)
@@ -15080,29 +15118,124 @@ def _timeout_s():
     return DEFAULT_TIMEOUT_MS / 1000.0
 
 
-def hub_drain():
-    """Atomically print + delete finalized outbox requests as a JSON array.
-    Skips unfinished .tmp files; leaves unreadable files in place.
-    Always exits 0."""
+def _load_cards(home):
+    """Read fresh coverage cards from ~/.cam/camb/hubs/*.json.
+    Returns {hub_id: card}. Stale cards (older than CARD_TTL_S) and
+    unreadable files are ignored. Kept byte-equivalent with camb's."""
+    hubs = os.path.join(home, "hubs")
+    cards = {}
+    now = time.time()
+    try:
+        names = sorted(n for n in os.listdir(hubs) if n.endswith(".json"))
+    except OSError:
+        return cards
+    for n in names:
+        try:
+            with open(os.path.join(hubs, n), "r", encoding="utf-8") as fh:
+                card = json.load(fh)
+            hid = str(card.get("hub_id") or n[:-5])
+            ts = float(card.get("ts") or 0)
+            if now - ts <= CARD_TTL_S:
+                cards[hid] = card
+        except (OSError, IOError, ValueError, TypeError):
+            continue
+    return cards
+
+
+def _event_target_ref(req):
+    """The raw target ref of a request argv ('' for list/malformed).
+    Target positions follow bridge-protocol-v1 §6."""
+    argv = req.get("argv") or []
+    if len(argv) < 2:
+        return ""
+    verb = argv[0]
+    if verb in ("status", "capture", "send", "key"):
+        ref = str(argv[1])
+    elif verb == "msg" and len(argv) >= 3 and argv[1] == "send":
+        ref = str(argv[2])
+    else:
+        return ""
+    return "" if ref.startswith("-") else ref
+
+
+def _card_covers(card, ref):
+    """ref may be '<node>:<agent>'; a cover entry matches by exact node
+    or as the '<entry>:' prefix. Entries are {name, key} dicts (name is
+    hub-local, key is the canonical user@host:port) or plain strings."""
+    for e in card.get("covers") or []:
+        if isinstance(e, dict):
+            candidates = [e.get("name"), e.get("key")]
+        else:
+            candidates = [e]
+        for n in candidates:
+            if n and (ref == n or ref.startswith(str(n) + ":")):
+                return True
+    return False
+
+
+def _should_claim(req, cards, my_id):
+    """Router rule (§9.2): an event with an explicit node target covered
+    by ANOTHER live hub's card is left in the outbox for that hub.
+    Everything else (list, bare refs, my coverage, nobody's coverage) is
+    claimable."""
+    ref = _event_target_ref(req)
+    if not ref or ":" not in ref:
+        return True
+    mine = cards.get(my_id)
+    if mine and _card_covers(mine, ref):
+        return True
+    for hid, card in cards.items():
+        if hid != my_id and _card_covers(card, ref):
+            return False
+    return True
+
+
+def hub_drain(bridge_id=""):
+    """Claim-aware drain (bridge-protocol-v1.1). With a bridge-id, each
+    outbox event is atomically claimed (rename → .claimed-<id>) before
+    printing; events targeting nodes covered by another live hub's card
+    are skipped; this hub's own claimed leftovers from an interrupted
+    drain are re-printed (at-least-once above the host's seen-id
+    idempotency), and orphans of hubs without a live card are adopted.
+    Without a bridge-id the legacy print+delete behaviour is kept
+    verbatim. Skips unfinished .tmp files; leaves unreadable files in
+    place. Always exits 0."""
     home = _ensure_dirs()
     outbox = os.path.join(home, "outbox")
+    cards = _load_cards(home)
     try:
-        names = sorted(
-            n for n in os.listdir(outbox)
-            if n.endswith(".json") and os.path.isfile(os.path.join(outbox, n))
-        )
+        names = sorted(os.listdir(outbox))
     except OSError:
         names = []
     reqs = []
     drained = []
     for n in names:
         p = os.path.join(outbox, n)
+        m = _CLAIMED_RE.match(n)
+        owner = None
+        if m:
+            owner = m.group(2)
+            if owner != bridge_id and owner in cards:
+                continue  # live owner's leftover — it will re-drain it
+            # own leftover or a dead owner's orphan: re-drain/adopt.
+        elif not n.endswith(".json"):
+            continue  # unfinished .tmp or junk
         try:
             with open(p, "r", encoding="utf-8") as fh:
-                reqs.append(json.load(fh))
-            drained.append(p)
+                req = json.load(fh)
         except (OSError, IOError, ValueError):
             continue  # unreadable: leave it
+        if owner is None and bridge_id:
+            if not _should_claim(req, cards, bridge_id):
+                continue  # a live peer covers the target — leave it
+            claimed = p + ".claimed-" + bridge_id
+            try:
+                os.rename(p, claimed)
+                p = claimed
+            except OSError:
+                continue  # lost the claim race
+        reqs.append(req)
+        drained.append(p)
     sys.stdout.write(json.dumps(reqs) + "\n")
     for p in drained:
         try:
@@ -15112,10 +15245,103 @@ def hub_drain():
     return 0
 
 
+def _emit_response(resp):
+    """Print a bridge response and return its exit code (0 ok / 1 error)."""
+    if resp.get("ok"):
+        text = resp.get("text")
+        if text is not None:
+            sys.stdout.write(str(text) + "\n")
+        return 0
+    err = resp.get("error") or "unknown error"
+    sys.stderr.write("camc: %s\n" % err)
+    for c in resp.get("candidates") or []:
+        sys.stderr.write(str(c) + "\n")
+    return 1
+
+
+def _tunnel_token(home, hub_id):
+    try:
+        with open(os.path.join(home, "hubs", hub_id + ".token"),
+                  "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except (OSError, IOError):
+        return ""
+
+
+def _tunnel_call(port, token, req, deadline):
+    """One synchronous request/response over a hub tunnel (§10). Returns
+    the response dict, or None on any transport failure — the caller
+    falls back to the next tunnel or the mailbox."""
+    try:
+        sock = socket.create_connection(("127.0.0.1", port), timeout=0.25)
+    except OSError:
+        return None
+    try:
+        sock.settimeout(max(0.5, deadline - time.time()))
+        frame = json.dumps({"token": token, "request": req}).encode("utf-8") + b"\n"
+        sock.sendall(frame)
+        buf = b""
+        while b"\n" not in buf:
+            try:
+                chunk = sock.recv(65536)
+            except socket.timeout:
+                return None
+            if not chunk:
+                return None
+            buf += chunk
+            if len(buf) > 4 * 1024 * 1024:
+                return None
+        return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+def _try_tunnels(home, req):
+    """Tunnel fast path (§10): every live card advertising a tunnel,
+    coverage-filtered for explicit node targets, priority-desc. Returns
+    the final response, or None when no tunnel could deliver (transport
+    failures and not_my_fleet cascade; application-level responses are
+    terminal). Kept byte-equivalent with camb's."""
+    target = _event_target_ref(req)
+    cands = []
+    for hid, card in _load_cards(home).items():
+        tun = card.get("tunnel") or {}
+        port = tun.get("port")
+        if not isinstance(port, int) or port <= 0:
+            continue
+        if target and ":" in target and not _card_covers(card, target):
+            continue
+        token = _tunnel_token(home, hid)
+        if not token:
+            continue
+        try:
+            prio = int(tun.get("priority", 0))
+        except (ValueError, TypeError):
+            prio = 0
+        cands.append((prio, hid, port, token))
+    cands.sort(key=lambda c: (-c[0], c[1]))
+    deadline = time.time() + _timeout_s()
+    for _, _hid, port, token in cands:
+        resp = _tunnel_call(port, token, req, deadline)
+        if resp is None:
+            continue
+        if str(resp.get("error") or "").startswith("not_my_fleet"):
+            continue
+        return resp
+    return None
+
+
 def submit(argv):
-    """Ferry argv to the bridge host via the mailbox. Exit codes per
-    bridge-protocol-v1: 0 ok / 1 error response / 2 bridge unavailable
-    (the request stays in the outbox and can be drained later)."""
+    """Ferry argv to the bridge host. Tunnel first (synchronous push when
+    a hub's card advertises one), mailbox fallback (source of truth).
+    Exit codes per bridge-protocol-v1: 0 ok / 1 error response / 2 bridge
+    unavailable (the request stays in the outbox and can be drained
+    later)."""
     if not mailbox_deployed():
         sys.stderr.write(
             "camc: bridge unavailable (no bridge host mailbox on this node)\n")
@@ -15131,6 +15357,10 @@ def submit(argv):
         "from": {"agent": _from_agent()},
         "ts": time.time(),
     }
+
+    resp = _try_tunnels(home, req)
+    if resp is not None:
+        return _emit_response(resp)
 
     tmp = os.path.join(outbox, req["id"] + ".json.tmp")
     final = os.path.join(outbox, req["id"] + ".json")
@@ -15152,16 +15382,7 @@ def submit(argv):
                 os.unlink(resp_path)
             except OSError:
                 pass
-            if resp.get("ok"):
-                text = resp.get("text")
-                if text is not None:
-                    sys.stdout.write(str(text) + "\n")
-                return 0
-            err = resp.get("error") or "unknown error"
-            sys.stderr.write("camc: %s\n" % err)
-            for c in resp.get("candidates") or []:
-                sys.stderr.write(str(c) + "\n")
-            return 1
+            return _emit_response(resp)
         time.sleep(POLL_INTERVAL_S)
 
     sys.stderr.write(
@@ -15230,6 +15451,1056 @@ def route(argv, store=None):
 _hub_drain = hub_drain
 _bridge_route = route
 _bridge_submit = submit
+
+
+# ===========================================================================
+# tunnel
+# ===========================================================================
+
+DEFAULT_SERVE_PORT = 42177
+LOCAL_PORT_BASE = 42200
+LOCAL_PORT_SPAN = 100
+CARD_TTL_S = 60
+KEEPER_LOOP_S = 2.0
+RECONNECT_MIN_S = 5.0
+RECONNECT_MAX_S = 60.0
+FRAME_CAP = 4 * 1024 * 1024
+ALLOWED_VERBS = ("list", "status", "capture", "send", "key", "msg")
+# Same target-position rule as the fleet bridge (bridge-protocol-v1 §6):
+# status/capture/send/key take argv[1], `msg send` takes argv[2].
+_TARGETED_VERBS = ("status", "capture", "send", "key")
+_GLOBAL_FLAGS = ("--json", "-v", "--verbose")
+_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+
+def _serve_token_path():
+    return os.path.join(TUNNEL_DIR, "token")
+
+
+def _serve_card_path():
+    return os.path.join(TUNNEL_DIR, "serve.json")
+
+
+def _serve_log_path():
+    return os.path.join(LOGS_DIR, "tunnel-serve.log")
+
+
+def _audit_path():
+    return os.path.join(LOGS_DIR, "tunnel-serve-audit.jsonl")
+
+
+def _check_name(name):
+    if not name or not _NAME_RE.match(str(name)):
+        raise ValueError("bad machine name %r" % (name,))
+    return str(name)
+
+
+def _machine_home(name):
+    return os.path.join(TUNNELS_DIR, _check_name(name))
+
+
+def _card_path(name):
+    return os.path.join(TUNNELS_DIR, _check_name(name) + ".json")
+
+
+def _m_token_path(name):
+    return os.path.join(TUNNELS_DIR, _check_name(name) + ".token")
+
+
+def _outbox_dir(name):
+    return os.path.join(_machine_home(name), "outbox")
+
+
+def _inbox_dir(name):
+    return os.path.join(_machine_home(name), "inbox")
+
+
+def _keeper_pid_path(name):
+    return os.path.join(PIDS_DIR, "tunnel-%s.pid" % _check_name(name))
+
+
+def _keeper_log_path(name):
+    return os.path.join(LOGS_DIR, "tunnel-%s.log" % _check_name(name))
+
+
+def _ensure_dir(d, mode=0o700):
+    if not os.path.isdir(d):
+        os.makedirs(d, mode)
+
+
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _port_open(port, timeout=0.25):
+    try:
+        socket.create_connection(("127.0.0.1", int(port)),
+                                 timeout=timeout).close()
+        return True
+    except OSError:
+        return False
+
+
+def _atomic_write_json(path, obj, mode=0o600):
+    _ensure_dir(os.path.dirname(path))
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(obj, fh)
+        fh.write("\n")
+    os.rename(tmp, path)
+
+
+def _camc_cmd():
+    """Command prefix to run this camc as a subprocess."""
+    deployed = os.path.join(CAM_DIR, "camc")
+    if os.path.isfile(deployed):
+        return [sys.executable, deployed]
+    script = os.path.abspath(sys.argv[0])
+    if os.path.isfile(script) and not script.endswith("__main__.py"):
+        return [sys.executable, script]
+    return [sys.executable, "-m", "camc_pkg"]
+
+
+def _call_timeout_s():
+    raw = os.environ.get("CAMC_TUNNEL_TIMEOUT_MS")
+    if raw:
+        try:
+            return max(0.5, float(raw) / 1000.0)
+        except ValueError:
+            pass
+    return 30.0
+
+
+def _mailbox_wait_s():
+    raw = os.environ.get("CAMC_TUNNEL_MAILBOX_MS")
+    if raw:
+        try:
+            return max(0.0, float(raw) / 1000.0)
+        except ValueError:
+            pass
+    return 5.0
+
+
+# ---------------------------------------------------------------------------
+# Machine prefix resolution
+# ---------------------------------------------------------------------------
+
+
+def _machine_prefixes(m):
+    """All acceptable '<prefix>:' forms for a machine record, longest
+    first: name, user@host:port, host:port, user@host, host."""
+    prefs = set()
+    name = m.get("name")
+    host = m.get("host")
+    user = m.get("user")
+    port = m.get("port") or 22
+    if name:
+        prefs.add(str(name))
+    if host:
+        prefs.add("%s:%s" % (host, port))
+        prefs.add(str(host))
+        if user:
+            prefs.add("%s@%s:%s" % (user, host, port))
+            prefs.add("%s@%s" % (user, host))
+    return sorted(prefs, key=len, reverse=True)
+
+
+def resolve_machine(ref, store=None):
+    """Longest matching machine prefix in '<prefix>:<rest>'.
+    Returns (machine, prefix, rest) or None."""
+    if not ref or ":" not in ref:
+        return None
+    if store is None:
+        store = MachineStore()
+    best = None
+    for m in store.list_ssh():
+        for p in _machine_prefixes(m):
+            if ref.startswith(p + ":"):
+                if best is None or len(p) > len(best[1]):
+                    best = (m, p, ref[len(p) + 1:])
+    return best
+
+
+def _target_pos(argv):
+    """Index of the target ref in a normalized verb-first argv, or None."""
+    i = 0
+    while i < len(argv) and argv[i] in _GLOBAL_FLAGS:
+        i += 1
+    if i >= len(argv):
+        return None
+    verb = argv[i]
+    if verb in _TARGETED_VERBS:
+        pos = i + 1
+    elif verb == "msg" and len(argv) > i + 1 and argv[i + 1] == "send":
+        pos = i + 2
+    else:
+        return None
+    return pos if pos < len(argv) else None
+
+
+def _strip_target_prefix(argv, machine):
+    """Remove this machine's '<prefix>:' from the target arg so the remote
+    camc sees a bare ref (the fleet host strips node: the same way)."""
+    argv = list(argv)
+    pos = _target_pos(argv)
+    if pos is None:
+        return argv
+    ref = argv[pos]
+    for p in _machine_prefixes(machine):
+        if ref.startswith(p + ":"):
+            argv[pos] = ref[len(p) + 1:]
+            return argv
+    return argv
+
+
+# ---------------------------------------------------------------------------
+# Client side: route + submit (tunnel fast path → mailbox fallback)
+# ---------------------------------------------------------------------------
+
+
+def tunnel_route(argv, store=None):
+    """Pre-dispatch decision for machine-prefixed targets. Returns
+    (machine, ferry_argv) or None to fall through to the fleet bridge /
+    local dispatch. Bare refs never route here (fleet hub semantics
+    unchanged)."""
+    if not argv:
+        return None
+    globals_seen = []
+    i = 0
+    while i < len(argv) and argv[i] in _GLOBAL_FLAGS:
+        globals_seen.append(argv[i])
+        i += 1
+    if i >= len(argv):
+        return None
+    verb = argv[i]
+    rest = argv[i + 1:]
+    if verb in _TARGETED_VERBS:
+        if not rest or rest[0].startswith("-"):
+            return None
+        ref = rest[0]
+    elif verb == "msg":
+        if len(rest) < 2 or rest[0] != "send" or rest[1].startswith("-"):
+            return None
+        ref = rest[1]
+    else:
+        return None
+    hit = resolve_machine(ref, store)
+    if hit is None:
+        return None
+    return (hit[0], _ferry_argv(verb, rest, globals_seen))
+
+
+def _load_card(name):
+    try:
+        with open(_card_path(name), "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, IOError, ValueError):
+        return None
+
+
+def card_fresh(card, now=None):
+    try:
+        return ((time.time() if now is None else now)
+                - float(card.get("ts") or 0)) <= CARD_TTL_S
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+def _read_m_token(name):
+    try:
+        with open(_m_token_path(name), "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except (OSError, IOError):
+        return ""
+
+
+def _new_request(machine, argv):
+    return {
+        "id": uuid.uuid4().hex,
+        "argv": list(argv),
+        "from": {"agent": _from_agent()},
+        "ts": time.time(),
+        "proto": 1,
+        "machine": machine.get("name"),
+    }
+
+
+def _write_inbox(name, req_id, resp, req=None):
+    out = dict(resp)
+    if req is not None:
+        out.setdefault("argv", req.get("argv"))
+        out.setdefault("machine", name)
+    out["flushed_at"] = time.time()
+    _atomic_write_json(os.path.join(_inbox_dir(name), req_id + ".json"), out)
+
+
+def tunnel_flush(machine, call_fn=None):
+    """Flush queued outbox requests over the tunnel; each response lands in
+    inbox/ and its request is deleted. Stops at the first transport
+    failure (the tunnel is effectively down; the rest wait for the next
+    pass). Returns (sent, remaining)."""
+    name = machine.get("name")
+    outbox = _outbox_dir(name)
+    try:
+        names = sorted(n for n in os.listdir(outbox) if n.endswith(".json"))
+    except OSError:
+        return (0, 0)
+    total = len(names)
+    sent = 0
+    for n in names:
+        card = _load_card(name)
+        if (not card or card.get("state") != "up"
+                or not card_fresh(card)):
+            break
+        port = card.get("local_port")
+        token = _read_m_token(name)
+        if not isinstance(port, int) or port <= 0 or not token:
+            break
+        try:
+            with open(os.path.join(outbox, n), "r", encoding="utf-8") as fh:
+                req = json.load(fh)
+        except (OSError, IOError, ValueError):
+            continue
+        send_req = dict(req)
+        send_req["argv"] = _strip_target_prefix(req.get("argv") or [],
+                                                machine)
+        if call_fn is not None:
+            resp = call_fn(port, token, send_req)
+        else:
+            resp = _tunnel_call(port, token, send_req,
+                                time.time() + _call_timeout_s())
+        if resp is None:
+            break  # transport failure: tunnel effectively down
+        try:
+            _write_inbox(name, req.get("id") or n[:-5], resp, req)
+        except (OSError, IOError):
+            break
+        try:
+            os.unlink(os.path.join(outbox, n))
+        except OSError:
+            pass
+        sent += 1
+    return (sent, total - sent)
+
+
+def tunnel_submit(machine, argv):
+    """Send argv to a remote machine's camc. Tunnel fast path (fresh state
+    card + token) → synchronous response, exit 0/1. Any transport failure
+    → queue into ~/.cam/tunnels/<m>/outbox/, poll inbox briefly in case
+    the keeper is mid-flush, then exit 2 with the request preserved."""
+    name = machine.get("name")
+    argv = _resolve_send_io(argv)
+    req = _new_request(machine, argv)
+
+    card = _load_card(name)
+    token = _read_m_token(name)
+    port = (card or {}).get("local_port")
+    if (card and card.get("state") == "up" and card_fresh(card)
+            and isinstance(port, int) and port > 0 and token):
+        send_req = dict(req)
+        send_req["argv"] = _strip_target_prefix(argv, machine)
+        resp = _tunnel_call(port, token, send_req,
+                            time.time() + _call_timeout_s())
+        if resp is not None:
+            return _emit_response(resp)
+
+    # Mailbox fallback (source of truth when the tunnel is down).
+    _ensure_dir(_outbox_dir(name))
+    _ensure_dir(_inbox_dir(name))
+    tmp = os.path.join(_outbox_dir(name), req["id"] + ".json.tmp")
+    final = os.path.join(_outbox_dir(name), req["id"] + ".json")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(req, fh)
+    os.rename(tmp, final)
+
+    resp_path = os.path.join(_inbox_dir(name), req["id"] + ".json")
+    deadline = time.time() + _mailbox_wait_s()
+    while time.time() < deadline:
+        if os.path.isfile(resp_path):
+            try:
+                with open(resp_path, "r", encoding="utf-8") as fh:
+                    resp = json.load(fh)
+            except (OSError, IOError, ValueError):
+                time.sleep(0.2)
+                continue
+            try:
+                os.unlink(resp_path)
+            except OSError:
+                pass
+            return _emit_response(resp)
+        time.sleep(0.2)
+
+    sys.stderr.write(
+        "camc: tunnel to '%s' unavailable; request queued to mailbox "
+        "(id %s)\n" % (name, req["id"][:8]))
+    sys.stderr.write(
+        "camc: the keeper flushes when the tunnel is back "
+        "('camc tunnel up %s'); replies: 'camc tunnel inbox %s'\n"
+        % (name, name))
+    return 2
+
+
+# ---------------------------------------------------------------------------
+# Serve side: token-authed camc executor on 127.0.0.1
+# ---------------------------------------------------------------------------
+
+
+def _load_or_create_serve_token(path=None):
+    path = path or _serve_token_path()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            tok = fh.read().strip()
+        if tok:
+            return tok
+    except (OSError, IOError):
+        pass
+    tok = secrets.token_hex(16)
+    _ensure_dir(os.path.dirname(path))
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(tok + "\n")
+    return tok
+
+
+def _exec_camc_argv(argv, timeout):
+    """Run camc argv locally; returns (rc, stdout, stderr)."""
+    try:
+        proc = subprocess.run(
+            _camc_cmd() + list(argv),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True, timeout=timeout)
+        return proc.returncode, proc.stdout, proc.stderr
+    except subprocess.TimeoutExpired:
+        return 124, "", "timeout after %ds" % timeout
+    except Exception as e:
+        return 1, "", str(e)
+
+
+def _audit(path, entry):
+    try:
+        _ensure_dir(os.path.dirname(path))
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    except (OSError, IOError):
+        pass
+
+
+def _read_frame(conn):
+    buf = b""
+    while b"\n" not in buf:
+        try:
+            chunk = conn.recv(65536)
+        except (OSError, socket.timeout):
+            return None
+        if not chunk:
+            return None
+        buf += chunk
+        if len(buf) > FRAME_CAP:
+            return None
+    try:
+        return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+    except ValueError:
+        return None
+
+
+class _TunnelHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        try:
+            self.request.settimeout(30)
+            frame = _read_frame(self.request)
+            resp = self.server.tunnel_dispatch(frame)
+            self.request.sendall(
+                json.dumps(resp).encode("utf-8") + b"\n")
+        except OSError:
+            pass
+
+
+class TunnelServer(socketserver.ThreadingTCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, port, token, exec_fn=None, audit_path=None):
+        self.token = token
+        self.exec_fn = exec_fn or _exec_camc_argv
+        self.audit = audit_path if audit_path is not None else _audit_path()
+        super().__init__(("127.0.0.1", port), _TunnelHandler)
+
+    def tunnel_dispatch(self, frame):
+        if not isinstance(frame, dict):
+            return {"id": None, "ok": False, "error": "bad frame"}
+        req = frame.get("request")
+        req_id = req.get("id") if isinstance(req, dict) else None
+        if not hmac.compare_digest(str(frame.get("token") or ""),
+                                   self.token):
+            return {"id": req_id, "ok": False, "error": "unauthorized"}
+        resp = self._handle_request(req)
+        return resp
+
+    def _handle_request(self, req):
+        if not isinstance(req, dict):
+            return {"id": None, "ok": False, "error": "missing request"}
+        req_id = req.get("id")
+        argv = req.get("argv")
+        proto = req.get("proto", 1)
+        entry = {"ts": time.time(), "id": req_id, "argv": argv,
+                 "from": (req.get("from") or {}).get("agent"),
+                 "machine": req.get("machine"), "ok": False,
+                 "error": None}
+        try:
+            if not isinstance(proto, int) or proto > 1:
+                entry["error"] = "unsupported proto %s" % proto
+            elif not isinstance(argv, list) or not argv:
+                entry["error"] = "missing argv"
+            else:
+                entry["error"] = self._validate(argv)
+                if entry["error"] is None:
+                    timeout = 120 if argv[0] == "msg" else 30
+                    rc, out, err = self.exec_fn(argv, timeout)
+                    entry["ok"] = rc == 0
+                    if rc == 0:
+                        return {"id": req_id, "ok": True, "proto": 1,
+                                "text": (out or "").rstrip("\n")}
+                    entry["error"] = (err or "").strip() or \
+                        (out or "").strip() or "exit %d" % rc
+            resp = {"id": req_id, "ok": False, "proto": 1,
+                    "error": entry["error"]}
+            return resp
+        finally:
+            _audit(self.audit, entry)
+
+    @staticmethod
+    def _validate(argv):
+        verb = argv[0]
+        if verb not in ALLOWED_VERBS:
+            return ("unsupported verb '%s' via tunnel "
+                    "(list, status, capture, send, key, msg)" % verb)
+        if verb == "msg" and (len(argv) < 2 or argv[1] != "send"):
+            return "unsupported msg form via tunnel (only 'msg send')"
+        pos = _target_pos(argv)
+        if pos is not None and ":" in str(argv[pos]):
+            return ("machine prefix not stripped by client: '%s'"
+                    % argv[pos])
+        return None
+
+
+def tunnel_serve(port=None, ensure=False, exec_fn=None):
+    """Run the tunnel endpoint. With ensure=True, idempotently start a
+    detached serve process if one is not already running, print
+    'ok <port>' and return."""
+    if port is None:
+        raw = os.environ.get("CAMC_TUNNEL_PORT")
+        if raw:
+            try:
+                port = int(raw)
+            except ValueError:
+                pass
+    if port is None:
+        port = DEFAULT_SERVE_PORT
+    if ensure:
+        return _serve_ensure(port)
+    token = _load_or_create_serve_token()
+    try:
+        srv = TunnelServer(port, token, exec_fn=exec_fn)
+    except OSError as e:
+        sys.stderr.write("camc: tunnel serve cannot bind 127.0.0.1:%d: %s\n"
+                         % (port, e))
+        return 1
+    _atomic_write_json(_serve_card_path(),
+                       {"pid": os.getpid(), "port": port, "ts": time.time()})
+    sys.stderr.write("camc: tunnel serve listening on 127.0.0.1:%d\n" % port)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.server_close()
+        for p in (_serve_card_path(),):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+    return 0
+
+
+def _serve_ensure(port):
+    card = None
+    try:
+        with open(_serve_card_path(), "r", encoding="utf-8") as fh:
+            card = json.load(fh)
+    except (OSError, IOError, ValueError):
+        pass
+    if (card and _pid_alive(card.get("pid"))
+            and _port_open(card.get("port"))):
+        sys.stdout.write("ok %s\n" % card.get("port"))
+        return 0
+    _ensure_dir(LOGS_DIR)
+    logfh = open(_serve_log_path(), "a")
+    proc = subprocess.Popen(
+        _camc_cmd() + ["tunnel", "serve", "--port", str(port)],
+        stdout=logfh, stderr=logfh, stdin=subprocess.DEVNULL,
+        start_new_session=True)
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            break
+        if _port_open(port):
+            sys.stdout.write("ok %d\n" % port)
+            return 0
+        time.sleep(0.3)
+    sys.stderr.write("camc: tunnel serve failed to start on port %d; "
+                     "see %s\n" % (port, _serve_log_path()))
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# Keeper: one persistent ssh -N -L per machine, with reconnect + flush
+# ---------------------------------------------------------------------------
+
+
+def _pick_local_port(machine, probe=None):
+    probe = probe or _port_open
+    want = machine.get("tunnel_port")
+    if want:
+        return int(want)
+    card = _load_card(machine.get("name"))
+    prev = (card or {}).get("local_port")
+    if isinstance(prev, int) and prev > 0 and not probe(prev):
+        return prev
+    name = str(machine.get("name") or "")
+    start = int(hashlib.sha256(name.encode("utf-8")).hexdigest(), 16)
+    for i in range(LOCAL_PORT_SPAN):
+        cand = LOCAL_PORT_BASE + (start + i) % LOCAL_PORT_SPAN
+        if not probe(cand):
+            return cand
+    raise RuntimeError("no free local tunnel port")
+
+
+def _tunnel_control_path(machine):
+    user = machine.get("user")
+    host = machine.get("host")
+    port = machine.get("port")
+    conn_key = "%s@%s:%s" % (user or "default", host, port or 22)
+    chash = hashlib.sha256(conn_key.encode()).hexdigest()[:12]
+    return "/tmp/cam-ssh-tun-%s" % chash
+
+
+def _tunnel_ssh_cmd(machine, local_port, remote_port):
+    """Dedicated-ControlPath ssh -N -L command (never shares remote.py's
+    auto-master socket: a slave connection cannot add forwards)."""
+    user = machine.get("user")
+    host = machine.get("host")
+    control = _tunnel_control_path(machine)
+    opts = _ssh_conn_opts(machine, control_path=control)
+    # Replace the auto-master/persist pair with an explicit master that
+    # lives exactly as long as this process. Options are flat "-o VALUE"
+    # pairs, so filter pairwise to avoid orphaning a bare "-o".
+    filtered = []
+    i = 0
+    while i < len(opts):
+        if opts[i] == "-o" and i + 1 < len(opts):
+            v = opts[i + 1]
+            if v.startswith(("ControlMaster=", "ControlPersist=")):
+                i += 2
+                continue
+            filtered += ["-o", v]
+            i += 2
+        else:
+            filtered.append(opts[i])
+            i += 1
+    opts = filtered
+    opts += ["-o", "ControlMaster=yes", "-o", "ControlPersist=yes",
+             "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3",
+             "-o", "ExitOnForwardFailure=yes", "-o", "BatchMode=yes"]
+    target = "%s@%s" % (user, host) if user else host
+    return (["ssh", "-N", "-T",
+             "-L", "127.0.0.1:%d:127.0.0.1:%d" % (local_port, remote_port)]
+            + opts + [target])
+
+
+def tunnel_keep_main(machine_name, store=None):
+    """Keeper daemon main (hidden `_tunnel_keep <machine>`)."""
+    store = store or MachineStore()
+    m = store.get(machine_name)
+    if not m or m.get("type") != "ssh":
+        sys.stderr.write("camc: no ssh machine '%s'\n" % machine_name)
+        return 1
+    name = m.get("name")
+    _ensure_dir(TUNNELS_DIR)
+    _ensure_dir(PIDS_DIR)
+    _ensure_dir(LOGS_DIR)
+    _atomic_write_json(_keeper_pid_path(name), {"pid": os.getpid()})
+
+    stopped = {"flag": False}
+
+    def _on_term(signum, frame):
+        stopped["flag"] = True
+    signal.signal(signal.SIGTERM, _on_term)
+    signal.signal(signal.SIGINT, _on_term)
+
+    backoff = RECONNECT_MIN_S
+    reconnects = 0
+    synced = False
+    proc = None
+    try:
+        while not stopped["flag"]:
+            m = store.get(name)
+            if not m or m.get("type") != "ssh":
+                break  # machine record removed: self-terminate
+            _atomic_write_json(_card_path(name), {
+                "machine": name, "state": "connecting",
+                "pid": os.getpid(), "reconnects": reconnects,
+                "last_error": None, "ts": time.time()})
+
+            rc, out = ssh_camc(
+                m, ["tunnel", "serve", "--ensure"], timeout=90)
+            remote_port = 0
+            if rc == 0:
+                mm = re.search(r"\bok\s+(\d+)\b", out or "")
+                if mm:
+                    remote_port = int(mm.group(1))
+            if not remote_port:
+                if not synced:
+                    try:
+                        sync_camc_to_machine(m)
+                    except Exception:
+                        pass
+                    synced = True
+                _atomic_write_json(_card_path(name), {
+                    "machine": name, "state": "down", "pid": os.getpid(),
+                    "reconnects": reconnects,
+                    "last_error": "remote serve ensure failed (rc=%s)"
+                                  % rc,
+                    "ts": time.time()})
+                time.sleep(backoff)
+                backoff = min(backoff * 2, RECONNECT_MAX_S)
+                continue
+
+            rc, tok = ssh_run(
+                m, "cat %s/.cam/tunnel/token 2>/dev/null"
+                   % (m.get("remote_home") or "~"), timeout=15)
+            token = (tok or "").strip()
+            if rc != 0 or not token:
+                _atomic_write_json(_card_path(name), {
+                    "machine": name, "state": "down", "pid": os.getpid(),
+                    "reconnects": reconnects,
+                    "last_error": "token fetch failed (rc=%s)" % rc,
+                    "ts": time.time()})
+                time.sleep(backoff)
+                backoff = min(backoff * 2, RECONNECT_MAX_S)
+                continue
+            fd = os.open(_m_token_path(name),
+                         os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(token + "\n")
+
+            try:
+                local_port = _pick_local_port(m)
+            except RuntimeError as e:
+                _atomic_write_json(_card_path(name), {
+                    "machine": name, "state": "down", "pid": os.getpid(),
+                    "reconnects": reconnects, "last_error": str(e),
+                    "ts": time.time()})
+                time.sleep(backoff)
+                backoff = min(backoff * 2, RECONNECT_MAX_S)
+                continue
+
+            logfh = open(_keeper_log_path(name), "a")
+            logfh.write("%s connect: local %d -> %s:%d\n"
+                        % (time.strftime("%Y-%m-%dT%H:%M:%S"),
+                           local_port, m.get("host"), remote_port))
+            logfh.flush()
+            proc = subprocess.Popen(
+                _tunnel_ssh_cmd(m, local_port, remote_port),
+                stdin=subprocess.DEVNULL, stdout=logfh, stderr=logfh,
+                start_new_session=False)  # stay in keeper's kill group
+
+            up = False
+            for _ in range(20):
+                if proc.poll() is not None or stopped["flag"]:
+                    break
+                if _port_open(local_port):
+                    up = True
+                    break
+                time.sleep(0.5)
+            if not up:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                _atomic_write_json(_card_path(name), {
+                    "machine": name, "state": "down", "pid": os.getpid(),
+                    "reconnects": reconnects,
+                    "last_error": "forward did not come up",
+                    "ts": time.time()})
+                reconnects += 1
+                time.sleep(backoff)
+                backoff = min(backoff * 2, RECONNECT_MAX_S)
+                continue
+
+            backoff = RECONNECT_MIN_S
+            synced = False
+            since = time.time()
+            while not stopped["flag"] and proc.poll() is None:
+                _atomic_write_json(_card_path(name), {
+                    "machine": name, "state": "up",
+                    "local_port": local_port, "remote_port": remote_port,
+                    "pid": os.getpid(), "ssh_pid": proc.pid,
+                    "since": since, "reconnects": reconnects,
+                    "last_error": None, "ts": time.time()})
+                if os.path.isdir(_outbox_dir(name)):
+                    try:
+                        tunnel_flush(m)
+                    except Exception:
+                        pass
+                time.sleep(KEEPER_LOOP_S)
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+            reconnects += 1
+            if not stopped["flag"]:
+                _atomic_write_json(_card_path(name), {
+                    "machine": name, "state": "down", "pid": os.getpid(),
+                    "reconnects": reconnects,
+                    "last_error": "ssh exited rc=%s" % proc.returncode,
+                    "ts": time.time()})
+                time.sleep(backoff)
+                backoff = min(backoff * 2, RECONNECT_MAX_S)
+    finally:
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        state = "stopped" if stopped["flag"] else "down"
+        try:
+            _atomic_write_json(_card_path(name), {
+                "machine": name, "state": state, "pid": os.getpid(),
+                "reconnects": reconnects, "last_error": None,
+                "ts": time.time()})
+        except (OSError, IOError):
+            pass
+        try:
+            os.unlink(_keeper_pid_path(name))
+        except OSError:
+            pass
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# CLI-facing operations (cmd_tunnel backs these)
+# ---------------------------------------------------------------------------
+
+
+def tunnel_keeper_running(name):
+    try:
+        with open(_keeper_pid_path(name), "r", encoding="utf-8") as fh:
+            pid = json.load(fh).get("pid")
+    except (OSError, IOError, ValueError):
+        return False
+    return _pid_alive(pid)
+
+
+def tunnel_up(machines):
+    """Start keeper daemons. Returns (started, skipped, errors)."""
+    started, skipped, errors = [], [], []
+    _ensure_dir(LOGS_DIR)
+    _ensure_dir(PIDS_DIR)
+    for m in machines:
+        name = m.get("name")
+        try:
+            _check_name(name)
+        except ValueError:
+            errors.append((name, "bad machine name"))
+            continue
+        if tunnel_keeper_running(name):
+            skipped.append(name)
+            continue
+        logfh = open(_keeper_log_path(name), "a")
+        try:
+            proc = subprocess.Popen(
+                _camc_cmd() + ["_tunnel_keep", name],
+                stdout=logfh, stderr=logfh, stdin=subprocess.DEVNULL,
+                start_new_session=True)
+            _atomic_write_json(_keeper_pid_path(name), {"pid": proc.pid})
+            started.append(name)
+        except OSError as e:
+            errors.append((name, str(e)))
+    return started, skipped, errors
+
+
+def tunnel_down(machine):
+    """Stop one keeper (and its ssh child). Returns True if something was
+    stopped. `machine` is the machines.json record (or a plain name)."""
+    if isinstance(machine, str):
+        machine = MachineStore().get(machine) or {"name": machine}
+    name = machine.get("name")
+    stopped_any = False
+    try:
+        with open(_keeper_pid_path(name), "r", encoding="utf-8") as fh:
+            pid = json.load(fh).get("pid")
+    except (OSError, IOError, ValueError):
+        pid = None
+    if pid and _pid_alive(pid):
+        try:
+            os.killpg(int(pid), signal.SIGTERM)
+        except OSError:
+            try:
+                os.kill(int(pid), signal.SIGTERM)
+            except OSError:
+                pass
+        deadline = time.time() + 5
+        while time.time() < deadline and _pid_alive(pid):
+            time.sleep(0.2)
+        if _pid_alive(pid):
+            try:
+                os.killpg(int(pid), signal.SIGKILL)
+            except OSError:
+                try:
+                    os.kill(int(pid), signal.SIGKILL)
+                except OSError:
+                    pass
+        stopped_any = True
+    card = _load_card(name)
+    ssh_pid = (card or {}).get("ssh_pid")
+    if ssh_pid and _pid_alive(ssh_pid):
+        try:
+            os.kill(int(ssh_pid), signal.SIGTERM)
+        except OSError:
+            pass
+        stopped_any = True
+    # Sweep any orphaned tunnel master (e.g. left behind by a crashed
+    # keeper whose pid file is gone): ask the control socket to exit.
+    if machine.get("host"):
+        try:
+            subprocess.run(
+                ["ssh", "-O", "exit", "-S", _tunnel_control_path(machine),
+                 "%s@%s" % (machine["user"], machine["host"])
+                 if machine.get("user") else machine["host"]],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    try:
+        os.unlink(_keeper_pid_path(name))
+    except OSError:
+        pass
+    if card:
+        card["state"] = "stopped"
+        card["ts"] = time.time()
+        try:
+            _atomic_write_json(_card_path(name), card)
+        except (OSError, IOError):
+            pass
+    return stopped_any
+
+
+def tunnel_status(store=None):
+    """State rows for every SSH machine: [{name, state, ...}]."""
+    store = store or MachineStore()
+    rows = []
+    for m in store.list_ssh():
+        name = m.get("name")
+        card = _load_card(name)
+        alive = tunnel_keeper_running(name)
+        state = (card or {}).get("state") or "down"
+        if not alive and state == "up":
+            state = "down"
+        if card and not card_fresh(card) and state == "up":
+            state = "down"
+        rows.append({
+            "name": name,
+            "host": m.get("host"),
+            "state": state,
+            "keeper": "running" if alive else "stopped",
+            "local_port": (card or {}).get("local_port"),
+            "since": (card or {}).get("since"),
+            "reconnects": (card or {}).get("reconnects") or 0,
+            "last_error": (card or {}).get("last_error"),
+            "queued": _outbox_count(name),
+            "inbox": _inbox_count(name),
+        })
+    return rows
+
+
+def _dir_count(d):
+    try:
+        return len([n for n in os.listdir(d) if n.endswith(".json")])
+    except OSError:
+        return 0
+
+
+def _outbox_count(name):
+    return _dir_count(_outbox_dir(name))
+
+
+def _inbox_count(name):
+    return _dir_count(_inbox_dir(name))
+
+
+def tunnel_agents(machine, timeout=None):
+    """Run `list` on one machine through its tunnel. Returns
+    (ok, text_or_error)."""
+    name = machine.get("name")
+    card = _load_card(name)
+    token = _read_m_token(name)
+    port = (card or {}).get("local_port")
+    if not (card and card.get("state") == "up" and card_fresh(card)
+            and isinstance(port, int) and port > 0 and token):
+        return False, "tunnel down (start it: camc tunnel up %s)" % name
+    req = _new_request(machine, ["list"])
+    resp = _tunnel_call(port, token, req,
+                        time.time() + (timeout or _call_timeout_s()))
+    if resp is None:
+        return False, "tunnel transport failure"
+    if resp.get("ok"):
+        return True, str(resp.get("text") or "")
+    return False, str(resp.get("error") or "unknown error")
+
+
+def tunnel_inbox_read(name):
+    """Read and delete collected replies for one machine. Returns the
+    list of response dicts."""
+    out = []
+    d = _inbox_dir(name)
+    try:
+        names = sorted(n for n in os.listdir(d) if n.endswith(".json"))
+    except OSError:
+        return out
+    for n in names:
+        p = os.path.join(d, n)
+        try:
+            with open(p, "r", encoding="utf-8") as fh:
+                out.append(json.load(fh))
+        except (OSError, IOError, ValueError):
+            continue
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+    return out
 
 
 # ===========================================================================
@@ -22338,6 +23609,10 @@ def cmd_machine_add(args):
         machine["env_setup"] = args.env_setup
     if getattr(args, "key_file", None):
         machine["key_file"] = args.key_file
+    if getattr(args, "camc_path", None):
+        machine["camc_path"] = args.camc_path
+    if getattr(args, "remote_home", None):
+        machine["remote_home"] = args.remote_home
     # Validate SSH machines
     if machine["type"] == "ssh":
         if not machine.get("host"):
@@ -22350,6 +23625,8 @@ def cmd_machine_add(args):
     print("Added machine '%s' (%s)" % (name, machine["type"]))
     if machine.get("host"):
         print("  %s@%s:%s" % (machine.get("user", ""), machine["host"], machine.get("port", 22)))
+    if machine["type"] == "ssh":
+        print("  Tunnel: camc tunnel up %s" % name)
 
 
 def cmd_machine_rm(args):
@@ -22382,10 +23659,14 @@ def cmd_machine_edit(args):
         m["env_setup"] = args.env_setup; changed = True
     if getattr(args, "key_file", None) is not None:
         m["key_file"] = args.key_file; changed = True
+    if getattr(args, "camc_path", None) is not None:
+        m["camc_path"] = args.camc_path; changed = True
+    if getattr(args, "remote_home", None) is not None:
+        m["remote_home"] = args.remote_home; changed = True
     if getattr(args, "type", None) is not None:
         m["type"] = args.type; changed = True
     if not changed:
-        print("Nothing to change. Use --host, --user, --port, --env-setup, --key-file")
+        print("Nothing to change. Use --host, --user, --port, --env-setup, --key-file, --camc-path, --remote-home")
         return
     store.save(m)
     print("Updated machine '%s'" % name)
@@ -22411,6 +23692,180 @@ def cmd_machine_ping(args):
             print_success("%s (%s)" % (name, host))
         else:
             print_error("%s (%s) — unreachable" % (name, host))
+
+
+# ===========================================================================
+# Machine tunnels (persistent per-machine SSH forward + mailbox fallback)
+# ===========================================================================
+
+def cmd_tunnel(args):
+    """Tunnel management subcommands."""
+    sub = getattr(args, "tunnel_cmd", None)
+    if sub == "up":
+        cmd_tunnel_up(args)
+    elif sub == "down":
+        cmd_tunnel_down(args)
+    elif sub == "status":
+        cmd_tunnel_status(args)
+    elif sub == "agents":
+        cmd_tunnel_agents(args)
+    elif sub == "inbox":
+        cmd_tunnel_inbox(args)
+    elif sub == "flush":
+        cmd_tunnel_flush(args)
+    elif sub == "serve":
+        sys.exit(tunnel_serve(port=args.port, ensure=args.ensure))
+    else:
+        print("Usage: camc tunnel {up|down|status|agents|inbox|flush|serve}",
+              file=sys.stderr)
+        sys.exit(1)
+
+
+def _tunnel_select_machines(args):
+    """Resolve the [names...]/--all machine selection into records."""
+    store = MachineStore()
+    names = getattr(args, "names", None) or []
+    if getattr(args, "all", False):
+        machines = store.list_ssh()
+    else:
+        machines = []
+        for n in names:
+            m = store.get(n)
+            if not m or m.get("type") != "ssh":
+                print("Error: no ssh machine '%s'" % n, file=sys.stderr)
+                sys.exit(1)
+            machines.append(m)
+    if not machines:
+        print("No machines selected (give names or --all; configure with "
+              "'camc machine add')", file=sys.stderr)
+        sys.exit(1)
+    return machines
+
+
+def cmd_tunnel_up(args):
+    machines = _tunnel_select_machines(args)
+    started, skipped, errors = tunnel_up(machines)
+    for name in started:
+        print_success("tunnel keeper started: %s" % name)
+    for name in skipped:
+        print_warning("tunnel keeper already running: %s" % name)
+    for name, err in errors:
+        print_error("tunnel keeper failed to start: %s — %s" % (name, err))
+    if errors:
+        sys.exit(1)
+
+
+def cmd_tunnel_down(args):
+    machines = _tunnel_select_machines(args)
+    for m in machines:
+        name = m.get("name")
+        if tunnel_down(m):
+            print_success("tunnel keeper stopped: %s" % name)
+        else:
+            print_warning("no tunnel keeper running: %s" % name)
+
+
+def cmd_tunnel_status(args):
+    rows = tunnel_status()
+    if _want_json(args):
+        print(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        print("No SSH machines configured.")
+        return
+    _state_colors = {"up": "green", "down": "red", "connecting": "yellow",
+                     "stopped": "yellow"}
+    headers = ["NAME", "STATE", "KEEPER", "LOCAL_PORT", "QUEUED",
+               "INBOX", "RECONNECTS", "LAST_ERROR"]
+    table = []
+    for r in rows:
+        table.append([
+            r["name"],
+            _c(r["state"], _state_colors.get(r["state"])),
+            r["keeper"],
+            r["local_port"] or "-",
+            r["queued"],
+            r["inbox"],
+            r["reconnects"],
+            (r["last_error"] or "-"),
+        ])
+    print_table(headers, table, title="Machine Tunnels")
+
+
+def cmd_tunnel_agents(args):
+    store = MachineStore()
+    name = getattr(args, "name", None)
+    if name:
+        m = store.get(name)
+        if not m or m.get("type") != "ssh":
+            print("Error: no ssh machine '%s'" % name, file=sys.stderr)
+            sys.exit(1)
+        machines = [m]
+    else:
+        machines = store.list_ssh()
+    if not machines:
+        print("No SSH machines configured.")
+        return
+    failed = 0
+    for i, m in enumerate(machines):
+        ok, text = tunnel_agents(m)
+        if _want_json(args):
+            print(json.dumps({"machine": m.get("name"), "ok": ok,
+                              "text": text}))
+            if not ok:
+                failed += 1
+            continue
+        if len(machines) > 1:
+            if i:
+                print()
+            print("== %s ==" % m.get("name"))
+        if ok:
+            print(text)
+        else:
+            print("(%s)" % text)
+            failed += 1
+    if machines and failed == len(machines):
+        sys.exit(1)
+
+
+def cmd_tunnel_inbox(args):
+    store = MachineStore()
+    name = getattr(args, "name", None)
+    if name:
+        m = store.get(name)
+        if not m or m.get("type") != "ssh":
+            print("Error: no ssh machine '%s'" % name, file=sys.stderr)
+            sys.exit(1)
+        machines = [m]
+    else:
+        machines = store.list_ssh()
+    any_rows = False
+    for m in machines:
+        mname = m.get("name")
+        for resp in tunnel_inbox_read(mname):
+            any_rows = True
+            if _want_json(args):
+                print(json.dumps(resp))
+                continue
+            argv = " ".join(str(a) for a in (resp.get("argv") or []))
+            state = "ok" if resp.get("ok") else "error"
+            print("[%s] %s  %s" % (mname, state, argv))
+            text = resp.get("text") if resp.get("ok") else resp.get("error")
+            if text:
+                print(text)
+    if not any_rows and not _want_json(args):
+        print("No queued replies.")
+
+
+def cmd_tunnel_flush(args):
+    m = MachineStore().get(args.name)
+    if not m or m.get("type") != "ssh":
+        print("Error: no ssh machine '%s'" % args.name, file=sys.stderr)
+        sys.exit(1)
+    sent, remaining = tunnel_flush(m)
+    print("flushed %d request(s), %d remaining" % (sent, remaining))
+    if remaining:
+        sys.exit(2)
 
 
 # ===========================================================================
@@ -23132,6 +24587,8 @@ examples:
     ma.add_argument("--port", default=None, help="SSH port")
     ma.add_argument("--env-setup", default=None, help="Shell commands to run before agent")
     ma.add_argument("--key-file", default=None, help="SSH key file")
+    ma.add_argument("--camc-path", default=None, help="Remote camc binary path [default: ~/.cam/camc]")
+    ma.add_argument("--remote-home", default=None, help="Remote HOME for camc state [default: ssh login home]")
     mrm = msub.add_parser("rm", help="Remove a machine")
     mrm.add_argument("name", help="Machine name")
     me = msub.add_parser("edit", help="Edit a machine")
@@ -23142,6 +24599,8 @@ examples:
     me.add_argument("--port", default=None)
     me.add_argument("--env-setup", default=None)
     me.add_argument("--key-file", default=None)
+    me.add_argument("--camc-path", default=None)
+    me.add_argument("--remote-home", default=None)
     mping = msub.add_parser("ping", help="Test SSH connectivity")
     mping.add_argument("name", nargs="?", default=None, help="Machine name (omit for all)")
 
@@ -23160,6 +24619,30 @@ examples:
     # sync
     sy = sub.add_parser("sync", help="Sync camc and configs to remote machines")
     sy.add_argument("target", nargs="?", default=None, help="Machine name (omit for all SSH machines)")
+
+    # tunnel
+    tp = sub.add_parser("tunnel", help="Persistent SSH tunnels to machines")
+    tsub = tp.add_subparsers(
+        dest="tunnel_cmd", parser_class=CamArgumentParser)
+    tup = tsub.add_parser("up", help="Start tunnel keeper(s)")
+    tup.add_argument("names", nargs="*", help="Machine names")
+    tup.add_argument("--all", action="store_true", help="All SSH machines")
+    tdown = tsub.add_parser("down", help="Stop tunnel keeper(s)")
+    tdown.add_argument("names", nargs="*", help="Machine names")
+    tdown.add_argument("--all", action="store_true", help="All SSH machines")
+    tst = tsub.add_parser("status", help="Show tunnel state")
+    tst.add_argument("--json", action="store_true", help="JSON output")
+    tag = tsub.add_parser("agents", help="List agents on tunnel-connected machines")
+    tag.add_argument("name", nargs="?", default=None, help="Machine name (omit for all)")
+    tag.add_argument("--json", action="store_true", help="JSON output")
+    tib = tsub.add_parser("inbox", help="Print collected mailbox replies")
+    tib.add_argument("name", nargs="?", default=None, help="Machine name (omit for all)")
+    tib.add_argument("--json", action="store_true", help="JSON output")
+    tfl = tsub.add_parser("flush", help="Flush queued requests now")
+    tfl.add_argument("name", help="Machine name")
+    tsv = tsub.add_parser("serve", help="Run the tunnel endpoint (normally remote)")
+    tsv.add_argument("--port", type=int, default=None, help="Listen port [default: 42177]")
+    tsv.add_argument("--ensure", action="store_true", help="Start detached if not running")
 
     # migrate
     mig = sub.add_parser("db-migrate", help="Migrate cam SQLite data to JSON")
@@ -23194,10 +24677,22 @@ examples:
     if len(sys.argv) == 6 and sys.argv[1] == "_bind_codex_session":
         sys.exit(_run_codex_session_binder(*sys.argv[2:]))
 
+    # Hidden _tunnel_keep subcommand (per-machine tunnel keeper daemon)
+    if len(sys.argv) >= 3 and sys.argv[1] == "_tunnel_keep":
+        sys.exit(tunnel_keep_main(sys.argv[2]))
+
     # Command aliases (expand before argparse sees them)
     _aliases = {"a": "attach", "ls": "list"}
     if len(sys.argv) > 1 and sys.argv[1] in _aliases:
         sys.argv[1] = _aliases[sys.argv[1]]
+
+    # Machine tunnels (src/camc_pkg/tunnel.py): '<machine>:<ref>' targets
+    # matching machines.json are served by the per-machine persistent
+    # tunnel (mailbox fallback when the tunnel is down). Runs before the
+    # fleet bridge so registered machine names win over hub node names.
+    _tun_route = tunnel_route(sys.argv[1:])
+    if _tun_route is not None:
+        sys.exit(tunnel_submit(*_tun_route))
 
     # Fleet bridge (docs/desktop/bridge-protocol-v1.md): --hub-drain is the
     # host's outbox-drain hook; route() applies local-first semantics and
@@ -23205,7 +24700,14 @@ examples:
     # this node. Both must run before argparse: the ferry packs argv
     # verbatim (and packs nothing when dispatch stays local).
     if len(sys.argv) >= 2 and sys.argv[1] == "--hub-drain":
-        sys.exit(_hub_drain())
+        _bid = ""
+        _rest = sys.argv[2:]
+        for _i, _a in enumerate(_rest):
+            if _a == "--bridge-id" and _i + 1 < len(_rest):
+                _bid = _rest[_i + 1]
+            elif _a.startswith("--bridge-id="):
+                _bid = _a.split("=", 1)[1]
+        sys.exit(_hub_drain(_bid))
     _ferry_argv = _bridge_route(sys.argv[1:])
     if _ferry_argv is not None:
         sys.exit(_bridge_submit(_ferry_argv))
@@ -23267,6 +24769,7 @@ examples:
         "machine": cmd_machine,
         "context": cmd_context,
         "sync": cmd_sync,
+        "tunnel": cmd_tunnel,
         "db-migrate": cmd_db_migrate,
         "version": cmd_version,
         "skills": cmd_skills,

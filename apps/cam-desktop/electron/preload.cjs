@@ -136,6 +136,9 @@ contextBridge.exposeInMainWorld('CamBridge', {
     readClipboardText() {
       return ipcRenderer.invoke('files:readClipboardText');
     },
+    writeClipboardText(text) {
+      return ipcRenderer.invoke('files:writeClipboardText', { text: String(text == null ? '' : text) });
+    },
     readClipboardAttachments() {
       return ipcRenderer.invoke('files:readClipboardAttachments');
     },

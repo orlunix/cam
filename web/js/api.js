@@ -680,9 +680,10 @@ export class CamApi {
     }
     return this.request('GET', `/api/agents/${encodeURIComponent(id)}/output?${qs.toString()}`);
   }
-  agentFullOutput(id, offset = 0, format = null) {
+  agentFullOutput(id, offset = 0, format = null, lines = 0) {
     const fmt = format ? `&format=${encodeURIComponent(format)}` : '';
-    return this.request('GET', `/api/agents/${id}/fulloutput?offset=${offset}${fmt}`);
+    const ln = lines > 0 ? `&lines=${Math.floor(lines)}` : '';
+    return this.request('GET', `/api/agents/${id}/fulloutput?offset=${offset}${fmt}${ln}`);
   }
   sendInput(id, text, sendEnter = true, hints = null) {
     const body = { text, send_enter: sendEnter };

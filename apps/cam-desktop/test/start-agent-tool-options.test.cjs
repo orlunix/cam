@@ -57,5 +57,18 @@ ok("mobile Start moves Prompt into Advanced", mobileAdvanced.includes('<label fo
 ok("mobile Start moves Auto-confirm into Advanced", mobileAdvanced.includes('id="autoconfirm"'));
 ok("mobile Start moves Auto-exit into Advanced", mobileAdvanced.includes('id="autoexit"'));
 
+// Tool launcher (camc run --tool-launcher): desktop Start offers a
+// default/auto/custom select, validates the custom argv template, and
+// disables Auto-confirm for any non-default launcher. The hub forwards
+// the value verbatim to camc run.
+const hubSrc = fs.readFileSync(path.join(root, "apps", "cam-desktop", "electron", "embedded-hub.cjs"), "utf8");
+ok("desktop Start offers a tool launcher select", desktopHtml.includes('id="start-tool-launcher"') && desktopHtml.includes('auto (official)'));
+ok("desktop Start has a custom launcher input", desktopHtml.includes('id="start-tool-launcher-custom"') && desktopHtml.includes('id="start-tool-launcher-custom-field"'));
+ok("desktop Start resolves the launcher value", desktop.includes('function selectedToolLauncher()') && desktop.includes('body.tool_launcher = launcher'));
+ok("desktop Start validates the custom template", desktop.includes('function validCustomLauncher(') && desktop.includes("t => t === '{command}'"));
+ok("desktop Start mirrors the camc named presets", desktop.includes('auto|qsub-4g|ssh-auto'));
+ok("desktop Start disables auto-confirm for a non-default launcher", desktop.includes('function applyLauncherState(') && desktop.includes('dataset.prevChecked'));
+ok("desktop hub forwards --tool-launcher to camc run", hubSrc.includes("'--tool-launcher'") && hubSrc.includes('body.tool_launcher'));
+
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exitCode = fail ? 1 : 0;

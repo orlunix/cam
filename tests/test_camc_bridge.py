@@ -9,9 +9,11 @@ functions plus a __main__ runner (this WSL has no pytest).
 
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -315,7 +317,7 @@ def test_hub_drain_empty_bootstraps_dirs():
         p = _run_camc(["--hub-drain"], home)
         assert p.returncode == 0
         assert json.loads(p.stdout) == []
-        for sub in ("outbox", "inbox"):
+        for sub in ("outbox", "inbox", "hubs"):
             d = os.path.join(home, ".cam", "camb", sub)
             assert os.path.isdir(d), d
             mode = os.stat(d).st_mode & 0o777
@@ -518,6 +520,319 @@ def test_capture_exact_hex_remote_miss_ferries():
         assert p.returncode == 2, p.stderr
         _, req = _read_single_request(home)
         assert req["argv"] == ["capture", "af12be34", "--lines", "3"]
+
+
+# ------------------------------------------------------- v1.1 claim + router
+#
+# The drain is the multi-hub router surface (bridge-protocol-v1 §9.2):
+# --bridge-id claims atomically (rename → .claimed-<id>), coverage cards
+# in ~/.cam/camb/hubs/ filter explicit `node:ref` targets to the hub that
+# covers them, own claimed leftovers re-drain (at-least-once above the
+# host's seen-id idempotency), and orphans of card-less (dead) hubs are
+# adopted. Every scenario runs against BOTH ferries (camc and camb) to
+# pin their byte-compatible behaviour.
+
+
+def _write_event(home, req):
+    os.makedirs(_outbox(home), exist_ok=True)
+    with open(os.path.join(_outbox(home), req["id"] + ".json"), "w") as fh:
+        json.dump(req, fh)
+
+
+def _write_card(home, hub_id, covers, ts=None, tunnel=None, token=""):
+    d = os.path.join(home, ".cam", "camb", "hubs")
+    os.makedirs(d, exist_ok=True)
+    card = {"hub_id": hub_id,
+            "ts": ts if ts is not None else time.time(),
+            "covers": covers, "proto": 1}
+    if tunnel:
+        card["tunnel"] = tunnel
+    with open(os.path.join(d, hub_id + ".json"), "w") as fh:
+        json.dump(card, fh)
+    if token:
+        with open(os.path.join(d, hub_id + ".token"), "w") as fh:
+            fh.write(token + "\n")
+
+
+def _both_drainers():
+    return [("camc", _run_camc), ("camb", _run_camb)]
+
+
+def _drain_with(impl, home, hub):
+    p = impl(["--hub-drain", "--bridge-id", hub], home)
+    assert p.returncode == 0, p.stderr
+    return json.loads(p.stdout)
+
+
+def test_drain_claim_collects_and_deletes():
+    for name, impl in _both_drainers():
+        with tempfile.TemporaryDirectory() as home:
+            _deploy_mailbox(home)
+            _write_event(home, {"id": "a" * 8, "argv": ["list"],
+                                "from": {"agent": None}, "ts": 1.0})
+            _write_event(home, {"id": "b" * 8, "argv": ["send", "x", "--text", "h"],
+                                "from": {"agent": None}, "ts": 2.0})
+            got = _drain_with(impl, home, "hubx")
+            assert sorted(r["id"] for r in got) == ["a" * 8, "b" * 8], (name, got)
+            assert _ls(_outbox(home)) == [], (name, _ls(_outbox(home)))
+
+
+def test_drain_skips_peer_covered_target():
+    for name, impl in _both_drainers():
+        with tempfile.TemporaryDirectory() as home:
+            _deploy_mailbox(home)
+            _write_event(home, {"id": "c" * 8,
+                                "argv": ["msg", "send", "nodeA:af12", "-t", "x"],
+                                "from": {"agent": None}, "ts": 1.0})
+            _write_card(home, "hubP", [{"name": "nodeA", "key": "u@10.0.0.1:22"}])
+            # hubx does not cover nodeA → the event stays for hubP
+            got = _drain_with(impl, home, "hubx")
+            assert got == [], (name, got)
+            assert _ls(_outbox(home)) == ["c" * 8 + ".json"], (name, _ls(_outbox(home)))
+            # hubP claims it (its card covers nodeA)
+            got = _drain_with(impl, home, "hubP")
+            assert [r["id"] for r in got] == ["c" * 8], (name, got)
+            assert _ls(_outbox(home)) == [], (name, _ls(_outbox(home)))
+
+
+def test_drain_claims_when_nobody_covers():
+    for name, impl in _both_drainers():
+        with tempfile.TemporaryDirectory() as home:
+            _deploy_mailbox(home)
+            _write_event(home, {"id": "d" * 8, "argv": ["status", "nodeZ:q1"],
+                                "from": {"agent": None}, "ts": 1.0})
+            _write_card(home, "hubP", [{"name": "nodeA", "key": "u@10.0.0.1:22"}])
+            got = _drain_with(impl, home, "hubx")
+            assert [r["id"] for r in got] == ["d" * 8], (name, got)
+
+
+def test_drain_stale_peer_card_does_not_block():
+    for name, impl in _both_drainers():
+        with tempfile.TemporaryDirectory() as home:
+            _deploy_mailbox(home)
+            _write_event(home, {"id": "e" * 8, "argv": ["status", "nodeA:q1"],
+                                "from": {"agent": None}, "ts": 1.0})
+            _write_card(home, "hubP", [{"name": "nodeA"}],
+                        ts=time.time() - 200)  # older than CARD_TTL_S=90
+            got = _drain_with(impl, home, "hubx")
+            assert [r["id"] for r in got] == ["e" * 8], (name, got)
+
+
+def test_drain_endpoint_key_target_filtered():
+    # explicit targets in canonical-key form (user@host:port:agent) must
+    # route by the card's key entry, surviving the inner colons
+    for name, impl in _both_drainers():
+        with tempfile.TemporaryDirectory() as home:
+            _deploy_mailbox(home)
+            _write_event(home, {"id": "f" * 8,
+                                "argv": ["status", "u@10.0.0.1:22:af12"],
+                                "from": {"agent": None}, "ts": 1.0})
+            _write_card(home, "hubP", [{"name": "nodeA", "key": "u@10.0.0.1:22"}])
+            got = _drain_with(impl, home, "hubx")
+            assert got == [], (name, got)
+            got = _drain_with(impl, home, "hubP")
+            assert [r["id"] for r in got] == ["f" * 8], (name, got)
+
+
+def test_drain_bare_ref_never_filtered():
+    for name, impl in _both_drainers():
+        with tempfile.TemporaryDirectory() as home:
+            _deploy_mailbox(home)
+            _write_event(home, {"id": "0" * 8, "argv": ["status", "somename"],
+                                "from": {"agent": None}, "ts": 1.0})
+            _write_card(home, "hubP", [{"name": "nodeA", "key": "u@10.0.0.1:22"}])
+            got = _drain_with(impl, home, "hubx")
+            assert [r["id"] for r in got] == ["0" * 8], (name, got)
+
+
+def test_drain_own_claimed_leftover_reprinted():
+    # a drain interrupted after claim but before deletion is re-collected
+    # by the SAME hub on its next drain (at-least-once; the host's seen-id
+    # cache turns the duplicate dispatch into a re-delivered response)
+    for name, impl in _both_drainers():
+        with tempfile.TemporaryDirectory() as home:
+            _deploy_mailbox(home)
+            req = {"id": "1" * 8, "argv": ["list"], "from": {"agent": None},
+                   "ts": 1.0}
+            leftover = os.path.join(_outbox(home), "1" * 8 + ".json.claimed-hubx")
+            with open(leftover, "w") as fh:
+                json.dump(req, fh)
+            got = _drain_with(impl, home, "hubx")
+            assert [r["id"] for r in got] == ["1" * 8], (name, got)
+            assert _ls(_outbox(home)) == [], (name, _ls(_outbox(home)))
+
+
+def test_drain_peer_claimed_leftover_rules():
+    # live owner (fresh card): untouched + not printed; dead owner
+    # (no/stale card): adopted by whoever drains next
+    for name, impl in _both_drainers():
+        with tempfile.TemporaryDirectory() as home:
+            _deploy_mailbox(home)
+            req = {"id": "2" * 8, "argv": ["list"], "from": {"agent": None},
+                   "ts": 1.0}
+            fname = "2" * 8 + ".json.claimed-hubP"
+            with open(os.path.join(_outbox(home), fname), "w") as fh:
+                json.dump(req, fh)
+            _write_card(home, "hubP", [])  # fresh → hubP alive
+            got = _drain_with(impl, home, "hubx")
+            assert got == [], (name, got)
+            assert _ls(_outbox(home)) == [fname], (name, _ls(_outbox(home)))
+            _write_card(home, "hubP", [], ts=time.time() - 200)  # now dead
+            got = _drain_with(impl, home, "hubx")
+            assert [r["id"] for r in got] == ["2" * 8], (name, got)
+            assert _ls(_outbox(home)) == [], (name, _ls(_outbox(home)))
+
+
+def test_drain_legacy_without_bridge_id_unchanged():
+    # old hosts call plain --hub-drain: everything prints, no claiming,
+    # dead-hub orphans adopted (cards absent/ignored for unnamed drains)
+    for name, impl in _both_drainers():
+        with tempfile.TemporaryDirectory() as home:
+            _deploy_mailbox(home)
+            _write_event(home, {"id": "3" * 8, "argv": ["status", "nodeA:q1"],
+                                "from": {"agent": None}, "ts": 1.0})
+            _write_card(home, "hubP", [{"name": "nodeA"}])
+            p = impl(["--hub-drain"], home)
+            assert p.returncode == 0, p.stderr
+            got = json.loads(p.stdout)
+            assert [r["id"] for r in got] == ["3" * 8], (name, got)
+            assert _ls(_outbox(home)) == [], (name, _ls(_outbox(home)))
+
+
+# ------------------------------------------------------- v2 tunnel fast path
+#
+# Ferry priority chain (§10): local → tunnels (coverage-filtered,
+# priority-desc) → mailbox. A real 127.0.0.1 socket stands in for the
+# hub's forwardIn endpoint; each scenario runs against BOTH ferries.
+
+
+class _FakeTunnel(threading.Thread):
+    """One-shot fake hub tunnel: one JSON line in, responder(req) out."""
+
+    def __init__(self, home, hub_id, responder, covers=None, token="tok-test"):
+        threading.Thread.__init__(self, daemon=True)
+        self.received = []
+        self.responder = responder
+        self.sock = socket.socket()
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(4)
+        self.port = self.sock.getsockname()[1]
+        _write_card(home, hub_id, covers if covers is not None else [],
+                    tunnel={"port": self.port}, token=token)
+        self.token = token
+        self.start()
+
+    def run(self):
+        try:
+            conn, _ = self.sock.accept()
+            try:
+                data = b""
+                while b"\n" not in data:
+                    chunk = conn.recv(65536)
+                    if not chunk:
+                        break
+                    data += chunk
+                if data:
+                    payload = json.loads(data.split(b"\n", 1)[0].decode("utf-8"))
+                    self.received.append(payload)
+                    resp = self.responder(payload.get("request") or {})
+                    conn.sendall(json.dumps(resp).encode("utf-8") + b"\n")
+            finally:
+                conn.close()
+        finally:
+            self.sock.close()
+
+
+def _closed_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def _submit_both(impl, argv, home, timeout_ms="3000"):
+    return impl(argv, home, env_extra={"CAMB_TIMEOUT_MS": timeout_ms})
+
+
+def test_tunnel_fast_path_ok():
+    for name, impl in _both_drainers():
+        with tempfile.TemporaryDirectory() as home:
+            _deploy_mailbox(home)
+            tun = _FakeTunnel(home, "hubT",
+                              lambda req: {"id": req.get("id"), "ok": True,
+                                           "text": "TUNNEL-PONG"},
+                              covers=[{"name": "nodeA", "key": "u@10.0.0.1:22"}])
+            p = _submit_both(impl, ["status", "nodeA:af12"], home)
+            assert p.returncode == 0, (name, p.stderr)
+            assert p.stdout.strip() == "TUNNEL-PONG", (name, p.stdout)
+            # fast path: no mailbox file left behind
+            assert _ls(_outbox(home)) == [], (name, _ls(_outbox(home)))
+            # the hub side got our request with the per-node token
+            assert len(tun.received) == 1
+            assert tun.received[0]["token"] == "tok-test"
+            assert tun.received[0]["request"]["argv"] == ["status", "nodeA:af12"]
+
+
+def test_tunnel_app_error_is_terminal_no_mailbox():
+    for name, impl in _both_drainers():
+        with tempfile.TemporaryDirectory() as home:
+            _deploy_mailbox(home)
+            _FakeTunnel(home, "hubT",
+                        lambda req: {"id": req.get("id"), "ok": False,
+                                     "error": "unauthorized"},
+                        covers=[{"name": "nodeA"}])
+            p = _submit_both(impl, ["status", "nodeA:af12"], home)
+            assert p.returncode == 1, (name, p.returncode, p.stderr)
+            assert "unauthorized" in p.stderr, (name, p.stderr)
+            assert _ls(_outbox(home)) == [], (name, _ls(_outbox(home)))
+
+
+def test_tunnel_down_falls_back_to_mailbox():
+    for name, impl in _both_drainers():
+        with tempfile.TemporaryDirectory() as home:
+            _deploy_mailbox(home)
+            _write_card(home, "hubT", [{"name": "nodeA"}],
+                        tunnel={"port": _closed_port()}, token="tok-test")
+            p = _submit_both(impl, ["status", "nodeA:af12"], home,
+                             timeout_ms="300")
+            assert p.returncode == 2, (name, p.returncode, p.stderr)
+            rid, req = _read_single_request(home)
+            assert req["argv"] == ["status", "nodeA:af12"], (name, req["argv"])
+
+
+def test_tunnel_not_my_fleet_cascades_to_next_hub():
+    for name, impl in _both_drainers():
+        with tempfile.TemporaryDirectory() as home:
+            _deploy_mailbox(home)
+            first = _FakeTunnel(home, "hubA",
+                                lambda req: {"id": req.get("id"), "ok": False,
+                                             "error": "not_my_fleet: no agent"},
+                                covers=[{"name": "nodeA"}], token="tok-a")
+            second = _FakeTunnel(home, "hubB",
+                                 lambda req: {"id": req.get("id"), "ok": True,
+                                              "text": "SECOND-HUB"},
+                                 covers=[{"name": "nodeA"}], token="tok-b")
+            p = _submit_both(impl, ["status", "nodeA:af12"], home)
+            assert p.returncode == 0, (name, p.stderr)
+            assert p.stdout.strip() == "SECOND-HUB", (name, p.stdout)
+            assert len(first.received) == 1 and len(second.received) == 1
+            assert _ls(_outbox(home)) == [], (name, _ls(_outbox(home)))
+
+
+def test_tunnel_skipped_when_target_not_covered():
+    for name, impl in _both_drainers():
+        with tempfile.TemporaryDirectory() as home:
+            _deploy_mailbox(home)
+            tun = _FakeTunnel(home, "hubT",
+                              lambda req: {"id": req.get("id"), "ok": True},
+                              covers=[{"name": "nodeA"}])  # covers nodeA only
+            p = _submit_both(impl, ["status", "nodeZ:q1"], home,
+                             timeout_ms="300")
+            assert p.returncode == 2, (name, p.returncode, p.stderr)
+            assert tun.received == [], (name, tun.received)
+            _read_single_request(home)  # landed in the mailbox instead
 
 
 # -------------------------------------------------------------------- runner

@@ -57,6 +57,18 @@ or present camc state, but camc owns the local runtime truth.
 | `logs/monitor-<id>.stderr` | monitor subprocess launcher | monitor subprocess stderr | Created by `run` / `heal` launch paths |
 | `cron/cron.log` | system crontab block | cron tick stdout/stderr | Human-readable cron log |
 | `pids/<id>.pid` | monitor subprocess | monitor process pid | Self-cleanup on exit |
+| `tunnel/token` | `tunnel.py` serve | hex token (0600) | Auto-generated on first `tunnel serve` |
+| `tunnel/serve.json` | `tunnel.py` serve | `{pid, port, ts}` | Removed on clean exit |
+| `tunnels/<m>.json` | `tunnel.py` keeper | keeper state card `{state, local_port, ssh_pid, …}` | 60s TTL; stale = keeper dead |
+| `tunnels/<m>.token` | `tunnel.py` keeper | remote token copy (0600) | Fetched over ssh at connect |
+| `tunnels/<m>/outbox/<id>.json` | `tunnel.py` submit | queued request (tmp→rename) | Flushed by keeper when tunnel returns |
+| `tunnels/<m>/inbox/<id>.json` | `tunnel.py` keeper | flushed reply | Read+deleted by `tunnel inbox` |
+| `logs/tunnel-serve-audit.jsonl` | `tunnel.py` serve | one JSON record per request | Append-only; never logs tokens |
+| `camb/serve.token` | camb `--serve` | hex token (0600) | Host endpoint auth; auto-generated |
+| `camb/serve.json` / `camb/serve.pid` | camb `--serve` | endpoint card / pid | `--ensure` idempotent start |
+| `camb/reverse.json` / `camb/reverse.pid` | camb `reverse` | maintainer state card / pid | `reverse up/down/status` |
+| `camb/serve-audit.jsonl` | camb `--serve` | one JSON record per request | Append-only; never logs tokens |
+| `pids/tunnel-<m>.pid` | `tunnel.py` keeper | keeper process pid | Self-cleanup on exit |
 
 `/tmp/cam-sockets/cam-<id>.sock` holds the tmux server socket for each
 agent. This is **machine-local** even on NFS-shared `~/.cam/` — that's how
@@ -123,6 +135,17 @@ and should not be treated as a correctness metric; the generated `src/camc` /
 | `fast_capture.py` + `prelude/*` | ~600 | Data-plane fast path for capture and simple send text using `agents.json`, `--no-fast-path` rollback, and build-time hook registry | Release-sensitive; see `docs/camc-refactor-development-plan.md` |
 | `storage.py`, `machine_store.py`, `context_store.py` | ~450 | JSON stores and local registries | Candidate for shared store helper |
 | `scheduler.py`, `migrate.py`, `remote.py`, `formatters.py`, `utils.py`, `detection.py`, `system_prompt.py` | ~1,500 | Supporting features and compatibility | Review deletion only with usage evidence |
+| `bridge.py` | ~440 | Fleet bridge ferry (hub mailbox + tunnel fast path, bridge-protocol-v1) | Hub-centric; see `docs/desktop/bridge-protocol-v1.md` |
+| `tunnel.py` | ~700 | Per-machine persistent SSH tunnels: keeper + serve + route/submit + mailbox fallback | Hub-less peer path; §6a |
+
+The terminal UI is **not** part of camc: it lives in `src/cam/tui.py` as
+`cam tui` (also launched by bare `cam`), a cam-level interface alongside
+CAM Desktop / CAM Mobile / the Web UI. It provides the agent sidebar, live
+ANSI capture pane, node/agent/settings forms, an agent action menu
+(attach/reboot/rename/exit/stop/kill/rm via `camc` subprocess), and a
+command console that runs any one-shot `cam`/`camc` command into a
+scrollable output mode. One visible capture pane; no split-pane or per-tab
+PTY yet; attach drops to real `tmux attach`.
 
 **Service boundary today.** Core feature modules exist, but the CLI adapter
 layer is still monolithic. `cli.py` contains the parser and substantial feature
@@ -249,6 +272,83 @@ tell "still processing" from "dead".
   retry + ledger-as-truth.
 - **No fan-out.** `to` is single-recipient. Broadcast requires N sends.
 - **No back-pressure.** Sender sees no queue depth.
+
+## 6a. Machine tunnels — per-machine persistent SSH path
+
+`tunnel.py` + `cmd_tunnel_*` in `cli.py`. Hub-less peer path: unlike the
+fleet bridge (desktop hub owns tunnels), every camc can keep its own
+persistent tunnel to each SSH machine in `machines.json` and delegate
+targeted commands directly to that machine's camc.
+
+### 6a.1 Components
+
+- **serve** (`camc tunnel serve [--port N] [--ensure]`, default port
+  42177, `CAMC_TUNNEL_PORT` env): JSON-line endpoint on 127.0.0.1 only,
+  token-authed (`~/.cam/tunnel/token`, 0600, auto-generated).
+  Frame = bridge-protocol-v1 §10: one line `{"token", "request"}` in,
+  one line response out, 4MB cap, thread-per-connection. Executes the
+  allowlist `list, status, capture, send, key, msg send` by spawning the
+  local camc (`msg` gets 120s, others 30s exec timeout). Every request
+  is audited to `logs/tunnel-serve-audit.jsonl` (tokens never logged).
+  The client must strip the `machine:` prefix before sending — a colon
+  surviving in the target is rejected as a client bug.
+- **keeper** (`camc tunnel up <name>|--all` → hidden `_tunnel_keep
+  <name>` daemon): per machine, ensures the remote serve (auto-deploys
+  camc via `sync_camc_to_machine` when the remote is too old), fetches
+  the token, then holds one `ssh -N -L 127.0.0.1:<lp>:127.0.0.1:<rp>`
+  with `ServerAliveInterval=30`, `ExitOnForwardFailure=yes`,
+  `BatchMode=yes`, and a **dedicated** ControlPath
+  (`/tmp/cam-ssh-tun-<hash>`) so it never fights remote.py's auto-master.
+  On ssh exit: backoff 5s → ×2 → 60s cap, reconnect. State card
+  `tunnels/<m>.json` refreshed every ~2s (60s TTL for readers); the
+  keeper also flushes the outbox every loop while up.
+- **route/submit** (pre-dispatch, before the fleet bridge): `<machine>:<ref>`
+  targets (also `<user>@<host>:<port>:<ref>` endpoint forms) matching
+  `machines.json` go tunnel-first; anything else falls through to the
+  bridge/local dispatch unchanged. Bare refs never route here.
+
+### 6a.2 Exit codes and fallback semantics
+
+Mirrors bridge-protocol-v1 §7:
+
+| exit | meaning |
+|---|---|
+| 0 | ok response; remote stdout printed |
+| 1 | error response; remote stderr/text passed through |
+| 2 | tunnel unavailable; request queued in `tunnels/<m>/outbox/` |
+
+A queued request is flushed by the keeper when the tunnel returns (or by
+`camc tunnel flush <m>`); its reply lands in `tunnels/<m>/inbox/` and is
+printed (and deleted) by `camc tunnel inbox [m]`. `submit` still polls
+the inbox briefly after queueing (`CAMC_TUNNEL_MAILBOX_MS`, default
+5000) so a keeper that is mid-flush can answer synchronously. Tunnel
+call timeout: `CAMC_TUNNEL_TIMEOUT_MS` (default 30000).
+
+### 6a.3 Commands
+
+```
+camc tunnel up <name...>|--all     # start keeper(s)
+camc tunnel down <name...>|--all   # stop keeper(s) + ssh child
+camc tunnel status [--json]        # state cards: state/port/queued/inbox
+camc tunnel agents [name]          # remote `list` over up tunnels
+camc tunnel inbox [name] [--json]  # print+collect flushed replies
+camc tunnel flush <name>           # flush outbox now (exit 2 if leftover)
+camc tunnel serve [--port N] [--ensure]
+```
+
+Routing precedence for `<prefix>:<ref>`: **machines.json (tunnel) >
+fleet bridge hub node name > local**. With no keeper and no hub mailbox,
+colon targets keep the previous exit-2 behaviour.
+
+### 6a.4 Machine record extensions
+
+`machines.json` entries accept two optional fields that redirect the
+remote camc layout (used for isolated deployments and local testing):
+
+| field | default | effect |
+|---|---|---|
+| `camc_path` | `~/.cam/camc` | remote camc binary path used by `ssh_camc`/`sync` |
+| `remote_home` | ssh login home | prefixes remote commands with `HOME=<path>`; camc state lives in `<remote_home>/.cam` |
 
 ## 7. Cron — external tick contract
 

@@ -8,7 +8,7 @@ import logging
 import os
 import sys
 
-__version__ = "1.2.162"
+__version__ = "1.2.185"
 __build__ = ""  # populated by build_camc.py: "git-hash date"
 
 # ---------------------------------------------------------------------------
@@ -34,6 +34,8 @@ EVENTS_FILE = os.path.join(CAM_DIR, "events.jsonl")
 MACHINES_FILE = os.path.join(CAM_DIR, "machines.json")
 CONTEXTS_FILE = os.path.join(CAM_DIR, "contexts.json")
 PIDS_DIR = os.path.join(CAM_DIR, "pids")
+TUNNEL_DIR = os.path.join(CAM_DIR, "tunnel")
+TUNNELS_DIR = os.path.join(CAM_DIR, "tunnels")
 CONTEXT_FILE = os.path.join(CAM_DIR, "context.json")  # Legacy single-machine context
 SOCKETS_DIR = "/tmp/cam-sockets"
 

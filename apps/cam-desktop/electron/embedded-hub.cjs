@@ -1319,7 +1319,9 @@ const RUN_REMOTE_TIMEOUT_MS = 45000;
  *  are required-ish; api + auto_exit + no_default_api + api_token optional.
  *  --no-default-api and --api-token are passed straight through to camc
  *  (see src/camc_pkg/cli.py:6368/6370). --no-default-api is a no-op when
- *  an explicit --api is also set, but camc handles the precedence. */
+ *  an explicit --api is also set, but camc handles the precedence.
+ *  tool_launcher (named preset or {command} argv template) is forwarded
+ *  verbatim; camc validates it (tool_launcher.py). */
 function _buildRunArgv(body) {
   const tool  = String((body && body.tool) || 'claude');
   const path  = String((body && body.path) || '');
@@ -1329,11 +1331,13 @@ function _buildRunArgv(body) {
   const autoExit = !!(body && body.auto_exit);
   const noDefaultApi = !!(body && body.no_default_api);
   const apiToken = body && body.api_token ? String(body.api_token) : '';
+  const toolLauncher = body && body.tool_launcher ? String(body.tool_launcher).trim() : '';
   const argv = ['--json', 'run', '-t', tool, '-p', path];
   if (name) argv.push('-n', name);
   if (api)  argv.push('--api', api);
   if (noDefaultApi) argv.push('--no-default-api');
   if (apiToken) argv.push('--api-token', apiToken);
+  if (toolLauncher) argv.push('--tool-launcher', toolLauncher);
   if (autoExit) argv.push('--auto-exit');
   argv.push(prompt);
   return argv;
@@ -3639,6 +3643,139 @@ const BRIDGE_DRAIN_TIMEOUT_MS = 10000;
 const BRIDGE_MSG_TIMEOUT_MS = 120000;
 const BRIDGE_TARGETED_VERBS = new Set(['status', 'capture', 'send', 'key', 'msg']);
 const BRIDGE_VERBS_HELP = 'list, status, capture, send, key, msg';
+// v1.1 idempotency: per-source-node seen-id cache. A drained event whose
+// id is already here gets the CACHED response re-delivered (never
+// re-dispatched) — covers drain-interrupt replays and claimed-orphan
+// re-drains. 10 min / 500 ids per node is ample for ferry timeouts (30s).
+const BRIDGE_SEEN_TTL_MS = 10 * 60 * 1000;
+const BRIDGE_SEEN_MAX = 500;
+// v1.1 router: this hub publishes a coverage card to
+// ~/.cam/camb/hubs/<hub-id>.json on every bridge-enabled node (throttled
+// to once per 15s; ferries and drains treat cards older than 90s as
+// dead). Cards make multi-hub claiming coverage-aware instead of a blind
+// race; see docs/desktop/bridge-protocol-v1.md §9.2.
+const BRIDGE_CARD_INTERVAL_MS = 15000;
+const BRIDGE_CARD_TTL_S = 90;
+// Bare-ref events this hub cannot route are released back to the outbox
+// (attempts+1) so an overlapping hub with different coverage can claim
+// them; after BRIDGE_MAX_ATTEMPTS claims the event fails for good.
+const BRIDGE_MAX_ATTEMPTS = 3;
+
+/** Stable hub identity, persisted next to the store so restarts keep
+ *  draining into the same card/claim namespace. */
+function _bridgeHubId() {
+  if (state.bridgeHubId) return state.bridgeHubId;
+  let id = '';
+  try {
+    if (state.storePath) {
+      const f = path.join(path.dirname(state.storePath), 'bridge-hub-id');
+      if (fs.existsSync(f)) id = String(fs.readFileSync(f, 'utf8')).trim();
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(id)) id = '';
+      if (!id) {
+        id = crypto.randomBytes(16).toString('hex');
+        fs.writeFileSync(f, id + '\n', { mode: 0o600 });
+      }
+    }
+  } catch (_) { /* fall through to ephemeral */ }
+  if (!id) {
+    if (!state.bridgeHubIdEphemeral) state.bridgeHubIdEphemeral = crypto.randomBytes(16).toString('hex');
+    id = state.bridgeHubIdEphemeral;
+  }
+  state.bridgeHubId = id;
+  return id;
+}
+
+/** Canonical node key for bridge routing: user@host:port. Context names
+ *  are hub-local (two hubs may name the same machine differently); the
+ *  endpoint key is the cross-hub identity carried in coverage cards. */
+function _bridgeNodeKey(ctx) {
+  const m = (ctx && ctx.machine) || {};
+  if (m.type !== 'ssh' || !m.host) return '';
+  return `${m.user || ''}@${m.host}:${m.port || 22}`;
+}
+
+/** This hub's coverage: every ssh context it can reach, as
+ *  {name, key} pairs (name for single-hub readability, key for
+ *  cross-hub routing). */
+function _bridgeCoverageEntries() {
+  const ctxs = (state.store && Array.isArray(state.store.contexts)) ? state.store.contexts : [];
+  const out = [];
+  const seen = new Set();
+  for (const c of ctxs) {
+    if (!c) continue;
+    const key = _bridgeNodeKey(c);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ name: String(c.name || ''), key });
+  }
+  return out;
+}
+
+function _bridgeSeenMap() {
+  if (!state.bridgeSeen) state.bridgeSeen = new Map(); // ctxId → Map(id → {ts, resp})
+  return state.bridgeSeen;
+}
+
+function _bridgeSeenGet(ctxId, id) {
+  const m = _bridgeSeenMap().get(String(ctxId));
+  if (!m) return null;
+  const hit = m.get(String(id));
+  if (!hit) return null;
+  if (Date.now() - hit.ts > BRIDGE_SEEN_TTL_MS) { m.delete(String(id)); return null; }
+  return hit.resp;
+}
+
+function _bridgeSeenPut(ctxId, id, resp) {
+  const idk = String(id || '');
+  if (!idk || !resp || resp.release) return; // releases are not answers
+  const key = String(ctxId);
+  const sm = _bridgeSeenMap();
+  let m = sm.get(key);
+  if (!m) { m = new Map(); sm.set(key, m); }
+  if (m.size >= BRIDGE_SEEN_MAX) {
+    const cutoff = Date.now() - BRIDGE_SEEN_TTL_MS;
+    for (const [k, v] of m) { if (v.ts < cutoff) m.delete(k); }
+    while (m.size >= BRIDGE_SEEN_MAX) m.delete(m.keys().next().value);
+  }
+  m.set(idk, { ts: Date.now(), resp });
+}
+
+/** In-flight dispatch dedup: a duplicate that arrives WHILE the first
+ *  dispatch is still running (tunnel retry racing a mailbox claim)
+ *  awaits the same promise instead of starting a second execution. */
+function _bridgePendingMap() {
+  if (!state.bridgePending) state.bridgePending = new Map(); // ctxId → Map(id → Promise)
+  return state.bridgePending;
+}
+
+/** Hub secret, persisted 0600 next to the store. Tunnel tokens derive
+ *  from it per node (sha256(secret/nodeKey)) so no per-node token state
+ *  needs keeping in sync. */
+function _bridgeHubSecret() {
+  if (state.bridgeHubSecret) return state.bridgeHubSecret;
+  let s = '';
+  try {
+    if (state.storePath) {
+      const f = path.join(path.dirname(state.storePath), 'bridge-hub-secret');
+      if (fs.existsSync(f)) s = String(fs.readFileSync(f, 'utf8')).trim();
+      if (!/^[0-9a-f]{64}$/.test(s)) s = '';
+      if (!s) {
+        s = crypto.randomBytes(32).toString('hex');
+        fs.writeFileSync(f, s + '\n', { mode: 0o600 });
+      }
+    }
+  } catch (_) { /* fall through to ephemeral */ }
+  if (!s) {
+    if (!state.bridgeHubSecretEphemeral) state.bridgeHubSecretEphemeral = crypto.randomBytes(32).toString('hex');
+    s = state.bridgeHubSecretEphemeral;
+  }
+  state.bridgeHubSecret = s;
+  return s;
+}
+
+function _bridgeTunnelToken(ctx) {
+  return crypto.createHash('sha256').update(`${_bridgeHubSecret()}/${_bridgeNodeKey(ctx)}`).digest('hex');
+}
 
 function _bridgeWorkerMap() {
   if (!state.bridgeWorkers) state.bridgeWorkers = new Map();
@@ -3706,7 +3843,44 @@ async function _bridgeTick(ctxId) {
       if (!ensured.ok) {
         fail(`ensure camb: ${ensured.error || 'failed'}${ensured.detail ? `: ${ensured.detail}` : ''}`);
       } else {
-        const res = await _sshTransport.execRemote({ ...baseOpts, command: `${REMOTE_CAMB} --hub-drain`, timeout_ms: BRIDGE_DRAIN_TIMEOUT_MS });
+        const hubId = _bridgeHubId();
+        // Tunnel (§10): keep a reverse forward armed on this node's exec
+        // conn so ferries can push requests synchronously. ensureForwardIn
+        // is idempotent per pooled client and re-arms after pool churn.
+        // The mailbox drain below stays the source of truth — a dead
+        // tunnel just means no fast path until the next tick.
+        let tunPort = 0;
+        if (typeof _sshTransport.ensureForwardIn === 'function') {
+          try {
+            if (!w.tunnelHandler) w.tunnelHandler = (conn) => { void _bridgeTunnelServe(ctxId, conn); };
+            const tf = await _sshTransport.ensureForwardIn(baseOpts, { ports: [41777, 0], onConnection: w.tunnelHandler });
+            if (tf && tf.ok) {
+              tunPort = tf.port;
+              if (!w.tokenDeployed) {
+                const tw = await _sshTransport.writeRemoteFile({ ...baseOpts, remotePath: `.cam/camb/hubs/${hubId}.token`, content: `${_bridgeTunnelToken(ctx)}\n` });
+                if (tw && tw.ok) {
+                  await _sshTransport.execRemote({ ...baseOpts, command: `chmod 600 ~/.cam/camb/hubs/${hubId}.token` });
+                  w.tokenDeployed = true;
+                }
+              }
+            }
+          } catch (_) { /* tunnel is best-effort */ }
+        }
+        // Router coverage card (v1.1 §9.2): refreshed every 15s — or
+        // immediately when the tunnel port (dis)appears so ferries see
+        // the fast path state promptly. Card failures never fail the tick.
+        if (!w.lastCardAt || Date.now() - w.lastCardAt > BRIDGE_CARD_INTERVAL_MS || (w.cardTunnelPort || 0) !== tunPort) {
+          try {
+            const cdir = await _sshTransport.execRemote({ ...baseOpts, command: 'mkdir -p ~/.cam/camb/hubs' });
+            if (cdir && cdir.ok) {
+              const card = { hub_id: hubId, ts: Math.floor(Date.now() / 1000), covers: _bridgeCoverageEntries(), proto: 1 };
+              if (tunPort) card.tunnel = { port: tunPort };
+              const cw = await _sshTransport.writeRemoteFile({ ...baseOpts, remotePath: `.cam/camb/hubs/${hubId}.json`, content: JSON.stringify(card) });
+              if (cw && cw.ok) { w.lastCardAt = Date.now(); w.cardTunnelPort = tunPort; }
+            }
+          } catch (_) { /* best-effort */ }
+        }
+        const res = await _sshTransport.execRemote({ ...baseOpts, command: `${REMOTE_CAMB} --hub-drain --bridge-id ${hubId}`, timeout_ms: BRIDGE_DRAIN_TIMEOUT_MS });
         if (!res || !res.ok) {
           const err = res || {};
           // A failed drain right after a cache-hit ensure means the
@@ -3728,13 +3902,43 @@ async function _bridgeTick(ctxId) {
             w.lastError = null;
             w.backoffMs = BRIDGE_POLL_MS;
             const responses = [];
+            const releases = [];
             for (const req of reqs) {
               try {
                 // eslint-disable-next-line no-await-in-loop
-                responses.push(await _bridgeDispatch(ctx, req));
+                const resp = await _bridgeHandleRequest(ctx, req);
+                if (resp && resp.release) {
+                  // Multi-hub overlap: this hub cannot route the bare
+                  // ref. Re-publish to the outbox (attempts+1) so an
+                  // overlapping hub can claim it; the cap converts the
+                  // last attempt into the definitive error (audited —
+                  // it is a terminal dispatch outcome).
+                  const attempts = Number((req && req.attempts) || 0) + 1;
+                  if (attempts >= BRIDGE_MAX_ATTEMPTS) {
+                    responses.push({ id: req && req.id, ok: false, error: resp.error || 'unroutable target' });
+                    _bridgeAudit({
+                      ts: nowIso(), from_ctx: (ctx && ctx.name) || '',
+                      from_agent: (req && req.from && req.from.agent) || '',
+                      argv: (req && req.argv) || [], target_ctx: null,
+                      ok: false, error: resp.error || 'unroutable target',
+                    });
+                  } else {
+                    releases.push({ ...(req || {}), attempts });
+                    pushLog('info', `bridge ${ctx.name}: released ${String((req && req.id) || '').slice(0, 8)} (attempt ${attempts}/${BRIDGE_MAX_ATTEMPTS}, not in this hub's fleet)`);
+                  }
+                } else {
+                  responses.push(resp);
+                }
               } catch (e) {
                 responses.push({ id: req && req.id, ok: false, error: `hub dispatch error: ${e && e.message}` });
               }
+            }
+            for (const rel of releases) {
+              const rid = String(rel.id || '');
+              if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(rid) || rid.includes('..')) continue;
+              // eslint-disable-next-line no-await-in-loop
+              const wr = await _sshTransport.writeRemoteFile({ ...baseOpts, remotePath: `.cam/camb/outbox/${rid}.json`, content: JSON.stringify(rel) });
+              if (!wr || !wr.ok) { fail(`outbox release ${rid}: ${(wr && wr.error) || 'failed'}`); break; }
             }
             if (responses.length) {
               // eslint-disable-next-line no-await-in-loop
@@ -3795,23 +3999,40 @@ function _bridgeCandidate(ctx, a) {
   return `${ctx.name}:${String(a.id || '')} ${String(a.task_name || '')}`.trim();
 }
 
-/** Resolve a `[node:]agent` ref to {ctx, agent}. Bare refs match the
- *  source node FIRST (local-first semantics), then the fleet; >1
- *  fleet-wide hit returns {candidates: ['<ctx>:<id> <name>', …]}. */
+/** Resolve a `[node:]agent` ref to {ctx, agent}. The node part may be a
+ *  context name (hub-local) OR a canonical endpoint key user@host:port
+ *  (cross-hub identity from coverage cards) — prefix-matched against
+ *  both forms so `<key>:<agent>` parses despite its inner colons. Bare
+ *  refs match the source node FIRST (local-first semantics), then the
+ *  fleet; >1 fleet-wide hit returns {candidates: ['<ctx>:<id> <name>',
+ *  …]}. A bare-ref total miss returns {unroutable: true} so multi-hub
+ *  callers can release the event instead of failing it. */
 function _bridgeResolveTarget(fromCtx, ref) {
   const raw = String(ref || '');
   if (!raw) return { error: 'missing target' };
   const ctxs = Array.isArray(state.store && state.store.contexts) ? state.store.contexts : [];
   if (raw.includes(':')) {
-    const ctxName = raw.slice(0, raw.indexOf(':'));
-    const agentRef = raw.slice(raw.indexOf(':') + 1);
-    const ctx = ctxs.find(c => c && c.name === ctxName);
-    if (!ctx) return { error: `unknown node '${ctxName}'` };
+    let ctx = null;
+    let agentRef = '';
+    for (const c of ctxs) {
+      if (!c) continue;
+      const nameP = `${c.name}:`;
+      const key = _bridgeNodeKey(c);
+      const keyP = key ? `${key}:` : '';
+      if (raw.startsWith(nameP)) { ctx = c; agentRef = raw.slice(nameP.length); break; }
+      if (keyP && raw.startsWith(keyP)) { ctx = c; agentRef = raw.slice(keyP.length); break; }
+    }
+    if (!ctx) {
+      // Node part = everything up to the last colon (agent refs never
+      // contain ':'), so endpoint-key forms report sanely too.
+      const nodePart = raw.slice(0, raw.lastIndexOf(':'));
+      return { error: `unknown node '${nodePart}'` };
+    }
     if (!agentRef) return { error: 'missing target' };
     const matches = _bridgeMatchAgent(_bridgeAgentsForContext(ctx), agentRef);
-    if (!matches.length) return { error: `no agent '${agentRef}' on node '${ctxName}'` };
+    if (!matches.length) return { error: `no agent '${agentRef}' on node '${ctx.name}'` };
     if (matches.length > 1) return { candidates: matches.map(a => _bridgeCandidate(ctx, a)) };
-    return { ctx, agent: matches[0] };
+    return { ctx, agent: matches[0], agentRef };
   }
   const local = fromCtx ? _bridgeMatchAgent(_bridgeAgentsForContext(fromCtx), raw) : [];
   if (local.length === 1) return { ctx: fromCtx, agent: local[0] };
@@ -3820,7 +4041,7 @@ function _bridgeResolveTarget(fromCtx, ref) {
   for (const c of ctxs) {
     for (const a of _bridgeMatchAgent(_bridgeAgentsForContext(c), raw)) fleet.push({ ctx: c, agent: a });
   }
-  if (!fleet.length) return { error: `no agent matches '${raw}'` };
+  if (!fleet.length) return { error: `no agent matches '${raw}'`, unroutable: true };
   if (fleet.length > 1) return { candidates: fleet.map(m => _bridgeCandidate(m.ctx, m.agent)) };
   return fleet[0];
 }
@@ -3872,6 +4093,106 @@ function _bridgeAudit(entry) {
   } catch (_) { /* audit must never break dispatch */ }
 }
 
+/** Tunnel request handler (§10): one JSON line in, one JSON line out.
+ *  The forwarded port is reachable by ANY process on the node, so the
+ *  per-node token (derived from the hub secret, deployed 0600 next to
+ *  the card) gates every request; the dispatch funnel is shared with
+ *  the mailbox — same schema, same consent, same audit, same seen-id
+ *  idempotency. A release maps to not_my_fleet so the ferry tries the
+ *  next tunnel or falls back to the mailbox. */
+function _bridgeTunnelServe(ctxId, conn) {
+  const stream = conn && conn.stream;
+  if (!stream) return;
+  const respond = (obj) => {
+    try { stream.write(JSON.stringify(obj) + '\n'); } catch (_) { /* noop */ }
+    try { stream.end(); } catch (_) { /* noop */ }
+  };
+  const ctxs = (state.store && Array.isArray(state.store.contexts)) ? state.store.contexts : [];
+  const ctx = ctxs.find(c => c && String(c.id) === String(ctxId));
+  if (!ctx || !ctx.machine || ctx.machine.bridge !== true) {
+    respond({ ok: false, error: 'bridge disabled' });
+    return;
+  }
+  let buf = '';
+  let served = false;
+  stream.on('data', (chunk) => {
+    if (served) return;
+    buf += chunk.toString('utf8');
+    const nl = buf.indexOf('\n');
+    if (nl < 0) {
+      if (buf.length > 4 * 1024 * 1024) { served = true; respond({ ok: false, error: 'request too large' }); }
+      return;
+    }
+    served = true;
+    void (async () => {
+      let payload = null;
+      try { payload = JSON.parse(buf.slice(0, nl)); } catch (_) { /* handled below */ }
+      if (!payload || typeof payload !== 'object') return respond({ ok: false, error: 'bad request frame' });
+      const given = Buffer.from(String(payload.token || ''));
+      const want = Buffer.from(_bridgeTunnelToken(ctx));
+      if (given.length !== want.length || !crypto.timingSafeEqual(given, want)) {
+        return respond({ ok: false, error: 'unauthorized' });
+      }
+      const req = payload.request;
+      if (!req || typeof req !== 'object' || !Array.isArray(req.argv)) {
+        return respond({ ok: false, error: 'missing request' });
+      }
+      try {
+        const resp = await _bridgeHandleRequest(ctx, req);
+        if (resp && resp.release) {
+          return respond({ id: req.id, ok: false, error: `not_my_fleet: ${resp.error || 'unroutable'}` });
+        }
+        respond(resp);
+      } catch (e) {
+        respond({ id: req && req.id, ok: false, error: `hub dispatch error: ${e && e.message}` });
+      }
+    })();
+  });
+  stream.on('error', () => { /* half-open tunnel sockets die quietly */ });
+}
+
+/** Shared request funnel for the mailbox drain loop AND the tunnel
+ *  listener (v1.1/v2): seen-id dedup → dispatch → cache the response. A
+ *  duplicate event id gets the cached response re-delivered, never a
+ *  second dispatch; a duplicate arriving WHILE the first dispatch runs
+ *  awaits the same promise (tunnel retry racing a mailbox claim).
+ *  Release markers pass through uncached — routing signals, not
+ *  answers. */
+async function _bridgeHandleRequest(ctx, req) {
+  const rid = req && req.id;
+  const ctxKey = String(ctx && ctx.id);
+  if (rid) {
+    const seen = _bridgeSeenGet(ctxKey, rid);
+    if (seen) {
+      pushLog('info', `bridge ${(ctx && ctx.name) || '?'}: duplicate ${String(rid).slice(0, 8)} — cached response re-delivered`);
+      return seen;
+    }
+    const pm = _bridgePendingMap().get(ctxKey);
+    const pending = pm && pm.get(String(rid));
+    if (pending) return pending;
+  }
+  const p = (async () => {
+    try {
+      const resp = await _bridgeDispatch(ctx, req);
+      if (rid) _bridgeSeenPut(ctxKey, rid, resp);
+      return resp;
+    } finally {
+      const pm = _bridgePendingMap().get(ctxKey);
+      if (pm && rid) {
+        pm.delete(String(rid));
+        if (!pm.size) _bridgePendingMap().delete(ctxKey);
+      }
+    }
+  })();
+  if (rid) {
+    const all = _bridgePendingMap();
+    let pm = all.get(ctxKey);
+    if (!pm) { pm = new Map(); all.set(ctxKey, pm); }
+    pm.set(String(rid), p);
+  }
+  return p;
+}
+
 async function _bridgeDispatch(fromCtx, req) {
   const argv = (req && Array.isArray(req.argv)) ? req.argv.map(a => String(a == null ? '' : a)) : [];
   const verb = argv[0] || '';
@@ -3895,6 +4216,13 @@ async function _bridgeDispatch(fromCtx, req) {
         const resolved = _bridgeResolveTarget(fromCtx, ref);
         if (resolved.candidates) {
           out = { ok: false, error: 'ambiguous target', candidates: resolved.candidates };
+        } else if (resolved.unroutable) {
+          // Bare-ref fleet miss. Multi-hub overlap: another hub may
+          // cover the target, so signal release (re-publish) instead of
+          // failing. Not a dispatch — no audit here; the terminal
+          // outcome (success or attempts-exhausted error) is audited by
+          // whoever finishes the event.
+          return { id: req && req.id, release: true, error: resolved.error };
         } else if (resolved.error) {
           out = { ok: false, error: resolved.error };
         } else {
@@ -3903,10 +4231,13 @@ async function _bridgeDispatch(fromCtx, req) {
             out = { ok: false, error: 'target node has bridge disabled' };
           } else {
             const fwd = rest.slice();
-            // Strip the "node:" prefix before forwarding; the target
-            // node's camc resolves id-prefixes/names itself. Every
-            // other token passes through byte-identical.
-            if (ref.includes(':')) fwd[refIndex] = ref.slice(ref.indexOf(':') + 1);
+            // Strip the node prefix before forwarding; the target
+            // node's camc resolves id-prefixes/names itself. Use the
+            // resolver's agentRef — the prefix may be an endpoint key
+            // (user@host:port) with inner colons, so a naive first-colon
+            // strip would mangle it. Every other token passes through
+            // byte-identical.
+            if (resolved.agentRef) fwd[refIndex] = resolved.agentRef;
             // eslint-disable-next-line no-await-in-loop
             const exec = await _execCamcOnContext(resolved.ctx, [verb, ...fwd], {
               timeoutMs: verb === 'msg' ? BRIDGE_MSG_TIMEOUT_MS : Math.max(SYNC_DEFAULT_TIMEOUT_MS, 30000),
@@ -5434,8 +5765,12 @@ async function handle(req, res) {
           detail: `Output unavailable: ${resolved.error}`,
         });
       }
-      // lines=0 → full scrollback per `camc capture` default.
-      const captured = await _captureAgentOutput(resolved, id, 0, format);
+      // lines=0 → full scrollback per `camc capture` default; a positive
+      // ?lines=N bounds the capture (the desktop terminal's attach-time
+      // history replay uses it — a full 50k-line dump stalls slow links).
+      const linesParam = Number.parseInt(url.searchParams.get('lines') || '0', 10);
+      const lines = Number.isFinite(linesParam) && linesParam > 0 ? Math.min(linesParam, 20000) : 0;
+      const captured = await _captureAgentOutput(resolved, id, lines, format);
       if (!captured.ok) {
         pushLog('warn', `fulloutput ${id} via ${resolved.ctx.name} failed: ${captured.error}`);
         return sendJson(res, 502, {
@@ -5835,6 +6170,15 @@ async function getAttachConnectOpts(agentId) {
   const fallbackOpts = (machineOpts.host !== opts.host
     || machineOpts.user !== opts.user
     || String(machineOpts.port || 22) !== String(opts.port || 22)) ? machineOpts : null;
+
+  // Overlap the TERM-pool SSH handshake with the camc probe/ensure
+  // below: exec and terminal pools connect to the same endpoint, and
+  // running them serially doubles the handshake cost of a cold attach
+  // (~2x connect time before the first byte). The warm is fire-and-
+  // forget — openTerminalChannel reuses the in-flight entry by pool key.
+  if (_sshTransport && typeof _sshTransport.warmConnection === 'function') {
+    try { _sshTransport.warmConnection(opts, { pool: 'term' }); } catch { /* noop */ }
+  }
 
   // Attach fast path: if the bundled camc is already verified on this
   // host (ready-cache hit), skip the per-attach ensure probe. On a

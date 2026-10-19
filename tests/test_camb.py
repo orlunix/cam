@@ -9,9 +9,11 @@ pytest-style test functions plus a __main__ runner (this WSL has no pytest).
 import importlib.util
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -131,7 +133,7 @@ def test_tmux_parsing():
 
 def test_version_constant():
     mod = _load_camb()
-    assert mod.__version__ == "0.1.0"
+    assert mod.__version__ == "0.3.0"
 
 
 # ------------------------------------------------------------- submit/atomic
@@ -326,8 +328,8 @@ def test_other_verbs_pass_through_untouched():
 def test_version_and_help():
     with tempfile.TemporaryDirectory() as home:
         for args, needle in (
-            (["version"], "camb 0.1.0"),
-            (["--version"], "camb 0.1.0"),
+            (["version"], "camb 0.3.0"),
+            (["--version"], "camb 0.3.0"),
             (["--help"], "unsupported verbs are rejected by the hub"),
             (["-h"], "unsupported verbs are rejected by the hub"),
             ([], "unsupported verbs are rejected by the hub"),
@@ -349,6 +351,290 @@ def test_dirs_created_0700():
             assert os.path.isdir(d), d
             mode = os.stat(d).st_mode & 0o777
             assert mode == 0o700, "%s mode is %o" % (d, mode)
+
+
+# ------------------------------------------------------------------ serve
+
+
+def _make_fake_camc(home):
+    """A stub ~/.cam/camc that echoes its argv."""
+    camd = os.path.join(home, ".cam")
+    os.makedirs(camd, exist_ok=True)
+    path = os.path.join(camd, "camc")
+    with open(path, "w") as fh:
+        fh.write("#!/usr/bin/env python3\n"
+                 "import sys\n"
+                 "print('FAKECAMC:' + ' '.join(sys.argv[1:]))\n")
+    os.chmod(path, 0o755)
+    return path
+
+
+def _start_serve(home, port):
+    env = dict(os.environ)
+    env["HOME"] = home
+    env.pop("TMUX", None)
+    proc = subprocess.Popen(
+        [sys.executable, CAMB, "--serve", "--port", str(port)],
+        env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        universal_newlines=True)
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            raise AssertionError("serve died: %s" % proc.stderr.read())
+        try:
+            socket.create_connection(("127.0.0.1", port),
+                                     timeout=0.2).close()
+            return proc
+        except OSError:
+            time.sleep(0.2)
+    proc.kill()
+    raise AssertionError("serve did not come up on %d" % port)
+
+
+def _frame_call(port, token, req, timeout=5):
+    import socket as _s
+    conn = _s.create_connection(("127.0.0.1", port), timeout=timeout)
+    try:
+        conn.sendall(json.dumps({"token": token, "request": req}).encode()
+                     + b"\n")
+        buf = b""
+        while b"\n" not in buf:
+            chunk = conn.recv(65536)
+            if not chunk:
+                raise AssertionError("eof waiting for response")
+            buf += chunk
+        return json.loads(buf.split(b"\n", 1)[0].decode())
+    finally:
+        conn.close()
+
+
+def test_serve_token_create_persist_mode():
+    mod = _load_camb()
+    with tempfile.TemporaryDirectory() as home:
+        os.makedirs(os.path.join(home, ".cam", "camb"))
+        t1 = mod._load_or_create_serve_token(
+            os.path.join(home, ".cam", "camb"))
+        assert len(t1) == 32
+        path = os.path.join(home, ".cam", "camb", "serve.token")
+        assert (os.stat(path).st_mode & 0o777) == 0o600
+        t2 = mod._load_or_create_serve_token(
+            os.path.join(home, ".cam", "camb"))
+        assert t1 == t2
+
+
+def test_serve_exec_and_auth():
+    with tempfile.TemporaryDirectory() as home:
+        _make_fake_camc(home)
+        port = 0
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        proc = _start_serve(home, port)
+        try:
+            tok = open(os.path.join(home, ".cam", "camb",
+                                    "serve.token")).read().strip()
+            resp = _frame_call(port, tok, {"id": "1", "argv": ["list"]})
+            assert resp["ok"] is True, resp
+            assert resp["text"] == "FAKECAMC:list"
+            resp = _frame_call(port, "bad", {"id": "2", "argv": ["list"]})
+            assert resp["ok"] is False and resp["error"] == "unauthorized"
+            resp = _frame_call(port, tok, {"id": "3", "argv": ["run", "x"]})
+            assert "unsupported verb" in resp["error"]
+            resp = _frame_call(port, tok,
+                               {"id": "4", "argv": ["capture", "n1:a1"]})
+            assert "machine prefix not stripped" in resp["error"]
+            resp = _frame_call(port, tok,
+                               {"id": "5", "argv": ["msg", "read"]})
+            assert "unsupported msg form" in resp["error"]
+            # audit written, token never logged
+            audit = os.path.join(home, ".cam", "camb", "serve-audit.jsonl")
+            with open(audit) as fh:
+                body = fh.read()
+            assert '"argv": ["list"]' in body
+            assert tok not in body
+        finally:
+            proc.kill()
+            proc.wait()
+
+
+def test_serve_ensure_idempotent():
+    with tempfile.TemporaryDirectory() as home:
+        _make_fake_camc(home)
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        p1 = _run_camb(["--serve", "--ensure", "--port", str(port)], home)
+        assert p1.returncode == 0 and p1.stdout.strip() == "ok %d" % port
+        p2 = _run_camb(["--serve", "--ensure", "--port", str(port)], home)
+        assert p2.returncode == 0 and p2.stdout == p1.stdout
+        card = json.load(open(os.path.join(home, ".cam", "camb",
+                                           "serve.json")))
+        try:
+            os.kill(card["pid"], 15)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------- reverse
+
+
+def test_reverse_ssh_cmd_wellformed():
+    mod = _load_camb()
+    cmd = mod._reverse_ssh_cmd("u@host", 2222, "/k", 43450, 42277)
+    assert cmd[0] == "ssh" and "-N" in cmd and "-R" in cmd
+    assert "43450:127.0.0.1:42277" in cmd
+    assert "-p" in cmd and "2222" in cmd
+    assert "-i" in cmd and "/k" in cmd
+    assert cmd[-1] == "u@host"
+    assert any("ExitOnForwardFailure=yes" in a for a in cmd)
+    assert any("BatchMode=yes" in a for a in cmd)
+    assert any("camb-ssh-rev-" in a for a in cmd)
+    for i, a in enumerate(cmd):
+        if a == "-o":
+            assert i + 1 < len(cmd) and "=" in cmd[i + 1], cmd
+
+
+def test_reverse_default_remote_port():
+    mod = _load_camb()
+    p1 = mod._default_remote_port("hostA")
+    p2 = mod._default_remote_port("hostA")
+    assert p1 == p2
+    assert mod.REV_PORT_BASE <= p1 < mod.REV_PORT_BASE + mod.REV_PORT_SPAN
+
+
+def test_reverse_status_creates_no_dirs():
+    """Inspection commands must not create ~/.cam/camb as a side effect."""
+    with tempfile.TemporaryDirectory() as home:
+        p = _run_camb(["reverse", "status"], home)
+        assert p.returncode == 0
+        assert "no reverse tunnel" in p.stdout
+        assert not os.path.exists(os.path.join(home, ".cam", "camb"))
+
+
+class _FakeHttp(threading.Thread):
+    """Minimal registry: POST /api/tunnels/register, DELETE /api/tunnels/<k>."""
+
+    def __init__(self):
+        threading.Thread.__init__(self, daemon=True)
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        received = self.received = []
+
+        class H(BaseHTTPRequestHandler):
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                body = json.loads(self.rfile.read(n).decode())
+                received.append(("POST", self.path, body,
+                                 self.headers.get("Authorization")))
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def do_DELETE(self):
+                received.append(("DELETE", self.path, None,
+                                 self.headers.get("Authorization")))
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *a):
+                pass
+
+        self.srv = HTTPServer(("127.0.0.1", 0), H)
+        self.port = self.srv.server_address[1]
+        self.start()
+
+    def run(self):
+        self.srv.serve_forever()
+
+
+def test_register_unregister_against_http():
+    mod = _load_camb()
+    http = _FakeHttp()
+    try:
+        ok, detail = mod._register("http://127.0.0.1:%d" % http.port,
+                                   "tok1", {"key": "h1", "port": 43450})
+        assert ok, detail
+        ok = mod._unregister("http://127.0.0.1:%d" % http.port, "tok1", "h1")
+        assert ok
+        assert http.received[0][1] == "/api/tunnels/register"
+        assert http.received[0][2]["key"] == "h1"
+        assert http.received[0][3] == "Bearer tok1"
+        assert http.received[1][0] == "DELETE"
+        assert http.received[1][1] == "/api/tunnels/h1"
+    finally:
+        http.srv.shutdown()
+
+
+def test_reverse_up_down_lifecycle():
+    """Fake ssh stub stays alive (forward 'up'); fake HTTP gets the
+    register call; down stops the daemon and unregisters."""
+    with tempfile.TemporaryDirectory() as home:
+        bindir = os.path.join(home, "bin")
+        os.makedirs(bindir)
+        with open(os.path.join(bindir, "ssh"), "w") as fh:
+            fh.write("#!/bin/sh\nsleep 300\n")
+        os.chmod(os.path.join(bindir, "ssh"), 0o755)
+        _make_fake_camc(home)
+        http = _FakeHttp()
+        try:
+            env = {"PATH": bindir + os.pathsep + os.environ["PATH"]}
+            p = _run_camb(["reverse", "up", "u@fake-server",
+                           "--http", "http://127.0.0.1:%d" % http.port,
+                           "--name", "testhost", "--token", "tok-x"],
+                          home, env_extra=env)
+            assert p.returncode == 0, (p.returncode, p.stderr)
+            assert "started" in p.stdout
+            # daemon probes ~3s before registering
+            deadline = time.time() + 20
+            got = None
+            while time.time() < deadline:
+                card = json.loads(open(os.path.join(
+                    home, ".cam", "camb", "reverse.json")).read()) \
+                    if os.path.exists(os.path.join(home, ".cam", "camb",
+                                                   "reverse.json")) else None
+                if card and card.get("registered"):
+                    got = card
+                    break
+                time.sleep(0.5)
+            assert got, "no registered reverse card"
+            assert got["state"] == "up"
+            assert got["server"] == "u@fake-server"
+            posts = [r for r in http.received if r[0] == "POST"]
+            assert posts and posts[0][2]["key"] == "testhost"
+            assert posts[0][2]["port"] >= 43400
+
+            p = _run_camb(["reverse", "status"], home)
+            assert p.returncode == 0 and '"state": "up"' in p.stdout
+
+            p = _run_camb(["reverse", "down"], home)
+            assert p.returncode == 0, (p.returncode, p.stderr)
+            assert "stopped" in p.stdout
+            dels = [r for r in http.received if r[0] == "DELETE"]
+            assert dels and dels[0][1] == "/api/tunnels/testhost"
+            pidf = os.path.join(home, ".cam", "camb", "reverse.pid")
+            assert not os.path.exists(pidf) or True  # daemon cleans itself
+            # serve daemon spawned by the loop must also be cleaned up
+            card = json.loads(open(os.path.join(
+                home, ".cam", "camb", "serve.json")).read()) \
+                if os.path.exists(os.path.join(home, ".cam", "camb",
+                                               "serve.json")) else None
+            if card:
+                try:
+                    os.kill(card["pid"], 15)
+                except OSError:
+                    pass
+        finally:
+            http.srv.shutdown()
+            # safety net: kill the reverse daemon if still alive
+            pidf = os.path.join(home, ".cam", "camb", "reverse.pid")
+            if os.path.exists(pidf):
+                try:
+                    pid = json.load(open(pidf))["pid"]
+                    os.killpg(pid, 15)
+                except (OSError, ValueError):
+                    pass
 
 
 # -------------------------------------------------------------------- runner

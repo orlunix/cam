@@ -1,6 +1,11 @@
 # Desktop Terminal tmux Interactions Spec
 
-**Status:** draft (2026-07-14)  
+**Status:** draft (2026-07-14). **Feature B is superseded (2026-10-13):**
+tmux copy-mode controls were replaced by native-terminal browsing — fresh
+attaches replay pane history into a 20000-line local scrollback, the live
+stream is stripped of alt-screen switches (`?47/1047/1048/1049` h/l) so
+TUI agents keep their scrollback, and wheel / PageUp / PageDown / ↑
+History / ↓ To bottom all operate on the local buffer only.
 **Scope:** CAM-Desktop Direct/Electron Terminal mode.  
 **Out of scope:** Relay mode, Mobile UI, Rich/Plain output behavior, and
 changing CAMC's message/send fast path.

@@ -6770,3 +6770,275 @@ dee07ef chore(camc): prepare 1.2.137 release
 587f478 fix(camc): trust exact Codex workdir
 44b334f chore(camc): prepare 1.2.137 release
 ```
+## v1.2.165  886f323-dirty 2026-10-14 14:02
+
+- Lines: 24722
+- Output: /mnt/c/Users/Thinkpad/gitlab/cam/dist/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.166  886f323-dirty 2026-10-14 14:08
+
+- Lines: 24722
+- Output: /mnt/c/Users/Thinkpad/gitlab/cam/dist/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.167  886f323-dirty 2026-10-14 17:24
+
+- Lines: 24756
+- Output: /mnt/c/Users/Thinkpad/gitlab/cam/dist/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.168  886f323-dirty 2026-10-14 17:25
+
+- Lines: 24753
+- Output: /mnt/c/Users/Thinkpad/gitlab/cam/dist/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.169  886f323-dirty 2026-10-14 17:32
+
+- Lines: 24753
+- Output: /mnt/c/Users/Thinkpad/gitlab/cam/dist/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.170  886f323-dirty 2026-10-14 17:33
+
+- Lines: 24765
+- Output: /mnt/c/Users/Thinkpad/gitlab/cam/dist/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.171  886f323-dirty 2026-10-14 17:40
+
+- Lines: 24786
+- Output: /mnt/c/Users/Thinkpad/gitlab/cam/dist/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.172  886f323-dirty 2026-10-15 13:13
+
+- Lines: 24795
+- Output: /mnt/c/Users/Thinkpad/gitlab/cam/dist/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.173  886f323-dirty 2026-10-15 13:15
+
+- Lines: 25376
+- Output: /mnt/c/Users/Thinkpad/gitlab/cam/dist/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.174  886f323-dirty 2026-10-15 14:10
+
+- Lines: 25690
+- Output: /mnt/c/Users/Thinkpad/gitlab/cam/dist/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.175  886f323-dirty 2026-10-15 16:16
+
+- Lines: 25889
+- Output: /mnt/c/Users/Thinkpad/gitlab/cam/dist/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.176  886f323-dirty 2026-10-15 16:45
+
+- Lines: 25927
+- Output: /mnt/c/Users/Thinkpad/gitlab/cam/dist/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.177  886f323-dirty 2026-10-15 17:07
+
+- Lines: 25925
+- Output: /mnt/c/Users/Thinkpad/gitlab/cam/dist/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.178  886f323-dirty 2026-10-15 17:25
+
+- Lines: 25943
+- Output: /mnt/c/Users/Thinkpad/gitlab/cam/dist/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.179  886f323-dirty 2026-10-16 11:25
+
+- Lines: 26128
+- Output: /mnt/c/Users/Thinkpad/gitlab/cam/dist/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.180  886f323-dirty 2026-10-16 11:29
+
+- Lines: 25779
+- Output: /tmp/pytest-of-hren/pytest-0/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.181  886f323-dirty 2026-10-16 11:29
+
+- Lines: 26128
+- Output: /tmp/pytest-of-hren/pytest-0/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.182  886f323-dirty 2026-10-16 11:32
+
+- Lines: 26129
+- Output: /mnt/c/Users/Thinkpad/gitlab/cam/dist/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.183  886f323-dirty 2026-10-16 11:34
+
+- Lines: 25780
+- Output: /tmp/pytest-of-hren/pytest-1/test_build_camc_respects_disab0/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.184  886f323-dirty 2026-10-16 11:34
+
+- Lines: 26129
+- Output: /tmp/pytest-of-hren/pytest-1/test_build_camc_default_includ0/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```
+
+## v1.2.185  886f323-dirty 2026-10-16 11:47
+
+- Lines: 24786
+- Output: /mnt/c/Users/Thinkpad/gitlab/cam/dist/camc
+- Recent changes:
+```
+886f3239 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa27 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d0 feat(camc): centralize tool launcher execution
+43c8caaa feat(camc): harden native API proxy and isolate agents
+587f4788 fix(camc): trust exact Codex workdir
+```

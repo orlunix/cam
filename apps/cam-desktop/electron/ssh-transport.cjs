@@ -279,6 +279,11 @@ async function _retryOnceAfterPoolDrop(opts, reason, fn) {
 
 function _dropEntry(key, _reason) {
   const entry = _pool.get(key) || _termPool.get(key);
+  // Armed remote forwards are bound to a specific pooled client; when
+  // that client goes away the forward record must go with it (the next
+  // ensureForwardIn call re-arms on the fresh connection).
+  const fwd = _forwards.get(key);
+  if (fwd && (!entry || fwd.client === entry.client)) _forwards.delete(key);
   if (!entry) return;
   entry.poolRef.delete(key);
   _clearIdleTimer(entry);
@@ -380,6 +385,14 @@ function _getOrCreate(key, opts, ssh2, poolRef) {
   entry.readyPromise = new Promise((resolve, reject) => {
     const t0 = Date.now();
     let settled = false;
+    // Drop only while the pool slot still holds THIS entry: a dying
+    // predecessor's late end/close/error events share the same pool key
+    // and must not assassinate a freshly-created replacement (the
+    // closeAll / OS-resume + immediate-reattach race — the replacement's
+    // readyPromise then never settled and every attach stalled ~20s).
+    const dropIfCurrent = (reason) => {
+      if (entry.poolRef.get(key) === entry) _dropEntry(key, reason);
+    };
     const failConnect = (err) => {
       if (settled) return;
       settled = true;
@@ -389,30 +402,32 @@ function _getOrCreate(key, opts, ssh2, poolRef) {
       if (dbgLines.length) {
         _log(`connect fail ${opts.host}:${port} handshake debug (last ${dbgLines.length}):\n  ` + dbgLines.slice(-40).join('\n  '));
       }
-      _dropEntry(key, 'connect_error');
+      dropIfCurrent('connect_error');
       reject(c);
     };
     const onError = (err) => {
-      if (entry.state === 'connecting') failConnect(err);
+      if (!settled) failConnect(err);
       else {
         _log(`connect lost ${opts.host}:${port} (pool=${pool === _termPool ? 'term' : 'exec'}): ${(err && err.message) || 'error'}`);
-        _dropEntry(key, 'error');
+        dropIfCurrent('error');
       }
     };
     _log(`connect start ${opts.user}@${opts.host}:${port}${opts.jump ? ` via ${opts.jump.user}@${opts.jump.host}:${opts.jump.port || 22}` : ''} (pool=${pool === _termPool ? 'term' : 'exec'})`);
     const onClose = () => {
-      // If we never reached ready, treat close as connect failure.
-      if (entry.state === 'connecting') failConnect(new Error('Connection lost before handshake'));
+      // Any close before the promise settled must reject it — an entry
+      // killed mid-handshake (state already 'closed' via closeAll) is no
+      // longer 'connecting', but its consumers are still waiting.
+      if (!settled) failConnect(new Error('Connection lost before handshake'));
       else {
         _log(`connect closed ${opts.host}:${port} (pool=${pool === _termPool ? 'term' : 'exec'})`);
-        _dropEntry(key, 'close');
+        dropIfCurrent('close');
       }
     };
     const onEnd = () => {
-      if (entry.state === 'connecting') failConnect(new Error('Connection ended before handshake'));
+      if (!settled) failConnect(new Error('Connection ended before handshake'));
       else {
         _log(`connect ended ${opts.host}:${port} (pool=${pool === _termPool ? 'term' : 'exec'})`);
-        _dropEntry(key, 'end');
+        dropIfCurrent('end');
       }
     };
 
@@ -1072,12 +1087,113 @@ async function openTerminalChannel(opts, hooks = {}) {
   });
 }
 
+/* ── Remote port forwarding (bridge tunnel, bridge-protocol-v1 §10) ──
+ * ensureForwardIn arms a forwardIn on the node's EXEC-pool connection
+ * (the hub→node SSH channel the bridge worker already maintains), which
+ * makes 127.0.0.1:<port> ON THE NODE reach back into this process. The
+ * forward is bound to the current pooled client; pool replacement
+ * (drop/reconnect) invalidates it and the next ensure call re-arms on
+ * the new client. 'tcp connection' events are demuxed by destPort so
+ * several forwards can coexist on one client. */
+
+const _forwards = new Map(); // poolKey → { client, port, onConnection, listener }
+
+async function ensureForwardIn(opts, { ports = [41777, 0], onConnection } = {}) {
+  const ssh2 = _loadSsh2();
+  if (!ssh2 || !ssh2.Client) {
+    return { ok: false, error: 'ssh2_unavailable', detail: `ssh2 module not loadable: ${(ssh2 && ssh2._loadError) || 'unknown'}` };
+  }
+  const key = _poolKey(opts);
+  const entry = _getOrCreate(key, opts, ssh2);
+  try {
+    // eslint-disable-next-line no-await-in-loop
+    await entry.readyPromise;
+  } catch (e) {
+    return { ok: false, error: (e && e.error) || 'connect_failed', detail: (e && e.detail) || 'connect failed' };
+  }
+  if (!entry.client) return { ok: false, error: 'no_client', detail: 'pooled entry has no client' };
+  const cur = _forwards.get(key);
+  if (cur && cur.client === entry.client && cur.onConnection === onConnection) {
+    return { ok: true, port: cur.port, cached: true };
+  }
+  if (cur && cur.listener && cur.client && typeof cur.client.removeListener === 'function') {
+    try { cur.client.removeListener('tcp connection', cur.listener); } catch { /* noop */ }
+  }
+  _forwards.delete(key);
+  return await new Promise((resolve) => {
+    let idx = 0;
+    const tryNext = () => {
+      if (idx >= ports.length) {
+        resolve({ ok: false, error: 'forward_failed', detail: 'no candidate port could be bound on the remote side' });
+        return;
+      }
+      const want = ports[idx++];
+      try {
+        entry.client.forwardIn('127.0.0.1', want, (err, boundPort) => {
+          if (err) { tryNext(); return; }
+          const port = Number(boundPort || want) || 0;
+          const listener = (info, accept) => {
+            if (!info || info.destPort !== port) return;
+            let stream = null;
+            try { stream = accept && accept(); } catch { /* noop */ }
+            if (!stream) return;
+            try { onConnection({ stream, info, key }); } catch { try { stream.close(); } catch { /* noop */ } }
+          };
+          entry.client.on('tcp connection', listener);
+          _forwards.set(key, { client: entry.client, port, onConnection, listener });
+          _log(`forwardIn armed ${opts.host}: remote 127.0.0.1:${port}`);
+          resolve({ ok: true, port });
+        });
+      } catch (e) {
+        resolve({ ok: false, error: 'forward_failed', detail: (e && e.message) || 'forwardIn threw' });
+      }
+    };
+    tryNext();
+  });
+}
+
+async function unforwardIn(opts) {
+  const key = _poolKey(opts);
+  const f = _forwards.get(key);
+  if (!f) return { ok: true };
+  _forwards.delete(key);
+  try { f.client.removeListener('tcp connection', f.listener); } catch { /* noop */ }
+  return await new Promise((resolve) => {
+    try { f.client.unforwardIn('127.0.0.1', f.port, () => resolve({ ok: true })); }
+    catch { resolve({ ok: true }); }
+  });
+}
+
+/** Begin connecting a pooled entry for `opts` WITHOUT waiting for it.
+ *  A later consumer for the same pool key (openTerminalChannel for
+ *  'term', execRemote/writeRemoteFile for 'exec') reuses the in-flight
+ *  connect, so the handshake overlaps whatever the caller does in
+ *  between (hub resolution, camc probe/ensure). Idempotent; never
+ *  throws/rejects — a connect failure drops the entry as usual and
+ *  surfaces through the later consumer's own retry path. */
+function warmConnection(opts, { pool = 'term' } = {}) {
+  if (_override) return { ok: false, error: 'override_active' };
+  if (!opts || !opts.host || !opts.user) return { ok: false, error: 'invalid_args' };
+  const ssh2 = _loadSsh2();
+  if (!ssh2 || !ssh2.Client) return { ok: false, error: 'ssh2_unavailable' };
+  const key = _poolKey(opts);
+  const entry = _getOrCreate(key, opts, ssh2, pool === 'term' ? _termPool : _pool);
+  // Swallow early rejection: the consumer awaits the entry itself (or
+  // finds it dropped and retries). Without this tap a failed warm could
+  // surface as an unhandled rejection in the main process.
+  try { entry.readyPromise.catch(() => {}); } catch { /* noop */ }
+  return { ok: true, state: entry.state };
+}
+
 module.exports = {
   execRemote,
   writeRemoteFile,
   listRemoteFiles,
   readRemoteFile,
   openTerminalChannel,
+  warmConnection,
+  ensureForwardIn,
+  unforwardIn,
   setOverride,
   setLogger,
   closeAll,

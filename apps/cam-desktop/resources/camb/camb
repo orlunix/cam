@@ -6,20 +6,39 @@ and prints the hub's response from ~/.cam/camb/inbox/. camb contains NO verb
 validation, NO target parsing and NO fleet knowledge — the hub does
 everything. This keeps camb trivially embeddable into camc later.
 
+Since 0.3.0 camb also carries the host-side reverse-tunnel daemons:
+`--serve` exposes this node's camc over a token-authed 127.0.0.1 JSON-line
+endpoint, and `reverse up` maintains a persistent `ssh -N -R` reverse tunnel
+to a cam server (registering the allocated server-side port with it), so the
+cam server can dispatch onto this host without per-request SSH.
+
 stdlib-only, Python 3.6+.
 """
 
+import hashlib
+import hmac
 import json
 import os
 import re
+import secrets
+import signal
+import socket
+import socketserver
+import subprocess
 import sys
+import threading
 import time
+import urllib.request
 import uuid
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 
 POLL_INTERVAL_S = 0.2
 DEFAULT_TIMEOUT_MS = 30000
+# Coverage cards (~/.cam/camb/hubs/<hub-id>.json) older than this are
+# treated as dead: their coverage stops excluding events from claiming
+# and their claimed leftovers become adoptable by other hubs.
+CARD_TTL_S = 90
 
 HELP = """camb — cam-style fleet bridge client (thin; hub does the real work)
 
@@ -34,7 +53,17 @@ usage: camb <verb> [args...]  (camc-aligned surface)
 
 special modes (handled locally, never sent to the hub):
   camb version | --version     print version
-  camb --hub-drain             atomically drain outbox as a JSON array
+  camb --hub-drain [--bridge-id ID]
+                               atomically claim+drain outbox as JSON
+  camb --serve [--port N] [--ensure]
+                               token-authed camc executor on 127.0.0.1
+                               (reverse-tunnel endpoint; default 42277)
+  camb reverse up <user@server> --http URL [--name N] [--token T]
+                 [--ssh-port N] [--key-file F] [--remote-port N]
+                 [--serve-port N]
+                               maintain a persistent ssh -R reverse tunnel
+                               to the cam server and register with it
+  camb reverse down | status   stop / inspect the reverse tunnel
   camb --help | -h             this help
 
 targets may be bare (<id-or-name>, local node first) or
@@ -50,7 +79,7 @@ def _camb_home():
 
 def _ensure_dirs():
     home = _camb_home()
-    for sub in ("outbox", "inbox"):
+    for sub in ("outbox", "inbox", "hubs"):
         d = os.path.join(home, sub)
         if not os.path.isdir(d):
             os.makedirs(d, 0o700)
@@ -107,29 +136,127 @@ def _timeout_s():
     return DEFAULT_TIMEOUT_MS / 1000.0
 
 
-def _hub_drain():
-    """Atomically print + delete finalized outbox requests as a JSON array.
-    Skips unfinished .tmp files; leaves unreadable files in place.
-    Always exits 0."""
+_CLAIMED_RE = re.compile(r"^(.*\.json)\.claimed-([A-Za-z0-9_.-]+)$")
+
+
+def _load_cards(home):
+    """Read fresh coverage cards from ~/.cam/camb/hubs/*.json.
+    Returns {hub_id: card}. Stale cards (older than CARD_TTL_S) and
+    unreadable files are ignored."""
+    hubs = os.path.join(home, "hubs")
+    cards = {}
+    now = time.time()
+    try:
+        names = sorted(n for n in os.listdir(hubs) if n.endswith(".json"))
+    except OSError:
+        return cards
+    for n in names:
+        try:
+            with open(os.path.join(hubs, n), "r", encoding="utf-8") as fh:
+                card = json.load(fh)
+            hid = str(card.get("hub_id") or n[:-5])
+            ts = float(card.get("ts") or 0)
+            if now - ts <= CARD_TTL_S:
+                cards[hid] = card
+        except (OSError, IOError, ValueError, TypeError):
+            continue
+    return cards
+
+
+def _event_target_ref(req):
+    """The raw target ref of a request argv ('' for list/malformed).
+    Target positions follow bridge-protocol-v1 §6."""
+    argv = req.get("argv") or []
+    if len(argv) < 2:
+        return ""
+    verb = argv[0]
+    if verb in ("status", "capture", "send", "key"):
+        ref = str(argv[1])
+    elif verb == "msg" and len(argv) >= 3 and argv[1] == "send":
+        ref = str(argv[2])
+    else:
+        return ""
+    return "" if ref.startswith("-") else ref
+
+
+def _card_covers(card, ref):
+    """ref may be '<node>:<agent>'; a cover entry matches by exact node
+    or as the '<entry>:' prefix. Entries are {name, key} dicts (name is
+    hub-local, key is the canonical user@host:port) or plain strings."""
+    for e in card.get("covers") or []:
+        if isinstance(e, dict):
+            candidates = [e.get("name"), e.get("key")]
+        else:
+            candidates = [e]
+        for n in candidates:
+            if n and (ref == n or ref.startswith(str(n) + ":")):
+                return True
+    return False
+
+
+def _should_claim(req, cards, my_id):
+    """Router rule (§9.2): an event with an explicit node target covered
+    by ANOTHER live hub's card is left in the outbox for that hub.
+    Everything else (list, bare refs, my coverage, nobody's coverage) is
+    claimable."""
+    ref = _event_target_ref(req)
+    if not ref or ":" not in ref:
+        return True
+    mine = cards.get(my_id)
+    if mine and _card_covers(mine, ref):
+        return True
+    for hid, card in cards.items():
+        if hid != my_id and _card_covers(card, ref):
+            return False
+    return True
+
+
+def _hub_drain(bridge_id=""):
+    """Claim-aware drain (bridge-protocol-v1.1). With a bridge-id, each
+    outbox event is atomically claimed (rename → .claimed-<id>) before
+    printing; events targeting nodes covered by another live hub's card
+    are skipped; this hub's own claimed leftovers from an interrupted
+    drain are re-printed (at-least-once above the host's seen-id
+    idempotency), and orphans of hubs without a live card are adopted.
+    Without a bridge-id the legacy print+delete behaviour is kept
+    verbatim. Skips unfinished .tmp files; leaves unreadable files in
+    place. Always exits 0."""
     home = _ensure_dirs()
     outbox = os.path.join(home, "outbox")
+    cards = _load_cards(home)
     try:
-        names = sorted(
-            n for n in os.listdir(outbox)
-            if n.endswith(".json") and os.path.isfile(os.path.join(outbox, n))
-        )
+        names = sorted(os.listdir(outbox))
     except OSError:
         names = []
     reqs = []
     drained = []
     for n in names:
         p = os.path.join(outbox, n)
+        m = _CLAIMED_RE.match(n)
+        owner = None
+        if m:
+            owner = m.group(2)
+            if owner != bridge_id and owner in cards:
+                continue  # live owner's leftover — it will re-drain it
+            # own leftover or a dead owner's orphan: re-drain/adopt.
+        elif not n.endswith(".json"):
+            continue  # unfinished .tmp or junk
         try:
             with open(p, "r", encoding="utf-8") as fh:
-                reqs.append(json.load(fh))
-            drained.append(p)
+                req = json.load(fh)
         except (OSError, IOError, ValueError):
             continue  # unreadable: leave it
+        if owner is None and bridge_id:
+            if not _should_claim(req, cards, bridge_id):
+                continue  # a live peer covers the target — leave it
+            claimed = p + ".claimed-" + bridge_id
+            try:
+                os.rename(p, claimed)
+                p = claimed
+            except OSError:
+                continue  # lost the claim race
+        reqs.append(req)
+        drained.append(p)
     sys.stdout.write(json.dumps(reqs) + "\n")
     for p in drained:
         try:
@@ -137,6 +264,97 @@ def _hub_drain():
         except OSError:
             pass
     return 0
+
+
+def _emit_response(resp):
+    """Print a bridge response and return its exit code (0 ok / 1 error)."""
+    if resp.get("ok"):
+        text = resp.get("text")
+        if text is not None:
+            sys.stdout.write(str(text) + "\n")
+        return 0
+    err = resp.get("error") or "unknown error"
+    sys.stderr.write("camb: %s\n" % err)
+    for c in resp.get("candidates") or []:
+        sys.stderr.write(str(c) + "\n")
+    return 1
+
+
+def _tunnel_token(home, hub_id):
+    try:
+        with open(os.path.join(home, "hubs", hub_id + ".token"),
+                  "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except (OSError, IOError):
+        return ""
+
+
+def _tunnel_call(port, token, req, deadline):
+    """One synchronous request/response over a hub tunnel (§10). Returns
+    the response dict, or None on any transport failure — the caller
+    falls back to the next tunnel or the mailbox."""
+    try:
+        sock = socket.create_connection(("127.0.0.1", port), timeout=0.25)
+    except OSError:
+        return None
+    try:
+        sock.settimeout(max(0.5, deadline - time.time()))
+        frame = json.dumps({"token": token, "request": req}).encode("utf-8") + b"\n"
+        sock.sendall(frame)
+        buf = b""
+        while b"\n" not in buf:
+            try:
+                chunk = sock.recv(65536)
+            except socket.timeout:
+                return None
+            if not chunk:
+                return None
+            buf += chunk
+            if len(buf) > 4 * 1024 * 1024:
+                return None
+        return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    finally:
+        try:
+            sock.close()
+        except OSError:
+            pass
+
+
+def _try_tunnels(home, req):
+    """Tunnel fast path (§10): every live card advertising a tunnel,
+    coverage-filtered for explicit node targets, priority-desc. Returns
+    the final response, or None when no tunnel could deliver (transport
+    failures and not_my_fleet cascade; application-level responses are
+    terminal)."""
+    target = _event_target_ref(req)
+    cands = []
+    for hid, card in _load_cards(home).items():
+        tun = card.get("tunnel") or {}
+        port = tun.get("port")
+        if not isinstance(port, int) or port <= 0:
+            continue
+        if target and ":" in target and not _card_covers(card, target):
+            continue
+        token = _tunnel_token(home, hid)
+        if not token:
+            continue
+        try:
+            prio = int(tun.get("priority", 0))
+        except (ValueError, TypeError):
+            prio = 0
+        cands.append((prio, hid, port, token))
+    cands.sort(key=lambda c: (-c[0], c[1]))
+    deadline = time.time() + _timeout_s()
+    for _, _hid, port, token in cands:
+        resp = _tunnel_call(port, token, req, deadline)
+        if resp is None:
+            continue
+        if str(resp.get("error") or "").startswith("not_my_fleet"):
+            continue
+        return resp
+    return None
 
 
 def _submit(argv):
@@ -150,6 +368,12 @@ def _submit(argv):
         "from": {"agent": _from_agent()},
         "ts": time.time(),
     }
+
+    # Tunnel fast path: synchronous push when a hub tunnel is live. The
+    # mailbox below stays the fallback and source of truth.
+    resp = _try_tunnels(home, req)
+    if resp is not None:
+        return _emit_response(resp)
 
     tmp = os.path.join(outbox, req["id"] + ".json.tmp")
     final = os.path.join(outbox, req["id"] + ".json")
@@ -171,16 +395,7 @@ def _submit(argv):
                 os.unlink(resp_path)
             except OSError:
                 pass
-            if resp.get("ok"):
-                text = resp.get("text")
-                if text is not None:
-                    sys.stdout.write(str(text) + "\n")
-                return 0
-            err = resp.get("error") or "unknown error"
-            sys.stderr.write("camb: %s\n" % err)
-            for c in resp.get("candidates") or []:
-                sys.stderr.write(str(c) + "\n")
-            return 1
+            return _emit_response(resp)
         time.sleep(POLL_INTERVAL_S)
 
     sys.stderr.write(
@@ -188,6 +403,581 @@ def _submit(argv):
         "on this node)\n"
     )
     return 2
+
+
+# ---------------------------------------------------------------------------
+# Host tunnel serve (`camb --serve`): token-authed camc executor on
+# 127.0.0.1, speaking bridge-protocol-v1 §10 frames (one JSON line
+# {"token", request} in, one JSON line response out). This is the endpoint
+# a cam server's reverse tunnel forwards into.
+# ---------------------------------------------------------------------------
+
+SERVE_DEFAULT_PORT = 42277
+FRAME_CAP = 4 * 1024 * 1024
+SERVE_ALLOWED_VERBS = ("list", "status", "capture", "send", "key", "msg")
+# Registration port span on the cam server: one 127.0.0.1 port per host.
+REV_PORT_BASE = 43400
+REV_PORT_SPAN = 200
+REV_RECONNECT_MIN_S = 5.0
+REV_RECONNECT_MAX_S = 60.0
+
+
+def _serve_token_path(home):
+    return os.path.join(home, "serve.token")
+
+
+def _serve_pid_path(home):
+    return os.path.join(home, "serve.pid")
+
+
+def _serve_audit_path(home):
+    return os.path.join(home, "serve-audit.jsonl")
+
+
+def _serve_card_path(home):
+    return os.path.join(home, "serve.json")
+
+
+def _reverse_state_path(home):
+    return os.path.join(home, "reverse.json")
+
+
+def _reverse_pid_path(home):
+    return os.path.join(home, "reverse.pid")
+
+
+def _write_json_0600(path, obj):
+    d = os.path.dirname(path)
+    if not os.path.isdir(d):
+        os.makedirs(d, 0o700)
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        json.dump(obj, fh)
+        fh.write("\n")
+    os.rename(tmp, path)
+
+
+def _load_json(path):
+    try:
+        with open(path, "r") as fh:
+            return json.load(fh)
+    except (OSError, IOError, ValueError):
+        return None
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _port_open(port, timeout=0.25):
+    try:
+        socket.create_connection(("127.0.0.1", int(port)),
+                                 timeout=timeout).close()
+        return True
+    except OSError:
+        return False
+
+
+def _load_or_create_serve_token(home):
+    path = _serve_token_path(home)
+    try:
+        with open(path, "r") as fh:
+            tok = fh.read().strip()
+        if tok:
+            return tok
+    except (OSError, IOError):
+        pass
+    tok = secrets.token_hex(16)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(tok + "\n")
+    return tok
+
+
+def _read_json_line(conn):
+    buf = b""
+    while b"\n" not in buf:
+        try:
+            chunk = conn.recv(65536)
+        except (OSError, socket.timeout):
+            return None
+        if not chunk:
+            return None
+        buf += chunk
+        if len(buf) > FRAME_CAP:
+            return None
+    try:
+        return json.loads(buf.split(b"\n", 1)[0].decode("utf-8"))
+    except ValueError:
+        return None
+
+
+def _serve_exec(argv, timeout, home):
+    """Run camc argv on this node; returns (rc, stdout, stderr)."""
+    camc = os.path.join(os.path.expanduser("~"), ".cam", "camc")
+    if not os.path.isfile(camc):
+        return 1, "", "camc not deployed at ~/.cam/camc"
+    try:
+        proc = subprocess.run(
+            [sys.executable, camc] + list(argv),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            universal_newlines=True, timeout=timeout)
+        return proc.returncode, proc.stdout, proc.stderr
+    except subprocess.TimeoutExpired:
+        return 124, "", "timeout after %ds" % timeout
+    except Exception as e:
+        return 1, "", str(e)
+
+
+def _serve_audit(home, entry):
+    try:
+        with open(_serve_audit_path(home), "a") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    except (OSError, IOError):
+        pass
+
+
+class _ServeHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        try:
+            self.request.settimeout(30)
+            frame = _read_json_line(self.request)
+            resp = self.server.camb_dispatch(frame)
+            self.request.sendall(
+                json.dumps(resp).encode("utf-8") + b"\n")
+        except (OSError, ValueError):
+            pass
+
+
+class _ServeServer(socketserver.ThreadingTCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, port, token, home, exec_fn=None):
+        self.token = token
+        self.home = home
+        self.exec_fn = exec_fn or _serve_exec
+        socketserver.ThreadingTCPServer.__init__(
+            self, ("127.0.0.1", port), _ServeHandler)
+
+    def camb_dispatch(self, frame):
+        if not isinstance(frame, dict):
+            return {"id": None, "ok": False, "error": "bad frame"}
+        req = frame.get("request")
+        req_id = req.get("id") if isinstance(req, dict) else None
+        if not hmac.compare_digest(str(frame.get("token") or ""),
+                                   self.token):
+            return {"id": req_id, "ok": False, "error": "unauthorized"}
+        return self._handle(req)
+
+    def _handle(self, req):
+        if not isinstance(req, dict):
+            return {"id": None, "ok": False, "error": "missing request"}
+        req_id = req.get("id")
+        argv = req.get("argv")
+        proto = req.get("proto", 1)
+        entry = {"ts": time.time(), "id": req_id, "argv": argv,
+                 "from": (req.get("from") or {}).get("agent")
+                 if isinstance(req.get("from"), dict) else None,
+                 "ok": False, "error": None}
+        try:
+            if not isinstance(proto, int) or proto > 1:
+                entry["error"] = "unsupported proto %s" % proto
+            elif not isinstance(argv, list) or not argv:
+                entry["error"] = "missing argv"
+            else:
+                entry["error"] = _serve_validate(argv)
+                if entry["error"] is None:
+                    timeout = 120 if argv[0] == "msg" else 30
+                    rc, out, err = self.exec_fn(argv, timeout, self.home)
+                    entry["ok"] = rc == 0
+                    if rc == 0:
+                        return {"id": req_id, "ok": True, "proto": 1,
+                                "text": (out or "").rstrip("\n")}
+                    entry["error"] = ((err or "").strip()
+                                      or (out or "").strip()
+                                      or "exit %d" % rc)
+            return {"id": req_id, "ok": False, "proto": 1,
+                    "error": entry["error"]}
+        finally:
+            _serve_audit(self.home, entry)
+
+
+def _serve_validate(argv):
+    verb = argv[0]
+    if verb not in SERVE_ALLOWED_VERBS:
+        return ("unsupported verb '%s' via tunnel "
+                "(list, status, capture, send, key, msg)" % verb)
+    if verb == "msg" and (len(argv) < 2 or argv[1] != "send"):
+        return "unsupported msg form via tunnel (only 'msg send')"
+    ref = _event_target_ref({"argv": argv})
+    if ref and ":" in ref:
+        # hubs strip the node: prefix before forwarding (spec §4); a
+        # colon surviving to this endpoint is a caller bug.
+        return "machine prefix not stripped by caller: '%s'" % ref
+    return None
+
+
+def _serve_cli(args):
+    port = SERVE_DEFAULT_PORT
+    ensure = False
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--port" and i + 1 < len(args):
+            port = int(args[i + 1]); i += 2
+        elif a == "--ensure":
+            ensure = True; i += 1
+        else:
+            sys.stderr.write("camb: unknown --serve arg %r\n" % a)
+            return 1
+    home = _ensure_dirs()
+    if ensure:
+        return _serve_ensure(home, port)
+    token = _load_or_create_serve_token(home)
+    try:
+        srv = _ServeServer(port, token, home)
+    except OSError as e:
+        sys.stderr.write("camb: serve cannot bind 127.0.0.1:%d: %s\n"
+                         % (port, e))
+        return 1
+    _write_json_0600(_serve_card_path(home),
+                     {"pid": os.getpid(), "port": port, "ts": time.time()})
+    sys.stderr.write("camb: serve listening on 127.0.0.1:%d\n" % port)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.server_close()
+        try:
+            os.unlink(_serve_card_path(home))
+        except OSError:
+            pass
+    return 0
+
+
+def _serve_ensure(home, port):
+    """Idempotent detached start; prints 'ok <port>' (keeper parses this)."""
+    card = _load_json(_serve_card_path(home))
+    if card and _pid_alive(card.get("pid")) and _port_open(card.get("port")):
+        sys.stdout.write("ok %s\n" % card.get("port"))
+        return 0
+    logf = open(os.path.join(home, "serve.log"), "a")
+    proc = subprocess.Popen(
+        [sys.executable, os.path.abspath(sys.argv[0]), "--serve",
+         "--port", str(port)],
+        stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
+        start_new_session=True)
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            break
+        if _port_open(port):
+            sys.stdout.write("ok %d\n" % port)
+            return 0
+        time.sleep(0.3)
+    sys.stderr.write("camb: serve failed to start on port %d\n" % port)
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# Reverse tunnel maintainer (`camb reverse`): persistent ssh -N -R back to
+# the cam server, plus registration so the server knows which local port
+# reaches this host.
+# ---------------------------------------------------------------------------
+
+
+def _reverse_ssh_cmd(server, ssh_port, key_file, remote_port, serve_port):
+    conn_key = "%s:%s" % (server, ssh_port or 22)
+    chash = hashlib.sha256(conn_key.encode("utf-8")).hexdigest()[:12]
+    cmd = ["ssh", "-N", "-T",
+           "-R", "%d:127.0.0.1:%d" % (remote_port, serve_port)]
+    if ssh_port:
+        cmd += ["-p", str(ssh_port)]
+    if key_file:
+        cmd += ["-i", key_file]
+    cmd += [
+        "-o", "ConnectTimeout=10",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "ExitOnForwardFailure=yes",
+        "-o", "ServerAliveInterval=30",
+        "-o", "ServerAliveCountMax=3",
+        "-o", "BatchMode=yes",
+        "-o", "ControlMaster=no",
+        "-o", "ControlPath=/tmp/camb-ssh-rev-%s" % chash,
+        server,
+    ]
+    return cmd
+
+
+def _default_remote_port(name):
+    h = int(hashlib.sha256(name.encode("utf-8")).hexdigest(), 16)
+    return REV_PORT_BASE + h % REV_PORT_SPAN
+
+
+def _register(http_base, token, payload, timeout=10):
+    req = urllib.request.Request(
+        http_base.rstrip("/") + "/api/tunnels/register",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json",
+                 "Authorization": "Bearer %s" % token},
+        method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status == 200, resp.read().decode("utf-8", "replace")
+    except Exception as e:
+        return False, str(e)
+
+
+def _unregister(http_base, token, key, timeout=10):
+    req = urllib.request.Request(
+        http_base.rstrip("/") + "/api/tunnels/" + key,
+        headers={"Authorization": "Bearer %s" % token},
+        method="DELETE")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def _reverse_loop(home, server, http_base, name, token, remote_port,
+                  serve_port, key_file, ssh_port):
+    """Maintainer daemon body. State card + backoff + re-register."""
+    stopped = [False]
+
+    def _on_term(signum, frame):
+        stopped[0] = True
+    signal.signal(signal.SIGTERM, _on_term)
+    signal.signal(signal.SIGINT, _on_term)
+
+    backoff = REV_RECONNECT_MIN_S
+    reconnects = 0
+    port = remote_port
+    proc = None
+
+    def _card(state, **kw):
+        obj = {"name": name, "server": server, "http": http_base,
+               "state": state, "serve_port": serve_port,
+               "remote_port": port, "reconnects": reconnects,
+               "token": token,  # needed by `reverse down` to unregister
+               "ts": time.time()}
+        obj.update(kw)
+        try:
+            _write_json_0600(_reverse_state_path(home), obj)
+        except (OSError, IOError):
+            pass
+
+    try:
+        while not stopped[0]:
+            _card("connecting")
+            if _serve_ensure(home, serve_port) != 0:
+                _card("down", last_error="local serve ensure failed")
+                time.sleep(backoff)
+                backoff = min(backoff * 2, REV_RECONNECT_MAX_S)
+                continue
+            _card("connecting")
+            logf = open(os.path.join(home, "reverse.log"), "a")
+            proc = subprocess.Popen(
+                _reverse_ssh_cmd(server, ssh_port, key_file, port,
+                                 serve_port),
+                stdout=logf, stderr=logf, stdin=subprocess.DEVNULL)
+            # With ExitOnForwardFailure a bind conflict kills ssh fast;
+            # staying alive ~3s means the forward is up.
+            up = False
+            for _ in range(30):
+                if proc.poll() is not None or stopped[0]:
+                    break
+                time.sleep(0.1)
+            if proc.poll() is None and not stopped[0]:
+                up = True
+            if not up:
+                rc = proc.poll()
+                if rc is not None:
+                    # likely bind conflict or ssh failure: try next port
+                    port = REV_PORT_BASE + \
+                        (port + 1 - REV_PORT_BASE) % REV_PORT_SPAN
+                _card("down", last_error="ssh exited rc=%s" % rc)
+                reconnects += 1
+                time.sleep(backoff)
+                backoff = min(backoff * 2, REV_RECONNECT_MAX_S)
+                continue
+            backoff = REV_RECONNECT_MIN_S
+            ok, detail = _register(http_base, token, {
+                "key": name, "name": name, "port": port,
+                "token": token,
+                "serve_port": serve_port, "ts": time.time()})
+            last_register = time.time()
+            _card("up" if ok else "down", registered=ok,
+                  last_error=None if ok else "register failed: %s" % detail)
+            while not stopped[0] and proc.poll() is None:
+                # heartbeat re-register: keeps the server-side registry
+                # entry fresh (stale entries are pruned)
+                if ok and time.time() - last_register > 60:
+                    ok, detail = _register(http_base, token, {
+                        "key": name, "name": name, "port": port,
+                        "token": token,
+                        "serve_port": serve_port, "ts": time.time()})
+                    last_register = time.time()
+                _card("up" if ok else "down",
+                      registered=ok,
+                      last_error=None if ok else
+                      "register failed: %s" % detail)
+                time.sleep(5)
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+            reconnects += 1
+            if not stopped[0]:
+                _card("down", last_error="ssh exited rc=%s" % proc.returncode)
+                time.sleep(backoff)
+                backoff = min(backoff * 2, REV_RECONNECT_MAX_S)
+    finally:
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        _card("stopped")
+        try:
+            os.unlink(_reverse_pid_path(home))
+        except OSError:
+            pass
+    return 0
+
+
+def _reverse_cli(args):
+    if not args or args[0] in ("-h", "--help"):
+        sys.stderr.write(
+            "usage: camb reverse up <user@server> --http URL "
+            "[--ssh-port N] [--key-file F] [--name N] [--token T]\n"
+            "                        [--remote-port N] [--serve-port N]\n"
+            "       camb reverse down | status\n")
+        return 1
+    sub = args[0]
+    # status/down are read-mostly: never create mailbox dirs as a side
+    # effect of an inspection command.
+    home = _camb_home() if sub in ("status", "down") else _ensure_dirs()
+    if sub == "status":
+        card = _load_json(_reverse_state_path(home))
+        if not card:
+            sys.stdout.write("no reverse tunnel\n")
+            return 0
+        sys.stdout.write(json.dumps(card, indent=2) + "\n")
+        return 0
+    if sub == "down":
+        pid = (_load_json(_reverse_pid_path(home)) or {}).get("pid")
+        stopped = False
+        if pid and _pid_alive(pid):
+            try:
+                os.killpg(int(pid), signal.SIGTERM)
+                stopped = True
+            except OSError:
+                try:
+                    os.kill(int(pid), signal.SIGTERM)
+                    stopped = True
+                except OSError:
+                    pass
+        card = _load_json(_reverse_state_path(home)) or {}
+        if card.get("http") and card.get("name") and card.get("token"):
+            _unregister(card["http"], card["token"], card["name"])
+        try:
+            os.unlink(_reverse_pid_path(home))
+        except OSError:
+            pass
+        if card:
+            _write_json_0600(_reverse_state_path(home),
+                             dict(card, state="stopped", ts=time.time()))
+        sys.stdout.write("reverse tunnel %s\n"
+                         % ("stopped" if stopped else "was not running"))
+        return 0
+    if sub == "_run":
+        # hidden daemon entry (spawned by `reverse up`)
+        kw = dict(arg.split("=", 1) for a in args[1:]
+                  for arg in [a] if "=" in a)
+        return _reverse_loop(
+            home, kw["server"], kw["http"], kw["name"], kw["token"],
+            int(kw["remote_port"]), int(kw["serve_port"]),
+            kw.get("key_file") or None,
+            int(kw["ssh_port"]) if kw.get("ssh_port") else None)
+    if sub != "up":
+        sys.stderr.write("camb: unknown reverse subcommand %r\n" % sub)
+        return 1
+    # reverse up <user@server> --http URL [options]
+    server = None
+    http_base = None
+    name = None
+    token = None
+    key_file = None
+    ssh_port = None
+    remote_port = None
+    serve_port = SERVE_DEFAULT_PORT
+    i = 1
+    while i < len(args):
+        a = args[i]
+        if a == "--http" and i + 1 < len(args):
+            http_base = args[i + 1]; i += 2
+        elif a == "--ssh-port" and i + 1 < len(args):
+            ssh_port = int(args[i + 1]); i += 2
+        elif a == "--key-file" and i + 1 < len(args):
+            key_file = args[i + 1]; i += 2
+        elif a == "--name" and i + 1 < len(args):
+            name = args[i + 1]; i += 2
+        elif a == "--token" and i + 1 < len(args):
+            token = args[i + 1]; i += 2
+        elif a == "--remote-port" and i + 1 < len(args):
+            remote_port = int(args[i + 1]); i += 2
+        elif a == "--serve-port" and i + 1 < len(args):
+            serve_port = int(args[i + 1]); i += 2
+        elif not a.startswith("-") and server is None:
+            server = a; i += 1
+        else:
+            sys.stderr.write("camb: unknown reverse up arg %r\n" % a)
+            return 1
+    if not server or not http_base:
+        sys.stderr.write(
+            "camb: reverse up needs <user@server> and --http URL\n")
+        return 1
+    if name is None:
+        name = socket.gethostname().split(".")[0]
+    if token is None:
+        token = _load_or_create_serve_token(home)
+    if remote_port is None:
+        remote_port = _default_remote_port(name)
+    pid = (_load_json(_reverse_pid_path(home)) or {}).get("pid")
+    if pid and _pid_alive(pid):
+        sys.stderr.write("camb: reverse tunnel already running (pid %d)\n"
+                         % pid)
+        return 1
+    logf = open(os.path.join(home, "reverse.log"), "a")
+    proc = subprocess.Popen(
+        [sys.executable, os.path.abspath(sys.argv[0]), "reverse", "_run",
+         "server=%s" % server, "http=%s" % http_base, "name=%s" % name,
+         "token=%s" % token, "remote_port=%d" % remote_port,
+         "serve_port=%d" % serve_port]
+        + (["key_file=%s" % key_file] if key_file else [])
+        + (["ssh_port=%d" % ssh_port] if ssh_port else []),
+        stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
+        start_new_session=True)
+    _write_json_0600(_reverse_pid_path(home), {"pid": proc.pid})
+    sys.stdout.write("camb: reverse tunnel maintainer started "
+                     "(pid %d, %s → %s)\n" % (proc.pid, name, server))
+    return 0
 
 
 def main(argv):
@@ -198,7 +988,18 @@ def main(argv):
         sys.stdout.write("camb %s\n" % __version__)
         return 0
     if argv[0] == "--hub-drain":
-        return _hub_drain()
+        bid = ""
+        rest = argv[1:]
+        for i, a in enumerate(rest):
+            if a == "--bridge-id" and i + 1 < len(rest):
+                bid = rest[i + 1]
+            elif a.startswith("--bridge-id="):
+                bid = a.split("=", 1)[1]
+        return _hub_drain(bid)
+    if argv[0] == "--serve":
+        return _serve_cli(argv[1:])
+    if argv[0] == "reverse":
+        return _reverse_cli(argv[1:])
     return _submit(_resolve_send_io(argv))
 
 

@@ -62,6 +62,8 @@ Requirements: Python 3.10+, tmux.
 ## Quick Start
 
 ```bash
+cam                                                 # Open the interactive TUI
+cam cli                                             # Classic CLI form: full command help
 cam doctor                                          # Check environment
 cam context add my-project /path/to/project         # Register a project
 cam run claude "Add error handling to the API"      # Launch an agent
@@ -70,6 +72,8 @@ cam logs <agent-id> -f                              # Follow live output
 cam attach <agent-id>                               # Attach to TMUX session
 cam stop <agent-id>                                 # Graceful stop
 ```
+
+See [TUI (`cam tui`)](#tui-cam-tui) for the interactive interface.
 
 ### Background Mode
 
@@ -193,6 +197,24 @@ cam serve --port 8420 --token <api-token> \
 ```
 
 The relay is a standalone Python script with zero dependencies (stdlib-only RFC 6455 WebSocket). It bridges REST-over-WebSocket between mobile clients and your CAM server. Also supports HTTP proxy mode for environments where WebSocket is blocked.
+
+## TUI (`cam tui`)
+
+The terminal interface of cam, at the same level as CAM Desktop, CAM Mobile
+(PWA below), and the Web UI. Running bare `cam` opens `cam tui`; without a
+real terminal or curses it prints the help instead. The classic CLI form
+stays fully supported alongside the TUI: every `cam <command>` works as
+before, and `cam cli` prints the full command help. Every operation is
+available inside the TUI:
+
+- Live agent list + ANSI capture, real tmux attach, and a composer to send input.
+- **Enter** on an empty composer (or the `[actions]` button) opens the agent
+  action menu: attach / reboot / rename / exit / stop / kill / rm.
+- `[new]` / `[settings]` / `[nodes]` cover agent creation and machine management.
+- **`:`** on an empty composer (or `[cmd]`) opens a command console: any
+  one-shot `cam` / `camc` command (`msg`, `cron`, `api`, `skills`, `config`,
+  `history`, …) runs in the background and its output opens in a scrollable
+  work pane; **Esc** returns to the live agent view.
 
 ## Mobile App
 

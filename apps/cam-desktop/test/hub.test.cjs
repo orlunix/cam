@@ -264,6 +264,31 @@ async function main() {
   ok('parity agent records requested_timeout', r.body.agent && r.body.agent.requested_timeout === '30m', JSON.stringify(r.body.agent));
   eq('parity agent records requested_retry', r.body.agent && r.body.agent.requested_retry, 2);
 
+  // 6b. --tool-launcher passthrough: the hub forwards the value verbatim
+  //     into the camc run argv (named preset and {command} template
+  //     alike); camc validates the contract (tool_launcher.py).
+  let capturedRunCmd = '';
+  setRemoteHandler((opts) => {
+    if (/'run'/.test(opts.command)) { capturedRunCmd = String(opts.command); return { ok: true, stdout: '  ID: c0ffee11\n  Tool: claude\n', stderr: '' }; }
+    if (/'status'/.test(opts.command)) return { ok: true, stdout: JSON.stringify({ id: 'c0ffee11', status: 'running', state: 'initializing', task: { tool: 'claude', name: '', prompt: 'p' }, context_path: '/home/ren/src', transport_type: 'ssh' }), stderr: '' };
+    return { ok: false, error: 'exec_failed', detail: 'unhandled cmd' };
+  });
+  r = await request('POST', '/api/agents', {
+    tool: 'claude', prompt: 'p', context: 'ren01', tool_launcher: 'auto',
+  });
+  eq('launcher named start accepted', r.status, 201);
+  ok('launcher named preset forwarded', capturedRunCmd.includes("'--tool-launcher' 'auto'"), capturedRunCmd);
+  r = await request('POST', '/api/agents', {
+    tool: 'claude', prompt: 'p', context: 'ren01', tool_launcher: 'qsub run -- {command}',
+  });
+  eq('launcher template start accepted', r.status, 201);
+  ok('launcher template forwarded verbatim', capturedRunCmd.includes("'--tool-launcher' 'qsub run -- {command}'"), capturedRunCmd);
+  r = await request('POST', '/api/agents', {
+    tool: 'claude', prompt: 'p', context: 'ren01',
+  });
+  eq('launcher-less start accepted', r.status, 201);
+  ok('no --tool-launcher flag when unset', !capturedRunCmd.includes('--tool-launcher'), capturedRunCmd);
+
   // An empty Start prompt is an interactive launch, not a validation
   // failure. CAMC accepts an empty positional prompt and leaves the selected
   // CLI ready for the user to type in its terminal.

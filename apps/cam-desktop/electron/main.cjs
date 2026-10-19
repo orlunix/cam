@@ -815,29 +815,37 @@ async function termOpen(event, payload = {}) {
   const tmux = tmuxMetadataForAgent(resolved.agent);
   if (tmux && !tmux.bin) {
     // Older agent records carry no tmux_bin. Probe the remote once per
-    // endpoint instead of guessing /bin/tmux; a failed probe leaves the
-    // controls degraded exactly as before (strip hidden, terminal fine).
-    tmux.bin = await _probeRemoteTmuxBin(resolved.opts);
+    // endpoint instead of guessing /bin/tmux. The probe runs in the
+    // BACKGROUND (2026-10-14, term-is-first-class): awaiting it here paid
+    // a full cold exec-pool handshake before the channel open whenever
+    // the camc ready-cache had skipped the probe/ensure path. The answer
+    // is cached per endpoint (_tmuxBinProbes), so the session's window-
+    // control handlers and later attaches pick it up; THIS attach runs
+    // with window controls degraded, exactly like an undiscoverable-tmux
+    // endpoint (strip hidden, terminal fine).
+    const probeP = _probeRemoteTmuxBin(resolved.opts);
+    void Promise.resolve(probeP).then((bin) => {
+      if (bin && tmux && !tmux.bin) tmux.bin = bin;
+      if (!bin) console.warn(`[tmux-probe] no tmux binary found on ${resolved.opts.host}; window controls disabled`);
+    }).catch(() => {});
   }
-  if (tmux && !tmux.bin) {
-    // No recorded or discoverable tmux binary on this endpoint.
-    console.warn(`[tmux-probe] no tmux binary found on ${resolved.opts.host}; window controls disabled`);
-  }
-  // Bounded discovery-queue wait: a wedged previous discovery (attach
-  // hung mid-flight on a network flap) must not block THIS attach
-  // forever — 15s and we proceed without ordering (discovery falls back
-  // to selectOnlyClient on overlap, which is already handled).
+  // Bounded discovery-queue wait: a wedged or merely busy previous
+  // discovery (another attach's post-open client discovery still holds
+  // the slot) must not block THIS attach — 2s and we proceed without
+  // ordering (discovery falls back to selectOnlyClient on overlap, which
+  // is already handled). Window controls are best-effort; the terminal
+  // channel is the only first-class citizen on this path.
   const tGate0 = Date.now();
   const discoveryKey = `${resolved.opts.host}|${tmux ? tmux.socket : ''}`;
   const discoveryBeginP = tmux && tmux.bin ? _beginTmuxDiscovery(discoveryKey) : null;
   const releaseTmuxDiscovery = discoveryBeginP
     ? await Promise.race([
         discoveryBeginP,
-        new Promise((resolve) => setTimeout(() => resolve(null), 15000)),
+        new Promise((resolve) => setTimeout(() => resolve(null), 2000)),
       ])
     : null;
   if (discoveryBeginP && !releaseTmuxDiscovery) {
-    _diagLog(`[attach] ${agentId}: tmux discovery queue wait exceeded 15s — proceeding without ordering`);
+    _diagLog(`[attach] ${agentId}: tmux discovery queue wait exceeded 2s — proceeding without ordering`);
     // The abandoned chain link still resolves one day — release our own
     // gate immediately then, so later attaches are not queued behind us.
     void discoveryBeginP.then((releaseFn) => {
@@ -922,7 +930,7 @@ async function termOpen(event, payload = {}) {
   // background work — they must never add to the attach latency.
   void _repairRemoteTerminalSize(resolved.opts, agentId, cols, rows);
   if (releaseTmuxDiscovery) void _discoverTmuxClient(sessionId, beforeClients).finally(releaseTmuxDiscovery);
-  _termGateOpen(sessionId, sender);
+  _termGateOpen(sessionId, sender, payload && payload.historyHoldMs);
   return { ok: true, sessionId, timings: { open_ms: openMs } };
 }
 
@@ -962,12 +970,17 @@ function _rawTermSend(sessionId, sender, data) {
   try { sender.send('term:data', { sessionId, data }); } catch { /* torn down */ }
 }
 
-function _termGateOpen(sessionId, sender) {
+function _termGateOpen(sessionId, sender, holdMs = 0) {
+  // historyHoldMs (renderer attach replay): while the renderer is
+  // pre-filling scrollback from pane history, the gate must hold past
+  // the default 2s fallback or live bytes would interleave with the
+  // history block. Capped so a wedged fetch can never hang the channel.
+  const hold = Math.min(Math.max(Number(holdMs) || 0, TERM_READY_FALLBACK_MS), 30000);
   const gate = { ready: false, chunks: [], bytes: 0, sender, timer: null };
   gate.timer = setTimeout(() => {
     gate.ready = true; // renderer never signalled — flush anyway
     _termGateFlush(sessionId, gate);
-  }, TERM_READY_FALLBACK_MS);
+  }, hold);
   if (gate.timer.unref) gate.timer.unref();
   _termReady.set(sessionId, gate);
 }
@@ -1105,6 +1118,15 @@ function filesReadClipboardText() {
     return { ok: true, text: clipboard.readText() || '' };
   } catch (e) {
     return { ok: false, error: 'clipboard_text_failed', detail: e && e.message || String(e) };
+  }
+}
+
+function filesWriteClipboardText(payload) {
+  try {
+    clipboard.writeText(String((payload && payload.text) || ''));
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: 'clipboard_write_failed', detail: e && e.message || String(e) };
   }
 }
 
@@ -1277,6 +1299,7 @@ app.whenReady().then(() => {
   ipcMain.handle('files:saveText',        (_e, opts) => filesSaveText(opts));
   ipcMain.handle('files:saveFile',        (_e, opts) => filesSaveFile(opts));
   ipcMain.handle('files:readClipboardText', () => filesReadClipboardText());
+  ipcMain.handle('files:writeClipboardText', (_e, payload) => filesWriteClipboardText(payload));
   ipcMain.handle('files:readClipboardAttachments', () => filesReadClipboardAttachments());
   ipcMain.handle('net:probe', (_event, payload) => netProbe(payload && payload.url || '', payload && payload.timeoutMs || 8000));
 

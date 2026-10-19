@@ -118,6 +118,49 @@ export function mountNodesMode({
     return api.deleteContext(name);
   }
 
+  function agentsOnContext(name) {
+    const key = String(name || '');
+    if (!key) return [];
+    return (state.get('agents') || []).filter(a => a && (a.context_name || '') === key);
+  }
+
+  function agentsOnHost(node) {
+    const names = new Set(((node && node.contexts) || []).map(c => c && c.name).filter(Boolean));
+    const host = (node && node.host) || '';
+    const user = (node && node.user) || '';
+    const isSSH = !!(node && node.isSSH);
+    const port = String((node && node.port) == null || (node && node.port) === '' ? 22 : node.port);
+    return (state.get('agents') || []).filter(a => {
+      if (!a) return false;
+      if (names.has(a.context_name || '')) return true;
+      // Legacy rows without a usable context_name: match the stamped
+      // endpoint so they are still cleaned up with their host.
+      if (!isSSH || !(a.machine_host || '')) return false;
+      const aPort = String(a.machine_port == null || a.machine_port === '' ? 22 : a.machine_port);
+      return a.machine_host === host && aPort === port && String(a.machine_user || '') === String(user);
+    });
+  }
+
+  // Node deletion cascades (2026-10-13): every agent on the node is
+  // stopped and removed remotely (camc rm --kill via DELETE
+  // /api/agents/:id/history) BEFORE the context record is deleted, so
+  // the hub can still resolve the endpoint + credentials for the exec.
+  // A failed agent delete keeps its row and is reported; it does not
+  // block the context delete.
+  async function cascadeDeleteAgents(agents) {
+    let removed = 0;
+    const failed = [];
+    for (const a of agents) {
+      try {
+        await api.deleteAgentHistory(a.id);
+        removed++;
+      } catch (err) {
+        failed.push(`${a.id}: ${(err && err.message) || 'failed'}`);
+      }
+    }
+    return { removed, failed };
+  }
+
   function formatOpError(op, err, field) {
     const detail = (err && err.message) || String(err);
     if (err && err.status === 404) {
@@ -876,11 +919,16 @@ export function mountNodesMode({
         const names   = node.contexts.map(c => c.name);
         const nameStr = names.length ? names.join(', ') : '(none)';
         const epLabel = node.isSSH ? `${node.user}@${node.host}:${node.port}` : node.host;
+        const hostAgents = agentsOnHost(node);
+        const runningCount = hostAgents.filter(a => a && a.status === 'running').length;
         const ok = window.confirm(
           `Delete host "${epLabel}"?\n\n` +
           `This will remove ${names.length} context record(s):\n  ${nameStr}\n\n` +
-          `Agents already imported into this Hub will remain in the ` +
-          `agent list. No remote cleanup is performed.`
+          (hostAgents.length
+            ? `All ${hostAgents.length} agent(s) on this host will be STOPPED and ` +
+              `DELETED remotely (camc rm --kill)` +
+              (runningCount ? ` — ${runningCount} still running` : '') + '.'
+            : 'No agents on this host.')
         );
         if (!ok) return;
 
@@ -897,6 +945,18 @@ export function mountNodesMode({
           setStatus(formatOpError('Delete host', err), 'is-error');
           showToast(formatOpError('Delete host', err), 'error', 5000);
           return;
+        }
+        // Cascade first: agents are stopped/removed remotely while the
+        // context records (and their credentials) still exist to resolve
+        // the exec endpoint.
+        let agentsRemoved = 0;
+        if (hostAgents.length) {
+          btn.textContent = 'Deleting agents…';
+          setStatus(`Deleting ${hostAgents.length} agent(s) on ${epLabel}…`);
+          const cascade = await cascadeDeleteAgents(hostAgents);
+          agentsRemoved = cascade.removed;
+          for (const f of cascade.failed) failures.push(f);
+          btn.textContent = 'Deleting…';
         }
         for (const ctx of node.contexts) {
           try {
@@ -915,17 +975,17 @@ export function mountNodesMode({
           try { await loadAgents(); } catch (_) {}
         }
         if (failures.length === 0) {
-          showToast(`Deleted host "${epLabel}" (${removed} context(s))`, 'success');
-          setStatus(`Deleted host "${epLabel}" (${removed} context(s)).`, 'is-ok');
+          showToast(`Deleted host "${epLabel}" (${removed} context(s), ${agentsRemoved} agent(s))`, 'success');
+          setStatus(`Deleted host "${epLabel}" (${removed} context(s), ${agentsRemoved} agent(s)).`, 'is-ok');
         } else {
           const head = failures.slice(0, 4).join(', ');
           const tail = failures.length > 4 ? ', …' : '';
           showToast(
-            `Delete host "${epLabel}": ${removed} removed, ${failures.length} failed (${head}${tail})`,
+            `Delete host "${epLabel}": ${removed} context(s) + ${agentsRemoved} agent(s) removed, ${failures.length} failed (${head}${tail})`,
             'warning', 6000,
           );
           setStatus(
-            `Delete host "${epLabel}": ${removed} removed, ${failures.length} failed (${head}${tail}).`,
+            `Delete host "${epLabel}": ${removed} context(s) + ${agentsRemoved} agent(s) removed, ${failures.length} failed (${head}${tail}).`,
             'is-error',
           );
           btn.disabled = false;
@@ -1119,12 +1179,15 @@ export function mountNodesMode({
         e.stopPropagation();
         const name = btn.dataset.name;
         if (!name) return;
+        const ctxAgents = agentsOnContext(name);
         const ok = window.confirm(
           `Delete context "${name}"?\n\n` +
           `Only this context's workspace record is removed. Other ` +
-          `contexts on the same host are untouched. Agents already ` +
-          `imported into this Hub remain in the agent list. No ` +
-          `remote cleanup is performed.`
+          `contexts on the same host are untouched.\n\n` +
+          (ctxAgents.length
+            ? `${ctxAgents.length} agent(s) imported under this context will ` +
+              `be STOPPED and DELETED remotely (camc rm --kill).`
+            : 'No agents are imported under this context.')
         );
         if (!ok) return;
         btn.disabled = true;
@@ -1132,6 +1195,15 @@ export function mountNodesMode({
         btn.textContent = '…';
         try {
           await persistReady('Delete context');
+          // Cascade first (see cascadeDeleteAgents): remote removal needs
+          // the context record for endpoint/credential resolution.
+          let agentsRemoved = 0;
+          const agentFailures = [];
+          if (ctxAgents.length) {
+            const cascade = await cascadeDeleteAgents(ctxAgents);
+            agentsRemoved = cascade.removed;
+            agentFailures.push(...cascade.failed);
+          }
           await persistDelete(name);
           lastSync.delete(name);
           expandedCtxNames.delete(name);
@@ -1139,8 +1211,19 @@ export function mountNodesMode({
           if (typeof loadAgents === 'function') {
             try { await loadAgents(); } catch (_) {}
           }
-          showToast(`Deleted context "${name}"`, 'success');
-          setStatus(`Deleted context "${name}".`, 'is-ok');
+          if (agentFailures.length) {
+            const head = agentFailures.slice(0, 3).join(', ');
+            const tail = agentFailures.length > 3 ? ', …' : '';
+            showToast(
+              `Deleted context "${name}"; ${agentsRemoved}/${ctxAgents.length} agent(s) removed (${head}${tail})`,
+              'warning', 6000,
+            );
+            setStatus(`Deleted context "${name}"; ${agentFailures.length} agent delete(s) failed.`, 'is-error');
+          } else {
+            const suffix = ctxAgents.length ? ` — ${agentsRemoved} agent(s) removed` : '';
+            showToast(`Deleted context "${name}"${suffix}`, 'success');
+            setStatus(`Deleted context "${name}"${suffix}.`, 'is-ok');
+          }
         } catch (err) {
           btn.disabled = false;
           btn.textContent = originalText;

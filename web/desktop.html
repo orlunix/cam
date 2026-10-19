@@ -748,6 +748,25 @@
                   <code>--retry</code> flag, so the value is recorded
                   but not enforced by camc.</span>
               </label>
+              <label>Tool launcher
+                <select id="start-tool-launcher">
+                  <option value="">default</option>
+                  <option value="auto">auto (official)</option>
+                  <option value="custom">custom…</option>
+                </select>
+                <span class="form-hint">Launch the tool through a named
+                  preset or a custom argv template (<code>camc run
+                  --tool-launcher</code>). Any non-default choice
+                  disables Auto-confirm.</span>
+              </label>
+              <label id="start-tool-launcher-custom-field" hidden>Custom launcher argv
+                <input type="text" id="start-tool-launcher-custom"
+                  placeholder="qsub run -- {command}" autocomplete="off">
+                <span class="form-hint">Argv template with exactly one
+                  standalone <code>{command}</code> element, or a named
+                  preset (<code>qsub-4g</code>,
+                  <code>ssh-auto[:JOBID]</code>).</span>
+              </label>
             </div>
             <div class="settings-section" id="start-api-section">
               <h3 class="start-api-heading">Custom LLM API</h3>

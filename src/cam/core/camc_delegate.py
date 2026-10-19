@@ -58,10 +58,13 @@ def _run_camc(args: list[str], timeout: float = 30) -> tuple[int, str]:
 
 
 def _run_camc_ssh(host: str, user: str, port: int | None, args: list[str],
-                  timeout: float = 30) -> tuple[int, str]:
+                  timeout: float = 30, key_file: str | None = None,
+                  camc_path: str | None = None,
+                  remote_home: str | None = None) -> tuple[int, str]:
     """Run a camc command on a remote machine via SSH."""
     import hashlib as _hl
-    camc_remote = "~/.cam/camc"
+    camc_remote = camc_path or "~/.cam/camc"
+    env_prefix = "HOME=%s " % remote_home if remote_home else ""
     # Reuse the same ControlMaster socket as SSHTransport so we piggy-back
     # on its already-authenticated persistent connection.
     conn_key = "%s@%s:%s" % (user or "default", host, port or 22)
@@ -70,9 +73,12 @@ def _run_camc_ssh(host: str, user: str, port: int | None, args: list[str],
     ssh_cmd = ["ssh"]
     if port:
         ssh_cmd += ["-p", str(port)]
+    if key_file:
+        ssh_cmd += ["-i", key_file]
     ssh_cmd += [
         "-o", "ConnectTimeout=10",
         "-o", "StrictHostKeyChecking=no",
+        "-o", "BatchMode=yes",
         "-o", "ControlPath=%s" % control_path,
         "-o", "ControlMaster=auto",
         "-o", "ControlPersist=600",
@@ -86,10 +92,10 @@ def _run_camc_ssh(host: str, user: str, port: int | None, args: list[str],
     if has_non_ascii:
         quoted_args = " ".join(shlex.quote(a) for a in args)
         # Pipe a bash script via stdin; SSH -T disables pty allocation
-        bash_script = "#!/bin/bash\npython3 %s %s\n" % (camc_remote, quoted_args)
+        bash_script = "#!/bin/bash\n%spython3 %s %s\n" % (env_prefix, camc_remote, quoted_args)
         ssh_cmd += ["-T", target, "bash"]
     else:
-        remote_cmd = "python3 %s %s" % (camc_remote, " ".join(shlex.quote(a) for a in args))
+        remote_cmd = "%spython3 %s %s" % (env_prefix, camc_remote, " ".join(shlex.quote(a) for a in args))
         ssh_cmd += [target, remote_cmd]
         bash_script = None
     try:

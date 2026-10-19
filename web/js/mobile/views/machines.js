@@ -242,10 +242,22 @@ export function renderMachines(container, opts = {}) {
         const shortHost = machine.host === 'local' ? 'local' : machine.host.split('.')[0];
         const msg = `Delete node "${shortHost}"?\n\n` +
           `This will remove ${machine.contexts.length} context(s): ${machine.contexts.map(c => c.name).join(', ')}` +
-          (machine.runningCount > 0 ? `\n\nWARNING: ${machine.runningCount} agent(s) still running!` : '');
+          (machine.agents.length
+            ? `\n\nAll ${machine.agents.length} agent(s) on this node will be STOPPED and DELETED remotely (camc rm --kill)` +
+              (machine.runningCount > 0 ? ` — ${machine.runningCount} still running` : '') + '.'
+            : '\n\nNo agents on this node.');
         if (!confirm(msg)) return;
         btn.disabled = true;
         btn.textContent = 'Deleting...';
+        // Cascade first: remote agent removal (camc rm --kill) resolves the
+        // endpoint + credentials through the context records, so agents go
+        // down before their contexts are deleted.
+        let agentsRemoved = 0;
+        let agentsFailed = 0;
+        for (const a of machine.agents) {
+          try { await api.deleteAgentHistory(a.id); agentsRemoved++; }
+          catch { agentsFailed++; }
+        }
         let deleted = 0;
         for (const ctx of machine.contexts) {
           try {
@@ -254,10 +266,6 @@ export function renderMachines(container, opts = {}) {
           } catch (err) {
             state.toast(`Delete ${ctx.name} failed: ${err.message}`, 'error');
           }
-        }
-        // Clean agent history too
-        for (const a of machine.agents.filter(a => a.status !== 'running')) {
-          try { await api.deleteAgentHistory(a.id); } catch {}
         }
         // Refresh
         try {
@@ -269,7 +277,9 @@ export function renderMachines(container, opts = {}) {
           state.set('agents', agentResp.agents || []);
         } catch {}
         expandedId = null;
-        state.toast(`Deleted ${deleted} context(s) from ${shortHost}`, 'success');
+        const summary = `Deleted ${deleted} context(s) + ${agentsRemoved} agent(s) from ${shortHost}`;
+        if (agentsFailed) state.toast(`${summary} — ${agentsFailed} agent delete(s) failed`, 'error');
+        else state.toast(summary, 'success');
       });
     });
   }

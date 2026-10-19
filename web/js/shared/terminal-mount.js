@@ -525,7 +525,7 @@ function createTerminalEntry(agent, hostEl) {
   const termOpts = {
     cursorBlink: true,
     convertEol: false,
-    scrollback: 5000,
+    scrollback: 20000,
     fontFamily: terminalFontFamily(),
     fontSize: terminalFontSizeFromCss(),
     theme: terminalThemeFromCss(),
@@ -743,7 +743,7 @@ export async function disposeTerminalForAgent(agentId, opts = {}) {
   if (opts.evict && ent.serialize && ent.term) {
     try {
       const snapshot = ent.serialize.serialize(
-        { excludeAltBuffer: true, excludeModes: true, scrollback: 5000 });
+        { excludeAltBuffer: true, excludeModes: true, scrollback: 20000 });
       if (snapshot) _parkedSnapshots.set(agentId, snapshot);
     } catch { /* snapshot failed — evict proceeds without restore */ }
   }
@@ -777,6 +777,15 @@ export function scrollTerminalToBottom(agentId) {
   ent.needsBottom = true;
   ent.forceBottomUntil = Date.now() + 800;
   terminalScrollToBottom(ent);
+  return true;
+}
+
+export function scrollTerminalToTop(agentId) {
+  const ent = terminalSessions.get(agentId);
+  if (!ent?.term) return false;
+  try { ent.term.scrollToTop(); } catch { return false; }
+  ent.needsBottom = false;
+  ent.forceBottomUntil = 0;
   return true;
 }
 

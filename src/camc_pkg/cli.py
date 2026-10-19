@@ -7224,6 +7224,10 @@ def cmd_machine_add(args):
         machine["env_setup"] = args.env_setup
     if getattr(args, "key_file", None):
         machine["key_file"] = args.key_file
+    if getattr(args, "camc_path", None):
+        machine["camc_path"] = args.camc_path
+    if getattr(args, "remote_home", None):
+        machine["remote_home"] = args.remote_home
     # Validate SSH machines
     if machine["type"] == "ssh":
         if not machine.get("host"):
@@ -7236,6 +7240,8 @@ def cmd_machine_add(args):
     print("Added machine '%s' (%s)" % (name, machine["type"]))
     if machine.get("host"):
         print("  %s@%s:%s" % (machine.get("user", ""), machine["host"], machine.get("port", 22)))
+    if machine["type"] == "ssh":
+        print("  Tunnel: camc tunnel up %s" % name)
 
 
 def cmd_machine_rm(args):
@@ -7270,10 +7276,14 @@ def cmd_machine_edit(args):
         m["env_setup"] = args.env_setup; changed = True
     if getattr(args, "key_file", None) is not None:
         m["key_file"] = args.key_file; changed = True
+    if getattr(args, "camc_path", None) is not None:
+        m["camc_path"] = args.camc_path; changed = True
+    if getattr(args, "remote_home", None) is not None:
+        m["remote_home"] = args.remote_home; changed = True
     if getattr(args, "type", None) is not None:
         m["type"] = args.type; changed = True
     if not changed:
-        print("Nothing to change. Use --host, --user, --port, --env-setup, --key-file")
+        print("Nothing to change. Use --host, --user, --port, --env-setup, --key-file, --camc-path, --remote-home")
         return
     store.save(m)
     print("Updated machine '%s'" % name)
@@ -7301,6 +7311,191 @@ def cmd_machine_ping(args):
             print_success("%s (%s)" % (name, host))
         else:
             print_error("%s (%s) — unreachable" % (name, host))
+
+
+# ===========================================================================
+# Machine tunnels (persistent per-machine SSH forward + mailbox fallback)
+# ===========================================================================
+
+def cmd_tunnel(args):
+    """Tunnel management subcommands."""
+    sub = getattr(args, "tunnel_cmd", None)
+    if sub == "up":
+        cmd_tunnel_up(args)
+    elif sub == "down":
+        cmd_tunnel_down(args)
+    elif sub == "status":
+        cmd_tunnel_status(args)
+    elif sub == "agents":
+        cmd_tunnel_agents(args)
+    elif sub == "inbox":
+        cmd_tunnel_inbox(args)
+    elif sub == "flush":
+        cmd_tunnel_flush(args)
+    elif sub == "serve":
+        from camc_pkg.tunnel import tunnel_serve
+        sys.exit(tunnel_serve(port=args.port, ensure=args.ensure))
+    else:
+        print("Usage: camc tunnel {up|down|status|agents|inbox|flush|serve}",
+              file=sys.stderr)
+        sys.exit(1)
+
+
+def _tunnel_select_machines(args):
+    """Resolve the [names...]/--all machine selection into records."""
+    from camc_pkg.machine_store import MachineStore
+    store = MachineStore()
+    names = getattr(args, "names", None) or []
+    if getattr(args, "all", False):
+        machines = store.list_ssh()
+    else:
+        machines = []
+        for n in names:
+            m = store.get(n)
+            if not m or m.get("type") != "ssh":
+                print("Error: no ssh machine '%s'" % n, file=sys.stderr)
+                sys.exit(1)
+            machines.append(m)
+    if not machines:
+        print("No machines selected (give names or --all; configure with "
+              "'camc machine add')", file=sys.stderr)
+        sys.exit(1)
+    return machines
+
+
+def cmd_tunnel_up(args):
+    from camc_pkg.tunnel import tunnel_up
+    machines = _tunnel_select_machines(args)
+    started, skipped, errors = tunnel_up(machines)
+    for name in started:
+        print_success("tunnel keeper started: %s" % name)
+    for name in skipped:
+        print_warning("tunnel keeper already running: %s" % name)
+    for name, err in errors:
+        print_error("tunnel keeper failed to start: %s — %s" % (name, err))
+    if errors:
+        sys.exit(1)
+
+
+def cmd_tunnel_down(args):
+    from camc_pkg.tunnel import tunnel_down
+    machines = _tunnel_select_machines(args)
+    for m in machines:
+        name = m.get("name")
+        if tunnel_down(m):
+            print_success("tunnel keeper stopped: %s" % name)
+        else:
+            print_warning("no tunnel keeper running: %s" % name)
+
+
+def cmd_tunnel_status(args):
+    from camc_pkg.tunnel import tunnel_status
+    rows = tunnel_status()
+    if _want_json(args):
+        print(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        print("No SSH machines configured.")
+        return
+    _state_colors = {"up": "green", "down": "red", "connecting": "yellow",
+                     "stopped": "yellow"}
+    headers = ["NAME", "STATE", "KEEPER", "LOCAL_PORT", "QUEUED",
+               "INBOX", "RECONNECTS", "LAST_ERROR"]
+    table = []
+    for r in rows:
+        table.append([
+            r["name"],
+            _c(r["state"], _state_colors.get(r["state"])),
+            r["keeper"],
+            r["local_port"] or "-",
+            r["queued"],
+            r["inbox"],
+            r["reconnects"],
+            (r["last_error"] or "-"),
+        ])
+    print_table(headers, table, title="Machine Tunnels")
+
+
+def cmd_tunnel_agents(args):
+    from camc_pkg.tunnel import tunnel_agents
+    from camc_pkg.machine_store import MachineStore
+    store = MachineStore()
+    name = getattr(args, "name", None)
+    if name:
+        m = store.get(name)
+        if not m or m.get("type") != "ssh":
+            print("Error: no ssh machine '%s'" % name, file=sys.stderr)
+            sys.exit(1)
+        machines = [m]
+    else:
+        machines = store.list_ssh()
+    if not machines:
+        print("No SSH machines configured.")
+        return
+    failed = 0
+    for i, m in enumerate(machines):
+        ok, text = tunnel_agents(m)
+        if _want_json(args):
+            print(json.dumps({"machine": m.get("name"), "ok": ok,
+                              "text": text}))
+            if not ok:
+                failed += 1
+            continue
+        if len(machines) > 1:
+            if i:
+                print()
+            print("== %s ==" % m.get("name"))
+        if ok:
+            print(text)
+        else:
+            print("(%s)" % text)
+            failed += 1
+    if machines and failed == len(machines):
+        sys.exit(1)
+
+
+def cmd_tunnel_inbox(args):
+    from camc_pkg.tunnel import tunnel_inbox_read
+    from camc_pkg.machine_store import MachineStore
+    store = MachineStore()
+    name = getattr(args, "name", None)
+    if name:
+        m = store.get(name)
+        if not m or m.get("type") != "ssh":
+            print("Error: no ssh machine '%s'" % name, file=sys.stderr)
+            sys.exit(1)
+        machines = [m]
+    else:
+        machines = store.list_ssh()
+    any_rows = False
+    for m in machines:
+        mname = m.get("name")
+        for resp in tunnel_inbox_read(mname):
+            any_rows = True
+            if _want_json(args):
+                print(json.dumps(resp))
+                continue
+            argv = " ".join(str(a) for a in (resp.get("argv") or []))
+            state = "ok" if resp.get("ok") else "error"
+            print("[%s] %s  %s" % (mname, state, argv))
+            text = resp.get("text") if resp.get("ok") else resp.get("error")
+            if text:
+                print(text)
+    if not any_rows and not _want_json(args):
+        print("No queued replies.")
+
+
+def cmd_tunnel_flush(args):
+    from camc_pkg.tunnel import tunnel_flush
+    from camc_pkg.machine_store import MachineStore
+    m = MachineStore().get(args.name)
+    if not m or m.get("type") != "ssh":
+        print("Error: no ssh machine '%s'" % args.name, file=sys.stderr)
+        sys.exit(1)
+    sent, remaining = tunnel_flush(m)
+    print("flushed %d request(s), %d remaining" % (sent, remaining))
+    if remaining:
+        sys.exit(2)
 
 
 # ===========================================================================
@@ -8029,6 +8224,8 @@ examples:
     ma.add_argument("--port", default=None, help="SSH port")
     ma.add_argument("--env-setup", default=None, help="Shell commands to run before agent")
     ma.add_argument("--key-file", default=None, help="SSH key file")
+    ma.add_argument("--camc-path", default=None, help="Remote camc binary path [default: ~/.cam/camc]")
+    ma.add_argument("--remote-home", default=None, help="Remote HOME for camc state [default: ssh login home]")
     mrm = msub.add_parser("rm", help="Remove a machine")
     mrm.add_argument("name", help="Machine name")
     me = msub.add_parser("edit", help="Edit a machine")
@@ -8039,6 +8236,8 @@ examples:
     me.add_argument("--port", default=None)
     me.add_argument("--env-setup", default=None)
     me.add_argument("--key-file", default=None)
+    me.add_argument("--camc-path", default=None)
+    me.add_argument("--remote-home", default=None)
     mping = msub.add_parser("ping", help="Test SSH connectivity")
     mping.add_argument("name", nargs="?", default=None, help="Machine name (omit for all)")
 
@@ -8057,6 +8256,30 @@ examples:
     # sync
     sy = sub.add_parser("sync", help="Sync camc and configs to remote machines")
     sy.add_argument("target", nargs="?", default=None, help="Machine name (omit for all SSH machines)")
+
+    # tunnel
+    tp = sub.add_parser("tunnel", help="Persistent SSH tunnels to machines")
+    tsub = tp.add_subparsers(
+        dest="tunnel_cmd", parser_class=CamArgumentParser)
+    tup = tsub.add_parser("up", help="Start tunnel keeper(s)")
+    tup.add_argument("names", nargs="*", help="Machine names")
+    tup.add_argument("--all", action="store_true", help="All SSH machines")
+    tdown = tsub.add_parser("down", help="Stop tunnel keeper(s)")
+    tdown.add_argument("names", nargs="*", help="Machine names")
+    tdown.add_argument("--all", action="store_true", help="All SSH machines")
+    tst = tsub.add_parser("status", help="Show tunnel state")
+    tst.add_argument("--json", action="store_true", help="JSON output")
+    tag = tsub.add_parser("agents", help="List agents on tunnel-connected machines")
+    tag.add_argument("name", nargs="?", default=None, help="Machine name (omit for all)")
+    tag.add_argument("--json", action="store_true", help="JSON output")
+    tib = tsub.add_parser("inbox", help="Print collected mailbox replies")
+    tib.add_argument("name", nargs="?", default=None, help="Machine name (omit for all)")
+    tib.add_argument("--json", action="store_true", help="JSON output")
+    tfl = tsub.add_parser("flush", help="Flush queued requests now")
+    tfl.add_argument("name", help="Machine name")
+    tsv = tsub.add_parser("serve", help="Run the tunnel endpoint (normally remote)")
+    tsv.add_argument("--port", type=int, default=None, help="Listen port [default: 42177]")
+    tsv.add_argument("--ensure", action="store_true", help="Start detached if not running")
 
     # migrate
     mig = sub.add_parser("db-migrate", help="Migrate cam SQLite data to JSON")
@@ -8091,10 +8314,24 @@ examples:
     if len(sys.argv) == 6 and sys.argv[1] == "_bind_codex_session":
         sys.exit(_run_codex_session_binder(*sys.argv[2:]))
 
+    # Hidden _tunnel_keep subcommand (per-machine tunnel keeper daemon)
+    if len(sys.argv) >= 3 and sys.argv[1] == "_tunnel_keep":
+        from camc_pkg.tunnel import tunnel_keep_main
+        sys.exit(tunnel_keep_main(sys.argv[2]))
+
     # Command aliases (expand before argparse sees them)
     _aliases = {"a": "attach", "ls": "list"}
     if len(sys.argv) > 1 and sys.argv[1] in _aliases:
         sys.argv[1] = _aliases[sys.argv[1]]
+
+    # Machine tunnels (src/camc_pkg/tunnel.py): '<machine>:<ref>' targets
+    # matching machines.json are served by the per-machine persistent
+    # tunnel (mailbox fallback when the tunnel is down). Runs before the
+    # fleet bridge so registered machine names win over hub node names.
+    from camc_pkg.tunnel import tunnel_route, tunnel_submit
+    _tun_route = tunnel_route(sys.argv[1:])
+    if _tun_route is not None:
+        sys.exit(tunnel_submit(*_tun_route))
 
     # Fleet bridge (docs/desktop/bridge-protocol-v1.md): --hub-drain is the
     # host's outbox-drain hook; route() applies local-first semantics and
@@ -8103,7 +8340,14 @@ examples:
     # verbatim (and packs nothing when dispatch stays local).
     if len(sys.argv) >= 2 and sys.argv[1] == "--hub-drain":
         from camc_pkg.bridge import hub_drain as _hub_drain
-        sys.exit(_hub_drain())
+        _bid = ""
+        _rest = sys.argv[2:]
+        for _i, _a in enumerate(_rest):
+            if _a == "--bridge-id" and _i + 1 < len(_rest):
+                _bid = _rest[_i + 1]
+            elif _a.startswith("--bridge-id="):
+                _bid = _a.split("=", 1)[1]
+        sys.exit(_hub_drain(_bid))
     from camc_pkg.bridge import route as _bridge_route, submit as _bridge_submit
     _ferry_argv = _bridge_route(sys.argv[1:])
     if _ferry_argv is not None:
@@ -8166,6 +8410,7 @@ examples:
         "machine": cmd_machine,
         "context": cmd_context,
         "sync": cmd_sync,
+        "tunnel": cmd_tunnel,
         "db-migrate": cmd_db_migrate,
         "version": cmd_version,
         "skills": cmd_skills,

@@ -109,6 +109,7 @@ const drainCount = { [HOSTS.nodeA]: 0, [HOSTS.nodeB]: 0, [HOSTS.nodeC]: 0 };
 const execCalls = [];   // {host, command}
 const uploads = [];     // {host, remotePath}
 const inboxWrites = []; // {host, remotePath, response}
+const tunnelHandlers = {}; // host → onConnection registered via ensureForwardIn
 // First camb probe on nodeA reports "missing" so the worker's first
 // tick exercises the full deploy path (upload + chmod/mv + verify).
 const cambMissingOnce = new Set([HOSTS.nodeA]);
@@ -161,17 +162,53 @@ function makeSshTransport() {
     },
     writeRemoteFile(opts) {
       const rec = { host: opts.host, remotePath: String(opts.remotePath || ''), content: opts.content };
+      const text = Buffer.isBuffer(rec.content) ? rec.content.toString('utf8') : String(rec.content || '');
       if (rec.remotePath.startsWith('.cam/camb/inbox/')) {
         let parsed = null;
-        const text = Buffer.isBuffer(rec.content) ? rec.content.toString('utf8') : String(rec.content || '');
         try { parsed = JSON.parse(text); } catch (_) { /* captured raw below */ }
         inboxWrites.push({ host: rec.host, remotePath: rec.remotePath, response: parsed });
+      } else if (rec.remotePath.startsWith('.cam/camb/outbox/')) {
+        // Released events: the hub re-publishes to the node's outbox —
+        // emulate the node filesystem by feeding them back to the drain.
+        try { drainQueues[rec.host].push(JSON.parse(text)); } catch (_) { /* malformed release */ }
+        uploads.push(rec);
       } else {
         uploads.push(rec);
       }
       return Promise.resolve({ ok: true, bytes: 0 });
     },
     closeAll() {},
+    // Tunnel (§10): record the connection handler per host and report a
+    // fixed armed port; tests drive the handler with fake streams.
+    ensureForwardIn(opts, { onConnection } = {}) {
+      tunnelHandlers[opts.host] = onConnection;
+      return Promise.resolve({ ok: true, port: 41777 });
+    },
+    unforwardIn() { return Promise.resolve({ ok: true }); },
+  };
+}
+
+function fakeTunnelConn() {
+  const listeners = {};
+  const out = [];
+  let ended = false;
+  const stream = {
+    on(ev, fn) { listeners[ev] = fn; return stream; },
+    write(s) { out.push(String(s)); return true; },
+    end() { ended = true; },
+  };
+  return {
+    stream,
+    send(obj) { if (listeners.data) listeners.data(Buffer.from(JSON.stringify(obj) + '\n')); },
+    async response(timeoutMs = 6000) {
+      const t0 = Date.now();
+      while (!ended) {
+        if (Date.now() - t0 > timeoutMs) throw new Error('tunnel response timeout');
+        // eslint-disable-next-line no-await-in-loop
+        await sleep(20);
+      }
+      return JSON.parse(out.join('').split('\n')[0]);
+    },
   };
 }
 
@@ -329,7 +366,7 @@ async function main() {
       if (w.host === HOSTS.nodeA && w.response && w.response.id) m.set(w.response.id, w);
     }
     return m.size >= reqs.length ? m : null;
-  }, 8000);
+  }, 15000); // r-notfound now survives two release re-publishes (~3 ticks) before its terminal error
   const resp = (id) => (responses && responses.get(id) && responses.get(id).response) || {};
 
   // Fleet list — plain table
@@ -479,6 +516,125 @@ async function main() {
       ok('audit list entry has null target', !!listEntry && listEntry.target_ctx === null && listEntry.ok === true,
         JSON.stringify(listEntry));
     }
+  }
+
+  // ── 10. v1.1 router artifacts: drain claims under --bridge-id, and
+  //    this hub publishes a coverage card per bridge-enabled node ──
+  {
+    const drains = callsOn(HOSTS.nodeA, /--hub-drain --bridge-id [0-9a-f]{32}\b/);
+    ok('drain carries --bridge-id', drains.length >= 1,
+      JSON.stringify(callsOn(HOSTS.nodeA, /--hub-drain/).slice(0, 1)));
+    const bidMatch = /--bridge-id ([0-9a-f]{32})/.exec(drains[0] || '');
+    const cardUp = uploads.find(u => u.host === HOSTS.nodeA && /^\.cam\/camb\/hubs\/[0-9a-f]{32}\.json$/.test(u.remotePath));
+    ok('coverage card published to nodeA', !!cardUp,
+      JSON.stringify(uploads.map(u => u.remotePath).filter(p => p.includes('hubs'))));
+    let card = null;
+    try { card = JSON.parse(Buffer.isBuffer(cardUp.content) ? cardUp.content.toString('utf8') : String(cardUp.content || '')); } catch (_) {}
+    ok('card shape (hub_id/ts/covers/proto)',
+      !!card && typeof card.hub_id === 'string' && typeof card.ts === 'number'
+        && Array.isArray(card.covers) && card.proto === 1,
+      JSON.stringify(card));
+    ok('card covers all three nodes by name AND canonical key',
+      !!card && ['nodeA', 'nodeB', 'nodeC'].every(n => card.covers.some(e => e && e.name === n))
+        && ['u@10.10.0.1:22', 'u@10.10.0.2:22', 'u@10.10.0.3:22'].every(k => card.covers.some(e => e && e.key === k)),
+      JSON.stringify(card && card.covers));
+    ok('drain bridge-id == card hub_id', !!bidMatch && !!card && bidMatch[1] === card.hub_id);
+    ok('card advertises the armed tunnel port', !!card && !!card.tunnel && card.tunnel.port === 41777,
+      JSON.stringify(card && card.tunnel));
+  }
+
+  // ── 11. release: unroutable bare ref re-published with attempts ──
+  //    (r-notfound's terminal 'no agent matches' error was asserted
+  //    above; here we pin the two release re-publishes that preceded it)
+  {
+    const rels = uploads
+      .filter(u => u.host === HOSTS.nodeA && u.remotePath === '.cam/camb/outbox/r-notfound.json')
+      .map(u => { try { return JSON.parse(Buffer.isBuffer(u.content) ? u.content.toString('utf8') : String(u.content || '')); } catch (_) { return null; } });
+    ok('r-notfound released twice (attempts 1 then 2)',
+      rels.length === 2 && rels[0] && rels[0].attempts === 1 && rels[1] && rels[1].attempts === 2,
+      JSON.stringify(rels.map(x => x && x.attempts)));
+  }
+
+  // ── 12. seen-id idempotency: duplicate event ids dispatch once ──
+  {
+    const statusBefore = callsOn(HOSTS.nodeA, /'status' 'aa11aaaa'/).length;
+    drainQueues[HOSTS.nodeA].push(
+      { id: 'r-dup', argv: ['status', 'aa11aaaa'], from: FROM, ts: 20 },
+      { id: 'r-dup', argv: ['status', 'aa11aaaa'], from: FROM, ts: 21 },
+    );
+    await waitFor('same-batch dup pair answered', () =>
+      inboxWrites.filter(w => w.host === HOSTS.nodeA && w.response && w.response.id === 'r-dup').length >= 2, 6000);
+    eq('same-batch duplicate dispatched once',
+      callsOn(HOSTS.nodeA, /'status' 'aa11aaaa'/).length - statusBefore, 1);
+    // A third occurrence in a LATER drain still gets the cached response.
+    drainQueues[HOSTS.nodeA].push({ id: 'r-dup', argv: ['status', 'aa11aaaa'], from: FROM, ts: 22 });
+    await waitFor('cross-drain dup answered', () =>
+      inboxWrites.filter(w => w.host === HOSTS.nodeA && w.response && w.response.id === 'r-dup').length >= 3, 6000);
+    eq('cross-drain duplicate not re-dispatched',
+      callsOn(HOSTS.nodeA, /'status' 'aa11aaaa'/).length - statusBefore, 1);
+    const dups = inboxWrites.filter(w => w.host === HOSTS.nodeA && w.response && w.response.id === 'r-dup').map(w => w.response);
+    ok('all dup responses identical and ok',
+      dups.length === 3 && dups.every(d => d.ok === true && d.text === dups[0].text),
+      JSON.stringify(dups));
+  }
+
+  // ── 13. canonical endpoint-key target: <user@host:port>:<agent> ──
+  {
+    const before = callsOn(HOSTS.nodeB, /'status' 'af12'/).length;
+    drainQueues[HOSTS.nodeA].push({ id: 'r-keyaddr', argv: ['status', 'u@10.10.0.2:22:af12'], from: FROM, ts: 23 });
+    const wr = await waitFor('key-addressed response', () =>
+      inboxWrites.find(x => x.host === HOSTS.nodeA && x.response && x.response.id === 'r-keyaddr') || null, 6000);
+    eq('key-addressed response ok', wr && wr.response && wr.response.ok, true);
+    eq('key-addressed landed on nodeB',
+      callsOn(HOSTS.nodeB, /'status' 'af12'/).length - before, 1);
+  }
+
+  // ── 14. tunnel (§10): token gate + shared dispatch funnel ──
+  {
+    ok('tunnel forward armed on nodeA', typeof tunnelHandlers[HOSTS.nodeA] === 'function');
+    ok('tunnel forward armed on nodeB', typeof tunnelHandlers[HOSTS.nodeB] === 'function');
+    const tokUp = uploads.find(u => u.host === HOSTS.nodeA && /^\.cam\/camb\/hubs\/[0-9a-f]{32}\.token$/.test(u.remotePath));
+    ok('tunnel token deployed next to the card', !!tokUp,
+      JSON.stringify(uploads.map(u => u.remotePath).filter(p => p.includes('.token'))));
+    const token = tokUp ? (Buffer.isBuffer(tokUp.content) ? tokUp.content.toString('utf8') : String(tokUp.content)).trim() : '';
+    ok('token is the derived 64-hex value', /^[0-9a-f]{64}$/.test(token), token);
+
+    // Wrong token → unauthorized, nothing dispatched.
+    const c1 = fakeTunnelConn();
+    tunnelHandlers[HOSTS.nodeA]({ stream: c1.stream, info: {} });
+    c1.send({ token: 'wrong', request: { id: 't-unauth', argv: ['list'], from: FROM, ts: 30 } });
+    const r1 = await c1.response();
+    eq('tunnel bad token rejected', r1.ok, false);
+    eq('tunnel bad token error', r1.error, 'unauthorized');
+
+    // Right token → dispatched through the shared funnel to nodeB.
+    const c2 = fakeTunnelConn();
+    tunnelHandlers[HOSTS.nodeA]({ stream: c2.stream, info: {} });
+    c2.send({ token, request: { id: 't-msg', argv: ['msg', 'send', 'af12', '-t', 'via-tunnel'], from: FROM, ts: 31 } });
+    const r2 = await c2.response(8000);
+    eq('tunnel msg ok', r2 && r2.ok, true);
+    eq('tunnel msg id echoes', r2 && r2.id, 't-msg');
+    ok('tunnel msg reply relayed', /bridge-pong/.test((r2 && r2.text) || ''), r2 && r2.text);
+    eq('tunnel msg dispatched exactly once',
+      callsOn(HOSTS.nodeB, /'msg' 'send' 'af12' '-t' 'via-tunnel'/).length, 1);
+
+    // Same event id again over the tunnel → cached response, no 2nd exec.
+    const c3 = fakeTunnelConn();
+    tunnelHandlers[HOSTS.nodeA]({ stream: c3.stream, info: {} });
+    c3.send({ token, request: { id: 't-msg', argv: ['msg', 'send', 'af12', '-t', 'via-tunnel'], from: FROM, ts: 32 } });
+    const r3 = await c3.response(8000);
+    eq('tunnel duplicate gets cached response', r3 && r3.ok, true);
+    eq('tunnel duplicate not re-dispatched',
+      callsOn(HOSTS.nodeB, /'msg' 'send' 'af12' '-t' 'via-tunnel'/).length, 1);
+
+    // Unroutable bare ref over the tunnel → not_my_fleet (the ferry
+    // cascades to the next tunnel / mailbox instead of failing).
+    const c4 = fakeTunnelConn();
+    tunnelHandlers[HOSTS.nodeA]({ stream: c4.stream, info: {} });
+    c4.send({ token, request: { id: 't-ghost', argv: ['status', 'zzzz'], from: FROM, ts: 33 } });
+    const r4 = await c4.response();
+    eq('tunnel unroutable ok false', r4 && r4.ok, false);
+    ok('tunnel unroutable is not_my_fleet', /^not_my_fleet:/.test((r4 && r4.error) || ''), r4 && r4.error);
   }
 
   // ── 2e. Hub restart re-boots workers from the persisted store ──

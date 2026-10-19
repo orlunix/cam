@@ -65,6 +65,11 @@ Agents are addressable by name, ID prefix, or `#N` (1-based from `~/.cam/camc li
 | Set a per-tool API default | `~/.cam/camc api default set -t codex <name>` |
 | Clear a default (login) | `~/.cam/camc api default clear -t codex` |
 | Use login for one run | `~/.cam/camc run -t codex --no-default-api -n <name>` |
+| Start tunnel to a machine | `camc tunnel up <machine>` (or `--all`; keeper auto-reconnects) |
+| Remote agent via tunnel | `camc capture <machine>:<agent>` / `status` / `send` / `key` / `msg send` |
+| List remote agents | `camc tunnel agents [machine]` |
+| Tunnel state / queued | `camc tunnel status` |
+| Queued replies (tunnel was down) | `camc tunnel inbox [machine]` |
 
 **Other skill areas:**
 
@@ -181,6 +186,23 @@ For asking another agent to do something, use the **camc-messaging** skill:
 ```
 
 Full protocol, wire format, and patterns: see the camc-messaging skill.
+
+### Remote agents via machine tunnels
+
+Machines registered with `camc machine add` (type ssh) support direct
+delegation over a persistent SSH tunnel — no desktop hub needed:
+
+```bash
+camc tunnel up <machine>            # start keeper (auto-reconnect, one per server)
+camc tunnel status                  # state, local port, queued/inbox counts
+camc capture <machine>:<agent>      # any of: status capture send key "msg send"
+camc tunnel agents [machine]        # remote `camc list` through the tunnel
+```
+
+When the tunnel is down, the command queues to
+`~/.cam/tunnels/<m>/outbox/` and exits 2; the keeper flushes it on
+reconnect and the reply lands in `camc tunnel inbox [machine]`. Details:
+`docs/camc-spec.md` §6a.
 
 ## 3. Manage / lifecycle
 

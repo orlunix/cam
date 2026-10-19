@@ -32,12 +32,9 @@ const sync = fn("syncActiveTerminalEntry", "terminalEntryBySession");
 const cssPath = path.join(__dirname, "..", "..", "..", "web", "css", "desktop.css");
 const css = fs.readFileSync(cssPath, "utf8");
 const terminalChromeCss = css.slice(css.indexOf(".terminal-tmux-chrome"), css.indexOf("#mode-agents .agent-composer[hidden]"));
-const wheelStart = source.indexOf("entry._wheelHandler = (ev) =>");
-const wheelEnd = source.indexOf("container.addEventListener('wheel'", wheelStart);
-const wheel = wheelStart >= 0 && wheelEnd >= 0 ? source.slice(wheelStart, wheelEnd) : "";
-const keyStart = source.indexOf("entry.term.attachCustomKeyEventHandler((ev) =>");
-const keyEnd = source.indexOf("entry._wheelHandler = (ev) =>", keyStart);
-const keyHandler = keyStart >= 0 && keyEnd >= 0 ? source.slice(keyStart, keyEnd) : "";
+// Input interception (paging keys, copy/paste, wheel, right-click) lives
+// in the unified trap layer; agent-console only wires it.
+const trap = fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "shared", "terminal-trap.js"), "utf8");
 const historyStart = source.indexOf("terminalHistoryBtn.addEventListener('click'");
 const historyEnd = source.indexOf("terminalBottomBtn.addEventListener('click'", historyStart);
 const historyClick = historyStart >= 0 && historyEnd >= 0 ? source.slice(historyStart, historyEnd) : "";
@@ -81,7 +78,7 @@ ok("cached session does not reconnect", !cachedBlock.includes("bridge.open"));
 // measuring the grid, so a first attach never opens at the xterm 80x24
 // default while the pane is still hidden.
 const layoutWait = open.indexOf("await waitForTerminalLayout(ent)");
-const openCall = open.indexOf("bridge.open({ agentId: agent.id, cols: openCols, rows: openRows })");
+const openCall = open.indexOf("bridge.open({ agentId: agent.id, cols: openCols, rows: openRows,");
 ok("open waits for layout before measuring", layoutWait >= 0 && openCall > layoutWait,
   "layoutWait=" + layoutWait + " openCall=" + openCall);
 ok("layout wait helper exists", source.includes("async function waitForTerminalLayout("));
@@ -107,7 +104,7 @@ ok("terminal action bar is centered and lifted off the input line",
     && terminalChromeCss.includes("gap: 5px;"));
 ok("terminal action buttons are scaled 1.2x",
   terminalChromeCss.includes("width: 34px;") && terminalChromeCss.includes("height: 34px;") && terminalChromeCss.includes("font-size: 13px;"));
-ok("copy browsing suppresses terminal auto-follow", source.includes("!ent.copyBrowsing"));
+ok("terminal auto-follow uses viewport state only (no copy-mode gate)", source.includes("const shouldFollow = terminalShouldForceBottom(ent) || terminalIsAtBottom(ent);") && !source.includes("copyBrowsing"));
 ok("tmux controls have a bounded passive refresh", source.includes("terminalTmuxRefreshPending"));
 ok("terminal status retains its full text as a tooltip", source.includes("terminalAttachStatus.title = text || ''"));
 ok("switching back immediately restores the cached agent tabs", sync.includes("renderTerminalTabs(ent)"));
@@ -123,19 +120,32 @@ ok("current nested camc tmux socket is normalized", hub.includes("rec.tmux_socke
 ok("terminal chrome keeps info status color", css.includes(".terminal-tmux-chrome .terminal-attach-status.is-info"));
 ok("terminal chrome keeps ok status color", css.includes(".terminal-tmux-chrome .terminal-attach-status.is-ok"));
 ok("terminal chrome keeps error status color", css.includes(".terminal-tmux-chrome .terminal-attach-status.is-error"));
-ok("normal wheel scrolls local xterm viewport", wheel.includes("entry.term.scrollLines(lines)"));
-ok("normal wheel pauses terminal auto-follow", wheel.includes("entry.needsBottom = false;") && wheel.includes("entry.forceBottomUntil = 0;"));
-ok("History wheel sends five line keys through the live PTY", wheel.includes("if (entry.copyBrowsing)") && wheel.includes("sequence.repeat(5)") && wheel.includes("bridge.input({ sessionId: entry.sessionId"));
-ok("History maps PageUp and PageDown through the live PTY", source.includes("PageUp: '\\x1b[5~'") && source.includes("PageDown: '\\x1b[6~'") && keyHandler.includes("bridge.input({ sessionId: entry.sessionId"));
+ok("agent-console wires the unified terminal trap layer",
+  source.includes("attachTerminalTrap(entry, {") && source.includes("../shared/terminal-trap.js"));
+ok("normal wheel scrolls local xterm viewport", trap.includes("term.scrollLines(lines)"));
+ok("normal wheel pauses terminal auto-follow", trap.includes("entry.needsBottom = false;") && trap.includes("entry.forceBottomUntil = 0;"));
+ok("wheel always scrolls the local buffer and never forwards to the PTY",
+  trap.includes("term.scrollLines(lines)") && !trap.includes("bridge.input") && !trap.includes("copyBrowsing"));
+ok("Shift+PageUp/PageDown page the local buffer natively",
+  trap.includes("ev.shiftKey") && trap.includes("key === 'PageUp' || key === 'PageDown'")
+    && trap.includes("term.scrollPages(key === 'PageUp' ? -1 : 1)"));
+ok("right-click copies the selection instantly, otherwise pastes (trap layer)",
+  trap.includes("container.addEventListener('contextmenu'")
+    && trap.includes("if (!copySelection()) doPaste();"));
+ok("trap layer suppresses the native context menu on the pane",
+  trap.indexOf("ev.preventDefault();") >= 0 && trap.includes("contextMenuHandler"));
+ok("alt-screen switches are stripped from the live stream (TUI scrollback works)",
+  source.includes("TERMINAL_ALT_SCREEN_RE") && source.includes("sanitizeTerminalStream(ent, String(msg.data || ''))"));
+ok("alt-screen filter survives sequences split across chunks",
+  source.includes("_altScreenTail") && source.includes("TERMINAL_ALT_SCREEN_PREFIXES"));
+ok("alt-screen filter state resets on open and reconnect",
+  source.includes("ent._altScreenTail = '';"));
 ok("History leaves Up and Down on xterm's native input path", !source.includes("ArrowUp: -1") && !source.includes("ArrowDown: 1"));
-ok("History enters copy mode via the live stream (prefix+[), optimistic state",
-  historyClick.includes("bridge.input({ sessionId: ent.sessionId, data: '\\x02[' })")
-    && historyClick.indexOf("data: '\\x02['") < historyClick.indexOf("ent.copyBrowsing = true")
-    && !historyClick.includes("await bridge.copyMode") && !historyClick.includes("term.scrollLines"));
-ok("History button pages up via the live stream while in copy mode",
-  historyClick.includes("if (ent.copyBrowsing) {") && historyClick.includes("bridge.input({ sessionId: ent.sessionId, data: '\\x1b[5~' })"));
-ok("To Bottom safely cancels tmux copy mode before local follow", bottomClick.includes("await bridge.cancelCopyMode({ sessionId: ent.sessionId })") && bottomClick.indexOf("await bridge.cancelCopyMode") < bottomClick.indexOf("ent.copyBrowsing = false"));
-ok("To Bottom keeps an immediate local fast path outside copy mode", bottomClick.includes("if (!ent.copyBrowsing) {") && bottomClick.indexOf("if (!ent.copyBrowsing)") < bottomClick.indexOf("await bridge.cancelCopyMode"));
+ok("History button scrolls natively and never enters copy mode",
+  historyClick.includes("ent.term.scrollToTop()") && !historyClick.includes("\\x02[")
+    && !historyClick.includes("copyBrowsing") && !historyClick.includes("bridge.input"));
+ok("To Bottom is pure local follow (no copy-mode cancel)",
+  bottomClick.includes("terminalScrollToBottom(ent);") && !bottomClick.includes("cancelCopyMode") && !bottomClick.includes("copyBrowsing"));
 ok("Refresh reuses the force-open lifecycle", refreshClick.includes("await openTerminalForSelected({ force: true })"));
 ok("force refresh recreates even an already detached xterm",
   open.includes("if (force) {") && !open.includes("if (force && ent.sessionId)"));
@@ -160,11 +170,57 @@ ok("terminal attachment pending state survives shared control refreshes",
   source.includes("let terminalAttachmentPending = false")
     && source.includes("terminalAttachmentPending = terminalDelivery")
     && source.includes("terminalAttachmentPending = false"));
-ok("tmux refresh reconciles renderer history with pane state", source.includes("ent.copyBrowsing = !!result.copyMode"));
+ok("tmux refresh no longer drives renderer copy state", !source.includes("copyBrowsing") && !source.includes("result.copyMode"));
 ok("copy actions invalidate stale tmux refresh state", source.includes("tmuxControlRevision: 0") && source.includes("const tmuxControlRevision = ent.tmuxControlRevision") && source.includes("if (ent.tmuxControlRevision !== tmuxControlRevision) return;"));
 ok("xterm scroll state updates the bottom control", source.includes("entry.term.onScroll(() =>"));
-ok("To Bottom is available above live output outside copy mode", source.includes("!ent?.copyBrowsing && terminalIsAtBottom(ent)"));
-ok("normal wheel remains local outside copy mode", wheel.indexOf("entry.term.scrollLines(lines)") > wheel.indexOf("if (entry.copyBrowsing)"));
+ok("To Bottom is gated on viewport state only", source.includes("terminalBottomBtn.disabled = actionsBlocked || !terminalConnected || terminalIsAtBottom(ent);"));
+ok("xterm scrollback raised to 20000", source.includes("scrollback: 20000,"));
+
+// Native-terminal replacement for tmux copy mode (2026-10): fresh
+// attaches replay pane history into the local buffer before the
+// ready-gate releases live bytes; copy writes the selection to the
+// clipboard and never eats SIGINT.
+ok("fresh attach fetches history in parallel with the channel open",
+  open.includes("startTerminalHistoryFetch(ent, agent);")
+    && open.indexOf("startTerminalHistoryFetch(ent, agent);") < open.indexOf("bridge.open({ agentId: agent.id"));
+ok("history settles before the ready-gate releases live bytes",
+  open.includes("await settleTerminalHistory(ent, agent);")
+    && open.indexOf("await settleTerminalHistory(ent, agent);") < open.indexOf("bridge.ready({ sessionId: ent.sessionId })")
+    && open.includes("const freshAttach = !ent.hasConnected && !res.reused;"));
+ok("attach holds the ready-gate for the history fetch",
+  open.includes("historyHoldMs: wantsHistory ? TERMINAL_HISTORY_HOLD_MS : 0") && main.includes("payload.historyHoldMs"));
+ok("history replay is bounded and never interleaves with live data",
+  source.includes("TERMINAL_HISTORY_HOLD_MS = 6000")
+    && source.includes("if (ent.sawLiveData) return;")
+    && source.includes("api.agentFullOutput(agent.id, 0, 'ansi', TERMINAL_HISTORY_REPLAY_LINES)"));
+ok("attach warms the term-pool handshake in parallel with the camc probe",
+  (() => {
+    const i = hub.indexOf("async function getAttachConnectOpts");
+    const body = i >= 0 ? hub.slice(i) : "";
+    return body.includes("_sshTransport.warmConnection(opts, { pool: 'term' })")
+      && body.indexOf("warmConnection(opts") < body.indexOf("command: `test -x ${REMOTE_CAMC}`");
+  })());
+ok("copy-with-selection writes the clipboard; bare Ctrl+C still SIGINTs",
+  trap.includes("term.hasSelection()")
+    && trap.includes("writeClipboardText(sel)")
+    && trap.includes("if (!copySelection()) return true;"));
+ok("clipboard write channel exists end to end",
+  preload.includes("ipcRenderer.invoke('files:writeClipboardText'")
+    && main.includes("ipcMain.handle('files:writeClipboardText', (_e, payload) => filesWriteClipboardText(payload))")
+    && main.includes("clipboard.writeText"));
+ok("hub fulloutput accepts a bounded lines parameter",
+  hub.includes("searchParams.get('lines')") && hub.includes("_captureAgentOutput(resolved, id, lines, format)"));
+
+// Mobile parity: copy mode removed there too — the history button
+// scrolls the native buffer, no copy-mode plumbing survives, and the
+// shared mount exports the top-scroll helper with the same buffer size.
+const mobileDetail = fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "mobile", "views", "agent-detail.js"), "utf8");
+const sharedMount = fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "shared", "terminal-mount.js"), "utf8");
+ok("mobile history button scrolls natively, copy mode fully removed",
+  mobileDetail.includes("scrollTerminalToTop(agentId);")
+    && !mobileDetail.includes("terminalCopyMode") && !mobileDetail.includes("copyModeActive"));
+ok("shared terminal mount exports scrollTerminalToTop with 20000 scrollback",
+  sharedMount.includes("export function scrollTerminalToTop(") && sharedMount.includes("scrollback: 20000,"));
 ok("preload exposes narrow tmux copy-mode channels", preload.includes("copyMode(payload)") && preload.includes("cancelCopyMode(payload)") && !preload.includes("copyScroll(payload)"));
 ok("main owns native tmux copy-mode IPC", main.includes("term:copyMode") && main.includes("term:cancelCopyMode") && !main.includes("term:copyScroll"));
 ok("copy-mode entry uses one-page-up on the owned pane", main.includes("['copy-mode', '-u', '-t', state.paneId]"));
@@ -257,8 +313,8 @@ ok("Diagnostics lives in a Settings tab (not the main mode nav)",
     && fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "desktop", "settings-mode.js"), "utf8").includes("mountDiagnosticsMode"));
 ok("built-in exec path logs one line per command (sync visibility on warm pools)",
   transport.includes("_execDone(first)") && transport.includes("exec ${opts.host}:${opts.port || 22} ${r && r.ok ? 'ok'"));
-ok("tmux discovery queue wait is bounded (15s) with self-release of abandoned links",
-  main.includes("Promise.race([") && main.includes("tmux discovery queue wait exceeded 15s")
+ok("tmux discovery queue wait is bounded (2s) with self-release of abandoned links",
+  main.includes("Promise.race([") && main.includes("tmux discovery queue wait exceeded 2s")
     && main.includes("void discoveryBeginP.then((releaseFn)"));
 ok("window switch/create use the live attach stream first (pty fast path)",
   main.includes("function _ptySwitchWindow") && main.includes("via: 'pty'") && main.includes("ent.write('\\x02c')"));
@@ -276,10 +332,12 @@ ok("attach prefers the reachable context endpoint, machine fields only as fallba
     && hub.includes("machineOpts.host = agent.machine_host")
     && main.includes("ATTACH_FALLBACK_ERRORS")
     && !main.includes("if (agent.machine_host) opts.host = agent.machine_host;"));
-ok("tmux binary is probed per endpoint, never hardcoded to /bin/tmux",
+ok("tmux binary is probed per endpoint in the background, never hardcoded to /bin/tmux",
   main.includes("function _probeRemoteTmuxBin")
     && main.includes("command -v tmux || command -v /bin/tmux")
-    && main.includes("tmux.bin = await _probeRemoteTmuxBin(resolved.opts)")
+    && !main.includes("tmux.bin = await _probeRemoteTmuxBin")
+    && main.includes("void Promise.resolve(probeP).then((bin) =>")
+    && main.includes("if (bin && tmux && !tmux.bin) tmux.bin = bin;")
     && !require("fs").readFileSync(require("path").join(__dirname, "..", "electron", "tmux-controls.cjs"), "utf8").includes('|| "/bin/tmux"'));
 ok("remote size repair resolves tmux binary from record with env fallback",
   main.includes('tmux_bin = (') && main.includes('shutil.which("tmux")') && !main.includes('["tmux", "-S", str(socket)]'));

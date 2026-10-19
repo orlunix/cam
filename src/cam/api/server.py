@@ -120,7 +120,42 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("CamcPoller failed to start: %s", e)
 
+    # Tunnel hub — cam serve as a bridge host (reverse tunnels from hosts,
+    # ferry listener + mailbox drain). Off unless server.tunnel_hub=true.
+    tunnel_hub_task = None
+    if getattr(server_state.config.server, "tunnel_hub", False):
+        try:
+            from cam.core.tunnel_hub import TunnelHub
+            from cam.core.tunnel_registry import TunnelRegistry
+
+            data_dir = Path(server_state.config.paths.data_dir).expanduser()
+            registry = TunnelRegistry(str(data_dir / "tunnels.json"))
+            hub = TunnelHub(
+                registry,
+                str(data_dir),
+                do_onboard=server_state.config.server.tunnel_onboard,
+                server_ssh_target=server_state.config.server.tunnel_ssh_target,
+                http_base=server_state.config.server.tunnel_http_base,
+                auth_token=server_state.auth_token,
+            )
+            server_state.tunnel_hub = hub
+            tunnel_hub_task = asyncio.create_task(hub.run())
+            logger.info("TunnelHub started (ferry listener + registry)")
+        except Exception as e:
+            logger.warning("TunnelHub failed to start: %s", e)
+
     yield
+
+    if tunnel_hub_task and not tunnel_hub_task.done():
+        try:
+            await server_state.tunnel_hub.stop()
+        except Exception:
+            pass
+        tunnel_hub_task.cancel()
+        try:
+            await tunnel_hub_task
+        except asyncio.CancelledError:
+            pass
 
     if camc_poller_task and not camc_poller_task.done():
         camc_poller_task.cancel()
@@ -173,6 +208,7 @@ def create_app(overrides: dict | None = None) -> FastAPI:
     from cam.api.routes.contexts import router as contexts_router
     from cam.api.routes.files import router as files_router
     from cam.api.routes.system import router as system_router
+    from cam.api.routes.tunnels import router as tunnels_router
     from cam.api.ws import router as ws_router
 
     app.include_router(agents_router, prefix="/api")
@@ -180,6 +216,7 @@ def create_app(overrides: dict | None = None) -> FastAPI:
     app.include_router(contexts_router, prefix="/api")
     app.include_router(files_router, prefix="/api")
     app.include_router(system_router, prefix="/api")
+    app.include_router(tunnels_router, prefix="/api")
     app.include_router(ws_router, prefix="/api")
 
     # Serve web client (PWA) — mount AFTER API routes

@@ -62,6 +62,9 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   const autoconfirmEl = panel.querySelector('#start-autoconfirm');
   const timeoutEl = panel.querySelector('#start-timeout');
   const retryEl = panel.querySelector('#start-retry');
+  const launcherSel = panel.querySelector('#start-tool-launcher');
+  const launcherCustomFieldEl = panel.querySelector('#start-tool-launcher-custom-field');
+  const launcherCustomEl = panel.querySelector('#start-tool-launcher-custom');
   const nameEl = panel.querySelector('#start-name');
   const submitBtn = panel.querySelector('#start-submit');
   const statusEl = panel.querySelector('#start-status');
@@ -129,6 +132,52 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
     if (customToolEl) {
       customToolEl.disabled = !custom;
       customToolEl.required = custom;
+    }
+  }
+
+  // Mirrors camc's named_tool_launcher regex (tool_launcher.py).
+  const NAMED_LAUNCHER_RE = /^(auto|qsub-4g|ssh-auto(?::\d+)?)$/;
+
+  /** Resolved --tool-launcher value: '' for default, the named preset,
+   *  or the custom argv template text. */
+  function selectedToolLauncher() {
+    if (!launcherSel || !launcherSel.value) return '';
+    if (launcherSel.value !== 'custom') return launcherSel.value;
+    return launcherCustomEl ? (launcherCustomEl.value || '').trim() : '';
+  }
+
+  /** Custom launcher validation, mirroring camc: either a named preset
+   *  (qsub-4g, ssh-auto[:JOBID]) or an argv template with exactly one
+   *  standalone {command} element. camc re-validates with shlex; this
+   *  only catches obvious mistakes before submit. */
+  function validCustomLauncher(v) {
+    if (NAMED_LAUNCHER_RE.test(v)) return true;
+    const tokens = v.split(/\s+/).filter(Boolean);
+    return tokens.filter(t => t === '{command}').length === 1;
+  }
+
+  /** Any non-default launcher disables Auto-confirm (a launcher places
+   *  the tool on another host/queue where the local confirm loop does
+   *  not apply). The previous checkbox state is stashed so switching
+   *  back to default restores it. */
+  function applyLauncherState() {
+    const v = launcherSel ? launcherSel.value : '';
+    const custom = v === 'custom';
+    if (launcherCustomFieldEl) launcherCustomFieldEl.hidden = !custom;
+    if (launcherCustomEl) launcherCustomEl.disabled = !custom;
+    if (!autoconfirmEl) return;
+    if (v) {
+      if (autoconfirmEl.dataset.prevChecked == null) {
+        autoconfirmEl.dataset.prevChecked = autoconfirmEl.checked ? '1' : '0';
+      }
+      autoconfirmEl.checked = false;
+      autoconfirmEl.disabled = true;
+    } else {
+      autoconfirmEl.disabled = false;
+      if (autoconfirmEl.dataset.prevChecked != null) {
+        autoconfirmEl.checked = autoconfirmEl.dataset.prevChecked === '1';
+        delete autoconfirmEl.dataset.prevChecked;
+      }
     }
   }
 
@@ -442,6 +491,8 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
       const tok = (apiTokenEl && apiTokenEl.value.trim()) || '';
       if (tok) body.api_token = tok;
     }
+    const launcher = selectedToolLauncher();
+    if (launcher) body.tool_launcher = launcher;
     const n = (nameEl.value || '').trim();
     if (n) body.name = n;
     return body;
@@ -462,6 +513,17 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
     if (!ctxVal || ctxVal === NONE_CONTEXT_VALUE) {
       const path = pathEl.value.trim();
       if (!path) { setStatus('Pick a context, or provide a path.', 'is-error'); return; }
+    }
+    if (launcherSel && launcherSel.value === 'custom') {
+      const v = launcherCustomEl ? (launcherCustomEl.value || '').trim() : '';
+      if (!v) {
+        setStatus('Enter a custom launcher argv template (or pick default/auto).', 'is-error');
+        return;
+      }
+      if (!validCustomLauncher(v)) {
+        setStatus('Custom launcher must be a named preset (qsub-4g, ssh-auto[:JOBID]) or an argv template with exactly one standalone {command}.', 'is-error');
+        return;
+      }
     }
     const body = readForm();
     submitBtn.disabled = true;
@@ -538,6 +600,7 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
     }
   });
   if (apiListBtn) apiListBtn.addEventListener('click', listApiModels);
+  if (launcherSel) launcherSel.addEventListener('change', applyLauncherState);
   // --no-default-api clears an explicit --api selection + re-renders
   // status so "Selected: official/login API" reflects the toggle.
   if (noDefaultApiEl) {
@@ -564,6 +627,7 @@ export function mountStartAgentMode({ api, state, showToast, setMode, loadAgents
   let prevAdapters = state.get('adapters');
   refreshToolOptions();
   toggleCustomTool();
+  applyLauncherState();
   refreshContextOptions();
   refreshNodeOptions();
   toggleNodeFields();

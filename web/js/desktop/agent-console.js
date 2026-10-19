@@ -16,6 +16,7 @@
  * we fall back to plain so input/key sending stays intact.
  */
 
+import { attachTerminalTrap } from '../shared/terminal-trap.js?v=0.68.1';
 import { bumpUserActivity } from './shell.js?v=0.65.1';
 import { mountExtView } from '../shared/ext-view-host.js?v=0.68.1';
 import { installExtBridge } from '../shared/ext-bridge.js';
@@ -2022,7 +2023,7 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
       term: new TermCtor({
         cursorBlink: true,
         convertEol: false,
-        scrollback: 5000,
+        scrollback: 20000,
         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
         fontSize: terminalFontSizeFromCss(),
         theme: terminalThemeFromCss(),
@@ -2039,12 +2040,12 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
       hasConnected: false,
       needsBottom: true,
       forceBottomUntil: 0,
-      copyBrowsing: false,
+      sawLiveData: false,
       tmuxReady: false,
       tmuxWindows: [],
       tmuxControlRevision: 0,
       tmuxDiagnosticVisible: false,
-      _wheelHandler: null,
+      _trap: null,
       _scrollDisposable: null,
     };
     const FitCtor = window.FitAddon && window.FitAddon.FitAddon;
@@ -2053,52 +2054,18 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
       entry.term.loadAddon(entry.fit);
     }
     entry.term.open(container);
-    const historyPageSequence = {
-      PageUp: '\x1b[5~',
-      PageDown: '\x1b[6~',
-    };
-    entry.term.attachCustomKeyEventHandler((ev) => {
-      if (!ev || ev.type !== 'keydown') return true;
-      const historySequence = entry.copyBrowsing ? historyPageSequence[ev.key] : '';
-      if (historySequence) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        const bridge = termBridge();
-        if (bridge && entry.sessionId) {
-          void bridge.input({ sessionId: entry.sessionId, data: historySequence });
-        }
-        return false;
-      }
-      if (!ev.ctrlKey || ev.shiftKey || ev.altKey || ev.metaKey) return true;
-      if (String(ev.key || '').toLowerCase() !== 'v') return true;
-      ev.preventDefault();
-      ev.stopPropagation();
-      void pasteTerminalClipboardText(entry);
-      return false;
+    // All input interception (paging keys, copy/paste, wheel, right-
+    // click) lives in ONE trap layer — see shared/terminal-trap.js.
+    entry._trap = attachTerminalTrap(entry, {
+      container,
+      writeClipboardText: (text) => {
+        const bridge = attachmentBridge();
+        if (bridge && typeof bridge.writeClipboardText === 'function') void bridge.writeClipboardText(text);
+      },
+      onPaste: () => pasteTerminalClipboardText(entry),
+      onViewportChange: () => { if (termAgentId === entry.agentId) updateTerminalTmuxControls(); },
+      onStatus: (text, kind) => setTerminalAttachStatus(text, kind || 'info', 2500, entry.agentId),
     });
-    entry._wheelHandler = (ev) => {
-      if (!ev.deltaY) return;
-      const count = Math.max(1, Math.min(4, Math.ceil(Math.abs(ev.deltaY) / 80)));
-      const direction = ev.deltaY < 0 ? 'up' : 'down';
-      const lines = direction === 'up' ? -count : count;
-      if (entry.copyBrowsing) {
-        ev.preventDefault();
-        ev.stopPropagation();
-        const bridge = termBridge();
-        if (bridge && entry.sessionId) {
-          const sequence = direction === 'up' ? '\x1b[A' : '\x1b[B';
-          void bridge.input({ sessionId: entry.sessionId, data: sequence.repeat(5) });
-        }
-        return;
-      }
-      ev.preventDefault();
-      ev.stopPropagation();
-      try { entry.term.scrollLines(lines); } catch (_) {}
-      entry.needsBottom = false;
-      entry.forceBottomUntil = 0;
-      if (termAgentId === entry.agentId) updateTerminalTmuxControls();
-    };
-    container.addEventListener('wheel', entry._wheelHandler, { capture: true, passive: false });
     entry._scrollDisposable = entry.term.onScroll(() => {
       if (termAgentId === entry.agentId) updateTerminalTmuxControls();
     });
@@ -2147,6 +2114,36 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
     return !!ent;
   }
 
+  // Agent TUIs (claude, kimi) live in the alternate screen and tmux
+  // forwards smcup/rmcup on attach — but xterm's alt buffer has no
+  // scrollback, which silently kills PageUp/wheel/History browsing.
+  // Strip the alt-screen mode switches from the live stream so everything
+  // stays in the normal buffer with its 20000-line scrollback. The filter
+  // is stateful: a sequence split across chunks is held back until it
+  // completes or proves innocent.
+  const TERMINAL_ALT_SCREEN_RE = /\x1b\[\?(?:47|1047|1048|1049)[hl]/g;
+  const TERMINAL_ALT_SCREEN_PREFIXES = new Set();
+  for (const mode of ['47', '1047', '1048', '1049']) {
+    for (const toggle of ['h', 'l']) {
+      const seq = `\x1b[?${mode}${toggle}`;
+      for (let i = 1; i < seq.length; i++) TERMINAL_ALT_SCREEN_PREFIXES.add(seq.slice(0, i));
+    }
+  }
+
+  function sanitizeTerminalStream(ent, chunk) {
+    let data = (ent._altScreenTail || '') + chunk;
+    ent._altScreenTail = '';
+    for (let len = Math.min(data.length, 7); len >= 1; len--) {
+      const tail = data.slice(data.length - len);
+      if (TERMINAL_ALT_SCREEN_PREFIXES.has(tail)) {
+        ent._altScreenTail = tail;
+        data = data.slice(0, data.length - len);
+        break;
+      }
+    }
+    return data.replace(TERMINAL_ALT_SCREEN_RE, '');
+  }
+
   function setupTerminalEvents() {
     const bridge = termBridge();
     if (!bridge || termUnsubData || termUnsubStatus) return;
@@ -2154,8 +2151,9 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
       if (!msg) return;
       const ent = terminalEntryBySession(msg.sessionId);
       if (!ent || !ent.term) return;
-      const shouldFollow = !ent.copyBrowsing && (terminalShouldForceBottom(ent) || terminalIsAtBottom(ent));
-      ent.term.write(String(msg.data || ''), () => {
+      ent.sawLiveData = true;
+      const shouldFollow = terminalShouldForceBottom(ent) || terminalIsAtBottom(ent);
+      ent.term.write(sanitizeTerminalStream(ent, String(msg.data || '')), () => {
         if (shouldFollow) terminalScrollToBottom(ent);
       });
     });
@@ -2167,7 +2165,6 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
         const suffix = msg.error ? `: ${msg.error}` : (msg.code != null ? ` (exit ${msg.code})` : '');
         ent.sessionId = null;
         ent.opening = false;
-        ent.copyBrowsing = false;
         if (msg.code === 0 && !msg.error) {
           // Clean exit (agent/session finished): no reconnect offer.
           ent.sessionState = 'idle';
@@ -2214,6 +2211,7 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
     const bridge = termBridge();
     if (!bridge) { ent.sessionState = 'dead'; ent.reconnectOffered = true; return; }
     try {
+      ent._altScreenTail = '';
       ent.term.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?2004l');
       ent.term.write('\r\n\x1b[2mreconnecting…\x1b[0m\r\n');
       const cols = Math.max(TERMINAL_MIN_NOTIFY_COLS, Number(ent.term.cols) || 80);
@@ -2349,8 +2347,9 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
     const sid = ent.sessionId;
     terminalSessions.delete(agentId);
     try { ent._scrollDisposable && ent._scrollDisposable.dispose(); } catch (_) {}
-    if (ent.container && ent._wheelHandler) {
-      try { ent.container.removeEventListener('wheel', ent._wheelHandler, { capture: true }); } catch (_) {}
+    if (ent._trap) {
+      try { ent._trap.detach(); } catch (_) {}
+      ent._trap = null;
     }
     if (ent.container) {
       try { ent.container.remove(); } catch (_) {}
@@ -2358,7 +2357,6 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
     try { ent.term && ent.term.dispose(); } catch (_) {}
     ent.sessionId = null;
     ent.opening = false;
-    ent.copyBrowsing = false;
     if (ent._autoReconnectTimer) { try { clearTimeout(ent._autoReconnectTimer); } catch (_) {} ent._autoReconnectTimer = null; }
     if (ent._bgRetryTimer) { try { clearTimeout(ent._bgRetryTimer); } catch (_) {} ent._bgRetryTimer = null; }
     if (bridge && sid) {
@@ -2375,7 +2373,6 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
     const sid = ent.sessionId;
     ent.sessionId = null;
     ent.opening = false;
-    ent.copyBrowsing = false;
     if (ent._autoReconnectTimer) { try { clearTimeout(ent._autoReconnectTimer); } catch (_) {} ent._autoReconnectTimer = null; }
     if (ent._bgRetryTimer) { try { clearTimeout(ent._bgRetryTimer); } catch (_) {} ent._bgRetryTimer = null; }
     if (bridge && sid) {
@@ -2426,6 +2423,60 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
     }
   }
 
+  /* Native-terminal history replay (replaces the tmux copy-mode
+   * browser): a FRESH attach fetches the pane's own history (ansi,
+   * bounded lines) IN PARALLEL with the channel open — on slow links
+   * the capture round trip is the long pole — then the ready-gate is
+   * held (historyHoldMs → main) until the block is written, so history
+   * lands strictly before the first live repaint. Best-effort: a fetch
+   * that misses the budget is skipped with a status note (never a
+   * stuck attach), and any live byte that slipped past the gate
+   * cancels the write (never interleave). Reconnects/cached sessions
+   * keep the surviving buffer untouched. */
+  const TERMINAL_HISTORY_REPLAY_LINES = 1200;
+  // Hold budget for the replay (2026-10-13: 12s → 6s): the fetch runs in
+  // parallel with the channel open, so on a cold attach it usually lands
+  // for free; the cap only bounds the worst-case "Loading history…"
+  // stare on degraded links before live bytes are released.
+  const TERMINAL_HISTORY_HOLD_MS = 6000;
+
+  function startTerminalHistoryFetch(ent, agent) {
+    const fetch = {
+      promise: api.agentFullOutput(agent.id, 0, 'ansi', TERMINAL_HISTORY_REPLAY_LINES),
+      startedAt: Date.now(),
+    };
+    fetch.promise.catch(() => {}); // settleTerminalHistory owns the outcome
+    ent._historyFetch = fetch;
+  }
+
+  async function settleTerminalHistory(ent, agent) {
+    const fetch = ent && ent._historyFetch;
+    if (ent) ent._historyFetch = null;
+    if (!ent || !fetch) return;
+    const budgetLeft = TERMINAL_HISTORY_HOLD_MS - (Date.now() - fetch.startedAt);
+    if (budgetLeft <= 250) {
+      setTerminalAttachStatus('Terminal attached (history skipped: slow link).', 'info', 4000, agent.id);
+      return;
+    }
+    setTerminalAttachStatus('Loading history…', 'info', 0, agent.id);
+    let res = null;
+    let timedOut = false;
+    try {
+      res = await Promise.race([
+        fetch.promise,
+        new Promise((resolve) => setTimeout(() => { timedOut = true; resolve(null); }, budgetLeft)),
+      ]);
+    } catch (_) { res = null; }
+    if (timedOut || !res || typeof res.output !== 'string' || !res.output) {
+      if (timedOut) setTerminalAttachStatus('Terminal attached (history skipped: slow link).', 'info', 4000, agent.id);
+      return;
+    }
+    if (ent.sawLiveData) return; // gate flushed early — never interleave
+    try {
+      await new Promise((resolve) => { try { ent.term.write(res.output, resolve); } catch (_) { resolve(); } });
+    } catch (_) { /* history replay is best-effort */ }
+  }
+
   async function openTerminalForSelected(opts = {}) {    const force = !!(opts && opts.force);
     const agent = selectedAgent();
     if (!agent) {
@@ -2459,8 +2510,17 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
     prepareThenShowTerminalEntry(agent.id, 120);
     ent.opening = true;
     ent.sessionState = 'connecting';
+    ent._altScreenTail = '';
     syncActiveTerminalEntry(agent.id);
     if (!ent.hasConnected) ent.term.clear();
+    // Fresh pane: start the history fetch in PARALLEL with the channel
+    // open — on slow links the capture round trip is the long pole, and
+    // the gate hold passed to open() buys it its budget.
+    const wantsHistory = !ent.hasConnected;
+    if (wantsHistory) {
+      ent.sawLiveData = false;
+      startTerminalHistoryFetch(ent, agent);
+    }
     setTerminalAttachStatus(
       force ? 'Re-attaching terminal...' : `Connecting terminal to ${agent.task_name || agent.id}...`, 'info', 0, agent.id
     );
@@ -2483,7 +2543,7 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
       // closed below (see watchdog-close + the stale-entry guard).
       const openWithWatchdog = async () => {
         alog(`open start ${agent.id} ${openCols}x${openRows}${force ? ' (force)' : ''}`);
-        const p = bridge.open({ agentId: agent.id, cols: openCols, rows: openRows });
+        const p = bridge.open({ agentId: agent.id, cols: openCols, rows: openRows, historyHoldMs: wantsHistory ? TERMINAL_HISTORY_HOLD_MS : 0 });
         let timedOut = false;
         const r = await Promise.race([
           p,
@@ -2526,6 +2586,7 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
         ent.term.write(`\r\n\x1b[31mTerminal attach failed: ${res && (res.detail || res.error) || 'unknown'}\x1b[0m\r\n`);
         ent.sessionId = null;
         ent.sessionState = 'idle';
+        ent._historyFetch = null;
         return res || { ok: false, error: 'attach_failed', detail: 'Terminal attach failed.' };
       }
       alog(`open ok ${agent.id} sid=${res.sessionId}${res.reused ? ' (reused)' : ''}`);
@@ -2533,8 +2594,13 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
       ent.opening = false;
       ent.sessionState = 'live';
       ent.lastUsed = Date.now();
+      const freshAttach = !ent.hasConnected && !res.reused;
       ent.hasConnected = true;
       ent._autoReconnectAttempt = 0;
+      // Fresh attach: settle the history fetch (started in parallel
+      // with the open) BEFORE the ready-gate releases the first live
+      // repaint, so the two never interleave.
+      if (freshAttach) await settleTerminalHistory(ent, agent);
       // Ready-gate (Tabby initialDataBuffer): main buffered the first
       // pane repaint until the xterm was opened and fitted. It was — the
       // open size came from the fit above — so release the buffer now.
@@ -3090,72 +3156,21 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
     terminalAttachBtn.addEventListener('click', () => {
       if (!terminalAttachBtn.disabled) void pickAndUploadTerminalAttachment();
     });
-    terminalHistoryBtn.addEventListener('click', async () => {
+    terminalHistoryBtn.addEventListener('click', () => {
+      // Native-terminal history: scroll to the oldest line in the local
+      // buffer (fresh attaches are pre-filled from pane history at open).
+      // tmux copy mode is no longer entered from the app.
       const ent = terminalSessions.get(termAgentId);
-      const bridge = termBridge();
-      if (!ent || !bridge || !ent.sessionId || terminalHistoryBtn.disabled) return;
-      const sessionId = ent.sessionId;
-      // In copy mode the same button pages up one screen via the live
-      // stream (tmux copy-mode interprets PageUp directly — no exec,
-      // no mode change). Outside copy mode it enters copy mode.
-      if (ent.copyBrowsing) {
-        try { bridge.input({ sessionId: ent.sessionId, data: '\x1b[5~' }); } catch (_) {}
-        try { ent.term.focus(); } catch (_) {}
-        return;
-      }
-      // Enter copy mode via the live attach stream (prefix + '['). The
-      // keystroke rides the already-warm PTY — instant even on slow
-      // links, where the tmux-exec path ('copy-mode -u -t pane') cost a
-      // full SSH round trip (~3s on some machines). Optimistic state,
-      // same pattern as tab switching; the pane shows the copy-mode UI
-      // immediately if it worked.
-      try {
-        bridge.input({ sessionId: ent.sessionId, data: '\x02[' });
-        ent.copyBrowsing = true;
-        ent.needsBottom = false;
-        ent.forceBottomUntil = 0;
-        updateTerminalTmuxControls();
-        try { ent.term.focus(); } catch (_) {}
-      } catch (e) {
-        ent.copyBrowsing = false;
-        setTerminalAttachStatus(e?.message || 'Could not enter tmux history.', 'error');
-      } finally {
-        ent.tmuxControlRevision += 1;
-        updateTerminalTmuxControls();
-      }
+      if (!ent || terminalHistoryBtn.disabled) return;
+      try { ent.term.scrollToTop(); } catch (_) {}
+      try { ent.term.focus(); } catch (_) {}
     });
-    terminalBottomBtn.addEventListener('click', async () => {
+    terminalBottomBtn.addEventListener('click', () => {
       const ent = terminalSessions.get(termAgentId);
       if (!ent || terminalBottomBtn.disabled) return;
-      if (!ent.copyBrowsing) {
-        terminalScrollToBottom(ent);
-        updateTerminalTmuxControls();
-        try { ent.term.focus(); } catch (_) {}
-        return;
-      }
-      const bridge = termBridge();
-      if (!bridge || !ent.sessionId) return;
-      const sessionId = ent.sessionId;
-      ent.tmuxControlRevision += 1;
-      terminalBottomBtn.disabled = true;
-      try {
-        const result = await bridge.cancelCopyMode({ sessionId: ent.sessionId });
-        if (ent.sessionId !== sessionId) return;
-        if (!result?.ok) {
-          setTerminalAttachStatus(result?.detail || 'Could not leave tmux history.', 'error');
-          return;
-        }
-        ent.copyBrowsing = false;
-        terminalScrollToBottom(ent);
-        updateTerminalTmuxControls();
-        try { ent.term.focus(); } catch (_) {}
-      } catch (e) {
-        setTerminalAttachStatus(e?.message || 'Could not leave tmux history.', 'error');
-      } finally {
-        ent.tmuxControlRevision += 1;
-        terminalBottomBtn.disabled = false;
-        updateTerminalTmuxControls();
-      }
+      terminalScrollToBottom(ent);
+      updateTerminalTmuxControls();
+      try { ent.term.focus(); } catch (_) {}
     });
     terminalRefreshBtn.addEventListener('click', async () => {
       if (terminalRefreshPending || terminalRefreshBtn.disabled) return;
@@ -3279,12 +3294,13 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
     }
     if (terminalActionBar) terminalActionBar.hidden = !terminalVisible;
     if (terminalHistoryBtn) {
-      // Enabled in copy mode too: the same button pages up one screen
-      // via the live stream (see the click handler).
-      terminalHistoryBtn.disabled = actionsBlocked || !tmuxVisible;
-      terminalHistoryBtn.title = ent?.copyBrowsing ? 'Page up (tmux copy mode)' : 'Browse tmux history';
+      // Native scroll-to-top over the local buffer; needs a live
+      // terminal but no tmux metadata (works even when the window
+      // strip is unavailable).
+      terminalHistoryBtn.disabled = actionsBlocked || !terminalConnected;
+      terminalHistoryBtn.title = 'Scroll to oldest loaded history';
     }
-    if (terminalBottomBtn) terminalBottomBtn.disabled = actionsBlocked || !terminalConnected || (!ent?.copyBrowsing && terminalIsAtBottom(ent));
+    if (terminalBottomBtn) terminalBottomBtn.disabled = actionsBlocked || !terminalConnected || terminalIsAtBottom(ent);
     if (terminalRefreshBtn) {
       // Refresh is the escape hatch for a stuck attach — it must stay
       // clickable while opening; the force path abandons the in-flight
@@ -3357,7 +3373,6 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
       ent.tmuxRetryCount = 0;
       ent.tmuxHintState = '';
       ent.tmuxWindows = result.windows || [];
-      ent.copyBrowsing = !!result.copyMode;
       if (ent.tmuxDiagnosticVisible) {
         ent.tmuxDiagnosticVisible = false;
         setTerminalAttachStatus('', 'info', 0);

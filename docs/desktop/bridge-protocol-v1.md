@@ -1,6 +1,6 @@
 # Bridge Protocol v1（规范）
 
-状态：v1 草案（2026-09-08）。desktop 实现与本规范一致
+状态：v1.1（2026-10-12，router + tunnel 落地）。desktop 实现与本规范一致
 （实现侧笔记见 [`camb-bridge.md`](./camb-bridge.md)，总纲见
 [`fleet-bridge-plan.md`](./fleet-bridge-plan.md)）。
 
@@ -13,8 +13,8 @@
 - 标准化：消息 schema（§2）、解析规则（§4）、consent 模型（§5）、
   verb allowlist（§6）、超时与退出码（§7）、审计格式（§8）、
   投递语义（§9）、兼容性规则（§11）
-- 可插拔：transport。v1 = 文件信箱（§3，唯一已实现）；
-  v2 = 隧道（§10，预留未实现）
+- 可插拔：transport。v1 = 文件信箱（§3）；v1.1 = 多 hub router
+  （§9.2 coverage cards）；v2 = 隧道加速器（§10，已实现）
 - 实现分歧提到本规范解决；任何实现不得私自发明字段或语义
 
 ## 2. 消息 schema
@@ -52,16 +52,22 @@ ferry 侧唯一的 argv 客户端逻辑：`send --file <path>` 与
 ```
 ~/.cam/camb/outbox/<id>.json     ferry 写，host drain 收
 ~/.cam/camb/inbox/<id>.json      host 写，ferry 读
+~/.cam/camb/hubs/<hub-id>.json   host 覆盖名片（router，§9.2）
+~/.cam/camb/hubs/<hub-id>.token  host 隧道令牌（0600，§10）
 ```
 
 ### 3.2 规则
 
 - **提交**：ferry 写 `<id>.json.tmp` → `rename` 为 `<id>.json`
   （原子发布）；drain 跳过 `.tmp` 文件
-- **drain**：host 在 node 上 exec `~/.cam/camb --hub-drain`。
-  node 侧把全部已 finalize 的请求打成 JSON 数组打印到 stdout
-  （空 = `[]`），随后删除已读文件；不可读的文件留在原地；
-  **恒 exit 0**
+- **drain**：host 在 node 上 exec `~/.cam/camb --hub-drain
+  --bridge-id <id>`。node 侧对每个请求先原子认领（rename →
+  `<id>.json.claimed-<id>`，先者胜），再把认领到的请求打成 JSON
+  数组打印到 stdout（空 = `[]`），随后删除已认领文件；不可读的
+  文件留在原地；**恒 exit 0**。无 `--bridge-id` 的调用保持 v1
+  语义（打印全部 + 删除）
+- **名片**：host 每 ~15s 在自己管理的 node 上刷新
+  `hubs/<hub-id>.json`；ts 超过 90s 未刷新视为该 host 已死（§9.2）
 - **响应**：host 先 `mkdir -p ~/.cam/camb/inbox`，再写
   `inbox/<id>.json`；ferry 轮询读到后删除
 - **ferry 等待**：默认 30s（env `CAMB_TIMEOUT_MS` 可调）；
@@ -149,46 +155,84 @@ host 侧：
 
 ## 9. 投递语义与多 bridge
 
-### 9.1 单 bridge（v1 已实现的语义，如实陈述）
+### 9.1 单 bridge（v1.1 已硬化）
 
-- 正常路径：exactly-once（outbox 原子发布 → drain 打印+删除 →
-  dispatch → inbox 写回）
-- drain 传输中断：node 侧先打印后删除（camb `_hub_drain`），连接
-  断开时已打印的条目**可能已删（丢失）或未删（下一 tick 重 drain →
-  可能重复 dispatch）**。v1 接受 at-most-once + 偶发重复：
-  发送方超时 exit 2 是显式失败，可安全重发；审计可查
-- 响应写回失败：操作可能已执行而发送方只见超时——不确定态，
-  以 host 审计为准
-- **v1.1 硬化项（已知债）**：host 侧 per-context seen-id 短窗去重
-  （幂等）；可选两阶段 drain（drain + ack）升级为 at-least-once
+- 正常路径：exactly-once（outbox 原子发布 → 认领+drain → dispatch →
+  inbox 写回）
+- **seen-id 幂等（已实现）**：host 对每来源 node 缓存近期 dispatch
+  过的 event id（10min / 500 条）；重复 id 直接重投缓存响应，绝不
+  二次执行；dispatch **进行中**到达的重复 id 共享同一 in-flight
+  promise，不会并发双跑
+- **claim 孤儿重收（已实现）**：drain 在打印前原子认领
+  （`.claimed-<id>`）；传输中断时已认领的文件由同一 host 下次
+  drain 重新收集（无桥接 id 的调用也会收养无存活名片的孤儿）。
+  配合 seen-id，实际语义 = at-least-once 传输 + 幂等执行
+- 响应写回失败：操作可能已执行而发送方只见超时——不确定态，以
+  host 审计为准
 
-### 9.2 多 bridge（v1.1，协议扩展）
+### 9.2 多 bridge（v1.1 已实现：coverage cards router）
 
-同一 node 挂多个 bridge host 时：
+同一 node 挂多个 bridge host 时，**node 上的名片目录充当路由表**
+——hub 间不需要任何通信（它们可能互相不可达，但都够得着交集
+node）：
 
-- **认领**：drain 扩展为 `--hub-drain --bridge-id=<id>`，node 侧先
-  原子 `rename outbox/<id>.json → outbox/<id>.claimed-<bridgeid>`，
-  先者胜；只打印/删除自己认领到的文件
-- **幂等**：每个 host 对 seen event id 去重（9.1 的硬化项此时变强制）
+- **名片**：每个 host 每 ~15s 在自己管理的每个 node 上原子写
+  `hubs/<hub-id>.json`：`{hub_id, ts, covers:[{name, key}], tunnel?,
+  proto}`。`key` 是跨 hub 的规范节点身份（`user@host:port`），
+  `name` 是 host 本地的 context 名（两个 host 可以给同一机器起
+  不同名字）。ts 超过 90s 未刷新 = 该 host 已死，其名片失效
+- **认领**：drain 携带 `--bridge-id`；node 侧原子 rename 先者胜，
+  只打印/删除自己认领到的
+- **路由规则**：显式 `node:ref` 目标（支持 name 或 endpoint key
+  形式，含内部冒号）若被**其它**存活 host 的名片覆盖 → 跳过不
+  认领；自己覆盖 / 无人覆盖 / 裸 ref / list → 认领
+- **释放**：host 认领后发现无法路由（裸 ref 全舰队 miss）→ 把
+  event 写回 outbox（attempts+1），让覆盖不同的其它 host 下轮
+  认领；attempts ≥ 3 才产出最终错误（此时记审计）
+- **收养**：claimer 无存活名片的 `.claimed-*` 孤儿由下一个 drain
+  的 host 收养
+- **幂等**：seen-id（§9.1）在多 bridge 下是强制件
 - **响应**：由认领者写 inbox
-- 每个 host 独立 consent 配置、独立审计文件
-- v1 规范只保证单 bridge per node；多 bridge 部署前认领 + 幂等
-  两条必须已落地
+- 每个 host 独立 consent 配置、独立审计文件。**覆盖重叠是常态**
+  （desktop + mobile 管同一批 node）；consent 分歧属部署纪律，
+  双方审计可查
 
-## 10. Transport v2：隧道（预留，未实现）
+## 10. Transport v2：隧道（已实现）
 
-同一 schema 跑在 node→host 的 reverse tunnel 上，同步
-request/response，目的仅是降低延迟。规则：
+同一 schema 跑在 node→host 的 reverse forward 上（host 在既有 SSH
+exec 连接上 `forwardIn`，node 上的 `127.0.0.1:<port>` 回到 host），
+同步 request/response，唯一目的是降低延迟（mailbox 最坏要等一个
+poll 周期）。规则：
 
 - **best-effort**：隧道只是加速器；mailbox 是 source of truth。
-  发送时隧道健康才走隧道，否则落 mailbox；每个 event 只走一条路，
-  event id 幂等兜底
-- host 尽最大努力保活（断线检测 / 重连 / 重发 forwardIn），但
-  正确性不依赖保活成功
-- **新增安全面**：node 上任意进程可经隧道调 host 端点 → 必须
-  per-node token（ferry 部署时落盘、0600）+ host 只暴露 bridge
-  子集端点（不得暴露完整 hub API）
-- 实现前单独安全评审；本节届时升级为正式章节
+  ferry 发送优先级：**本机 → tunnel A → tunnel B …**（存活名片里
+  advertised 的隧道；显式 node 目标按 covers 过滤；priority 降序）
+  **→ 全失败落 mailbox**。应用层响应（含错误）是终态；只有传输
+  失败与 `not_my_fleet` 沿链下降
+- **帧**：单行 JSON `{token, request}` 入，单行 JSON response 出，
+  一次连接一个请求
+- **保活**：host 的 drain worker 每个 tick 顺手体检/重修隧道
+  （forwardIn 绑定当前 pool 连接，连接更换即重挂）；正确性不依赖
+  保活成功，隧道死亡最坏表现为本 tick 无快路径
+- **安全**：per-node token —— host 侧由持久 hub secret 派生
+  （`sha256(secret/nodeKey)`，secret 0600 存于 host 数据目录），
+  部署到 `hubs/<hub-id>.token`（0600）。隧道端点只接受 bridge
+  request schema（天然子集，完整 hub API 不暴露），timing-safe
+  比较，错误令牌只回 `unauthorized`
+- **幂等**：event id 全程不变；隧道半途失败落 mailbox 产生的重复
+  由 host seen-id / in-flight promise 去重（§9.1）
+
+### 10.1 反向隧道与 cam serve hub（2026-10-14,camb 0.3.0 起）
+
+除了 hub 发起的 forwardIn 隧道，host 也可以**主动**向一个 cam
+server 建立反向隧道（`camb reverse up`,ssh `-R`),cam serve 侧由
+`tunnel_hub` worker(`server.tunnel_hub=true`）注册表管理多条反隧、
+发布自己的 hub 名片 + 本地 §10 listener，并 drain mailbox。dispatch
+路径优先级：活反隧 > 一次性 ssh > 放回 outbox。注册接口
+`POST /api/tunnels/register`(Bearer = master token 或派生
+`sha256(master "/" key)`);host 心跳每 60s 重注册，registry 条目
+300s 过期。schema 与 §10 帧格式不变——反隧只是 hub→host 方向的一条
+更快 transport，正确性依然只依赖 mailbox。
 
 ## 11. 兼容性规则
 
@@ -199,5 +243,9 @@ request/response，目的仅是降低延迟。规则：
 - 混跑矩阵：旧 ferry + 新 host = 正常（旧 ferry 不发 proto，按 1
   处理）；新 ferry + 旧 host = ferry 负责在收到
   `unsupported proto` 时降级重试 proto 1 或显式报错
+- v1.1/v2 混跑：旧 host（drain 不带 `--bridge-id`）+ 新 ferry →
+  v1 语义（打印全部+删除，孤儿收养但不按名片过滤）；新 host +
+  旧 ferry（无名片目录/无隧道）→ 自动退回 mailbox-only；隧道不可
+  达的 ferry 落 mailbox —— 所有组合退化为 v1 行为，无硬断
 - ferry 与 host 的版本探测走各自既有通道（ferry 部署时的版本
   比较；host 的 bridge-status），不在协议消息里握手

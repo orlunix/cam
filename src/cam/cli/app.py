@@ -4,6 +4,12 @@ This is the entry point for the ``cam`` command. It defines the main Typer app,
 global options (--json, --verbose, --config, --data-dir), and lazy-initialised
 shared state that subcommands access via ``from cam.cli.app import state``.
 
+Running bare ``cam`` (no subcommand) launches ``cam tui`` — cam's terminal
+interface, alongside cam desktop / cam mobile / cam webui — falling back to
+the help text when no real terminal or curses is available. The classic CLI
+form stays: every ``cam <command>`` works as before, and ``cam cli`` prints
+the full command help (both live in the "Interfaces" help panel).
+
 Subcommand registration:
 - ``cam context ...`` is mounted as a Typer sub-group.
 - Agent commands (run, list, status, logs, attach, stop, kill) and system
@@ -25,7 +31,7 @@ from cam.cli.formatters import set_json_mode
 app = typer.Typer(
     name="cam",
     help="CAM \u2014 Coding Agent Manager. PM2 for AI coding agents.",
-    no_args_is_help=True,
+    no_args_is_help=False,
     rich_markup_mode="rich",
 )
 
@@ -139,11 +145,44 @@ state = AppState()
 
 
 # ---------------------------------------------------------------------------
+# TUI launch — bare ``cam`` and ``cam tui`` share the cam curses TUI,
+# cam's terminal interface alongside cam desktop / mobile / webui
+# ---------------------------------------------------------------------------
+
+
+def _tui_available() -> bool:
+    """Whether the interactive TUI can start here (real tty + curses)."""
+    import sys
+
+    from cam import tui as cam_tui
+
+    return (cam_tui.curses is not None
+            and sys.stdin.isatty() and sys.stdout.isatty())
+
+
+def _launch_tui(ctx: typer.Context | None = None) -> None:
+    """Start the curses TUI. With ``ctx`` (bare ``cam``), fall back to help
+    when the TUI cannot start; without (explicit ``cam tui``), error out."""
+    if _tui_available():
+        from cam.tui import tui_main
+
+        raise typer.Exit(tui_main())
+    if ctx is not None:
+        typer.echo(ctx.get_help())
+        typer.echo("\nHint: run `cam` in a real terminal with curses "
+                   "to open the TUI (same as `cam tui`).")
+        return
+    typer.echo("cam tui: needs a real terminal (tty) and the curses module",
+               err=True)
+    raise typer.Exit(1)
+
+
+# ---------------------------------------------------------------------------
 # Root callback — processes global options before any subcommand runs
 # ---------------------------------------------------------------------------
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def main_callback(
     ctx: typer.Context,
     json_output: bool = typer.Option(
@@ -174,6 +213,9 @@ def main_callback(
     state.config_path = config
     state.data_dir = data_dir
     set_json_mode(json_output)
+    if ctx.invoked_subcommand is None:
+        # Bare `cam`: open the TUI (help fallback when it cannot start).
+        _launch_tui(ctx)
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +280,20 @@ from cam.cli import node_cmd  # noqa: E402
 app.add_typer(context_cmd.app, name="context", help="Manage work contexts.", rich_help_panel=_SYSTEM)
 app.add_typer(config_cmd.app, name="config", help="Manage CAM configuration.", rich_help_panel=_SYSTEM)
 app.add_typer(node_cmd.app, name="node", help="View nodes and their agents.", rich_help_panel=_SYSTEM)
+
+
+# TUI command — cam's terminal interface, same one bare `cam` launches
+@app.command(name="tui", rich_help_panel="Interfaces")
+def tui() -> None:
+    """Open the terminal UI (agents, nodes, actions, command console)."""
+    _launch_tui()
+
+
+# CLI command — cam's classic command-line form, kept alongside the TUI
+@app.command(name="cli", rich_help_panel="Interfaces")
+def cli(ctx: typer.Context) -> None:
+    """Classic CLI form: show all `cam <command>` usage (same as --help)."""
+    typer.echo(ctx.find_root().get_help())
 
 
 # Server command — starts the API server
