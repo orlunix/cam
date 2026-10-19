@@ -206,27 +206,52 @@ Server 单实例锁、socket、连接状态及活跃队列必须放节点本地�
 
 ### 6.1 远端操作范围
 
-camc 的 msg、capture、list、run、stop/kill/rm 都可使用统一 message 路由。可路由不等于操作已实现：目标机器必须宣告并注册对应能力，否则返回 `UNSUPPORTED_OPERATION`，不能通过 Server 或 Client exec camc CLI 补齐。
+本节仅定义新通信协议可以转发的操作白名单，不重写命令行为、不迁移 agent 管理权，也不删改现有本机命令。首版必选为 **msg、send、capture、run、stop、rm、list** 七项；以下“支持”指目标设计范围，不代表当前实现已全部接通。
 
-| camc 操作 | message 的 operation / 目标 | 目标端职责与结果 |
+目标 Server/本机接收端负责操作白名单和能力检查；Client 只做通用信封转发和通道授权。未列入范围、目标未注册或未获授权的操作明确拒绝，不能通过 Server 或 Client exec camc CLI 补齐。
+
+**首版必选：**
+
+| camc 操作 | message 的 operation / 目标 | 远端通信约定 |
 | --- | --- | --- |
 | msg send / reply | `message.send`，目标 Node + agent | 投递消息；reply 是新消息，reply_to 指向被回复的消息，Client 不等待业务回复 |
+| send | `agent.send`，目标 Node + agent | 向工具终端发送文本，保留 Enter/no-enter 语义，返回输入投递结果 |
 | capture | `agent.capture`，目标 Node + agent | 读取对应输出；结果有大小上限，截断/分页情况明确返回 |
 | list | `agent.list`，目标 Node 的操作接收端 | 返回该 Node 的列表及来源；跨 Node 聚合由来源 Server 发起并合并 |
-| run | `agent.run`，目标 Node 的操作接收端 | 按保存参数启动，返回 agent/launch ID；异步进度及 started/failed 作为关联结果消息返回 |
+| run | `agent.run`，目标 Node 的操作接收端 | 转发启动参数，返回 agent/launch ID 及现有启动过程的关联结果 |
 | stop | `agent.stop`，目标 Node + agent | 按现有 stop 语义处理，返回目标身份及停止结果 |
-| kill | `agent.kill`，目标 Node + agent | 按现有 kill 语义处理，返回目标身份及结果 |
 | rm | `agent.remove`，目标 Node + agent | 按现有删除/回收语义处理，返回结果，不改变操作范围 |
 
+**推荐增补，尚未列为首版必选：**
+
+| 操作 | operation | 用途 |
+| --- | --- | --- |
+| status | `agent.status` | 查询单个 agent 的详细状态及启动阶段，避免依赖 capture 猜测是否 started |
+| key | `agent.key` | 发送 Enter、Escape、方向键等特殊按键，处理文本 send 无法表达的交互 |
+
+推荐项只有明确启用并注册目标能力后才可转发；未接入时返回不支持，不作为首版核心验收已完成的前提。
+
+**本轮不支持通过新通信协议转发：**
+
+| 范围 | 处理方式 |
+| --- | --- |
+| kill、reboot/migrate、exit、update/add、heal/prune | 暂不列入远端白名单，保留既有本机方式；不能因为有通道就自动开放 |
+| logs/history/archive、cron、API/config、env/init、upgrade/skills、tunnel 管理 | 本轮通信范围之外，后续按需要单独决定 |
+| attach 的持续终端会话、实时 input/resize | 走独立终端流式通道，不纳入本轮普通消息操作 |
+| 任意 shell/命令字符串 | 不作为兜底 operation；只接受已登记的结构化操作 |
+
+消息发送、回复、回执、路由通告和结构化 `operation.result` 是协议自身需要的消息，不因业务操作白名单缩小而禁止。`msg read/wait/show/list` 对已保存对话的读取和等待由来源 camc/Server 处理，本轮不额外开放读取目标机器任意消息账本的远端操作。
+
 - **定向 agent 操作**：本机查找优先；未命中才交本机 Server。显式远端 Node 优先于同名本机 agent；目标不存在、已命中后执行失败或名称有歧义，均不能换到另一个同名对象执行。
+- **send**：与带线程/回复语义的 msg 分开；`--file/--stdin` 内容在发送端读成文本后放入 payload，目标不尝试读取来源机器的文件路径。保留现有输入/Enter 选项，不把输入成功当作 agent 已回答。
 - **run**：目标 agent 尚不存在，不用“查找本机 agent 是否存在”选机器；未指定 Node 时保持本机默认，显式远端则发往该 Node。管理/提交 Node 与 tool-launcher 的 LSF execution host 分开，原 launcher/autorun 策略不变。
 - **list**：默认保持既有本机语义；指定 Node 查询该 Node；显式跨节点 scope 时，由来源 Server 按 Node 去重后分别查询，返回各 Node 结果和不可达信息。不能把空列表当作“目标未找到”再自动扩大范围。
-- **结果**：capture/list/run/stop/kill/rm 的接收端产生普通 `operation.result` message，使用新 ID 和反向收发地址，`reply_to` 指向原操作消息 ID；payload 给出 pending/ok/error 及结构化结果/错误。来源 Server 保存并交给原 CLI 或 agent，CLI 退出不删除结果。
-- **run 护航**：初始 accepted/initializing 不是 started；实际管理后端继续护航到 started 或明确 failed，Client 无需保持一段独占请求等待。
+- **结果**：send/capture/list/run/stop/rm 的接收端产生普通 `operation.result` message，使用新 ID 和反向收发地址，`reply_to` 指向原操作消息 ID；payload 给出 pending/ok/error 及结构化结果/错误。来源 Server 保存并交给原 CLI 或 agent，CLI 退出不删除结果。
+- **run 护航**：沿用实际管理后端的现有启动策略；初始 accepted/initializing 不能伪装成 started。通信层只传递进度/结果，Client 无需保持一段独占请求等待。
 - **去重**：相同 message ID 的重试不得重复启动或重复执行修改操作；原结果或操作进度可恢复查询。进度与最终结果各有稳定消息身份，重发不能生成业务副本。
 - **后端边界**：接收端复用已接入的 legacy runtime 或已迁移的原生 Server 能力；同一 agent 仍只有一个管理后端。Router 本身不新增 registry 写入或第二个 monitor。各操作按能力逐项验收，首版可先接 echo。
 
-status、短文本 send/key、reboot 等管理操作也可按此模式逐项接入。attach/input/resize 的持续终端会话使用独立流式协议；本机 version、配置与 Server 自身启动等入口不强行变成远端消息。
+未登记操作返回 `UNSUPPORTED_OPERATION`；已登记但未授权返回明确的授权错误。架构以后可以扩展其它操作，但新增操作需要明确加入范围、注册能力并补对应验收，不能默认把全部 camc CLI 都开放。
 
 ## 7. 本机优先与跨 Node 消息投递
 
@@ -345,7 +370,8 @@ UI 关闭或浏览历史不影响 tool；选区与 copy/paste 属于用户端。
 | 同 ID 不同参数、过期请求、歧义目标、递归中继 | 明确拒绝，不执行副作用 |
 | 目标接收端未注册/未实现操作 | 明确返回不支持或不可达，不启动 camc CLI 或 tool |
 | 多消息并发、agent 延迟回复 | 通道继续收发其它消息，无业务请求独占 |
-| 已接入远端 capture/list/run/stop/kill/rm | 操作及结果走同一 message 通道；Client 不依赖旧请求上下文，重复 run 不启动第二个 agent |
+| 已接入首版 msg/send/capture/run/stop/rm/list | 操作及结果走同一 message 通道；Client 不依赖旧请求上下文，重复 run 或 send 不执行第二次 |
+| 未开放的 kill/reboot 等操作、推荐项未接入 | 明确不支持或未授权，无命令执行兜底；既有本机命令不受影响 |
 | list 的本机/指定 Node/跨节点 scope | 范围明确，聚合按 Node 去重，不可达保留为错误，不静默当成空列表 |
 | 仅部署 Router | agent registry、状态、monitor、launcher 与 attach 原流程保持不变 |
 

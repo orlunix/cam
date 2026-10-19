@@ -8,7 +8,7 @@
 
 ## 1. 核心规则
 
-**request 与 response 都是一条普通 message，使用同一套发送、路由和投递流程。** 回复具有新的 `message_id`，通过 `reply_to` 关联被回复的消息。Client 对两者执行相同的转发，不等待业务结果，也不维护业务回程表。该通道也承载 capture、list、run、stop/kill/rm 等结构化操作及其结果。
+**request 与 response 都是一条普通 message，使用同一套发送、路由和投递流程。** 回复具有新的 `message_id`，通过 `reply_to` 关联被回复的消息。Client 对两者执行相同的转发，不等待业务结果，也不维护业务回程表。首版通信操作白名单为 msg、send、capture、run、stop、rm、list，目标操作的既有本机语义不变。
 
 ```text
 请求：camc A → Server A → Client C1 → Server B → agent B
@@ -49,7 +49,7 @@ Router 先行：现有本机管理、launcher、monitor、attach 和 legacy Desk
 
 Client 只需维护 `node_id → 当前连接`、通道状态和有界发送队列。Server 保存 `目标 Node → 可用 Client 集合`；Client 不保存等待 agent 回复的 pending 表、对话历史或权威消息数据库。
 
-通用操作的名称、目标和返回约定见总 Spec 的 [远端操作范围](cam-client-server-spec.md#61-远端操作范围)。Client 不解析每个命令的参数；目标机器须已注册对应能力。run/list 不套用“先查某个已有 agent，没找到才远端”的规则。
+操作的必选/推荐/不支持范围、名称、目标和返回约定见总 Spec 的 [远端操作范围](cam-client-server-spec.md#61-远端操作范围)。status/key 仅推荐增补，kill/reboot 等本轮未开放。目标机器负责登记与业务白名单检查，Client 不解析每个命令的参数，也不能把整套 CLI 作为兜底；run/list 不套用“先查某个已有 agent，没找到才远端”的规则。
 
 ## 4. 专用通道与可达通告
 
@@ -110,7 +110,7 @@ Client 只有在与 B 认证成功且 forwarding 就绪时，才向 A 宣告可�
 
 同一条消息重试保持 ID、地址和内容；回复是新消息，有自己的期限。`reply_to`/可选 thread 关联保存在两端消息记录中，Client 不靠它们决定路径。Router 测试可以用 `receiver_id=test.echo` 的已注册接收端替代 agent，回复仍是新消息。
 
-capture/list/run/stop/kill/rm 等操作同样使用该 message 信封：`operation` 标识结构化操作，目标指定 agent 或已注册本机操作接收端，参数放在 payload。接收端返回新的 `operation.result` message，其 `reply_to` 指向原操作的 message ID，并携带明确结果/错误；Client 沿相同入口转发。具体业务能力逐项接入，不代表当前已支持全部 camc 命令。
+send/capture/list/run/stop/rm 使用该 message 信封：`operation` 标识结构化操作，目标指定 agent 或已注册本机操作接收端，参数放在 payload。接收端返回新的 `operation.result` message，其 `reply_to` 指向原操作的 message ID，并携带明确结果/错误；Client 沿相同入口转发。具体业务能力逐项接入，不代表当前已支持全部 camc 命令。
 
 Client 对每条 message 只执行以下步骤：
 
@@ -156,7 +156,8 @@ UI 刷新、切换 agent、关闭终端标签不影响后台 forwarding；后台
 | 本机 agent 存在、本机未命中、显式远端同名目标 | 分别本机投递、交本机 Server、精确远端；本机投递错误不换目标 | CF-03、04 |
 | A→B、B→A、A→第三节点同时发送多条消息 | 各到目标，允许乱序，等待回复不占通道 | CF-03、04、05 |
 | 请求经 C1，业务回复经 C2 | 回复有新 ID 和正确 reply_to；来源 agent 收到，C2 没有旧请求记录也能转发 | CF-04、05、06 |
-| capture/list/run/stop/kill/rm 的目标能力已注册 | 参数保持不变，结果/错误使用新 message 返回；Client 不执行命令或等待结果 | CF-03、04、05 |
+| msg/send/capture/run/stop/rm/list 的目标能力已注册 | 参数保持不变，结果/错误使用新 message 返回；Client 不执行命令或等待结果 | CF-03、04、05 |
+| kill/reboot 等未开放操作，或 status/key 未接入 | 明确不支持/未授权，不执行任意 CLI 兜底；已开放的操作仍可工作 | CF-03、04 |
 | 请求投递后 C1 退出，agent 很久后才回复 | B 独立保存并发送回复，无业务回程表依赖 | CF-05、06 |
 | A 暂时离线，稍后恢复 | B 按回复自己的 ID/期限恢复投递，不重新执行原任务 | CF-06 |
 | 消息重试、多 Client 重复送达、同 ID 改正文 | 相同消息目标只投递一次；内容冲突被拒绝 | CF-03、06 |
