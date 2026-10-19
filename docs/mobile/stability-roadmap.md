@@ -18,6 +18,12 @@ is preserved across first attach, cached re-entry, and app background recovery.
   keep the same SSH attach, xterm buffer, and grid. Only an explicit Fit or a
   new attach recomputes the size, preventing TUI input rows and echo state from
   being rearranged by lifecycle resize events.
+- **Observation status (2026-10-19)** — user on-device testing confirmed that
+  2.4.117 resolves the enlarged input box and missing echo after app background
+  recovery. The current root-cause conclusion is repeated automatic resize of
+  an already-connected TUI, not a required reattach. Keep this under observation;
+  if it recurs, record the lifecycle step, input/echo behavior, local and remote
+  grid sizes, and whether the same attach survived before changing code again.
 - **Cached park/resume buffer preservation** — parked terminal entries cannot
   run deferred local fits or resize while hidden. Cached resume reuses the same
   attach and preserves the existing terminal rows.
