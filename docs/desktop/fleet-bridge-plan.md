@@ -4,6 +4,11 @@
 v1 实现（camb + desktop bridge worker + UI 开关）已完成、测试全绿、待 commit。
 本文是 camc 归并与多 bridge 标准化的总纲。
 
+> 2026-10-18：本文保留为现有 bridge 的历史方案。目标角色、camc 的 legacy
+> Client 定位、单 Node 单 Server 及多 Client 路径，以
+> [CAM Client / Server Spec](../cam-client-server-spec.md) 为准；下文的
+> “Server 经 SSH 调用 camc”不作为新架构的实现要求。
+
 关联文档：
 - 协议规范（schema/语义的唯一权威）：[`bridge-protocol-v1.md`](./bridge-protocol-v1.md)
 - v1 实现笔记（desktop 侧现状）：[`camb-bridge.md`](./camb-bridge.md)
