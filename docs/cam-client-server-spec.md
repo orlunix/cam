@@ -20,6 +20,7 @@ CAM 的产品架构只有 **Client** 与 **Server** 两种角色。每台纳入�
 
 既有文档的关系：
 
+- [CAM Client Forwarding Spec](cam-client-forwarding-spec.md)：Client 专用转发通道、可达通告、请求与回程、恢复及逐项验收要求；属于本文 Router 阶段的 Client 侧契约。
 - [camc spec](camc-spec.md)：legacy camc 当前行为与兼容约束。
 - [Bridge Protocol v1](desktop/bridge-protocol-v1.md)、[camb 实现笔记](desktop/camb-bridge.md)：现有桥接协议与实现，迁移期通过适配器兼容。
 - [Fleet Bridge 旧方案](desktop/fleet-bridge-plan.md)：现有 bridge 的背景；目标角色和职责以本文为准。
@@ -87,6 +88,8 @@ Router 首版负责：
 这些是后续阶段的验收目标。迁入 Server 的能力使用内部模块或共享库，不依赖 argparse、CLI 输出解析或嵌套 camc 命令。
 
 ### 4.2 CAM Client
+
+Client forwarding 的必做清单、通道和验收以 [CAM Client Forwarding Spec](cam-client-forwarding-spec.md) 为准。每个 Server 使用专用双向 forwarding 通道，接收 Server 推送并维护请求回程；该通道与终端 attach/输出分开。
 
 - 提供 Desktop、Mobile、TUI 或 CLI 交互，连接并展示多个 Server。
 - 对已迁移能力，汇总 Server 快照和事件，显示 owner Node、更新时间及 stale/offline 状态；Router 首版不要求替换现有 camc 信息读取。
