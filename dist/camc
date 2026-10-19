@@ -1,7 +1,7 @@
 #!/bin/sh
 ''':'
 if [ "$#" -eq 1 ] && [ "$1" = version ] && [ -n "${HOME:-}" ]; then
-    printf '%s\n' 'camc v1.2.185 (90be1e5-dirty 2026-10-18 20:38)'
+    printf '%s\n' 'camc v1.2.185 (906b207-dirty 2026-10-19 03:26)'
     printf '\nSupported tools:\n'
     _camc_configs="${HOME}/.cam/configs"
     for _camc_tool in claude codex cursor pi; do
@@ -503,7 +503,7 @@ def early_version_main(argv=None, version=None, build=None, config_names=None):
         suffix = " (config: %s)" % path if os.path.exists(path) else " (embedded)"
         print("  %s%s" % (name.replace(".toml", ""), suffix))
     return 0
-_fast_version_exit = early_version_main(version='1.2.185', build='90be1e5-dirty 2026-10-18 20:38', config_names=('claude.toml', 'codex.toml', 'cursor.toml', 'pi.toml'))
+_fast_version_exit = early_version_main(version='1.2.185', build='906b207-dirty 2026-10-19 03:26', config_names=('claude.toml', 'codex.toml', 'cursor.toml', 'pi.toml'))
 if _fast_version_exit is not None:
     raise SystemExit(_fast_version_exit)
 
@@ -817,6 +817,8 @@ from pathlib import Path
 from uuid import uuid4
 from uuid import uuid4, uuid5, NAMESPACE_DNS as _UUID_NS
 import argparse
+import contextlib
+import datetime as _cam_datetime
 import fnmatch
 import hashlib
 import hmac
@@ -837,6 +839,7 @@ import socket
 import socket as _sock
 import socket as _socket
 import socketserver
+import stat
 import subprocess
 import sys
 import tempfile
@@ -850,7 +853,7 @@ import uuid
 # ===========================================================================
 
 __version__ = "1.2.185"
-__build__ = "90be1e5-dirty 2026-10-18 20:38"
+__build__ = "906b207-dirty 2026-10-19 03:26"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -14516,6 +14519,567 @@ _bridge_submit = submit
 
 
 # ===========================================================================
+# server_protocol
+# ===========================================================================
+
+CAM_MESSAGE_LIMIT = 4 * 1024 * 1024
+CAM_AGENT_OPERATIONS = {
+    "message.send": "msg", "agent.send": "send",
+    "agent.capture": "capture", "agent.run": "run",
+    "agent.stop": "stop", "agent.remove": "rm",
+    "agent.kill": "kill", "agent.reboot": "reboot",
+    "agent.key": "key", "agent.status": "status",
+}
+_CAM_MESSAGE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+class CamProtocolError(ValueError):
+    pass
+
+
+def cam_message_time(value):
+    try:
+        return _cam_datetime.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=_cam_datetime.timezone.utc).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        raise CamProtocolError("invalid message expiry")
+
+
+def cam_message_expiry(seconds):
+    return (_cam_datetime.datetime.now(_cam_datetime.timezone.utc) +
+            _cam_datetime.timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def validate_cam_envelope(message, node_id=None, now=None):
+    """Validate common addressing before accepting operations or results."""
+    if (not isinstance(message, dict) or type(message.get("version")) is not int or
+            message["version"] != 1):
+        raise CamProtocolError("unsupported message version")
+    if message.get("type") != "message":
+        raise CamProtocolError("expected message")
+    mid = message.get("message_id")
+    if not isinstance(mid, str) or not _CAM_MESSAGE_ID.fullmatch(mid):
+        raise CamProtocolError("invalid message ID")
+    for field in ("reply_to", "thread_id"):
+        value = message.get(field)
+        if value is not None and (not isinstance(value, str) or not _CAM_MESSAGE_ID.fullmatch(value)):
+            raise CamProtocolError("invalid %s" % field)
+    source, target = message.get("source"), message.get("target")
+    if not isinstance(source, dict) or not isinstance(target, dict):
+        raise CamProtocolError("missing source or target")
+    for address in (source, target):
+        node = address.get("node_id")
+        if (not isinstance(node, str) or not node or len(node) > 128 or
+                any(ord(char) < 33 for char in node)):
+            raise CamProtocolError("missing or invalid Node")
+        agent = address.get("agent_id")
+        if agent is not None and (not isinstance(agent, str) or
+                                  not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", agent)):
+            raise CamProtocolError("invalid agent ID")
+    if node_id is not None and target["node_id"] != node_id:
+        raise CamProtocolError("wrong target Node")
+    if not isinstance(message.get("payload"), dict):
+        raise CamProtocolError("invalid payload")
+    expiry = cam_message_time(message.get("expires_at"))
+    if now is None:
+        import time
+        now = time.time()
+    if expiry <= now:
+        raise CamProtocolError("message expired")
+    cam_encode_frame(message)
+    return message
+
+
+def validate_cam_message(message, node_id=None, now=None):
+    """Validate an addressed operation without mutating it."""
+    validate_cam_envelope(message, node_id, now)
+    if message.get("operation") not in CAM_AGENT_OPERATIONS:
+        raise CamProtocolError("UNSUPPORTED_OPERATION")
+    agent = message["target"].get("agent_id")
+    if not isinstance(agent, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", agent):
+        raise CamProtocolError("a specific agent ID is required")
+    return message
+
+
+def cam_encode_frame(value):
+    try:
+        data = json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8") + b"\n"
+    except (TypeError, ValueError, UnicodeError, RecursionError):
+        raise CamProtocolError("invalid JSON message")
+    if len(data) > CAM_MESSAGE_LIMIT:
+        raise CamProtocolError("message exceeds frame limit")
+    return data
+
+
+def cam_read_frame(stream):
+    data = stream.readline(CAM_MESSAGE_LIMIT + 1)
+    if not data:
+        raise CamProtocolError("connection closed before result")
+    if len(data) > CAM_MESSAGE_LIMIT or not data.endswith(b"\n"):
+        raise CamProtocolError("invalid or oversized frame")
+    try:
+        def reject_constant(unused):
+            raise ValueError("non-JSON number")
+        value = json.loads(data.decode("utf-8"), parse_constant=reject_constant)
+    except (ValueError, UnicodeError, RecursionError):
+        raise CamProtocolError("invalid JSON frame")
+    if not isinstance(value, dict):
+        raise CamProtocolError("expected object frame")
+    return value
+
+
+def cam_operation_result(message, stdout="", stderr="", exit_code=0, status=None):
+    """A result is a new addressed message, not a held relay connection."""
+    return {
+        "version": 1, "type": "message", "message_id": uuid.uuid4().hex,
+        "reply_to": message["message_id"],
+        "source": dict(message["target"]),
+        "target": {"node_id": message["source"]["node_id"],
+                   "receiver_id": "operation.results"},
+        "operation": "operation.result",
+        "payload": {"status": status or ("ok" if exit_code == 0 else "error"),
+                    "stdout": stdout, "stderr": stderr, "exit_code": exit_code},
+        "expires_at": cam_message_expiry(86400),
+    }
+
+
+# ===========================================================================
+# server_client
+# ===========================================================================
+
+def cam_server_socket(env=None):
+    env = os.environ if env is None else env
+    if env.get("CAM_SERVER_SOCKET"):
+        return os.path.expanduser(env["CAM_SERVER_SOCKET"])
+    card = os.path.join(os.path.expanduser("~"), ".cam", "server",
+                        "endpoint-%s.json" % socket.gethostname())
+    try:
+        info = os.stat(card)
+        if info.st_uid != os.getuid() or info.st_mode & 0o022:
+            return None
+        with open(card, "r") as stream:
+            value = json.load(stream)
+        return value.get("socket") if isinstance(value, dict) else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+class CamServerConnection:
+    def __init__(self, path, timeout=30):
+        self.path, self.timeout = path, timeout
+        self.socket = None
+        self.stream = None
+        self.node_id = None
+
+    def __enter__(self):
+        try:
+            info = os.stat(self.path)
+            if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
+                raise CamProtocolError("local Server socket is not owned by this user")
+            self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.socket.settimeout(self.timeout)
+            self.socket.connect(self.path)
+            self.stream = self.socket.makefile("rb")
+            self.send({"type": "hello", "version": 1, "role": "camc"})
+            hello = cam_read_frame(self.stream)
+            self.node_id = hello.get("node_id")
+            if (hello.get("type") != "hello" or hello.get("version") != 1 or
+                    not isinstance(self.node_id, str) or not self.node_id):
+                raise CamProtocolError("incompatible local CAM Server")
+            return self
+        except Exception:
+            self.__exit__(None, None, None)
+            raise
+
+    def __exit__(self, *unused):
+        if self.stream is not None:
+            self.stream.close()
+        if self.socket is not None:
+            self.socket.close()
+
+    def send(self, frame):
+        self.socket.sendall(cam_encode_frame(frame))
+
+    def resolve(self, node, agent):
+        self.send({"type": "resolve", "node": node, "agent": agent})
+        answer = cam_read_frame(self.stream)
+        if answer.get("type") != "resolved":
+            raise CamProtocolError(str(answer.get("error") or "TARGET_UNRESOLVED"))
+        target = {"node_id": answer.get("node_id"), "agent_id": answer.get("agent_id")}
+        if (not isinstance(target["node_id"], str) or not target["node_id"] or
+                (agent is not None and
+                 (not isinstance(target["agent_id"], str) or not target["agent_id"]))):
+            raise CamProtocolError("TARGET_UNRESOLVED")
+        return target
+
+    def publish(self, message):
+        """Durable local acceptance for an asynchronous reply."""
+        self.send({"type": "publish", "message": message})
+        answer = cam_read_frame(self.stream)
+        if answer.get("type") != "accepted" or answer.get("message_id") != message["message_id"]:
+            raise CamProtocolError(str(answer.get("error") or "reply was not accepted"))
+
+    def submit(self, message, wait_for_reply=False):
+        validate_cam_message(message)
+        self.send(message)
+        return self.await_result(message, wait_for_reply)
+
+    def await_result(self, message, wait_for_reply=False):
+        deadline = time.monotonic() + self.timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise CamProtocolError("result timed out; delivery may be unknown")
+            self.socket.settimeout(remaining)
+            result = cam_read_frame(self.stream)
+            if result.get("type") == "error":
+                raise CamProtocolError(str(result.get("error") or "Server rejected request"))
+            validate_cam_envelope(result, self.node_id)
+            if wait_for_reply and result.get("operation") == "message.send":
+                if (result.get("reply_to") != message["message_id"] or
+                        result["source"].get("node_id") != message["target"]["node_id"] or
+                        result["source"].get("agent_id") != message["target"].get("agent_id") or
+                        result["target"].get("agent_id") != message["source"].get("agent_id")):
+                    raise CamProtocolError("reply source/target mismatch")
+                value = result["payload"].get("args", {}).get("text")
+                if not isinstance(value, str):
+                    raise CamProtocolError("invalid reply text")
+                return value + "\n", "", 0
+            if (result.get("type") != "message" or
+                    result.get("operation") != "operation.result" or
+                    result.get("message_id") == message["message_id"] or
+                    result.get("reply_to") != message["message_id"]):
+                raise CamProtocolError("unrelated or invalid result")
+            source, target = result.get("source"), result.get("target")
+            if (result.get("version") != 1 or not isinstance(source, dict) or
+                    not isinstance(target, dict) or
+                    source.get("node_id") != message["target"]["node_id"] or
+                    source.get("agent_id") != message["target"]["agent_id"] or
+                    target.get("node_id") != self.node_id or
+                    target.get("receiver_id") != "operation.results"):
+                raise CamProtocolError("result source/target mismatch")
+            payload = result.get("payload")
+            if not isinstance(payload, dict):
+                raise CamProtocolError("missing result payload")
+            if payload.get("status") == "pending":
+                continue
+            if wait_for_reply and payload.get("kind") == "delivery":
+                if payload.get("exit_code") == 0:
+                    continue
+            out, err, code = (payload.get("stdout"), payload.get("stderr"),
+                              payload.get("exit_code"))
+            if (not isinstance(out, str) or not isinstance(err, str) or
+                    type(code) is not int or not 0 <= code <= 255):
+                raise CamProtocolError("invalid stdout/stderr/exit_code result")
+            if payload.get("status") not in ("ok", "error", "unknown"):
+                raise CamProtocolError("invalid result status")
+            if payload["status"] in ("unknown", "error") and code == 0:
+                raise CamProtocolError("failed or unknown result cannot succeed")
+            return out, err, code
+
+
+def _cam_local_agent(store, ref):
+    """Keep local lookup precedence, but never send an ambiguous miss away."""
+    def local(agent):
+        host = agent.get("hostname")
+        return not host or host.split(".", 1)[0] == socket.gethostname().split(".", 1)[0]
+    agents = [a for a in store.list() if local(a)]
+    for agent in agents:
+        if ref in (agent["id"], agent.get("tmux_session"), agent.get("session")):
+            return agent
+    groups = [[a for a in agents if a["id"].startswith(ref)]]
+    names = [(a, ((a.get("task") or {}).get("name") or a.get("name") or "").lower())
+             for a in agents]
+    groups.extend([[a for a, name in names if name == ref.lower()],
+                   [a for a, name in names if name.startswith(ref.lower())]])
+    for matches in groups:
+        if len(matches) > 1:
+            raise CamProtocolError("ambiguous local agent; use its full ID")
+        if matches:
+            return matches[0]
+    agent = store.get(ref)  # Preserve legacy numeric-index lookup.
+    return agent if agent and local(agent) else None
+
+
+def cam_server_route(parser, argv, store=None, env=None):
+    """Return an exit code if Server routing handled argv, otherwise None."""
+    env = os.environ if env is None else env
+    path = cam_server_socket(env)
+    if "--help" in argv or "-h" in argv:
+        return None
+    if not path:
+        if any(v == "--node" or v.startswith("--node=") for v in argv):
+            sys.stderr.write("camc: --node requires a local CAM Server endpoint\n")
+            return 2
+        return None
+    command = next((v for v in argv if not v.startswith("-")), "")
+    if command not in set(CAM_AGENT_OPERATIONS.values()):
+        if command in ("list", "ls") and any(v in argv for v in ("-a", "--all")):
+            sys.stderr.write("camc: remote list is not supported by the CAM Server protocol\n")
+            return 2
+        return None
+    args = parser.parse_args(argv)
+    command = args.command
+    if command == "msg" and getattr(args, "msg_cmd", None) != "send":
+        return None  # replies/reads are handled by their message-context adapter
+    field = ("to" if command == "msg" else
+             "agent_id" if command == "status" else "id")
+    ref = getattr(args, field, None) if command != "run" else None
+    node = getattr(args, "node", None) if command == "run" else None
+    if command == "run" and not node:
+        return None
+    if command != "run":
+        if not ref:
+            return None  # preserve local status without an agent argument
+        if ":" in ref:
+            node, ref = ref.rsplit(":", 1)
+            if not node or not ref:
+                sys.stderr.write("camc: expected Node:agent\n")
+                return 2
+        else:
+            if store is None:
+                store = AgentStore()
+            try:
+                local_agent = _cam_local_agent(store, ref)
+                if local_agent is not None:
+                    # Shared Home may contain a foreign machine's same-name
+                    # record. Dispatch the resolved local ID to the existing
+                    # handler, without repeating a global name lookup.
+                    setattr(args, field, local_agent["id"])
+                    handlers = {"capture": cmd_capture, "status": cmd_status,
+                                "send": cmd_send, "key": cmd_key,
+                                "stop": cmd_stop, "kill": cmd_kill,
+                                "rm": cmd_rm, "reboot": cmd_migrate, "msg": cmd_msg_send}
+                    handlers[command](args)
+                    return 0
+            except CamProtocolError as exc:
+                sys.stderr.write("camc: %s\n" % exc)
+                return 2
+    message = None
+    try:
+        default_timeout = getattr(args, "timeout", 600) if command == "msg" and not args.no_wait else 30
+        timeout = float(env.get("CAM_SERVER_TIMEOUT", default_timeout))
+        if not 0 < timeout <= 86400:
+            raise ValueError("CAM_SERVER_TIMEOUT must be between 0 and 86400")
+        with CamServerConnection(path, timeout) as server:
+            if command == "run":
+                target = server.resolve(node, None)
+                target["agent_id"] = _gen_agent_id()
+            else:
+                target = server.resolve(node, ref)
+            values = vars(args).copy()
+            for key in ("command", "node", "verbose"):
+                values.pop(key, None)
+            if command == "send":
+                values["text"] = _send_text_from_args(args)
+                values["file"], values["stdin"] = None, False
+            if command == "run":
+                values["path"] = os.path.abspath(values["path"])
+                if not any(v == "--tool-launcher" or v.startswith("--tool-launcher=") for v in argv):
+                    values["tool_launcher"] = None  # resolve default on target Node
+            if command != "run":
+                values[field] = target["agent_id"]
+            operation = next(k for k, v in CAM_AGENT_OPERATIONS.items() if v == command)
+            message = {"version": 1, "type": "message", "message_id": uuid.uuid4().hex,
+                       "source": {"node_id": server.node_id}, "target": target,
+                       "operation": operation, "payload": {"args": values},
+                       "expires_at": cam_message_expiry(timeout)}
+            if command == "msg":
+                sender = _msg_sender_identity()
+                if sender:
+                    message["source"]["agent_id"] = sender["sender_id"]
+                message["payload"]["expect_response"] = not args.no_wait
+                message["thread_id"] = message["message_id"]
+                cam_save_message_context(message, "outgoing")
+                _msg_ledger_append({"msg_id": message["message_id"], "status": "sent",
+                                    "to": args.to, "expect_reply": True,
+                                    "server_message": True, "text": args.text})
+                cam_record_message_turn(message)
+            output, errors, code = server.submit(
+                message, wait_for_reply=(command == "msg" and not args.no_wait))
+            if command == "msg" and code == 0 and not args.no_wait:
+                _msg_ledger_append({"msg_id": message["message_id"],
+                                    "status": "replied", "reply": output.rstrip("\n")})
+            sys.stdout.write(output)
+            sys.stderr.write(errors)
+            return code
+    except (OSError, ValueError, TypeError) as exc:
+        correlation = (" (message_id=%s, target=%s:%s)" %
+                       (message["message_id"], message["target"]["node_id"],
+                        message["target"]["agent_id"])) if message else ""
+        sys.stderr.write("camc: CAM Server: %s%s; no legacy retry was attempted\n" %
+                         (exc, correlation))
+        return 2
+
+
+def cam_message_context_directory(node_id=None):
+    """Shared Home must not mix opposite ends of the same message."""
+    directory = os.path.join(os.path.expanduser("~"), ".cam", "server", "messages")
+    if node_id is not None:
+        directory = os.path.join(directory, hashlib.sha256(node_id.encode("utf-8")).hexdigest())
+    return directory
+
+
+@contextlib.contextmanager
+def cam_message_thread_lock(thread_id):
+    if not isinstance(thread_id, str) or not _CAM_MESSAGE_ID.fullmatch(thread_id):
+        raise CamProtocolError("invalid thread ID")
+    # The legacy ledger can itself live on shared Home. Lock across Nodes so
+    # each transport message maps to one turn, with a unique local sequence.
+    import fcntl
+    directory = os.path.join(os.path.expanduser("~"), ".cam", "server", "thread-locks")
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    fd = os.open(os.path.join(directory, thread_id + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    with os.fdopen(fd, "r+") as stream:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def cam_save_message_context(message, direction):
+    """Persist only message correlation; this is not a Client relay table."""
+    mid = message.get("message_id", "")
+    thread = message.get("thread_id", mid)
+    if not all(isinstance(value, str) and _CAM_MESSAGE_ID.fullmatch(value) for value in (mid, thread)):
+        raise CamProtocolError("invalid message context ID")
+    local = message["target"] if direction == "incoming" else message["source"]
+    directory = cam_message_context_directory(local["node_id"])
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    # The stable thread alias points to its newest turn; individual transport
+    # message contexts remain available for explicit reply_to correlation.
+    for context_id in set((mid, thread)):
+        path = os.path.join(directory, context_id + ".json")
+        temporary = path + "." + uuid.uuid4().hex
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "w") as stream:
+                json.dump({"direction": direction, "message": message}, stream)
+            os.replace(temporary, path)
+        finally:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+
+
+def cam_record_message_turn(message):
+    """Map an outgoing transport message to the existing local thread ledger."""
+    thread = message.get("thread_id", message["message_id"])
+    source, target = message["source"], message["target"]
+    text = message["payload"].get("args", {}).get("text")
+    if text is None:
+        text = message["payload"].get("stdout", "").rstrip("\n")
+    with cam_message_thread_lock(thread):
+        if any(turn.get("message_id") == message["message_id"] for turn in _msg_thread_turns(thread)):
+            return
+        _msg_ledger_append({"record": "turn", "schema": _MSG_SCHEMA,
+                        "msg_id": thread, "seq": _msg_thread_seq(thread) + 1,
+                        "message_id": message["message_id"], "reply_to": message.get("reply_to"),
+                        "kind": "message", "text": text,
+                        "from_id": source.get("agent_id", ""), "from_name": source.get("name", ""),
+                        "to_id": target.get("agent_id", ""), "to_name": target.get("name", ""),
+                        "from_node": source["node_id"], "to_node": target["node_id"]})
+
+
+def cam_server_reply(args):
+    if not _CAM_MESSAGE_ID.fullmatch(args.msg_id):
+        return None
+    try:
+        directory = cam_message_context_directory()
+        if not any(os.path.isfile(os.path.join(directory, node, args.msg_id + ".json"))
+                   for node in os.listdir(directory)):
+            return None
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, TypeError) as exc:
+        sys.stderr.write("camc: CAM Server message context: %s\n" % exc)
+        return 2
+    try:
+        endpoint = cam_server_socket()
+        if not endpoint:
+            raise CamProtocolError("local CAM Server endpoint is required for this reply")
+        with CamServerConnection(endpoint) as server:
+            path = os.path.join(cam_message_context_directory(server.node_id), args.msg_id + ".json")
+            info = os.stat(path)
+            if info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise CamProtocolError("message context must be private")
+            with open(path, "r") as stream:
+                context = json.load(stream)
+            original = context["message"]
+            incoming = context["direction"] == "incoming"
+            remote = original["source"] if incoming else original["target"]
+            local = original["target"] if incoming else original["source"]
+            if server.node_id != local["node_id"]:
+                raise CamProtocolError("reply context belongs to another Node")
+            message = {"version": 1, "type": "message", "message_id": uuid.uuid4().hex,
+                       "reply_to": original["message_id"], "source": dict(local),
+                       "thread_id": original.get("thread_id", original["message_id"]),
+                       "expires_at": cam_message_expiry(86400)}
+            if remote.get("agent_id"):
+                message.update(target=dict(remote), operation="message.send",
+                               payload={"args": {"text": args.text, "to": remote["agent_id"],
+                                                 "msg_cmd": "send", "no_wait": True}})
+            else:
+                message.update(target={"node_id": remote["node_id"], "receiver_id": "operation.results"},
+                               operation="operation.result",
+                               payload={"status": "ok", "kind": "reply", "stdout": args.text + "\n",
+                                        "stderr": "", "exit_code": 0})
+            server.publish(message)
+            cam_save_message_context(message, "outgoing")
+            cam_record_message_turn(message)
+            sys.stdout.write("REPLIED_TO=%s\nMESSAGE_ID=%s\nTHREAD_ID=%s\n" %
+                             (message["reply_to"], message["message_id"], message["thread_id"]))
+            return 0
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        sys.stderr.write("camc: CAM Server reply: %s\n" % exc)
+        return 2
+
+
+def cam_server_wait(args):
+    """Wait on the Source Server's durable result without resending a task."""
+    if not _CAM_MESSAGE_ID.fullmatch(args.msg_id):
+        return None
+    directory = cam_message_context_directory()
+    try:
+        if not any(os.path.isfile(os.path.join(directory, node, args.msg_id + ".json"))
+                   for node in os.listdir(directory)):
+            return None
+    except FileNotFoundError:
+        return None
+    try:
+        endpoint = cam_server_socket()
+        if not endpoint:
+            raise CamProtocolError("local CAM Server is required to wait on this message")
+        timeout = max(5, min(86400, int(getattr(args, "timeout", 600) or 600)))
+        with CamServerConnection(endpoint, timeout) as server:
+            path = os.path.join(cam_message_context_directory(server.node_id), args.msg_id + ".json")
+            info = os.stat(path)
+            if info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise CamProtocolError("message context must be private")
+            with open(path, "r") as stream:
+                context = json.load(stream)
+            saved = context["message"]
+            incoming = context["direction"] == "incoming"
+            local = saved["target"] if incoming else saved["source"]
+            remote = saved["source"] if incoming else saved["target"]
+            if local["node_id"] != server.node_id:
+                raise CamProtocolError("wait context belongs to another Node")
+            original = {"message_id": args.msg_id, "source": local, "target": remote}
+            server.send({"type": "wait", "message_id": args.msg_id, "timeout": timeout})
+            output, errors, code = server.await_result(original, wait_for_reply=True)
+            if code == 0:
+                _msg_ledger_append({"msg_id": args.msg_id, "status": "replied", "reply": output.rstrip("\n")})
+            sys.stdout.write(output)
+            sys.stderr.write(errors)
+            return code
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        sys.stderr.write("camc: CAM Server wait: %s; original was not resubmitted\n" % exc)
+        return 2
+
+
+# ===========================================================================
 # tunnel
 # ===========================================================================
 
@@ -20990,7 +21554,8 @@ def _msg_submit_notification(session, payload, msg_id, target=None,
 
 def _msg_inject(session, to_label, text, timeout_s,
                 expect_reply=False, reply_to=None,
-                submit_delay=_MSG_SUBMIT_DELAY_DEFAULT):
+                submit_delay=_MSG_SUBMIT_DELAY_DEFAULT, message_id=None, sender=None,
+                thread_id=None):
     """Inject [camc msg#<id>]: marker into pane. Logs ledger sent/delivered.
 
     Returns (msg_id, ok). On delivery failure, logs deliver_failed and
@@ -21019,8 +21584,14 @@ def _msg_inject(session, to_label, text, timeout_s,
     minting a new id. The kwarg is kept for legacy callers / forward
     compat with non-thread inter-process correlation.
     """
-    msg_id = uuid4().hex[:8]
-    sender = _msg_sender_identity()
+    msg_id = message_id or uuid4().hex[:8]
+    ledger_id = thread_id or msg_id
+    existing_turn = next((turn for turn in _msg_thread_turns(ledger_id)
+                          if turn.get("message_id") == msg_id), None) if thread_id else None
+    seq = (existing_turn["seq"] if existing_turn else
+           _msg_thread_seq(ledger_id) + 1) if thread_id else 1
+    if sender is None:
+        sender = _msg_sender_identity()
     target = _msg_target_identity(to_label)
     prefix = _msg_sender_prefix(sender) + _msg_target_prefix(target)
     if reply_to:
@@ -21029,11 +21600,13 @@ def _msg_inject(session, to_label, text, timeout_s,
     if expect_reply:
         body = body + (_MSG_REPLY_INSTRUCTION % msg_id)
     wire_text = (prefix + " " + body) if prefix else body
-    payload = "[camc msg#%s]: %s" % (msg_id, wire_text)
+    payload = "[camc msg#%s]: %s" % (ledger_id, wire_text)
     sent_record = {
-        "msg_id": msg_id, "to": to_label, "tmux_session": session,
+        "msg_id": ledger_id, "to": to_label, "tmux_session": session,
         "text": text, "status": "sent", "timeout_s": timeout_s,
     }
+    if thread_id:
+        sent_record["message_id"] = msg_id
     if sender:
         sent_record.update(sender)
     if target:
@@ -21044,7 +21617,7 @@ def _msg_inject(session, to_label, text, timeout_s,
         sent_record["reply_to"] = reply_to
     _msg_ledger_append(sent_record)
 
-    # V0 thread/mailbox: append turn(seq=1) + delivery to the recipient
+    # V0 thread/mailbox: append a turn + delivery to the recipient
     # mailbox. These are append-only and source-of-truth for `camc msg
     # read`; the legacy sent/delivered status records above are kept for
     # backward compatibility with `wait`/`show`/`list`.
@@ -21053,25 +21626,29 @@ def _msg_inject(session, to_label, text, timeout_s,
     to_id = (target or {}).get("target_id", "") if target else ""
     to_name = (target or {}).get("target_name", "") if target else ""
     mailbox_id = _msg_mailbox_id_for_target(target, session, to_label)
-    _msg_ledger_append({
+    turn_record = {
         "record": "turn", "schema": _MSG_SCHEMA,
-        "msg_id": msg_id, "seq": 1, "kind": "message",
+        "msg_id": ledger_id, "seq": seq, "kind": "message",
         "from_id": from_id, "from_name": from_name,
         "to_id": to_id, "to_name": to_name,
         "text": text,
-    })
+    }
+    if thread_id:
+        turn_record.update(message_id=msg_id, reply_to=reply_to)
+    if not existing_turn:
+        _msg_ledger_append(turn_record)
     _msg_ledger_append({
         "record": "delivery", "schema": _MSG_SCHEMA,
-        "msg_id": msg_id, "seq": 1,
+        "msg_id": ledger_id, "seq": seq,
         "mailbox_id": mailbox_id,
         "to_id": to_id, "to_name": to_name,
     })
 
-    if not _msg_submit_notification(session, payload, msg_id, target,
+    if not _msg_submit_notification(session, payload, ledger_id, target,
                                     submit_delay=submit_delay):
-        _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
+        _msg_ledger_append({"msg_id": ledger_id, "status": "deliver_failed"})
         return (msg_id, False)
-    _msg_ledger_append({"msg_id": msg_id, "status": "delivered"})
+    _msg_ledger_append({"msg_id": ledger_id, "status": "delivered"})
     return (msg_id, True)
 
 
@@ -21562,6 +22139,9 @@ def cmd_msg_wait(args):
     `replied` record (Phase 1 async); otherwise scrapes the recorded
     tmux session pane until the reply stabilises or timeout.
     """
+    server_exit = cam_server_wait(args)
+    if server_exit is not None:
+        raise SystemExit(server_exit)
     msg_id = args.msg_id
     timeout = max(int(getattr(args, "timeout", 600) or 600), 5)
 
@@ -21611,6 +22191,9 @@ def cmd_msg_reply(args):
       - Best-effort tmux notification reuses the SAME [camc msg#<id>]
         thread marker (no new logical id, no `reply_to:` block).
     """
+    server_exit = cam_server_reply(args)
+    if server_exit is not None:
+        raise SystemExit(server_exit)
     orig_msg_id = args.msg_id
     text = args.text
 
@@ -22876,6 +23459,8 @@ examples:
     r.add_argument("--tool", "-t", default="codex", help="Tool command (claude, codex, cursor, pi, or other PATH executable) [default: codex]")
     r.add_argument("--path", "-p", default=os.getcwd(), help="Working directory")
     r.add_argument("--name", "-n", default=None, help="Human-readable name")
+    r.add_argument("--node", default=None, metavar="NODE",
+                   help="Create the agent on this Node through the local CAM Server")
     r.add_argument("--auto-exit", "-a", action="store_true", help="Auto-exit on completion")
     # Hidden safety arm for --auto-exit. Without this, --auto-exit is a no-op
     # in the monitor. Intentionally undocumented (argparse.SUPPRESS) — the
@@ -23295,6 +23880,12 @@ examples:
     _aliases = {"a": "attach", "ls": "list"}
     if len(sys.argv) > 1 and sys.argv[1] in _aliases:
         sys.argv[1] = _aliases[sys.argv[1]]
+
+    # The new local Server protocol takes precedence only when its endpoint
+    # is configured. Local AgentStore hits still use the existing commands.
+    _server_exit = cam_server_route(p, sys.argv[1:])
+    if _server_exit is not None:
+        sys.exit(_server_exit)
 
     # Machine tunnels (src/camc_pkg/tunnel.py): '<machine>:<ref>' targets
     # matching machines.json are served by the per-machine persistent

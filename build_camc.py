@@ -64,6 +64,8 @@ MODULE_ORDER = [
     "api_resolver",
     "skills",
     "bridge",
+    "server_protocol",
+    "server_client",
     # tunnel must follow bridge (reuses its §10 frame helpers) and
     # precede cli (which routes machine-prefixed targets through it).
     "tunnel",

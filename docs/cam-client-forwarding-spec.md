@@ -30,7 +30,7 @@ C1 和 C2 可以是同一个 Client，也可以不同。每条消息独立选路
 
 显式指定远端 `Node:agent` 时，直接交给本机 Server，不能命中本机同名 agent。已找到本机 agent 但投递失败时返回本机错误，不能把相同名称的远端 agent 当作替代目标。
 
-远端转发前必须确定目标 Node；只有 agent 名而尚未定位时返回 `TARGET_UNRESOLVED`，不广播执行业务。Router 首版不增加全网 agent 目录；Client 不做 agent 查找。目标定位能力与 agent 信息后续迁移分开接入。
+远端转发前必须确定目标 Node。Client 复用已有 `(node,name,id,status)` agent 信息表进行名称/ID 定位，不增加第二份权威 registry；来源 Server 可通过该缓存完成提交前的 resolve。只有 agent 名而尚未唯一定位时返回 `TARGET_UNRESOLVED`，不广播执行业务。已构造的消息按其固定目标转发，不因名称或缓存状态改写目标；目标 Server 再校验真实 agent。
 
 Router 先行：现有本机管理、launcher、monitor、attach 和 legacy Desktop/Mobile 路径保持。Server 使用本机接收端或共享消息模块，不启动 camc CLI 或第二个 camc 接收守护进程。camc 消息接入必须单独实现和验证。
 
@@ -47,7 +47,7 @@ Router 先行：现有本机管理、launcher、monitor、attach 和 legacy Desk
 | CF-07 | 限制帧大小、发送队列和写入并发，隔离慢目标，明确背压，不静默丢消息 |
 | CF-08 | forwarding 在后台运行；提供通道、可达目标、队列、错误与耗时状态，默认日志不记录正文或凭据 |
 
-Client 只需维护 `node_id → 当前连接`、通道状态和有界发送队列。Server 保存 `目标 Node → 可用 Client 集合`；Client 不保存等待 agent 回复的 pending 表、对话历史或权威消息数据库。
+Client 维护已有 agent 信息缓存、`node_id → 当前连接`、通道状态和有界发送队列。缓存记录 Node、name、id、status 及新鲜度，离线/过期必须可见，dead agent 仍可作为 status/rm/reboot 的目标。Server 保存 `目标 Node → 可用 Client 集合`；Client 不保存等待 agent 回复的 pending 表、对话历史或权威消息数据库。
 
 操作的支持/不支持范围、名称、目标和返回约定见总 Spec 的 [远端操作范围](cam-client-server-spec.md#61-远端操作范围)。第一步十项业务操作均须明确 `target.node_id` 与 `target.agent_id`；run 创建其预分配的新 ID，其余操作针对已有 agent。远端 list、跨节点列表聚合、空目标/通配符、批量及 Node 级业务操作本轮不开放；现有本机 list 保持。目标机器负责登记与业务白名单检查，Client 不解析每个命令的参数，也不能把整套 CLI 作为兜底。
 
@@ -147,6 +147,8 @@ camc 适配层维护本机 thread/seq 与跨 Node `message_id`、`reply_to`、�
 每个连接与整个 Client 都限制帧大小、排队字节数和写入并发。尚未接收的消息可明确拒绝；已接收消息不能静默丢弃。一个慢目标不能阻塞其它目标，队列不能无限增长。
 
 UI 刷新、切换 agent、关闭终端标签不影响后台 forwarding；后台退出或系统暂停会使路径失效，但不停止 agent。状态至少显示实际 Node、通道状态、可达目标、队列大小、最后错误和最近转发耗时。日志仅记录来源/目标 Node、message ID、连接及错误元数据，不记录正文、token 或完整环境。
+
+实现位置：[Rust Router 与 Client 参考组件](../components/cam-router/README.md)。参考组件使用独立后台进程验证本契约，不代表现有 Desktop/Mobile 已接入；其 UI、SSH 真机与打包 Electron 验收独立记录。
 
 ## 8. 必须通过的验收
 

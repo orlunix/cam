@@ -7068,3 +7068,10 @@ dee07ef chore(camc): prepare 1.2.137 release
 43c8caaa feat(camc): harden native API proxy and isolate agents
 587f4788 fix(camc): trust exact Codex workdir
 ```
+
+## CAM Server integration snapshot — 2026-10-19
+
+- camc v1.2.185; build: 906b207-dirty 2026-10-19 03:26
+- Includes local CAM Server protocol/client and independent msg reply/wait.
+- Lines: 23982
+- Source snapshot only; no installation or deployment.

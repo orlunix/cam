@@ -5519,7 +5519,8 @@ def _msg_submit_notification(session, payload, msg_id, target=None,
 
 def _msg_inject(session, to_label, text, timeout_s,
                 expect_reply=False, reply_to=None,
-                submit_delay=_MSG_SUBMIT_DELAY_DEFAULT):
+                submit_delay=_MSG_SUBMIT_DELAY_DEFAULT, message_id=None, sender=None,
+                thread_id=None):
     """Inject [camc msg#<id>]: marker into pane. Logs ledger sent/delivered.
 
     Returns (msg_id, ok). On delivery failure, logs deliver_failed and
@@ -5548,8 +5549,14 @@ def _msg_inject(session, to_label, text, timeout_s,
     minting a new id. The kwarg is kept for legacy callers / forward
     compat with non-thread inter-process correlation.
     """
-    msg_id = uuid4().hex[:8]
-    sender = _msg_sender_identity()
+    msg_id = message_id or uuid4().hex[:8]
+    ledger_id = thread_id or msg_id
+    existing_turn = next((turn for turn in _msg_thread_turns(ledger_id)
+                          if turn.get("message_id") == msg_id), None) if thread_id else None
+    seq = (existing_turn["seq"] if existing_turn else
+           _msg_thread_seq(ledger_id) + 1) if thread_id else 1
+    if sender is None:
+        sender = _msg_sender_identity()
     target = _msg_target_identity(to_label)
     prefix = _msg_sender_prefix(sender) + _msg_target_prefix(target)
     if reply_to:
@@ -5558,11 +5565,13 @@ def _msg_inject(session, to_label, text, timeout_s,
     if expect_reply:
         body = body + (_MSG_REPLY_INSTRUCTION % msg_id)
     wire_text = (prefix + " " + body) if prefix else body
-    payload = "[camc msg#%s]: %s" % (msg_id, wire_text)
+    payload = "[camc msg#%s]: %s" % (ledger_id, wire_text)
     sent_record = {
-        "msg_id": msg_id, "to": to_label, "tmux_session": session,
+        "msg_id": ledger_id, "to": to_label, "tmux_session": session,
         "text": text, "status": "sent", "timeout_s": timeout_s,
     }
+    if thread_id:
+        sent_record["message_id"] = msg_id
     if sender:
         sent_record.update(sender)
     if target:
@@ -5573,7 +5582,7 @@ def _msg_inject(session, to_label, text, timeout_s,
         sent_record["reply_to"] = reply_to
     _msg_ledger_append(sent_record)
 
-    # V0 thread/mailbox: append turn(seq=1) + delivery to the recipient
+    # V0 thread/mailbox: append a turn + delivery to the recipient
     # mailbox. These are append-only and source-of-truth for `camc msg
     # read`; the legacy sent/delivered status records above are kept for
     # backward compatibility with `wait`/`show`/`list`.
@@ -5582,25 +5591,29 @@ def _msg_inject(session, to_label, text, timeout_s,
     to_id = (target or {}).get("target_id", "") if target else ""
     to_name = (target or {}).get("target_name", "") if target else ""
     mailbox_id = _msg_mailbox_id_for_target(target, session, to_label)
-    _msg_ledger_append({
+    turn_record = {
         "record": "turn", "schema": _MSG_SCHEMA,
-        "msg_id": msg_id, "seq": 1, "kind": "message",
+        "msg_id": ledger_id, "seq": seq, "kind": "message",
         "from_id": from_id, "from_name": from_name,
         "to_id": to_id, "to_name": to_name,
         "text": text,
-    })
+    }
+    if thread_id:
+        turn_record.update(message_id=msg_id, reply_to=reply_to)
+    if not existing_turn:
+        _msg_ledger_append(turn_record)
     _msg_ledger_append({
         "record": "delivery", "schema": _MSG_SCHEMA,
-        "msg_id": msg_id, "seq": 1,
+        "msg_id": ledger_id, "seq": seq,
         "mailbox_id": mailbox_id,
         "to_id": to_id, "to_name": to_name,
     })
 
-    if not _msg_submit_notification(session, payload, msg_id, target,
+    if not _msg_submit_notification(session, payload, ledger_id, target,
                                     submit_delay=submit_delay):
-        _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
+        _msg_ledger_append({"msg_id": ledger_id, "status": "deliver_failed"})
         return (msg_id, False)
-    _msg_ledger_append({"msg_id": msg_id, "status": "delivered"})
+    _msg_ledger_append({"msg_id": ledger_id, "status": "delivered"})
     return (msg_id, True)
 
 
@@ -6091,6 +6104,10 @@ def cmd_msg_wait(args):
     `replied` record (Phase 1 async); otherwise scrapes the recorded
     tmux session pane until the reply stabilises or timeout.
     """
+    from camc_pkg.server_client import cam_server_wait
+    server_exit = cam_server_wait(args)
+    if server_exit is not None:
+        raise SystemExit(server_exit)
     msg_id = args.msg_id
     timeout = max(int(getattr(args, "timeout", 600) or 600), 5)
 
@@ -6140,6 +6157,10 @@ def cmd_msg_reply(args):
       - Best-effort tmux notification reuses the SAME [camc msg#<id>]
         thread marker (no new logical id, no `reply_to:` block).
     """
+    from camc_pkg.server_client import cam_server_reply
+    server_exit = cam_server_reply(args)
+    if server_exit is not None:
+        raise SystemExit(server_exit)
     orig_msg_id = args.msg_id
     text = args.text
 
@@ -7435,6 +7456,8 @@ examples:
     r.add_argument("--tool", "-t", default="codex", help="Tool command (claude, codex, cursor, pi, or other PATH executable) [default: codex]")
     r.add_argument("--path", "-p", default=os.getcwd(), help="Working directory")
     r.add_argument("--name", "-n", default=None, help="Human-readable name")
+    r.add_argument("--node", default=None, metavar="NODE",
+                   help="Create the agent on this Node through the local CAM Server")
     r.add_argument("--auto-exit", "-a", action="store_true", help="Auto-exit on completion")
     # Hidden safety arm for --auto-exit. Without this, --auto-exit is a no-op
     # in the monitor. Intentionally undocumented (argparse.SUPPRESS) — the
@@ -7855,6 +7878,13 @@ examples:
     _aliases = {"a": "attach", "ls": "list"}
     if len(sys.argv) > 1 and sys.argv[1] in _aliases:
         sys.argv[1] = _aliases[sys.argv[1]]
+
+    # The new local Server protocol takes precedence only when its endpoint
+    # is configured. Local AgentStore hits still use the existing commands.
+    from camc_pkg.server_client import cam_server_route
+    _server_exit = cam_server_route(p, sys.argv[1:])
+    if _server_exit is not None:
+        sys.exit(_server_exit)
 
     # Machine tunnels (src/camc_pkg/tunnel.py): '<machine>:<ref>' targets
     # matching machines.json are served by the per-machine persistent

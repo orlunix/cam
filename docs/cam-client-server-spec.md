@@ -2,7 +2,7 @@
 
 日期：2026-10-18；更新：2026-10-19（统一 message 路由）
 
-状态：目标设计草案；当前先实现 Router，agent 管理随后迁移，实现尚未完成。
+状态：目标设计；Rust Router、Client forwarding 参考组件和 camc SDK 接入已实现，单机多进程验收通过；各平台 Client 集成与物理跨主机部署继续验收，agent 管理随后迁移。
 
 范围：术语、职责、连接、跨机器请求与响应、可靠性、旧组件归并及验收。
 
@@ -21,6 +21,8 @@ CAM 的产品架构只有 **Client** 与 **Server** 两种角色。每台纳入�
 既有文档的关系：
 
 - [CAM Client Forwarding Spec](cam-client-forwarding-spec.md)：Client 专用转发通道、可达通告、统一消息转发、恢复及逐项验收要求；属于本文 Router 阶段的 Client 侧契约。
+- [camc Server 接入](camc-server-integration.md)：已实现的本机 IPC、原生 SDK 后端与验收边界。
+- [Rust Router 使用与构建](../components/cam-router/README.md)：独立服务、Client 参考组件、通道配置、持久队列和通用 Linux 静态构建；Python 包旧入口暂不替换。
 - [camc spec](camc-spec.md)：legacy camc 当前行为与兼容约束。
 - [Bridge Protocol v1](desktop/bridge-protocol-v1.md)、[camb 实现笔记](desktop/camb-bridge.md)：现有桥接协议与实现，迁移期通过适配器兼容。
 - [Fleet Bridge 旧方案](desktop/fleet-bridge-plan.md)：现有 bridge 的背景；目标角色和职责以本文为准。
