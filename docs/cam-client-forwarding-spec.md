@@ -8,7 +8,7 @@
 
 ## 1. 核心规则
 
-**request 与 response 都是一条普通 message，使用同一套发送、路由和投递流程。** 回复具有新的 `message_id`，通过 `reply_to` 关联被回复的消息。Client 对两者执行相同的转发，不等待业务结果，也不维护业务回程表。首版通信操作白名单为 msg、send、capture、run、stop、rm、list，目标操作的既有本机语义不变。
+**request 与 response 都是一条普通 message，使用同一套发送、路由和投递流程。** 回复具有新的 `message_id`，通过 `reply_to` 关联被回复的消息。Client 对两者执行相同的转发，不等待业务结果，也不维护业务回程表。首版通信操作白名单为 msg、send、capture、run、stop、rm、kill、reboot、key、status，全部面向具体 agent，目标操作的既有本机语义不变。
 
 ```text
 请求：camc A → Server A → Client C1 → Server B → agent B
@@ -21,7 +21,7 @@ C1 和 C2 可以是同一个 Client，也可以不同。每条消息独立选路
 
 | 步骤/组件 | 必须完成的工作 |
 | --- | --- |
-| camc 发送 | 定向 agent 操作先按现有规则处理本机目标；本机不存在目标或显式指定远端时交本机 Server；run/list 按明确的目标 Node 和 scope 处理 |
+| camc 发送 | 定向 agent 操作先按现有规则处理本机目标；本机不存在目标或显式指定远端时交本机 Server；run 指定目标 Node 与预分配的新 agent ID |
 | 本机 Server | 保存待发送消息，根据目标 Node 选择可直达它的 Client |
 | Client | 根据 `target.node_id` 找到连接，转发完整 message |
 | 目标 Server | 认证、去重并交给已注册的本机消息接收端 |
@@ -49,7 +49,7 @@ Router 先行：现有本机管理、launcher、monitor、attach 和 legacy Desk
 
 Client 只需维护 `node_id → 当前连接`、通道状态和有界发送队列。Server 保存 `目标 Node → 可用 Client 集合`；Client 不保存等待 agent 回复的 pending 表、对话历史或权威消息数据库。
 
-操作的必选/推荐/不支持范围、名称、目标和返回约定见总 Spec 的 [远端操作范围](cam-client-server-spec.md#61-远端操作范围)。status/key 仅推荐增补，kill/reboot 等本轮未开放。目标机器负责登记与业务白名单检查，Client 不解析每个命令的参数，也不能把整套 CLI 作为兜底；run/list 不套用“先查某个已有 agent，没找到才远端”的规则。
+操作的支持/不支持范围、名称、目标和返回约定见总 Spec 的 [远端操作范围](cam-client-server-spec.md#61-远端操作范围)。第一步十项业务操作均须明确 `target.node_id` 与 `target.agent_id`；run 创建其预分配的新 ID，其余操作针对已有 agent。远端 list、跨节点列表聚合、空目标/通配符、批量及 Node 级业务操作本轮不开放；现有本机 list 保持。目标机器负责登记与业务白名单检查，Client 不解析每个命令的参数，也不能把整套 CLI 作为兜底。
 
 ## 4. 专用通道与可达通告
 
@@ -110,7 +110,9 @@ Client 只有在与 B 认证成功且 forwarding 就绪时，才向 A 宣告可�
 
 同一条消息重试保持 ID、地址和内容；回复是新消息，有自己的期限。`reply_to`/可选 thread 关联保存在两端消息记录中，Client 不靠它们决定路径。Router 测试可以用 `receiver_id=test.echo` 的已注册接收端替代 agent，回复仍是新消息。
 
-send/capture/list/run/stop/rm 使用该 message 信封：`operation` 标识结构化操作，目标指定 agent 或已注册本机操作接收端，参数放在 payload。接收端返回新的 `operation.result` message，其 `reply_to` 指向原操作的 message ID，并携带明确结果/错误；Client 沿相同入口转发。具体业务能力逐项接入，不代表当前已支持全部 camc 命令。
+send/capture/run/stop/rm/kill/reboot/key/status 使用该 message 信封：`operation` 标识结构化操作，目标指定具体 agent，参数放在 payload。接收端返回新的 `operation.result` message，其 `reply_to` 指向原操作的 message ID，并携带明确结果/错误；Client 沿相同入口转发。具体业务能力逐项接入，不代表当前已支持全部 camc 命令。协议控制帧、内部投递状态和 echo 测试接收端与这些业务操作分开，不新增 Node 级业务入口。
+
+capture/status 等同步命令由来源 camc 等待本机 Server 的结果。来源 Server 保存原消息与本机调用的对应关系，收到普通 `operation.result` 后交还 stdout/stderr/exit_code；CLI 按现有格式输出并退出。关联与等待不放在 Client，返回可经不同 Client，不阻塞通道处理其它消息。结果投到来源 Server 的内部接收端，不要求原调用方一定也是 agent。详见总 Spec 的 [stdout 返回约定](cam-client-server-spec.md#62-capturestatus-等命令的-stdout-返回)。
 
 Client 对每条 message 只执行以下步骤：
 
@@ -156,8 +158,11 @@ UI 刷新、切换 agent、关闭终端标签不影响后台 forwarding；后台
 | 本机 agent 存在、本机未命中、显式远端同名目标 | 分别本机投递、交本机 Server、精确远端；本机投递错误不换目标 | CF-03、04 |
 | A→B、B→A、A→第三节点同时发送多条消息 | 各到目标，允许乱序，等待回复不占通道 | CF-03、04、05 |
 | 请求经 C1，业务回复经 C2 | 回复有新 ID 和正确 reply_to；来源 agent 收到，C2 没有旧请求记录也能转发 | CF-04、05、06 |
-| msg/send/capture/run/stop/rm/list 的目标能力已注册 | 参数保持不变，结果/错误使用新 message 返回；Client 不执行命令或等待结果 | CF-03、04、05 |
-| kill/reboot 等未开放操作，或 status/key 未接入 | 明确不支持/未授权，不执行任意 CLI 兜底；已开放的操作仍可工作 | CF-03、04 |
+| msg/send/capture/run/stop/rm/kill/reboot/key/status 的目标能力已注册 | 明确目标 Node/agent，参数保持不变，结果/错误使用新 message 返回；Client 不执行命令或等待结果 | CF-03、04、05 |
+| 空 agent、通配符、批量或仅指定 Node 的业务操作 | 明确拒绝；run 使用固定的新 agent ID，status 只查指定 agent | CF-03、04 |
+| reboot 或 key 重复投递 | 目标只重建一次 launch 或注入一次按键，结果返回不依赖原 Client | CF-04、06 |
+| capture/status 并发等待，结果乱序或重复 | 来源 CLI 各自得到正确 stdout/stderr/退出码；无协议包装或重复输出，其它消息继续转发 | CF-04、05、06 |
+| 远端 list 等未开放操作，或目标未注册对应能力 | 明确不支持/未授权，不执行任意 CLI 兜底；现有本机 list 不受影响 | CF-03、04 |
 | 请求投递后 C1 退出，agent 很久后才回复 | B 独立保存并发送回复，无业务回程表依赖 | CF-05、06 |
 | A 暂时离线，稍后恢复 | B 按回复自己的 ID/期限恢复投递，不重新执行原任务 | CF-06 |
 | 消息重试、多 Client 重复送达、同 ID 改正文 | 相同消息目标只投递一次；内容冲突被拒绝 | CF-03、06 |

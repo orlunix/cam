@@ -206,7 +206,9 @@ Server 单实例锁、socket、连接状态及活跃队列必须放节点本地�
 
 ### 6.1 远端操作范围
 
-本节仅定义新通信协议可以转发的操作白名单，不重写命令行为、不迁移 agent 管理权，也不删改现有本机命令。首版必选为 **msg、send、capture、run、stop、rm、list** 七项；以下“支持”指目标设计范围，不代表当前实现已全部接通。
+本节仅定义新通信协议可以转发的操作白名单，不重写命令行为、不迁移 agent 管理权，也不删改现有本机命令。首版必选为 **msg、send、capture、run、stop、rm、kill、reboot、key、status** 十项；以下“支持”指目标设计范围，不代表当前实现已全部接通。
+
+**第一步只开放面向具体 agent 的业务操作。** 每条业务操作必须携带明确的 `target.node_id` 与 `target.agent_id`，不接受空目标、通配符、批量操作或只有 Node 的业务请求。run 使用预先分配的新 agent ID 创建该目标，其余操作针对已有 agent；不增加列表、聚合或 Node 级业务接口。
 
 目标 Server/本机接收端负责操作白名单和能力检查；Client 只做通用信封转发和通道授权。未列入范围、目标未注册或未获授权的操作明确拒绝，不能通过 Server 或 Client exec camc CLI 补齐。
 
@@ -217,41 +219,75 @@ Server 单实例锁、socket、连接状态及活跃队列必须放节点本地�
 | msg send / reply | `message.send`，目标 Node + agent | 投递消息；reply 是新消息，reply_to 指向被回复的消息，Client 不等待业务回复 |
 | send | `agent.send`，目标 Node + agent | 向工具终端发送文本，保留 Enter/no-enter 语义，返回输入投递结果 |
 | capture | `agent.capture`，目标 Node + agent | 读取对应输出；结果有大小上限，截断/分页情况明确返回 |
-| list | `agent.list`，目标 Node 的操作接收端 | 返回该 Node 的列表及来源；跨 Node 聚合由来源 Server 发起并合并 |
-| run | `agent.run`，目标 Node 的操作接收端 | 转发启动参数，返回 agent/launch ID 及现有启动过程的关联结果 |
-| stop | `agent.stop`，目标 Node + agent | 按现有 stop 语义处理，返回目标身份及停止结果 |
+| run | `agent.run`，目标 Node + 预分配的新 agent ID | 创建该指定 agent，返回相同 agent ID、新 launch ID 及现有启动过程的关联结果 |
+| stop | `agent.stop`，目标 Node + agent | 停止 pane 0 工具并保留 tmux，记录 dead/stopped，返回停止结果 |
 | rm | `agent.remove`，目标 Node + agent | 按现有删除/回收语义处理，返回结果，不改变操作范围 |
-
-**推荐增补，尚未列为首版必选：**
-
-| 操作 | operation | 用途 |
-| --- | --- | --- |
-| status | `agent.status` | 查询单个 agent 的详细状态及启动阶段，避免依赖 capture 猜测是否 started |
-| key | `agent.key` | 发送 Enter、Escape、方向键等特殊按键，处理文本 send 无法表达的交互 |
-
-推荐项只有明确启用并注册目标能力后才可转发；未接入时返回不支持，不作为首版核心验收已完成的前提。
+| kill | `agent.kill`，目标 Node + agent | 销毁 tmux 会话、保留 agent 记录，记录 dead/killed，返回结果 |
+| reboot | `agent.reboot`，目标 Node + agent | 保持 agent ID，按保存配置重建 tmux 和工具会话，返回新的 launch ID 与启动结果 |
+| key | `agent.key`，目标 Node + agent | 发送 Enter、Escape、方向键等特殊按键，保留现有按键语义并返回投递结果 |
+| status | `agent.status`，目标 Node + agent | 查询该 agent 的详细状态及启动阶段，不返回整机或全 fleet 列表 |
 
 **本轮不支持通过新通信协议转发：**
 
 | 范围 | 处理方式 |
 | --- | --- |
-| kill、reboot/migrate、exit、update/add、heal/prune | 暂不列入远端白名单，保留既有本机方式；不能因为有通道就自动开放 |
+| list，包括指定远端 Node 查询及跨节点聚合 | 不纳入本轮通信白名单；现有本机 list 保持不变，后续 agent 信息 API 迁移另行定义 |
+| migrate、exit、update/add、heal/prune | 暂不列入远端白名单，保留既有本机方式；不能因为有通道就自动开放 |
 | logs/history/archive、cron、API/config、env/init、upgrade/skills、tunnel 管理 | 本轮通信范围之外，后续按需要单独决定 |
 | attach 的持续终端会话、实时 input/resize | 走独立终端流式通道，不纳入本轮普通消息操作 |
 | 任意 shell/命令字符串 | 不作为兜底 operation；只接受已登记的结构化操作 |
 
-消息发送、回复、回执、路由通告和结构化 `operation.result` 是协议自身需要的消息，不因业务操作白名单缩小而禁止。`msg read/wait/show/list` 对已保存对话的读取和等待由来源 camc/Server 处理，本轮不额外开放读取目标机器任意消息账本的远端操作。
+消息发送、回复、回执、路由通告和结构化 `operation.result` 是协议自身需要的消息，不因业务操作白名单缩小而禁止。路由通告、内部投递状态和 echo 测试接收端不构成额外的 Node 级业务操作。`msg read/wait/show/list` 对已保存对话的读取和等待由来源 camc/Server 处理，本轮不额外开放读取目标机器任意消息账本的远端操作。
 
 - **定向 agent 操作**：本机查找优先；未命中才交本机 Server。显式远端 Node 优先于同名本机 agent；目标不存在、已命中后执行失败或名称有歧义，均不能换到另一个同名对象执行。
 - **send**：与带线程/回复语义的 msg 分开；`--file/--stdin` 内容在发送端读成文本后放入 payload，目标不尝试读取来源机器的文件路径。保留现有输入/Enter 选项，不把输入成功当作 agent 已回答。
-- **run**：目标 agent 尚不存在，不用“查找本机 agent 是否存在”选机器；未指定 Node 时保持本机默认，显式远端则发往该 Node。管理/提交 Node 与 tool-launcher 的 LSF execution host 分开，原 launcher/autorun 策略不变。
-- **list**：默认保持既有本机语义；指定 Node 查询该 Node；显式跨节点 scope 时，由来源 Server 按 Node 去重后分别查询，返回各 Node 结果和不可达信息。不能把空列表当作“目标未找到”再自动扩大范围。
-- **结果**：send/capture/list/run/stop/rm 的接收端产生普通 `operation.result` message，使用新 ID 和反向收发地址，`reply_to` 指向原操作消息 ID；payload 给出 pending/ok/error 及结构化结果/错误。来源 Server 保存并交给原 CLI 或 agent，CLI 退出不删除结果。
-- **run 护航**：沿用实际管理后端的现有启动策略；初始 accepted/initializing 不能伪装成 started。通信层只传递进度/结果，Client 无需保持一段独占请求等待。
-- **去重**：相同 message ID 的重试不得重复启动或重复执行修改操作；原结果或操作进度可恢复查询。进度与最终结果各有稳定消息身份，重发不能生成业务副本。
+- **run**：发送端一次性分配目标 agent ID，连同目标 Node 和启动参数提交；该消息重试保持 agent ID 和 message ID。未指定 Node 时保持本机默认，显式远端则发往该 Node；不能因新 ID 尚不存在而扩大查找或随机选机器。若该 ID 已属于另一操作则返回冲突，不覆盖已有 agent。管理/提交 Node 与 tool-launcher 的 LSF execution host 分开，原 launcher/autorun 策略不变。
+- **reboot**：沿用当前语义，用相同 agent ID 重建 tmux 和工具会话，不自动 resume 旧 tool session；保留已保存的 tool、options、tool-env 和 tool-launcher 策略。重复投递同一 reboot 消息返回同一 launch 的记录，不重复重建。
+- **key**：按既有键名和发送行为处理，消息重试不得重复注入 Enter 或其它按键；按键投递结果与 agent 的业务回答分开。
+- **status**：必须指定具体 agent，沿用该 agent 的状态信息；不能用空 agent ID 作为 list 替代。除 run 外，目标不存在时返回 `AGENT_NOT_FOUND`，不自动创建 agent 或改投同名对象。
+- **结果**：send/capture/run/stop/rm/kill/reboot/key/status 的接收端产生普通 `operation.result` message，使用新 ID 和反向收发地址，`reply_to` 指向原操作消息 ID；payload 给出 pending/ok/error 及结构化结果/错误。来源 Server 保存并交给原 CLI 或 agent，CLI 退出不删除结果。
+- **run/reboot 护航**：沿用实际管理后端的现有启动策略；初始 accepted/initializing 不能伪装成 started。通信层只传递进度/结果，Client 无需保持一段独占请求等待。
+- **去重**：相同 message ID 的重试不得重复启动、重建、注入文本/按键或重复执行修改操作；原结果或操作进度可恢复查询。进度与最终结果各有稳定消息身份，重发不能生成业务副本。
 - **后端边界**：接收端复用已接入的 legacy runtime 或已迁移的原生 Server 能力；同一 agent 仍只有一个管理后端。Router 本身不新增 registry 写入或第二个 monitor。各操作按能力逐项验收，首版可先接 echo。
 
 未登记操作返回 `UNSUPPORTED_OPERATION`；已登记但未授权返回明确的授权错误。架构以后可以扩展其它操作，但新增操作需要明确加入范围、注册能力并补对应验收，不能默认把全部 camc CLI 都开放。
+
+### 6.2 capture/status 等命令的 stdout 返回
+
+**业务结果仍是普通 message；同步等待放在发起端 camc 与本机 Server 之间。** Client 不保存业务回程表，也不独占 forwarding 通道。capture/status 默认等到该次查询的终态结果后输出；其它命令沿用各自既有的等待/no-wait 语义。
+
+1. camc 把带唯一 message ID 的操作交给本机 Server A，并通过本机 IPC 等待结果。
+2. A 保存 `原消息 ID → 本机调用方/等待连接、目标 Node/agent、结果状态`，再正常选路投递。这个对应关系属于来源 Server，不属于中继 Client。
+3. B 的本机接收端执行已登记操作，复用后端和格式化函数生成 stdout/stderr/退出码；不为捕获输出而启动 camc CLI。
+4. B 保存并发送新的 `operation.result` message，`reply_to` 指向原操作消息；发给 A 的内部结果接收端，可经过另一个 Client。
+5. A 核对来源 B、目标 agent 与原调用记录，保存结果并交给对应等待者。camc 将 stdout 写标准输出、stderr 写标准错误，再按 exit_code 退出。
+
+结果消息示例；`operation.results` 是内部结果接收端，不是新增的 Node 级用户操作：
+
+```json
+{
+  "version": 1,
+  "type": "message",
+  "message_id": "result-capture-1",
+  "reply_to": "request-capture-1",
+  "source": {"node_id": "node-b", "agent_id": "agent-b"},
+  "target": {"node_id": "node-a", "receiver_id": "operation.results"},
+  "operation": "operation.result",
+  "payload": {
+    "status": "ok",
+    "stdout": "第一行\n第二行\n",
+    "stderr": "",
+    "exit_code": 0
+  },
+  "expires_at": "2026-10-19T22:00:30Z"
+}
+```
+
+- `--json` 等现有输出选项保持有效。业务 stdout 不混入路由日志、消息信封或 ACK，确保重定向、管道和脚本仍可使用；通信诊断走 stderr/日志。
+- 同时执行的 capture/status 各有独立关联，结果可以乱序；重复结果不重复交付给已经完成的本机调用。
+- 超时、连接失败或无法确认结果时，CLI 返回非零并在 stderr 给出原因，不能把空 stdout/写 socket 成功当作查询成功。修改操作的结果未知不能解释为未执行。
+- 原 CLI 退出后，Server 保留结果供有权限的来源查询，不重做原业务；Source Node 离线时，B 的结果消息按普通消息队列等待恢复。
+- 首版 capture 结果限制大小，按现有 lines/format 选项生成；超限明确报错或按事先声明的截断契约返回，不能静默截断后伪装完整成功。持续终端流仍使用独立通道。
 
 ## 7. 本机优先与跨 Node 消息投递
 
@@ -370,9 +406,12 @@ UI 关闭或浏览历史不影响 tool；选区与 copy/paste 属于用户端。
 | 同 ID 不同参数、过期请求、歧义目标、递归中继 | 明确拒绝，不执行副作用 |
 | 目标接收端未注册/未实现操作 | 明确返回不支持或不可达，不启动 camc CLI 或 tool |
 | 多消息并发、agent 延迟回复 | 通道继续收发其它消息，无业务请求独占 |
-| 已接入首版 msg/send/capture/run/stop/rm/list | 操作及结果走同一 message 通道；Client 不依赖旧请求上下文，重复 run 或 send 不执行第二次 |
-| 未开放的 kill/reboot 等操作、推荐项未接入 | 明确不支持或未授权，无命令执行兜底；既有本机命令不受影响 |
-| list 的本机/指定 Node/跨节点 scope | 范围明确，聚合按 Node 去重，不可达保留为错误，不静默当成空列表 |
+| 已接入首版 msg/send/capture/run/stop/rm/kill/reboot/key/status | 操作及结果走同一 message 通道；Client 不依赖旧请求上下文，同一消息不重复执行 |
+| 缺少 agent ID、通配符、批量或 Node 级业务请求 | 明确拒绝；status 不退化为 list，run 只创建其预分配 ID |
+| reboot 或 key 重复投递 | reboot 只创建一次新 launch；key 只注入一次，结果可恢复查询 |
+| 多个 capture/status 同步调用，结果乱序或重复到达 | 各自 stdout/stderr/退出码准确；不打印协议包装，不占 Client 通道，不重复输出 |
+| 未开放的远端 list 等操作、已列操作在目标未接入 | 明确不支持或未授权，无命令执行兜底；既有本机命令不受影响 |
+| 本机 list、远端 list 与跨节点聚合 | 本机行为保持；新协议的远端查询和聚合明确返回不支持，不静默扩大范围 |
 | 仅部署 Router | agent registry、状态、monitor、launcher 与 attach 原流程保持不变 |
 
 ### 13.2 后续 agent 信息与管理迁移
