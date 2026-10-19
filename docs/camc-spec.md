@@ -138,15 +138,6 @@ and should not be treated as a correctness metric; the generated `src/camc` /
 | `bridge.py` | ~440 | Fleet bridge ferry (hub mailbox + tunnel fast path, bridge-protocol-v1) | Hub-centric; see `docs/desktop/bridge-protocol-v1.md` |
 | `tunnel.py` | ~700 | Per-machine persistent SSH tunnels: keeper + serve + route/submit + mailbox fallback | Hub-less peer path; §6a |
 
-The terminal UI is **not** part of camc: it lives in `src/cam/tui.py` as
-`cam tui` (also launched by bare `cam`), a cam-level interface alongside
-CAM Desktop / CAM Mobile / the Web UI. It provides the agent sidebar, live
-ANSI capture pane, node/agent/settings forms, an agent action menu
-(attach/reboot/rename/exit/stop/kill/rm via `camc` subprocess), and a
-command console that runs any one-shot `cam`/`camc` command into a
-scrollable output mode. One visible capture pane; no split-pane or per-tab
-PTY yet; attach drops to real `tmux attach`.
-
 **Service boundary today.** Core feature modules exist, but the CLI adapter
 layer is still monolithic. `cli.py` contains the parser and substantial feature
 logic for lifecycle, archive, msg, cron, API, machine/context, capture/send/key,
