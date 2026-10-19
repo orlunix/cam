@@ -1,0 +1,716 @@
+
+--- /dev/null
++++ cam/docs/wintmux-compat.md
+@@ -0,0 +1,155 @@
++# Wintmux: tmux CLI Compatibility Requirements
++
++CAM's SSH transport sends standard tmux commands to the remote host.
++For wintmux to work as a drop-in replacement, it must accept the same
++CLI interface — implementing what makes sense and silently ignoring the rest.
++
++This document lists every tmux invocation CAM makes and the expected
++wintmux behavior for each.
++
++## Global Flags
++
++| Flag | tmux meaning | wintmux behavior |
++|------|-------------|-----------------|
++| `-u` | Force UTF-8 mode | **Ignore** (always UTF-8) |
++| `-S <path>` | Socket path | **Keep** (already supported) |
++
++## Subcommands
++
++### `new-session`
++
++```
++tmux -u -S <socket> new-session -d -s <name> -c <workdir> <command>
++```
++
++| Flag | tmux meaning | wintmux behavior |
++|------|-------------|-----------------|
++| `-d` | Detached (background) | **Implement** — same as existing `--daemon` |
++| `-s <name>` | Session name | **Ignore** (1 socket = 1 session, name is redundant) |
++| `-c <workdir>` | Working directory | **Implement** — `cd` to this dir before running command |
++| positional arg | Shell command to run | **Keep** (already supported) |
++
++wintmux should auto-create the socket's parent directory if it doesn't exist.
++
++### `set-option`
++
++```
++tmux -u -S <socket> set-option -t <name> history-limit 50000
++```
++
++**Ignore entire command, return exit code 0.** Screen buffer is fixed-size.
++
++### `capture-pane`
++
++```
++tmux -u -S <socket> capture-pane -p -J -t <target> -S -50
++tmux -u -S <socket> capture-pane -p -J -a -t <target> -S -50
++```
++
++| Flag | tmux meaning | wintmux behavior |
++|------|-------------|-----------------|
++| `-p` | Print to stdout | **Keep** (already supported) |
++| `-J` | Join wrapped lines | **Ignore** (screen parser already handles this) |
++| `-t <target>` | Target pane `session:window.pane` | **Ignore** (only 1 pane per socket) |
++| `-S -<N>` | Scroll back N lines | **Ignore** (return full screen capture) |
++| `-a` | Capture alternate screen buffer | **Ignore** (screen parser already handles alternate screen) |
++
++### `send-keys`
++
++```
++tmux -u -S <socket> send-keys -t <target> -l -- <text>
++tmux -u -S <socket> send-keys -t <target> Enter
++```
++
++| Flag | tmux meaning | wintmux behavior |
++|------|-------------|-----------------|
++| `-t <target>` | Target pane | **Ignore** |
++| `-l` | Literal mode (no key lookup) | **Keep** (already supported) |
++| `--` | End of options | **Keep** |
++
++### `has-session`
++
++```
++tmux -u -S <socket> has-session -t <name>
++```
++
++| Flag | wintmux behavior |
++|------|-----------------|
++| `-t <name>` | **Ignore** — just check if the socket's session is alive |
++
++Exit code 0 = alive, non-zero = dead.
++
++### `kill-session`
++
++```
++tmux -u -S <socket> kill-session -t <name>
++```
++
++| Flag | wintmux behavior |
++|------|-----------------|
++| `-t <name>` | **Ignore** — kill the socket's session |
++
++Should clean up the socket file after killing.
++
++### `pipe-pane`
++
++```
++tmux -u -S <socket> pipe-pane -t <target> cat >> <logfile>
++```
++
++**Ignore entire command, return exit code 0.** CAM falls back to polling
++`capture-pane` when pipe-pane is unavailable.
++
++### `-V` (version)
++
++```
++tmux -V
++```
++
++Print version string (e.g. `wintmux 1.0`) to stdout. CAM uses this to
++verify tmux is installed on the remote host.
++
++## Socket Path
++
++CAM uses `/tmp/cam-sockets/<session_id>.sock` as the socket path.
++wintmux should either:
++
++- Accept Unix-style paths and map `/tmp/` to a suitable Windows directory
++  (e.g. `%TEMP%`), or
++- Create the path as-is under `C:\tmp\cam-sockets\` (simpler)
++
++The key requirement is that `tmux -S /tmp/cam-sockets/xxx.sock new-session ...`
++must work without CAM needing to know about Windows paths.
++
++## Shell Commands (non-tmux)
++
++CAM also runs these shell commands over SSH before/after tmux operations:
++
++| Command | Purpose | Notes |
++|---------|---------|-------|
++| `mkdir -p /tmp/cam-sockets` | Create socket dir | Uses `check=False` — failure is OK if wintmux auto-creates dirs |
++| `rm -f /tmp/cam-sockets/<id>.sock` | Clean up socket | Uses `check=False` — failure is OK if wintmux cleans up on kill |
++| `echo ok && tmux -V` | Connection test | `&&` works in cmd.exe and PowerShell 7+; for PS 5.x, see note below |
++
++**PowerShell 5.x note**: `&&` is not supported. If the remote SSH shell is
++PowerShell 5.x, wintmux should provide a `tmux test` or similar command that
++combines connectivity check and version output. Alternatively, configure the
++Windows SSH server to use `cmd.exe` as the default shell.
++
++## Summary: What to Implement
++
++**New features** (required):
++- `-d` flag on `new-session` (equivalent to `--daemon`)
++- `-c <workdir>` flag on `new-session`
++
++**Ignore silently** (accept the flag, do nothing, return 0):
++- `-u` (global)
++- `-t <target>` (on send-keys, capture-pane, has-session, kill-session, set-option)
++- `-J`, `-a`, `-S -<N>` (on capture-pane)
++- `-s <name>` (on new-session)
++- `set-option` (entire subcommand)
++- `pipe-pane` (entire subcommand)
++
++**Already working**:
++- `-S <socket>`, `-p`, `-l`, `--`, `send-keys`, `capture-pane`, `has-session`,
++  `kill-session`, `new-session` with positional command, `-V`
+
+--- /dev/null
++++ cam/tools/cam-client.ps1
+@@ -0,0 +1,553 @@
++#Requires -Version 5.1
++<#
++.SYNOPSIS
++    CAM (Coding Agent Manager) PowerShell client.
++
++.DESCRIPTION
++    Interacts with a CAM API server over HTTP. Supports agent lifecycle
++    management, output viewing, input sending, and context browsing.
++
++.EXAMPLE
++    # Import and configure
++    . .\cam-client.ps1
++    Set-CamServer -Url "http://192.168.1.10:8420" -Token "cam-web-token-2026"
++
++    # List agents
++    Get-CamAgent
++
++    # Start an agent
++    Start-CamAgent -Tool claude -Prompt "say hello" -Context winbox
++
++    # Watch output
++    Watch-CamOutput <agent-id>
++
++    # Send input
++    Send-CamInput <agent-id> -Text "yes"
++#>
++
++# --- State -------------------------------------------------------------------
++
++$script:CamUrl   = if ($env:CAM_URL)   { $env:CAM_URL }   else { '' }
++$script:CamToken = if ($env:CAM_TOKEN) { $env:CAM_TOKEN } else { '' }
++
++# --- Helpers ------------------------------------------------------------------
++
++function Set-CamServer {
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory)][string]$Url,
++        [Parameter(Mandatory)][string]$Token
++    )
++    $script:CamUrl   = $Url.TrimEnd('/')
++    $script:CamToken = $Token
++    # Quick health check
++    try {
++        $h = Invoke-CamApi GET '/api/system/health'
++        Write-Host "Connected: $($h.status) | v$($h.version) | $($h.agents_running) running" -ForegroundColor Green
++    } catch {
++        Write-Warning "Connection failed: $_"
++    }
++}
++
++function Invoke-CamApi {
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory, Position=0)][string]$Method,
++        [Parameter(Mandatory, Position=1)][string]$Path,
++        [Parameter(Position=2)]$Body
++    )
++    if (-not $script:CamUrl) { throw "Not configured. Run: Set-CamServer -Url <url> -Token <token>" }
++
++    $uri = "$($script:CamUrl)$Path"
++    $headers = @{}
++    if ($script:CamToken) { $headers['Authorization'] = "Bearer $($script:CamToken)" }
++
++    $params = @{
++        Uri         = $uri
++        Method      = $Method
++        Headers     = $headers
++        ContentType = 'application/json'
++        ErrorAction = 'Stop'
++    }
++    if ($Body) { $params['Body'] = ($Body | ConvertTo-Json -Depth 10) }
++
++    try {
++        Invoke-RestMethod @params
++    } catch {
++        $resp = $_.Exception.Response
++        if ($resp) {
++            $reader = [System.IO.StreamReader]::new($resp.GetResponseStream())
++            $detail = $reader.ReadToEnd()
++            $reader.Close()
++            try { $detail = ($detail | ConvertFrom-Json).detail } catch {}
++            throw "API $($resp.StatusCode): $detail"
++        }
++        throw
++    }
++}
++
++# --- System -------------------------------------------------------------------
++
++function Get-CamHealth {
++    <# .SYNOPSIS Server health check (no auth needed). #>
++    Invoke-CamApi GET '/api/system/health'
++}
++
++function Get-CamConfig {
++    <# .SYNOPSIS Server configuration. #>
++    Invoke-CamApi GET '/api/system/config'
++}
++
++# --- Agents -------------------------------------------------------------------
++
++function Get-CamAgent {
++    <#
++    .SYNOPSIS List agents or get one by ID.
++    .EXAMPLE Get-CamAgent
++    .EXAMPLE Get-CamAgent -Id abc123
++    .EXAMPLE Get-CamAgent -Status running
++    #>
++    [CmdletBinding(DefaultParameterSetName='List')]
++    param(
++        [Parameter(ParameterSetName='Single', Position=0)][string]$Id,
++        [Parameter(ParameterSetName='List')][string]$Status,
++        [Parameter(ParameterSetName='List')][string]$Tool,
++        [Parameter(ParameterSetName='List')][string]$Context,
++        [Parameter(ParameterSetName='List')][int]$Limit = 20
++    )
++
++    if ($Id) {
++        $a = Invoke-CamApi GET "/api/agents/$Id"
++        Format-Agent $a
++        return
++    }
++
++    $qs = @()
++    if ($Status)  { $qs += "status=$Status" }
++    if ($Tool)    { $qs += "tool=$Tool" }
++    if ($Context) { $qs += "context=$Context" }
++    $qs += "limit=$Limit"
++    $q = $qs -join '&'
++
++    $r = Invoke-CamApi GET "/api/agents?$q"
++
++    if ($r.count -eq 0) {
++        Write-Host "No agents found." -ForegroundColor DarkGray
++        return
++    }
++
++    # Table output
++    $fmt = "{0,-10} {1,-14} {2,-7} {3,-11} {4,-18} {5,-8} {6}"
++    Write-Host ($fmt -f 'ID','NAME','TOOL','STATUS','STATE','CONTEXT','DURATION') -ForegroundColor DarkCyan
++    Write-Host ('-' * 90) -ForegroundColor DarkGray
++    foreach ($a in $r.agents) {
++        $id    = $a.id.Substring(0, [Math]::Min(8, $a.id.Length))
++        $name  = if ($a.task_name.Length -gt 13) { $a.task_name.Substring(0,12) + '~' } else { $a.task_name }
++        $tool  = if ($a.tool.Length -gt 6) { $a.tool.Substring(0,6) + '~' } else { $a.tool }
++        $ctx   = if ($a.context_name) { $a.context_name } else { '-' }
++        $state = if ($a.state) { $a.state } else { '-' }
++
++        $color = switch -Wildcard ($a.status) {
++            '*running*'   { 'Green' }
++            '*completed*' { 'Cyan' }
++            '*failed*'    { 'Red' }
++            '*killed*'    { 'Yellow' }
++            default       { 'White' }
++        }
++
++        # Duration
++        $dur = ''
++        if ($a.started_at) {
++            $start = [DateTime]::Parse($a.started_at)
++            $end   = if ($a.completed_at) { [DateTime]::Parse($a.completed_at) } else { [DateTime]::UtcNow }
++            $span  = $end - $start
++            $dur   = if ($span.TotalHours -ge 1) { "{0:0}h{1:0}m" -f $span.TotalHours, $span.Minutes }
++                     elseif ($span.TotalMinutes -ge 1) { "{0:0}m{1:0}s" -f $span.TotalMinutes, $span.Seconds }
++                     else { "{0}s" -f $span.Seconds }
++        }
++
++        Write-Host ($fmt -f $id, $name, $tool, $a.status, $state, $ctx, $dur) -ForegroundColor $color
++    }
++    Write-Host "`n$($r.count) agent(s)" -ForegroundColor DarkGray
++}
++
++function Start-CamAgent {
++    <#
++    .SYNOPSIS Start a new coding agent.
++    .EXAMPLE Start-CamAgent -Tool claude -Prompt "fix the bug in main.py" -Context myproject
++    #>
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory)][string]$Prompt,
++        [string]$Tool = 'claude',
++        [string]$Context,
++        [string]$Name,
++        [switch]$AutoConfirm,
++        [switch]$Watch
++    )
++    $body = @{ tool = $Tool; prompt = $Prompt }
++    if ($Context)     { $body['context'] = $Context }
++    if ($Name)        { $body['name'] = $Name }
++    if ($AutoConfirm) { $body['auto_confirm'] = $true }
++
++    $a = Invoke-CamApi POST '/api/agents' $body
++    Write-Host "Agent started: $($a.id.Substring(0,8)) ($($a.task_name))" -ForegroundColor Green
++
++    if ($Watch) {
++        Watch-CamOutput $a.id
++    } else {
++        Write-Host "Run: Watch-CamOutput $($a.id.Substring(0,8))" -ForegroundColor DarkGray
++    }
++    return $a
++}
++
++function Stop-CamAgent {
++    <#
++    .SYNOPSIS Stop or kill an agent.
++    .EXAMPLE Stop-CamAgent abc123
++    .EXAMPLE Stop-CamAgent abc123 -Force
++    #>
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory, Position=0)][string]$Id,
++        [switch]$Force
++    )
++    $r = Invoke-CamApi DELETE "/api/agents/$($Id)?force=$($Force.ToString().ToLower())"
++    if ($r.ok) {
++        Write-Host "Agent $($Id.Substring(0,8)) stopped." -ForegroundColor Yellow
++    } else {
++        Write-Warning "Failed to stop agent."
++    }
++}
++
++function Remove-CamAgent {
++    <# .SYNOPSIS Delete agent history record. #>
++    [CmdletBinding()]
++    param([Parameter(Mandatory, Position=0)][string]$Id)
++    Invoke-CamApi DELETE "/api/agents/$Id/history"
++    Write-Host "Agent $($Id.Substring(0,8)) deleted." -ForegroundColor DarkGray
++}
++
++function Update-CamAgent {
++    <# .SYNOPSIS Update agent name or auto-confirm setting. #>
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory, Position=0)][string]$Id,
++        [string]$Name,
++        [Nullable[bool]]$AutoConfirm
++    )
++    $body = @{}
++    if ($Name)                    { $body['name'] = $Name }
++    if ($null -ne $AutoConfirm)   { $body['auto_confirm'] = $AutoConfirm }
++    Invoke-CamApi PATCH "/api/agents/$Id" $body
++}
++
++# --- Output & Input -----------------------------------------------------------
++
++function Get-CamOutput {
++    <#
++    .SYNOPSIS Get agent terminal output (single snapshot).
++    .EXAMPLE Get-CamOutput abc123
++    .EXAMPLE Get-CamOutput abc123 -Lines 120
++    #>
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory, Position=0)][string]$Id,
++        [int]$Lines = 80
++    )
++    $r = Invoke-CamApi GET "/api/agents/$Id/output?lines=$Lines"
++    $r.output
++}
++
++function Watch-CamOutput {
++    <#
++    .SYNOPSIS Watch agent output in real-time (polls every 2s, Ctrl+C to stop).
++    .EXAMPLE Watch-CamOutput abc123
++    #>
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory, Position=0)][string]$Id,
++        [int]$Lines = 50,
++        [int]$Interval = 2
++    )
++
++    $hash = $null
++    $shortId = $Id.Substring(0, [Math]::Min(8, $Id.Length))
++    Write-Host "Watching agent $shortId (Ctrl+C to stop)..." -ForegroundColor DarkCyan
++
++    try {
++        while ($true) {
++            $qs = "lines=$Lines"
++            if ($hash) { $qs += "&hash=$hash" }
++
++            $r = Invoke-CamApi GET "/api/agents/$Id/output?$qs"
++
++            if (-not $r.unchanged) {
++                Clear-Host
++                Write-Host "=== Agent $shortId === $(Get-Date -Format 'HH:mm:ss') ===" -ForegroundColor DarkCyan
++                Write-Host ""
++                Write-Host $r.output
++                $hash = $r.hash
++            }
++
++            if (-not $r.active) {
++                Write-Host "`nAgent finished." -ForegroundColor Yellow
++                break
++            }
++
++            Start-Sleep -Seconds $Interval
++        }
++    } catch [System.Management.Automation.PipelineStoppedException] {
++        # Ctrl+C
++    }
++}
++
++function Send-CamInput {
++    <#
++    .SYNOPSIS Send text input to a running agent.
++    .EXAMPLE Send-CamInput abc123 -Text "yes"
++    .EXAMPLE Send-CamInput abc123 -Text "hello" -NoEnter
++    #>
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory, Position=0)][string]$Id,
++        [Parameter(Mandatory, Position=1)][string]$Text,
++        [switch]$NoEnter
++    )
++    Invoke-CamApi POST "/api/agents/$Id/input" @{
++        text       = $Text
++        send_enter = (-not $NoEnter)
++    } | Out-Null
++    Write-Host "Sent." -ForegroundColor Green
++}
++
++function Send-CamKey {
++    <#
++    .SYNOPSIS Send a special key (Enter, Escape, C-c, etc.) to an agent.
++    .EXAMPLE Send-CamKey abc123 Enter
++    .EXAMPLE Send-CamKey abc123 C-c
++    #>
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory, Position=0)][string]$Id,
++        [Parameter(Mandatory, Position=1)]
++        [ValidateSet('Enter','Escape','BSpace','Tab','Space','C-c','C-d','C-z',
++                     'Up','Down','Left','Right','Home','End','DC','PageUp','PageDown')]
++        [string]$Key
++    )
++    Invoke-CamApi POST "/api/agents/$Id/key" @{ key = $Key } | Out-Null
++    Write-Host "Sent $Key." -ForegroundColor Green
++}
++
++# --- Contexts -----------------------------------------------------------------
++
++function Get-CamContext {
++    <#
++    .SYNOPSIS List contexts or get one by name/ID.
++    .EXAMPLE Get-CamContext
++    .EXAMPLE Get-CamContext winbox
++    #>
++    [CmdletBinding()]
++    param([Parameter(Position=0)][string]$NameOrId)
++
++    if ($NameOrId) {
++        Invoke-CamApi GET "/api/contexts/$NameOrId"
++        return
++    }
++
++    $r = Invoke-CamApi GET '/api/contexts'
++    if ($r.count -eq 0) {
++        Write-Host "No contexts." -ForegroundColor DarkGray
++        return
++    }
++
++    $fmt = "{0,-10} {1,-14} {2,-6} {3,-20} {4}"
++    Write-Host ($fmt -f 'ID','NAME','TYPE','MACHINE','PATH') -ForegroundColor DarkCyan
++    Write-Host ('-' * 80) -ForegroundColor DarkGray
++    foreach ($c in $r.contexts) {
++        $id   = $c.id.Substring(0, [Math]::Min(8, $c.id.Length))
++        $name = if ($c.name.Length -gt 13) { $c.name.Substring(0,12) + '~' } else { $c.name }
++        $machine = if ($c.machine -and $c.machine.host) {
++            "$($c.machine.user)@$($c.machine.host)"
++        } else { 'localhost' }
++        $mtype = if ($c.machine -and $c.machine.type) { $c.machine.type } else { 'local' }
++        $path = if ($c.path.Length -gt 30) { '...' + $c.path.Substring($c.path.Length - 27) } else { $c.path }
++
++        Write-Host ($fmt -f $id, $name, $mtype, $machine, $path)
++    }
++    Write-Host "`n$($r.count) context(s)" -ForegroundColor DarkGray
++}
++
++# --- Files --------------------------------------------------------------------
++
++function Get-CamFile {
++    <#
++    .SYNOPSIS Browse files in a context or read a file.
++    .EXAMPLE Get-CamFile winbox                    # list root
++    .EXAMPLE Get-CamFile winbox -Path src/         # list subdir
++    .EXAMPLE Get-CamFile winbox -Path src/main.py  # read file
++    .EXAMPLE Get-CamFile winbox -Path src/main.py -Read  # force read mode
++    #>
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory, Position=0)][string]$Context,
++        [string]$Path = '',
++        [switch]$Read
++    )
++
++    if ($Read -and $Path) {
++        $r = Invoke-CamApi GET "/api/contexts/$Context/files/read?path=$([Uri]::EscapeDataString($Path))"
++        return $r.content
++    }
++
++    $r = Invoke-CamApi GET "/api/contexts/$Context/files?path=$([Uri]::EscapeDataString($Path))"
++
++    if ($r.entries.Count -eq 0) {
++        Write-Host "(empty)" -ForegroundColor DarkGray
++        return
++    }
++
++    foreach ($e in $r.entries) {
++        $icon = if ($e.type -eq 'dir') { 'd' } else { '-' }
++        $size = if ($e.size) { "{0,10:N0}" -f $e.size } else { '          ' }
++        $color = if ($e.type -eq 'dir') { 'Cyan' } else { 'White' }
++        Write-Host ("{0} {1}  {2}" -f $icon, $size, $e.name) -ForegroundColor $color
++    }
++}
++
++# --- Interactive session ------------------------------------------------------
++
++function Enter-CamSession {
++    <#
++    .SYNOPSIS Interactive session: view output + type input. Ctrl+C to exit.
++    .EXAMPLE Enter-CamSession abc123
++    #>
++    [CmdletBinding()]
++    param(
++        [Parameter(Mandatory, Position=0)][string]$Id,
++        [int]$Lines = 50
++    )
++
++    $shortId = $Id.Substring(0, [Math]::Min(8, $Id.Length))
++    $hash = $null
++
++    Write-Host "Session $shortId | Type input + Enter to send | 'q' to quit | '!key NAME' for special keys" -ForegroundColor DarkCyan
++    Write-Host ""
++
++    # Initial output
++    $r = Invoke-CamApi GET "/api/agents/$Id/output?lines=$Lines"
++    Write-Host $r.output
++    $hash = $r.hash
++
++    while ($true) {
++        # Check for new output
++        Start-Sleep -Milliseconds 500
++        try {
++            $qs = "lines=$Lines"
++            if ($hash) { $qs += "&hash=$hash" }
++            $r = Invoke-CamApi GET "/api/agents/$Id/output?$qs"
++
++            if (-not $r.unchanged) {
++                Clear-Host
++                Write-Host "=== $shortId ===" -ForegroundColor DarkCyan
++                Write-Host $r.output
++                $hash = $r.hash
++            }
++
++            if (-not $r.active) {
++                Write-Host "`nAgent finished." -ForegroundColor Yellow
++                break
++            }
++        } catch {
++            Write-Warning "Poll failed: $_"
++        }
++
++        # Non-blocking input check
++        if ([Console]::KeyAvailable) {
++            $line = Read-Host ">"
++            if ($line -eq 'q') { break }
++            if ($line -match '^!key\s+(\S+)') {
++                Send-CamKey $Id $Matches[1]
++            } else {
++                Send-CamInput $Id -Text $line
++            }
++        }
++    }
++}
++
++# --- Formatting ---------------------------------------------------------------
++
++function Format-Agent($a) {
++    $border = '=' * 60
++    Write-Host $border -ForegroundColor DarkCyan
++    Write-Host "  Agent: $($a.task_name)" -ForegroundColor White
++    Write-Host $border -ForegroundColor DarkCyan
++
++    $color = switch -Wildcard ($a.status) {
++        '*running*'   { 'Green' }
++        '*completed*' { 'Cyan' }
++        '*failed*'    { 'Red' }
++        '*killed*'    { 'Yellow' }
++        default       { 'White' }
++    }
++
++    $fields = [ordered]@{
++        'ID'          = $a.id
++        'Tool'        = $a.tool
++        'Status'      = $a.status
++        'State'       = $a.state
++        'Context'     = $a.context_name
++        'Started'     = $a.started_at
++        'Completed'   = $a.completed_at
++        'Exit Reason' = $a.exit_reason
++        'Auto-Confirm'= $a.auto_confirm
++    }
++
++    foreach ($kv in $fields.GetEnumerator()) {
++        $val = if ($null -ne $kv.Value) { $kv.Value } else { '-' }
++        $vc = if ($kv.Key -eq 'Status') { $color } else { 'White' }
++        Write-Host ("  {0,-14} {1}" -f "$($kv.Key):", $val) -ForegroundColor $vc
++    }
++
++    if ($a.prompt) {
++        Write-Host ""
++        Write-Host "  Prompt:" -ForegroundColor DarkCyan
++        Write-Host "  $($a.prompt)" -ForegroundColor DarkGray
++    }
++    Write-Host $border -ForegroundColor DarkCyan
++}
++
++# --- Aliases ------------------------------------------------------------------
++
++Set-Alias cam-health   Get-CamHealth
++Set-Alias cam-agents   Get-CamAgent
++Set-Alias cam-start    Start-CamAgent
++Set-Alias cam-stop     Stop-CamAgent
++Set-Alias cam-watch    Watch-CamOutput
++Set-Alias cam-send     Send-CamInput
++Set-Alias cam-contexts Get-CamContext
++Set-Alias cam-files    Get-CamFile
++Set-Alias cam-session  Enter-CamSession
++
++# --- Init message -------------------------------------------------------------
++
++if ($script:CamUrl) {
++    Write-Host "CAM client loaded. Server: $($script:CamUrl)" -ForegroundColor DarkCyan
++} else {
++    Write-Host @"
++CAM PowerShell Client loaded.
++  Set-CamServer -Url "http://HOST:PORT" -Token "YOUR_TOKEN"
++  Or set `$env:CAM_URL and `$env:CAM_TOKEN before importing.
++
++Commands:
++  Get-CamAgent [-Id X] [-Status running]    List/get agents
++  Start-CamAgent -Prompt "..." [-Context X] Start agent
++  Stop-CamAgent <id> [-Force]               Stop/kill agent
++  Watch-CamOutput <id>                       Live output
++  Send-CamInput <id> -Text "..."            Send input
++  Send-CamKey <id> Enter                     Send special key
++  Get-CamContext [name]                      List/get contexts
++  Get-CamFile <ctx> [-Path dir/]            Browse files
++  Enter-CamSession <id>                      Interactive mode
++"@ -ForegroundColor DarkCyan
++}
