@@ -854,7 +854,6 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         setTerminalViewActive(agentId, true);
         updateTerminalChrome(true);
         await resumeTerminalForAgent(api, agent, terminalHost);
-        focusTerminalForAgent(agentId);
       }
       updateTerminalMetaBar();
       return { ok: true, reused: true };
@@ -877,7 +876,6 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       state.toast(`Terminal attach: ${res.error}`, 'error', 6000);
     } else if (res?.ok && isTerminalMode()) {
       scheduleTerminalFit(agentId);
-      focusTerminalForAgent(agentId);
     }
     updateTerminalMetaBar();
     return res;

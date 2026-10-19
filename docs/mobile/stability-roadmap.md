@@ -1,16 +1,32 @@
 # Mobile V2 — Stability Status & Roadmap
 
 **Living document.** Current line: branch `camui-desktop-v2`, version
-2.4.111 (2026-10-18). This file supersedes the older `docs/mobile/*`
+2.4.117 (2026-10-19). This file supersedes the older `docs/mobile/*`
 plans — see §5 for what to trust where.
 
-## 1. Stability fixes in 2.4.111
+## 1. Stability fixes in 2.4.117
 
-The remaining items from the old §2 backlog were closed as one coordinated
-release. The 2.4.110 native whole-view IME translation is retained.
+The 2.4.111 stability fixes and the 2.4.110 native whole-view IME translation
+are retained. Android terminal focus stays user-initiated, and terminal output
+is preserved across first attach, cached re-entry, and app background recovery.
 
 ### Terminal transport and lifecycle
 
+- **Stable terminal grid after attach** — Android performs one attach-time
+  ready resize to open the native output gate, then disables automatic local
+  and remote resize. Background/foreground transitions and agent switching
+  keep the same SSH attach, xterm buffer, and grid. Only an explicit Fit or a
+  new attach recomputes the size, preventing TUI input rows and echo state from
+  being rearranged by lifecycle resize events.
+- **Cached park/resume buffer preservation** — parked terminal entries cannot
+  run deferred local fits or resize while hidden. Cached resume reuses the same
+  attach and preserves the existing terminal rows.
+- **First-attach byte preservation** — the native ready-gate flushes buffered
+  PTY bytes before live output instead of discarding them. JS reveal replays
+  the complete accumulated stream rather than clearing everything received
+  before the final fit. Failed initial flushes drop the unusable native
+  session. This prevents a partial first tmux repaint from leaving static
+  bottom rows blank until refresh.
 - **Loopback binary WebSocket** — Android Direct PTY traffic now uses
   `ws://127.0.0.1:<hub>/term?token=…`. `open/resize/copymode/close` are
   ordered JSON control messages; input and output are binary frames. The old
@@ -79,6 +95,8 @@ Run from the repository root unless noted:
 PATH="$HOME/tools/jdk17/bin:$PATH" bash apps/cam-mobile/test/lockrepro/run.sh
 cd apps/cam-desktop
 $HOME/tools/node/bin/node test/mobile-stability.test.cjs
+$HOME/tools/node/bin/node test/mobile-terminal-reveal.test.cjs
+$HOME/tools/node/bin/node test/mobile-terminal-park.test.cjs
 $HOME/tools/node/bin/node test/api-stability.test.cjs
 $HOME/tools/node/bin/node test/terminal-ws.test.cjs
 $HOME/tools/node/bin/node test/mobile-hub-contract.test.cjs
@@ -91,9 +109,10 @@ $HOME/tools/node/bin/node test/hub.test.cjs
 ```
 
 The JVM suite also starts real user-level sshd instances when available. It
-covers WebSocket framing/backpressure-sensitive transport code, hub restart,
-blackhole concurrency, the shared contract, ed25519 direct/jump, changed-host
-key rejection, and explicit retrust.
+covers WebSocket framing/backpressure-sensitive transport code, terminal
+ready-gate ordering and flush failure cleanup, hub restart, blackhole
+concurrency, the shared contract, ed25519 direct/jump, changed-host key
+rejection, and explicit retrust.
 
 `apps/cam-mobile/build.sh` performs the full mobile JS syntax gate, javac/d8,
 APK zipalign, signing, and signature verification. Packaging uses Python; a
