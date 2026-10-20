@@ -77,6 +77,11 @@ impl Config {
         Ok(config)
     }
     pub fn validate_endpoint(e: &Endpoint) -> Result<()> {
+        if e.name.chars().count() > 96 || e.name.chars().any(char::is_control) {
+            return Err(error(
+                "Node name must be at most 96 characters without control characters",
+            ));
+        }
         if !cam_protocol::valid_id(&e.node_id) || e.socket.is_some() == !e.command.is_empty() {
             return Err(error(
                 "Node needs a stable ID and exactly one socket or argv command",
@@ -102,6 +107,61 @@ impl Config {
     pub fn freshness_seconds(&self) -> u64 {
         (self.poll_seconds * 3).max(15)
     }
+}
+
+/// Names belong to the Client UI; routing continues to use the pinned Node ID.
+pub fn endpoint_name(endpoint: &Endpoint, local_host: &str) -> String {
+    if !endpoint.name.trim().is_empty() {
+        return endpoint.name.trim().into();
+    }
+    if endpoint.socket.is_some() {
+        return local_host.into();
+    }
+    if endpoint
+        .command
+        .first()
+        .and_then(|s| Path::new(s).file_name())
+        .and_then(|s| s.to_str())
+        == Some("ssh")
+    {
+        let mut args = endpoint.command.iter().skip(1);
+        while let Some(arg) = args.next() {
+            if [
+                "-B", "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m", "-O",
+                "-o", "-p", "-Q", "-R", "-S", "-W", "-w",
+            ]
+            .contains(&arg.as_str())
+            {
+                args.next();
+                continue;
+            }
+            let host = if arg == "--" {
+                args.next()
+            } else if arg.starts_with('-') {
+                continue;
+            } else {
+                Some(arg)
+            };
+            if let Some(host) = host {
+                let host = host.strip_prefix("ssh://").unwrap_or(host);
+                let host = host.rsplit('@').next().unwrap_or(host);
+                if host.starts_with('[') {
+                    return host
+                        .split(']')
+                        .next()
+                        .unwrap_or(host)
+                        .trim_start_matches('[')
+                        .into();
+                }
+                return host.split(':').next().unwrap_or(host).into();
+            }
+            break;
+        }
+    }
+    format!(
+        "Node {}",
+        endpoint.node_id.chars().take(8).collect::<String>()
+    )
 }
 pub fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let parent = path
@@ -129,4 +189,55 @@ pub fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 }
 pub fn prepare_runtime(path: &Path) -> Result<()> {
     private_dir(path, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn names_use_hostname_or_alias_without_changing_identity() {
+        let mut e: Endpoint = serde_json::from_value(serde_json::json!({
+            "node_id":"0123456789abcdef0123456789abcdef", "socket":"/tmp/server.sock", "token_file":"/private/token"
+        })).unwrap();
+        assert_eq!(endpoint_name(&e, "local.example.com"), "local.example.com");
+        assert!(!serde_json::to_value(&e)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("name"));
+        e.socket = None;
+        e.command = vec![
+            "/bin/ssh",
+            "-F",
+            "/dev/null",
+            "-p",
+            "5865",
+            "-T",
+            "-o",
+            "BatchMode=yes",
+            "hren@pdx.example.com",
+            "/path/cam-server",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        assert_eq!(endpoint_name(&e, "local"), "pdx.example.com");
+        e.command = vec![
+            "ssh".into(),
+            "-p5865".into(),
+            "--".into(),
+            "ssh://hren@[::1]:5865".into(),
+        ];
+        assert_eq!(endpoint_name(&e, "local"), "::1");
+        e.command = vec!["custom-transport".into(), "unrelated-argument".into()];
+        assert_eq!(endpoint_name(&e, "local"), "Node 01234567");
+        e.name = "DC7".into();
+        assert_eq!(endpoint_name(&e, "local"), "DC7");
+        assert_eq!(e.node_id, "0123456789abcdef0123456789abcdef");
+        e.name = "bad\nname".into();
+        assert!(Config::validate_endpoint(&e)
+            .unwrap_err()
+            .to_string()
+            .contains("Node name"));
+    }
 }

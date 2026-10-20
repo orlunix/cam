@@ -7123,3 +7123,27 @@ af632cd feat: add machine tunnels and modernize terminal interfaces
 886f323 feat(camc): harden autorun launcher fallback and runtime isolation
 368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
 ```
+## v1.2.190  b17e2a9-dirty 2026-10-19 20:31
+
+- Lines: 24055
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+b17e2a9 feat(tui): add Rust terminal client and local daemon
+0c9114e feat(server): add portable router and native camc integration
+906b207 refactor(camc): simplify lifecycle and unify launch preparation
+af632cd feat: add machine tunnels and modernize terminal interfaces
+886f323 feat(camc): harden autorun launcher fallback and runtime isolation
+```
+## v1.2.191  b17e2a9-dirty 2026-10-19 22:10
+
+- Lines: 24058
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+b17e2a9 feat(tui): add Rust terminal client and local daemon
+0c9114e feat(server): add portable router and native camc integration
+906b207 refactor(camc): simplify lifecycle and unify launch preparation
+af632cd feat: add machine tunnels and modernize terminal interfaces
+886f323 feat(camc): harden autorun launcher fallback and runtime isolation
+```

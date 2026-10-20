@@ -184,8 +184,9 @@ def _mock_current_job_query(monkeypatch, output, rc=0):
     return calls
 
 
-def test_detect_current_autorun_allocation_verifies_lsf_record(monkeypatch):
-    output = _current_autorun_job()
+@pytest.mark.parametrize("dispatch", ["Started on", "Dispatched to"])
+def test_detect_current_autorun_allocation_verifies_lsf_record(monkeypatch, dispatch):
+    output = _current_autorun_job().replace("Started on", dispatch)
     calls = _mock_current_job_query(monkeypatch, output)
 
     result = tool_launcher.detect_current_autorun_allocation(
@@ -350,13 +351,52 @@ def test_autorun_parser_ranks_then_deduplicates_hosts():
     assert candidates[-1]["job_name"] == "dvnet_autorun"
 
 
-def test_long_metadata_verifies_owner_and_exec_host():
+@pytest.mark.parametrize("dispatch", ["Started on", "Dispatched to"])
+def test_long_metadata_verifies_owner_and_exec_host(dispatch):
     candidate = {"job_id": "1796123900", "host": "host-ai"}
+    output = _long_job(candidate).replace("Started on", dispatch)
     assert tool_launcher._verify_autorun_job_long(
-        _long_job(candidate), candidate, expected_user="tester")
+        output, candidate, expected_user="tester")
     assert not tool_launcher._verify_autorun_job_long(
-        _long_job(candidate).replace("host-ai", "changed-host"), candidate,
+        output.replace("host-ai", "changed-host"), candidate,
         expected_user="tester")
+
+
+def test_dispatched_allocation_is_reused_before_qsub(monkeypatch, tmp_path):
+    candidate = {"job_id": "1729124669", "host": "pdx3-sim-e14-027"}
+    tool_dir, tool = _install_fake_target_tool(tmp_path, "claude")
+    calls = [];progress = []
+    def process(argv, **kwargs):
+        calls.append(argv)
+        if argv[:2] == ["/fake/nvprojectname", "resolve_validate"]:
+            return 0, "mobile\n", ""
+        if "-noheader" in argv:
+            return 0, "1729124669|RUN|autorun_sla|Y|pdx3-sim-e14-027|mobile|tcsh|tcsh|\n", ""
+        if argv[:3] == ["/fake/bjobs", "-l", "-UF"]:
+            return 0, _long_job(candidate).replace("Started on", "Wed Sep  2 04:09:14: Dispatched to"), ""
+        if argv[0] == "/fake/battach":
+            return _run_fake_battach_probe(argv, {"PATH":str(tool_dir)}, kwargs.get("cwd"))
+        pytest.fail("must reuse the verified allocation, without qsub: %r" % argv)
+    monkeypatch.setattr(tool_launcher, "_launcher_binary", _fake_launcher_binary)
+    monkeypatch.setattr(tool_launcher, "_launcher_process", process)
+    argv, metadata, _ = tool_launcher.resolve_named_tool_launcher(
+        ("auto", ""), "claude", str(tmp_path), {"USER":"tester", "PATH":str(tool_dir)}, progress=progress.append)
+    assert argv == ["/fake/battach", "-L", "{command}", "1729124669"]
+    assert metadata["_target_tool_path"] == str(tool)
+    assert not any("/fake/qsub" in call for call in calls)
+
+
+def test_allocation_host_uses_last_dispatch_and_ignores_inline_description(monkeypatch):
+    candidate = {"job_id":"123", "host":"host-a"}
+    output = _current_autorun_job() + "Mon Oct 19 19:00:00: Dispatched to <host-b>;\n"
+    assert not tool_launcher._verify_autorun_job_long(output, candidate, expected_user="tester")
+    _mock_current_job_query(monkeypatch, output)
+    assert tool_launcher.detect_current_autorun_allocation(
+        {"LSB_JOBID":"123"}, local_host="host-a", current_user="tester") is None
+    output = _current_autorun_job().replace("\nStarted on <host-a>;", " Started on <host-a>;")
+    _mock_current_job_query(monkeypatch, output)
+    assert tool_launcher.detect_current_autorun_allocation(
+        {"LSB_JOBID":"123"}, local_host="host-a", current_user="tester") is None
     assert not tool_launcher._verify_autorun_job_long(
         _long_job(candidate, user="other"), candidate,
         expected_user="tester")
@@ -488,7 +528,7 @@ def test_auto_uses_qsub_only_after_all_battach_candidates_fail(
 
     assert launcher == [
         "/fake/nvprojectname", "run", "mobile", "/fake/qsub",
-        "-q", "o_cpu_4G", "-m", "rel8x", "-app", "r89docker",
+        "-q", "o_pri_interactive_cpu_16G", "-m", "rel8x", "-app", "r89docker",
         "--qsla", "autorun_sla", "-app", "affinity", "-Is", "{command}"]
     assert metadata == {
         "preset": "auto", "transport": "qsub", "project": "mobile",
@@ -746,6 +786,39 @@ def test_auto_runtime_defers_project_save_when_battach_succeeds(tmp_path):
         preferred_tool_path=tool)
     assert subprocess.run(command).returncode == 0
     assert not log.exists()
+
+
+def test_auto_runtime_qsub_uses_interactive_16g_with_autorun(tmp_path):
+    arguments = tmp_path / "qsub-arguments"
+    tool_events = tmp_path / "tool-events"
+    tool = _executable(tmp_path, "codex", (
+        'if [ "$1" = --version ]; then exit 0; fi\n'
+        'printf "%s\\n" "$*" > %s' %
+        ("%s", shlex.quote(str(tool_events)))))
+    project = _executable(tmp_path, "nvprojectname", (
+        '[ "$1" = run ] && [ "$2" = mobile ] || exit 98\n'
+        'shift 2\nexec "$@"'))
+    qsub = _executable(tmp_path, "qsub", (
+        'printf "%s\\n" "$@" > %s\n'
+        'for _arg do :; done\nexec /bin/sh -c "$_arg"' %
+        ("%s", shlex.quote(str(arguments)))))
+    status = str(tmp_path / "exit")
+    command, directory = tool_launcher.build_auto_launcher_command(
+        ["/bin/false", "-L", "{command}", "123"],
+        {"transport": "battach", "_auto_plan": [
+            {"transport": "qsub", "nvproject": project,
+             "qsub": qsub, "project": "mobile"}]},
+        [tool, "--yolo"], str(tmp_path), "codex",
+        preferred_tool_path=tool, exit_status_path=status)
+    result = subprocess.run(command, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, universal_newlines=True)
+    assert result.returncode == 0, result.stderr
+    assert arguments.read_text().splitlines()[:-1] == [
+        "-q", "o_pri_interactive_cpu_16G", "-m", "rel8x", "-app", "r89docker",
+        "--qsla", "autorun_sla", "-app", "affinity", "-Is"]
+    assert tool_events.read_text().strip() == "--yolo"
+    assert (tmp_path / "exit.launcher").read_text().strip() == "qsub"
+    assert not os.path.exists(directory)
 
 
 def test_remote_launcher_rejects_api_profile():

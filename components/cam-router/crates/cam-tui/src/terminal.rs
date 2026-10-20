@@ -227,7 +227,7 @@ pub fn encode_key(key: KeyEvent) -> Vec<u8> {
         text
     }
 }
-fn clipboard_programs(write: bool) -> Vec<(&'static str, Vec<&'static str>)> {
+fn clipboard_programs(write: bool) -> Vec<(String, Vec<&'static str>)> {
     let mut programs = vec![];
     if std::env::var_os("WAYLAND_DISPLAY").is_some() {
         programs.push((
@@ -244,10 +244,27 @@ fn clipboard_programs(write: bool) -> Vec<(&'static str, Vec<&'static str>)> {
                 vec!["-selection", "clipboard", "-o"]
             },
         ));
+        programs.push((
+            "xsel",
+            vec!["--clipboard", if write { "--input" } else { "--output" }],
+        ));
     }
     #[cfg(target_os = "macos")]
     programs.push((if write { "pbcopy" } else { "pbpaste" }, vec![]));
-    programs
+    let sibling = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(std::path::Path::to_path_buf));
+    let mut resolved = vec![];
+    for (program, args) in programs {
+        resolved.push((program.to_string(), args.clone()));
+        if let Some(dir) = &sibling {
+            let path = dir.join(program);
+            if path.is_file() {
+                resolved.push((path.to_string_lossy().into_owned(), args));
+            }
+        }
+    }
+    resolved
 }
 pub fn copy(text: &str) -> Result<String> {
     if text.is_empty() {
@@ -255,7 +272,7 @@ pub fn copy(text: &str) -> Result<String> {
     }
     for (program, args) in clipboard_programs(true) {
         if clipboard_helper(
-            program,
+            &program,
             &args,
             Some(text.as_bytes()),
             Duration::from_secs(2),
@@ -264,6 +281,13 @@ pub fn copy(text: &str) -> Result<String> {
         {
             return Ok("Copied to local clipboard".into());
         }
+    }
+    // An unsupported OSC 52 (or broken outer tmux passthrough) can expose
+    // its base64 payload as screen text. Never emit one without opt-in.
+    if std::env::var("CAM_TUI_CLIPBOARD").as_deref() != Ok("osc52") {
+        return Err(error(
+            "System clipboard unavailable: install xclip/xsel (X11) or wl-clipboard (Wayland); no terminal request sent",
+        ));
     }
     if text.len() > 100_000 {
         return Err(error(
@@ -287,7 +311,7 @@ pub fn copy(text: &str) -> Result<String> {
 }
 pub fn read_clipboard() -> Result<String> {
     for (program, args) in clipboard_programs(false) {
-        if let Ok(output) = clipboard_helper(program, &args, None, Duration::from_secs(2)) {
+        if let Ok(output) = clipboard_helper(&program, &args, None, Duration::from_secs(2)) {
             return Ok(String::from_utf8(output)?);
         }
     }

@@ -195,6 +195,9 @@ the job's container or cgroup. The tool must pass its version check in that
 host environment before SSH is selected.
 The order is current allocation direct -> battach -> SSH -> qsub. If none
 can start the tool, the launch fails; it never silently starts locally.
+The automatic qsub fallback requests `o_pri_interactive_cpu_16G` (16 GB),
+with service class `autorun_sla`; the virtual queue maps to
+`o_pri_interactive` on PDX. Custom launcher prefixes keep the caller's queue.
 
 Auto startup prints brief `[launcher]` progress to stdout: self allocation
 check, battach/SSH probes, qsub preparation, and final launch failure.

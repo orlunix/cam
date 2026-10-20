@@ -73,12 +73,14 @@ Client 配置示例：
 ## 操作
 
 - 点击 agent 打开/切换 tab；右键 agent 打开操作菜单。New 选择 Node、工具与绝对工作目录，使用原有 launcher、autorun 和隔离 home 策略。
+- Node 默认显示本机或 SSH 目标的主机名，可在连接设置中填写可选简称。New、发送 prompt 和任务表单点击 Node 后选择机器，不需要复制内部 ID；Esc 返回原表单。Nodes → Details 可查看已有连接的完整 Server ID。旧连接 ID 与路由保持兼容；新增旧式连接的配对设置仍保留 Server ID 字段。
 - New/run 请求交给 tmux 后即返回。qsub 在 pane 中自行等待 dispatch，排队期间保持 alive/running/initializing，不消耗 20 秒或 600 秒工具启动计时；auto 和自定义前缀都在目标端真正执行工具时才启动计时。stop/kill/rm 仍可取消等待。
 - `F1` New，`F2` Nodes，`F3` Settings；点击 Filter 输入筛选。表单用 Tab 切换，最后一项 Enter 或点击 Save 提交，Esc 关闭。
 - PageUp/PageDown、滚轮浏览历史；拖选后选区保留。End 或 History 提示返回实时画面。
 - 全屏 TUI 显式启用配色与反显选区，即使父进程设置了 `NO_COLOR`，选区仍可见。
-- Ctrl+C 有选区时复制，无选区时发送中断。原生剪贴板写入成功才显示 Copied；OSC 52 仅提示已发送请求。
-- Linux 原生剪贴板使用本机 PATH 中的 `wl-copy`/`wl-paste` 或 `xclip`/`xsel`；远端 Node 不需要这些依赖。未找到 helper 时复制退回 OSC 52，不能据此确认系统剪贴板已写入。
+- Ctrl+C 有选区时复制，无选区时发送中断。松开鼠标保留 CAM 选区，不自动复制；在选区内右键也可复制。外层终端的右键菜单不认识 CAM 选区，其 Copy 可能仍为灰色。
+- Linux 原生剪贴板使用 PATH 或 cam-tui 同目录中的 `wl-copy`/`wl-paste`、`xclip`/`xsel`；远端 Node 不需要这些依赖。原生剪贴板写入成功才显示 Copied；不可用时明确报错，默认不再发送可能显示成乱码的 OSC 52。
+- 已确认外层终端支持时，可显式用 `CAM_TUI_CLIPBOARD=osc52 cam-tui` 允许终端剪贴板回退。该路径仅提示请求已发送，不能确认系统剪贴板已写入；不支持该协议的终端请使用原生剪贴板。
 - 使用外层终端 Paste，或本地剪贴板可用时 Ctrl+V；不自动补 Enter。目标未启用 bracketed paste 时拒绝多行粘贴，避免直接执行多行 shell 内容。
 - `F8` 显式切换工具鼠标透传；默认鼠标归 CAM。输入和 resize 由当前 writer 视图控制。
 - Settings 管理任务/loop，选中后可 Edit；首版 schedule 输入正整数秒，或 `at UNIX_SECONDS`。编辑保留任务 ID、历史及暂停状态；正在执行时需等待结束再编辑。任务结果未知会保留 unknown，不自动重跑。

@@ -42,6 +42,7 @@ class UI:
         self.screen = pyte.Screen(cols, rows)
         self.stream = pyte.Stream(self.screen)
         self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        self.raw = bytearray()
         self.until(lambda: "Client ready" in self.pump())
 
     def pump(self, seconds=0.1):
@@ -55,6 +56,7 @@ class UI:
                     break
                 if not data:
                     break
+                self.raw.extend(data)
                 self.stream.feed(self.decoder.decode(data))
         return "\n".join(self.screen.display)
 
@@ -137,7 +139,9 @@ class FeatureTests(unittest.TestCase):
     create_agent = baseline.TuiTests.create_agent
 
     def agent_record(self, node, agent):
-        return next((a for a in json.loads((node.home / ".cam/agents.json").read_text())
+        path = node.home / ".cam/agents.json"
+        rows = json.loads(path.read_text()) if path.exists() else []
+        return next((a for a in rows
                      if a["id"] == agent), None)
 
     def cached(self, agent):
@@ -149,7 +153,8 @@ class FeatureTests(unittest.TestCase):
         ui = UI(self)
         ui.key(b"\x1bOQ")  # F2
         ui.click("+ Add")
-        ui.field("Node ID", b.node_id)
+        ui.field("Name (optional)", "Remote test")
+        ui.field("Server ID (advanced)", b.node_id)
         ui.field("Unix socket (local)", str(b.socket))
         ui.field("Token file (absolute)", str(self.tokens["c2"]))
         ui.save()
@@ -158,7 +163,7 @@ class FeatureTests(unittest.TestCase):
         self.assertFalse(next(n for n in self.rpc("snapshot")["nodes"]
                               if n["node_id"] == b.node_id)["ready"])
         ui.key(b"\x1bOQ")
-        ui.click(b.node_id)
+        ui.click("Remote test · tunnel")
         ui.click("Edit", exact=True)
         ui.field("Token file (absolute)", str(self.tokens["c1"]))
         ui.save()
@@ -166,7 +171,7 @@ class FeatureTests(unittest.TestCase):
                                 if n["node_id"] == b.node_id)["ready"])
         agent = self.create_agent(b, "node-kept")
         ui.key(b"\x1bOQ")
-        ui.click(b.node_id)
+        ui.click("Remote test · tunnel")
         ui.click("Disconnect", exact=True)
         self.until(lambda: not next(n for n in self.rpc("snapshot")["nodes"]
                                     if n["node_id"] == b.node_id)["ready"])
@@ -178,6 +183,45 @@ class FeatureTests(unittest.TestCase):
         self.assertEqual(b.status()["node_id"], b.node_id)
         self.assertIn("TUI_READY_node-kept", b.cli("capture", agent).stdout)
         self.assertEqual(json.loads(self.client_config.read_text())["endpoints"][0]["node_id"], a.node_id)
+
+    def test_new_agent_chooses_machine_name_and_routes_to_its_original_id(self):
+        a, b = self.managed_node("a", "b"), self.managed_node("b", "a")
+        self.start_daemon([a, b])
+        for node, name in ((a, "PDX046"), (b, "DC7")):
+            self.rpc("node.upsert", {"node_id": node.node_id, "name": name,
+                "socket": str(node.socket), "token_file": str(self.tokens["c1"])})
+        self.until(lambda: all(n["ready"] for n in self.rpc("snapshot")["nodes"]))
+        ui = UI(self)
+        ui.key(b"\x1bOP")
+        ui.click("Node", exact=True)
+        ui.until(lambda: "Choose machine" in ui.pump())
+        ui.click("DC7")
+        ui.until(lambda: "New agent" in ui.pump() and "DC7" in ui.pump())
+        tool = self.base / "node-picker-tool"
+        tool.write_text("#!/bin/sh\necho NODE_PICKER_READY\nexec /bin/cat\n")
+        tool.chmod(0o700)
+        ui.field("Name", "picked-target")
+        ui.field("Tool", str(tool))
+        ui.field("Workspace", str(self.base))
+        ui.field("Launcher (blank=default, none=local)", "none")
+        ui.save()
+        agent = self.until(lambda: next((r for r in self.rpc("snapshot")["agents"]
+            if r["name"] == "picked-target" and r["phase"] == "started"), None))
+        self.agents_created.append((b, agent["id"]))
+        self.assertEqual(agent["node_id"], b.node_id)
+        self.assertIsNone(self.agent_record(a, agent["id"]))
+        self.assertIsNotNone(self.agent_record(b, agent["id"]))
+        ui.until(lambda: "NODE_PICKER_READY" in ui.pump())
+        ui.filter("DC7")
+        ui.until(lambda: "picked-target" in ui.pump())
+        ui.key(b"\x1bOQ")
+        ui.click("DC7 · tunnel")
+        ui.click("Edit", exact=True)
+        ui.field("Name (optional)", "DC7 renamed")
+        ui.save()
+        ui.until(lambda: any(e.get("name") == "DC7 renamed" for e in self.rpc("snapshot")["connections"]))
+        saved = next(e for e in json.loads(self.client_config.read_text())["endpoints"] if e["node_id"] == b.node_id)
+        self.assertEqual(saved["name"], "DC7 renamed")
 
     def test_gui_agent_operations_and_invalid_new_agent(self):
         node = self.managed_node()
@@ -239,6 +283,28 @@ class FeatureTests(unittest.TestCase):
         self.assertEqual(failed["state"], "failed")
         self.assertTrue(failed["exit_reason"])
 
+    def test_copy_without_system_clipboard_never_emits_escape_payload(self):
+        node = self.managed_node()
+        self.start_daemon([node])
+        self.create_agent(node, "clipboard-missing")
+        for name in ("DISPLAY", "WAYLAND_DISPLAY", "CAM_TUI_CLIPBOARD"):
+            self.env.pop(name, None)
+        ui = UI(self)
+        ui.until(lambda: "clipboard-missing" in ui.pump())
+        ui.click("clipboard-missing")
+        ui.until(lambda: "TUI_READY_clipboard-missing" in ui.pump())
+        x, y = ui.position("TUI_READY_clipboard-missing")
+        ui.send(("\x1b[<0;%d;%dM\x1b[<32;%d;%dM\x1b[<0;%d;%dm" %
+                 (x + 1, y + 1, x + 10, y + 1, x + 10, y + 1)).encode())
+        begin = len(ui.raw)
+        for _ in range(2):
+            ui.key(b"\x03")
+            ui.until(lambda: "System clipboard unavailable" in ui.pump())
+        self.assertNotIn(b"]52;c;", bytes(ui.raw[begin:]),
+                         "unsupported clipboard control sequence leaked to terminal")
+        self.assertIn("TUI_READY_clipboard-missing", ui.pump())
+        ui.close()
+
     def test_real_clipboard_unicode_multiline_paste_and_interrupt(self):
         extra = os.environ.get("CAM_TUI_E2E_CLIPBOARD_BIN_DIR")
         if extra:
@@ -272,6 +338,10 @@ class FeatureTests(unittest.TestCase):
         # Force initial-mode recovery rather than relying on a live 2004h
         # arriving after attach. This reproduces old tmux deterministically.
         self.until(lambda: "SECOND_世界" in self.operation(node, agent, "capture")["stdout"])
+        if (TUI.parent / "xclip").is_file():
+            # A colocated helper must work even when the invoking desktop
+            # shell omitted its directory from PATH.
+            self.env["PATH"] = str(self.base / "no-path-helpers")
         ui = UI(self)
         ui.click("clipboard")
         ui.until(lambda: "SECOND_世界" in ui.pump())

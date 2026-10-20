@@ -15,7 +15,7 @@ async fn run() -> Result<()> {
         .map(|s| ["version", "--version"].contains(&s.as_str()))
         .unwrap_or(false)
     {
-        println!("cam-clientd 0.1.0");
+        println!("cam-clientd {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     if args.first().map(String::as_str) != Some("serve") {

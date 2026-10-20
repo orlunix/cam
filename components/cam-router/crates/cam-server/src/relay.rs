@@ -25,6 +25,8 @@ use tokio::{
 #[serde(deny_unknown_fields)]
 pub struct Endpoint {
     pub node_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
     pub token_file: PathBuf,
     #[serde(default)]
     pub socket: Option<PathBuf>,

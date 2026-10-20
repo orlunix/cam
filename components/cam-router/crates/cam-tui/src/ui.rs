@@ -48,6 +48,12 @@ struct Tab {
 }
 enum Dialog {
     Nodes,
+    ChooseNode {
+        form: Box<Dialog>,
+        field: usize,
+        selected: usize,
+        nodes: Vec<String>,
+    },
     Settings,
     Menu(Value),
     Form {
@@ -80,6 +86,7 @@ pub struct App {
     main: Rect,
     status: String,
     node: String,
+    local_host: String,
     job: String,
     snapshot_pending: bool,
     daemon_connected: bool,
@@ -150,6 +157,7 @@ impl App {
             main: Rect::default(),
             status: "Connecting to local Client daemon…".into(),
             node: String::new(),
+            local_host: cam_server::config::hostname().unwrap_or_else(|_| "Local".into()),
             job: String::new(),
             snapshot_pending: false,
             daemon_connected: false,
@@ -192,6 +200,10 @@ impl App {
             .flatten()
             .filter(|a| {
                 filter.is_empty()
+                    || self
+                        .node_label(a["node_id"].as_str().unwrap_or(""))
+                        .to_lowercase()
+                        .contains(&filter)
                     || ["name", "id", "node_id", "state", "status", "tool"]
                         .iter()
                         .any(|k| {
@@ -204,6 +216,79 @@ impl App {
             })
             .cloned()
             .collect()
+    }
+    fn node_options(&self) -> Vec<String> {
+        let mut nodes = vec![];
+        for key in ["connections", "nodes"] {
+            for node in self.snapshot[key].as_array().into_iter().flatten() {
+                if let Some(id) = node["node_id"].as_str() {
+                    if !nodes.iter().any(|n| n == id) {
+                        nodes.push(id.to_string());
+                    }
+                }
+            }
+        }
+        nodes
+    }
+    fn node_label(&self, id: &str) -> String {
+        let connections = self.snapshot["connections"].as_array();
+        let endpoints: Vec<cam_server::relay::Endpoint> = connections
+            .into_iter()
+            .flatten()
+            .filter_map(|value| serde_json::from_value(value.clone()).ok())
+            .collect();
+        let Some(endpoint) = endpoints.iter().find(|e| e.node_id == id) else {
+            return if id.is_empty() { "Select a machine".into() } else { format!("Node {}", id.chars().take(8).collect::<String>()) };
+        };
+        let name = crate::config::endpoint_name(endpoint, &self.local_host);
+        if endpoints
+            .iter()
+            .filter(|e| crate::config::endpoint_name(e, &self.local_host) == name)
+            .count()
+            > 1
+        {
+            format!("{name} [{}]", id.chars().take(8).collect::<String>())
+        } else {
+            name
+        }
+    }
+    fn choose_node(&mut self, field: usize) {
+        let Some(form @ Dialog::Form { .. }) = self.dialog.take() else { return };
+        let current = match &form {
+            Dialog::Form { fields, .. } => fields.get(field).map(|v| v.1.as_str()).unwrap_or(""),
+            _ => "",
+        };
+        let nodes = self.node_options();
+        let selected = nodes.iter().position(|n| n == current).unwrap_or(0);
+        self.dialog = Some(Dialog::ChooseNode {
+            form: Box::new(form),
+            field,
+            selected,
+            nodes,
+        });
+    }
+    fn select_node(&mut self, index: usize) {
+        // Freeze choice identities while the dialog is open. A concurrent
+        // connection edit must not turn a displayed row into another target.
+        let id = match &self.dialog {
+            Some(Dialog::ChooseNode { nodes, .. }) => nodes.get(index).cloned(),
+            _ => None,
+        };
+        let Some(id) = id else { return };
+        if !self.node_options().contains(&id) {
+            self.status = "Machine was removed; reopen the machine selector".into();
+            return;
+        }
+        if let Some(Dialog::ChooseNode {
+            mut form, field, ..
+        }) = self.dialog.take()
+        {
+            if let Dialog::Form { fields, focus, .. } = form.as_mut() {
+                fields[field].1 = id;
+                *focus = (field + 1).min(fields.len() - 1);
+            }
+            self.dialog = Some(*form);
+        }
     }
     fn active_tab(&mut self) -> Option<&mut Tab> {
         self.tabs.get_mut(self.active)
@@ -339,7 +424,7 @@ impl App {
             "new",
             "New agent",
             vec![
-                ("Node ID", node),
+                ("Node", node),
                 ("Name", String::new()),
                 ("Tool", "codex".into()),
                 ("Workspace", String::new()),
@@ -367,7 +452,11 @@ impl App {
             "node",
             "Node connection",
             vec![
-                ("Node ID", node),
+                (
+                    "Name (optional)",
+                    existing["name"].as_str().unwrap_or("").into(),
+                ),
+                ("Server ID (advanced)", node),
                 (
                     "Unix socket (local)",
                     existing["socket"].as_str().unwrap_or("").into(),
@@ -431,7 +520,7 @@ impl App {
                     },
                 ),
                 (
-                    "Node ID",
+                    "Node",
                     job["node_id"]
                         .as_str()
                         .or_else(|| agent["node_id"].as_str())
@@ -479,13 +568,13 @@ impl App {
                     );
                 }
                 "node" => {
-                    let command: Vec<String> = if v[2].is_empty() {
+                    let command: Vec<String> = if v[3].is_empty() {
                         vec![]
                     } else {
-                        serde_json::from_str(&v[2])?
+                        serde_json::from_str(&v[3])?
                     };
-                    self.request("command".into(),"node.upsert",json!({"node_id":v[0],"socket":if v[1].is_empty(){Value::Null}else{json!(v[1])},"command":command,"token_file":v[3]}));
-                    self.node = v[0].clone();
+                    self.request("command".into(),"node.upsert",json!({"node_id":v[1],"name":v[0],"socket":if v[2].is_empty(){Value::Null}else{json!(v[2])},"command":command,"token_file":v[4]}));
+                    self.node = v[1].clone();
                 }
                 "job" => {
                     let mut job = self.editing_job.clone().unwrap_or_else(|| json!({}));
@@ -570,7 +659,7 @@ impl App {
                 "message",
                 "Send agent prompt",
                 vec![
-                    ("Node ID", agent["node_id"].as_str().unwrap_or("").into()),
+                    ("Node", agent["node_id"].as_str().unwrap_or("").into()),
                     ("Agent ID", agent["id"].as_str().unwrap_or("").into()),
                     ("Prompt", String::new()),
                 ],
@@ -580,7 +669,8 @@ impl App {
         self.request("operation".into(),"agent.operation",json!({"node_id":agent["node_id"],"agent_id":agent["id"],"operation":format!("agent.{operation}"),"options":{"json":true}}));
         self.status = format!(
             "Submitted {operation} to {}:{}",
-            agent["node_id"], agent["id"]
+            self.node_label(agent["node_id"].as_str().unwrap_or("")),
+            agent["id"]
         );
     }
     fn action(&mut self, action: &str) {
@@ -588,10 +678,26 @@ impl App {
             "new" => self.new_agent(),
             "nodes" => self.dialog = Some(Dialog::Nodes),
             "settings" => self.dialog = Some(Dialog::Settings),
-            "dismiss" => self.dialog = None,
+            "dismiss" => {
+                self.dialog = match self.dialog.take() {
+                    Some(Dialog::ChooseNode { form, .. }) => Some(*form),
+                    _ => None,
+                };
+            }
             "form.submit" => self.submit_form(),
             "node.add" => self.node_form(false),
             "node.edit" => self.node_form(true),
+            "node.details" => {
+                self.dialog = Some(Dialog::Info {
+                    title: "Node details".into(),
+                    text: format!(
+                        "{}\n\nServer ID: {}",
+                        self.node_label(&self.node),
+                        self.node
+                    ),
+                    scroll: 0,
+                });
+            }
             "job.add" => self.job_form(false),
             "job.edit" => self.job_form(true),
             "node.connect" | "node.disconnect" | "node.remove" => {
@@ -610,6 +716,13 @@ impl App {
                 }
             }
             _ => {
+                if let Some(index) = action
+                    .strip_prefix("pick-node:")
+                    .and_then(|v| v.parse::<usize>().ok())
+                {
+                    self.select_node(index);
+                    return;
+                }
                 if let Some(key) = action.strip_prefix("agent:") {
                     if let Some(agent) = self.agents().into_iter().find(|a| {
                         format!(
@@ -656,8 +769,12 @@ impl App {
                     .strip_prefix("field:")
                     .and_then(|s| s.parse::<usize>().ok())
                 {
+                    let node_field = matches!(&self.dialog, Some(Dialog::Form { fields, .. }) if fields.get(index).map(|v| v.0.as_str()) == Some("Node"));
                     if let Some(Dialog::Form { focus, .. }) = &mut self.dialog {
                         *focus = index;
+                    }
+                    if node_field {
+                        self.choose_node(index);
                     }
                 }
                 if let Some(op) = action.strip_prefix("op:") {
@@ -1029,7 +1146,10 @@ impl App {
             f.render_widget(
                 Paragraph::new(format!(
                     "  {} · {}{}",
-                    agent["node_id"].as_str().unwrap_or(""),
+                    self.node_label(agent["node_id"].as_str().unwrap_or(""))
+                        .split('.')
+                        .next()
+                        .unwrap_or(""),
                     agent["state"].as_str().unwrap_or(""),
                     if stale {
                         " · stale"
@@ -1190,14 +1310,19 @@ impl App {
                         break;
                     }
                     let field = Rect::new(inner.x, y, inner.width, 2);
+                    let display = if label == "Node" {
+                        format!("{}  ▾", self.node_label(value))
+                    } else {
+                        value.clone()
+                    };
                     f.render_widget(
-                        Paragraph::new(format!("{label}\n{value}")).style(
+                        Paragraph::new(format!("{label}\n{display}")).style(
                             Style::default().fg(if i == *focus { ACCENT } else { Color::Gray }),
                         ),
                         field,
                     );
                     self.hits.push((field, format!("field:{i}")));
-                    if i == *focus {
+                    if i == *focus && label != "Node" {
                         f.set_cursor(
                             (inner.x + value.width().min(inner.width as usize) as u16)
                                 .min(inner.x + inner.width - 1),
@@ -1213,12 +1338,55 @@ impl App {
                     true,
                 );
             }
+            Dialog::ChooseNode {
+                selected, nodes, ..
+            } => {
+                f.render_widget(
+                    Paragraph::new("Choose machine · ↑/↓ Enter · Esc back")
+                        .style(Style::default().fg(ACCENT)),
+                    Rect::new(inner.x, inner.y, inner.width, 1),
+                );
+                let visible = inner.height.saturating_sub(3).max(1) as usize;
+                let start = selected.saturating_sub(visible - 1);
+                if nodes.is_empty() {
+                    f.render_widget(
+                        Paragraph::new("No machines configured. Add a connection in Nodes."),
+                        Rect::new(inner.x, inner.y + 2, inner.width, 2),
+                    );
+                }
+                for (row, (index, node)) in nodes
+                    .iter()
+                    .enumerate()
+                    .skip(start)
+                    .take(visible)
+                    .enumerate()
+                {
+                    let ready = self.snapshot["nodes"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .any(|n| n["node_id"] == *node && n["ready"] == true);
+                    let label = format!(
+                        "{} {} · {}",
+                        if index == *selected { "›" } else { " " },
+                        self.node_label(node),
+                        if ready { "connected" } else { "offline" }
+                    );
+                    self.button(
+                        f,
+                        Rect::new(inner.x, inner.y + 2 + row as u16, inner.width, 1),
+                        &label,
+                        &format!("pick-node:{index}"),
+                        index == *selected,
+                    );
+                }
+            }
             Dialog::Menu(agent) => {
                 f.render_widget(
                     Paragraph::new(format!(
                         "{} · {}",
                         agent["name"].as_str().unwrap_or("agent"),
-                        agent["node_id"].as_str().unwrap_or("")
+                        self.node_label(agent["node_id"].as_str().unwrap_or(""))
                     )),
                     Rect::new(inner.x, inner.y, inner.width, 1),
                 );
@@ -1265,7 +1433,7 @@ impl App {
                     let label = format!(
                         "{} {} · tunnel {} · status {}",
                         if self.node == identity { "›" } else { " " },
-                        identity,
+                        self.node_label(identity),
                         node["tunnel_health"].as_str().unwrap_or("unknown"),
                         node["status_health"].as_str().unwrap_or("unknown")
                     );
@@ -1293,6 +1461,7 @@ impl App {
                     ("Connect", "node.connect"),
                     ("Disconnect", "node.disconnect"),
                     ("Remove", "node.remove"),
+                    ("Details", "node.details"),
                 ]
                 .iter()
                 .enumerate()
@@ -1417,12 +1586,44 @@ impl App {
                 }
                 if self.dialog.is_some() {
                     if key.code == KeyCode::Esc {
-                        self.dialog = None;
+                        self.action("dismiss");
+                        return true;
+                    }
+                    if matches!(self.dialog, Some(Dialog::ChooseNode { .. })) {
+                        if let Some(Dialog::ChooseNode {
+                            selected, nodes, ..
+                        }) = &mut self.dialog
+                        {
+                            let count = nodes.len();
+                            match key.code {
+                                KeyCode::Up => *selected = selected.saturating_sub(1),
+                                KeyCode::Down => {
+                                    *selected = (*selected + 1).min(count.saturating_sub(1))
+                                }
+                                KeyCode::Enter => {
+                                    let index = *selected;
+                                    self.select_node(index);
+                                }
+                                _ => {}
+                            }
+                        }
                         return true;
                     }
                     if key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::CONTROL) {
                         self.submit_form();
                         return true;
+                    }
+                    let node_field = match &self.dialog {
+                        Some(Dialog::Form { fields, focus, .. }) if fields[*focus].0 == "Node" => {
+                            Some(*focus)
+                        }
+                        _ => None,
+                    };
+                    if let Some(field) = node_field {
+                        if matches!(key.code, KeyCode::Enter | KeyCode::Char(' ')) {
+                            self.choose_node(field);
+                            return true;
+                        }
                     }
                     if let Some(Dialog::Form { fields, focus, .. }) = &mut self.dialog {
                         match key.code {
@@ -1437,10 +1638,13 @@ impl App {
                                     *focus += 1;
                                 }
                             }
-                            KeyCode::Backspace => {
+                            KeyCode::Backspace if node_field.is_none() => {
                                 fields[*focus].1.pop();
                             }
-                            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            KeyCode::Char(c)
+                                if node_field.is_none()
+                                    && !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
                                 fields[*focus].1.push(c)
                             }
                             _ => {}
@@ -1520,7 +1724,11 @@ impl App {
             }
             Event::Paste(text) => {
                 if let Some(Dialog::Form { fields, focus, .. }) = &mut self.dialog {
-                    fields[*focus].1.push_str(&text);
+                    if fields[*focus].0 != "Node" {
+                        fields[*focus].1.push_str(&text);
+                    }
+                } else if self.dialog.is_some() {
+                    // Dialog input must never leak into an attached tool.
                 } else if self.filter_focus {
                     self.filter.push_str(&text);
                 } else {
@@ -1528,6 +1736,23 @@ impl App {
                 }
             }
             Event::Mouse(mouse) => {
+                if let Some(Dialog::ChooseNode {
+                    selected, nodes, ..
+                }) = &mut self.dialog
+                {
+                    let node_count = nodes.len();
+                    match mouse.kind {
+                        MouseEventKind::ScrollUp => {
+                            *selected = selected.saturating_sub(1);
+                            return true;
+                        }
+                        MouseEventKind::ScrollDown => {
+                            *selected = (*selected + 1).min(node_count.saturating_sub(1));
+                            return true;
+                        }
+                        _ => {}
+                    }
+                }
                 if mouse.kind == MouseEventKind::Up(MouseButton::Left)
                     && !(self.mouse_passthrough
                         && self.dialog.is_none()
@@ -1722,6 +1947,54 @@ pub fn run(config: Config, handle: tokio::runtime::Handle) -> Result<()> {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+    #[tokio::test]
+    async fn node_picker_shows_hostnames_and_preserves_routing_ids() {
+        let mut app = App::new(&Config::default(), tokio::runtime::Handle::current());
+        let a = "0123456789abcdef0123456789abcdef";
+        let b = "fedcba9876543210fedcba9876543210";
+        app.snapshot = json!({"nodes":[{"node_id":a,"ready":true},{"node_id":b,"ready":false}],
+            "connections":[{"node_id":a,"name":"PDX046","socket":"/tmp/a","token_file":"/tmp/token"},
+                           {"node_id":b,"name":"DC7","socket":"/tmp/b","token_file":"/tmp/token"}],
+            "agents":[{"node_id":b,"id":"11111111","name":"agent-one"}]});
+        app.new_agent();
+        let mut terminal = Terminal::new(TestBackend::new(120, 32)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol.as_str())
+            .collect();
+        assert!(text.contains("PDX046"));
+        assert!(!text.contains(a));
+        app.event(Event::Paste(b.into()));
+        app.action("field:0");
+        app.snapshot["connections"]
+            .as_array_mut()
+            .unwrap()
+            .reverse();
+        app.event(Event::Key(event::KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        )));
+        app.event(Event::Key(event::KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )));
+        match &app.dialog {
+            Some(Dialog::Form { fields, .. }) => assert_eq!(fields[0].1, b),
+            _ => panic!("picker must return to the form"),
+        };
+        app.action("field:0");
+        app.event(Event::Key(event::KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )));
+        assert!(matches!(&app.dialog, Some(Dialog::Form { fields, .. }) if fields[0].1 == b));
+        app.filter = "dc7".into();
+        assert_eq!(app.agents().len(), 1);
+    }
     #[tokio::test]
     async fn typed_input_waits_for_prior_input_before_sending_enter() {
         use cam_protocol::{read_frame, write_frame};
