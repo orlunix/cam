@@ -11,6 +11,7 @@ EXPECTED_SKILLS = {
     "camc-goal-loop",
     "camc-messaging",
     "managing-camc",
+    "managing-cam-tui",
 }
 
 # API routing is publishable as a CAMC user feature, but must remain scoped to

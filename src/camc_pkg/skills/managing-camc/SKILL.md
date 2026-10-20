@@ -1,19 +1,20 @@
 ---
 name: managing-camc
 description: >
-  Manage AI coding agents (Claude Code, Codex, Cursor, Pi) on a single
-  machine with camc — the standalone, stdlib-only Python CLI. Use when
+  Manage AI coding agents (Claude Code, Codex, Cursor, Pi) locally or on
+  connected CAM Servers with camc — the stdlib-only Python CLI. Use when
   the user wants to start an agent, send it a prompt, capture its
   output, attach to it, resume / reboot it, or clean up records.
   For inter-agent messaging use the camc-messaging skill. For cron/loops use
   camc-cron-loop. For diagnosing stuck agents use camc-diagnose.
-  Cross-machine fleet operations are outside this built-in skill.
+  Cross-Server operations address a specific Node and agent; fleet listing
+  and terminal attach use CAM TUI.
 compatibility: Requires ~/.cam/camc deployed by the camc release.
 metadata:
   author: hren
   tags: camc, cam, agent, agents, tmux, claude, claude-code, codex,
     cursor, pi, monitor, session, attach, capture, send, key, prune,
-    reboot, resume, migrate, heal, single-machine, ai-agent,
+    reboot, resume, migrate, heal, server, node, forwarding, ai-agent,
     coding-agent, pm2, run, lifecycle
   category: infra
   requires-tools: camc, tmux
@@ -22,13 +23,16 @@ argument-hint: "[run | list | capture <agent> | send <agent> -t '...' | reboot <
 allowed-tools: Bash Read Glob Grep
 ---
 
-# camc — single-machine agent manager
+# camc — local and cross-Server agent operations
 
 camc starts AI coding agents (claude / codex / cursor / pi) inside tmux
 sessions, lets you send them prompts and read their output, and tracks
 each agent's lifecycle. Every agent has its own tmux session, monitor
 process, and tool conversation identity. Reboot preserves the agent ID
 but starts a new tool conversation.
+With a local CAM Server and an authorized Client forwarding connection,
+the same CLI can address agents on other Nodes. A missing local agent is
+not proof that the target does not exist remotely.
 
 > **When in doubt, run `--help` first — never guess.** Flags drift
 > between releases; the binary is the source of truth. `~/.cam/camc --help`
@@ -474,16 +478,45 @@ LSF allocation. Use `exit` when a graceful tool exit is wanted.
 For deeper diagnosis (stuck agents, exit reasons, heal details):
 use the **camc-diagnose** skill.
 
-## Host scope
+## Cross-Server operations
 
-Run camc on the host that owns the tmux sessions. Shared agents.json does not
-make another host’s processes local. Remote launcher execution is supported;
-fleet/server management is outside this skill. The old `cam` CLI is retired.
+An unqualified agent name/ID resolves locally first, then through the local
+CAM Server when no local match exists. Use `Node:agent` to choose the owner
+explicitly, especially when names collide. Ambiguous targets fail instead
+of selecting an arbitrary agent. Node means a configured Server hostname,
+alias or internal ID; use the existing hostname/alias when available.
+
+Examples assume the registered Node alias `node-b`:
+
+```sh
+~/.cam/camc status node-b:worker
+~/.cam/camc capture node-b:worker --lines 100
+~/.cam/camc send node-b:worker -t "Continue the authorized task"
+~/.cam/camc run --node node-b --tool codex --path /work/repo -n worker
+```
+
+Remote operations are `msg`, `send`, `capture`, `status`, `run`, `stop`, `kill`,
+`reboot`, `rm` and `key`. `run` uses `--node`; the others use `Node:agent`.
+`msg reply` uses its saved message context. Output, errors and exit status
+return to the caller; delivery is not a business reply or proof that a
+newly submitted tool has started.
+
+Cross-Server `list`, `attach`, `logs`, `update`, `heal`, cron and bulk operations
+are not provided by this routing path. Use CAM TUI for fleet discovery and
+terminal attach. A local registry, including one on shared Home, is not a
+fleet inventory. LSF launcher execution does not change the agent's owner Node.
+
+The local Server endpoint, connected forwarding Client and peer permissions
+must be available. After submission, a timeout can mean an unknown outcome:
+do not resend a mutation or switch to SSH/legacy execution automatically.
+For connection checks, returned results and remote startup supervision, read
+[reference/cross-server.md](reference/cross-server.md). The old `cam` CLI is retired.
 
 ## Reference (deep-dives — load on demand)
 
 | File | When to read |
 |---|---|
+| `reference/cross-server.md` | Address remote agents, inspect routes, interpret results and recover from uncertainty |
 | `reference/sessions.md` | Find / resume a Claude session JSONL |
 
 ### Other skills

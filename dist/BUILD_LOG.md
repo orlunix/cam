@@ -7147,3 +7147,39 @@ b17e2a9 feat(tui): add Rust terminal client and local daemon
 af632cd feat: add machine tunnels and modernize terminal interfaces
 886f323 feat(camc): harden autorun launcher fallback and runtime isolation
 ```
+## v1.2.192  2819ebc-dirty 2026-10-20 01:05
+
+- Lines: 24196
+- Output: /tmp/cam-tui-panes-20261020/camc
+- Recent changes:
+```
+2819ebc feat(tui): refine sidebar and add per-agent settings
+fdeb302 fix: harden autorun reuse and TUI clipboard handling
+b17e2a9 feat(tui): add Rust terminal client and local daemon
+0c9114e feat(server): add portable router and native camc integration
+906b207 refactor(camc): simplify lifecycle and unify launch preparation
+```
+## v1.2.193  2819ebc-dirty 2026-10-20 02:15
+
+- Lines: 22372
+- Output: /tmp/cam-skills-sync-20261020/camc
+- Recent changes:
+```
+2819ebc feat(tui): refine sidebar and add per-agent settings
+fdeb302 fix: harden autorun reuse and TUI clipboard handling
+b17e2a9 feat(tui): add Rust terminal client and local daemon
+0c9114e feat(server): add portable router and native camc integration
+906b207 refactor(camc): simplify lifecycle and unify launch preparation
+```
+## v1.2.194  2819ebc-dirty 2026-10-20 02:35
+
+- Lines: 22373
+- Output: /tmp/cam-cross-server-skills-20261020/camc
+- Recent changes:
+```
+2819ebc feat(tui): refine sidebar and add per-agent settings
+fdeb302 fix: harden autorun reuse and TUI clipboard handling
+b17e2a9 feat(tui): add Rust terminal client and local daemon
+0c9114e feat(server): add portable router and native camc integration
+906b207 refactor(camc): simplify lifecycle and unify launch preparation
+```
