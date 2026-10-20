@@ -52,3 +52,27 @@ Server readiness on every Node after deployment. Leave the two historical
 mode-0555 PDX106 controller archives without new skill installations, as in
 the preceding [fleet sync](cam-skills-sync-20261020.md). Back up changed copies
 under each Home's private `~/.cam/backups/skills-sync-20261020-*` directory.
+
+## Deployment result
+
+All seven Nodes passed final read-back verification: 104 logical skill roots,
+the active skillm libraries, personal/shared camc artifacts and fresh SDK
+imports match the canonical six skills/thirteen files. Every Server is ready
+and has a ready forwarding Client after reconnection. The existing registry
+still contains 65 local agent records across those Nodes; existing agents
+were not restarted.
+
+Artifact SHA-256:
+`79efdcc58ade662758d8e1d4804e063bd544719de601c1aaa12abd75dd022d36`.
+Changed files/configuration were backed up under
+`~/.cam/backups/skills-sync-20261020-094119/<hostname>/`.
+
+A live PDX046 → DC7-26 test created disposable agent `af925afb` through camc's
+Server route, then verified capture, send/key, JSON status, async message
+delivery, independent reply and wait stdout. The remote run installed all
+thirteen current skill files into its workspace. The agent and temporary
+workspace were removed, and the final fleet count returned to 65 agents.
+
+The skills and bundled release were committed as `b224123` and pushed to
+`origin/cam-tui`. Unrelated TUI/Server implementation changes remain outside
+this skills commit.
