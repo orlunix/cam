@@ -1,5 +1,5 @@
 import { api, state, navigate } from '../app.js';
-import { ensureMobileCamBridgeShim } from '../mobile-bridge.js?v=2.3.39';
+import { ensureMobileCamBridgeShim } from '../mobile-bridge.js';
 import { canUseTerminalMode } from '../../shared/term-bridge.js';
 import {
   openTerminalForAgent,
@@ -31,6 +31,7 @@ import { agentOpsSupported, getHubCapabilities } from '../../shared/hub-capabili
 import { recordAgentAccess } from '../../shared/agent-access.js';
 import { readMobileOutputFont, clearTerminalChromeInlineFont } from '../../shared/mobile-appearance.js';
 import {
+  agentDisplayStatus,
   findAgentByIdentity,
   parseAgentRouteHints,
   agentEndpointHints,
@@ -42,15 +43,33 @@ import {
   scrollRichOutputToBottom,
   disposeRichOutput,
 } from '../rich-output.js';
+import { createTerminalKeyComposer } from '../terminal-key-composer.js';
 
 const OUTPUT_MODE_KEY = 'cam_mobile_output_mode';
 const OUTPUT_MODE_DEFAULT_KEY = 'cam_mobile_output_mode_default_v4';
 const OUTPUT_MODE_DEFAULT = 'live';
 
+// Current camc model: alive/dead. Alive may be running or idle; dead reasons
+// are separate metadata. Keep legacy terminal statuses for older hosts, and
+// never hide output/terminal/input behind a running-status whitelist.
+const TERMINAL_AGENT_STATUSES = ['dead', 'completed', 'failed', 'killed', 'timeout', 'stopped'];
+function isTerminalStatus(status) {
+  return TERMINAL_AGENT_STATUSES.includes(status);
+}
+
+const AGENT_BADGE_STATUSES = new Set([
+  'running', 'idle', 'alive', 'dead', 'completed', 'failed', 'timeout', 'killed',
+  'pending', 'starting', 'retrying', 'stopped',
+]);
+function safeAgentBadge(agent) {
+  const status = String(agentDisplayStatus(agent) || '');
+  return AGENT_BADGE_STATUSES.has(status) ? status : 'dead';
+}
+
 function mobileDirectTerminalDefault() {
   return !!(typeof window !== 'undefined'
     && window.CamBridge
-    && typeof window.CamBridge.term_open === 'function');
+    && typeof window.CamBridge.directHub_start === 'function');
 }
 
 function stripAnsi(text) {
@@ -139,13 +158,14 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   let _inflightStart = 0;
   let _inflightTimer = null;     // interval updating the in-flight toast
   let _inflightAbort = null;     // AbortController for cancelling slow requests
+  let _documentMenuClickHandler = null;
   let _lastResponseMs = 0;       // last successful response time in ms
   // Restore last-seen output so the view renders instantly on re-entry
   const _prevOutput = state.getOutput(agentId);
   let cachedOutput = _prevOutput?.text || '';
   let _outputHash = _prevOutput?.hash || null;
   let agent = resolveAgent(state.get('agents') || []);
-  const isActiveAgent = agent && ['running', 'starting', 'pending'].includes(agent.status);
+  const isActiveAgent = agent && !isTerminalStatus(agent.status);
   // Phone Direct: always open in Terminal + auto SSH attach when entering a live agent.
   if (isActiveAgent && mobileDirectTerminalDefault() && canUseTerminalMode(api)) {
     outputMode = 'terminal';
@@ -157,7 +177,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     useFullOutput = false;
   }
   // Auto-switch to full output for completed agents (live capture returns empty)
-  if (agent && ['completed', 'failed', 'killed', 'timeout'].includes(agent.status)) {
+  if (agent && isTerminalStatus(agent.status)) {
     useFullOutput = true;
     outputMode = 'full';
   } else if (outputMode === 'full') {
@@ -169,6 +189,11 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   let _attachAttempt = 0;
   // Keep this per-detail-view so opening the native keyboard never collapses keys.
   let keybarExpanded = false;
+  const keyComposer = createTerminalKeyComposer();
+  let flushKeyComposer = null;
+  // init() routes before and after connect; a slower first render must not
+  // paint over the newer mounted view after its cleanup has run.
+  let _viewDisposed = false;
   let bottomStatusTimer = null;
   const UPLOAD_RAW_MAX_BYTES = 18 * 1024 * 1024;
 
@@ -282,8 +307,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       <div class="terminal-keybar${visible ? '' : ' hidden'}${keybarExpanded ? ' is-expanded' : ''}" id="terminal-keybar">
         <div class="terminal-keybar-row terminal-keybar-primary">
           <button type="button" class="term-key" data-term-char="/" title="Slash">/</button>
-          <button type="button" class="term-key" data-term-char="y">y</button>
-          <button type="button" class="term-key" data-term-char="1">1</button>
+          <button type="button" class="term-key" data-term-key="Up" title="Up">↑</button>
+          <button type="button" class="term-key" data-term-key="Tab">Tab</button>
           <button type="button" class="term-key" data-term-key="Enter" title="Enter">\u21b5</button>
           <button type="button" class="term-key" data-term-key="Escape">Esc</button>
           <button type="button" class="term-key" data-term-key="C-c" title="Ctrl-C">^C</button>
@@ -292,16 +317,17 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           <button type="button" class="term-key term-key-more" data-term-action="more" aria-expanded="${keybarExpanded}" title="${keybarExpanded ? 'Hide extra keys' : 'Show more keys'}">${keybarExpanded ? 'Less' : 'More'}</button>
         </div>
         <div class="terminal-keybar-row terminal-keybar-secondary">
+          <button type="button" class="term-key" data-term-char="y">y</button>
+          <button type="button" class="term-key" data-term-char="1">1</button>
           <button type="button" class="term-key" data-term-char="2">2</button>
           <button type="button" class="term-key" data-term-char="3">3</button>
           <button type="button" class="term-key" data-term-char="4">4</button>
-          <button type="button" class="term-key" data-term-key="Tab">Tab</button>
           <button type="button" class="term-key" data-term-key="BTab">S-Tab</button>
           <button type="button" class="term-key term-key-mod" data-term-mod="ctrl">Ctrl</button>
           <button type="button" class="term-key term-key-mod" data-term-mod="alt">Alt</button>
         </div>
         <div class="terminal-keybar-row terminal-keybar-secondary">
-          <button type="button" class="term-key" data-term-key="Up" title="Up">\u2191</button>
+          <button type="button" class="term-key term-key-mod" data-term-mod="shift">\u2191</button>
           <button type="button" class="term-key" data-term-key="Left" title="Left">\u2190</button>
           <button type="button" class="term-key" data-term-key="Right" title="Right">\u2192</button>
           <button type="button" class="term-key" data-term-key="Home">Home</button>
@@ -395,70 +421,74 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         dropTerminalIme();
       });
     }
-    let ctrlLatch = false;
-    let altLatch = false;
-
     const syncModButtons = () => {
-      keybar.querySelectorAll('[data-term-mod="ctrl"]').forEach(el => {
-        el.classList.toggle('active', ctrlLatch);
-      });
-      keybar.querySelectorAll('[data-term-mod="alt"]').forEach(el => {
-        el.classList.toggle('active', altLatch);
+      const mods = keyComposer.modifiers();
+      const labels = { ctrl: 'Ctrl', alt: 'Alt', shift: 'Shift' };
+      keybar.querySelectorAll('[data-term-mod]').forEach(el => {
+        el.textContent = labels[el.dataset.termMod] || el.textContent;
+        el.classList.toggle('active', !!mods[el.dataset.termMod]);
       });
     };
 
-    const sendRaw = async (data) => {
+    const sendRaw = async (data, signal = null) => {
       if (isTerminalMode() && mobileTerminalInput()) {
-        if (!terminalSessionReady(agentId)) {
-          state.toast('Terminal not connected', 'error');
-          return;
-        }
+        if (!terminalSessionReady(agentId)) throw new Error('Terminal not connected');
         // No focusTerminalForAgent here: quick keys must not focus xterm's
         // helper textarea — that pops the soft keyboard on every tap.
         await sendTerminalRaw(agentId, data);
         return;
       }
-      await sendAgentInput(data, false);
+      await sendAgentInput(data, false, signal);
+    };
+
+    flushKeyComposer = async (text = '', enter = false, signal = null) => {
+      const bytes = keyComposer.draft(text, enter);
+      if (!bytes) return false;
+      try {
+        await sendRaw(bytes, signal);
+        keyComposer.clear();
+        return true;
+      } finally {
+        syncModButtons();
+      }
     };
 
     keybar.querySelectorAll('[data-term-mod]').forEach(btn => {
       btn.addEventListener('click', () => {
-        const mod = btn.dataset.termMod;
-        if (mod === 'ctrl') {
-          ctrlLatch = !ctrlLatch;
-          if (ctrlLatch) altLatch = false;
-        } else if (mod === 'alt') {
-          altLatch = !altLatch;
-          if (altLatch) ctrlLatch = false;
-        }
+        keyComposer.toggleModifier(btn.dataset.termMod);
         syncModButtons();
       });
     });
 
     keybar.querySelectorAll('[data-term-key]').forEach(btn => {
       btn.addEventListener('click', () => {
-        void sendAgentKey(btn.dataset.termKey).catch(e => state.toast(e.message, 'error'));
-        ctrlLatch = false;
-        altLatch = false;
-        syncModButtons();
+        const key = btn.dataset.termKey;
+        if (key === 'Enter' && (keyComposer.hasModifiers() || keyComposer.hasPending())) {
+          void flushKeyComposer('', true).catch(e => state.toast(e.message, 'error'));
+          return;
+        }
+        if (keyComposer.hasModifiers() || keyComposer.hasPending()) {
+          keyComposer.queueKey(key, 'key');
+          syncModButtons();
+          return;
+        }
+        void sendAgentKey(key).catch(e => state.toast(e.message, 'error'));
       });
     });
 
     keybar.querySelectorAll('[data-term-char]').forEach(btn => {
       btn.addEventListener('click', () => {
-        let ch = btn.dataset.termChar || '';
-        if (ctrlLatch && ch.length === 1) {
-          const code = ch.toLowerCase().charCodeAt(0);
-          ch = code >= 97 && code <= 122 ? String.fromCharCode(code - 96) : ch;
-        } else if (altLatch && ch.length === 1) {
-          ch = `\x1b${ch}`;
+        const ch = btn.dataset.termChar || '';
+        if (keyComposer.hasModifiers() || keyComposer.hasPending()) {
+          keyComposer.queueKey(ch, 'char');
+          syncModButtons();
+          return;
         }
         void sendRaw(ch).catch(e => state.toast(e.message, 'error'));
-        ctrlLatch = false;
-        altLatch = false;
-        syncModButtons();
       });
     });
+
+    syncModButtons();
 
     keybar.querySelectorAll('[data-term-action]').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -472,7 +502,6 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           btn.textContent = keybarExpanded ? 'Less' : 'More';
           btn.title = keybarExpanded ? 'Hide extra keys' : 'Show more keys';
           btn.setAttribute('aria-expanded', String(keybarExpanded));
-          if (_syncVisualViewport) _syncVisualViewport();
           if (isTerminalMode()) requestAnimationFrame(() => scheduleTerminalFit(agentId));
         }
       });
@@ -626,72 +655,6 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   // #content is the parent — we toggle flex layout on it
   const contentEl = document.getElementById('content');
 
-  // ======= visualViewport: keyboard padding only (never pin #app height — resume drift) =======
-  let _vvCleanup = null;
-  let _syncVisualViewport = null;
-  let _lastVisualKeyboardGap = -1;
-  function setupVisualViewport() {
-    const vv = window.visualViewport;
-    if (!vv) return;
-    const getInput = () => container.querySelector('.input-section');
-    const sync = () => {
-      if (document.hidden) return;
-      const gap = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-      // The soft keyboard can only be open while a text field is focused.
-      // visualViewport resize events are unreliable in this WebView, so a
-      // gap alone must not keep the keyboard offset alive — otherwise a
-      // missed close event leaves a keyboard-height black band behind.
-      const ae = document.activeElement;
-      const fieldFocused = !!(ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA')
-        && container.contains(ae));
-      const keyboardOpen = gap > 40 && fieldFocused;
-      const inp = getInput();
-      const bottomControls = container.querySelector('#output-bottom-controls');
-      // Active output views keep the composer inside the shared bottom
-      // accessory, so only that wrapper receives the keyboard offset.
-      if (inp) inp.style.marginBottom = bottomControls ? '' : (keyboardOpen ? `${gap}px` : '');
-      if (bottomControls) {
-        // Status, keys, and the Live composer move as one accessory above the
-        // native keyboard. This preserves More/Less state without overlap.
-        bottomControls.style.marginBottom = keyboardOpen ? `${gap}px` : '';
-        bottomControls.classList.toggle('keyboard-open', keyboardOpen);
-      }
-      if (Math.abs(gap - _lastVisualKeyboardGap) > 1) {
-        _lastVisualKeyboardGap = gap;
-        if (bottomControls && isTerminalMode()) requestAnimationFrame(() => scheduleTerminalFit(agentId));
-      }
-      if (keyboardOpen && autoScroll) {
-        const pane = container.querySelector('#output-pane');
-        if (pane) requestAnimationFrame(() => { pane.scrollTop = pane.scrollHeight; });
-        const fsPre = fsOverlay ? fsOverlay.querySelector('#fs-output-pane') : null;
-        if (fsPre) requestAnimationFrame(() => { fsPre.scrollTop = fsPre.scrollHeight; });
-      }
-    };
-    vv.addEventListener('resize', sync);
-    vv.addEventListener('scroll', sync);
-    // Re-evaluate on focus moves too — a missed vv event must not leave a
-    // stale keyboard margin (the keyboard-height black band) behind.
-    document.addEventListener('focusin', sync);
-    document.addEventListener('focusout', sync);
-    sync();
-    _syncVisualViewport = sync;
-    _vvCleanup = () => {
-      vv.removeEventListener('resize', sync);
-      vv.removeEventListener('scroll', sync);
-      document.removeEventListener('focusin', sync);
-      document.removeEventListener('focusout', sync);
-      const inp = getInput();
-      if (inp) inp.style.marginBottom = '';
-      const bottomControls = container.querySelector('#output-bottom-controls');
-      if (bottomControls) {
-        bottomControls.style.marginBottom = '';
-        bottomControls.classList.remove('keyboard-open');
-      }
-      _syncVisualViewport = null;
-    };
-  }
-  setupVisualViewport();
-
   function timeSince(dateStr) {
     if (!dateStr) return '';
     const s = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
@@ -744,21 +707,21 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   }
 
   function mobileTerminalInput() {
-    return !!(window.CamBridge && typeof window.CamBridge.term_open === 'function');
+    return !!(window.CamBridge && typeof window.CamBridge.directHub_start === 'function');
   }
 
-  async function sendAgentInput(text, withEnter = true) {
+  async function sendAgentInput(text, withEnter = true, signal = null) {
     if (isTerminalMode() && mobileTerminalInput() && terminalSessionReady(agentId)) {
       return sendTerminalInput(agentId, text, { enter: withEnter });
     }
-    return api.sendInput(agentId, text, withEnter, agentHints());
+    return api.sendInput(agentId, text, withEnter, agentHints(), signal);
   }
 
-  async function sendAgentKey(key) {
+  async function sendAgentKey(key, signal = null) {
     if (isTerminalMode() && mobileTerminalInput() && terminalSessionReady(agentId)) {
       return sendTerminalKey(agentId, key);
     }
-    return api.sendKey(agentId, key, agentHints());
+    return api.sendKey(agentId, key, agentHints(), signal);
   }
 
   async function prefetchCapturePreview() {
@@ -791,8 +754,9 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     }
     const badge = container.querySelector('.detail-title .badge');
     if (badge) {
-      badge.textContent = updated.status;
-      badge.className = `badge badge-${updated.status}`;
+      const displayStatus = safeAgentBadge(updated);
+      badge.textContent = displayStatus;
+      badge.className = `badge badge-${displayStatus}`;
     }
     const meta = container.querySelector('#meta-line');
     if (meta && !meta.classList.contains('hidden')) {
@@ -802,7 +766,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   }
 
   function agentIsRunnable() {
-    return agent && ['running', 'starting', 'pending'].includes(agent.status);
+    return agent && !isTerminalStatus(agent.status);
   }
 
   function scheduleAutoAttach() {
@@ -829,7 +793,6 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         setTerminalViewActive(agentId, true);
         updateTerminalChrome(true);
         await resumeTerminalForAgent(api, agent, terminalHost);
-        focusTerminalForAgent(agentId);
       }
       updateTerminalMetaBar();
       return { ok: true, reused: true };
@@ -852,7 +815,6 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       state.toast(`Terminal attach: ${res.error}`, 'error', 6000);
     } else if (res?.ok && isTerminalMode()) {
       scheduleTerminalFit(agentId);
-      focusTerminalForAgent(agentId);
     }
     updateTerminalMetaBar();
     return res;
@@ -924,7 +886,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     outputTimer = null;
     updateOutputModeMenu();
     applyOutputMode();
-    const active = agent && ['running', 'starting', 'pending'].includes(agent.status);
+    const active = agent && !isTerminalStatus(agent.status);
     if ((outputMode === 'live' || outputMode === 'rich') && active) {
       void loadOutput();
       restartOutputPoll();
@@ -934,7 +896,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   function restartOutputPoll() {
     clearInterval(outputTimer);
     outputTimer = null;
-    if (isTerminalMode() || useFullOutput) return;
+    if (_viewDisposed || !agent || isTerminalStatus(agent.status) || isTerminalMode() || useFullOutput) return;
     outputTimer = setInterval(loadOutput, _outputPollMs);
   }
 
@@ -950,6 +912,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   }
 
   const render = async (freshAgent) => {
+    if (_viewDisposed) return;
     if (freshAgent) {
       agent = freshAgent;
     } else {
@@ -958,13 +921,15 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         try {
           agent = await api.getAgent(agentId, agentHints());
         } catch (e) {
+          if (_viewDisposed) return;
           container.innerHTML = '<div class="error-state">Agent not found</div>';
           return;
         }
+        if (_viewDisposed) return;
       }
     }
 
-    if (agent && ['running', 'starting', 'pending'].includes(agent.status)
+    if (agent && !isTerminalStatus(agent.status)
         && mobileDirectTerminalDefault() && canUseTerminalMode(api)) {
       outputMode = 'terminal';
       useFullOutput = false;
@@ -975,7 +940,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       cachedOutput = existingPane.textContent;
     }
 
-    const isActive = ['running', 'starting', 'pending'].includes(agent.status);
+    const isActive = !isTerminalStatus(agent.status);
     const prompt = agent.prompt || '';
     const showTerminalOnRender = isActive && outputMode === 'terminal' && canUseTerminalMode(api);
     const showRichOnRender = outputMode === 'rich' && outputCaptureSupported();
@@ -989,7 +954,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           <button class="back-btn" id="back-btn">&larr;</button>
           <div class="detail-title">
             <h2>${escapeHtml(agent.task_name || agent.id.slice(0, 8))}</h2>
-            <span class="badge badge-${agent.status}">${agent.status}</span>
+            <span class="badge badge-${safeAgentBadge(agent)}">${safeAgentBadge(agent)}</span>
           </div>
           <div class="detail-actions-inline" style="position:relative;">
             <button class="overflow-menu-btn" id="menu-btn">\u22ee</button>
@@ -1003,14 +968,13 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
               ${terminalMenuHTML()}
               <hr>
               <button class="overflow-menu-item" id="agent-settings-btn">Settings</button>
-              <button class="overflow-menu-item" id="agent-ext-btn">Extensions</button>
               <button class="overflow-menu-item danger" id="stop-btn">Stop agent</button>
               <button class="overflow-menu-item danger" id="delete-btn">Delete agent</button>
             </div>
           </div>
         </div>
 
-        <div class="detail-meta-compact${showOutputChromeOnRender ? ' hidden' : ''}" id="meta-line">${renderMeta()}</div>
+        <div class="detail-meta-compact${showOutputChromeOnRender ? ' hidden' : ''}" id="meta-line">${escapeHtml(renderMeta())}</div>
         <div class="terminal-meta-bar${showOutputChromeOnRender ? '' : ' hidden'}" id="terminal-meta-bar"><span class="terminal-meta-left"></span><span class="terminal-meta-conn"></span></div>
 
         <div class="output-section" id="output-section">
@@ -1039,7 +1003,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           <button class="back-btn" id="back-btn">&larr;</button>
           <div class="detail-title">
             <h2>${escapeHtml(agent.task_name || agent.id.slice(0, 8))}</h2>
-            <span class="badge badge-${agent.status}">${agent.status}</span>
+            <span class="badge badge-${safeAgentBadge(agent)}">${safeAgentBadge(agent)}</span>
           </div>
           <div class="detail-actions-inline" style="position:relative;">
             <button class="overflow-menu-btn" id="menu-btn">\u22ee</button>
@@ -1053,14 +1017,13 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
               ${terminalMenuHTML()}
               <hr>
               <button class="overflow-menu-item" id="agent-settings-btn">Settings</button>
-              <button class="overflow-menu-item" id="agent-ext-btn">Extensions</button>
               <button class="overflow-menu-item" id="restart-btn">Restart</button>
               <button class="overflow-menu-item danger" id="delete-btn">Delete agent</button>
             </div>
           </div>
         </div>
 
-        <div class="detail-meta-compact" id="meta-line">${renderMeta()}</div>
+        <div class="detail-meta-compact" id="meta-line">${escapeHtml(renderMeta())}</div>
         <div class="terminal-meta-bar hidden" id="terminal-meta-bar"><span class="terminal-meta-left"></span><span class="terminal-meta-conn"></span></div>
 
         <div class="output-section" id="output-section">
@@ -1098,7 +1061,6 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
 
     wireEvents(isActive);
     if (isActive) wireTerminalKeyBar();
-    if (_syncVisualViewport) _syncVisualViewport();
     applyFontSize();
     applyOutputMode();
     if (!isTerminalMode()) {
@@ -1127,7 +1089,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid #333;flex-shrink:0;">
         <div style="display:flex;align-items:center;gap:8px;">
           <span style="font-weight:600;font-size:14px;">${name}</span>
-          <span class="badge badge-${agent.status}" style="font-size:10px;">${agent.status}</span>
+          <span class="badge badge-${safeAgentBadge(agent)}" style="font-size:10px;">${safeAgentBadge(agent)}</span>
         </div>
         <div style="display:flex;gap:4px;">
           <button class="btn-sm" id="fs-refresh">\u21bb</button>
@@ -1223,7 +1185,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       }
       const doSend = async () => {
         const text = inputText.value;
-        if (!text || sending) return;
+        const hasComposedKeys = keyComposer.hasModifiers() || keyComposer.hasPending();
+        if ((!text && !hasComposedKeys) || sending) return;
         // Optimistic: clear input and disable button immediately
         inputText.value = '';
         sending = true;
@@ -1231,7 +1194,11 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         sendBtn.textContent = '...';
         const preview = text.length > 20 ? text.slice(0, 20) + '\u2026' : text;
         try {
-          await _tracked(`Sending "${preview}"`, () => sendAgentInput(text), true);
+          if (hasComposedKeys) {
+            await _tracked(`Sending "${preview}"`, (signal) => flushKeyComposer(text, true, signal), true);
+          } else {
+            await _tracked(`Sending "${preview}"`, (signal) => sendAgentInput(text, true, signal), true);
+          }
           if (!isTerminalMode()) {
             _outputHash = null;
             void loadOutput();
@@ -1297,18 +1264,18 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         if (btn.disabled) return;
         btn.disabled = true;
         btn.style.opacity = '0.4';
-        _tracked(label, fn, true).catch(e => state.toast(e.message, 'error'))
+        _tracked(label, (signal) => fn(signal), true).catch(e => state.toast(e.message, 'error'))
           .finally(() => { btn.disabled = false; btn.style.opacity = ''; });
       });
     }
     root.querySelectorAll('.btn-quick[data-input]').forEach(btn => {
       const ch = btn.dataset.input;
-      quickSend(btn, `Sending "${ch}"`, () => sendAgentInput(ch, false));
+      quickSend(btn, `Sending "${ch}"`, (signal) => sendAgentInput(ch, false, signal));
     });
     root.querySelectorAll('.btn-quick[data-key]').forEach(btn => {
       const key = btn.dataset.key;
       const label = `Sending ${_keyLabels[key] || key}`;
-      quickSend(btn, label, () => sendAgentKey(key));
+      quickSend(btn, label, (signal) => sendAgentKey(key, signal));
     });
 
     // File upload. The server accepts Base64, not a phone-local URI.
@@ -1369,11 +1336,15 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         e.stopPropagation();
         menu.classList.toggle('hidden');
       });
-      document.addEventListener('click', (e) => {
+      if (_documentMenuClickHandler) {
+        document.removeEventListener('click', _documentMenuClickHandler);
+      }
+      _documentMenuClickHandler = (e) => {
         if (!menu.contains(e.target) && e.target !== menuBtn) {
           menu.classList.add('hidden');
         }
-      });
+      };
+      document.addEventListener('click', _documentMenuClickHandler);
     }
 
     const closeMenu = () => { if (menu) menu.classList.add('hidden'); };
@@ -1476,11 +1447,6 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     if (settingsBtn) settingsBtn.addEventListener('click', () => {
       closeMenu();
       navigate(`/agent/${agentId}/settings`);
-    });
-    const extBtn = container.querySelector('#agent-ext-btn');
-    if (extBtn) extBtn.addEventListener('click', () => {
-      closeMenu();
-      navigate(`/agent/${agentId}/extensions`);
     });
 
     const outputWrap = container.querySelector('.output-wrap');
@@ -1733,9 +1699,11 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     const el = _showInflightToast();
     el.classList.remove('inflight-toast-out', 'inflight-toast-ok', 'inflight-toast-err');
     const slow = parseFloat(elapsed) >= 5.0;
+    const safeLabel = escapeHtml(_inflightLabel);
+    const safeVia = escapeHtml(via);
     el.innerHTML = slow
-      ? `<span>\u26a0 ${_inflightLabel} via ${via} \u2026 ${elapsed}s</span><button class="inflight-cancel" id="inflight-cancel-btn">Cancel</button>`
-      : `<span>\u23f3 ${_inflightLabel} via ${via} \u2026 ${elapsed}s</span>`;
+      ? `<span>\u26a0 ${safeLabel} via ${safeVia} \u2026 ${elapsed}s</span><button class="inflight-cancel" id="inflight-cancel-btn">Cancel</button>`
+      : `<span>\u23f3 ${safeLabel} via ${safeVia} \u2026 ${elapsed}s</span>`;
     const cancelBtn = el.querySelector('#inflight-cancel-btn');
     if (cancelBtn) {
       cancelBtn.onclick = () => {
@@ -1759,9 +1727,10 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     const el = _showInflightToast();
     const via = _viaPath();
     const secs = (elapsed / 1000).toFixed(1);
-    const label = doneLabel || _inflightLabel;
+    const label = escapeHtml(doneLabel || _inflightLabel);
+    const safeVia = escapeHtml(via);
     el.innerHTML = success
-      ? `<span>\u2713 ${label} \u00b7 ${secs}s via ${via}</span>`
+      ? `<span>\u2713 ${label} \u00b7 ${secs}s via ${safeVia}</span>`
       : `<span>\u2717 ${label} failed \u00b7 ${secs}s</span>`;
     el.classList.remove('inflight-toast-out', 'inflight-toast-ok', 'inflight-toast-err');
     el.classList.toggle('inflight-toast-ok', success);
@@ -1772,20 +1741,24 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   // Convenience: wrap an async action with inflight tracking
   // immediate=true shows toast instantly (for user actions like send/key)
   async function _tracked(label, fn, immediate = false) {
-    if (label === 'Fetching output') return await fn();
-    const id = _startInflightTracking(label, immediate);
+    const background = label === 'Fetching output';
+    const id = background ? null : _startInflightTracking(label, immediate);
+    const controller = new AbortController();
+    if (id != null) _inflightAbort = controller;
     try {
-      const result = await fn();
+      const result = await fn(controller.signal);
       if (id != null) _finishInflightTracking(id, true);
       return result;
     } catch (e) {
       if (id != null) _finishInflightTracking(id, false);
       throw e;
+    } finally {
+      if (_inflightAbort === controller) _inflightAbort = null;
     }
   }
 
   async function loadOutput() {
-    if (isTerminalMode()) return;
+    if (_viewDisposed || !agent || isTerminalStatus(agent.status) || isTerminalMode()) return;
     if (fsOverlay) {
       loadFsOutput();
       return;
@@ -1797,15 +1770,17 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     _fetchActive = true;
 
     try {
-      await _tracked('Fetching output', async () => {
+      await _tracked('Fetching output', async (signal) => {
         if (useFullOutput) {
-          const data = await api.agentFullOutput(agentId, outputOffset);
+          const data = await api.agentFullOutput(agentId, outputOffset, null, 0, signal);
+          if (_viewDisposed) return;
           if (data.output) {
             updatePane(pane, data.output);
             outputOffset = data.next_offset || outputOffset;
           }
         } else {
-          const data = await api.agentOutput(agentId, 200, _outputHash, null, agentHints());
+          const data = await api.agentOutput(agentId, 200, _outputHash, null, agentHints(), signal);
+          if (_viewDisposed) return;
           if (data.hash) _outputHash = data.hash;
           if (!data.unchanged && data.output) {
             if (isRichOutputMode()) {
@@ -1864,8 +1839,9 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       }
       el.innerHTML = entries.map(e => {
         const ts = e.ts ? new Date(e.ts).toLocaleTimeString() : '';
-        const type = e.type || '';
-        return `<div class="log-entry log-${type}"><span class="log-ts">${ts}</span> <span class="log-type">[${type}]</span> ${escapeHtml(e.output || e.state || JSON.stringify(e.data || ''))}</div>`;
+        const type = String(e.type || '');
+        const typeClass = type.replace(/[^a-zA-Z0-9_-]/g, '') || 'info';
+        return `<div class="log-entry log-${typeClass}"><span class="log-ts">${ts}</span> <span class="log-type">[${escapeHtml(type)}]</span> ${escapeHtml(e.output || e.state || JSON.stringify(e.data || ''))}</div>`;
       }).join('');
     } catch {
       el.innerHTML = '<div class="empty-state">Logs unavailable</div>';
@@ -1888,23 +1864,29 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   // Pass cached agent from state to avoid blocking on a network fetch —
   // the page layout appears instantly, output loads in background.
   render(agent).then(() => {
-    if (!isTerminalMode() && ['running', 'starting', 'pending'].includes(agent?.status) && !useFullOutput) {
+    if (_viewDisposed) return;
+    if (agent && !isTerminalMode() && !isTerminalStatus(agent.status) && !useFullOutput) {
       restartOutputPoll();
     }
   });
 
   const unsub = state.subscribe((data) => {
     const updated = resolveAgent(data.agents || []);
-    if (updated && updated.status !== agent?.status) {
+    if (updated && (updated.status !== agent?.status || updated.state !== agent?.state)) {
+      const statusChanged = updated.status !== agent?.status;
       patchAgentHeader(updated);
       agent = updated;
-      const nowActive = ['running', 'starting', 'pending'].includes(updated.status);
-      if (!nowActive) {
-        void disposeTerminalForAgent(agentId);
-      } else if (nowActive && mobileDirectTerminalDefault() && canUseTerminalMode(api)) {
-        outputMode = 'terminal';
-        useFullOutput = false;
-        applyOutputMode();
+      if (statusChanged) {
+        const nowActive = !isTerminalStatus(updated.status);
+        if (!nowActive) {
+          clearInterval(outputTimer);
+          outputTimer = null;
+          void disposeTerminalForAgent(agentId);
+        } else if (nowActive && mobileDirectTerminalDefault() && canUseTerminalMode(api)) {
+          outputMode = 'terminal';
+          useFullOutput = false;
+          applyOutputMode();
+        }
       }
     }
   });
@@ -1928,13 +1910,19 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   window.addEventListener('cam-mobile-appearance', onMobileAppearance);
 
   return () => {
+    _viewDisposed = true;
     _attachAttempt += 1;
     clearInterval(outputTimer);
+    outputTimer = null;
     clearInterval(elapsedTimer);
     setTerminalViewActive(agentId, false);
     void parkTerminalForAgent(agentId);
     _removeInflightToast();
     if (_inflightAbort) _inflightAbort.abort();
+    if (_documentMenuClickHandler) {
+      document.removeEventListener('click', _documentMenuClickHandler);
+      _documentMenuClickHandler = null;
+    }
     if (_copyCleanups) _copyCleanups();
     contentEl.classList.remove('agent-detail-active');
     contentEl.classList.remove('terminal-ui-active');
@@ -1947,7 +1935,6 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     window.removeEventListener('cam-terminal-status', _onTerminalStatus);
     window.removeEventListener('cam-mobile-appearance', onMobileAppearance);
     if (bottomStatusTimer) clearTimeout(bottomStatusTimer);
-    if (_vvCleanup) _vvCleanup();
     unsub();
   };
 }

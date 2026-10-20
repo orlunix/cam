@@ -7,10 +7,13 @@ import {
   getNodeDisplayName,
   isAgentHostEnabled,
 } from '../../shared/node-host-meta.js';
-import { agentRouteQuery } from '../../shared/agent-helpers.js';
+import { agentDisplayStatus, agentRouteQuery } from '../../shared/agent-helpers.js';
 
 const STATUS_ICONS = {
   running: '<span class="dot running"></span>',
+  idle: '<span class="dot idle"></span>',
+  alive: '<span class="dot alive"></span>',
+  dead: '<span class="dot dead"></span>',
   completed: '<span class="dot completed"></span>',
   failed: '<span class="dot failed"></span>',
   timeout: '<span class="dot timeout"></span>',
@@ -20,8 +23,13 @@ const STATUS_ICONS = {
   retrying: '<span class="dot retrying"></span>',
 };
 
+function safeStatus(status) {
+  const value = String(status || '');
+  return Object.prototype.hasOwnProperty.call(STATUS_ICONS, value) ? value : 'dead';
+}
+
 function statusIcon(status) {
-  return STATUS_ICONS[status] || '<span class="dot"></span>';
+  return STATUS_ICONS[safeStatus(status)] || '<span class="dot"></span>';
 }
 
 function timeSince(dateStr) {
@@ -52,6 +60,12 @@ function escapeHtml(s) {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
+}
+
+function escapeAttr(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[ch]);
 }
 
 export function renderDashboard(container) {
@@ -147,7 +161,7 @@ export function renderDashboard(container) {
     // Update tool/context filter options (preserve selection)
     const tools = [...new Set(agents.map(a => a.tool))];
     const curTool = toolSel.value;
-    toolSel.innerHTML = `<option value="">Tools</option>${tools.map(t => `<option value="${t}">${t}</option>`).join('')}`;
+    toolSel.innerHTML = `<option value="">Tools</option>${tools.map(t => `<option value="${escapeAttr(t)}">${escapeHtml(t)}</option>`).join('')}`;
     toolSel.value = curTool;
 
     const machines = [...new Set(agents.filter(isAgentHostEnabled).map(a => a.machine_host || 'local'))].sort();
@@ -157,7 +171,7 @@ export function renderDashboard(container) {
       const label = sample
         ? getNodeDisplayName(hostKeyFromAgent(sample), m === 'local' ? 'local' : m.split('.')[0])
         : (m === 'local' ? 'local' : m.split('.')[0]);
-      return `<option value="${m}">${label}</option>`;
+      return `<option value="${escapeAttr(m)}">${escapeHtml(label)}</option>`;
     }).join('')}`;
     machineSel.value = curMachine;
 
@@ -177,16 +191,17 @@ export function renderDashboard(container) {
     if (canPatch) {
       // In-place update: patch badge, meta, and time for each card
       filtered.forEach(agent => {
-        const card = existingList.querySelector(`.agent-card[data-id="${agent.id}"]`);
+        const card = [...existingList.querySelectorAll('.agent-card')].find(el => el.dataset.id === agent.id);
         if (!card) return;
+        const displayStatus = safeStatus(agentDisplayStatus(agent));
         const badge = card.querySelector('.badge');
-        if (badge && badge.textContent !== agent.status) {
-          badge.textContent = agent.status;
-          badge.className = `badge badge-${agent.status}`;
+        if (badge && badge.textContent !== displayStatus) {
+          badge.textContent = displayStatus;
+          badge.className = `badge badge-${displayStatus}`;
         }
         const dot = card.querySelector('.dot');
-        if (dot && dot.className !== `dot ${agent.status}`) {
-          dot.className = `dot ${agent.status}`;
+        if (dot && dot.className !== `dot ${displayStatus}`) {
+          dot.className = `dot ${displayStatus}`;
         }
         const timeEl = card.querySelector('.agent-time');
         if (timeEl) timeEl.textContent = timeSince(agent.started_at);
@@ -206,17 +221,18 @@ export function renderDashboard(container) {
                 const time = timeSince(agent.started_at);
                 const canDelete = TERMINAL.includes(agent.status);
                 const isEditing = agent.id === editingId;
+                const displayStatus = safeStatus(agentDisplayStatus(agent));
                 return `
-                <div class="agent-card${isEditing ? ' editing' : ''}" data-id="${agent.id}" data-host-key="${escapeHtml(hostKeyFromAgent(agent))}">
+                <div class="agent-card${isEditing ? ' editing' : ''}" data-id="${escapeAttr(agent.id)}" data-host-key="${escapeAttr(hostKeyFromAgent(agent))}">
                   <div class="agent-card-header">
-                    ${statusIcon(agent.status)}
+                    ${statusIcon(displayStatus)}
                     <span class="agent-name">${escapeHtml(agent.task_name || agent.id.slice(0, 8))}</span>
-                    <span class="badge badge-${agent.status}">${agent.status}</span>
-                    <button class="btn-sm btn-secondary edit-agent" data-id="${agent.id}" title="Edit">Edit</button>
-                    ${canDelete ? `<button class="btn-delete-card" data-delete-id="${agent.id}" title="Delete">&times;</button>` : ''}
+                    <span class="badge badge-${displayStatus}">${displayStatus}</span>
+                    <button class="btn-sm btn-secondary edit-agent" data-id="${escapeAttr(agent.id)}" title="Edit">Edit</button>
+                    ${canDelete ? `<button class="btn-delete-card" data-delete-id="${escapeAttr(agent.id)}" title="Delete">&times;</button>` : ''}
                   </div>
                   <div class="agent-card-meta">
-                    <span class="agent-tool">${agent.tool}</span>
+                    <span class="agent-tool">${escapeHtml(agent.tool)}</span>
                     ${agent.context_name ? `<span class="agent-ctx">${escapeHtml(agent.context_name)}</span>` : ''}
                     <span class="agent-time">${time}</span>
                   </div>

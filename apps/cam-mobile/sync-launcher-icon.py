@@ -10,9 +10,9 @@ import struct
 import zlib
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 SRC = ROOT / "web" / "assets" / "icon-192.png"
-RES = ROOT / "android" / "app" / "src" / "main" / "res"
+RES = ROOT / "apps" / "cam-mobile" / "app" / "src" / "main" / "res"
 TARGETS = {
     "mipmap-hdpi/ic_launcher.png": 72,
     "mipmap-xhdpi/ic_launcher.png": 96,

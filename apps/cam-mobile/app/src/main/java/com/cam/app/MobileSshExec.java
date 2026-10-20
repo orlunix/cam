@@ -507,7 +507,8 @@ public final class MobileSshExec {
                 return seq;
             } catch (Exception e) {
                 String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                seq.error = msg.toLowerCase().contains("auth") ? "auth_failed" : "connect_failed";
+                seq.error = msg.toLowerCase().contains("host_key_changed") ? "host_key_changed"
+                    : (msg.toLowerCase().contains("auth") ? "auth_failed" : "connect_failed");
                 seq.detail = msg;
                 return seq;
             } finally {

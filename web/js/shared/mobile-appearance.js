@@ -1,7 +1,10 @@
-/** Mobile appearance — menu (UI scale) + output font sizes (localStorage + CSS vars). */
+/** Mobile appearance — theme + menu (UI scale) + output font sizes (localStorage + CSS vars). */
 
+export const MOBILE_THEME_KEY = 'cam_mobile_theme';
 export const MOBILE_UI_FONT_KEY = 'cam_mobile_font_ui';
 export const MOBILE_OUTPUT_FONT_KEY = 'cam_output_font_size';
+
+export const MOBILE_VALID_THEMES = ['dark', 'light', 'system'];
 
 export const MOBILE_UI_MIN = 11;
 export const MOBILE_UI_MAX = 18;
@@ -31,6 +34,38 @@ export function readMobileUiFont() {
   return readInt(MOBILE_UI_FONT_KEY, MOBILE_UI_DEFAULT, MOBILE_UI_MIN, MOBILE_UI_MAX);
 }
 
+export function readMobileTheme() {
+  try {
+    const v = localStorage.getItem(MOBILE_THEME_KEY);
+    if (MOBILE_VALID_THEMES.includes(v)) return v;
+  } catch {}
+  return 'dark';
+}
+
+function systemPrefersLight() {
+  try {
+    return !!(typeof window !== 'undefined' && window.matchMedia
+      && window.matchMedia('(prefers-color-scheme: light)').matches);
+  } catch { return false; }
+}
+
+export function effectiveMobileTheme(setting = readMobileTheme()) {
+  if (setting === 'light') return 'light';
+  if (setting === 'dark') return 'dark';
+  return systemPrefersLight() ? 'light' : 'dark';
+}
+
+let themeMediaHooked = false;
+function hookSystemThemeListener() {
+  if (themeMediaHooked || typeof window === 'undefined' || !window.matchMedia) return;
+  themeMediaHooked = true;
+  try {
+    window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+      if (readMobileTheme() === 'system') applyMobileAppearance();
+    });
+  } catch {}
+}
+
 export function readMobileOutputFont() {
   return readFloat(
     MOBILE_OUTPUT_FONT_KEY,
@@ -43,6 +78,13 @@ export function readMobileOutputFont() {
 /** Apply saved appearance to CSS custom properties. Idempotent. */
 export function applyMobileAppearance() {
   if (typeof document === 'undefined' || !document.body) return;
+  hookSystemThemeListener();
+  // `data-theme` is only set when light; dark is the unattributed default.
+  const themeSetting = readMobileTheme();
+  const theme = effectiveMobileTheme(themeSetting);
+  if (theme === 'light') document.body.setAttribute('data-theme', 'light');
+  else document.body.removeAttribute('data-theme');
+  document.body.setAttribute('data-theme-setting', themeSetting);
   const ui = readMobileUiFont();
   const out = readMobileOutputFont();
   const outPx = `${out.toFixed(1)}px`;
@@ -57,7 +99,7 @@ export function applyMobileAppearance() {
   } catch {}
   clearTerminalChromeInlineFont();
   try {
-    window.dispatchEvent(new CustomEvent('cam-mobile-appearance', { detail: { ui, output: out } }));
+    window.dispatchEvent(new CustomEvent('cam-mobile-appearance', { detail: { ui, output: out, theme } }));
   } catch {}
 }
 

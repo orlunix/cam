@@ -1,0 +1,123 @@
+{
+  "context": {
+    "name": "contract-node",
+    "path": "/tmp",
+    "host": "192.0.2.1",
+    "user": "contract",
+    "port": 22,
+    "auth_method": "password",
+    "remember_password": true,
+    "password": "contract-password"
+  },
+  "routes": [
+    {
+      "name": "health",
+      "method": "GET",
+      "path": "/api/system/health",
+      "status": 200,
+      "required": ["status", "version", "capabilities", "adapters"],
+      "fields": { "status": "ok" }
+    },
+    {
+      "name": "context create",
+      "method": "POST",
+      "path": "/api/contexts",
+      "body": "$context",
+      "status": 201,
+      "required": ["id", "name", "path", "machine"],
+      "fields": { "name": "contract-node" }
+    },
+    {
+      "name": "context list",
+      "method": "GET",
+      "path": "/api/contexts",
+      "status": 200,
+      "required": ["contexts"],
+      "arrayKeys": ["contexts"]
+    },
+    {
+      "name": "context get by name",
+      "method": "GET",
+      "path": "/api/contexts/contract-node",
+      "status": 200,
+      "required": ["id", "name", "path", "machine"],
+      "fields": { "name": "contract-node" }
+    },
+    {
+      "name": "idle sync status",
+      "method": "GET",
+      "path": "/api/contexts/contract-node/sync-status",
+      "status": 200,
+      "required": ["ok", "progress"],
+      "fields": { "ok": true }
+    },
+    {
+      "name": "agent list",
+      "method": "GET",
+      "path": "/api/agents",
+      "status": 200,
+      "required": ["agents"],
+      "arrayKeys": ["agents"]
+    },
+    {
+      "name": "unknown agent output",
+      "method": "GET",
+      "path": "/api/agents/no-such-agent/output?lines=10",
+      "status": 502,
+      "required": ["error"],
+      "error": "agent_not_found"
+    },
+    {
+      "name": "unknown agent input",
+      "method": "POST",
+      "path": "/api/agents/no-such-agent/input",
+      "body": { "text": "true", "send_enter": false },
+      "status": 502,
+      "required": ["error"],
+      "error": "agent_not_found"
+    },
+    {
+      "name": "unknown agent key",
+      "method": "POST",
+      "path": "/api/agents/no-such-agent/key",
+      "body": { "key": "Enter" },
+      "status": 404,
+      "required": ["error"],
+      "error": "agent_not_found"
+    },
+    {
+      "name": "unknown agent upload",
+      "method": "POST",
+      "path": "/api/agents/no-such-agent/upload",
+      "body": { "filename": "contract.txt", "data": "eA==" },
+      "status": 404,
+      "required": ["error"],
+      "error": "agent_not_found"
+    },
+    {
+      "name": "context update",
+      "method": "PUT",
+      "path": "/api/contexts/contract-node",
+      "body": { "env_setup": "export CONTRACT=1" },
+      "status": 200,
+      "required": ["id", "name", "path", "machine"],
+      "fields": { "machine.env_setup": "export CONTRACT=1" }
+    },
+    {
+      "name": "updated context readback",
+      "method": "GET",
+      "path": "/api/contexts/contract-node",
+      "status": 200,
+      "required": ["id", "name", "machine"],
+      "fields": { "machine.env_setup": "export CONTRACT=1" }
+    },
+    {
+      "name": "context delete",
+      "method": "DELETE",
+      "path": "/api/contexts/contract-node",
+      "status": 200,
+      "required": ["ok"],
+      "fields": { "ok": true }
+    }
+  ]
+}

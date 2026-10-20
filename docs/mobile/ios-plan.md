@@ -27,20 +27,20 @@ on-device hub** in v1.
 | Web UI (all views, gestures, keybar, xterm) | **100% shared** | same files in WKWebView |
 | `CamApi` connection logic | shared | direct HTTP mode |
 | Shell (WKWebView, safe-area, keyboard) | Swift rewrite | ~300–500 lines |
-| JS bridge | Swift rewrite | contract: `term_*`, `directHub_*`, `files_*` — same names/payloads as `CamJsBridge` |
+| JS bridge | Swift rewrite | contract: `directHub_*`, `files_*` — same names/payloads as `CamJsBridge` |
 | Credential storage | Swift rewrite | iOS Keychain (bridge: `MobileCredentialStore` semantics) |
 | SSH layer (JSch) | **not needed in v1** | B plan: Citadel / SwiftNIO-SSH |
 | Embedded hub | **not needed in v1** | B plan: Swift port of `MobileEmbeddedHub` |
 
-### Bridge contract (must match Android exactly)
+### Bridge contract (must match current Android)
 
-`term_open / term_input / term_resize / term_close / term_copymode`,
 `directHub_start/stop/restart/check/logs/getProfile/request`,
 `files_pickFile / files_saveText`, `pickPrivateKey`, plus the
-`__camTermCb / __camTermEvent / __camDirectHubCb / __camFilesCb /
-__camOnKeyPicked(+Error)` callback globals and the
-`window.__camBridgeShared` pending-map discipline (see 2.4.52 fix in
-`stability-roadmap.md` §1).
+`__camDirectHubCb / __camFilesCb / __camOnKeyPicked(+Error)` callback
+globals and the `window.__camBridgeShared` pending-map discipline.
+Android's old `term_*` bridge no longer exists. Strategy B must implement
+the authenticated `/term` WebSocket protocol instead: JSON control messages
+and binary PTY input/output, as documented in `stability-roadmap.md`.
 
 ## Strategy B (later, if v1 proves iOS needs standalone connections)
 
