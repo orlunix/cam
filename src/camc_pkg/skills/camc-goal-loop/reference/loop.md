@@ -24,4 +24,4 @@ If blocked or the goal is ambiguous, record the blocker in {TASK_FILE}; leave
 the loop active for a human to adjust the task.
 ```
 
-For Codex or Cursor use `AGENTS.md`; for Claude use `CLAUDE.md`.
+For Codex, Cursor, or Pi use `AGENTS.md`; for Claude use `CLAUDE.md`.

@@ -1,5 +1,9 @@
 # Feature Spec: Unified Heal + Hook Management
 
+> Historical hook proposal. Current heal modes are documented in the
+> managing-camc skill. Monitor repair only considers running agents; a live
+> tmux shell never revives a stopped/completed/failed record.
+
 ## Overview
 
 Consolidate all agent health and maintenance operations under `camc heal`.
@@ -8,7 +12,7 @@ Add hook injection capability for agent-to-agent communication.
 ## Commands
 
 ```bash
-camc heal                    # default: fix dead monitors + restore stale agents
+camc heal                    # default: fix dead monitors for running agents
 camc heal --upgrade          # kill all monitors, restart with current binary
 camc heal --hooks            # inject/update hooks to all running agents
 camc heal --session          # validate session files exist (warning only)
@@ -125,7 +129,7 @@ camc wait <agent-id> --timeout 300  # with timeout
 
 | Flag | What it does | Status |
 |------|-------------|--------|
-| (default) | Restart dead monitors, restore stale agents | Existing |
+| (default) | Restart dead monitors for running agents | Existing |
 | `--upgrade` | Kill all monitors, restart with current binary | Existing |
 | `--hooks` | Inject/update hooks to all running agent workdirs | New |
 | `--session` | Validate session files exist for all agents | New |

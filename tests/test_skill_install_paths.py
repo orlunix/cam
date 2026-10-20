@@ -142,13 +142,3 @@ def test_heal_refreshes_embedded_skills_for_each_local_agent(monkeypatch, tmp_pa
         ((str(first),), {"force": True, "config_dir": ".codex"}),
         ((str(second),), {"force": True, "config_dir": ".claude"}),
     ]
-
-
-def test_skills_add_and_rm_are_compatibility_noops(capsys):
-    from types import SimpleNamespace
-    from camc_pkg import cli
-
-    cli.cmd_skills_add(SimpleNamespace(name="camc-messaging"))
-    cli.cmd_skills_rm(SimpleNamespace(name="camc-messaging"))
-
-    assert capsys.readouterr().out.count("bundled with camc") == 2

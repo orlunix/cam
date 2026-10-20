@@ -18,6 +18,103 @@ import pytest
 from camc_pkg import cli as _cli
 
 
+@pytest.mark.parametrize("status", ["stopped", "completed", "failed"])
+@pytest.mark.parametrize("other_monitor", [None, "alive", "dead"])
+def test_heal_preserves_terminal_agents_with_live_shells(
+        tmp_path, monkeypatch, status, other_monitor):
+    from types import SimpleNamespace
+    from camc_pkg.storage import AgentStore
+    store = AgentStore(str(tmp_path / "agents.json"))
+    terminal = {
+        "id": "dead1234", "status": status, "state": "idle",
+        "hostname": _cli._sock.gethostname(), "tmux_session": "cam-dead1234",
+        "completed_at": "2026-10-14T00:00:00Z", "exit_reason": "retained shell",
+    }
+    store.save(terminal)
+    if other_monitor:
+        store.save(dict(terminal, id="beef1234", status="running", pid=123456,
+                        tmux_session="cam-beef1234", completed_at=None))
+    monkeypatch.setattr(_cli, "AgentStore", lambda: store)
+    monkeypatch.setattr(_cli, "LOGS_DIR", str(tmp_path))
+    monkeypatch.setattr(_cli, "SOCKETS_DIR", str(tmp_path / "sockets"))
+    os.mkdir(_cli.SOCKETS_DIR)
+    open(os.path.join(_cli.SOCKETS_DIR, "cam-dead1234.sock"), "w").close()
+    monkeypatch.setattr(_cli, "tmux_session_exists", lambda _s: True)
+    monkeypatch.setattr(_cli, "_cleanup_duplicate_monitors", lambda *_a: (123456 if other_monitor == "alive" else None, []))
+    monkeypatch.setattr(_cli, "_find_claude_pid", lambda _s: None)
+    monkeypatch.setattr(_cli, "EventStore", lambda: SimpleNamespace(rotate=lambda **_kw: 0))
+    monkeypatch.setattr(_cli, "has_local_cron_work", lambda: False)
+    # Exercise the orphan scan with the retained terminal session too.
+    monkeypatch.setattr(_cli.os, "listdir", lambda p:
+                        ["cam-dead1234.sock"] if p == _cli.SOCKETS_DIR else [])
+    def probe_pid(pid, sig):
+        assert (pid, sig) == (123456, 0)
+        if other_monitor == "dead":
+            raise ProcessLookupError()
+    monkeypatch.setattr(_cli.os, "kill", probe_pid)
+    spawned = []
+    monkeypatch.setattr(_cli.subprocess, "Popen", lambda argv, **_kw:
+                        spawned.append(argv) or SimpleNamespace(pid=234567))
+
+    _cli._do_heal()
+
+    from camc_pkg.storage import normalize_agent
+    assert store.get(terminal["id"]) == normalize_agent(terminal)
+    assert [argv[-1] for argv in spawned] == (["beef1234"] if other_monitor == "dead" else [])
+    if other_monitor:
+        assert store.get("beef1234")["status"] == "alive"
+        assert store.get("beef1234")["pid"] == (234567 if other_monitor == "dead" else 123456)
+
+
+@pytest.mark.parametrize("orphan_home", [None, "current", "other", "unavailable"])
+@pytest.mark.parametrize("restart", [False, True])
+def test_heal_with_no_running_agents_repairs_cron_and_adopts_only_owned_orphans(
+        tmp_path, monkeypatch, orphan_home, restart):
+    from types import SimpleNamespace
+    from camc_pkg.storage import AgentStore
+    store = AgentStore(str(tmp_path / "agents.json"))
+    sockets = tmp_path / "sockets"
+    sockets.mkdir()
+    if orphan_home:
+        (sockets / "cam-abcd1234.sock").touch()
+    home = str(tmp_path / "home")
+    monkeypatch.setenv("HOME", home)
+    monkeypatch.setattr(_cli, "AgentStore", lambda: store)
+    monkeypatch.setattr(_cli, "LOGS_DIR", str(tmp_path))
+    monkeypatch.setattr(_cli, "SOCKETS_DIR", str(sockets))
+    listdir = os.listdir
+    monkeypatch.setattr(_cli.os, "listdir", lambda p:
+                        listdir(p) if str(p) == str(sockets) else [])
+    monkeypatch.setattr(_cli, "tmux_session_exists", lambda _s: True)
+    def query(argv, **_kw):
+        if argv[-2:] == ["show-environment", "HOME"]:
+            if orphan_home == "unavailable":
+                return 1, ""
+            return 0, "HOME=" + (home if orphan_home == "current" else "/other/home")
+        return 0, str(tmp_path)
+    monkeypatch.setattr(_cli, "_run", query)
+    monkeypatch.setattr(_cli, "_find_claude_pid", lambda _s: None)
+    monkeypatch.setattr(_cli, "_find_session_id", lambda *_a, **_kw: "")
+    spawned = []
+    monkeypatch.setattr(_cli.subprocess, "Popen", lambda argv, **_kw:
+                        spawned.append(argv) or SimpleNamespace(pid=234567))
+    maintenance = []
+    monkeypatch.setattr(_cli, "EventStore", lambda: SimpleNamespace(
+        rotate=lambda **_kw: maintenance.append("events") or 0))
+    monkeypatch.setattr(_cli, "has_local_cron_work", lambda: not restart)
+    monkeypatch.setattr(_cli, "cron_scheduler_present", lambda: restart)
+    def repair(**kwargs):
+        maintenance.append(kwargs)
+        return {"status": "running"}
+    monkeypatch.setattr(_cli, "ensure_cron_scheduler", repair)
+
+    _cli._do_heal(restart_cron=restart)
+
+    assert maintenance == ["events", {"wait": True, "restart": restart}]
+    assert [r["id"] for r in store.list()] == (["abcd1234"] if orphan_home == "current" else [])
+    assert len(spawned) == (1 if orphan_home == "current" else 0)
+
+
 # ---------------------------------------------------------------------------
 # _find_monitor_pids
 # ---------------------------------------------------------------------------
@@ -198,15 +295,11 @@ class TestHealAdoptsLiveUntrackedMonitor:
             self, tmp_path, monkeypatch, capsys):
         import json as _json
         from camc_pkg import storage as _storage
-        from camc_pkg import cron as _cron
         import socket as _sock
 
         # ---- Redirect ~/.cam/* into tmp_path ----
         agents_file = tmp_path / "agents.json"
         monkeypatch.setattr(_storage, "AGENTS_FILE", str(agents_file))
-        # Heal also touches cron.ensure_tick_if_needed → stub it out.
-        monkeypatch.setattr(_cron, "ensure_tick_if_needed",
-                            lambda *a, **kw: "noop")
         # Stub /tmp scan that the heal hook walks (preserve real listdir).
         _real_listdir = os.listdir
         monkeypatch.setattr(_cli.os, "listdir",
@@ -226,7 +319,7 @@ class TestHealAdoptsLiveUntrackedMonitor:
                      "auto_confirm": True},
             "context_path": str(tmp_path),
             "transport_type": "local",
-            "status": "running",
+            "status": "alive",
             "state": "idle",
             "tmux_session": "cam-" + aid,
             "pid": stale_pid,

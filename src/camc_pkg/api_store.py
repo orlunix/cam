@@ -4,8 +4,6 @@ import json
 import os
 import socket
 import time
-import urllib.error
-import urllib.request
 
 from camc_pkg import CAM_DIR
 from camc_pkg.api_metadata import (
@@ -540,6 +538,7 @@ def catalog_url(provider):
 
 def fetch_model_catalog(provider, token, timeout=5.0):
     """Fetch model ids from provider catalog endpoint. Returns set of ids."""
+    import urllib.request
     url = catalog_url(provider)
     if not url:
         return set()
@@ -611,6 +610,7 @@ def tools_supporting_api(data, api_key):
 
 def check_provider(data):
     """Ping provider catalog, refresh enabled flags and _catalog."""
+    import urllib.error
     from camc_pkg.api_token import resolve_token
 
     providers = data.get("providers") or {}

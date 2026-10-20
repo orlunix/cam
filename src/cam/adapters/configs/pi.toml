@@ -7,7 +7,6 @@
 # TUI markers (Pi 0.85.x):
 #   Idle editor:     solid horizontal top/bottom borders
 #   Working editor:  top border contains "Working" and a spinner
-#   Completion:      working label disappears and the solid editor returns
 
 [adapter]
 name = "pi"
@@ -45,35 +44,6 @@ strip_ansi = true
 ready_pattern = "\\A(?![\\s\\S]*Working)[\\s\\S]*^─{10,}$"
 ready_flags = ["MULTILINE"]
 prompt_submit_delay = 0.5
-
-[state]
-strategy = "last"
-recent_chars = 3000
-
-[[state.patterns]]
-state = "planning"
-pattern = "(Working|Thinking|Analyzing|(^|\\n)\\s*(read|grep|find|ls)\\b)"
-flags = ["IGNORECASE"]
-
-[[state.patterns]]
-state = "editing"
-pattern = "(^|\\n)\\s*(edit|write)\\b"
-flags = ["IGNORECASE"]
-
-[[state.patterns]]
-state = "testing"
-pattern = "((^|\\n)\\s*bash\\b|Running tests|pytest|npm test|cargo test)"
-flags = ["IGNORECASE"]
-
-[[state.patterns]]
-state = "committing"
-pattern = "(git commit|git push|gh pr create)"
-flags = ["IGNORECASE"]
-
-[completion]
-# Interactive Pi stays alive after each task.  The monitor's adapter-owned
-# busy marker plus solid-editor readiness drives idle detection.
-strategy = "process_exit"
 
 [monitor]
 busy_pattern = "Working"

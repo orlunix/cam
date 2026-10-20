@@ -11,6 +11,36 @@ except ImportError:
     _fcntl = None
 
 
+def normalize_agent(record):
+    """Normalize legacy records to the two-level agent lifecycle in place."""
+    status = record.get("status")
+    state = record.get("state")
+    if status not in ("alive", "dead"):
+        if status in ("stopped", "failed", "killed", "complete", "completed"):
+            record["status"] = "dead"
+            record["state"] = "stopped" if status in ("complete", "completed") else status
+        else:
+            record["status"] = "alive"
+            record["state"] = "idle" if state == "idle" else "running"
+            record["phase"] = ("initializing" if status in ("pending", "starting") or
+                               state == "initializing" or
+                               (record.get("runtime") or {}).get("preparing") else "started")
+    if record["status"] == "alive" and state == "initializing":
+        record["phase"] = "initializing"
+    if record["status"] == "dead":
+        if record.get("state") not in ("stopped", "failed", "killed"):
+            record["state"] = "failed"
+        record["phase"] = None
+    else:
+        if record.get("state") not in ("idle", "running"):
+            record["state"] = "running"
+        if record.get("phase") not in ("initializing", "started"):
+            record["phase"] = "started"
+        if record["phase"] == "initializing":
+            record["state"] = "running"
+    return record
+
+
 class AgentStore(object):
     def __init__(self, path=None):
         self._path = path or AGENTS_FILE
@@ -23,7 +53,7 @@ class AgentStore(object):
                 if _fcntl:
                     _fcntl.flock(f.fileno(), _fcntl.LOCK_SH)
                 try:
-                    return json.load(f)
+                    return [normalize_agent(a) for a in json.load(f)]
                 finally:
                     if _fcntl:
                         _fcntl.flock(f.fileno(), _fcntl.LOCK_UN)
@@ -48,7 +78,7 @@ class AgentStore(object):
                         sz = os.path.getsize(self._path)
                         file_had_data = sz > 4  # non-trivial content (not just "[]")
                         with open(self._path, "r") as f:
-                            agents = json.load(f)
+                            agents = [normalize_agent(a) for a in json.load(f)]
                     except (ValueError, OSError):
                         if file_had_data:
                             # File exists with data but JSON parse failed —
@@ -57,9 +87,10 @@ class AgentStore(object):
                             # never be replaced from a failed read.
                             return
                         agents = []
-                agents = fn(agents)
+                agents = [normalize_agent(a) for a in fn(agents)]
                 tmp = self._path + ".tmp"
                 with open(tmp, "w") as f:
+                    os.fchmod(f.fileno(), 0o600)
                     json.dump(agents, f, indent=2)
                     f.flush()
                     os.fsync(f.fileno())
@@ -111,6 +142,7 @@ class AgentStore(object):
         return None
 
     def save(self, agent):
+        agent = normalize_agent(dict(agent))
         def _do(agents):
             for i, a in enumerate(agents):
                 if a["id"] == agent["id"]:
@@ -120,12 +152,21 @@ class AgentStore(object):
             return agents
         self._modify(_do)
 
-    def update(self, agent_id, **fields):
+    def update(self, agent_id, expected_launch_id=None, **fields):
         result = [None]
         def _do(agents):
             for a in agents:
                 if a["id"] == agent_id:
+                    if expected_launch_id is not None and a.get("launch_id") != expected_launch_id:
+                        break
+                    if (expected_launch_id is not None and a.get("status") == "dead"
+                            and fields.get("status") == "dead"):
+                        break  # The first terminal result wins within a launch.
+                    if (a.get("status") == "dead" and "status" not in fields
+                            and fields.get("state") in ("idle", "running")):
+                        break  # Late screen updates cannot revive or rewrite a terminal tool.
                     a.update(fields)
+                    normalize_agent(a)
                     result[0] = a
                     break
             return agents

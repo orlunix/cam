@@ -18,7 +18,6 @@ from uuid import uuid4, uuid5, NAMESPACE_DNS as _UUID_NS
 from pathlib import Path
 
 from camc_pkg import __build__
-from camc_pkg.api_proxy import run_api_proxy
 from camc_pkg.skills import list_skills, install_manifest_skills
 from camc_pkg.tool_launcher import (
     build_auto_launcher_command,
@@ -38,6 +37,11 @@ from camc_pkg.tool_launcher import (
     validate_tool_launcher_api,
     without_launcher_auto_permission,
 )
+
+
+def run_api_proxy(argv=None):
+    from camc_pkg.api_proxy import run_api_proxy as _api_proxy_run
+    return _api_proxy_run(argv)
 
 
 _PHASE1_STORAGE_RELPATHS = (
@@ -241,16 +245,16 @@ def _gen_agent_id():
 
 from camc_pkg import __version__, CAM_DIR, CONFIGS_DIR, CONTEXT_FILE, LOGS_DIR, PIDS_DIR, SOCKETS_DIR, log
 from camc_pkg.utils import _now_iso, _time_ago, _load_default_context, _build_command, _kill_monitor, _run
-from camc_pkg.adapters import (_EMBEDDED_CONFIGS, _load_config, load_config,
+from camc_pkg.adapters import (_EMBEDDED_CONFIGS, _load_config,
                                install_default_configs, install_default_boot_configs)
 from camc_pkg.storage import AgentStore, EventStore
 from camc_pkg.transport import (
     _find_tmux_socket, capture_tmux, tmux_session_exists,
     tmux_send_input, tmux_send_key, tmux_kill_session, create_tmux_session,
-    tmux_rename_session, tmux_submit_input,
+    tmux_rename_session, tmux_submit_input, tmux_stop_agent_pane,
 )
 from camc_pkg.system_prompt import (
-    target_file, write_block, strip_block, has_block, load_prompt_text,
+    target_file, write_block, strip_block, load_prompt_text,
 )
 from camc_pkg.monitor import (
     _run_monitor, _normalize_screen, _content_hash, _strip_ascii_digits,
@@ -265,8 +269,7 @@ from camc_pkg.monitor import (
 from camc_pkg.cron import (
     CronConfig, CronStore, CronJobStore,
     DuplicateJobName, CorruptCronJSON, CorruptCronConfig,
-    AmbiguousJobKey, CrontabUnavailable,
-    install_tick, remove_tick, ensure_tick_if_needed, tick, cron_run,
+    AmbiguousJobKey, tick, cron_run,
     ensure_cron_scheduler, run_cron_scheduler, has_local_cron_work,
     cron_scheduler_present,
     parse_every, parse_daily, parse_at, parse_in,
@@ -291,16 +294,8 @@ def _agent_tool(agent):
     return agent.get("tool", "")
 
 
-def _send_confirm_response(session_id, response, send_enter):
-    # Multi-character responses are literal text except explicitly supported
-    # tmux key names used by adapter confirmation rules.
-    if response == "BTab" or (response and len(response) == 1):
-        if not tmux_send_key(session_id, response):
-            return False
-        if send_enter:
-            return tmux_send_key(session_id, "Enter")
-        return True
-    return tmux_send_input(session_id, response, send_enter=send_enter)
+def _launcher_progress(message):
+    print("[launcher] %s" % message, flush=True)
 
 
 def cmd_env(args):
@@ -652,6 +647,7 @@ def _agent_to_cam_json(a, _updated_at_override=None):
         "context_path": a.get("context_path") or a.get("path", ""),
         "transport_type": transport,
         "status": a.get("status", ""),
+        "phase": a.get("phase"),
         "state": a.get("state", ""),
         "tmux_session": session,
         "tmux_socket": sock or "",
@@ -677,63 +673,6 @@ _TOOL_HINTS = {
     "claude": "npm install -g @anthropic-ai/claude-code",
     "codex": "npm install -g @openai/codex",
 }
-
-
-def _auto_run_args(config, env=None):
-    """Return adapter-declared autorun argv when its condition is true.
-
-    ``autorun_condition`` is an adapter-owned Python expression evaluated
-    against parsed config data. It is fail-closed: missing files,
-    syntax/runtime errors, false results, or malformed adapter data all
-    return the historical launch argv unchanged.
-    """
-    policy = getattr(config, "auto_run", None)
-    if not isinstance(policy, dict):
-        return []
-    config_path = str(policy.get("autorun_config") or
-                      policy.get("config_path") or "").strip()
-    condition = str(policy.get("autorun_condition") or "").strip()
-    args = policy.get("autorun_args") or policy.get("args") or []
-    if not config_path or not condition or not args:
-        return []
-
-    effective_env = dict(os.environ)
-    if env:
-        effective_env.update(env)
-    for name, value in effective_env.items():
-        config_path = config_path.replace("${%s}" % name, str(value))
-        config_path = config_path.replace("$%s" % name, str(value))
-    if config_path == "~" or config_path.startswith("~/"):
-        config_path = os.path.join(
-            effective_env.get("HOME") or os.path.expanduser("~"),
-            config_path[2:] if config_path.startswith("~/") else "",
-        )
-    config_path = os.path.abspath(os.path.expanduser(config_path))
-    if not os.path.isfile(config_path):
-        return []
-    try:
-        global_config = load_config(config_path)
-    except Exception:
-        return []
-    realpath = os.path.realpath(config_path)
-    path_parts = tuple(part for part in realpath.split(os.sep) if part)
-    try:
-        enabled = eval(
-            condition,
-            {"__builtins__": {}},
-            {
-                "config": global_config,
-                "config_path": config_path,
-                "realpath": realpath,
-                "path_parts": path_parts,
-            },
-        )
-        if not bool(enabled):
-            return []
-    except BaseException:
-        # A bad adapter condition must never make camc run fail.
-        return []
-    return [str(value) for value in args]
 
 
 def _preflight(tool, tool_binary, workdir, env_setup=None, runtime=None,
@@ -890,18 +829,6 @@ def _codex_api_model_override(api_plan):
     return ["-c", "model=%s" % json.dumps(model)] if model else []
 
 
-def _codex_api_proxy_override(api_plan):
-    """Pin one resumed Codex process to its own per-agent proxy."""
-    port = int((api_plan or {}).get("proxy_port") or 0)
-    if port <= 0:
-        return []
-    from camc_pkg.api_resolver import CODEX_API_PROVIDER
-    url = "http://127.0.0.1:%d%s" % (
-        port, (api_plan or {}).get("base_url_suffix") or "")
-    return ["-c", "model_providers.%s.base_url=%s" %
-            (CODEX_API_PROVIDER, json.dumps(url))]
-
-
 def _stop_agent_api_proxy(agent, cleanup_home=True):
     from camc_pkg.api_proxy import stop_agent_api_proxy
     stop_agent_api_proxy(agent, cleanup_home=cleanup_home)
@@ -925,7 +852,238 @@ def _cleanup_agent_runtime_overlay(agent):
         return False
 
 
-def cmd_run(args):
+def _launch_request_path(agent_id):
+    return os.path.join(PIDS_DIR, "%s.launch.json" % agent_id)
+
+
+def _remove_launch_request(agent_id):
+    try:
+        os.unlink(_launch_request_path(agent_id))
+    except OSError:
+        pass
+
+
+def cmd_run(args, agent_id=None):
+    launcher = getattr(args, "tool_launcher", None)
+    if launcher is None:
+        launcher = default_tool_launcher()
+    try:
+        if not named_tool_launcher(launcher):
+            parse_tool_launcher(launcher)
+        parsed_tool_args = _parse_tool_args(getattr(args, "tool_args", None))
+    except ValueError as exc:
+        print_error(str(exc))
+        raise SystemExit(1)
+    # Create the terminal first. All existing preparation policies run
+    # unchanged in its foreground worker, including local launches.
+    from camc_pkg.transport import TMUX_BIN, ensure_camc_tmux_config
+    workdir = os.path.abspath(args.path)
+    os.makedirs(workdir, exist_ok=True)
+    os.makedirs(PIDS_DIR, exist_ok=True)
+    agent_id = agent_id or _gen_agent_id()
+    session = "cam-%s" % agent_id
+    values = vars(args).copy()
+    values["tool_launcher"] = launcher
+    values["path"] = workdir
+    if values.get("system_file"):
+        # The worker starts in workdir; relative inputs belong to the caller.
+        values["system_file"] = os.path.abspath(os.path.expanduser(values["system_file"]))
+    values["_launch_id"] = uuid4().hex
+    request = _launch_request_path(agent_id)
+    fd = os.open(request, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as stream:
+        json.dump(values, stream)
+    store = AgentStore()
+    record = {
+        "id": agent_id, "launch_id": values["_launch_id"], "task": {
+            "name": getattr(args, "name", None) or os.path.basename(workdir),
+            "tool": getattr(args, "tool", None) or "codex",
+            "prompt": getattr(args, "prompt", "") or "", "auto_confirm": False,
+        },
+        "context_path": workdir, "hostname": _sock.gethostname(),
+        "status": "alive", "state": "running", "phase": "initializing",
+        "tmux_session": session, "tmux_bin": TMUX_BIN,
+        "tmux_socket": "%s/%s.sock" % (SOCKETS_DIR, session),
+        "started_at": _now_iso(), "pid": None,
+        "runtime": {"preparing": True},
+    }
+    # Retain restart settings even if preparation fails before publication.
+    # Persist user launch settings so reboot can reproduce this launch.
+    record["runtime"].update(
+        launcher_mode=("auto" if str(launcher).strip() == "auto" else
+                       "custom" if parse_tool_launcher(launcher) else "none"),
+        custom_launch={
+            "tool_dir": getattr(args, "tool_dir", None) or "",
+            "tool_env_keys": [entry.split("=", 1)[0]
+                              for entry in getattr(args, "tool_env", None) or []],
+            "tool_args": parsed_tool_args,
+            "tool_env": list(getattr(args, "tool_env", None) or []),
+            "tool_launcher": launcher,
+            "use_env_tool": bool(getattr(args, "use_env_tool", False)),
+        },
+        storage={"isolate_tool_home": getattr(args, "isolate_tool_home", None)},
+    )
+    for field, option in (("tags", "tag"), ("system_prompt", "system_prompt"),
+                          ("auto_exit", "auto_exit"), ("auto_exit_enable", "auto_exit_enable")):
+        record["task"][field] = getattr(args, option, None)
+    if getattr(args, "api", None):
+        record["api"] = {"name": args.api}
+    command = ([sys.executable, _CAMC_SCRIPT]
+               if _CAMC_SCRIPT and os.path.basename(_CAMC_SCRIPT) != "__main__.py" else
+               [sys.executable, "-m", "camc_pkg"])
+    command += ["_launch_worker", agent_id]
+    try:
+        store.save(record)
+        if not create_tmux_session(
+                session, command, workdir, inherit_env=True,
+                env=os.environ.copy(), tmux_bin=TMUX_BIN,
+                tmux_config=ensure_camc_tmux_config()):
+            raise RuntimeError("Failed to create tmux session")
+    except Exception:
+        _remove_launch_request(agent_id)
+        store.update(agent_id, expected_launch_id=record.get("launch_id"),
+                     status="dead", state="failed", runtime=dict(record["runtime"], preparing=False),
+                     exit_reason="Failed to create tmux session", completed_at=_now_iso())
+        print_error("Failed to create tmux session for '%s'" % session)
+        raise SystemExit(1)
+    print("  ID: %s  Tool: %s  Session: %s" % (
+        agent_id, record["task"]["tool"], session))
+    print("  Name: %s" % record["task"]["name"])
+    print("  Path: %s" % workdir)
+    print("  Preparing in tmux; attach to follow launcher progress.")
+    print("  Attach: camc attach %s" % agent_id)
+
+
+def _launch_worker_alive(pid, agent_id):
+    """Verify the process identity, avoiding recycled PIDs during heal."""
+    try:
+        with open("/proc/%d/cmdline" % int(pid), "rb") as stream:
+            args = stream.read().split(b"\0")
+        return b"_launch_worker" in args and agent_id.encode("ascii") in args
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _run_foreground_tool(agent_id, launch):
+    # Keep Ctrl-C tool-owned while supervising startup in this same pane.
+    previous_sigint = signal.signal(signal.SIGINT, lambda _signum, _frame: None)
+    proc = None
+    store = AgentStore()
+    initial = store.get(agent_id) or {}
+    launch_id = initial.get("launch_id")
+    try:
+        proc = subprocess.Popen(launch["command"], cwd=launch["workdir"], env=launch["env"])
+        if not launch.get("known_tool", False):
+            store.update(agent_id, expected_launch_id=launch_id,
+                         state="running", phase="started")
+        if launch.get("prompt"):
+            time.sleep(launch["startup_wait"])
+            tmux_send_input("cam-%s" % agent_id, launch["prompt"], send_enter=True)
+        deadline = time.monotonic() + launch.get("startup_timeout", 600.0)
+        while proc.poll() is None:
+            record = store.get(agent_id) or {}
+            if record.get("launch_id") != launch_id or record.get("status") != "alive":
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait()
+                return 1
+            if record.get("phase") == "started":
+                return proc.wait()  # Startup is supervised; no registry polling while working.
+            if record.get("phase") == "initializing" and time.monotonic() >= deadline:
+                store.update(agent_id, expected_launch_id=launch_id,
+                             status="dead", state="failed", completed_at=_now_iso(),
+                             exit_reason="Launcher/tool did not become ready within %.0fs" % launch.get("startup_timeout", 600.0))
+                continue
+            time.sleep(.2)
+        code = proc.wait()
+        record = store.get(agent_id) or {}
+        if record.get("phase") == "initializing":
+            store.update(agent_id, expected_launch_id=launch_id,
+                         status="dead", state="failed", completed_at=_now_iso(),
+                         exit_reason="Tool exited before startup readiness (code %s)" % code)
+            return code or 1
+        return code
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        signal.signal(signal.SIGINT, previous_sigint)
+
+
+def _run_launch_worker(agent_id):
+    """Prepare and run in the existing pane; never create another tmux."""
+    if not re.match(r"^[0-9a-f]{8}$", agent_id):
+        raise ValueError("Invalid launch request ID")
+    store = AgentStore()
+    launch = {}
+    code = 1
+    launch_id = (store.get(agent_id) or {}).get("launch_id")
+    try:
+        import stat
+        request = _launch_request_path(agent_id)
+        fd = os.open(request, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd) as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or stat.S_IMODE(info.st_mode) & 0o077):
+                raise ValueError("Unsafe launch request permissions")
+            values = json.load(stream)
+        launch_id = values.get("_launch_id")
+        _remove_launch_request(agent_id)
+        record = store.get(agent_id)
+        if (not record or record.get("status") != "alive"
+                or record.get("launch_id") != launch_id):
+            return 1
+        store.update(agent_id, expected_launch_id=launch_id,
+                     runtime=dict(record.get("runtime") or {}, worker_pid=os.getpid()))
+        print("[launch] shell ready; preparing environment and tool", flush=True)
+        _cmd_run_prepared(argparse.Namespace(**values), agent_id, launch)
+        record = store.get(agent_id)
+        if (not record or record.get("status") != "alive"
+                or record.get("launch_id") != launch_id):
+            return 1
+        print("[launch] starting tool", flush=True)
+        code = _run_foreground_tool(agent_id, launch)
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else 1
+    except KeyboardInterrupt:
+        code = 130
+    except Exception:
+        # Arguments and environment may contain secrets. Keep failure
+        # diagnostics structural; specific preflight errors print above.
+        print_error("Launch preparation failed; tmux shell retained")
+    finally:
+        record = store.get(agent_id)
+        owns_record = record and record.get("launch_id") == launch_id
+        if owns_record:
+            _remove_launch_request(agent_id)
+        if owns_record:
+            _kill_monitor(record)
+            _stop_agent_api_proxy(record, cleanup_home=False)
+        if owns_record and record.get("status") == "alive":
+            runtime = dict(record.get("runtime") or {})
+            runtime["preparing"] = False
+            store.update(agent_id, expected_launch_id=launch_id,
+                         status="dead", state="stopped" if code == 0 else "failed",
+                         runtime=runtime,
+                         completed_at=_now_iso(),
+                         exit_reason="Launch/tool exited with code %s" % code)
+        if code:
+            print("[launch] exited with code %s; tmux shell retained" % code,
+                  flush=True)
+        if launch.get("api_proxy"):
+            _stop_api_proxy(launch["api_proxy"])
+    return code
+
+
+def _cmd_run_prepared(args, agent_id, launch):
     tool = getattr(args, "tool", None) or "codex"
     known_tool = tool in ("claude", "codex", "cursor", "pi")
     prompt = getattr(args, "prompt", "") or ""
@@ -978,6 +1136,7 @@ def cmd_run(args):
     # preflight and then fail in tmux (or vice versa).
     from camc_pkg.runtime_env import build_runtime_env
     runtime = build_runtime_env(env_setup=env_setup)
+    print("[launch] environment ready; running preflight", flush=True)
     current_allocation = None
     api_plan = None
     api_proxy_proc = None
@@ -996,6 +1155,7 @@ def cmd_run(args):
             print_error(str(e))
             sys.exit(1)
     if launcher_preset and launcher_preset[0] == "auto":
+        _launcher_progress("self: checking current autorun allocation")
         # The login-shell environment normally preserves LSF variables, but
         # use the original process environment as a fallback for LSB_JOBID.
         allocation_env = dict(os.environ)
@@ -1003,15 +1163,12 @@ def cmd_run(args):
         current_allocation = detect_current_autorun_allocation(
             allocation_env)
         if current_allocation:
+            _launcher_progress("self: selected job %s on %s" % (
+                current_allocation.get("job_id"), current_allocation.get("host")))
             launcher_preset = None
             tool_launcher = []
-            queue = (current_allocation.get("virtual_queue") or
-                     current_allocation.get("queue") or "")
-            print_info(
-                "Using current autorun_sla allocation %s on %s%s" %
-                (current_allocation.get("job_id"),
-                 current_allocation.get("host"),
-                 (" (" + queue + ")") if queue else ""))
+        else:
+            _launcher_progress("self: not in a verified autorun allocation; trying battach")
     try:
         validate_tool_launcher_api(
             "none" if current_allocation else raw_tool_launcher, api_name)
@@ -1082,9 +1239,13 @@ def cmd_run(args):
                     launcher_preset, tool, workdir, runtime.env,
                     target_tool=target_tool_binary,
                     target_tool_path=target_tool_path_hint,
-                    target_tool_version_args=target_tool_version_args))
+                    target_tool_version_args=target_tool_version_args,
+                    progress=_launcher_progress))
         except ValueError as exc:
             print_error(str(exc))
+            sys.exit(2)
+        if not tool_launcher:
+            print_error("auto requires an LSF launcher; use --tool-launcher none for local execution")
             sys.exit(2)
         if launcher_metadata.get("transport") in ("battach", "ssh"):
             battach_target_binary = str(
@@ -1094,8 +1255,6 @@ def cmd_run(args):
                 print_error(
                     "battach probe did not return an absolute target tool path")
                 sys.exit(2)
-        for notice in launcher_notices:
-            print_info(notice)
     launcher_command_index = None
     if tool_launcher:
         launcher_command_index = (
@@ -1128,12 +1287,15 @@ def cmd_run(args):
     if has_error:
         sys.exit(1)
 
-    agent_id = _gen_agent_id()
     session = "cam-%s" % agent_id
     runtime_storage_info = None
     custom_launch_enabled = bool(
         tool_dir or tool_env_keys or tool_args or tool_launcher)
-    exit_status_path = (os.path.join(PIDS_DIR, "%s.tool-exit" % agent_id)
+    # A previous remote tool can report its exit after reboot. Keep both its
+    # exit receipt and launcher-start marker separate from this generation.
+    launch_id = getattr(args, "_launch_id", None)
+    status_id = "%s.%s" % (agent_id, launch_id) if launch_id else agent_id
+    exit_status_path = (os.path.join(PIDS_DIR, "%s.tool-exit" % status_id)
                         if custom_launch_enabled else "")
 
     # Per-agent system prompt: write to CLAUDE.md / AGENTS.md before
@@ -1182,40 +1344,26 @@ def cmd_run(args):
         if resume_session:
             session_uuid = resume_session
         else:
-            session_uuid = "%s-0000-0000-0000-000000000000" % agent_id
+            session_uuid = (str(uuid4()) if getattr(args, "_reboot", False) else
+                            "%s-0000-0000-0000-000000000000" % agent_id)
 
-    launch_cmd = _build_command(config, prompt, workdir)
-    local_fallback_cmd = without_launcher_auto_permission(list(launch_cmd))
-
-    # Remote launchers and a verified current autorun allocation both use
-    # the adapter's explicit autorun argument set. Ordinary local launches
-    # retain the conditional config-driven auto_run behavior.
-    if tool_launcher or current_allocation:
-        if getattr(config, "auto_permission_mode", False):
-            launch_cmd = without_launcher_auto_permission(launch_cmd)
-        launch_cmd += list(getattr(config, "launcher_autorun_args", []) or [])
-    elif launcher_metadata.get("preset") != "auto":
-        # Auto-run is opt-in through the adapter's three-gate policy. Keep
-        # user --tool-args last so the default command remains authoritative
-        # whenever the policy does not fully match.
-        launch_cmd += _auto_run_args(config, runtime.env)
-    else:
-        launch_cmd = list(local_fallback_cmd)
+    launch_cmd = without_launcher_auto_permission(
+        _build_command(config, prompt, workdir))
+    # Managed tools use the same native autorun switches on every transport.
+    # User-supplied switches remain last and must not be duplicated.
+    launch_cmd += [arg for arg in getattr(config, "launcher_autorun_args", [])
+                   if arg not in launch_cmd and arg not in tool_args]
 
     if tool == "codex" and api_plan:
         launch_cmd += _codex_api_model_override(api_plan)
-        local_fallback_cmd += _codex_api_model_override(api_plan)
 
     # Inject --session-id or --resume into Claude launch command
     if tool == "claude":
         if resume_session:
             launch_cmd += ["--resume", resume_session]
-            local_fallback_cmd += ["--resume", resume_session]
         elif session_uuid:
             launch_cmd += ["--session-id", session_uuid]
-            local_fallback_cmd += ["--session-id", session_uuid]
     launch_cmd += tool_args
-    local_fallback_cmd += tool_args
     prompt_in_command = bool(
         prompt and tool in ("codex", "claude", "cursor") and
         getattr(config, "prompt_after_launch", False))
@@ -1223,12 +1371,10 @@ def cmd_run(args):
         # These CLIs accept an initial interactive prompt as positional argv.
         # Native and launcher PTYs must not depend on a later pasted Enter.
         launch_cmd.append(prompt)
-        local_fallback_cmd.append(prompt)
     if battach_target_binary:
         launch_cmd = replace_launcher_target_binary(
             launch_cmd, battach_target_binary)
 
-    inherit_env = not getattr(args, "no_inherit_env", False)
 
     # 2026-06-23 PDX hotfix (NARROW): rewrite launch_cmd to use the
     # ABSOLUTE executable path that readiness just resolved. This
@@ -1297,12 +1443,11 @@ def cmd_run(args):
     except Exception as e:
         log.warning("skill install skipped: %s", e)
     print("Starting %s agent %s..." % (tool, agent_id))
-    # F-08: launch with the SAME effective env preflight saw, and the
-    # SAME tmux binary preflight just version-checked. resolved["tmux"]
-    # may be missing if preflight short-circuited (it doesn't — error
-    # would have exited above), but fall back to TMUX_BIN defensively.
+    # Keep the binary pinned to the server created before preparation.
     from camc_pkg.transport import TMUX_BIN, ensure_camc_tmux_config
     resolved_tmux = resolved.get("tmux") or TMUX_BIN
+    existing = AgentStore().get(agent_id) or {}
+    resolved_tmux = existing.get("tmux_bin") or resolved_tmux
     # 2026-06-23 PDX hardening: ensure ~/.cam/configs/tmux.conf
     # exists so the new tmux server starts with camc's config rather
     # than the user's ~/.tmux.conf. Pass the resolved path through
@@ -1317,6 +1462,7 @@ def cmd_run(args):
     if api_plan and api_plan.get("proxy_required"):
         try:
             api_proxy_proc, proxy_port = _start_api_proxy(api_plan, agent_id)
+            launch["api_proxy"] = api_proxy_proc
             proxy_base = api_plan.get("proxy_base_url") or ""
             proxy_url = proxy_base + (api_plan.get("base_url_suffix") or "")
             if tool == "claude":
@@ -1343,6 +1489,10 @@ def cmd_run(args):
             _stop_api_proxy(api_proxy_proc)
             print_error("Runtime storage bootstrap failed: %s" % e)
             sys.exit(1)
+    # Apply after login-shell capture and tool-env overrides, immediately
+    # before launch, for both local and current-allocation execution.
+    for name in ("NO_COLOR", "NODE_DISABLE_COLORS"):
+        runtime.env.pop(name, None)
     battach_script_dir = ""
     auto_launch_script = False
     if tool_launcher:
@@ -1355,21 +1505,24 @@ def cmd_run(args):
                 "bootstrap_dirs") or [],
             "target_env": launcher_target_environment(
                 runtime.env, runtime_storage_info),
-            "target_unset": (getattr(config, "runtime", None) or {}).get(
-                "clear_environment") or [],
+            # battach can reintroduce color suppression from the existing
+            # allocation even though the local tmux environment is clean.
+            "target_unset": ["NO_COLOR", "NODE_DISABLE_COLORS"] + list(
+                (getattr(config, "runtime", None) or {}).get(
+                    "clear_environment") or []),
         }
         try:
             if "_auto_plan" in launcher_metadata:
                 launch_cmd, battach_script_dir = build_auto_launcher_command(
                     tool_launcher, launcher_metadata, launch_cmd,
-                    local_fallback_cmd, workdir, target_tool_binary,
+                    workdir, target_tool_binary,
                     preferred_tool_path=target_tool_path_hint,
                     version_args=target_tool_version_args,
                     exit_status_path=exit_status_path or None,
                     **launcher_command_kwargs)
                 launcher_metadata.pop("_auto_plan", None)
                 launcher_metadata["fallback_order"] = [
-                    "direct", "battach", "ssh", "qsub", "local"]
+                    "direct", "battach", "ssh", "qsub"]
                 if exit_status_path:
                     launcher_metadata["launch_status_file"] = (
                         exit_status_path + ".launcher")
@@ -1399,35 +1552,10 @@ def cmd_run(args):
                     pass
             print_error("Failed to prepare tool launch command: %s" % exc)
             sys.exit(1)
-    # battach's target-side one-shot script records the tool's status itself.
-    # Do not wrap the visible battach command in transport's generic shell
-    # status recorder; that produced a nested /bin/sh -c command in tmux.
-    tmux_exit_status_path = exit_status_path or None
-    if auto_launch_script or launcher_metadata.get("transport") == "battach":
-        tmux_exit_status_path = None
-    if not create_tmux_session(session, launch_cmd, workdir,
-                               env_setup=env_setup, inherit_env=inherit_env,
-                               env=runtime.env, tmux_bin=resolved_tmux,
-                               tmux_config=camc_tmux_config,
-                               exit_status_path=tmux_exit_status_path):
-        if battach_script_dir:
-            shutil.rmtree(battach_script_dir, ignore_errors=True)
-        _stop_api_proxy(api_proxy_proc)
-        overlay_info = (runtime_storage_info or {}).get("overlay")
-        if overlay_info:
-            try:
-                from camc_pkg.runtime_env import remove_agent_runtime_home
-                remove_agent_runtime_home(overlay_info, owner_id=agent_id)
-            except Exception:
-                pass
-        print_error("Failed to create tmux session for '%s'" % session)
-        print_info("Debug: %s -u -S %s/%s.sock new-session -d -s %s -c %s" %
-                   (resolved_tmux, SOCKETS_DIR, session, session, workdir))
-        sys.exit(1)
-
+    launch.update(command=launch_cmd, workdir=workdir, env=runtime.env,
+                  known_tool=known_tool, startup_timeout=max(600.0, config.startup_wait))
     if not known_tool and prompt:
-        time.sleep(config.startup_wait)
-        tmux_send_input(session, prompt, send_enter=True)
+        launch.update(prompt=prompt, startup_wait=config.startup_wait)
 
     # Snapshot the tmux binary + version that actually started this server.
     # tmux client/server protocol requires matching versions, so subsequent
@@ -1455,6 +1583,7 @@ def cmd_run(args):
     agent_rec = {
         "id": agent_id,
         "session_id": session_uuid,
+        "launch_id": getattr(args, "_launch_id", None),
         "task": {"name": name or "", "tool": tool if known_tool else "others",
                  "prompt": prompt,
                  # Launcher targets already receive adapter-owned autorun
@@ -1474,8 +1603,8 @@ def cmd_run(args):
         "context_name": ctx_name,
         "context_path": workdir,
         "transport_type": transport,
-        "status": "running",
-        "state": "initializing" if known_tool else "idle",
+        "status": "alive",
+        "state": "running", "phase": "initializing",
         "tmux_session": session,
         "tmux_socket": "",
         "tmux_bin": tmux_bin_used,
@@ -1513,6 +1642,7 @@ def cmd_run(args):
         sys.version_info[0], sys.version_info[1], sys.version_info[2])
     agent_rec["runtime"] = {
         "schema": "camc-runtime/1",
+        "worker_pid": (existing.get("runtime") or {}).get("worker_pid"),
         "python": {"bin": sys.executable, "version": _python_version},
         "tmux": {
             "bin":         tmux_bin_used,
@@ -1533,6 +1663,9 @@ def cmd_run(args):
             "tool_dir": tool_dir or "",
             "tool_env_keys": tool_env_keys,
             "tool_args": tool_args,
+            "tool_env": list(getattr(args, "tool_env", None) or []),
+            "tool_launcher": raw_tool_launcher,
+            "use_env_tool": use_env_tool,
             "exit_status_path": exit_status_path,
         },
         "shell": {
@@ -1546,9 +1679,8 @@ def cmd_run(args):
         agent_rec["runtime"]["launch_mode"] = "current_autorun_allocation"
         agent_rec["runtime"]["allocation"] = dict(current_allocation)
     if tool_launcher:
-        # Store structural metadata only. The raw template, its argv, the
-        # expanded target command, and runtime env can contain passwords,
-        # tokens, prompts, or API routing details and must not be persisted.
+        # Resolved transport metadata is structural; user-supplied launch
+        # settings are persisted separately in custom_launch for reboot.
         agent_rec["runtime"]["launcher"] = {
             "executable": (resolved or {}).get("launcher", ""),
             "target_tool": target_tool_binary or tool,
@@ -1564,16 +1696,26 @@ def cmd_run(args):
         "custom" if parse_tool_launcher(raw_tool_launcher) else "none")
     if prompt_in_command:
         agent_rec["task"]["prompt_in_command"] = True
-    store.save(agent_rec)
+    # Update only an existing, still-running request under the store
+    # lock. A concurrent stop/rm must never resurrect the agent.
+    accepted = []
+    def publish(agents):
+        for index, existing in enumerate(agents):
+            if (existing["id"] == agent_id and existing.get("status") == "alive"
+                    and existing.get("launch_id") == getattr(args, "_launch_id", None)):
+                agents[index] = agent_rec
+                accepted.append(True)
+                break
+        return agents
+    store._modify(publish)
+    if not accepted:
+        _stop_api_proxy(api_proxy_proc)
+        current = store.get(agent_id)
+        if not current or current.get("launch_id") == getattr(args, "_launch_id", None):
+            _cleanup_agent_runtime_overlay(agent_rec)
+        raise SystemExit(130)
     if tool == "codex":
         _spawn_codex_session_binder(agent_id, session, workdir, started_at)
-
-    if exit_status_path:
-        time.sleep(_CUSTOM_LAUNCH_EXIT_GRACE)
-        exit_code = _read_custom_launch_exit(exit_status_path)
-        if exit_code is not None and exit_code != 0:
-            print_error("Tool exited with code %d; tmux session retained (attach: camc attach %s)"
-                        % (exit_code, agent_id))
 
     # Spawn background monitor (boot + tool TOML during initializing).
     try:
@@ -1694,7 +1836,8 @@ def cmd_list(args):
             "tag": tag_str,
             "tool": _tf(a, "tool", "?"),
             "status": a.get("status", "?"),
-            "state": a.get("state") or "-",
+            "state": ("running/initializing" if a.get("phase") == "initializing"
+                      else a.get("state") or "-"),
             "prompt": (_tf(a, "prompt") or "")[:24],
             "updated": _time_ago(_recency(a) or None),
         }
@@ -1750,37 +1893,29 @@ def cmd_logs(args):
 
 
 def cmd_stop(args):
-    """Kill the tool process (e.g. Claude) but leave the tmux session alive.
-
-    The shell in tmux can then be reused with `camc run --resume` to pick up
-    the conversation, or adopted as a fresh agent. Use `camc kill` to also
-    tear down tmux.
-    """
+    """Stop pane 0's program and retain the tmux session with an empty shell."""
     store = AgentStore()
     a = store.get(args.id)
     if not a:
         sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
     session = _sf(a, "tmux_session")
-    killed_pid = None
-    if session and tmux_session_exists(session):
-        pid = _find_claude_pid(session)
-        if pid:
-            try:
-                os.kill(pid, 9)
-                killed_pid = pid
-            except OSError as e:
-                print_warning("Failed to kill PID %d: %s" % (pid, e))
-        else:
-            print_warning("No tool process found inside tmux session '%s'" % session)
-    else:
-        print_warning("tmux session not found; marking agent stopped anyway")
-    _kill_monitor(a)
-    _stop_agent_api_proxy(a, cleanup_home=False)
-    store.update(a["id"], status="stopped", exit_reason="Stopped by user", completed_at=_now_iso())
-    if killed_pid:
-        print("Stopped agent %s (killed PID %d, tmux session still alive)" % (a["id"], killed_pid))
-    else:
-        print("Stopped agent %s" % a["id"])
+    try:
+        if session and (_find_tmux_socket(session) or tmux_session_exists(session)):
+            tmux_stop_agent_pane(session)
+    except Exception:
+        print_error("Failed to stop pane 0; agent was not marked stopped")
+        raise SystemExit(1)
+    # Preparation may have published its final record while stop was running.
+    current = store.get(a["id"])
+    if current:
+        _kill_monitor(current)
+        _stop_agent_api_proxy(current, cleanup_home=False)
+        runtime = dict(current.get("runtime") or {})
+        runtime["preparing"] = False
+        store.update(a["id"], status="dead", state="stopped", runtime=runtime,
+                     exit_reason="Pane 0 stopped by user", completed_at=_now_iso())
+    _remove_launch_request(a["id"])
+    print("Stopped agent %s (pane 0 reset; tmux retained if present)" % a["id"])
 
 
 def cmd_exit(args):
@@ -1790,6 +1925,8 @@ def cmd_exit(args):
     if not a:
         sys.stderr.write("Error: agent '%s' not found\n" % args.id); sys.exit(1)
     session = _sf(a, "tmux_session")
+    if (a.get("runtime") or {}).get("preparing"):
+        return cmd_stop(args)
     if not session or not tmux_session_exists(session):
         print_error("tmux session not found for agent %s" % a["id"])
         sys.exit(1)
@@ -1797,7 +1934,7 @@ def cmd_exit(args):
     clean = graceful_exit(session, tool=_tf(a, "tool", "claude"))
     _kill_monitor(a)
     _stop_agent_api_proxy(a, cleanup_home=False)
-    store.update(a["id"], status="stopped",
+    store.update(a["id"], status="dead", state="stopped",
                  exit_reason="Exited cleanly" if clean else "Exited (process killed)",
                  completed_at=_now_iso())
     if clean:
@@ -1820,7 +1957,8 @@ def cmd_kill(args):
         print_warning("tmux session is still alive; preserving runtime overlay")
         return
     _cleanup_agent_runtime_overlay(a)
-    store.update(a["id"], status="killed", exit_reason="Force killed by user", completed_at=_now_iso())
+    _remove_launch_request(a["id"])
+    store.update(a["id"], status="dead", state="killed", exit_reason="Force killed by user", completed_at=_now_iso())
     print("Killed agent %s" % a["id"])
 
 
@@ -1897,7 +2035,7 @@ def cmd_add(args):
     if existing:
         agent_id = existing["id"]
         # Reactivate: set running, clear completion fields, update hostname
-        store.update(agent_id, status="running", state="idle",
+        store.update(agent_id, status="alive", state="idle", phase="started",
                      completed_at=None, exit_reason=None,
                      hostname=_sock.gethostname())
         # Update name if --name provided
@@ -1914,7 +2052,7 @@ def cmd_add(args):
         name = getattr(args, "name", None) or ""
         cwd = os.getcwd()
         # Capture Claude session UUID before any subsequent fallback logic
-        # (see cmd_heal for why — reboot needs it).
+        # (used by archive and explicit resume).
         claude_pid = _find_claude_pid(args.session)
         session_uuid = _find_session_id(
             agent_id, claude_pid, workdir=cwd, tmux_session=args.session,
@@ -1928,7 +2066,7 @@ def cmd_add(args):
             "context_name": ctx_name,
             "context_path": cwd,
             "transport_type": "local",
-            "status": "running",
+            "status": "alive",
             "state": None,
             "tmux_session": args.session,
             "tmux_socket": "",
@@ -2202,7 +2340,7 @@ def cmd_archive(args):
     For older agents whose session_id was never tracked (or is the synthetic
     <aid>-0000-… placeholder), we run the same 4-layer extractor `camc heal`
     uses (cmdline → /proc/fd → project subdir → jsonl). When a real session_id
-    is recovered we persist it back into agents.json so next archive/reboot
+    is recovered we persist it back into agents.json so the next archive operation
     can skip the search. If the extractor falls through to the synthetic form
     we accept it (it's the actual session UUID for camc-run agents).
     """
@@ -2998,6 +3136,7 @@ def cmd_rm(args):
     # only after the tmux/tool process is gone; shared host-local targets are
     # deliberately retained for other agents on this host.
     _cleanup_agent_runtime_overlay(a)
+    _remove_launch_request(a["id"])
     store.remove(a["id"])
     print("Removed agent %s" % a["id"])
 
@@ -3005,8 +3144,7 @@ def cmd_rm(args):
 def cmd_prune(args):
     """Drift-fix by default; --orphans also deletes orphan records + files.
 
-    Default (no flags): scan agents.json. If a record's status says
-    not-running but tmux is actually alive, restore status to running.
+    Default: preserve recorded tool states, including retained empty shells.
     Nothing is deleted.
 
     --orphans: additionally delete records whose tmux session is dead
@@ -3029,7 +3167,6 @@ def cmd_prune(args):
     store = AgentStore()
     agents = store.list()
 
-    drift_fixed = 0
     orphan_removed = 0
     files_cleaned = 0
 
@@ -3042,31 +3179,13 @@ def cmd_prune(args):
         if s:
             known_sessions.add(s)
 
-        if a.get("status") in ("running", "starting", "pending"):
+        if a.get("status") == "alive":
             continue
-
         session = _sf(a, "tmux_session")
-        alive = False
-        if session:
-            sock = _find_tmux_socket(session)
-            if sock:
-                try:
-                    subprocess.run(
-                        ["tmux", "-S", sock, "has-session", "-t", session],
-                        check=True, stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE, timeout=3)
-                    alive = True
-                except Exception:
-                    pass
-
+        alive = bool(session and tmux_session_exists(session))
         if alive:
-            if dry:
-                print("would restore %s → running (tmux alive)" % a["id"])
-            else:
-                a["status"] = "running"
-                store.save(a)
-            drift_fixed += 1
-        elif do_orphans:
+            continue  # A retained tmux shell does not revive a stopped tool.
+        if do_orphans:
             if dry:
                 print("would remove orphan record %s (tmux dead)" % a["id"])
             else:
@@ -3121,8 +3240,6 @@ def cmd_prune(args):
                 files_cleaned += 1
 
     parts = []
-    if drift_fixed:
-        parts.append("restored %d (tmux alive)" % drift_fixed)
     if do_orphans:
         parts.append("removed %d orphan%s" % (
             orphan_removed, "s" if orphan_removed != 1 else ""))
@@ -3505,7 +3622,7 @@ def _project_dirs_for_workdir(workdir):
     Claude's canonical encoding replaces every '/', '.', and '_' with '-'
     (e.g. /home/scratch.hren_gpu_1/test → -home-scratch-hren-gpu-1-test).
     Older sessions used more conservative encodings that kept dots and/or
-    underscores, so we also try those variants so heal/reboot can find
+    underscores, so we also try those variants so heal/archive can find
     pre-existing project dirs.
     """
     wd = workdir.strip("/")
@@ -3754,395 +3871,86 @@ def graceful_exit(session, timeout=15, tool="claude"):
     return False
 
 
-def _recover_remote_codex_session(agent, store):
-    """Use the exact pane's status receipt, never the newest shared rollout."""
-    if not record_uses_tool_launcher(agent) or agent.get("state") != "idle":
-        return None
-    session = _sf(agent, "tmux_session")
-    if not session or not tmux_session_exists(session):
-        return None
-    screen = capture_tmux(session) or ""
-    # Do not overwrite input which the user has already composed.
-    prompt_lines = [line for line in screen.splitlines()
-                    if re.match(r"^\s*[›❯>]", line)]
-    if prompt_lines and prompt_lines[-1].strip() not in (
-            "› Ask Codex to do anything", "›", "❯", ">"):
-        return None
-    tmux_send_input(session, "/status", send_enter=True)
-    storage = (agent.get("runtime") or {}).get("storage") or {}
-    home = ((storage.get("overlay") or {}).get("path") or
-            storage.get("shared_home") or os.path.expanduser("~/.codex"))
-    workdir = _sf(agent, "context_path")
-    import glob
-    for attempt in range(20):
-        screen = capture_tmux(session) or ""
-        receipt = screen.rsplit("/status", 1)[-1] if "/status" in screen else ""
-        ids = re.findall(r"(?m)^\s*Session:\s*(%s)\s*$" % _UUID_RE_STR, receipt)
-        directory = re.search(r"(?m)^\s*Directory:\s*(.+?)\s*$", receipt)
-        if (len(set(ids)) == 1 and directory and
-                os.path.realpath(directory.group(1)) == os.path.realpath(workdir)):
-            session_id = ids[0]
-            paths = glob.glob(os.path.join(
-                home, "sessions", "*", "*", "*",
-                "rollout-*-%s.jsonl" % session_id))
-            paths = [path for path in paths if _codex_rollout_metadata(
-                path, workdir, expected_id=session_id,
-                started_at=_sf(agent, "started_at"))]
-            if len(paths) == 1:
-                store.update(agent["id"], session_id=session_id,
-                             session_path=paths[0], session_binding="bound")
-                agent.update(session_id=session_id, session_path=paths[0],
-                             session_binding="bound")
-                return session_id
-        if attempt == 2 and not receipt:
-            tmux_send_key(session, "Enter")
-        time.sleep(.2)
-    return None
-
-
-def _prepare_reboot_launcher(agent, tool, workdir, requested=None):
-    """Resolve reboot transports before disturbing the existing session."""
-    record = agent.get("runtime") or {}
-    if requested is None:
-        requested = record.get("launcher_mode")
-        if requested is None and (record.get("launcher") or {}).get("preset") == "auto":
-            requested = "auto"
-        if requested is None:
-            requested = default_tool_launcher()
-        if requested == "custom":
-            raise ValueError("reboot requires the custom --tool-launcher prefix again")
-    preset = named_tool_launcher(requested)
-    prefix = [] if preset else parse_tool_launcher(requested)
-    if not preset and not prefix:
-        return None
-    from camc_pkg.runtime_env import build_runtime_env
-    runtime = build_runtime_env()
-    config = _load_config(tool)
-    allocation_env = dict(os.environ)
-    allocation_env.update(runtime.env)
-    allocation = (detect_current_autorun_allocation(allocation_env)
-                  if preset else None)
-    validate_tool_launcher_api(
-        "none" if allocation else requested,
-        (agent.get("api") or {}).get("name"))
-    binary = launcher_target_binary(config.command)
-    readiness = getattr(config, "readiness", None) or {}
-    preferred = resolve_local_target_tool_path(
-        tool, binary, runtime.env, configured_binary=readiness.get("binary"))
-    version_args = readiness.get("version_args")
-    metadata = {}
-    if allocation:
-        prefix = []
-    elif preset:
-        prefix, metadata, notices = resolve_named_tool_launcher(
-            preset, tool, workdir, runtime.env, target_tool=binary,
-            target_tool_path=preferred, target_tool_version_args=version_args)
-        for notice in notices:
-            print_info(notice)
-        if not prefix:
-            raise ValueError("reboot auto requires a remote launcher; local fallback is disabled")
-    return {"runtime": runtime, "config": config, "prefix": prefix,
-            "metadata": metadata, "allocation": allocation,
-            "binary": binary, "preferred": preferred,
-            "version_args": version_args, "mode": "auto" if preset else "custom"}
-
-
 def cmd_migrate(args):
-    """Restart an agent with session resume (preserves conversation history)."""
+    """Recreate this agent's tmux and start a fresh tool session with its ID."""
     store = AgentStore()
-    a = store.get(args.id)
-    if not a:
-        sys.stderr.write("Error: agent '%s' not found\n" % args.id)
-        sys.exit(1)
-
-    tool = _tf(a, "tool", "claude")
-    if tool not in ("claude", "codex"):
-        print_error("Reboot with session resume only works with Claude/Codex agents (got: %s)" % tool)
-        sys.exit(1)
-
-    old_id = a["id"]
-    old_session = _sf(a, "tmux_session")
-    name = _tf(a, "name") or old_id
-    workdir = _sf(a, "context_path", os.getcwd())
-    old_session_id = a.get("session_id", "")
-    api_plan = None
-    old_api = a.get("api") if isinstance(a.get("api"), dict) else None
-    if tool == "codex":
-        if not old_session_id or a.get("session_binding") != "bound":
-            old_session_id = _recover_remote_codex_session(a, store)
-            if not old_session_id:
-                print_error("Cannot reboot Codex: a bound session_id is required; remote recovery requires an idle pane with no pending input")
-                sys.exit(1)
-        if old_api:
-            from camc_pkg.api_resolver import resolve_run_plan
-            try:
-                api_plan = resolve_run_plan(tool, old_api.get("name"))
-            except ValueError as e:
-                print_error("Cannot restore API: %s" % e)
-                sys.exit(1)
-            if api_plan.get("provider") != old_api.get("provider"):
-                print_error("Cannot restore API: saved provider no longer matches")
-                sys.exit(1)
-            if api_plan.get("model") != old_api.get("model"):
-                log.info("Migrating saved API model %s -> %s",
-                         old_api.get("model"), api_plan.get("model"))
-            # Curated profiles can move a retired model alias to a replacement
-            # while retaining the API name. Persist that migration when the
-            # resumed agent record is saved below.
-            old_api["model"] = api_plan.get("model")
-            old_api["provider"] = api_plan.get("provider")
-            if api_plan.get("client_model"):
-                old_api["client_model"] = api_plan.get("client_model")
-            try:
-                old_proxy_port = int(old_api.get("proxy_port") or 0)
-            except (TypeError, ValueError):
-                old_proxy_port = 0
-            if old_proxy_port <= 0:
-                print_error("Cannot restore API: saved proxy port is missing")
-                sys.exit(1)
-    # If session_id is the synthetic deterministic form, treat it as absent so
-    # the 4-layer extractor can try to find the real Claude session UUID.
-    synthetic = old_session_id == "%s-0000-0000-0000-000000000000" % old_id
-    if not old_session_id or synthetic:
-        claude_pid = _find_claude_pid(old_session) if old_session else None
-        found = _find_session_id(
-            old_id, claude_pid, workdir=workdir, tmux_session=old_session,
-        )
-        # _find_session_id returns the synthetic form as a last resort — accept
-        # only if it's a real session (either from fd, or at least a uuid that
-        # isn't all zeros after the agent-id prefix).
-        if found and found != "%s-0000-0000-0000-000000000000" % old_id:
-            old_session_id = found
-            log.info("Recovered session_id for %s via 4-layer extract: %s", old_id, old_session_id)
-    tags = _tf(a, "tags")
-    tags = tags if isinstance(tags, list) else []
-
+    agent = store.get(args.id)
+    if not agent:
+        print_error("Agent '%s' not found" % args.id)
+        raise SystemExit(1)
+    if getattr(args, "to", None):
+        print_error("Use --tool-launcher for remote reboot; --to is not supported")
+        raise SystemExit(2)
+    runtime = agent.get("runtime") or {}
+    custom = runtime.get("custom_launch") or {}
+    launcher = getattr(args, "tool_launcher", None)
+    if launcher is None:
+        launcher = custom.get("tool_launcher")
+    if launcher is None:
+        if runtime.get("launcher_mode") == "custom":
+            print_error("reboot requires the custom --tool-launcher prefix again")
+            raise SystemExit(2)
+        launcher = default_tool_launcher()
     try:
-        reboot_launcher = _prepare_reboot_launcher(
-            a, tool, workdir, getattr(args, "tool_launcher", None))
-        if reboot_launcher and getattr(args, "to", None):
-            raise ValueError("--to cannot be combined with --tool-launcher")
+        if not named_tool_launcher(launcher):
+            parse_tool_launcher(launcher)
     except ValueError as exc:
         print_error(str(exc))
-        sys.exit(2)
-
-    print_info("Rebooting agent %s (%s)..." % (name, old_id))
-
-    # Re-inject system_prompt block if recorded and missing from file
-    # (e.g. user wiped the file, or rebooting after a host move).
-    task_rec = a.get("task") or {}
-    sp_text = task_rec.get("system_prompt") or ""
-    sp_file_path = task_rec.get("system_prompt_file") or ""
-    if sp_text and sp_file_path:
-        if not has_block(sp_file_path, old_id):
-            try:
-                write_block(sp_file_path, old_id, sp_text)
-                print_info("System prompt re-injected at %s" % sp_file_path)
-            except Exception as e:
-                print_warning("Failed to re-inject system prompt: %s" % e)
-
-    # 1. Graceful exit — same as `camc exit`. Claude goes away, tmux stays.
-    if not (old_session and tmux_session_exists(old_session)):
-        print_error("No tmux session found for agent")
-        sys.exit(1)
-    print_info("Sending graceful exit sequence...")
-    clean = graceful_exit(old_session, tool=tool)
-    if record_uses_tool_launcher(a):
-        # Remote PIDs are invisible to the submit host's process finder.
-        # Claude's /exit may detach to its background-session picker; two
-        # interrupts leave that picker and release the transport as well.
-        tmux_send_key(old_session, "C-c")
-        tmux_send_key(old_session, "C-c")
-        time.sleep(2)
-    print_info("Agent exited cleanly" if clean else "Agent killed (exit not clean)")
-    # Let the shell prompt settle before typing into it.
-    time.sleep(2)
-
-    # 2. Guard against the session file still being held. graceful_exit kills
-    # the process, but if anything else somehow is still writing that .jsonl,
-    # two writers will corrupt it. Same invariant as `camc run --resume`.
-    if old_session_id and tool == "claude":
-        in_use = _find_session_in_use(old_session_id)
-        if in_use:
-            print_error("Cannot resume: session %s still in use by PID(s) %s" %
-                        (old_session_id, ", ".join(str(p) for p in in_use)))
-            sys.exit(1)
-
-    # 3. Kill old monitor (new one will be spawned after relaunch).
-    _kill_monitor(a)
-
-    config = reboot_launcher["config"] if reboot_launcher else _load_config(tool)
-    runtime_record = a.get("runtime") if isinstance(a.get("runtime"), dict) else {}
-    prior_storage = runtime_record.get("storage")
-    if not isinstance(prior_storage, dict):
-        prior_storage = {}
-    if api_plan:
-        # Reboot replaces only the proxy process.  Runtime storage is refreshed
-        # after the old tool process exits and before resume starts.
-        _stop_agent_api_proxy(a, cleanup_home=False)
-        try:
-            old_proxy_pid = int(old_api.get("proxy_pid") or 0)
-        except (TypeError, ValueError):
-            old_proxy_pid = 0
-        for _ in range(40):
-            if old_proxy_pid <= 0 or not os.path.exists(
-                    "/proc/%d" % old_proxy_pid):
-                break
-            time.sleep(.05)
-        try:
-            proxy_proc, proxy_port = _start_api_proxy(
-                api_plan, old_id, port=old_proxy_port)
-        except Exception as e:
-            print_error("API proxy failed to restart: %s" % e)
-            sys.exit(1)
-        api_plan["proxy_port"] = proxy_port
-        old_api["proxy_pid"] = proxy_proc.pid
-        old_api["proxy_port"] = proxy_port
-        proxy_url = "http://127.0.0.1:%d%s" % (
-            proxy_port, api_plan.get("base_url_suffix") or "")
-
-    runtime_spec = getattr(config, "runtime", None)
-    runtime_storage_info = None
-    runtime_reboot_env = None
-    if runtime_spec:
-        try:
-            from camc_pkg.runtime_env import (
-                build_runtime_env, configure_agent_runtime_home)
-            reboot_runtime = (reboot_launcher["runtime"] if reboot_launcher
-                              else build_runtime_env())
-            runtime_reboot_env = reboot_runtime.env
-            runtime_storage_info = configure_agent_runtime_home(
-                old_id, config, reboot_runtime, api_plan=api_plan,
-                api_base_url=proxy_url if api_plan else "",
-                isolate_tool_home=prior_storage.get("isolate_tool_home"),
-                **({"launcher": True} if reboot_launcher else {}))
-            runtime_record = a.setdefault("runtime", {})
-            runtime_record.pop("home", None)
-            runtime_record["storage"] = runtime_storage_info
-        except Exception as e:
-            if api_plan:
-                _stop_api_proxy(proxy_proc)
-            print_error("Runtime storage refresh failed: %s" % e)
-            sys.exit(1)
-
-    # 4. Relaunch Claude in the SAME tmux session: cd + claude --resume.
-    new_session_uuid = "%s-0000-0000-0000-000000000000" % old_id
-    launch_cmd = _build_command(config, "", workdir)
-    if tool == "codex":
-        launch_cmd += _codex_api_model_override(api_plan)
-        launch_cmd += _codex_api_proxy_override(api_plan)
-        launch_cmd += ["resume", old_session_id]
-    elif old_session_id:
-        launch_cmd += ["--resume", old_session_id]
-    else:
-        launch_cmd += ["--session-id", new_session_uuid]
-
-    if reboot_launcher:
-        launch_cmd = without_launcher_auto_permission(launch_cmd)
-        launch_cmd += list(getattr(config, "launcher_autorun_args", []) or [])
-        info = reboot_launcher
-        metadata = info["metadata"]
-        target_path = metadata.pop("_target_tool_path", "") or info["preferred"]
-        if target_path:
-            launch_cmd = replace_launcher_target_binary(launch_cmd, target_path)
-        storage = runtime_storage_info or {}
-        kwargs = {
-            "bootstrap_dirs": storage.get("bootstrap_dirs") or [],
-            "target_env": launcher_target_environment(info["runtime"].env, storage),
-            "target_unset": (runtime_spec or {}).get("clear_environment") or [],
-        }
-        status_path = os.path.join(PIDS_DIR, "%s.tool-exit" % old_id)
-        os.makedirs(PIDS_DIR, exist_ok=True)
-        for path in (status_path, status_path + ".launcher"):
-            try:
-                os.unlink(path)
-            except FileNotFoundError:
-                pass
-        if "_auto_plan" in metadata:
-            launch_cmd, _script_dir = build_auto_launcher_command(
-                info["prefix"], metadata, launch_cmd, [], workdir,
-                info["binary"], preferred_tool_path=info["preferred"],
-                version_args=info["version_args"], exit_status_path=status_path,
-                allow_local_fallback=False, **kwargs)
-            metadata.pop("_auto_plan", None)
-            metadata["launch_status_file"] = status_path + ".launcher"
-        elif info["prefix"]:
-            resolved_command = build_resolved_tool_command(
-                launch_cmd, info["binary"], workdir,
-                preferred_tool_path=info["preferred"], version_args=info["version_args"])
-            launch_cmd = build_launcher_command(info["prefix"], resolved_command, **kwargs)
-        else:
-            env_prefix = ["env"]
-            for key in kwargs["target_unset"]:
-                env_prefix += ["-u", key]
-            env_prefix += ["%s=%s" % (key, value) for key, value in
-                           sorted(kwargs["target_env"].items())]
-            launch_cmd = env_prefix + launch_cmd
-        runtime_record = a.setdefault("runtime", {})
-        runtime_record["launcher_mode"] = info["mode"]
-        runtime_record.pop("launcher", None)
-        runtime_record.pop("allocation", None)
-        runtime_record.pop("launch_mode", None)
-        if info["allocation"]:
-            runtime_record["allocation"] = info["allocation"]
-            runtime_record["launch_mode"] = "current_autorun_allocation"
-        else:
-            runtime_record["launcher"] = dict(metadata, target_tool=info["binary"])
-        runtime_record.setdefault("custom_launch", {})["exit_status_path"] = status_path
-        a.setdefault("task", {})["auto_confirm"] = False
-    elif getattr(args, "tool_launcher", None) is not None:
-        runtime_record = a.setdefault("runtime", {})
-        runtime_record["launcher_mode"] = "none"
-        for key in ("launcher", "allocation", "launch_mode"):
-            runtime_record.pop(key, None)
-
-    if runtime_storage_info and not reboot_launcher:
-        environment = str(runtime_storage_info.get("environment") or "")
-        overlay = runtime_storage_info.get("overlay") or {}
-        home_path = str(overlay.get("path") or
-                        runtime_storage_info.get("shared_home") or "")
-        if _TOOL_ENV_NAME_RE.match(environment) and home_path:
-            env_prefix = ["env"]
-            for name in (runtime_spec.get("clear_environment") or []):
-                if _TOOL_ENV_NAME_RE.match(str(name)):
-                    env_prefix += ["-u", str(name)]
-            if runtime_reboot_env is not None:
-                clean_path = str(runtime_reboot_env.get("PATH") or "")
-                if clean_path:
-                    env_prefix.append("PATH=%s" % clean_path)
-            launch_cmd = env_prefix + ["%s=%s" % (environment, home_path)] + launch_cmd
-
-    import shlex
-    cmd_str = "cd %s && %s" % (shlex.quote(workdir), " ".join(shlex.quote(arg) for arg in launch_cmd))
-    tmux_send_input(old_session, cmd_str, send_enter=True)
-
-    # 5. Update agent record (same ID, preserve session_id).
-    a["session_id"] = old_session_id or new_session_uuid
-    a["status"] = "running"
-    a["state"] = "initializing"
-    a["completed_at"] = None
-    a["exit_reason"] = None
-    a.get("task", {})["prompt"] = "(resumed)"
-    a.setdefault("task", {})["prompt_in_command"] = True
-    store.save(a)
-
-    # 5. Restart monitor
+        raise SystemExit(2)
+    overrides = getattr(args, "tool_env", None) or []
+    override_keys = {entry.split("=", 1)[0] for entry in overrides}
+    tool_env = [entry for entry in custom.get("tool_env", [])
+                if entry.split("=", 1)[0] not in override_keys] + overrides
     try:
-        proc = subprocess.Popen(
-            [sys.executable, _CAMC_SCRIPT, "_monitor", old_id] if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg", "_monitor", old_id],
-            stdout=subprocess.DEVNULL,
-            stderr=open(os.path.join(LOGS_DIR, "monitor-%s.stderr" % old_id), "a"),
-            start_new_session=True)
-        store.update(old_id, pid=proc.pid)
-    except Exception as e:
-        print_warning("Monitor failed to start: %s" % e)
-
-    print_success("Agent rebooted: %s (%s)" % (name, old_id))
-    if old_session_id:
-        print("  Resumed from: %s" % old_session_id)
-    print("  Session ID: %s" % (old_session_id or new_session_uuid))
-    print()
-    print("  Attach: camc attach %s" % old_id)
+        _apply_tool_env(argparse.Namespace(env={}, path=""), tool_env)
+        tool_args = getattr(args, "tool_args", None)
+        if tool_args is None:
+            tool_args = [" ".join(shlex.quote(arg) for arg in custom.get("tool_args") or [])]
+        _parse_tool_args(tool_args)
+    except ValueError as exc:
+        print_error(str(exc))
+        raise SystemExit(2)
+    supplied = {entry.split("=", 1)[0] for entry in tool_env if "=" in entry}
+    if set(custom.get("tool_env_keys") or []) - supplied:
+        print_error("reboot requires the original --tool-env overrides again (values are not stored)")
+        raise SystemExit(2)
+    tool = _tf(agent, "requested_tool") or _tf(agent, "tool", "codex")
+    api = agent.get("api") or {}
+    run_args = argparse.Namespace(
+        tool=tool, path=_sf(agent, "context_path") or os.getcwd(),
+        name=_tf(agent, "name") or agent["id"], prompt="",
+        tag=_tf(agent, "tags") or [], tool_launcher=launcher,
+        tool_dir=getattr(args, "tool_dir", None) or custom.get("tool_dir") or None,
+        tool_env=tool_env, tool_args=tool_args,
+        use_env_tool=(custom.get("use_env_tool", False)
+                      if getattr(args, "use_env_tool", None) is None else args.use_env_tool),
+        isolate_tool_home=(runtime.get("storage") or {}).get("isolate_tool_home"),
+        api=api.get("name"), no_default_api=not bool(api.get("name")),
+        system_prompt=_tf(agent, "system_prompt") or None,
+        auto_exit=bool(_tf(agent, "auto_exit", False)),
+        auto_exit_enable=bool(_tf(agent, "auto_exit_enable", False)),
+        _reboot=True,
+    )
+    session = _sf(agent, "tmux_session")
+    if session and tmux_session_exists(session):
+        if not tmux_kill_session(session):
+            print_error("Failed to destroy old tmux; reboot aborted")
+            raise SystemExit(1)
+        # kill-session is asynchronous. Wait for the old session to disappear
+        # before creating the new one with the same name/socket.
+        deadline = time.monotonic() + 3
+        while tmux_session_exists(session):
+            if time.monotonic() >= deadline:
+                print_error("Old tmux is still alive; reboot aborted")
+                raise SystemExit(1)
+            time.sleep(.05)
+    current = store.get(agent["id"]) or agent
+    _kill_monitor(current)
+    _stop_agent_api_proxy(current, cleanup_home=False)
+    store.update(agent["id"], status="dead", state="stopped", pid=None,
+                 runtime=dict(runtime, preparing=False))
+    _remove_launch_request(agent["id"])
+    cmd_run(run_args, agent_id=agent["id"])
 
 
 def cmd_attach(args):
@@ -4151,7 +3959,7 @@ def cmd_attach(args):
     if not agent_id:
         # No ID given — attach to most recent running agent
         agents = store.list()
-        running = [a for a in agents if a.get("status") == "running"]
+        running = [a for a in agents if a.get("status") == "alive"]
         running.sort(key=lambda x: x.get("started_at", ""), reverse=True)
         if not running:
             sys.stderr.write("Error: no running agents\n"); sys.exit(1)
@@ -4250,6 +4058,7 @@ def cmd_status(args):
             ("Tool", _tf(a, "tool", "?")),
             ("Status", a.get("status", "?")),
             ("State", a.get("state") or "-"),
+            ("Phase", a.get("phase") or "-"),
             ("Path", _sf(a, "context_path", "?")),
             ("Session", _sf(a, "tmux_session", "?")),
             ("Session ID", sid or None),
@@ -4446,7 +4255,8 @@ def _restart_local_monitors():
     for agent in store.list():
         aid = agent.get("id")
         session = _sf(agent, "tmux_session")
-        if (agent.get("status") != "running" or not aid or not session
+        if (agent.get("status") != "alive" or not aid or not session
+                or (agent.get("runtime") or {}).get("preparing")
                 or (agent.get("hostname")
                     and not _is_same_host(agent["hostname"], hostname))
                 or not tmux_session_exists(session)):
@@ -4500,59 +4310,192 @@ def _restart_local_monitors():
     return restarted, failed, skipped
 
 
+def _live_tool_identity(pid, tool):
+    """Return a PID/start-time identity only for an owned, live tool process."""
+    try:
+        root = "/proc/%d" % int(pid)
+        if os.stat(root).st_uid != os.getuid():
+            return None
+        with open(root + "/stat") as stream:
+            fields = stream.read().rsplit(")", 1)[1].split()
+        if fields[0] in ("Z", "X"):
+            return None
+        with open(root + "/cmdline", "rb") as stream:
+            argv = [p.decode("utf-8", errors="replace")
+                    for p in stream.read().split(b"\0") if p]
+        if not argv:
+            return None
+        names = {tool, "cursor-agent" if tool == "cursor" else tool}
+        executable = os.path.basename(argv[0])
+        matched = executable in names
+        # Inspect the script position, never arbitrary prompt/shell arguments.
+        if len(argv) > 1 and (executable in ("node", "nodejs", "bun")
+                              or executable.startswith("python")):
+            script = argv[1]
+            matched = os.path.basename(script) in names
+            packages = {"codex": "@openai/codex/", "claude": "@anthropic-ai/claude-code/",
+                        "cursor": "cursor-agent/", "pi": "pi-coding-agent/"}
+            matched = matched or (packages.get(tool, "\0") in script
+                                  and script.endswith((".js", ".mjs", ".cjs")))
+        return (int(pid), fields[19]) if matched else None
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _find_live_agent_tool(agent):
+    """Return (tool, identity), ('', empty-shell identity), or None (unknown)."""
+    from camc_pkg.transport import _tmux_base
+    session = _sf(agent, "tmux_session")
+    tool = os.path.basename(_tf(agent, "requested_tool") or _tf(agent, "tool", ""))
+    if not session or not tool:
+        return None
+    rc, output = _run(_tmux_base(session) + ["display-message", "-p", "-t",
+                     session + ":0.0", "#{pane_pid} #{pane_dead}"], timeout=5)
+    values = output.split()
+    if rc or len(values) != 2 or values[1] != "0" or not values[0].isdigit():
+        return None
+    pending, seen = [int(values[0])], set()
+    while pending and len(seen) < 128:
+        pid = pending.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        identity = _live_tool_identity(pid, tool)
+        if identity:
+            return tool, identity
+        pending.extend(_proc_children(pid))
+    # Only a verified childless shell is evidence of an empty retained pane.
+    # Failure to query processes, or a transport child, remains inconclusive.
+    root = int(values[0])
+    for shell in ("sh", "bash", "tcsh", "csh", "zsh", "fish", "dash"):
+        identity = _live_tool_identity(root, shell)
+        if identity:
+            try:
+                with open("/proc/%d/task/%d/children" % (root, root)) as stream:
+                    if not stream.read().strip():
+                        return "", (shell, identity)
+            except OSError:
+                pass
+            break
+    return None
+
+
+def _heal_live_agent_states(store, hostname, dry_run=False):
+    """Reconcile stale terminal/activity states using actual local tool evidence."""
+    from camc_pkg.detection import is_ready_for_input
+    from camc_pkg.transport import tmux_cursor_flag
+    repaired = []
+    for agent in store.list():
+        host = agent.get("hostname")
+        if host and not _is_same_host(host, hostname):
+            continue
+        if agent.get("phase") == "initializing":
+            continue  # The launch worker/boot monitor still owns readiness.
+        found = _find_live_agent_tool(agent)
+        if not found:
+            continue
+        tool, identity = found
+        empty = not tool
+        if empty:
+            if agent.get("status") == "dead":
+                continue
+            tool, identity = identity
+        session = _sf(agent, "tmux_session")
+        status, state = ("dead", "failed") if empty else ("alive", "running")
+        if not empty and tool in ("claude", "codex", "cursor", "pi"):
+            config = _load_config(tool)
+            output = capture_tmux(session, lines=128)
+            tail = "\n".join(output.splitlines()[-5:])
+            busy = config.busy_pattern and config.busy_pattern.search(tail)
+            if not busy and is_ready_for_input(
+                    output, config, cursor_flag=tmux_cursor_flag(session)):
+                state = "idle"
+        if ((agent.get("status"), agent.get("state"), agent.get("phase")) == (
+                "alive", state, "started") and not agent.get("completed_at")
+                and not agent.get("exit_reason")):
+            continue
+        if dry_run:
+            repaired.append(agent["id"])
+            print("  %s: would repair to %s/%s (local process verified)" %
+                  (agent["id"], status, state))
+            continue
+        changed = []
+        def repair(records):
+            for current in records:
+                if current["id"] != agent["id"]:
+                    continue
+                # A concurrent stop/reboot wins over this delayed observation.
+                keys = ("launch_id", "status", "state", "completed_at", "exit_reason",
+                        "tmux_session", "started_at")
+                if any(current.get(k) != agent.get(k) for k in keys):
+                    break
+                if _live_tool_identity(identity[0], tool) != identity:
+                    break
+                if empty:
+                    try:
+                        with open("/proc/%d/task/%d/children" % (identity[0], identity[0])) as stream:
+                            if stream.read().strip():
+                                break
+                    except OSError:
+                        break
+                if current.get("status") == "dead":
+                    receipt = ((current.get("runtime") or {}).get("custom_launch") or {}).get("exit_status_path")
+                    if receipt:
+                        try:
+                            os.unlink(receipt)  # A live tool disproves this old exit receipt.
+                        except FileNotFoundError:
+                            pass
+                        except OSError:
+                            break
+                current.update(status=status, state=state, phase=None if empty else "started",
+                               completed_at=_now_iso() if empty else None,
+                               exit_reason="No tool process remains in pane 0 (heal)" if empty else None,
+                               monitor_error=None)
+                current["runtime"] = dict(current.get("runtime") or {}, preparing=False)
+                changed.append(current["id"])
+                break
+            return records
+        store._modify(repair)
+        if changed:
+            repaired.extend(changed)
+            print("  %s (%s): %s verified -> %s/%s" % (
+                _tf(agent, "name") or agent["id"], agent["id"],
+                "empty shell" if empty else "live tool", status, state))
+    return repaired
+
+
 def _do_heal(restart_cron=False):
-    """Shared heal body: resume, restart monitors, orphan adopt, maintenance."""
+    """Repair running-agent monitors and maintain local runtime records."""
     my_hostname = _sock.gethostname()
     store = AgentStore()
+    _heal_live_agent_states(store, my_hostname)
     agents = store.list()
 
-    # --- Phase 1: Resume agents with live sessions but terminal status ---
-    terminal = [a for a in agents if a.get("status") in ("completed", "failed", "stopped")]
-    resumed = 0
-    for a in terminal:
-        agent_host = a.get("hostname")
-        if agent_host and not _is_same_host(agent_host, my_hostname):
-            continue
-        session = _sf(a, "tmux_session")
-        if not session:
-            continue
-        transport = a.get("transport_type", "local")
-        if transport != "local":
-            continue
-        if not tmux_session_exists(session):
-            continue
-        aid = a["id"]
-        name = _tf(a, "name") or aid
-        # Session still alive but agent marked terminal — resume it
-        store.update(aid, status="running", state="idle",
-                     completed_at=None, exit_reason=None)
-        # Spawn monitor
-        try:
-            proc = subprocess.Popen(
-                [sys.executable, _CAMC_SCRIPT, "_monitor", aid] if _CAMC_SCRIPT else [sys.executable, "-m", "camc_pkg", "_monitor", aid],
-                stdout=subprocess.DEVNULL,
-                stderr=open(os.path.join(LOGS_DIR, "monitor-%s.stderr" % aid), "a"),
-                start_new_session=True)
-            store.update(aid, pid=proc.pid)
-            print("  %s (%s): resumed (session alive, PID %d)" % (name, aid, proc.pid))
-        except Exception as e:
-            print("  %s (%s): resume failed: %s" % (name, aid, e))
-        resumed += 1
-    if resumed:
-        print("Resumed %d agent(s) with live sessions" % resumed)
-        # Re-read agents list after resume updates
-        agents = store.list()
-
-    # --- Phase 2: Check running agents, restart dead monitors ---
-    running = [a for a in agents if a.get("status") == "running"]
-    if not running and not resumed:
+    # A live tmux can be the empty shell retained after stop/tool exit.
+    # Terminal records without verified live tools remain terminal.
+    running = [a for a in agents if a.get("status") == "alive"]
+    if not running:
         print("No running agents.")
-        return
 
     healed = 0
     ok = 0
     skipped = 0
     for a in running:
+        if (a.get("runtime") or {}).get("preparing"):
+            worker = (a.get("runtime") or {}).get("worker_pid")
+            started = _parse_iso_timestamp(a.get("started_at"))
+            age = time.time() - started.timestamp() if started else 31
+            if a.get("hostname") and not _is_same_host(a["hostname"], my_hostname):
+                skipped += 1
+                continue
+            if (worker and _launch_worker_alive(worker, a["id"])) or (not worker and age < 30):
+                skipped += 1
+                continue
+            store.update(a["id"], expected_launch_id=a.get("launch_id"),
+                         status="dead", state="failed", completed_at=_now_iso(),
+                         exit_reason="Launch worker disappeared before tool startup",
+                         runtime=dict(a.get("runtime") or {}, preparing=False))
+            continue
         agent_host = a.get("hostname")
         if not agent_host:
             # Unknown hostname — check if tmux session exists locally.
@@ -4594,9 +4537,6 @@ def _do_heal(restart_cron=False):
                 print("  %s (%s): skipped (remote/%s)" % (name, aid, transport))
                 skipped += 1
                 continue
-            state = a.get("state") or "initializing"
-            status = "completed" if state not in ("initializing",) else "failed"
-            store.update(aid, status=status, exit_reason="Session gone (heal)", completed_at=_now_iso())
             # Unlink the dead session's socket too. Otherwise `camc attach`
             # on this agent would find the stale .sock, hand it to tmux,
             # and tmux would silently say "no sessions". The agent record
@@ -4618,12 +4558,16 @@ def _do_heal(restart_cron=False):
                         "pid=%d still bound to %s — NOT unlinking "
                         "(investigate and kill %d if truly dead)",
                         aid, pid, sock_path, pid)
+                    continue
                 else:
                     try:
                         os.unlink(sock_path)
                     except OSError:
                         pass
-            print("  %s (%s): session dead, marked %s" % (name, aid, status))
+            store.update(aid, expected_launch_id=a.get("launch_id"),
+                         status="dead", state="failed", exit_reason="Tmux session disappeared (heal)",
+                         completed_at=_now_iso())
+            print("  %s (%s): session dead, marked failed" % (name, aid))
             continue
 
         # Duplicate-monitor sweep. Multiple `camc _monitor <aid>`
@@ -4664,30 +4608,8 @@ def _do_heal(restart_cron=False):
             record_pid = kept_pid
             a["pid"] = kept_pid
 
-        # Check if monitor process is alive
-        monitor_alive = False
-        pid = record_pid
-        if pid:
-            try:
-                os.kill(pid, 0)
-                monitor_alive = True
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
-        if not monitor_alive:
-            for pid_path in (os.path.join(PIDS_DIR, "%s.pid" % aid), "/tmp/camc-%s.pid" % aid):
-                if os.path.exists(pid_path):
-                    try:
-                        with open(pid_path) as f:
-                            fpid = int(f.read().strip())
-                        os.kill(fpid, 0)
-                        monitor_alive = True
-                        break
-                    except (ValueError, ProcessLookupError, PermissionError, OSError):
-                        try:
-                            os.unlink(pid_path)
-                        except OSError:
-                            pass
-
+        # Only an identity-verified monitor counts as healthy.
+        monitor_alive = kept_pid is not None
         if monitor_alive:
             print("  %s (%s): ok" % (name, aid))
             ok += 1
@@ -4709,8 +4631,6 @@ def _do_heal(restart_cron=False):
     local_count = len(running) - skipped
     failed = local_count - ok - healed
     msg = "Heal: %d healthy, %d restarted" % (ok, healed)
-    if resumed:
-        msg += ", %d resumed" % resumed
     if failed:
         msg += ", %d failed" % failed
     if skipped:
@@ -4718,23 +4638,9 @@ def _do_heal(restart_cron=False):
     print(msg)
 
     # --- Phase 2.5: Backfill session_id for running local agents -------------
-    # Many agents were adopted/created before session_id tracking existed (or
-    # by older camc builds). Their session_id is empty or the synthetic
-    # <aid>-0000-... placeholder. Reboot then falls back to guessing and can
-    # pick the wrong session when multiple agents share a workdir.
-    #
-    # For backfill we deliberately use ONLY PID-authoritative signals
-    # (cmdline / fd). Workdir-based layers would silently assign the same
-    # UUID to multiple agents that happen to live in the same dir — worse
-    # than leaving the field empty, because reboot would then confidently
-    # resume the wrong session.
-    #
-    # Strategy: whenever we can read the Claude cmdline (authoritative), we
-    # *replace* the stored session_id with the cmdline value — even if the
-    # old one looks like a real UUID. This is the only way to repair past
-    # workdir-guess collisions (multiple agents in the same cwd all got
-    # backfilled to the same newest-subdir UUID). When cmdline is silent
-    # (Claude exited), we leave the stored value alone.
+    # Repair missing or incorrectly inferred session IDs for history/archive.
+    # Only live-process evidence can distinguish agents sharing a workdir.
+    # When that evidence is unavailable, retain the recorded value.
     backfilled = 0
     corrected = 0
     bf_skipped_no_claude = 0
@@ -4779,7 +4685,7 @@ def _do_heal(restart_cron=False):
 
     # --- Session file check (warning only) ---
     # Re-read running list so the check sees the session_ids we just backfilled.
-    running_recheck = [r for r in store.list() if r.get("status") == "running"]
+    running_recheck = [r for r in store.list() if r.get("status") == "alive"]
     for a in running_recheck:
         sid = a.get("session_id", "")
         if not sid:
@@ -4838,6 +4744,11 @@ def _do_heal(restart_cron=False):
                 continue
             session = fname[:-5]  # strip .sock → "cam-abc12345"
             sock_full = os.path.join(sock_dir, fname)
+            try:
+                if os.stat(sock_full).st_uid != os.getuid():
+                    continue
+            except OSError:
+                continue
             # A socket is stale whenever tmux has no live server behind it,
             # regardless of whether an agent record still points at it. BUT
             # `tmux_session_exists` can false-negative on transient errors
@@ -4864,6 +4775,12 @@ def _do_heal(restart_cron=False):
                 continue
             # Live session with an existing agent record → skip orphan adopt.
             if session in known_sessions:
+                continue
+            # Shared /tmp directories can contain another HOME's sessions.
+            # Adopt only sessions belonging to this registry's user home.
+            rc, home = _run(["tmux", "-S", sock_full,
+                             "show-environment", "HOME"], timeout=5)
+            if rc or home.strip() != "HOME=" + os.path.expanduser("~"):
                 continue
             # Extract agent ID from session name (cam-{id})
             aid = session[4:]  # strip "cam-"
@@ -4897,9 +4814,8 @@ def _do_heal(restart_cron=False):
                 # suffixed name regardless — the agent id guarantees uniqueness.
             known_names.add(agent_name)
             # Try to recover the Claude session UUID from the running process.
-            # Without this, `camc reboot` on an adopted agent falls back to
-            # workdir-based session lookup and picks the wrong session when
-            # multiple agents share a cwd (e.g. /home/hren).
+            # Bind the exact transcript for archive and explicit resume,
+            # even when multiple agents share a working directory.
             claude_pid = _find_claude_pid(session)
             session_uuid = _find_session_id(
                 aid, claude_pid, workdir=cwd, tmux_session=session,
@@ -4913,8 +4829,8 @@ def _do_heal(restart_cron=False):
                 "context_name": "",
                 "context_path": cwd,
                 "transport_type": "local",
-                "status": "running",
-                "state": "idle",
+                "status": "alive",
+                "state": "running", "phase": "initializing",
                 "tmux_session": session,
                 "tmux_socket": "",
                 "pid": None,
@@ -5184,34 +5100,6 @@ def cmd_heal(args):
     _refresh_embedded_skills_after_heal()
 
 
-def cmd_apply(args):
-    """Apply tasks from a YAML file (DAG scheduler)."""
-    from camc_pkg.scheduler import SchedulerError, TaskGraph, load_task_file, run_dag
-
-    task_file = args.file
-    dry_run = getattr(args, "dry_run", False)
-    workdir = os.path.abspath(getattr(args, "path", None) or os.getcwd())
-
-    try:
-        tasks, metadata = load_task_file(task_file)
-    except SchedulerError as e:
-        sys.stderr.write("Error: %s\n" % e); sys.exit(1)
-
-    try:
-        graph = TaskGraph(tasks)
-    except SchedulerError as e:
-        sys.stderr.write("Error: invalid task graph: %s\n" % e); sys.exit(1)
-
-    try:
-        results = run_dag(graph, workdir=workdir, dry_run=dry_run)
-    except SchedulerError as e:
-        sys.stderr.write("Error: %s\n" % e); sys.exit(1)
-
-    # Exit code: non-zero if any task failed
-    if results and any(r.get("status") not in ("completed", None) for r in results.values()):
-        sys.exit(1)
-
-
 def cmd_history(args):
     """Show event history for an agent."""
     events = EventStore()
@@ -5234,7 +5122,7 @@ def cmd_history(args):
     # Human-readable table
     _evt_colors = {
         "state_change": "cyan", "auto_confirm": "yellow",
-        "completed": "green", "monitor_start": "blue",
+        "tool_exit": "green", "monitor_start": "blue",
     }
     headers = ["AGENT", "TIME", "EVENT", "DETAIL"]
     rows = []
@@ -5246,8 +5134,8 @@ def cmd_history(args):
         elif etype == "auto_confirm":
             resp = detail.get("response", "")
             detail_str = "response=%r" % resp if resp else "(enter)"
-        elif etype == "completed":
-            detail_str = "%s: %s" % (detail.get("status", "?"), detail.get("reason", "?"))
+        elif etype == "tool_exit":
+            detail_str = "%s: %s" % (detail.get("state", "dead"), detail.get("reason", "?"))
         else:
             detail_str = json.dumps(detail) if detail else ""
         ts = ev.get("ts", "")[:19].replace("T", " ")
@@ -5452,7 +5340,6 @@ def _msg_resolve_session(to_arg):
 
 
 _MSG_SUBMIT_DELAY_DEFAULT = 0.5
-_CUSTOM_LAUNCH_EXIT_GRACE = 0.35
 
 
 def _msg_submit_delay(target):
@@ -5632,7 +5519,8 @@ def _msg_submit_notification(session, payload, msg_id, target=None,
 
 def _msg_inject(session, to_label, text, timeout_s,
                 expect_reply=False, reply_to=None,
-                submit_delay=_MSG_SUBMIT_DELAY_DEFAULT):
+                submit_delay=_MSG_SUBMIT_DELAY_DEFAULT, message_id=None, sender=None,
+                thread_id=None):
     """Inject [camc msg#<id>]: marker into pane. Logs ledger sent/delivered.
 
     Returns (msg_id, ok). On delivery failure, logs deliver_failed and
@@ -5661,8 +5549,14 @@ def _msg_inject(session, to_label, text, timeout_s,
     minting a new id. The kwarg is kept for legacy callers / forward
     compat with non-thread inter-process correlation.
     """
-    msg_id = uuid4().hex[:8]
-    sender = _msg_sender_identity()
+    msg_id = message_id or uuid4().hex[:8]
+    ledger_id = thread_id or msg_id
+    existing_turn = next((turn for turn in _msg_thread_turns(ledger_id)
+                          if turn.get("message_id") == msg_id), None) if thread_id else None
+    seq = (existing_turn["seq"] if existing_turn else
+           _msg_thread_seq(ledger_id) + 1) if thread_id else 1
+    if sender is None:
+        sender = _msg_sender_identity()
     target = _msg_target_identity(to_label)
     prefix = _msg_sender_prefix(sender) + _msg_target_prefix(target)
     if reply_to:
@@ -5671,11 +5565,13 @@ def _msg_inject(session, to_label, text, timeout_s,
     if expect_reply:
         body = body + (_MSG_REPLY_INSTRUCTION % msg_id)
     wire_text = (prefix + " " + body) if prefix else body
-    payload = "[camc msg#%s]: %s" % (msg_id, wire_text)
+    payload = "[camc msg#%s]: %s" % (ledger_id, wire_text)
     sent_record = {
-        "msg_id": msg_id, "to": to_label, "tmux_session": session,
+        "msg_id": ledger_id, "to": to_label, "tmux_session": session,
         "text": text, "status": "sent", "timeout_s": timeout_s,
     }
+    if thread_id:
+        sent_record["message_id"] = msg_id
     if sender:
         sent_record.update(sender)
     if target:
@@ -5686,7 +5582,7 @@ def _msg_inject(session, to_label, text, timeout_s,
         sent_record["reply_to"] = reply_to
     _msg_ledger_append(sent_record)
 
-    # V0 thread/mailbox: append turn(seq=1) + delivery to the recipient
+    # V0 thread/mailbox: append a turn + delivery to the recipient
     # mailbox. These are append-only and source-of-truth for `camc msg
     # read`; the legacy sent/delivered status records above are kept for
     # backward compatibility with `wait`/`show`/`list`.
@@ -5695,25 +5591,29 @@ def _msg_inject(session, to_label, text, timeout_s,
     to_id = (target or {}).get("target_id", "") if target else ""
     to_name = (target or {}).get("target_name", "") if target else ""
     mailbox_id = _msg_mailbox_id_for_target(target, session, to_label)
-    _msg_ledger_append({
+    turn_record = {
         "record": "turn", "schema": _MSG_SCHEMA,
-        "msg_id": msg_id, "seq": 1, "kind": "message",
+        "msg_id": ledger_id, "seq": seq, "kind": "message",
         "from_id": from_id, "from_name": from_name,
         "to_id": to_id, "to_name": to_name,
         "text": text,
-    })
+    }
+    if thread_id:
+        turn_record.update(message_id=msg_id, reply_to=reply_to)
+    if not existing_turn:
+        _msg_ledger_append(turn_record)
     _msg_ledger_append({
         "record": "delivery", "schema": _MSG_SCHEMA,
-        "msg_id": msg_id, "seq": 1,
+        "msg_id": ledger_id, "seq": seq,
         "mailbox_id": mailbox_id,
         "to_id": to_id, "to_name": to_name,
     })
 
-    if not _msg_submit_notification(session, payload, msg_id, target,
+    if not _msg_submit_notification(session, payload, ledger_id, target,
                                     submit_delay=submit_delay):
-        _msg_ledger_append({"msg_id": msg_id, "status": "deliver_failed"})
+        _msg_ledger_append({"msg_id": ledger_id, "status": "deliver_failed"})
         return (msg_id, False)
-    _msg_ledger_append({"msg_id": msg_id, "status": "delivered"})
+    _msg_ledger_append({"msg_id": ledger_id, "status": "delivered"})
     return (msg_id, True)
 
 
@@ -5879,14 +5779,6 @@ def _msg_thread_turns(msg_id):
     return turns
 
 
-def _msg_lookup_turn(msg_id, seq):
-    """Return the turn record matching (msg_id, seq), or None."""
-    for rec in _msg_ledger_iter(msg_id=msg_id):
-        if rec.get("record") == "turn" and rec.get("seq") == seq:
-            return rec
-    return None
-
-
 def _msg_mailbox_id_for_target(target_record, session, to_label):
     """Pick a mailbox_id for a delivery, preferring stable identifiers.
 
@@ -6038,14 +5930,6 @@ def _msg_other_side_recipient(msg_id, current_sender):
         "name": last_turn.get("from_name") or "",
         "session": "",
     }
-
-
-def _msg_lookup_sent_session(msg_id):
-    """Return (tmux_session, to_label) from the 'sent' ledger record, or (None, None)."""
-    for rec in _msg_ledger_iter(msg_id=msg_id):
-        if rec.get("status") == "sent":
-            return rec.get("tmux_session"), rec.get("to")
-    return None, None
 
 
 def _msg_find_sent(msg_id):
@@ -6220,6 +6104,10 @@ def cmd_msg_wait(args):
     `replied` record (Phase 1 async); otherwise scrapes the recorded
     tmux session pane until the reply stabilises or timeout.
     """
+    from camc_pkg.server_client import cam_server_wait
+    server_exit = cam_server_wait(args)
+    if server_exit is not None:
+        raise SystemExit(server_exit)
     msg_id = args.msg_id
     timeout = max(int(getattr(args, "timeout", 600) or 600), 5)
 
@@ -6269,6 +6157,10 @@ def cmd_msg_reply(args):
       - Best-effort tmux notification reuses the SAME [camc msg#<id>]
         thread marker (no new logical id, no `reply_to:` block).
     """
+    from camc_pkg.server_client import cam_server_reply
+    server_exit = cam_server_reply(args)
+    if server_exit is not None:
+        raise SystemExit(server_exit)
     orig_msg_id = args.msg_id
     text = args.text
 
@@ -7160,160 +7052,6 @@ def cmd_cron_list(args):
 
 
 # ===========================================================================
-# Machine management
-# ===========================================================================
-
-def cmd_machine(args):
-    """Machine management subcommands."""
-    sub = getattr(args, "machine_cmd", None)
-    if sub == "list":
-        cmd_machine_list(args)
-    elif sub == "add":
-        cmd_machine_add(args)
-    elif sub == "rm":
-        cmd_machine_rm(args)
-    elif sub == "edit":
-        cmd_machine_edit(args)
-    elif sub == "ping":
-        cmd_machine_ping(args)
-    else:
-        print("Usage: camc machine {list|add|rm|edit|ping}", file=sys.stderr)
-        sys.exit(1)
-
-
-def cmd_machine_list(args):
-    from camc_pkg.machine_store import MachineStore
-    store = MachineStore()
-    machines = store.list()
-    if _want_json(args):
-        print(json.dumps(machines, indent=2))
-        return
-    if not machines:
-        print("No machines configured.")
-        return
-    _mtype_colors = {"local": "cyan", "ssh": "green"}
-    headers = ["NAME", "TYPE", "HOST", "PORT", "USER"]
-    rows = []
-    for m in machines:
-        mtype = m.get("type", "?")
-        rows.append([
-            m.get("name", "?"),
-            _c(mtype, _mtype_colors.get(mtype)),
-            m.get("host") or "-",
-            m.get("port") or "-",
-            m.get("user") or "-",
-        ])
-    print_table(headers, rows, title="Machines")
-
-
-def cmd_machine_add(args):
-    from camc_pkg.machine_store import MachineStore
-    store = MachineStore()
-    name = args.name
-    if store.get(name) and name != "local":
-        print("Error: machine '%s' already exists (use 'camc machine edit' to update)" % name, file=sys.stderr)
-        sys.exit(1)
-    machine = {"name": name, "type": args.type or "ssh"}
-    if args.host:
-        machine["host"] = args.host
-    if args.user:
-        machine["user"] = args.user
-    if args.port:
-        machine["port"] = int(args.port)
-    if getattr(args, "env_setup", None):
-        machine["env_setup"] = args.env_setup
-    if getattr(args, "key_file", None):
-        machine["key_file"] = args.key_file
-    if getattr(args, "camc_path", None):
-        machine["camc_path"] = args.camc_path
-    if getattr(args, "remote_home", None):
-        machine["remote_home"] = args.remote_home
-    # Validate SSH machines
-    if machine["type"] == "ssh":
-        if not machine.get("host"):
-            print("Error: SSH machine requires --host", file=sys.stderr)
-            sys.exit(1)
-        if not machine.get("user"):
-            print("Error: SSH machine requires --user", file=sys.stderr)
-            sys.exit(1)
-    store.save(machine)
-    print("Added machine '%s' (%s)" % (name, machine["type"]))
-    if machine.get("host"):
-        print("  %s@%s:%s" % (machine.get("user", ""), machine["host"], machine.get("port", 22)))
-    if machine["type"] == "ssh":
-        print("  Tunnel: camc tunnel up %s" % name)
-
-
-def cmd_machine_rm(args):
-    from camc_pkg.machine_store import MachineStore
-    store = MachineStore()
-    name = args.name
-    if name == "local":
-        print("Error: cannot remove the 'local' machine", file=sys.stderr)
-        sys.exit(1)
-    if not store.remove(name):
-        print("Error: machine '%s' not found" % name, file=sys.stderr)
-        sys.exit(1)
-    print("Removed machine '%s'" % name)
-
-
-def cmd_machine_edit(args):
-    from camc_pkg.machine_store import MachineStore
-    store = MachineStore()
-    name = args.name
-    m = store.get(name)
-    if not m:
-        print("Error: machine '%s' not found" % name, file=sys.stderr)
-        sys.exit(1)
-    changed = False
-    if args.host is not None:
-        m["host"] = args.host; changed = True
-    if args.user is not None:
-        m["user"] = args.user; changed = True
-    if args.port is not None:
-        m["port"] = int(args.port); changed = True
-    if getattr(args, "env_setup", None) is not None:
-        m["env_setup"] = args.env_setup; changed = True
-    if getattr(args, "key_file", None) is not None:
-        m["key_file"] = args.key_file; changed = True
-    if getattr(args, "camc_path", None) is not None:
-        m["camc_path"] = args.camc_path; changed = True
-    if getattr(args, "remote_home", None) is not None:
-        m["remote_home"] = args.remote_home; changed = True
-    if getattr(args, "type", None) is not None:
-        m["type"] = args.type; changed = True
-    if not changed:
-        print("Nothing to change. Use --host, --user, --port, --env-setup, --key-file, --camc-path, --remote-home")
-        return
-    store.save(m)
-    print("Updated machine '%s'" % name)
-
-
-def cmd_machine_ping(args):
-    from camc_pkg.machine_store import MachineStore
-    from camc_pkg.remote import ssh_ping
-    store = MachineStore()
-    if args.name:
-        machines = [store.get(args.name)]
-        if not machines[0]:
-            print("Error: machine '%s' not found" % args.name, file=sys.stderr)
-            sys.exit(1)
-    else:
-        machines = store.list_ssh()
-    if not machines:
-        print("No SSH machines configured.")
-        return
-    for m in machines:
-        name = m.get("name", "?")
-        host = m.get("host", "?")
-        ok = ssh_ping(m)
-        if ok:
-            print_success("%s (%s)" % (name, host))
-        else:
-            print_error("%s (%s) — unreachable" % (name, host))
-
-
-# ===========================================================================
 # Machine tunnels (persistent per-machine SSH forward + mailbox fallback)
 # ===========================================================================
 
@@ -7358,7 +7096,7 @@ def _tunnel_select_machines(args):
             machines.append(m)
     if not machines:
         print("No machines selected (give names or --all; configure with "
-              "'camc machine add')", file=sys.stderr)
+              "'~/.cam/machines.json')", file=sys.stderr)
         sys.exit(1)
     return machines
 
@@ -7498,149 +7236,19 @@ def cmd_tunnel_flush(args):
         sys.exit(2)
 
 
-# ===========================================================================
-# Context management
-# ===========================================================================
-
-def cmd_context(args):
-    """Context management subcommands."""
-    sub = getattr(args, "context_cmd", None)
-    if sub == "list":
-        cmd_context_list(args)
-    elif sub == "add":
-        cmd_context_add(args)
-    elif sub == "rm":
-        cmd_context_rm(args)
-    else:
-        print("Usage: camc context {list|add|rm}", file=sys.stderr)
-        sys.exit(1)
-
-
-def cmd_context_list(args):
-    from camc_pkg.context_store import ContextStore
-    store = ContextStore()
-    contexts = store.list()
-    if _want_json(args):
-        print(json.dumps(contexts, indent=2))
-        return
-    if not contexts:
-        print("No contexts configured.")
-        return
-    headers = ["NAME", "MACHINE", "PATH"]
-    rows = [[c.get("name", "?"), c.get("machine", "?"), c.get("path", "?")] for c in contexts]
-    print_table(headers, rows, title="Contexts", col_styles={0: "bold cyan", 1: "magenta"})
-
-
-def cmd_context_add(args):
-    from camc_pkg.context_store import ContextStore
-    from camc_pkg.machine_store import MachineStore
-    ctx_store = ContextStore()
-    name = args.name
-    if ctx_store.get(name):
-        print("Error: context '%s' already exists" % name, file=sys.stderr)
-        sys.exit(1)
-    machine_name = getattr(args, "machine", None) or "local"
-    m_store = MachineStore()
-    if not m_store.get(machine_name):
-        print("Error: machine '%s' not found (use 'camc machine add' first)" % machine_name, file=sys.stderr)
-        sys.exit(1)
-    path = os.path.abspath(getattr(args, "path", None) or os.getcwd())
-    ctx_store.save({"name": name, "machine": machine_name, "path": path})
-    print("Added context '%s' (machine=%s, path=%s)" % (name, machine_name, path))
-
-
-def cmd_context_rm(args):
-    from camc_pkg.context_store import ContextStore
-    store = ContextStore()
-    if not store.remove(args.name):
-        print("Error: context '%s' not found" % args.name, file=sys.stderr)
-        sys.exit(1)
-    print("Removed context '%s'" % args.name)
-
-
-# ===========================================================================
-# Sync
-# ===========================================================================
-
-def cmd_sync(args):
-    """Sync camc and configs to remote machines."""
-    from camc_pkg.machine_store import MachineStore
-    from camc_pkg.remote import sync_camc_to_machine
-    store = MachineStore()
-
-    target = getattr(args, "target", None)
-    if target:
-        m = store.get(target)
-        if not m:
-            print("Error: machine '%s' not found" % target, file=sys.stderr)
-            sys.exit(1)
-        if m.get("type") != "ssh":
-            print("Error: sync only works with SSH machines" , file=sys.stderr)
-            sys.exit(1)
-        machines = [m]
-    else:
-        machines = store.list_ssh()
-
-    if not machines:
-        print("No SSH machines to sync.")
-        return
-
-    total_ok = 0
-    total_fail = 0
-    for m in machines:
-        name = m.get("name", "?")
-        host = m.get("host", "?")
-        print("Syncing to %s (%s)..." % (name, host))
-        try:
-            results = sync_camc_to_machine(m)
-        except Exception as e:
-            print("  \033[31m✗ Failed: %s\033[0m" % e)
-            total_fail += 1
-            continue
-        for fname, status in results.items():
-            if status == "deployed":
-                print("  \033[32m%s: deployed\033[0m" % fname)
-                total_ok += 1
-            elif status == "unchanged":
-                print("  %s: unchanged" % fname)
-            else:
-                print("  \033[31m%s: FAILED\033[0m" % fname)
-                total_fail += 1
-    print()
-    print("Sync complete: %d deployed, %d failed" % (total_ok, total_fail))
-
-
-def cmd_db_migrate(args):
-    """Migrate cam SQLite data to JSON format."""
-    from camc_pkg.migrate import run_migrate
-    db_path = getattr(args, "db", None)
-    dry_run = getattr(args, "dry_run", False)
-    run_migrate(db_path=db_path, dry_run=dry_run)
-
-
 def cmd_version(args):
-    build = __build__ if __build__ else "dev"
-    print("camc v%s (%s)" % (__version__, build))
-    print()
-    print("Supported tools:")
-    for key in sorted(_EMBEDDED_CONFIGS):
-        name = key.replace(".toml", "")
-        path = os.path.join(CONFIGS_DIR, key)
-        exists = " (config: %s)" % path if os.path.exists(path) else " (embedded)"
-        print("  %s%s" % (name, exists))
+    from camc_pkg.fast_version import early_version_main
+    early_version_main(["version"], version=__version__, build=__build__,
+                       config_names=_EMBEDDED_CONFIGS)
 
 
 def cmd_skills(args):
-    """Skills dispatch: list / add / rm."""
+    """List the bundled skills."""
     sub = getattr(args, "skills_cmd", None)
     if sub == "list":
         cmd_skills_list(args)
-    elif sub == "add":
-        cmd_skills_add(args)
-    elif sub == "rm":
-        cmd_skills_rm(args)
     else:
-        sys.stderr.write("usage: camc skills {list,add,rm} ...\n")
+        sys.stderr.write("usage: camc skills list\n")
         sys.exit(1)
 
 
@@ -7658,14 +7266,6 @@ def cmd_skills_list(args):
         if len(desc) > 72:
             desc = desc[:69] + "..."
         print("%-20s  %-8s  %s" % (row["name"], manifest, desc))
-
-
-def cmd_skills_add(args):
-    print("All official skills are bundled with camc and install automatically.")
-
-
-def cmd_skills_rm(args):
-    print("All official skills are bundled with camc and install automatically.")
 
 
 def cmd_capture(args):
@@ -7803,6 +7403,8 @@ class CamArgumentParser(argparse.ArgumentParser):
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "_launch_worker":
+        sys.exit(_run_launch_worker(sys.argv[2]))
     p = CamArgumentParser(
         prog="camc",
         description="CAM Client — Standalone coding agent manager. PM2 for AI coding agents.",
@@ -7821,15 +7423,11 @@ examples:
   camc status abc1                    Show detailed agent status
   camc add my-session --tool claude   Adopt existing tmux session
   camc rm abc1 --kill                 Remove and kill agent
-  camc apply -f tasks.yaml            Run DAG task file
   camc history abc1                   Show event history for agent
   camc capture myfix --lines 50       Capture agent screen output
   camc send myfix --text "hello"      Send text to agent
   camc key abc1 --key C-c             Send special key to agent
   camc heal                           Restart dead monitors
-  camc machine list                   List machines
-  camc context list                   List contexts
-  camc sync                           Sync camc to all remote machines
   camc version                        Show version info""")
     p.add_argument("--json", action="store_true", help="Output as JSON")
     p.add_argument("--verbose", "-v", action="store_true", help="Verbose output (debug logging)")
@@ -7849,11 +7447,17 @@ examples:
                            help="Emit a JSON envelope instead of human text")
 
     # run
-    r = sub.add_parser("run", help="Start a coding agent on a task")
+    r = sub.add_parser("run", help="Start a coding agent on a task",
+                       description="Create tmux first, then prepare and launch in its pane. "
+                       "Managed tools use native autorun by default. "
+                       "Successful return means the session was created; attach or capture "
+                       "to follow preparation and launcher progress.")
     r.add_argument("prompt", nargs="?", default="", help="Task prompt (empty for interactive mode)")
     r.add_argument("--tool", "-t", default="codex", help="Tool command (claude, codex, cursor, pi, or other PATH executable) [default: codex]")
     r.add_argument("--path", "-p", default=os.getcwd(), help="Working directory")
     r.add_argument("--name", "-n", default=None, help="Human-readable name")
+    r.add_argument("--node", default=None, metavar="NODE",
+                   help="Create the agent on this Node through the local CAM Server")
     r.add_argument("--auto-exit", "-a", action="store_true", help="Auto-exit on completion")
     # Hidden safety arm for --auto-exit. Without this, --auto-exit is a no-op
     # in the monitor. Intentionally undocumented (argparse.SUPPRESS) — the
@@ -7865,7 +7469,6 @@ examples:
     r.add_argument("--resume", dest="resume_session", default=None,
                    metavar="SESSION_ID",
                    help="Resume an existing Claude session by ID (adds --resume to claude, skips prompt injection)")
-    r.add_argument("--no-inherit-env", action="store_true", help="Legacy mode: wrap command with bash -c and env_setup")
     r.add_argument("--use-env-tool", dest="use_env_tool", action="store_true",
                    help="Advanced: skip golden tool paths (claude/codex/cursor/pi stable+latest) and resolve from runtime PATH only. Useful for testing dev builds.")
     r.add_argument("--tool-dir", default=None, metavar="DIR",
@@ -7879,8 +7482,9 @@ examples:
                    help=("Launcher (default: auto when nvprojectname is "
                          "available, otherwise local; auto checks the current "
                          "autorun allocation, attaches to a suitable existing "
-                         "job via battach, then SSH, qsub, and local without "
-                         "autorun; or provide a custom argv "
+                         "job via battach, then SSH and qsub; fails if none "
+                         "can launch the tool. Use none for local execution "
+                         "or provide a custom argv "
                          "prefix (camc appends the tool command))"))
     r.add_argument(
         "--isolate-tool-home", dest="isolate_tool_home",
@@ -7900,7 +7504,7 @@ examples:
 
     # list
     ls = sub.add_parser("list", aliases=["ls"], help="List agents")
-    ls.add_argument("--status", default=None, help="Filter by status")
+    ls.add_argument("--status", choices=("alive", "dead"), default=None, help="Filter by lifecycle")
     ls.add_argument("--tag", default=None, help="Filter by tag")
     ls.add_argument("--last", "-n", type=int, default=50, help="Show last N agents [default: 50]")
     ls.add_argument("--all", "-a", dest="fleet_all", action="store_true",
@@ -7916,8 +7520,8 @@ examples:
     ex = sub.add_parser("exit", help="Gracefully exit Claude (tmux stays alive, can be resumed)")
     ex.add_argument("id", help="Agent ID")
 
-    # stop — kill tool process, tmux stays alive
-    s = sub.add_parser("stop", help="Kill the tool process (tmux stays alive)")
+    # stop — reset the agent pane, tmux stays alive
+    s = sub.add_parser("stop", help="Stop pane 0 and keep tmux with an empty shell")
     s.add_argument("id", help="Agent ID")
 
     # kill — nuke tmux session
@@ -8014,16 +7618,28 @@ examples:
     prune_p.add_argument("--dry-run", action="store_true", help="Print what would change without acting")
 
     # reboot / migrate
-    rb = sub.add_parser("reboot", help="Restart agent with session resume (alias for migrate)")
+    rb = sub.add_parser("reboot", help="Restart any tool in a new tmux with the same agent ID")
     rb.add_argument("id", help="Agent ID or name")
-    rb.add_argument("--to", default=None, help="Target machine (host:port). Omit for local reboot.")
+    rb.add_argument("--to", default=None, help=argparse.SUPPRESS)
     rb.add_argument("--tool-launcher", default=None,
-                    help="auto or a custom launcher prefix; inherit saved launcher, otherwise use environment default. Auto reboot never falls back locally.")
-    mig_a = sub.add_parser("migrate", help="Restart or move agent with session resume")
+                    help="auto, none, or a custom launcher prefix; reuse saved selection by default, otherwise NV auto / non-NV local. Auto never falls back locally.")
+    rb.add_argument("--tool-env", action="append", default=[], metavar="NAME=VALUE",
+                    help="Override saved environment values by name; other values are retained")
+    mig_a = sub.add_parser("migrate", help="Alias for reboot: start a fresh tool session")
     mig_a.add_argument("id", help="Agent ID or name")
-    mig_a.add_argument("--to", default=None, help="Target machine (host:port). Omit for local reboot.")
+    mig_a.add_argument("--to", default=None, help=argparse.SUPPRESS)
     mig_a.add_argument("--tool-launcher", default=None,
                        help="Same launcher policy as reboot")
+    mig_a.add_argument("--tool-env", action="append", default=[], metavar="NAME=VALUE",
+                       help="Override saved environment values by name")
+
+    for reboot_parser in (rb, mig_a):
+        reboot_parser.add_argument("--tool-dir", default=None, metavar="DIR",
+                                   help="Override the saved tool directory")
+        reboot_parser.add_argument("--tool-args", action="append", default=None,
+                                   help="Replace saved tool arguments (repeatable; empty string clears)")
+        reboot_parser.add_argument("--use-env-tool", action="store_true", default=None,
+                                   help="Resolve from PATH instead of golden tool paths")
 
     # attach
     at = sub.add_parser("attach", help="Attach to an agent's TMUX session (interactive)")
@@ -8033,12 +7649,6 @@ examples:
     st = sub.add_parser("status", help="Show detailed agent status")
     st.add_argument("agent_id", nargs="?", default=None, help="Agent ID (full or short)")
     st.add_argument("--hash", default=None, help="Return unchanged if hash matches (automation)")
-
-    # apply
-    ap = sub.add_parser("apply", help="Run tasks from a YAML file (DAG scheduler)")
-    ap.add_argument("--file", "-f", required=True, help="Path to task YAML file")
-    ap.add_argument("--path", "-p", default=None, help="Working directory [default: cwd]")
-    ap.add_argument("--dry-run", action="store_true", help="Validate and show plan without executing")
 
     # history
     hi = sub.add_parser("history", help="Show event history")
@@ -8211,52 +7821,6 @@ examples:
         "run", help="(internal) execute one previously queued run by id")
     crun.add_argument("run_id", help="run id from runs.jsonl (e.g. r9f31a2c0)")
 
-    # machine
-    mp = sub.add_parser("machine", help="Manage remote machines")
-    msub = mp.add_subparsers(
-        dest="machine_cmd", parser_class=CamArgumentParser)
-    msub.add_parser("list", help="List machines")
-    ma = msub.add_parser("add", help="Add a machine")
-    ma.add_argument("name", help="Machine name")
-    ma.add_argument("--type", default="ssh", help="Machine type (local, ssh) [default: ssh]")
-    ma.add_argument("--host", default=None, help="Hostname or IP")
-    ma.add_argument("--user", default=None, help="SSH user")
-    ma.add_argument("--port", default=None, help="SSH port")
-    ma.add_argument("--env-setup", default=None, help="Shell commands to run before agent")
-    ma.add_argument("--key-file", default=None, help="SSH key file")
-    ma.add_argument("--camc-path", default=None, help="Remote camc binary path [default: ~/.cam/camc]")
-    ma.add_argument("--remote-home", default=None, help="Remote HOME for camc state [default: ssh login home]")
-    mrm = msub.add_parser("rm", help="Remove a machine")
-    mrm.add_argument("name", help="Machine name")
-    me = msub.add_parser("edit", help="Edit a machine")
-    me.add_argument("name", help="Machine name")
-    me.add_argument("--type", default=None)
-    me.add_argument("--host", default=None)
-    me.add_argument("--user", default=None)
-    me.add_argument("--port", default=None)
-    me.add_argument("--env-setup", default=None)
-    me.add_argument("--key-file", default=None)
-    me.add_argument("--camc-path", default=None)
-    me.add_argument("--remote-home", default=None)
-    mping = msub.add_parser("ping", help="Test SSH connectivity")
-    mping.add_argument("name", nargs="?", default=None, help="Machine name (omit for all)")
-
-    # context
-    cp = sub.add_parser("context", help="Manage project contexts")
-    csub = cp.add_subparsers(
-        dest="context_cmd", parser_class=CamArgumentParser)
-    csub.add_parser("list", help="List contexts")
-    ca = csub.add_parser("add", help="Add a context")
-    ca.add_argument("name", help="Context name")
-    ca.add_argument("--machine", "-m", default="local", help="Machine name [default: local]")
-    ca.add_argument("--path", "-p", default=None, help="Working directory [default: cwd]")
-    crm = csub.add_parser("rm", help="Remove a context")
-    crm.add_argument("name", help="Context name")
-
-    # sync
-    sy = sub.add_parser("sync", help="Sync camc and configs to remote machines")
-    sy.add_argument("target", nargs="?", default=None, help="Machine name (omit for all SSH machines)")
-
     # tunnel
     tp = sub.add_parser("tunnel", help="Persistent SSH tunnels to machines")
     tsub = tp.add_subparsers(
@@ -8281,11 +7845,6 @@ examples:
     tsv.add_argument("--port", type=int, default=None, help="Listen port [default: 42177]")
     tsv.add_argument("--ensure", action="store_true", help="Start detached if not running")
 
-    # migrate
-    mig = sub.add_parser("db-migrate", help="Migrate cam SQLite data to JSON")
-    mig.add_argument("--db", default=None, help="Path to cam.db [default: ~/.local/share/cam/cam.db]")
-    mig.add_argument("--dry-run", action="store_true", help="Show plan without writing files")
-
     # version
     sub.add_parser("version", help="Show version")
 
@@ -8293,12 +7852,8 @@ examples:
     sk = sub.add_parser("skills", help="Manage official embedded skills")
     sk_sub = sk.add_subparsers(
         dest="skills_cmd", parser_class=CamArgumentParser,
-        metavar="{list,add,rm}")
+        metavar="{list}")
     sk_sub.add_parser("list", help="List available official skills")
-    sk_add = sk_sub.add_parser("add", help="Add skill to manifest (auto-installed on run)")
-    sk_add.add_argument("name", help="Skill name or 'all'")
-    sk_rm = sk_sub.add_parser("rm", help="Remove skill from manifest")
-    sk_rm.add_argument("name", help="Skill name")
 
     if len(sys.argv) >= 2 and sys.argv[1] == "_api_proxy":
         sys.exit(run_api_proxy(sys.argv[2:]))
@@ -8323,6 +7878,13 @@ examples:
     _aliases = {"a": "attach", "ls": "list"}
     if len(sys.argv) > 1 and sys.argv[1] in _aliases:
         sys.argv[1] = _aliases[sys.argv[1]]
+
+    # The new local Server protocol takes precedence only when its endpoint
+    # is configured. Local AgentStore hits still use the existing commands.
+    from camc_pkg.server_client import cam_server_route
+    _server_exit = cam_server_route(p, sys.argv[1:])
+    if _server_exit is not None:
+        sys.exit(_server_exit)
 
     # Machine tunnels (src/camc_pkg/tunnel.py): '<machine>:<ref>' targets
     # matching machines.json are served by the per-machine persistent
@@ -8398,7 +7960,6 @@ examples:
         "migrate": cmd_migrate,
         "attach": cmd_attach, "a": cmd_attach,
         "status": cmd_status,
-        "apply": cmd_apply,
         "history": cmd_history,
         "capture": cmd_capture,
         "send": cmd_send,
@@ -8407,11 +7968,7 @@ examples:
         "heal": cmd_heal,
         "upgrade": cmd_upgrade,
         "cron": cmd_cron,
-        "machine": cmd_machine,
-        "context": cmd_context,
-        "sync": cmd_sync,
         "tunnel": cmd_tunnel,
-        "db-migrate": cmd_db_migrate,
         "version": cmd_version,
         "skills": cmd_skills,
         "api": cmd_api,

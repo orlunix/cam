@@ -461,7 +461,7 @@ def test_camc_drains_camb_request():
 _LOCAL_AGENT = {
     "id": "af12be34",
     "task": {"name": "myfix", "tool": "codex", "prompt": "fix it"},
-    "status": "running",
+    "status": "alive",
     "tmux_session": "cam-af12be34",
     "created_at": "2026-09-30T00:00:00Z",
     "updated_at": "2026-09-30T00:00:00Z",

@@ -286,6 +286,33 @@ def tmux_session_exists(session_id):
     return rc == 0
 
 
+def tmux_stop_agent_pane(session_id):
+    """Replace window 0 / pane 0 with an empty shell, retaining tmux."""
+    base = _tmux_base(session_id)
+    rc, output = _run(base + ["list-panes", "-s", "-t", session_id,
+                             "-F", "#{window_index}:#{pane_index} #{pane_id}"])
+    if rc:
+        raise RuntimeError("Cannot inspect agent pane")
+    pane = next((line.split()[1] for line in output.splitlines()
+                 if len(line.split()) == 2 and line.split()[0] == "0:0"), None)
+    if pane is None:
+        return  # The agent pane has already been removed; leave other panes alone.
+    # An explicit shell is essential: respawn-pane without a command would
+    # repeat the original tool command for sessions created without a shell.
+    shell = "/bin/sh"
+    try:
+        import pwd
+        candidate = pwd.getpwuid(os.getuid()).pw_shell
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            shell = candidate
+    except (KeyError, OSError):
+        pass
+    rc, _ = _run(base + ["respawn-pane", "-k", "-t", pane,
+                         "exec %s -i" % shlex.quote(shell)])
+    if rc:
+        raise RuntimeError("Cannot stop agent pane")
+
+
 _TMUX_SEND_CHUNK = 8192            # safely below tmux 3.4's ~16-20KB ARG_MAX
 _BRACKET_PASTE_OPEN = "\x1b[200~"
 _BRACKET_PASTE_CLOSE = "\x1b[201~"

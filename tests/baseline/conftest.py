@@ -92,7 +92,7 @@ def invoke_cli(monkeypatch):
 def run_spy(isolated_cam_home, monkeypatch):
     """Replace only run's OS process/tmux boundary with deterministic spies."""
     state = SimpleNamespace(
-        events=[], sessions=[], monitors=[], stopped_proxies=[],
+        events=[], sessions=[], launches=[], monitors=[], stopped_proxies=[],
         configs=[], launch_ok=True, agent_id="a1b2c3d4",
     )
 
@@ -139,12 +139,22 @@ def run_spy(isolated_cam_home, monkeypatch):
         state.monitors.append((args, kwargs))
         return Proc()
 
+    def foreground(agent_id, launch):
+        state.launches.append(dict(launch))
+        return 0
+
+    state.run_worker = lambda: cli._run_launch_worker(state.agent_id)
+
     monkeypatch.setattr(cli, "_preflight", preflight)
     monkeypatch.setattr(cli, "_load_config", load_config)
     monkeypatch.setattr(cli, "_gen_agent_id", lambda: state.agent_id)
     monkeypatch.setattr(cli, "create_tmux_session", create)
+    monkeypatch.setattr(cli, "_run_foreground_tool", foreground)
+    monkeypatch.setattr(cli, "_kill_monitor", lambda _agent: None)
+    monkeypatch.setattr(cli, "_stop_agent_api_proxy", lambda _agent, **_kwargs: None)
     monkeypatch.setattr(cli, "install_manifest_skills", lambda *args, **kwargs: state.events.append(("skills", args[0])))
     monkeypatch.setattr(transport, "ensure_camc_tmux_config", lambda: "")
+    monkeypatch.setattr(transport, "TMUX_BIN", "/fake/bin/tmux")
     monkeypatch.setattr(cli.subprocess, "check_output", lambda *args, **kwargs: b"tmux 3.4")
     monkeypatch.setattr(cli.subprocess, "Popen", popen)
     monkeypatch.setattr(cli, "_spawn_codex_session_binder", lambda *args: None)

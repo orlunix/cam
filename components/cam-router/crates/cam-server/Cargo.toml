@@ -1,0 +1,32 @@
+[package]
+name = "cam-server"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+test-harness = []
+
+[dependencies]
+cam-protocol = { path = "../cam-protocol" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+rusqlite.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+libc.workspace = true
+fs2.workspace = true
+
+[[bin]]
+name = "cam-server"
+path = "src/main.rs"
+
+[[bin]]
+name = "cam-forwarder"
+path = "src/forward_main.rs"
+
+[[example]]
+name = "router_test_node"
+required-features = ["test-harness"]

@@ -6770,6 +6770,32 @@ dee07ef chore(camc): prepare 1.2.137 release
 587f478 fix(camc): trust exact Codex workdir
 44b334f chore(camc): prepare 1.2.137 release
 ```
+
+## v1.2.163  886f323-dirty 2026-10-14 02:18
+
+- Lines: 23361
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+886f323 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+```
+## v1.2.164  886f323-dirty 2026-10-15 17:56
+
+- Lines: 21592
+- Output: /home/scratch.hren_gpu/test/gitlab/cam/dist/camc
+- Recent changes:
+```
+886f323 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+027774d feat(camc): centralize tool launcher execution
+43c8caa feat(camc): harden native API proxy and isolate agents
+587f478 fix(camc): trust exact Codex workdir
+```
+
 ## v1.2.165  886f323-dirty 2026-10-14 14:02
 
 - Lines: 24722
@@ -7042,3 +7068,10 @@ dee07ef chore(camc): prepare 1.2.137 release
 43c8caaa feat(camc): harden native API proxy and isolate agents
 587f4788 fix(camc): trust exact Codex workdir
 ```
+
+## CAM Server integration snapshot — 2026-10-19
+
+- camc v1.2.185; build: 906b207-dirty 2026-10-19 03:26
+- Includes local CAM Server protocol/client and independent msg reply/wait.
+- Lines: 23982
+- Source snapshot only; no installation or deployment.

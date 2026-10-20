@@ -156,7 +156,7 @@ Persist: 600s after last use
 ### 5. camc (Standalone Agent Manager)
 
 - **Source**: `src/camc_pkg/` (package) → `dist/camc` (single-file build)
-- **Deployed to**: each machine via `cam sync` or `camc sync`
+- **Deployed to**: each machine via `cam sync` or the Desktop deployment flow
 - **Zero dependencies**: Python 3.6+ stdlib only
 - **Data**: `~/.cam/agents.json`, `~/.cam/events.jsonl`
 
@@ -173,12 +173,7 @@ camc capture      Capture tmux output
 camc send/key     Send input/key to agent
 camc logs         View agent output (follow mode)
 camc heal         Check agents, restart dead monitors
-camc apply        DAG scheduler (YAML tasks)
 camc history      Show event log
-camc machine      list/add/rm/edit/ping machines
-camc context      list/add/rm contexts
-camc sync         Deploy camc to remote machines
-camc migrate      SQLite → JSON migration
 camc version      Show version and supported tools
 ```
 

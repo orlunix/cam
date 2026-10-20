@@ -4,8 +4,6 @@ import json
 import os
 import socket
 import time
-import urllib.error
-import urllib.request
 
 DEFAULT_MAX_OUTPUT_TOKENS = 131072
 DEFAULT_EFFECTIVE_CONTEXT_PERCENT = 95
@@ -204,6 +202,7 @@ def litellm_cost_map_url(provider):
 
 def fetch_litellm_cost_map(provider, timeout=30.0):
     """Fetch LiteLLM public cost map (no auth). Returns dict or {}."""
+    import urllib.request
     url = litellm_cost_map_url(provider)
     if not url:
         return {}
@@ -283,6 +282,7 @@ def merge_api_metadata(api_key, model_id, cost_map, synced_at=None):
 
 def sync_metadata_in_data(data, provider, cost_map=None, synced_at=None):
     """Merge metadata into apis.*; return count updated."""
+    import urllib.error
     if cost_map is None:
         try:
             cost_map = fetch_litellm_cost_map(provider)

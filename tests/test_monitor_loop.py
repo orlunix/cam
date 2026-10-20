@@ -11,6 +11,7 @@ Run:
 """
 
 import hashlib
+import importlib.util
 import threading
 import time
 import random
@@ -108,7 +109,7 @@ class MockStore:
                 "auto_exit": auto_exit,
                 "auto_exit_enable": auto_exit_enable,
             },
-            "status": "running",
+            "status": "alive",
             "state": None,
         }
 
@@ -267,7 +268,13 @@ def run_monitor_steps(screens, store=None, config=None, auto_exit=False,
     idle detection) advances properly even though real wall time barely moves.
     Each mock_sleep call advances the fake clock by the requested duration.
     """
-    from camc_pkg.monitor import run_monitor_loop
+    from camc_pkg import monitor as source_monitor
+
+    # Parallel simulations need separate globals. Patching the shared module
+    # (especially time.sleep) races on restore and leaks mocks into later tests.
+    spec = importlib.util.spec_from_file_location("test_monitor", source_monitor.__file__)
+    monitor = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(monitor)
 
     if config is None:
         config = make_config()
@@ -325,24 +332,21 @@ def run_monitor_steps(screens, store=None, config=None, auto_exit=False,
     def mock_signal(signum, handler):
         pass  # no-op — signal.signal() only works in main thread
 
-    with patch("camc_pkg.monitor.capture_tmux", side_effect=mock_capture), \
-         patch("camc_pkg.monitor.tmux_cursor_flag", side_effect=mock_cursor_flag), \
-         patch("camc_pkg.monitor.tmux_session_exists", side_effect=mock_session_exists), \
-         patch("camc_pkg.monitor.tmux_send_input", side_effect=mock_send_input), \
-         patch("camc_pkg.monitor.tmux_send_key", side_effect=mock_send_key), \
-         patch("camc_pkg.monitor.tmux_is_attached", side_effect=mock_is_attached), \
-         patch("camc_pkg.monitor.tmux_kill_session", side_effect=mock_kill), \
-         patch("camc_pkg.monitor.time.sleep", side_effect=mock_sleep), \
-         patch("camc_pkg.monitor.time.time", side_effect=mock_time), \
-         patch("camc_pkg.monitor.signal.signal", side_effect=mock_signal):
-        with patch("camc_pkg.monitor.stop_agent_api_proxy",
-                   side_effect=lambda agent, **_kwargs: proxy_stops.append(agent),
-                   create=True):
-            try:
-                run_monitor_loop("test-session", "test-001", config, store,
+    monitor.capture_tmux = mock_capture
+    monitor.tmux_cursor_flag = mock_cursor_flag
+    monitor.tmux_session_exists = mock_session_exists
+    monitor.tmux_send_input = mock_send_input
+    monitor.tmux_send_key = mock_send_key
+    monitor.tmux_is_attached = mock_is_attached
+    monitor.tmux_kill_session = mock_kill
+    monitor.time = SimpleNamespace(sleep=mock_sleep, time=mock_time)
+    monitor.signal = SimpleNamespace(signal=mock_signal, SIGTERM=monitor.signal.SIGTERM)
+    monitor.stop_agent_api_proxy = lambda agent, **_kwargs: proxy_stops.append(agent)
+    try:
+        monitor.run_monitor_loop("test-session", "test-001", config, store,
                                  events=events)
-            except StopIteration:
-                pass
+    except StopIteration:
+        pass
 
     return store, events
 
@@ -429,18 +433,18 @@ class TestStep1HealthCheck:
     def test_session_gone_has_worked(self):
         screens = [screen_testing(), screen_testing()]
         store, events = run_monitor_steps(screens, session_alive=False)
-        assert store.last_status == "completed"
-        assert events.of_type("completed")
+        assert store.last_status == "dead"
+        assert events.of_type("tool_exit")
 
     def test_session_gone_never_worked(self):
         screens = [screen_empty()]
         store, events = run_monitor_steps(screens, session_alive=False)
-        assert store.last_status == "failed"
+        assert store.last_status == "dead"
 
     def test_session_gone_with_completion_pattern(self):
         screens = [screen_idle()]
         store, events = run_monitor_steps(screens, session_alive=False)
-        assert store.last_status == "completed"
+        assert store.last_status == "dead"
 
     def test_session_gone_reclaims_its_owned_api_proxy(self):
         stops = []
@@ -462,7 +466,7 @@ def test_monitor_records_custom_tool_exit_without_killing_tmux(tmp_path):
     store, events = run_monitor_steps(
         [screen_planning()], store=store, session_alive=True, max_cycles=1)
 
-    assert store.last_status == "failed"
+    assert store.last_status == "dead"
     assert store.last_state == "failed"
     assert "code 7" in store.agent["exit_reason"]
     assert not status_path.exists()
@@ -545,25 +549,25 @@ class TestStep5StateDetection:
         screens = [screen_planning()] * 5
         store, events = run_monitor_steps(screens, max_cycles=10)
         states = [e["detail"]["to"] for e in events.of_type("state_change")]
-        assert "planning" in states
+        assert "running" in states
 
     def test_state_editing(self):
         screens = [screen_editing()] * 5
         store, events = run_monitor_steps(screens, max_cycles=10)
         states = [e["detail"]["to"] for e in events.of_type("state_change")]
-        assert "editing" in states
+        assert "running" in states
 
     def test_state_testing(self):
         screens = [screen_testing()] * 5
         store, events = run_monitor_steps(screens, max_cycles=10)
         states = [e["detail"]["to"] for e in events.of_type("state_change")]
-        assert "testing" in states
+        assert "running" in states
 
     def test_state_committing(self):
         screens = [screen_committing()] * 5
         store, events = run_monitor_steps(screens, max_cycles=10)
         states = [e["detail"]["to"] for e in events.of_type("state_change")]
-        assert "committing" in states
+        assert "running" in states
 
     def test_state_transitions(self):
         screens = (
@@ -574,10 +578,10 @@ class TestStep5StateDetection:
         )
         store, events = run_monitor_steps(screens, max_cycles=20)
         states = [e["detail"]["to"] for e in events.of_type("state_change")]
-        assert "planning" in states
-        assert "editing" in states
-        assert "testing" in states
-        assert "committing" in states
+        assert "running" in states
+        assert "running" in states
+        assert "running" in states
+        assert "running" in states
 
 
 class TestStep6OutputChange:
@@ -605,7 +609,7 @@ class TestStep7PureScreenIdle:
         store, events = run_monitor_steps(screens, max_cycles=25)
         idles = events.of_type("idle_confirmed")
         assert len(idles) >= 1
-        assert store.last_state == "idle"
+        assert any(u.get("state") == "idle" for u in store.updates)
 
     def test_busy_changing_screen_not_idle(self):
         """Changing output without a prompt is not considered idle."""
@@ -632,8 +636,8 @@ class TestStep8AutoExit:
         stops = []
         store, events = run_monitor_steps(
             screens, store=store, max_cycles=30, proxy_stops=stops)
-        assert store.last_status == "completed"
-        completed = events.of_type("completed")
+        assert store.last_status == "dead"
+        completed = events.of_type("tool_exit")
         assert any(e["detail"].get("reason") == "auto-exit" for e in completed)
         assert stops == [store.agent]
 
@@ -672,8 +676,8 @@ class TestFullLifecycle:
 
         state_changes = events.of_type("state_change")
         states = [e["detail"]["to"] for e in state_changes]
-        assert "planning" in states
-        assert "testing" in states
+        assert "running" in states
+        assert "running" in states
 
         confirms = events.of_type("auto_confirm")
         assert len(confirms) >= 1
@@ -782,7 +786,7 @@ class TestStress:
             screens.append(screen_committing())
         store, events = run_monitor_steps(screens, max_cycles=60)
         state_changes = events.of_type("state_change")
-        assert len(state_changes) >= 4
+        assert state_changes and {e["detail"]["to"] for e in state_changes} == {"running"}
 
     def test_rapid_transitions(self):
         """Rapid state changes interleaved with confirms."""
@@ -813,6 +817,7 @@ class TestStressParallel:
 
     def test_parallel_monitors(self):
         """Run 10 monitors in parallel with different random seeds."""
+        original_sleep, original_time = time.sleep, time.time
         results = {}
         threads = []
 
@@ -828,6 +833,9 @@ class TestStressParallel:
         for t in threads:
             t.join(timeout=30)
 
+        assert len(results) == 10
+        assert time.sleep is original_sleep
+        assert time.time is original_time
         for seed, (ok, result) in results.items():
             assert ok, "Parallel monitor seed %d crashed: %s" % (seed, result)
 
@@ -858,6 +866,7 @@ class TestStressParallel:
         for t in threads:
             t.join(timeout=30)
 
+        assert len(results) == 10
         for idx, (ok, result) in results.items():
             assert ok, "Parallel monitor %d crashed: %s" % (idx, result)
 
@@ -896,5 +905,6 @@ class TestStressParallel:
         for t in threads:
             t.join(timeout=30)
 
+        assert len(results) == 20
         failed = [(k, v[1]) for k, v in results.items() if not v[0]]
         assert not failed, "Parallel monitors crashed: %s" % failed

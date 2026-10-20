@@ -2,14 +2,13 @@
 #
 # Uses interactive TUI (not -p headless) because:
 # - headless `-p` mode rejects shell commands when --force/--yolo is disabled by admin
-# - interactive mode allows auto-confirming permission prompts via CAM monitor
+# - interactive mode retains the tool's native autorun behavior
 #
 # TUI markers observed:
 #   Ready prompt:     → Plan, search, build anything
 #   Tool call:        ⬢ Read /path   ⬢ Edit /path
 #   Shell command:    $ python3 test.py <time> in /dir
 #   Permission:       Run this command? → Run (once) (y)
-#   Completion:       → Add a follow-up  (second → prompt = done)
 
 [adapter]
 name = "cursor"
@@ -20,48 +19,13 @@ cursor_flag_support = false
 
 [launch]
 command = ["cursor-agent", "--workspace", "{path}"]
+launcher_autorun_args = ["--force"]
 prompt_after_launch = true
 startup_wait = 15.0
 strip_ansi = true
 
 ready_pattern = "→"
 ready_flags = ["MULTILINE"]
-
-[state]
-strategy = "last"
-recent_chars = 2000
-
-[[state.patterns]]
-state = "planning"
-pattern = "(⬢ Read|⬢ Glob|⬢ Grep|Thinking|Analyzing)"
-
-[[state.patterns]]
-state = "editing"
-pattern = "(⬢ Edit|⬢ Write)"
-
-[[state.patterns]]
-state = "testing"
-pattern = "(\\$ .+in /|Running tests|pytest|npm test)"
-flags = ["IGNORECASE"]
-
-[[state.patterns]]
-state = "committing"
-pattern = "(git commit|git push|gh pr create)"
-flags = ["IGNORECASE"]
-
-[completion]
-strategy = "prompt_count"
-
-prompt_pattern = "→"
-prompt_flags = ["MULTILINE"]
-prompt_count_threshold = 2
-
-# Fallback: single → plus usage percentage = completion
-# Agent shows "Claude 4.6 Opus (Thinking) · 6.7%" after task finishes
-fallback_summary_pattern = "·\\s*\\d+(\\.\\d+)?%"
-
-# (2026-06-11 trim) All prior rules removed; replaced by two anchored
-# rules below. The active cursor marker for Cursor TUI is →.
 
 [[confirm]]
 # Cursor's permission menu offers Auto-run on the following unselected line.

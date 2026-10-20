@@ -548,6 +548,10 @@ def test_nonterminal_stop_and_exit_preserve_overlay(
             pass
 
     monkeypatch.setattr(cli, "AgentStore", Store)
+    pane_resets = []
+    monkeypatch.setattr(cli, "PIDS_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "_find_tmux_socket", lambda _s: None)
+    monkeypatch.setattr(cli, "tmux_stop_agent_pane", pane_resets.append)
     monkeypatch.setattr(cli, "tmux_session_exists", lambda _s: True)
     monkeypatch.setattr(cli, "_find_claude_pid", lambda _s: None)
     monkeypatch.setattr(cli, "graceful_exit", lambda *_a, **_kw: True)
@@ -556,6 +560,7 @@ def test_nonterminal_stop_and_exit_preserve_overlay(
 
     getattr(cli, "cmd_" + command)(SimpleNamespace(id="agent-a"))
 
+    assert pane_resets == (["cam-agent-a"] if command == "stop" else [])
     assert (root / "agent-a").is_dir()
 
 

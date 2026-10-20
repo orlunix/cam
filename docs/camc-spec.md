@@ -28,12 +28,24 @@ or present camc state, but camc owns the local runtime truth.
   fallback otherwise.
 - **Thin CLI, fat services.** This is the direction, not the current state:
   today `cli.py` still contains substantial command logic. New work should
-  push logic into service modules (`monitor`, `cron`, `scheduler`,
+  push logic into service modules (`monitor`, `cron`,
   `transport`, `storage`, future `messaging`, …) and leave argparse handlers
   as thin shims.
-- **External tick model.** Monitor is a long-lived **observer** of a tmux
-  pane. Cron is a **driven** module — the OS crontab calls `camc cron tick`
-  on a fixed schedule; camc never schedules itself.
+- **Node-local scheduler.** Monitor observes an agent pane. Cron uses a
+  node-local daemon to invoke `cron tick`; camc does not install or repair
+  the user's system crontab.
+- **One launch policy.** Run honors an explicit launcher or uses
+  the current environment default: `auto` when `nvprojectname` is available,
+  otherwise `none`. Reboot reuses saved `tool_launcher`, `tool_env`,
+  `tool_dir`, `tool_args`, and `use_env_tool`, with explicit overrides winning.
+  These settings live in `agents.json` (mode 0600); environment values and
+  custom launcher prefixes are stored verbatim, including secrets. Legacy
+  records missing values still require them to be supplied again. `auto` tries current allocation,
+  battach, SSH, and qsub, then fails if no transport starts the tool.
+  Explicit `none` launches locally. Managed tools use adapter-native autorun
+  arguments on every transport: Claude `--dangerously-skip-permissions`,
+  Codex `--yolo`, Cursor `--force`, and Pi `--approve`.
+
 - **Stores own durable state.** JSON snapshots use fcntl-protected
   read-modify-write plus atomic rename where a store exists. Some legacy
   ledgers are still inline helpers in `cli.py`; the target is to move them
@@ -58,12 +70,10 @@ or present camc state, but camc owns the local runtime truth.
 | `cron/archive/` | `cron.py` | recycled job records | Removed/expired jobs are archived here |
 | `configs/*.toml` | adapter loader | TOML adapter rules | Optional override of embedded configs |
 | `context.json` | `_load_default_context` | legacy single-machine context | Optional env_setup |
-| `contexts.json` | `ContextStore` | list of workspace contexts | Locked write, atomic rename |
-| `machines.json` | `machine_store` | remote machine registry | Used by `cam sync` |
 | `archives/*.tar.gz` | `cli.cmd_archive_*` | transcript + agent metadata bundle | Created by `archive`, `rm --archive`, or pruning flows |
 | `logs/monitor-<id>.log` | monitor subprocess | monitor loop log | Main monitor logger output |
 | `logs/monitor-<id>.stderr` | monitor subprocess launcher | monitor subprocess stderr | Created by `run` / `heal` launch paths |
-| `cron/cron.log` | system crontab block | cron tick stdout/stderr | Human-readable cron log |
+| `cron/cron.log` | node-local scheduler | cron tick stdout/stderr | Human-readable cron log |
 | `pids/<id>.pid` | monitor subprocess | monitor process pid | Self-cleanup on exit |
 | `tunnel/token` | `tunnel.py` serve | hex token (0600) | Auto-generated on first `tunnel serve` |
 | `tunnel/serve.json` | `tunnel.py` serve | `{pid, port, ts}` | Removed on clean exit |
@@ -105,8 +115,9 @@ commands produce or consume records in this shape. (See also
   "context_name":   "",
   "context_path":   "/abs/workdir",
   "transport_type": "local|ssh",                   // how cam deployed it; NOT where tmux lives
-  "status":         "running",                       // common: pending|starting|running|completed|failed|killed|stopped
-  "state":          "initializing|planning|editing|testing|committing|idle",
+  "status":         "alive",                         // alive|dead
+  "state":          "running",                       // alive: idle|running; dead: stopped|failed|killed
+  "phase":          "initializing",                  // alive: initializing|started; dead: null
   "tmux_session":   "cam-<id>",
   "tmux_socket":    "",                            // override; default /tmp/cam-sockets/<session>.sock
   "tmux_bin":       "/usr/bin/tmux",               // pinned per-session
@@ -141,14 +152,15 @@ and should not be treated as a correctness metric; the generated `src/camc` /
 | `monitor.py` + `monitor_features.py` | ~1,030 | Long-running pane observer, auto-confirm, state management | Core monitor path; do not remove for size |
 | `transport.py` + `runtime_env.py` | ~1,300 | tmux operations, tool/path/env hardening | Critical for PDX/DC stability |
 | `fast_capture.py` + `prelude/*` | ~600 | Data-plane fast path for capture and simple send text using `agents.json`, `--no-fast-path` rollback, and build-time hook registry | Release-sensitive; see `docs/camc-refactor-development-plan.md` |
-| `storage.py`, `machine_store.py`, `context_store.py` | ~450 | JSON stores and local registries | Candidate for shared store helper |
-| `scheduler.py`, `migrate.py`, `remote.py`, `formatters.py`, `utils.py`, `detection.py`, `system_prompt.py` | ~1,500 | Supporting features and compatibility | Review deletion only with usage evidence |
+| `storage.py` | ~240 | Agent JSON store and event log | Preserve locking and atomic writes |
+| `formatters.py`, `utils.py`, `detection.py`, `system_prompt.py` | ~1,000 | Supporting features and compatibility | Review deletion only with usage evidence |
+| `machine_store.py`, `remote.py` | ~380 | Internal registry and SSH helpers required by the tunnel backend; legacy machine/context/sync commands remain retired | Tunnel dependency |
 | `bridge.py` | ~440 | Fleet bridge ferry (hub mailbox + tunnel fast path, bridge-protocol-v1) | Hub-centric; see `docs/desktop/bridge-protocol-v1.md` |
 | `tunnel.py` | ~700 | Per-machine persistent SSH tunnels: keeper + serve + route/submit + mailbox fallback | Hub-less peer path; §6a |
 
 **Service boundary today.** Core feature modules exist, but the CLI adapter
 layer is still monolithic. `cli.py` contains the parser and substantial feature
-logic for lifecycle, archive, msg, cron, API, machine/context, capture/send/key,
+logic for lifecycle, archive, msg, cron, API, capture/send/key,
 and maintenance commands. The simplification target (§9 and
 `docs/camc-refactor-development-plan.md`) is to demote `cmd_*` handlers to thin
 shims that delegate to feature services.
@@ -161,8 +173,9 @@ it survives CLI exit.
 
 Loop, every ~1s:
 
-1. **Health check** (every 15s): `tmux_session_exists(session)`. Gone →
-   `completed` if `has_worked`, else `failed`. Exit.
+1. **Health check** (every 15s): retry failed tmux queries; retain the state
+   if its server is still alive. Confirmed disappearance without an exit
+   receipt becomes `dead/failed` with a reason.
 2. **Capture** (`capture_tmux`) → hash (last status-bar line stripped to
    avoid Claude's spinner-alternation false changes).
 3. **Aux signals** (optional, per-adapter): `busy_pattern` (working),
@@ -175,23 +188,37 @@ Loop, every ~1s:
      contain `1{3,}`, suppress and apply ~60s cooldown. Prevents
      blasting `1`s when an earlier confirm misfired into prose.
    - Dispatch via `tmux_send_input` / `tmux_send_key`.
-5. **State detection** (`detect_state`): regex on recent ~2KB →
-   `planning|editing|testing|committing`. Sets `has_worked=True` on
-   first non-None state.
-6. **Idle detection**: `has_worked` + hash stable 60s + prompt visible →
-   `idle_confirmed`. Fast-track to 5s if `done_pattern` matched + bare prompt.
-7. **Stuck fallback**: `has_worked` + hash frozen 120s + prompt NOT visible →
-   send `probe_char` (default `1`).
-8. **Auto-exit** (opt-in): `idle_confirmed` + nobody attached +
-   `auto_exit=true` → kill session, mark completed.
+5. **Activity**: changed output or busy signals → `alive/running/started`.
+6. **Idle detection**: screen stable 60s + input prompt visible →
+   `alive/idle/started`. Fast-track to 5s for done signal + bare prompt.
+7. **Auto-exit** (opt-in): idle + nobody attached + `auto_exit=true` →
+   stop the session and record `dead/stopped`.
+
+There is no task-completion agent state. Finished work returns to idle;
+normal process exit is stopped, unsuccessful exit is failed, explicit kill
+is killed. The `completed_at` field is an exit timestamp only.
+Legacy records normalize on read and persist in the new form on the next
+write: legacy completed → dead/stopped; semantic work states → alive/running.
+Adapter TOML state/completion sections and their camc parsers have been removed.
+
+Startup remains `alive/running/initializing` until the monitor sees tool
+readiness (and acknowledges the initial prompt when applicable). The pane
+worker supervises startup: early exit, tool readiness timeout, or the overall
+600-second launcher/tool deadline produces `dead/failed` with `exit_reason`.
+Queue waiting does not consume the adapter's boot timer, but counts toward
+that overall deadline. Arbitrary tools have no TUI readiness contract and
+become started when their process is spawned. `run` returns after creating
+the pane; startup supervision continues in its worker. Stale monitors cannot
+write into a newer launch generation or replace a dead state with idle.
 
 **Self-heal**: monitor catches exceptions and restarts itself up to 5
 times with exponential backoff (5s, 10s, 15s…). Crashes beyond that need
-external heal.
+external heal. A monitor crash records `monitor_error`; it does not declare
+a still-running tool dead.
 
 **What monitor does NOT do**: it does not write to `messages.jsonl`, does
 not run cron jobs, does not invoke other agents, does not modify
-`agents.json` beyond status / state / pid / completed_at. That separation
+`agents.json` beyond lifecycle and monitor metadata. That separation
 is the "observer" half of "monitor as observer only".
 
 ## 6. Mailbox — `camc msg` protocol
@@ -367,12 +394,9 @@ camc cron tick                             # the external tick entry point
 
 ### 7.2 The tick
 
-camc never schedules itself. The OS crontab carries a single line
-installed by `install_tick()` (block-managed; see `_build_tick_block`):
-
-```
-* * * * * HOME=/home/<user> PATH=<captured PATH> /home/<user>/.cam/camc cron tick >> ~/.cam/cron/cron.log 2>&1
-```
+A node-local scheduler invokes `cron tick` for scheduled jobs and agent
+loops. The manual tick entry point remains available. Legacy system
+crontab entries are left untouched; camc no longer installs or repairs them.
 
 `camc cron tick` then:
 
@@ -391,10 +415,16 @@ actually fires. This mirrors the agent-level `hostname` filter.
 
 ### 7.4 Self-heal hook
 
-`ensure_tick_if_needed()` is also called by `camc heal`. If active jobs
-exist and the crontab block has been wiped (NFS reset, user crontab edit),
-heal re-installs it. If no enabled jobs remain, cron removal may remove the
-owned block.
+The maintenance phase of `camc heal` checks the node-local scheduler when
+local cron work exists. It does not edit system crontab. Agent monitor
+first reconciles local live-tool evidence regardless of the recorded label.
+A verified tool process under pane 0 restores stale terminal records to
+`alive/started`, clears old exit metadata/receipts, and classifies idle/running.
+Empty shells and transport-only processes do not revive records. Preparation with a missing launch
+worker becomes failed after a short spawn grace period.
+Maintenance and orphan discovery also run with no running agents. Orphan
+adoption requires an owned socket and the current HOME; sessions belonging
+to another HOME are left alone.
 
 ## 8. Tmux transport contract
 
@@ -416,9 +446,8 @@ existing sessions.
 **Multi-tmux-binary support**: `_tmux_bin_for_session(id)` reads the
 running server's `argv[0]` so capture/send can target a session that was
 created with a different `tmux` binary path than the one in `$PATH` today.
-The *choice* of which tmux binary to use at session creation is today
-implicit (`_detect_tmux_bin()` first match in `$PATH`); **F-06** makes
-that choice explicit per machine — see §9.6.
+The runtime resolves the tmux binary before use and pins it to the session;
+this does not require a machine registry.
 
 ## 9. Planned features (simplification roadmap)
 
@@ -437,10 +466,9 @@ design that is already in place.
 |---|---|---|---|---|
 | **F-01** | Thin CLI (move logic out of `cmd_*` handlers) | §9.1 | `cli.py`, new `messaging.py` / `archive.py` / `preflight.py` / `heal.py` | planned |
 | **F-02** | Service module shape (uniform `XService` interface) | §9.2 | all service modules | planned |
-| **F-03** | Common `BaseJsonStore` mixin (fcntl + atomic rename) | §9.3 | `storage.py`, `cron.py`, `machine_store.py`, `context_store.py` | planned |
+| **F-03** | Common `BaseJsonStore` mixin (fcntl + atomic rename) | §9.3 | `storage.py`, `cron.py` | planned |
 | **F-04** | Mailbox `claim → pending → reply` state machine | §9.4 + §6.3/§6.4 | `messages.jsonl` schema, new `messaging.py` | planned |
 | **F-05** | Monitor observer-only + pluggable `rule_engine` | §9.5 + §5 | `monitor.py`, new `rule_engine.py` | planned |
-| **F-06** | Per-machine tool resolution (Tier A / Tier B) | §9.6 + §8 | `machines.json` schema, `_preflight` in `cli.py`, `transport.py` tmux discovery | planned |
 | **F-07** | Control-plane/data-plane split + fast-path governance | refactor plan | `build_camc.py`, `prelude/*`, `fast_capture.py`, hot-path tests | active |
 
 Cross-refs from earlier sections:
@@ -449,7 +477,6 @@ Cross-refs from earlier sections:
 - §6.4 **Known gaps** (no claim phase) → **F-04**
 - §5 **Monitor loop** (today: detection + auto-confirm + idle in one loop) → **F-05**
 - §2 `messages.jsonl` row owner = "inline (`cli.py`)" → **F-01** + **F-04** move it behind a service
-- §8 **Multi-tmux-binary support** (per-session pin) → **F-06** supplies the resolution layer that decides which tmux to pin
 
 ### 9.1 F-01 — Thin CLI
 
@@ -493,9 +520,8 @@ All stores should share:
 - Atomic rename on every write.
 - `from_dict` / `to_dict` schema accessors.
 
-Target: extract a `BaseJsonStore` mixin. `AgentStore`, `CronStore`,
-`MachineStore`, `ContextStore` would all inherit it. Today each
-re-implements the locking dance.
+Target: share locking and atomic-write helpers between `AgentStore` and
+cron job storage where their contracts match.
 
 ### 9.4 F-04 — Mailbox `claim → pending → reply` state machine
 
@@ -544,117 +570,16 @@ monitor.last_state          ┘                                  │
 become discrete evaluators. Monitor only schedules captures and
 dispatches actions. Easier to test, easier to extend with new tools.
 
-### 9.6 F-06 — Per-machine tool resolution (Tier A / Tier B)
+### 9.6 Tool resolution
 
-Today the resolution of external tools is implicit: `claude` / `codex` /
-`cursor` are looked up via `$PATH` (after `env_setup`), and `tmux` is
-discovered by `_detect_tmux_bin()` then pinned per-session as `tmux_bin`.
-This produces hard-to-debug drift when one container has a different
-PATH ordering, a stale claude install, or an unexpected tmux version.
-F-06 makes the resolution explicit per machine.
+Tool resolution uses the runtime environment, adapter policy and explicit
+`--tool-dir`. The former machine-registry proposal has been retired.
 
-**Rationale**: the same agent prompt produces different results on
-different machines. Without a registry, `camc run` fails opaquely —
-or, worse, runs against the wrong binary version and produces subtly
-different output. Blind debugging is expensive; the registry surfaces
-drift up front.
+### 9.7 Cron scheduling
 
-**Scope** (intentionally narrow):
-
-- `tmux` (resolution + version expectation)
-- The agent tool family (`claude`, `codex`, `cursor`) — search-path list + version expectation
-
-Everything else (`git`, `ssh`, `scp`, `python3`, `bash`, plus anything an
-agent itself invokes via Bash) is **out of scope** for F-06. They use
-system PATH; missing → standard shell error.
-
-#### Two tiers
-
-| Tier | Definition | Resolution | Missing |
-|---|---|---|---|
-| **A — managed** | `machines.json` entry has a `tools` field | Explicit `path` / `search_paths` from config | **ERROR** (refuse to launch) |
-| **B — standalone** | `machines.json` entry has **no** `tools` field | Fall back to `which <tool>` (after `env_setup`) | **ERROR** for hard deps (tmux + the agent's own tool); **WARN** for anything else |
-
-The presence/absence of `tools` is the **only** discriminator. No new
-flag, no new file. ACME `*-container-xterm-*` hosts opt in to Tier A;
-local / `bpmpfw` / `hlren` / `vdi-wsl` stay zero-config Tier B.
-
-#### Schema (extension of `machines.json` entry)
-
-```jsonc
-{
-  "name": "pdx-container-xterm-098",
-  "host": "...",
-  "port": 3422,
-  "env_setup": "source ~/.bashrc",
-  "tools": {                                       // optional; presence → Tier A
-    "tmux":   { "path": "/usr/bin/tmux",
-                "version_expect": "3.4" },          // optional; mismatch → WARN
-    "claude": { "search_paths": [                   // ordered; first existing wins
-                  "/home/prgn_share/tools/claude-code/bin/claude",
-                  "claude"                          // sentinel: "claude" == fall back to which
-                ],
-                "version_expect": "2.1.x" },
-    "codex":  { "search_paths": ["codex"] },
-    "cursor": { "search_paths": ["cursor"] }
-  }
-}
-```
-
-- `path` — single pinned location (Tier A `tmux` convention)
-- `search_paths` — ordered list, first existing wins; a literal string
-  equal to the tool name (e.g. `"claude"`) means "fall back to
-  `which claude`" so an entry can mix pinned paths with PATH fallback
-- `version_expect` — optional, prefix-glob (`"2.1.x"` matches any
-  version starting with `2.1.`); mismatch → WARN + event, never blocks
-
-#### Runtime behavior
-
-- `_preflight(tool, machine)` resolves the tool **before** session
-  creation. Resolved path is recorded in the agent record (mirroring
-  today's per-session `tmux_bin`; F-06 extends to also pin the agent
-  tool path so later capture/send always knows the binary that was
-  actually used).
-- Each resolution writes an `events.jsonl` entry of type `tool_resolve`
-  so drift is visible in history.
-- Tier A version mismatch → **WARN** + event, continue.
-- Tier A missing path → **ERROR**, refuse to start agent.
-- Tier B missing hard-dep (tmux or the agent's own tool) → **ERROR**.
-- Tier B missing soft-dep → **WARN**.
-
-#### New CLI surface
-
-```
-camc machine fingerprint <name>     # SSH, discover paths/versions for tmux and
-                                    # claude/codex/cursor, print a diff vs the
-                                    # current machines.json. Does NOT auto-edit
-                                    # machines.json — Tier A registry stays
-                                    # authoritative; human reviews + commits.
-```
-
-Read-only on purpose: in Tier A the registry **is** the contract.
-Auto-rewrite would silently mask drift instead of surfacing it.
-
-#### Out-of-scope for F-06 v1 (future)
-
-- **Tool profiles** (`~/.cam/tool_profiles.json` + `tools_profile:
-  "<name>"` reference). Container hosts will likely share identical
-  `tools` blocks; once the duplication actually hurts, add a profile
-  layer. Until then, duplicate the block across the 3–4 ACME
-  containers — honest > clever.
-- **Auto-rewrite of `machines.json`** by `fingerprint`. Same reasoning.
-- **Fingerprinting tools agents invoke via Bash** (git/p4/nvip/make/…).
-  Trust system PATH; out of scope.
-
-### 9.7 Cron as external tick — (current design, no work item)
-
-Already the design today. Document as canonical:
-
-- camc owns `cron/jobs.d/*.json` and `cron tick` behavior.
-- camc does **not** own scheduling. The OS (crontab / systemd timer / cam-flow)
-  calls `cron tick` at whatever cadence it wants.
-- `install_tick()` is a convenience for the common "I want a 1-minute OS cron
-  entry" case. It is not required.
+The node-local daemon schedules ticks. The tick and worker retain their
+locking, host filtering and run-id deduplication contracts. System crontab
+management has been removed.
 
 ## 10. Drift from older docs
 
@@ -686,8 +611,8 @@ camc attach <id>                         # tmux attach
 camc exit  <id>                          # graceful /exit, tmux stays
 camc stop  <id>                          # SIGTERM tool, tmux stays
 camc kill  <id>                          # tear down session
-camc reboot <id>                         # restart with --resume
-camc migrate <id> [--to host:port]       # move/restart with --resume
+camc reboot <id>                         # fresh tool session, same agent ID
+camc migrate <id>                        # alias for reboot
 
 # Interact
 camc capture <id> [--lines N]
@@ -711,21 +636,17 @@ camc archive show <id-or-archive>
 
 # Scheduling
 camc cron add --name <n> --every 10m -- <cmd>
-camc cron tick                           # called by OS crontab
+camc cron tick                           # manual/internal scheduler tick
 camc cron list
 camc cron rm <id-or-name>
 
-# Multi-machine
-camc machine list
-camc machine add <name>
-camc machine rm <name>
-camc machine edit <name>
-camc machine ping [name]
-camc context list
-camc context add <name>
-camc context rm <name>
-camc sync                                # push binary + configs to remote machines
 ```
+
+The retired `apply`, `machine`, `context` and `sync` commands are no longer
+part of camc. Use `run --path` to select a workspace. Existing registry files
+are left untouched for older CAM consumers. The one-time `db-migrate`
+command and the no-op `skills add/rm` commands have also been removed;
+`skills list` and bundled skill installation remain available.
 
 ## 12. Doc map
 

@@ -35,9 +35,6 @@ graph TB
             camc_l_stop["camc stop/kill"]
             camc_l_heal["camc heal"]
             camc_l_attach["camc attach"]
-            camc_l_machine["camc machine list/add/rm"]
-            camc_l_context["camc context list/add/rm"]
-            camc_l_sync["camc sync"]
             camc_l_mon["monitors<br/>(1 per agent)"]
         end
 
@@ -129,9 +126,6 @@ graph TB
     api -->|"CamcDelegate<br/>SSH"| camc_r2
     api -->|"CamcDelegate<br/>subprocess"| camc_local
 
-    %% camc sync deploys to remotes
-    camc_l_sync -->|"SSH scp"| camc_r1
-    camc_l_sync -->|"SSH scp"| camc_r2
 
     %% camc → tmux
     camc_local --> local_tmux
@@ -240,11 +234,7 @@ graph TB
         send["send/key"]
         status["status --json"]
         heal["heal<br/>(+ cron)"]
-        apply["apply<br/>DAG scheduler"]
         history["history<br/>event log"]
-        machine_cmd["machine<br/>list/add/rm/edit/ping"]
-        context_cmd["context<br/>list/add/rm"]
-        sync_cmd["sync<br/>deploy to remotes"]
         migrate_cmd["migrate<br/>SQLite→JSON"]
     end
 
@@ -260,8 +250,6 @@ graph TB
     subgraph Data["Storage"]
         agents["agents.json<br/>(fcntl locked)"]
         events["events.jsonl<br/>(30-day rotate)"]
-        machines["machines.json"]
-        contexts["contexts.json"]
         configs["configs/*.toml<br/>claude/codex/cursor"]
         pidfiles["pids/*.pid"]
         logfiles["logs/monitor-*.log"]
@@ -285,9 +273,6 @@ graph TB
     heal --> agents
     heal --> Sessions
     heal -->|"rotate"| events
-    machine_cmd --> machines
-    context_cmd --> contexts
-    sync_cmd -->|"SSH scp"| machines
 
     Monitor --> Sessions
     Monitor --> agents

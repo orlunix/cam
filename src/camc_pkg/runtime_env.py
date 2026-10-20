@@ -739,7 +739,7 @@ _NEST_CLEAR_KEYS = ("TMUX", "TMUX_PANE", "CLAUDECODE")
 # an IDE non-interactive shell).  Passing that through suppresses ANSI in
 # Codex/Claude/Cursor despite the interactive PTY and makes Desktop appear
 # monochrome.  Do not inherit that non-interactive presentation preference.
-_INTERACTIVE_CLEAR_KEYS = ("NO_COLOR",)
+_INTERACTIVE_CLEAR_KEYS = ("NO_COLOR", "NODE_DISABLE_COLORS")
 
 
 def build_runtime_env(shell=None, env_setup=None):

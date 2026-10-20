@@ -1,65 +1,54 @@
-# `~/.cam/camc heal` and the monitor loop
+# Heal and lifecycle reconciliation
 
-## What the monitor is
+Agent `status` is `alive` or `dead`. Alive agents have `state=idle|running`
+and `phase=initializing|started`; dead agents have `state=stopped|failed|killed`
+and no startup phase. Finishing a task returns to idle, not completed.
 
-Every running agent has a background **monitor** Python subprocess that:
-
-- captures the tmux pane every ~1s
-- detects state (`planning`, `editing`, `testing`, `committing`, `idle`)
-- auto-confirms permission dialogs (`1` for menu, `y` for y/n, etc.)
-- detects completion (Claude prompt count, busy/done patterns from TOML)
-- updates `~/.cam/agents.json` and emits events to `~/.cam/events.jsonl`
-- self-restarts on crash (5 retries with exponential backoff)
-
-Logs land in `~/.cam/logs/monitor-<id>.log` (stdout) and
-`monitor-<id>.stderr`. PID file: `~/.cam/pids/<id>.pid`.
-
-## `~/.cam/camc heal`
-
-Walks every running agent on the current host:
+## Heal
 
 ```bash
-~/.cam/camc heal               # restart any agent whose monitor PID is dead
-~/.cam/camc heal --upgrade     # kill ALL monitors, restart each with the current
-                        # camc binary — use after deploying a new version
+~/.cam/camc heal                 # reconcile local evidence, repair missing monitors
+~/.cam/camc heal --monitor       # same default operation
+~/.cam/camc heal --restart       # replace verified local monitors, then normal heal
+~/.cam/camc heal --tmux          # refresh managed tmux configuration
+~/.cam/camc heal --agents        # explicit legacy record migration only
 ```
 
-Heal also cleans up:
-- stale socket files at `/tmp/cam-sockets/` whose tmux server is gone
-- orphan tmux sessions adoptable into agents.json (Phase 3)
+`heal --upgrade` is deprecated compatibility, not the maintenance workflow.
+The retired `cam` server is not involved. Default heal can recover cron's
+node-local scheduler when work exists; it does not edit system crontab.
 
-Heal **filters by hostname** — on NFS-shared `~/.cam/agents.json` clusters
-(PDX containers), `~/.cam/camc heal` on machine X only touches agents whose
-`hostname` field matches X. Other machines' agents are untouched.
+Heal checks the tool process rooted at window 0/pane 0. It does not infer
+liveness from a retained tmux shell, an extra pane, a stale PID, old screen
+text, or an SSH/battach/qsub transport alone. Verified local tools restore
+incorrect terminal labels to alive/started, clear old failure metadata and
+stale exit receipts, and classify idle using the current input UI; otherwise
+they are running. Process identity and the record are checked again before
+writing so concurrent stop/reboot and PID reuse win over stale observations.
+Remote-host records are not probed as local processes. If a tool only exists
+on an LSF execution host, transport presence on the submit host is insufficient
+for revival; obtain target-side evidence before claiming it is alive.
 
-## When to run heal
+A live tmux server behind a temporarily failing socket query is left alone.
+Confirmed missing local sessions become failed with a reason. Dead empty
+shells remain dead; an alive record with a verified childless shell is marked
+failed because its tool exited without a reliable exit result. Local orphan adoption and stale-socket cleanup are scoped
+to owned sockets and the same HOME.
 
-| Symptom | Action |
-|---|---|
-| `~/.cam/camc list` shows running but nothing's happening | `~/.cam/camc heal` |
-| Just deployed new ~/.cam/camc version | `~/.cam/camc heal --upgrade` |
-| Many agents stopped responding to send/key | `~/.cam/camc heal` |
-| sockets piling up in `/tmp/cam-sockets/` | `~/.cam/camc heal` (auto-cleans) |
+## Monitor and startup worker
 
-## Cron suggestion
+The monitor observes screen activity and input readiness, records idle/running,
+and applies adapter confirmation rules when enabled. It does not categorize
+planning/editing/testing/committing or infer completed from prompt counts.
+It records real exit receipts and checks session health. A monitor crash
+retries up to five times and then records monitor_error; it does not declare
+a working tool dead.
 
-```bash
-# Every 30 minutes
-*/30 * * * * /home/hren/.cam/camc heal >/dev/null 2>&1
-```
+Run/reboot create tmux first; preparation, launcher waits, and the tool run in
+pane 0. The worker supervises startup to started or a reasoned failure. The
+assistant must also inspect stalled startup and handle routine trust/menu
+choices as described in managing-camc. A successful run command is not
+startup completion. Do not inject arbitrary characters into a stalled UI.
 
-`cam sync` deploys this cron entry automatically (best-effort — tolerated
-to fail on hosts without `crontab`). Server side, `cam heal` runs hourly
-and SSHes into each unique host to call `~/.cam/camc heal` once per host.
-
-## Self-healing details
-
-The monitor wraps its main loop in `try/except` with restart-on-error.
-Common exceptions handled:
-
-- `database is locked` (SQLite contention with many concurrent agents)
-- `OSError` from a flaky NFS read on `agents.json`
-- `tmux server died` mid-capture
-
-After 5 consecutive failures the monitor exits and `~/.cam/camc heal` is
-expected to restart it on the next sweep.
+Logs: `~/.cam/logs/monitor-<id>.log` and `monitor-<id>.stderr`.
+Registry: `~/.cam/agents.json`; events: `~/.cam/events.jsonl`.

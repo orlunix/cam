@@ -96,52 +96,16 @@ class TestClaudeAdapter:
         assert "--permission-mode" not in cmd
         assert "--dangerously-skip-permissions" not in cmd
 
-    def test_detect_state_planning_thinking(self):
-        adapter = ClaudeAdapter()
-        assert adapter.detect_state("Thinking about the approach...") == AgentState.PLANNING
 
-    def test_detect_state_planning_tool_marker(self):
-        adapter = ClaudeAdapter()
-        assert adapter.detect_state("● Read(src/main.py)") == AgentState.PLANNING
 
-    def test_detect_state_editing_tool_marker(self):
-        adapter = ClaudeAdapter()
-        assert adapter.detect_state("● Edit(src/main.py)") == AgentState.EDITING
 
-    def test_detect_state_editing_write_marker(self):
-        adapter = ClaudeAdapter()
-        assert adapter.detect_state("● Write(new_file.py)") == AgentState.EDITING
 
-    def test_detect_state_testing_bash_marker(self):
-        adapter = ClaudeAdapter()
-        assert adapter.detect_state("● Bash(pytest tests/)") == AgentState.TESTING
 
-    def test_detect_state_testing_keyword(self):
-        adapter = ClaudeAdapter()
-        assert adapter.detect_state("Running tests with pytest...") == AgentState.TESTING
 
-    def test_detect_state_committing(self):
-        adapter = ClaudeAdapter()
-        assert adapter.detect_state("git commit -m 'fix bug'") == AgentState.COMMITTING
 
-    def test_detect_no_state(self):
-        adapter = ClaudeAdapter()
-        assert adapter.detect_state("Some random output") is None
 
-    def test_detect_state_strips_ansi(self):
-        adapter = ClaudeAdapter()
-        assert adapter.detect_state("\x1B[1;32mThinking\x1B[0m about the approach...") == AgentState.PLANNING
 
-    def test_detect_state_last_match_wins(self):
-        """When multiple patterns match, the last occurrence in output wins."""
-        adapter = ClaudeAdapter()
-        output = "● Read(config.py)\nAnalyzing...\n● Edit(config.py)\nDone"
-        assert adapter.detect_state(output) == AgentState.EDITING
 
-    def test_detect_state_last_match_testing_after_editing(self):
-        adapter = ClaudeAdapter()
-        output = "● Edit(main.py)\nUpdated file\n● Bash(pytest tests/)"
-        assert adapter.detect_state(output) == AgentState.TESTING
 
     def test_auto_confirm_proceed(self):
         adapter = ClaudeAdapter()
@@ -201,55 +165,13 @@ class TestClaudeAdapter:
         screen = "1. Yes, I trust this folder  2. No, exit"
         assert adapter.should_auto_confirm(screen) is None
 
-    def test_completion_returns_none_for_single_prompt(self):
-        adapter = ClaudeAdapter()
-        # Single ❯ = still working (initial prompt sent)
-        assert adapter.detect_completion("❯ Do something\nWorking...") is None
 
-    def test_completion_returns_none_for_no_prompt(self):
-        adapter = ClaudeAdapter()
-        assert adapter.detect_completion("anything") is None
 
-    def test_completion_detected_with_two_bare_prompts(self):
-        adapter = ClaudeAdapter()
-        # Two bare ❯ prompts = task done (first prompt + return to input after completion)
-        output = '❯\xa0Try "fix lint"\n● Write(file.py)\n────\n❯\xa0Try "fix lint"\n────'
-        assert adapter.detect_completion(output) == AgentStatus.COMPLETED
 
-    def test_completion_not_triggered_during_confirm_dialog(self):
-        adapter = ClaudeAdapter()
-        # Multiple ❯ lines but output contains a confirm pattern (permission prompt)
-        # — tool is waiting for approval, NOT idle
-        output = (
-            '❯ fetch something\n● Bash(curl ...)\n'
-            'Do you want to proceed?\n'
-            '❯ 1. Yes\n   2. No\n'
-        )
-        assert adapter.detect_completion(output) is None
 
-    def test_completion_fallback_crunched_with_single_prompt(self):
-        adapter = ClaudeAdapter()
-        # Single bare ❯ + "Crunched for" = completion (first ❯ scrolled past capture window)
-        output = "✻ Crunched for 1m 11s\n────\n❯\n────"
-        assert adapter.detect_completion(output) == AgentStatus.COMPLETED
 
-    def test_completion_fallback_sauteed_with_single_prompt(self):
-        adapter = ClaudeAdapter()
-        # Claude rotates verbs: "Sautéed for" should also work
-        output = "✻ Sautéed for 41s\n────\n❯\n────"
-        assert adapter.detect_completion(output) == AgentStatus.COMPLETED
 
-    def test_completion_no_fallback_without_prompt(self):
-        adapter = ClaudeAdapter()
-        # Task summary but no ❯ = not yet complete (still rendering)
-        output = "✻ Crunched for 45s\nSome more output"
-        assert adapter.detect_completion(output) is None
 
-    def test_completion_no_fallback_summary_only(self):
-        adapter = ClaudeAdapter()
-        # Single ❯ without task summary = still working (initial prompt)
-        output = "❯ Do something\n● Edit(file.py)\nModifying..."
-        assert adapter.detect_completion(output) is None
 
     def test_is_ready_for_input_with_prompt(self):
         adapter = ClaudeAdapter()
@@ -387,18 +309,8 @@ class TestCodexAdapter:
         result = adapter.should_auto_confirm("Just output")
         assert result is None
 
-    def test_completion_single_prompt_not_done(self):
-        adapter = CodexAdapter()
-        assert adapter.detect_completion("› say hello\n• Working...") is None
 
-    def test_completion_two_prompts_done(self):
-        adapter = CodexAdapter()
-        output = "› say hello\n• Hello!\n› "
-        assert adapter.detect_completion(output) == AgentStatus.COMPLETED
 
-    def test_completion_no_prompt(self):
-        adapter = CodexAdapter()
-        assert adapter.detect_completion("some output") is None
 
 
 class TestGenericAdapter:

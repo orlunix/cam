@@ -19,6 +19,7 @@ Hook return protocol (each hook function)::
 
 import json
 import os
+import shlex
 
 PRELUDE_DIR = os.path.dirname(os.path.abspath(__file__))
 MANIFEST_PATH = os.path.join(PRELUDE_DIR, "manifest.json")
@@ -121,7 +122,9 @@ def render_prelude(disabled=None):
     if hooks:
         lines.extend(_dispatcher_lines(hooks))
         lines.append("")
-    lines.append('exec python3 "$0" "$@"')
+    with open(os.path.join(PRELUDE_DIR, "bytecode_bootstrap.py"), "r") as stream:
+        bootstrap = stream.read()
+    lines.append('exec python3 -c %s "$0" "$@"' % shlex.quote(bootstrap))
     lines.append(":'''")
     return lines
 

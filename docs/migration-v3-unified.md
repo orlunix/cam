@@ -1,7 +1,9 @@
 # CAM v3: Unified Architecture Migration Plan
 
 > Date: 2026-03-26
-> Status: Planned
+> Status: Historical plan. As of 2026-10-14, camc no longer includes DAG apply,
+> machine/context registries, or sync. Those sections below describe the old
+> proposal, not the current CLI. See docs/camc-spec.md for current behavior.
 > Supersedes: docs/architecture-v2-camc-engine.md
 
 ## 1. Goal

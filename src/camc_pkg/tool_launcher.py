@@ -81,8 +81,13 @@ def record_uses_tool_launcher(record):
 
 
 def launcher_target_environment(runtime_env, storage_info=None):
-    """Send tool home and supplemental command paths, never loader variables."""
+    """Send terminal capabilities, tool home and paths, never loader variables."""
     result = {}
+    # An existing LSF allocation retains the environment of its original
+    # submitter. Its TERM is not necessarily the terminal attached now.
+    for name in ("TERM", "COLORTERM"):
+        if (runtime_env or {}).get(name):
+            result[name] = str(runtime_env[name])
     paths = []
     for path in str((runtime_env or {}).get("PATH") or "").split(os.pathsep):
         if (os.path.isabs(path) and "/tmp/arg0/" not in path and
@@ -633,11 +638,12 @@ def _auto_remaining_plan(candidates, battach, ssh, nvproject, qsub,
 
 def resolve_named_tool_launcher(preset_info, selected_tool, workdir, env,
                                 target_tool=None, target_tool_path="",
-                                target_tool_version_args=None):
+                                target_tool_version_args=None, progress=None):
     """Resolve a named launcher to argv plus secret-free metadata/notices."""
     preset = preset_info[0]
     if preset != "auto":
         raise ValueError("unsupported named tool launcher: %s" % preset)
+    report = progress or (lambda message: None)
 
     bjobs = _launcher_binary(env, ("/usr/local/lsf/bin/bjobs", "bjobs"))
     battach = _launcher_binary(
@@ -658,6 +664,7 @@ def resolve_named_tool_launcher(preset_info, selected_tool, workdir, env,
 
     candidates = []
     user = ""
+    report("battach: checking reusable autorun jobs")
     if bjobs:
         user = str((env or {}).get("USER") or
                    (env or {}).get("LOGNAME") or "")
@@ -671,6 +678,7 @@ def resolve_named_tool_launcher(preset_info, selected_tool, workdir, env,
         rc, stdout, stderr = _launcher_process(
             argv, env=env, cwd=workdir, timeout=15)
         if rc:
+            report("battach: job query failed (exit %s)" % rc)
             discovery_failure = (stderr or stdout or
                                  "exit %d" % rc).strip()[:200]
             notices.append("%s: bjobs discovery failed: %s" %
@@ -679,6 +687,7 @@ def resolve_named_tool_launcher(preset_info, selected_tool, workdir, env,
             candidates = _parse_autorun_jobs(
                 stdout, selected_tool, current_project=current_project)
     else:
+        report("battach: bjobs unavailable")
         notices.append("%s: bjobs not found" % preset)
 
     verified = []
@@ -695,10 +704,15 @@ def resolve_named_tool_launcher(preset_info, selected_tool, workdir, env,
         verified.append(candidate)
 
     preferred_tool_path = target_tool_path
+    if not verified:
+        report("battach: no verified autorun job; trying ssh")
     if verified and not battach:
+        report("battach: executable unavailable; trying ssh")
         notices.append("%s: battach not found" % preset)
     if battach:
         for candidate_index, candidate in enumerate(verified):
+            report("battach: probing job %s on %s" %
+                   (candidate["job_id"], candidate["host"]))
             probe_dir = ""
             try:
                 probe_dir, probe_path = _private_script(
@@ -719,6 +733,8 @@ def resolve_named_tool_launcher(preset_info, selected_tool, workdir, env,
             target_tool_path = _target_tool_from_probe(stdout)
             probe_diagnostics = "%s\n%s" % (stdout or "", stderr or "")
             if rc == 0 and target_tool_path:
+                report("battach: selected job %s on %s" %
+                       (candidate["job_id"], candidate["host"]))
                 notices.append(
                     "%s: using job %s on %s (%s)" %
                     (preset, candidate["job_id"], candidate["host"],
@@ -739,6 +755,8 @@ def resolve_named_tool_launcher(preset_info, selected_tool, workdir, env,
                     # removes this private field before persistence.
                     "_target_tool_path": target_tool_path,
                 }, notices)
+            report("battach: job %s probe failed (exit %s); continuing" %
+                   (candidate["job_id"], rc))
             if ("__CAMC_TARGET_TOOL_MISSING__" in probe_diagnostics or
                     "__CAMC_TARGET_TOOL_UNRUNNABLE__" in probe_diagnostics):
                 if "__CAMC_TARGET_TOOL_UNRUNNABLE__" in probe_diagnostics:
@@ -758,6 +776,7 @@ def resolve_named_tool_launcher(preset_info, selected_tool, workdir, env,
                      (": " + detail) if detail else ""))
     if ssh:
         for candidate_index, candidate in enumerate(verified):
+            report("ssh: probing %s" % candidate["host"])
             probe_body = _target_tool_probe_script(
                 target_tool, workdir, selected_tool=selected_tool,
                 preferred_tool_path=preferred_tool_path,
@@ -769,6 +788,7 @@ def resolve_named_tool_launcher(preset_info, selected_tool, workdir, env,
                 [probe_command], env=env, cwd=workdir, timeout=15)
             resolved_path = _target_tool_from_probe(stdout)
             if rc == 0 and resolved_path:
+                report("ssh: selected %s (host shell)" % candidate["host"])
                 notices.append("auto: using SSH host %s (job %s); "
                                "host shell, not an allocation attachment" %
                                (candidate["host"], candidate["job_id"]))
@@ -782,26 +802,29 @@ def resolve_named_tool_launcher(preset_info, selected_tool, workdir, env,
                                 verified, "", ssh, nvproject, qsub,
                                 current_project, first_ssh=candidate_index + 1),
                         }, notices)
+            report("ssh: %s probe failed (exit %s); continuing" %
+                   (candidate["host"], rc))
             notices.append("auto: SSH host %s unavailable: %s" %
                            (candidate["host"],
                             (stderr or stdout or "exit %s" % rc).strip()[:200]))
     if preset == "auto":
+        report("ssh: no usable target; trying qsub")
+        report("qsub: checking executable and project")
         try:
             launcher, metadata, qsub_notices = _qsub_launcher(
                 workdir, env, preset=preset)
             metadata["_auto_plan"] = []
+            report("qsub: prepared; submission will run in tmux")
             return launcher, metadata, notices + qsub_notices
-        except ValueError:
-            # Auto should still start the agent when the remote Farm path
-            # cannot be prepared (for example, this checkout has no
-            # registered nvprojectname). Explicit qsub presets remain strict.
-            notices.append(
-                "auto: qsub could not be prepared; launching locally")
-            return [], {
-                "preset": "auto",
-                "transport": "local",
-                "fallback": True,
-            }, notices
+        except ValueError as exc:
+            detail = str(exc)
+            reason = ("nvprojectname unavailable" if "requires nvprojectname" in detail else
+                      "qsub unavailable" if "requires qsub" in detail else
+                      "project setup failed")
+            report("qsub: %s; launch failed" % reason)
+            raise ValueError(
+                "auto could not prepare an LSF launcher (%s); "
+                "use --tool-launcher none for local execution" % reason)
     raise ValueError("unsupported named tool launcher: %s" % preset)
 
 
@@ -907,11 +930,10 @@ def build_battach_launcher_command(launcher_argv, tool_argv, workdir,
 
 
 def build_auto_launcher_command(launcher_argv, metadata, remote_tool_argv,
-                                local_tool_argv, workdir, target_tool,
+                                workdir, target_tool,
                                 preferred_tool_path="", version_args=None,
                                 bootstrap_dirs=None, target_env=None,
-                                target_unset=None, exit_status_path=None,
-                                allow_local_fallback=True):
+                                target_unset=None, exit_status_path=None):
     """Try transports on the submit host until a target starts the tool.
 
     A private shared marker distinguishes connection/submission failures from
@@ -1003,6 +1025,8 @@ def build_auto_launcher_command(launcher_argv, metadata, remote_tool_argv,
                     (nvproject, qsub, target_arg))
                 lines.extend(["_camc_qsub() {"] + qsub_lines + ["}"])
                 launch_line = "_camc_qsub"
+            lines.append("printf '%s\\n' %s" % (
+                "%s", shlex.quote("[launcher] %s: starting" % transport)))
             lines.append(launch_line)
             lines.append("_camc_rc=$?")
             lines.append("if [ -f %s ]; then" % shlex.quote(marker))
@@ -1012,21 +1036,9 @@ def build_auto_launcher_command(launcher_argv, metadata, remote_tool_argv,
                     shlex.quote(exit_status_path + ".launcher")))
             lines.extend(record_exit())
             lines.extend(["exit \"$_camc_rc\"", "fi"])
-            lines.append("printf '%s\\n' %s >&2" % (
-                "%s", shlex.quote("camc: %s did not start the tool; "
-                                    "trying next launcher" % transport)))
-        if allow_local_fallback:
-            local_command = build_resolved_tool_command(
-                local_tool_argv, target_tool, workdir,
-                preferred_tool_path=preferred_tool_path, version_args=version_args)
-            if exit_status_path:
-                lines.append("printf '%s\\n' local > %s" % (
-                    "%s", shlex.quote(exit_status_path + ".launcher")))
-            lines.append(" ".join(shlex.quote(item) for item in local_command))
-            lines.append("_camc_rc=$?")
-        else:
-            lines.append("printf '%s\\n' 'camc: no remote launcher started the tool; local fallback disabled for reboot' >&2")
-            lines.append("_camc_rc=125")
+            lines.append("printf '[launcher] %s: failed (exit %%s); trying next\\n' \"$_camc_rc\"" % transport)
+        lines.append("printf '%s\\n' 'camc: no LSF launcher started the tool; local fallback disabled' >&2")
+        lines.append("_camc_rc=125")
         lines.extend(record_exit())
         lines.append("exit \"$_camc_rc\"")
         runner = os.path.join(directory, "run")
@@ -1068,7 +1080,7 @@ def replace_launcher_target_binary(command, target_binary):
 
 
 def without_launcher_auto_permission(command):
-    """Remove Claude local auto mode before launcher-owned autorun."""
+    """Remove Claude's legacy auto mode before adding native autorun."""
     result = list(command)
     for index in range(len(result) - 1):
         if result[index:index + 2] == ["--permission-mode", "auto"]:

@@ -12,8 +12,9 @@ class Store(object):
         self._path = str(path)
         self.agent = {
             "id": "agent1",
-            "state": state,
-            "status": "running",
+            "state": "running" if state == "initializing" else state,
+            "phase": "initializing" if state == "initializing" else "started",
+            "status": "alive",
             "task": {
                 "name": "baseline", "tool": tool, "prompt": prompt,
                 "auto_confirm": enabled, "auto_exit": False,
@@ -208,7 +209,8 @@ def test_boot_trust_is_confirmed_before_original_prompt_is_submitted_once(
         ("key", "Enter"),
     ]
     assert phase == ["submitted"]
-    assert store.agent["state"] == "idle"
+    assert store.agent["phase"] == "started"
+    assert store.agent["state"] == "running"
     ready = [row for row in events if row[1] == "boot_ready"]
     assert len(ready) == 1
     assert ready[0][2]["prompt_sent"] is True
@@ -264,7 +266,8 @@ def test_active_boot_trust_with_input_cursor_is_confirmed_before_prompt(
         ("key", "Enter"),
     ]
     assert phase == ["submitted"]
-    assert store.agent["state"] == "idle"
+    assert store.agent["phase"] == "started"
+    assert store.agent["state"] == "running"
     assert len([row for row in events if row[1] == "boot_ready"]) == 1
 
 
@@ -326,7 +329,8 @@ def test_late_trust_confirmation_renews_wait_for_delayed_ready_prompt(
         ("key", "Enter"),
     ]
     assert phase == ["submitted"]
-    assert store.agent["state"] == "idle"
+    assert store.agent["phase"] == "started"
+    assert store.agent["state"] == "running"
     ready = [row for row in events if row[1] == "boot_ready"]
     assert len(ready) == 1
     assert ready[0][2]["prompt_sent"] is True
@@ -336,6 +340,7 @@ def test_failed_prompt_insert_is_not_claimed_and_retries_before_deadline(
         monkeypatch, tmp_path, caplog):
     from camc_pkg import detection
 
+    caplog.set_level("INFO", logger="camc")
     attempts = []
 
     def insert_prompt(_session, text, **_kwargs):
@@ -352,7 +357,8 @@ def test_failed_prompt_insert_is_not_claimed_and_retries_before_deadline(
     )
 
     assert attempts == ["retry launch prompt", "retry launch prompt"]
-    assert store.agent["state"] == "idle"
+    assert store.agent["phase"] == "started"
+    assert store.agent["state"] == "running"
     assert len([row for row in events if row[1] == "boot_ready"]) == 1
     messages = [record.getMessage() for record in caplog.records]
     assert len([msg for msg in messages if "Prompt insertion failed" in msg]) == 1

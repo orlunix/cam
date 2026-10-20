@@ -1,6 +1,7 @@
 """Tests for camc shell prelude hook registry and generated camc embedding."""
 
 import json
+import importlib.util
 import os
 import socket
 import subprocess
@@ -56,38 +57,26 @@ def test_render_prelude_disable_all_matches_capture_only(prelude_registry):
     assert all_text == cap_text
 
 
-def test_build_camc_respects_disable_capture(monkeypatch, tmp_path):
+@pytest.fixture
+def built_body(monkeypatch):
+    """Build without the release CLI's version/build-log side effects."""
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    build_py = os.path.join(repo, "build_camc.py")
-    out = tmp_path / "camc"
+    spec = importlib.util.spec_from_file_location("prelude_builder", os.path.join(repo, "build_camc.py"))
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    monkeypatch.delenv("CAMC_PRELUDE_DISABLE", raising=False)
+    return builder.build
+
+
+def test_build_camc_respects_disable_capture(monkeypatch, built_body):
     monkeypatch.setenv("CAMC_PRELUDE_DISABLE", "capture")
-    proc = subprocess.run(
-        [sys.executable, build_py, "--output", str(out)],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-    )
-    assert proc.returncode == 0, proc.stderr
-    body = out.read_text(encoding="utf-8")
+    body = built_body()
     assert "_camc_prelude_capture" not in body
     assert "exec python3" in body
 
 
-def test_build_camc_default_includes_capture_hook(tmp_path):
-    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    build_py = os.path.join(repo, "build_camc.py")
-    out = tmp_path / "camc"
-    env = os.environ.copy()
-    env.pop("CAMC_PRELUDE_DISABLE", None)
-    proc = subprocess.run(
-        [sys.executable, build_py, "--output", str(out)],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    assert proc.returncode == 0, proc.stderr
-    body = out.read_text(encoding="utf-8")
+def test_build_camc_default_includes_capture_hook(built_body):
+    body = built_body()
     assert "_camc_prelude_capture" in body
 
 
@@ -125,7 +114,7 @@ def test_shell_capture_fast_with_agents_json(prelude_bench_env):
                 "tmux_socket": str(sock),
                 "tmux_bin": "tmux",
                 "hostname": host,
-                "status": "running",
+                "status": "alive",
             }
         ], indent=2),
         encoding="utf-8",
@@ -177,7 +166,7 @@ def _write_fast_agent(cam_dir, agent_id, session, sock):
                 "tmux_socket": str(sock),
                 "tmux_bin": "tmux",
                 "hostname": host,
-                "status": "running",
+                "status": "alive",
             }
         ], indent=2),
         encoding="utf-8",

@@ -100,10 +100,11 @@ def test_current_codex_cursor_beats_stale_trust_in_scrollback():
 
 def test_cursor_boot_trust_rule():
     boot = _boot_config("cursor.boot.toml")
-    screen = "[a] Trust this workspace\n"
+    screen = "▶ [a] Trust this workspace\n"
     hit = should_boot_confirm(screen, boot)
     assert hit is not None
-    assert hit[0] == "a"
+    assert hit[:2] == ("", True)  # Enter accepts the selected workspace action.
+    assert should_boot_confirm("[a] Trust this workspace\n", boot) is None
 
 
 def test_codex_current_menu_beats_stale_prompt_during_boot():

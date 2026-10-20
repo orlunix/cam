@@ -82,57 +82,20 @@ def test_cursor_config_uses_128_line_primary_confirm_window():
     assert cfg.confirm_recent_lines == 128
 
 
-def test_registry_includes_state_manager_and_auto_confirmation_and_placeholders():
-    """The default v1 set is StateManagerFeature(10) → BootPromptFeature(15) →
-    AutoConfirmationFeature(20) → MailboxFeature(30, disabled) →
-    FinalStaticFallbackFeature(35) → CronFeature(40, disabled).
-    build_features() returns DISABLED
-    features too so the driver / introspection code can see them."""
+def test_feature_order_preserves_confirmation_and_fallback_phases():
     feats = mf.build_features()
-    by_name = {f.name: f for f in feats}
-    assert {"state_manager", "boot_prompt", "auto_confirm", "mailbox",
-            "final_static_fallback", "cron"} <= set(by_name)
-    # Order ascending.
-    names = [f.name for f in feats]
-    assert names == ["state_manager", "boot_prompt", "auto_confirm", "mailbox",
-                     "final_static_fallback", "cron"]
-    assert [f.order for f in feats] == [10, 15, 20, 30, 35, 40]
-
-
-def test_placeholders_are_disabled_by_default():
-    feats = {f.name: f for f in mf.build_features()}
-    assert feats["mailbox"].enabled is False, \
-        "MailboxFeature must ship disabled — no mailbox behavior in this slice"
-    assert feats["cron"].enabled is False, \
-        "CronFeature must ship disabled — no cron behavior in this slice"
-    assert feats["state_manager"].enabled is True
-    assert feats["auto_confirm"].enabled is True
-
-
-def test_placeholder_phase_hooks_are_noops():
-    """Even if a future change accidentally flips enabled=True on a
-    placeholder, its phase hooks must remain empty until the placeholder
-    is explicitly fleshed out. Right now the base-class default is `return
-    []`; this test catches a future override that forgets to stay a
-    no-op."""
-    cfg = _Cfg()
-    runtime = mf.MonitorRuntime("aid", cfg, now=0.0)
-    snap = _mk_snap()
-    for name in ("mailbox", "cron"):
-        feat = next(f for f in mf.build_features() if f.name == name)
-        assert feat.before_confirm(snap, runtime) == []
-        assert feat.confirm(snap, runtime)        == []
-        assert feat.after_confirm(snap, runtime)  == []
+    assert [f.name for f in feats] == [
+        "state_manager", "boot_prompt", "auto_confirm", "final_static_fallback"]
+    assert [f.order for f in feats] == [10, 15, 20, 35]
 
 
 def test_build_features_enabled_dict_overrides():
-    feats = mf.build_features(enabled={"mailbox": True, "auto_confirm": False})
+    feats = mf.build_features(enabled={"boot_prompt": True, "auto_confirm": False})
     by_name = {f.name: f for f in feats}
-    assert by_name["mailbox"].enabled is True
+    assert by_name["boot_prompt"].enabled is True
     assert by_name["auto_confirm"].enabled is False
     # Untouched names use the class default.
     assert by_name["state_manager"].enabled is True
-    assert by_name["cron"].enabled is False
 
 
 def test_build_features_allow_list_only_enables_named():
@@ -140,8 +103,7 @@ def test_build_features_allow_list_only_enables_named():
     by_name = {f.name: f for f in feats}
     assert by_name["state_manager"].enabled is True
     assert by_name["auto_confirm"].enabled is False
-    assert by_name["mailbox"].enabled is False
-    assert by_name["cron"].enabled is False
+    assert by_name["boot_prompt"].enabled is False
 
 
 def test_boot_prompt_uses_message_style_submit_with_default_fallback_delay():
@@ -268,22 +230,11 @@ def test_state_manager_before_confirm_done_marks_has_worked_only():
     assert any(a["kind"] == "log" and "Done signal" in a["msg"] for a in actions)
 
 
-def test_state_manager_after_confirm_state_change_emits_event_and_store_update(monkeypatch):
-    cfg = _Cfg()
-    runtime = mf.MonitorRuntime("aid", cfg, now=0.0)
-    feat = mf.StateManagerFeature()
-    # Stub detect_state to drive a transition.
-    monkeypatch.setattr("camc_pkg.detection.detect_state",
-                        lambda output, c: "editing")
-    snap = _mk_snap()
-    actions = feat.after_confirm(snap, runtime)
-    kinds = [a["kind"] for a in actions]
-    assert "event" in kinds
-    assert "store_update" in kinds
-    assert runtime.current_state == "editing"
-    assert runtime.has_worked is True   # transition to non-'initializing'
-    upd = next(a for a in actions if a["kind"] == "store_update")
-    assert upd["fields"] == {"state": "editing"}
+def test_state_manager_activity_is_running_not_semantic_work_type():
+    runtime = mf.MonitorRuntime("aid", _Cfg(), now=0.0)
+    actions = mf.StateManagerFeature().after_confirm(
+        _mk_snap(output="git commit / pytest / Edit", changed=True), runtime)
+    assert any(a.get("fields") == {"state": "running", "phase": "started"} for a in actions)
 
 
 def test_state_manager_after_confirm_output_change_resets_last_change(monkeypatch):
@@ -292,7 +243,6 @@ def test_state_manager_after_confirm_output_change_resets_last_change(monkeypatc
     runtime.last_change = 0.0
     runtime.idle_confirmed = True
     feat = mf.StateManagerFeature()
-    monkeypatch.setattr("camc_pkg.detection.detect_state", lambda o, c: None)
     snap = _mk_snap(changed=True, now=42.0,
                     hash="ab12", prev_hash="cd34")
     actions = feat.after_confirm(snap, runtime)
@@ -308,7 +258,6 @@ def test_state_manager_after_confirm_idle_detect_requires_stable_ticks(monkeypat
     runtime = mf.MonitorRuntime("aid", cfg, now=0.0)
     runtime.has_worked = True
     feat = mf.StateManagerFeature()
-    monkeypatch.setattr("camc_pkg.detection.detect_state", lambda o, c: None)
 
     # 10s stable → below 60s threshold → no idle fire.
     snap = _mk_snap(idle_for=10.0, prompt_visible=True)
@@ -320,7 +269,7 @@ def test_state_manager_after_confirm_idle_detect_requires_stable_ticks(monkeypat
     snap = _mk_snap(idle_for=60.0, prompt_visible=True)
     actions = feat.after_confirm(snap, runtime)
     upd = [a for a in actions if a["kind"] == "store_update"]
-    assert upd and upd[0]["fields"] == {"state": "idle"}
+    assert upd and upd[0]["fields"] == {"state": "idle", "phase": "started"}
     assert runtime.idle_confirmed is True
 
 
@@ -330,7 +279,6 @@ def test_state_manager_after_confirm_fast_track_idle_threshold(monkeypatch):
     runtime = mf.MonitorRuntime("aid", cfg, now=0.0)
     runtime.has_worked = True
     feat = mf.StateManagerFeature()
-    monkeypatch.setattr("camc_pkg.detection.detect_state", lambda o, c: None)
     snap = _mk_snap(idle_for=5.0, prompt_visible=True,
                     screen_done=True, bare_prompt=True)
     actions = feat.after_confirm(snap, runtime)

@@ -16,6 +16,9 @@ FAKE_TMUX = r'''#!{python}
 import json
 import os
 import sys
+import shlex
+import signal
+import subprocess
 
 args = sys.argv[1:]
 log_path = os.environ["FAKE_TMUX_LOG"]
@@ -36,13 +39,14 @@ if "-S" in args:
 
 command = next((name for name in (
     "new-session", "send-keys", "capture-pane", "display-message",
-    "has-session", "kill-session") if name in args), "")
+    "has-session", "kill-session", "set-buffer", "paste-buffer") if name in args), "")
 session = ""
 if "-s" in args:
     session = args[args.index("-s") + 1]
 elif "-t" in args:
     session = args[args.index("-t") + 1].split(":", 1)[0]
 state_path = os.path.join(state_dir, session + ".json") if session else ""
+buffer_path = os.path.join(state_dir, os.path.basename(socket_path) + ".buffer")
 
 def load():
     try:
@@ -55,7 +59,16 @@ def save(state):
     with open(state_path, "w") as stream:
         json.dump(state, stream)
 
-if command == "new-session":
+if command == "set-buffer":
+    with open(buffer_path, "w") as stream:
+        stream.write(args[-1])
+    emit({{"command": command, "args": args}})
+elif command == "paste-buffer":
+    state = load()
+    with open(buffer_path) as stream:
+        state["typed"] = stream.read()
+    save(state)
+elif command == "new-session":
     os.makedirs(state_dir, exist_ok=True)
     if socket_path:
         os.makedirs(os.path.dirname(socket_path), exist_ok=True)
@@ -70,7 +83,13 @@ elif command == "send-keys":
         state["typed"] = literal
     key = args[-1] if "-l" not in args else ""
     if key == "Enter":
-        if state.get("typed") == "1":
+        if "_launch_worker" in state.get("typed", ""):
+            worker = subprocess.Popen(shlex.split(state["typed"]),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True)
+            state["worker_pid"] = worker.pid
+            state["typed"] = ""
+        elif state.get("typed") == "1":
             state["phase"] = "ready"
         elif state.get("typed"):
             state["enters"] = state.get("enters", 0) + 1
@@ -106,6 +125,12 @@ elif command == "has-session":
     raise SystemExit(0 if state_path and os.path.exists(state_path) else 1)
 elif command == "kill-session":
     if state_path and os.path.exists(state_path):
+        pid = load().get("worker_pid")
+        if pid:
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
         os.unlink(state_path)
     emit({{"command": command, "session": session}})
 else:
@@ -134,7 +159,12 @@ def test_built_artifact_offline_run_confirm_msg_read_rm(tmp_path):
     tmux.write_text(FAKE_TMUX.format(python=sys.executable))
     tmux.chmod(0o755)
     codex = fake_bin / "codex"
-    codex.write_text("#!/bin/sh\necho 'codex 1.0'\n")
+    codex.write_text(
+        "#!%s\nimport json, os, sys, time\n"
+        "if '--version' in sys.argv: print('codex 1.0'); sys.exit(0)\n"
+        "with open(os.environ['FAKE_TMUX_LOG'], 'a') as f:\n"
+        " f.write(json.dumps({'command': 'tool-start', 'argv': sys.argv}) + '\\n')\n"
+        "time.sleep(60)\n" % sys.executable)
     codex.chmod(0o755)
 
     env = dict(os.environ)

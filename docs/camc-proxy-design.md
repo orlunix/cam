@@ -43,8 +43,8 @@ An adapter may declare a `[runtime]` block with its donor home, host-local
 links, config keys whose directory values need bootstrap, and the adapter's
 Boolean `isolate_tool_home` default. A single run can override that default
 with `--isolate-tool-home 1` or `--isolate-tool-home 0`; reboot preserves the
-resolved value. `camc run` and the DAG scheduler persist the resolved,
-non-secret layout in `agent.runtime.storage`.
+resolved value. `camc run` persists the resolved, non-secret layout in
+`agent.runtime.storage`.
 
 Codex is the first adapter using this contract:
 

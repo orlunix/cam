@@ -1,6 +1,6 @@
 # `~/.cam/camc msg` — inter-agent messaging protocol
 
-Send a request to another running cam agent. The append-only ledger at
+Send a request to another alive camc agent. The append-only ledger at
 `~/.cam/messages.jsonl` is the source of truth; the tmux-pane injection
 is a best-effort wake-up notification.
 
@@ -385,14 +385,10 @@ plain text output, and conservative settle timing.
 ## Concurrency
 
 V0: each blocking `~/.cam/camc msg send` or `~/.cam/camc msg wait` is its own
-subprocess + own polling loop. `~/.cam/camc msg send --no-wait` only injects and
+subprocess + own polling loop. `~/.cam/camc msg send --no-wait` records a mailbox turn, attempts wake-up, and
 returns; no background waiter is started. N concurrent waits = N
 subprocesses. Acceptable up to ~10 parallel without infrastructure
 changes.
-
-V1: when fan-out becomes common, consolidate into a per-host
-`MessageRouter` daemon (started by `cam serve` or always-on) that
-multiplexes captures and dispatches replies via msg_id correlation.
 
 ## Anti-patterns
 

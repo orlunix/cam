@@ -7,8 +7,8 @@ def test_status_omits_unreliable_alive_probe(monkeypatch):
     agent = {
         "id": "abc12345",
         "task": {"name": "worker", "tool": "codex", "prompt": ""},
-        "status": "running",
-        "state": "testing",
+        "status": "alive",
+        "state": "running", "phase": "initializing",
         "context_path": "/tmp/work",
         "tmux_session": "cam-abc12345",
         "started_at": "2026-08-13T00:00:00Z",
@@ -32,6 +32,7 @@ def test_status_omits_unreliable_alive_probe(monkeypatch):
         agent_id="abc12345", id=None, hash=None, json=False))
 
     fields = dict(captured["pairs"])
-    assert fields["Status"] == "running"
-    assert fields["State"] == "testing"
+    assert fields["Status"] == "alive"
+    assert fields["State"] == "running"
+    assert fields["Phase"] == "initializing"
     assert "Alive" not in fields
