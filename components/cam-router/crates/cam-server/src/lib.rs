@@ -3,3 +3,4 @@ pub mod config;
 pub mod relay;
 pub mod server;
 pub mod store;
+pub mod terminal;

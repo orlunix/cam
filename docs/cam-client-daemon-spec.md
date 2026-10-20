@@ -2,7 +2,7 @@
 
 日期：2026-10-19。开发分支：`cam-tui`。
 
-状态：设计要求，尚未实现。本文补充 [Client / Server Spec](cam-client-server-spec.md) 与 [CAM TUI Spec](cam-tui-terminal-spec.md)。
+状态：完整设计要求；本地 Rust daemon 已有 v0.1 实现，当前采用状态快照轮询，支持基础调度、engineering loop 与连接健康检查。实际范围与限制见 [CAM TUI v0.1](cam-tui-v0.1.md)。本文补充 [Client / Server Spec](cam-client-server-spec.md) 与 [CAM TUI Spec](cam-tui-terminal-spec.md)。
 
 ## 1. 组件与生命周期
 
@@ -139,4 +139,4 @@ daemon 持续检查后台功能是否可用，向 TUI 提供统一健康快照�
 6. 使用临时真实 agent 验证 continuation prompt 被正确处理，Goal 未达成不误报完成；关闭 TUI 后仍能调度，重开可查看结果。验证健康 probe 不触碰用户 agent，缺少 probe 能力和不适用场景显示正确。
 7. 回收专用 daemon、Server、agent、任务、loop 和连接；不修改用户原有 camc cron、loop、agent 或系统 crontab。
 
-当前仅记录设计，尚未创建 daemon、注册实际定时任务或修改现有调度器。
+v0.1 使用独立状态目录，不自动迁移既有 camc cron/loop。开发测试仅创建并回收临时 daemon、任务与 agent，不修改用户原有调度器。

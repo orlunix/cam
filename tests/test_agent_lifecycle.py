@@ -156,3 +156,97 @@ def test_queue_output_cannot_claim_tool_started():
     assert BootPromptFeature().after_confirm(
         SimpleNamespace(now=3, screen_busy=True), runtime) == []
     assert runtime.in_initializing
+
+
+def test_long_queue_wait_preserves_initializing_until_target_runs(supervised, tmp_path):
+    import shlex
+    from camc_pkg.tool_launcher import build_launcher_command, build_resolved_tool_command
+    store, launch = supervised
+    receipt, submitted, gate, ready = [tmp_path / name for name in
+                                       ('receipt', 'submitted', 'dispatch', 'tool-ready')]
+    store.update('1234abcd', runtime={'launcher': {'launch_status_file': str(receipt)}})
+    target = tmp_path / 'target-tool'
+    target.write_text('#!/bin/sh\nif [ "$1" = "--version" ]; then echo fixture; exit 0; fi\n'
+                      ': > %s\nsleep .2\n' % shlex.quote(str(ready)))
+    target.chmod(0o700)
+    launcher = tmp_path / 'queued-launcher.py'
+    launcher.write_text('import pathlib,sys,time,os\n'
+                        'pathlib.Path(%r).touch()\n'
+                        'while not pathlib.Path(%r).exists():time.sleep(.01)\n'
+                        'os.execl("/bin/sh","sh","-c",sys.argv[1])\n' %
+                        (str(submitted), str(gate)))
+    command = build_resolved_tool_command([str(target)], str(target), str(tmp_path),
+                                         started_status_path=str(receipt),
+                                         started_transport='custom')
+    launch.update(command=build_launcher_command([sys.executable, str(launcher)], command),
+                  startup_timeout=.05)
+    observed = []
+    def dispatch():
+        deadline = time.monotonic() + 4
+        while not submitted.exists() and time.monotonic() < deadline:time.sleep(.01)
+        time.sleep(.3)  # Longer than the foreground startup timeout.
+        observed.append((store.get('1234abcd')['phase'], receipt.exists()))
+        gate.touch()
+        while not ready.exists() and time.monotonic() < deadline:time.sleep(.01)
+        if ready.exists():store.update('1234abcd', state='idle', phase='started')
+    thread = threading.Thread(target=dispatch)
+    thread.start()
+    try:
+        assert cli._run_foreground_tool('1234abcd', launch) == 0
+        assert observed == [('initializing', False)]
+        assert receipt.read_text().strip() == 'custom'
+        assert store.get('1234abcd')['status'] == 'alive'
+        assert store.get('1234abcd')['phase'] == 'started'
+    finally:
+        gate.touch()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+
+def test_queue_cancellation_preserves_stopped_and_reaps_launcher(supervised, tmp_path):
+    store, launch = supervised
+    store.update('1234abcd', runtime={'launcher': {'launch_status_file': str(tmp_path/'not-dispatched')}})
+    launch.update(command=[sys.executable, '-c', 'import time;time.sleep(30)'], startup_timeout=0)
+    def stop():
+        time.sleep(.1)
+        store.update('1234abcd', status='dead', state='stopped')
+    thread = threading.Thread(target=stop)
+    thread.start()
+    try:
+        assert cli._run_foreground_tool('1234abcd', launch) == 1
+        assert store.get('1234abcd')['state'] == 'stopped'
+    finally:
+        thread.join()
+
+
+def test_startup_timeout_remains_active_after_dispatch(supervised, tmp_path):
+    store, launch = supervised
+    receipt = tmp_path/'receipt'
+    receipt.write_text('custom\n')
+    store.update('1234abcd', runtime={'launcher': {'launch_status_file': str(receipt)}})
+    launch.update(command=[sys.executable, '-c', 'import time;time.sleep(30)'], startup_timeout=0)
+    assert cli._run_foreground_tool('1234abcd', launch) == 1
+    assert store.get('1234abcd')['state'] == 'failed'
+    assert 'did not become ready' in store.get('1234abcd')['exit_reason']
+
+
+def test_unknown_tool_prompt_is_owned_by_launch_worker():
+    cfg = SimpleNamespace(startup_wait=2)
+    runtime = MonitorRuntime('a', cfg)
+    record = dict(phase='initializing', task={'tool': 'others',
+                  'requested_tool': 'custom-tool', 'prompt': 'send once'})
+    monitor._refresh_boot_runtime(runtime, SimpleNamespace(get=lambda _id: record), 'a', None)
+    assert runtime.boot_prompt == ''
+
+
+def test_short_queued_custom_tool_exit_uses_target_receipt(supervised, tmp_path, monkeypatch):
+    store, launch = supervised
+    receipt = tmp_path/'receipt'
+    store.update('1234abcd', runtime={'launcher': {'launch_status_file': str(receipt)}})
+    launch.update(command=[sys.executable, '-c',
+                          'import pathlib;pathlib.Path(%r).write_text("custom\\n")' % str(receipt)],
+                  known_tool=False, prompt='do not paste after exit', startup_wait=0,
+                  startup_timeout=0)
+    monkeypatch.setattr(cli, 'tmux_send_input', lambda *a, **kw: pytest.fail('tool already exited'))
+    assert cli._run_foreground_tool('1234abcd', launch) == 0
+    assert store.get('1234abcd')['phase'] == 'started'

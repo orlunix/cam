@@ -771,6 +771,21 @@ def test_launcher_target_environment_carries_home_paths_and_terminal_only():
         }
 
 
+def test_launcher_carries_explicit_tool_env_without_ambient_secrets(tmp_path):
+    runtime = {"PATH": "/usr/bin:/bin", "CAMC_E2E_AGENT": "test-agent",
+               "DISABLE_AUTOUPDATER": "1", "UNREQUESTED_SECRET": "not-forwarded",
+               "LD_LIBRARY_PATH": "/submit/lib"}
+    environment = tool_launcher.launcher_target_environment(
+        runtime, explicit_keys=["CAMC_E2E_AGENT", "DISABLE_AUTOUPDATER"])
+    command = tool_launcher.build_launcher_command(
+        ["{command}"], [sys.executable, "-c", "import os,json;print(json.dumps({k:os.environ.get(k) for k in ['CAMC_E2E_AGENT','DISABLE_AUTOUPDATER','UNREQUESTED_SECRET','LD_LIBRARY_PATH']}))"],
+        target_env=environment)[0]
+    output = subprocess.check_output(["/bin/sh", "-c", command], env={"PATH": "/usr/bin:/bin"})
+    assert json.loads(output.decode()) == {
+        "CAMC_E2E_AGENT": "test-agent", "DISABLE_AUTOUPDATER": "1",
+        "UNREQUESTED_SECRET": None, "LD_LIBRARY_PATH": None}
+
+
 def test_target_path_preserves_job_and_appends_visible_submit_paths(tmp_path):
     job = tmp_path / "job-bin"
     shared = tmp_path / "shared bin"
@@ -1196,7 +1211,8 @@ def test_managed_native_autorun_is_the_same_for_run_and_reboot(
     assert "--ask-for-approval" not in repr(command)
 
 
-def test_auto_queue_wait_does_not_consume_tool_boot_timeout(tmp_path, monkeypatch):
+@pytest.mark.parametrize("receipt", ["qsub", "custom"])
+def test_queue_wait_does_not_consume_tool_boot_timeout(tmp_path, monkeypatch, receipt):
     from camc_pkg import monitor
     from camc_pkg.monitor_features import MonitorRuntime
     status = tmp_path / "launch-status"
@@ -1211,7 +1227,7 @@ def test_auto_queue_wait_does_not_consume_tool_boot_timeout(tmp_path, monkeypatc
     monitor._refresh_boot_runtime(runtime, store, "test", None)
     assert runtime.boot_deadline == 220
     assert not runtime.feature_state.get("launcher_started")
-    status.write_text("qsub\n")
+    status.write_text(receipt + "\n")
     now[0] = 250
     monitor._refresh_boot_runtime(runtime, store, "test", None)
     assert runtime.feature_state["launcher_started"] is True
@@ -1478,6 +1494,7 @@ def test_codex_launcher_adds_yolo_and_keeps_remote_tool_name(tmp_path, monkeypat
         "target_tool": "codex",
         "argv_count": 6,
         "command_index": 6,
+        "launch_status_file": manifest["custom_launch"]["exit_status_path"] + ".launcher",
     }
     assert secret in manifest["custom_launch"]["tool_launcher"]
     assert "must-not-enter-manifest" not in repr(manifest)
@@ -1566,6 +1583,7 @@ def test_named_launcher_metadata_is_safe_and_observable(tmp_path, monkeypatch):
         "job_id": "123",
         "host": "host-a",
         "fallback": True,
+        "launch_status_file": captured["record"]["runtime"]["custom_launch"]["exit_status_path"] + ".launcher",
     }
     assert captured["record"]["task"]["auto_confirm"] is False
 

@@ -2,7 +2,7 @@
 
 **日期：** 2026-10-14
 
-**状态：** Router 与 camc SDK 接入已实现；TUI、本地 Client daemon、Server 状态订阅与交互终端通道尚未实现
+**状态：** Router、camc SDK、首版 Rust TUI/Client daemon 与 tmux control 终端通道已实现；增量状态订阅等完整目标继续验收，见 [v0.1 说明](../../cam-tui-v0.1.md)
 
 **范围：** 独立开发 Rust `cam-server`、`cam-tui` 和共享协议，参考 Herdr；现有 camc 继续使用。
 

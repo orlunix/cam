@@ -15,6 +15,9 @@ pub struct ClientGrant {
     pub token_file: PathBuf,
     #[serde(default)]
     pub source_nodes: Vec<String>,
+    /// Explicitly grant the Client local management/terminal API access.
+    #[serde(default)]
+    pub management: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

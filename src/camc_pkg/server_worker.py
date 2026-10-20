@@ -34,7 +34,15 @@ def main():
 
     def execute(message):
         try:
-            result = receiver.execute(message)
+            if message.get("type") == "backend.control":
+                from camc_pkg.server_management import management_request
+                try:
+                    result = management_request(message["action"], message.get("args") or {},
+                                                node, path, receiver)
+                except Exception as exc:
+                    result = {"error": str(exc)}
+            else:
+                result = receiver.execute(message)
             write({"type": "backend.result", "source_node": message["source"]["node_id"],
                    "request_id": message["message_id"], "message": result})
         except Exception:

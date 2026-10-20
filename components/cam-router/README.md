@@ -8,6 +8,8 @@ tmux, launcher and monitors remain in the existing native camc backend.
 reference implementation of a **Client's forwarding component**, intended for
 testing and embedding; it is not a third product role or a new hub service.
 Existing Desktop/Mobile transports are unchanged and have not yet embedded it.
+The first Rust TUI and persistent local Client daemon now embed the same relay;
+see [CAM TUI v0.1](../../docs/cam-tui-v0.1.md) for usage, scope and a disposable demo.
 The Python package's old `cam-server` entry point is unchanged; use the new
 binary's absolute path during migration.
 
@@ -39,7 +41,7 @@ sh components/cam-router/scripts/build-linux.sh x86_64
 ```
 
 The script rejects dynamic dependencies, smoke-tests native `version`, and
-produces both binaries plus SHA256SUMS. It does not install, publish or overwrite
+produces cam-server, cam-forwarder, cam-clientd and cam-tui plus SHA256SUMS. It does not install, publish or overwrite
 legacy camc. Cross builds also require a matching C compiler/linker; an ARM
 binary must be tested on ARM before claiming support.
 

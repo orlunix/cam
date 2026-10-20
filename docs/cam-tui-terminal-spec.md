@@ -2,7 +2,7 @@
 
 日期：2026-10-19。开发分支：`cam-tui`。
 
-状态：界面与功能范围已记录，Desktop 源码参考已检查；Rust TUI、本地 Client daemon、Server 状态订阅与交互终端通道尚未实现。现有 Router、forwarding 参考组件和 agent 操作 SDK 可作为接入基础。
+状态：Rust TUI、本地 Client daemon 与 tmux control 终端通道已有 v0.1 实现；状态目前通过受授权快照轮询同步，增量订阅与完整目标能力尚待实现。实际范围、试用和限制见 [CAM TUI v0.1](cam-tui-v0.1.md)。以下保留完整设计与验收目标。
 本文补充 [Client / Server Spec](cam-client-server-spec.md) 与
 [Server / TUI 早期计划](superpowers/plans/2026-10-14-cam-server-and-tui.md)。
 
@@ -137,7 +137,7 @@ Desktop 的 `sanitizeTerminalStream` 通过过滤备用屏幕切换来保留 xte
 
 ## 7. 交互终端通道与原型验收
 
-当前 Rust Server 实现的是 Router 与 agent-specific 操作接入，尚无交互终端输出流/resize/历史协议。新增终端能力要独立协商，不能把已有 capture/send/key 组合当作完整终端，或绕过当前白名单偷偷使用任意命令。
+Rust Server 最初实现 Router 与 agent-specific 操作接入；v0.1 新增显式授权的 tmux control 终端输出、输入、resize 和初始历史通道。新增能力需独立协商，不能把已有 capture/send/key 组合当作完整终端，或绕过当前白名单使用任意命令。完整协议与恢复目标仍按本节验收。
 
 终端通道需要明确 attach/detach、输出订阅、输入、resize、历史读取、连接代次和恢复游标。它与普通管理消息分离，不给每次按键创建一条持久业务消息；断线不盲目重发执行结果未知的输入。
 
@@ -233,7 +233,7 @@ CAM TUI 不只是终端布局，还必须接入以下能力。状态与业务所
 5. 完成持久定时任务与 engineering loop 注册/调度，以及分层健康检查；通过 idle gate、调度权、重启、去重与故障注入验收。
 6. 通过多 Node、多 Client、双向并发与换路径回复验收；清理全部临时 agent、进程、连接与 allocation。
 
-当前实现边界：
+最初规划时的基础与目标（v0.1 实际完成范围见上面的版本说明）：
 
 | 项目 | 已有基础 | 尚需完成 |
 | --- | --- | --- |

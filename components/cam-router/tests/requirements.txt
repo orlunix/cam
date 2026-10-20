@@ -1,0 +1,2 @@
+# Development-only PTY screen assertions; neither CAM binaries nor SDK need it.
+pyte==0.8.2

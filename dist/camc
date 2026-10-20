@@ -1,7 +1,7 @@
 #!/bin/sh
 ''':'
 if [ "$#" -eq 1 ] && [ "$1" = version ] && [ -n "${HOME:-}" ]; then
-    printf '%s\n' 'camc v1.2.185 (906b207-dirty 2026-10-19 03:26)'
+    printf '%s\n' 'camc v1.2.189 (06471f7-dirty 2026-10-19 18:46)'
     printf '\nSupported tools:\n'
     _camc_configs="${HOME}/.cam/configs"
     for _camc_tool in claude codex cursor pi; do
@@ -503,7 +503,7 @@ def early_version_main(argv=None, version=None, build=None, config_names=None):
         suffix = " (config: %s)" % path if os.path.exists(path) else " (embedded)"
         print("  %s%s" % (name.replace(".toml", ""), suffix))
     return 0
-_fast_version_exit = early_version_main(version='1.2.185', build='906b207-dirty 2026-10-19 03:26', config_names=('claude.toml', 'codex.toml', 'cursor.toml', 'pi.toml'))
+_fast_version_exit = early_version_main(version='1.2.189', build='06471f7-dirty 2026-10-19 18:46', config_names=('claude.toml', 'codex.toml', 'cursor.toml', 'pi.toml'))
 if _fast_version_exit is not None:
     raise SystemExit(_fast_version_exit)
 
@@ -852,8 +852,8 @@ import uuid
 # Constants and logging
 # ===========================================================================
 
-__version__ = "1.2.185"
-__build__ = "906b207-dirty 2026-10-19 03:26"
+__version__ = "1.2.189"
+__build__ = "06471f7-dirty 2026-10-19 18:46"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -5501,8 +5501,22 @@ def record_uses_tool_launcher(record):
     return isinstance(runtime, dict) and "launcher" in runtime
 
 
-def launcher_target_environment(runtime_env, storage_info=None):
-    """Send terminal capabilities, tool home and paths, never loader variables."""
+def launcher_start_pending(record):
+    """Wait for a target-side receipt, independently of queue duration."""
+    launcher = ((record.get("runtime") or {}).get("launcher") or {})
+    path = launcher.get("launch_status_file")
+    if not path:
+        return False
+    try:
+        with open(path) as stream:
+            started = stream.read(32).strip()
+    except (IOError, OSError):
+        return True
+    return started not in ("battach", "ssh", "qsub", "local", "custom")
+
+
+def launcher_target_environment(runtime_env, storage_info=None, explicit_keys=None):
+    """Send supported context and only caller-explicit extra environment."""
     result = {}
     # An existing LSF allocation retains the environment of its original
     # submitter. Its TERM is not necessarily the terminal attached now.
@@ -5522,6 +5536,13 @@ def launcher_target_environment(runtime_env, storage_info=None):
     name = str(storage.get("environment") or "")
     if name and _TOOL_ENV_NAME_RE.match(name):
         result[name] = str((runtime_env or {}).get(name) or "")
+    # --tool-env is an intentional override, distinct from copying the
+    # submit host's ambient credentials/loader environment. PATH continues
+    # through the allocation-preserving merge above.
+    for name in explicit_keys or []:
+        if (name != "PATH" and _TOOL_ENV_NAME_RE.match(name) and
+                name in (runtime_env or {})):
+            result[name] = str(runtime_env[name])
     return result
 
 
@@ -6010,11 +6031,11 @@ def build_resolved_tool_command(tool_argv, target_tool, workdir,
             shlex.quote(item) for item in env_assignments)
     exec_args = [exec_prefix, '"$_camc_tool"'] + [
         shlex.quote(str(item)) for item in tool_args]
+    if started_status_path:
+        lines.append("printf '%%s\\n' %s > %s || exit 125" % (
+            shlex.quote(started_transport),
+            shlex.quote(started_status_path)))
     if started_path:
-        if started_status_path:
-            lines.append("printf '%%s\\n' %s > %s || exit 125" % (
-                shlex.quote(started_transport),
-                shlex.quote(started_status_path)))
         lines.append(": > %s || exit 125" % shlex.quote(started_path))
     lines.append(" ".join(exec_args))
     return ["/bin/sh", "-c", "\n".join(lines) + "\n"]
@@ -7251,23 +7272,18 @@ def _refresh_boot_runtime(runtime, store, agent_id, boot_config):
     runtime.feature_state["waiting_for_launcher"] = False
     if runtime.in_initializing:
         task = rec.get("task") or {}
-        runtime.boot_prompt = ("" if task.get("prompt_in_command") else
+        runtime.boot_prompt = ("" if task.get("prompt_in_command") or
+                               task.get("requested_tool") else
                                _task_prompt(rec))
         launcher = ((rec.get("runtime") or {}).get("launcher") or {})
         launch_status = launcher.get("launch_status_file")
         if launch_status and not runtime.feature_state.get("launcher_started"):
-            # Queue time is not tool startup time. The auto runner records a
-            # transport only after target resolution, immediately before exec.
-            started = ""
-            try:
-                with open(launch_status) as status_file:
-                    started = status_file.read(32).strip()
-            except (IOError, OSError):
-                pass
+            # The target records a transport after resolution, immediately
+            # before exec. Queue time is not tool startup time.
             boot_wait = (boot_config.startup_wait if boot_config
                          else runtime.config.startup_wait)
             runtime.boot_deadline = time.time() + boot_wait
-            if started in ("battach", "ssh", "qsub", "local"):
+            if not launcher_start_pending(rec):
                 runtime.feature_state["launcher_started"] = True
             else:
                 runtime.feature_state["waiting_for_launcher"] = True
@@ -13474,10 +13490,16 @@ clear one (`fix-ecc`, `bug5893270`, `regr-fn100`).
 
 ### Startup supervision is part of the task
 
-A successful `~/.cam/camc run` command only means tmux was created. **Do not stop
-there or report success while `phase=initializing`.** The assistant launching
-the agent owns startup supervision through `status=alive, phase=started`.
-The same requirement applies after `reboot` or an explicit Claude resume.
+A successful `~/.cam/camc run` command means the launch request was handed to
+tmux; it does not mean the tool is ready. Normal interactive startup supervision
+continues through `status=alive, phase=started`. The same applies after `reboot`
+or an explicit Claude resume.
+
+For asynchronous qsub handoff, confirm that tmux exists and the pane has submitted
+the job or is waiting for dispatch, then return the agent/job ID. The pane owns
+the wait; leave `alive/running/initializing` until the tool actually starts.
+Report "submitted/queuing", never "started", while resources are pending. Do
+not wait for dispatch or kill a queued job merely because it takes a long time.
 
 1. Keep the returned agent ID and poll its status and visible pane:
    ```bash
@@ -13506,11 +13528,14 @@ The same requirement applies after `reboot` or an explicit Claude resume.
    and recorded failure reason. Do not claim started or force it into the
    registry. Authentication requiring the user remains a real blocker.
 
-The worker has an overall launcher/tool startup deadline (at least 600s);
-the adapter also has a boot-readiness timeout after transport starts. Queue
-waiting does not consume that adapter timer. An early exit or timeout is
+Launcher waiting has no startup deadline. A target-side receipt starts the
+tool startup timers only after target resolution, immediately before exec,
+for both auto and custom launcher prefixes. The worker's tool startup deadline
+is at least 600s; the adapter also has its boot-readiness timeout. An early exit
+or tool startup timeout is
 `dead/failed`, with `exit_reason`. Keep the failed pane available for diagnosis.
-Report success only with the final agent ID and observed started state.
+When reporting a ready tool, include the final agent ID and observed started
+state. An asynchronous submission is a separate, successful handoff.
 
 When `nvprojectname` is available, every tool defaults to
 `--tool-launcher auto`, including custom PATH tools. Outside that NVIDIA
@@ -17026,14 +17051,20 @@ def _run_foreground_tool(agent_id, launch):
     store = AgentStore()
     initial = store.get(agent_id) or {}
     launch_id = initial.get("launch_id")
-    try:
-        proc = subprocess.Popen(launch["command"], cwd=launch["workdir"], env=launch["env"])
-        if not launch.get("known_tool", False):
-            store.update(agent_id, expected_launch_id=launch_id,
-                         state="running", phase="started")
+    waiting = bool(((initial.get("runtime") or {}).get("launcher") or {}).get(
+        "launch_status_file"))
+
+    def start_custom_tool():
+        store.update(agent_id, expected_launch_id=launch_id,
+                     state="running", phase="started")
         if launch.get("prompt"):
             time.sleep(launch["startup_wait"])
             tmux_send_input("cam-%s" % agent_id, launch["prompt"], send_enter=True)
+
+    try:
+        proc = subprocess.Popen(launch["command"], cwd=launch["workdir"], env=launch["env"])
+        if not launch.get("known_tool", False) and not waiting:
+            start_custom_tool()
         deadline = time.monotonic() + launch.get("startup_timeout", 600.0)
         while proc.poll() is None:
             record = store.get(agent_id) or {}
@@ -17045,6 +17076,17 @@ def _run_foreground_tool(agent_id, launch):
                     proc.kill()
                     proc.wait()
                 return 1
+            if waiting:
+                if launcher_start_pending(record):
+                    # The detached pane owns qsub for as long as it queues.
+                    # Queue time consumes neither startup deadline.
+                    time.sleep(2.0)
+                    continue
+                waiting = False
+                deadline = time.monotonic() + launch.get("startup_timeout", 600.0)
+                if not launch.get("known_tool", False):
+                    start_custom_tool()
+                    continue
             if record.get("phase") == "started":
                 return proc.wait()  # Startup is supervised; no registry polling while working.
             if record.get("phase") == "initializing" and time.monotonic() >= deadline:
@@ -17055,6 +17097,14 @@ def _run_foreground_tool(agent_id, launch):
             time.sleep(.2)
         code = proc.wait()
         record = store.get(agent_id) or {}
+        if (record.get("phase") == "initializing" and waiting
+                and not launch.get("known_tool", False)
+                and not launcher_start_pending(record)):
+            # A short custom program can exec and finish between queue polls.
+            # Its receipt proves launch; never paste into the shell after exit.
+            store.update(agent_id, expected_launch_id=launch_id,
+                         state="running", phase="started")
+            return code
         if record.get("phase") == "initializing":
             store.update(agent_id, expected_launch_id=launch_id,
                          status="dead", state="failed", completed_at=_now_iso(),
@@ -17552,7 +17602,7 @@ def _cmd_run_prepared(args, agent_id, launch):
             "bootstrap_dirs": (runtime_storage_info or {}).get(
                 "bootstrap_dirs") or [],
             "target_env": launcher_target_environment(
-                runtime.env, runtime_storage_info),
+                runtime.env, runtime_storage_info, explicit_keys=tool_env_keys),
             # battach can reintroduce color suppression from the existing
             # allocation even though the local tmux environment is clean.
             "target_unset": ["NO_COLOR", "NODE_DISABLE_COLORS"] + list(
@@ -17582,13 +17632,18 @@ def _cmd_run_prepared(args, agent_id, launch):
                         exit_status_path=exit_status_path or None,
                         **launcher_command_kwargs))
             else:
+                launch_status = exit_status_path + ".launcher" if exit_status_path else ""
                 resolved_tool_command = build_resolved_tool_command(
                     launch_cmd, target_tool_binary, workdir,
                     preferred_tool_path=target_tool_path_hint,
-                    version_args=target_tool_version_args)
+                    version_args=target_tool_version_args,
+                    started_status_path=launch_status,
+                    started_transport=launcher_metadata.get("transport") or "custom")
                 launch_cmd = build_launcher_command(
                     tool_launcher, resolved_tool_command,
                     **launcher_command_kwargs)
+                if launch_status:
+                    launcher_metadata["launch_status_file"] = launch_status
         except (IOError, OSError, ValueError) as exc:
             _stop_api_proxy(api_proxy_proc)
             overlay_info = (runtime_storage_info or {}).get("overlay")
@@ -19590,10 +19645,13 @@ def _run_codex_session_binder(agent_id, tmux_session, workdir, started_at):
 
 def _spawn_codex_session_binder(agent_id, tmux_session, workdir, started_at):
     """Start a one-shot binder without adding launch-path latency."""
+    command = ([sys.executable, _CAMC_SCRIPT]
+               if _CAMC_SCRIPT and os.path.basename(_CAMC_SCRIPT) != "__main__.py"
+               else [sys.executable, "-m", "camc_pkg"])
     try:
         subprocess.Popen(
-            [sys.argv[0], "_bind_codex_session", agent_id, tmux_session,
-             workdir, started_at],
+            command + ["_bind_codex_session", agent_id, tmux_session,
+                       workdir, started_at],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
         )

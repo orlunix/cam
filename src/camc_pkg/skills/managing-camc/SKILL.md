@@ -114,10 +114,16 @@ clear one (`fix-ecc`, `bug5893270`, `regr-fn100`).
 
 ### Startup supervision is part of the task
 
-A successful `~/.cam/camc run` command only means tmux was created. **Do not stop
-there or report success while `phase=initializing`.** The assistant launching
-the agent owns startup supervision through `status=alive, phase=started`.
-The same requirement applies after `reboot` or an explicit Claude resume.
+A successful `~/.cam/camc run` command means the launch request was handed to
+tmux; it does not mean the tool is ready. Normal interactive startup supervision
+continues through `status=alive, phase=started`. The same applies after `reboot`
+or an explicit Claude resume.
+
+For asynchronous qsub handoff, confirm that tmux exists and the pane has submitted
+the job or is waiting for dispatch, then return the agent/job ID. The pane owns
+the wait; leave `alive/running/initializing` until the tool actually starts.
+Report "submitted/queuing", never "started", while resources are pending. Do
+not wait for dispatch or kill a queued job merely because it takes a long time.
 
 1. Keep the returned agent ID and poll its status and visible pane:
    ```bash
@@ -146,11 +152,14 @@ The same requirement applies after `reboot` or an explicit Claude resume.
    and recorded failure reason. Do not claim started or force it into the
    registry. Authentication requiring the user remains a real blocker.
 
-The worker has an overall launcher/tool startup deadline (at least 600s);
-the adapter also has a boot-readiness timeout after transport starts. Queue
-waiting does not consume that adapter timer. An early exit or timeout is
+Launcher waiting has no startup deadline. A target-side receipt starts the
+tool startup timers only after target resolution, immediately before exec,
+for both auto and custom launcher prefixes. The worker's tool startup deadline
+is at least 600s; the adapter also has its boot-readiness timeout. An early exit
+or tool startup timeout is
 `dead/failed`, with `exit_reason`. Keep the failed pane available for diagnosis.
-Report success only with the final agent ID and observed started state.
+When reporting a ready tool, include the final agent ID and observed started
+state. An asynchronous submission is a separate, successful handoff.
 
 When `nvprojectname` is available, every tool defaults to
 `--tool-launcher auto`, including custom PATH tools. Outside that NVIDIA

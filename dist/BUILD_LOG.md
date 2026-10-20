@@ -7075,3 +7075,51 @@ dee07ef chore(camc): prepare 1.2.137 release
 - Includes local CAM Server protocol/client and independent msg reply/wait.
 - Lines: 23982
 - Source snapshot only; no installation or deployment.
+## v1.2.186  06471f7-dirty 2026-10-19 14:16
+
+- Lines: 23982
+- Output: /tmp/cam-tui-fleet-20261019/camc
+- Recent changes:
+```
+0c9114e feat(server): add portable router and native camc integration
+906b207 refactor(camc): simplify lifecycle and unify launch preparation
+af632cd feat: add machine tunnels and modernize terminal interfaces
+886f323 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+```
+## v1.2.187  06471f7-dirty 2026-10-19 14:34
+
+- Lines: 23992
+- Output: /tmp/cam-tui-fleet-20261019/camc
+- Recent changes:
+```
+0c9114e feat(server): add portable router and native camc integration
+906b207 refactor(camc): simplify lifecycle and unify launch preparation
+af632cd feat: add machine tunnels and modernize terminal interfaces
+886f323 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+```
+## v1.2.188  06471f7-dirty 2026-10-19 15:36
+
+- Lines: 23992
+- Output: /tmp/cam-tui-feature-e2e-20261019/camc
+- Recent changes:
+```
+0c9114e feat(server): add portable router and native camc integration
+906b207 refactor(camc): simplify lifecycle and unify launch preparation
+af632cd feat: add machine tunnels and modernize terminal interfaces
+886f323 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+```
+## v1.2.189  06471f7-dirty 2026-10-19 18:46
+
+- Lines: 24040
+- Output: dist/camc
+- Recent changes:
+```
+0c9114e feat(server): add portable router and native camc integration
+906b207 refactor(camc): simplify lifecycle and unify launch preparation
+af632cd feat: add machine tunnels and modernize terminal interfaces
+886f323 feat(camc): harden autorun launcher fallback and runtime isolation
+368bfa2 feat(camc): bridge ferry (mailbox) — absorb camb, local-first routing
+```

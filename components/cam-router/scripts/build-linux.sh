@@ -20,7 +20,7 @@ cargo build --release --locked --target "$task_target" --bins
 task_target_dir=${CARGO_TARGET_DIR:-target}
 task_artifacts_dir=${CAM_ROUTER_ARTIFACT_DIR:-$task_target_dir/linux/$task_target}
 mkdir -p "$task_artifacts_dir"
-for task_bin in cam-server cam-forwarder; do
+for task_bin in cam-server cam-forwarder cam-clientd cam-tui; do
     task_source=$task_target_dir/$task_target/release/$task_bin
     if readelf -l "$task_source" | grep -q INTERP || readelf -d "$task_source" | grep -q '(NEEDED)'; then
         printf 'Refusing dynamically linked artifact: %s\n' "$task_source" >&2; exit 2
@@ -30,5 +30,5 @@ done
 if [ "$task_target" = "$task_arch-unknown-linux-musl" ]; then
     "$task_artifacts_dir/cam-server" version
 fi
-(cd "$task_artifacts_dir" && sha256sum cam-server cam-forwarder > SHA256SUMS)
+(cd "$task_artifacts_dir" && sha256sum cam-server cam-forwarder cam-clientd cam-tui > SHA256SUMS)
 printf 'Static Linux artifacts: %s\n' "$task_artifacts_dir"

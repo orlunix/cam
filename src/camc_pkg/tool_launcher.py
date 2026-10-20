@@ -80,8 +80,22 @@ def record_uses_tool_launcher(record):
     return isinstance(runtime, dict) and "launcher" in runtime
 
 
-def launcher_target_environment(runtime_env, storage_info=None):
-    """Send terminal capabilities, tool home and paths, never loader variables."""
+def launcher_start_pending(record):
+    """Wait for a target-side receipt, independently of queue duration."""
+    launcher = ((record.get("runtime") or {}).get("launcher") or {})
+    path = launcher.get("launch_status_file")
+    if not path:
+        return False
+    try:
+        with open(path) as stream:
+            started = stream.read(32).strip()
+    except (IOError, OSError):
+        return True
+    return started not in ("battach", "ssh", "qsub", "local", "custom")
+
+
+def launcher_target_environment(runtime_env, storage_info=None, explicit_keys=None):
+    """Send supported context and only caller-explicit extra environment."""
     result = {}
     # An existing LSF allocation retains the environment of its original
     # submitter. Its TERM is not necessarily the terminal attached now.
@@ -101,6 +115,13 @@ def launcher_target_environment(runtime_env, storage_info=None):
     name = str(storage.get("environment") or "")
     if name and _TOOL_ENV_NAME_RE.match(name):
         result[name] = str((runtime_env or {}).get(name) or "")
+    # --tool-env is an intentional override, distinct from copying the
+    # submit host's ambient credentials/loader environment. PATH continues
+    # through the allocation-preserving merge above.
+    for name in explicit_keys or []:
+        if (name != "PATH" and _TOOL_ENV_NAME_RE.match(name) and
+                name in (runtime_env or {})):
+            result[name] = str(runtime_env[name])
     return result
 
 
@@ -592,11 +613,11 @@ def build_resolved_tool_command(tool_argv, target_tool, workdir,
             shlex.quote(item) for item in env_assignments)
     exec_args = [exec_prefix, '"$_camc_tool"'] + [
         shlex.quote(str(item)) for item in tool_args]
+    if started_status_path:
+        lines.append("printf '%%s\\n' %s > %s || exit 125" % (
+            shlex.quote(started_transport),
+            shlex.quote(started_status_path)))
     if started_path:
-        if started_status_path:
-            lines.append("printf '%%s\\n' %s > %s || exit 125" % (
-                shlex.quote(started_transport),
-                shlex.quote(started_status_path)))
         lines.append(": > %s || exit 125" % shlex.quote(started_path))
     lines.append(" ".join(exec_args))
     return ["/bin/sh", "-c", "\n".join(lines) + "\n"]

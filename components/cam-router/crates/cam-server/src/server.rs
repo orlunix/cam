@@ -120,6 +120,7 @@ pub struct Server {
     executing: Arc<Semaphore>,
     budget: Arc<Semaphore>,
     connections: Arc<Semaphore>,
+    terminals: Arc<crate::terminal::Terminals>,
 }
 impl Server {
     pub async fn new(config: Config, epoch: String) -> Result<Arc<Self>> {
@@ -144,6 +145,7 @@ impl Server {
             backend,
             notify: Notify::new(),
             executing: Arc::new(Semaphore::new(8)),
+            terminals: Arc::new(crate::terminal::Terminals::default()),
         }))
     }
     fn validate_local(&self, message: &Value) -> Result<()> {
@@ -572,6 +574,7 @@ impl Server {
         }
         let generation = id();
         write_frame(&mut write,&json!({"type":"hello","version":1,"node_id":self.config.node_id,"server_epoch":self.epoch,"session_id":generation,
+            "management":grant.management,"capabilities":if grant.management&&self.backend.is_some(){vec!["agents.snapshot","agent.operation","terminal.control","loop.deliver","health"]}else{vec!["health"]},
             "route_ttl_seconds":self.config.route_ttl_seconds,"allowed_targets":self.config.peers.iter().map(|p|p.node_id.clone()).collect::<Vec<_>>()})).await?;
         let channel = Channel::start(write, self.budget.clone());
         self.clients.lock().unwrap().insert(
@@ -604,6 +607,20 @@ impl Server {
                     return Err(error("superseded Client connection"));
                 }
                 match frame["type"].as_str() {
+                    Some("sdk.request") => {
+                        let request_id=text(&frame,"id")?.to_string();
+                        let server=self.clone();let output=channel.clone();let owner=name.clone();let connection=generation.clone();
+                        let management=grant.management;
+                        let permit=self.executing.clone().try_acquire_owned();
+                        if let Ok(permit)=permit {
+                            tokio::spawn(async move {
+                                let _permit=permit;
+                                let outcome=server.client_request(&owner,&connection,management,&frame,output.clone()).await;
+                                let answer=match outcome {Ok(data)=>json!({"type":"sdk.result","id":request_id,"data":data}),Err(err)=>json!({"type":"sdk.result","id":request_id,"error":err.to_string()})};
+                                let _=output.frame(&answer);
+                            });
+                        }else{channel.frame(&json!({"type":"sdk.result","id":request_id,"error":"management backpressure"}))?;}
+                    }
                     Some("routes.snapshot") => {
                         let seq = frame["seq"]
                             .as_u64()
@@ -695,6 +712,7 @@ impl Server {
             }
         }
         .await;
+        self.terminals.disconnect(&generation);
         {
             let mut clients = self.clients.lock().unwrap();
             if clients
@@ -707,6 +725,70 @@ impl Server {
         }
         self.notify.notify_one();
         outcome
+    }
+
+    async fn client_request(
+        &self,
+        client: &str,
+        generation: &str,
+        management: bool,
+        frame: &Value,
+        channel: Channel,
+    ) -> Result<Value> {
+        let action = text(frame, "action")?;
+        if action == "health" {
+            return self.inspect();
+        }
+        if !management {
+            return Err(error("Client management capability is not granted"));
+        }
+        let backend = self
+            .backend
+            .as_ref()
+            .ok_or_else(|| error("UNSUPPORTED_OPERATION: no native backend"))?;
+        let mut args = frame.get("args").cloned().unwrap_or_else(|| json!({}));
+        match action {
+            "agents.snapshot" => backend.control(action, json!({})).await,
+            "terminal.attach" => {
+                self.terminals
+                    .open(backend, generation, &args, channel)
+                    .await
+            }
+            "terminal.input" | "terminal.resize" | "terminal.detach" => {
+                self.terminals.command(generation, action, &args)
+            }
+            "agent.operation" | "loop.deliver" => {
+                let operation = if action == "loop.deliver" {
+                    "agent.send"
+                } else {
+                    text(&args, "operation")?
+                };
+                if !cam_protocol::AGENT_OPERATIONS.contains(&operation) {
+                    return Err(error("UNSUPPORTED_OPERATION"));
+                }
+                let agent = text(&args, "agent_id")?;
+                if !cam_protocol::agent_id(agent) {
+                    return Err(error("specific agent ID required"));
+                }
+                let mid = text(frame, "id")?;
+                if !cam_protocol::valid_id(mid) {
+                    return Err(error("invalid operation ID"));
+                }
+                let message = json!({"type":"message","version":1,"message_id":mid,
+                    "source":{"node_id":format!("client.{}",config::node_key(client))},"target":{"node_id":self.config.node_id,"agent_id":agent},
+                    "operation":operation,"payload":{"args":args.get("options").cloned().unwrap_or_else(||json!({}))},"expires_at":stamp(now()+120)});
+                if action == "loop.deliver" {
+                    args["message"] = message;
+                    args["owner"] = json!(client);
+                    backend.control(action, args).await
+                } else {
+                    backend
+                        .control("agent.operation", json!({"message":message}))
+                        .await
+                }
+            }
+            _ => Err(error("UNSUPPORTED_MANAGEMENT_ACTION")),
+        }
     }
 }
 

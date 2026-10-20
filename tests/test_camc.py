@@ -1936,12 +1936,16 @@ class TestCliArgParsing:
     def test_does_not_reject_inline_option_value_for_other_command(
             self, monkeypatch):
         from camc_pkg import cli
+        from camc_pkg import server_client
 
         calls = []
         monkeypatch.setattr(
             sys, "argv", ["camc", "send", "agent1", "--text=-name"])
         monkeypatch.setattr(cli, "_ensure_logs_on_scratch", lambda: None)
         monkeypatch.setattr(cli, "cmd_send", lambda args: calls.append(args))
+        # Argument parsing must not discover a real Server in the test user's
+        # Home and route the synthetic "agent1" to that live endpoint.
+        monkeypatch.setattr(server_client, "cam_server_socket", lambda *_a, **_kw: None)
 
         cli.main()
 
