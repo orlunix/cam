@@ -15,8 +15,9 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame, Terminal,
 };
@@ -27,11 +28,25 @@ use std::{
     sync::mpsc,
     time::{Duration, Instant},
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const BG: Color = Color::Rgb(17, 20, 27);
 const PANEL: Color = Color::Rgb(27, 31, 41);
 const ACCENT: Color = Color::Rgb(115, 211, 190);
+// Keep chrome readable when a terminal customizes its indexed ANSI palette.
+const TEXT: Color = Color::Rgb(224, 230, 240);
+const MUTED: Color = Color::Rgb(156, 167, 187);
+const HINT: Color = Color::Rgb(118, 130, 150);
+const KEY: Color = Color::Rgb(138, 217, 232);
+const WARNING: Color = Color::Rgb(228, 201, 124);
+const ERROR: Color = Color::Rgb(240, 133, 133);
+#[derive(Clone, Copy)]
+enum FilterKind { Node, Tool, Status }
+impl FilterKind {
+    fn label(self) -> &'static str {
+        match self { Self::Node => "Node", Self::Tool => "Tool", Self::Status => "Status" }
+    }
+}
 struct Tab {
     key: String,
     agent: Value,
@@ -48,6 +63,14 @@ struct Tab {
 }
 enum Dialog {
     Nodes,
+    Help { scroll: u16 },
+    Filters,
+    ChooseFilter {
+        kind: FilterKind,
+        selected: usize,
+        options: Vec<(String, String)>,
+        return_to_panel: bool,
+    },
     ChooseNode {
         form: Box<Dialog>,
         field: usize,
@@ -56,6 +79,7 @@ enum Dialog {
     },
     Settings,
     Menu(Value),
+    More(Value),
     Form {
         kind: String,
         title: String,
@@ -79,8 +103,13 @@ pub struct App {
     tabs: Vec<Tab>,
     active: usize,
     filter: String,
+    filter_node: String,
+    filter_tool: String,
+    filter_status: String,
     filter_focus: bool,
     list_offset: usize,
+    agent_list: Rect,
+    menu_position: (u16, u16),
     dialog: Option<Dialog>,
     hits: Vec<(Rect, String)>,
     main: Rect,
@@ -95,6 +124,7 @@ pub struct App {
     history: usize,
     view_id: String,
     editing_job: Option<Value>,
+    editing_agent: Option<Value>,
     pending_open: Option<(String, String)>,
 }
 impl App {
@@ -150,8 +180,13 @@ impl App {
             tabs: vec![],
             active: 0,
             filter: String::new(),
+            filter_node: String::new(),
+            filter_tool: String::new(),
+            filter_status: String::new(),
             filter_focus: false,
             list_offset: 0,
+            agent_list: Rect::default(),
+            menu_position: (27, 6),
             dialog: None,
             hits: vec![],
             main: Rect::default(),
@@ -166,6 +201,7 @@ impl App {
             history: config.scrollback_lines,
             view_id: id(),
             editing_job: None,
+            editing_agent: None,
             pending_open: None,
         }
     }
@@ -199,11 +235,20 @@ impl App {
             .into_iter()
             .flatten()
             .filter(|a| {
-                filter.is_empty()
+                (self.filter_node.is_empty() || a["node_id"] == self.filter_node)
+                    && (self.filter_tool.is_empty() || a["tool"] == self.filter_tool)
+                    && (self.filter_status.is_empty()
+                        || a["status"] == self.filter_status
+                        || a["state"] == self.filter_status
+                        || Self::agent_status(a) == self.filter_status
+                        || (self.filter_status == "stale" && a["stale"] == true))
+                    && (filter.is_empty()
                     || self
                         .node_label(a["node_id"].as_str().unwrap_or(""))
                         .to_lowercase()
                         .contains(&filter)
+                    || self.short_node(a["node_id"].as_str().unwrap_or(""))
+                        .to_lowercase().contains(&filter)
                     || ["name", "id", "node_id", "state", "status", "tool"]
                         .iter()
                         .any(|k| {
@@ -213,9 +258,110 @@ impl App {
                                 .to_lowercase()
                                 .contains(&filter)
                         })
+                    || a["tags"].as_array().into_iter().flatten().any(|tag|
+                        tag.as_str().unwrap_or("").to_lowercase().contains(filter.trim_start_matches('#'))))
             })
             .cloned()
             .collect()
+    }
+    fn agent_status(agent: &Value) -> &str {
+        if agent["phase"] == "initializing" && agent["status"] == "alive" {
+            "starting"
+        } else {
+            agent["state"].as_str().filter(|s| !s.is_empty())
+                .unwrap_or_else(|| agent["status"].as_str().unwrap_or("unknown"))
+        }
+    }
+    fn short_node(&self, id: &str) -> String {
+        let label = self.node_label(id);
+        // Retain explicit aliases, including dots; abbreviate hostnames only.
+        let alias = self.snapshot["connections"].as_array().into_iter().flatten()
+            .find(|e| e["node_id"] == id)
+            .and_then(|e| e["name"].as_str()).filter(|s| !s.trim().is_empty());
+        if alias.is_some() { return label; }
+        label.split('.').next().unwrap_or(&label)
+            .replace("-container-xterm-", "-")
+    }
+    fn filter_value(&self, kind: FilterKind) -> &str {
+        match kind {
+            FilterKind::Node => &self.filter_node,
+            FilterKind::Tool => &self.filter_tool,
+            FilterKind::Status => &self.filter_status,
+        }
+    }
+    fn filter_label(&self, kind: FilterKind) -> String {
+        let value = self.filter_value(kind);
+        if value.is_empty() {
+            return match kind { FilterKind::Node => "All nodes", FilterKind::Tool => "All tools", FilterKind::Status => "All statuses" }.into();
+        }
+        match kind {
+            FilterKind::Node => self.short_node(value),
+            _ => value.into(),
+        }
+    }
+    fn choose_filter(&mut self, kind: FilterKind) {
+        let return_to_panel = matches!(self.dialog, Some(Dialog::Filters));
+        let all = match kind { FilterKind::Node => "All nodes", FilterKind::Tool => "All tools", FilterKind::Status => "All statuses" };
+        let mut options = vec![(String::new(), all.into())];
+        match kind {
+            FilterKind::Node => options.extend(self.node_options().into_iter()
+                .map(|id| { let label = self.short_node(&id); (id, label) })),
+            FilterKind::Tool => {
+                let tools: std::collections::BTreeSet<_> = self.snapshot["agents"]
+                    .as_array().into_iter().flatten()
+                    .filter_map(|a| a["tool"].as_str()).filter(|s| !s.is_empty()).collect();
+                options.extend(tools.into_iter().map(|tool| (tool.into(), tool.into())));
+            }
+            FilterKind::Status => options.extend(["alive", "idle", "running", "starting", "dead", "stopped", "failed", "killed", "stale"]
+                .iter().map(|s| (s.to_string(), s.to_string()))),
+        }
+        let selected = options.iter().position(|(v, _)| v == self.filter_value(kind)).unwrap_or(0);
+        self.filter_focus = false;
+        self.dialog = Some(Dialog::ChooseFilter { kind, selected, options, return_to_panel });
+    }
+    fn select_filter(&mut self, index: usize) {
+        let Some(Dialog::ChooseFilter { kind, options, return_to_panel, .. }) = self.dialog.take() else { return };
+        if let Some((value, _)) = options.get(index) {
+            match kind {
+                FilterKind::Node => self.filter_node = value.clone(),
+                FilterKind::Tool => self.filter_tool = value.clone(),
+                FilterKind::Status => self.filter_status = value.clone(),
+            }
+            self.list_offset = 0;
+        }
+        if return_to_panel { self.dialog = Some(Dialog::Filters); }
+    }
+    fn clear_filters(&mut self) {
+        self.filter.clear(); self.filter_node.clear(); self.filter_tool.clear(); self.filter_status.clear();
+        self.list_offset = 0;
+    }
+    fn guide() -> Text<'static> {
+        let heading = Style::default().fg(ACCENT).add_modifier(Modifier::BOLD);
+        let key = Style::default().fg(KEY).add_modifier(Modifier::BOLD);
+        let muted = Style::default().fg(MUTED);
+        Text::from(vec![
+            Line::from(Span::styled("  CAM  /  YOUR AGENT WORKSPACE", heading)),
+            Line::from("  Click an agent to open a tab, or choose New to start one."),
+            Line::from(vec![Span::raw("  "), Span::styled("Ctrl+Q", key), Span::raw("  Exit UI; agents keep running.    "), Span::styled("F4", key), Span::raw("  Open this guide anytime.")]),
+            Line::from(""),
+            Line::from(Span::styled("  HISTORY", heading)),
+            Line::from(vec![Span::raw("  "), Span::styled("PageUp / PageDown", key), Span::raw("  Browse history.  "), Span::styled("Mouse wheel", key), Span::raw("  Scroll.")]),
+            Line::from(vec![Span::raw("  "), Span::styled("End", key), Span::raw("  Return to live output and clear the selection.")]),
+            Line::from(""),
+            Line::from(Span::styled("  COPY & PASTE", heading)),
+            Line::from(vec![Span::raw("  Drag to select, release, then "), Span::styled("Ctrl+C", key), Span::raw(" to copy to the system clipboard.")]),
+            Line::from(Span::styled("  Ctrl+C without a selection interrupts the tool. Mouse copy remains terminal-dependent.", muted)),
+            Line::from(vec![Span::raw("  "), Span::styled("Ctrl+V", key), Span::raw(" or your terminal's Paste shortcut. Paste does not press Enter.")]),
+            Line::from(""),
+            Line::from(Span::styled("  FIND & ORGANIZE", heading)),
+            Line::from("  Filter by Node, Tool and Status; search names, IDs or #tags. Clear filters resets all."),
+            Line::from("  Agent details: tool · status · node. Nodes → Edit → Name sets a short alias."),
+            Line::from(""),
+            Line::from(Span::styled("  COMMON ACTIONS", heading)),
+            Line::from(vec![Span::raw("  "), Span::styled("F1", key), Span::raw(" New    "), Span::styled("F2", key), Span::raw(" Nodes    "), Span::styled("F3", key), Span::raw(" Settings    "), Span::styled("F8", key), Span::raw(" Tool mouse passthrough")]),
+            Line::from("  Agent … menu: Settings for name/tags, Stop or Remove; More actions for other commands."),
+            Line::from(Span::styled("  Connect CAM Servers in Nodes. Closing a tab leaves its agent running.", muted)),
+        ])
     }
     fn node_options(&self) -> Vec<String> {
         let mut nodes = vec![];
@@ -612,6 +758,25 @@ impl App {
                 "message" => {
                     self.request("operation".into(),"agent.operation",json!({"node_id":v[0],"agent_id":v[1],"operation":"agent.send","options":{"text":v[2]}}));
                 }
+                "agent.settings" => {
+                    if v[0].is_empty() || v[0].chars().count() > 128 || v[0].chars().any(char::is_control) {
+                        return Err(error("Name must contain 1-128 printable characters"));
+                    }
+                    let mut tags: Vec<&str> = vec![];
+                    for tag in v[1].split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                        if tag.len() > 64 || !tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                            return Err(error("Tags use letters, digits, underscore or dash; separate them with commas"));
+                        }
+                        if !tags.contains(&tag) { tags.push(tag); }
+                    }
+                    if tags.len() > 32 { return Err(error("Use up to 32 tags")); }
+                    let agent = self.editing_agent.as_mut().ok_or_else(|| error("Select an agent first"))?;
+                    agent["name"] = json!(v[0]);
+                    agent["tags"] = json!(tags);
+                    let args = json!({"node_id":agent["node_id"],"agent_id":agent["id"],"name":v[0],"tags":tags});
+                    self.request("attributes".into(), "agent.update", args);
+                    self.status = "Saving agent name and tags".into();
+                }
                 _ => {}
             }
             Ok(())
@@ -630,6 +795,17 @@ impl App {
     }
     fn operation(&mut self, operation: &str, agent: Value) {
         self.dialog = None;
+        if operation == "settings" {
+            let tags = agent["tags"].as_array().into_iter().flatten()
+                .filter_map(Value::as_str).collect::<Vec<_>>().join(", ");
+            self.form("agent.settings", &format!("Agent settings · {}", self.short_node(agent["node_id"].as_str().unwrap_or(""))), vec![
+                ("Name", agent["name"].as_str().unwrap_or("").into()),
+                ("Tags (comma-separated)", tags),
+            ]);
+            self.editing_agent = Some(agent);
+            return;
+        }
+        if operation == "more" { self.dialog = Some(Dialog::More(agent)); return; }
         if operation == "open" {
             self.open(agent);
             return;
@@ -678,9 +854,16 @@ impl App {
             "new" => self.new_agent(),
             "nodes" => self.dialog = Some(Dialog::Nodes),
             "settings" => self.dialog = Some(Dialog::Settings),
+            "help" => self.dialog = Some(Dialog::Help { scroll: 0 }),
+            "filters" => { self.filter_focus = false; self.dialog = Some(Dialog::Filters); }
+            "filter.node" => self.choose_filter(FilterKind::Node),
+            "filter.tool" => self.choose_filter(FilterKind::Tool),
+            "filter.status" => self.choose_filter(FilterKind::Status),
+            "filter.clear" => self.clear_filters(),
             "dismiss" => {
                 self.dialog = match self.dialog.take() {
                     Some(Dialog::ChooseNode { form, .. }) => Some(*form),
+                    Some(Dialog::ChooseFilter { return_to_panel: true, .. }) => Some(Dialog::Filters),
                     _ => None,
                 };
             }
@@ -716,6 +899,20 @@ impl App {
                 }
             }
             _ => {
+                if let Some(key) = action.strip_prefix("menu:") {
+                    if let Some(agent) = self.agents().into_iter().find(|a|
+                        format!("{}:{}", a["node_id"].as_str().unwrap_or(""), a["id"].as_str().unwrap_or("")) == key) {
+                        self.menu_position = self.hits.iter().find(|(_, action)| action == &format!("menu:{key}"))
+                            .map(|(r, _)| (r.x, r.y)).unwrap_or((27, 6));
+                        self.filter_focus = false;
+                        self.dialog = Some(Dialog::Menu(agent));
+                    }
+                    return;
+                }
+                if let Some(index) = action.strip_prefix("pick-filter:").and_then(|v| v.parse().ok()) {
+                    self.select_filter(index);
+                    return;
+                }
                 if let Some(index) = action
                     .strip_prefix("pick-node:")
                     .and_then(|v| v.parse::<usize>().ok())
@@ -778,7 +975,7 @@ impl App {
                     }
                 }
                 if let Some(op) = action.strip_prefix("op:") {
-                    if let Some(Dialog::Menu(agent)) = &self.dialog {
+                    if let Some(Dialog::Menu(agent) | Dialog::More(agent)) = &self.dialog {
                         self.operation(op, agent.clone());
                     }
                 }
@@ -806,6 +1003,12 @@ impl App {
                         }
                     }
                     self.snapshot = snapshot;
+                    for tab in &mut self.tabs {
+                        if let Some(agent) = self.snapshot["agents"].as_array().into_iter().flatten()
+                            .find(|a| a["id"] == tab.agent["id"] && a["node_id"] == tab.agent["node_id"]) {
+                            tab.agent = agent.clone();
+                        }
+                    }
                     if self.node.is_empty() {
                         self.node = self.snapshot["nodes"]
                             .as_array()
@@ -918,6 +1121,20 @@ impl App {
                 continue;
             }
             match result {
+                Ok(result) if kind == "attributes" => {
+                    let agent = &result["agent"];
+                    if let Some(current) = self.snapshot["agents"].as_array_mut().into_iter().flatten()
+                        .find(|a| a["id"] == agent["id"] && a["node_id"] == agent["node_id"]) {
+                        *current = agent.clone();
+                    }
+                    for tab in &mut self.tabs {
+                        if tab.agent["id"] == agent["id"] && tab.agent["node_id"] == agent["node_id"] {
+                            tab.agent = agent.clone();
+                        }
+                    }
+                    self.status = "Saved agent name and tags".into();
+                    self.last_snapshot = Instant::now() - Duration::from_secs(2);
+                }
                 Ok(result) if kind == "paste" => {
                     if let Some(text) = result.as_str() {
                         self.paste(text);
@@ -1065,7 +1282,7 @@ impl App {
         self.hits.clear();
         let area = f.size();
         f.render_widget(
-            Block::default().style(Style::default().bg(BG).fg(Color::White)),
+            Block::default().style(Style::default().bg(BG).fg(TEXT)),
             area,
         );
         if area.width < 48 || area.height < 12 {
@@ -1084,88 +1301,67 @@ impl App {
         self.button(f, Rect::new(1, 1, 5, 1), " New ", "new", false);
         self.button(f, Rect::new(7, 1, 10, 1), " Settings ", "settings", false);
         self.button(f, Rect::new(18, 1, 7, 1), " Nodes ", "nodes", false);
-        let filter = Rect::new(1, 3, left - 2, 3);
-        f.render_widget(
-            Paragraph::new(self.filter.as_str()).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(if self.filter_focus {
-                        "Filter · typing"
-                    } else {
-                        "Filter agents /"
-                    }),
-            ),
-            filter,
-        );
-        self.hits.push((filter, "filter".into()));
-        let agents = self.agents();
-        let height = area.height.saturating_sub(9) as usize;
-        for (i, agent) in agents
-            .iter()
-            .skip(self.list_offset)
-            .take(height / 2)
-            .enumerate()
-        {
-            let y = 7 + i as u16 * 2;
-            let key = format!(
-                "{}:{}",
-                agent["node_id"].as_str().unwrap_or(""),
-                agent["id"].as_str().unwrap_or("")
-            );
-            let selected = self
-                .tabs
-                .get(self.active)
-                .map(|t| t.key == key)
-                .unwrap_or(false);
-            let alive = agent["status"] == "alive";
-            let stale = agent["stale"] == true;
-            let color = if stale {
-                Color::DarkGray
-            } else if alive {
-                if agent["state"] == "idle" {
-                    ACCENT
-                } else {
-                    Color::LightYellow
-                }
-            } else {
-                Color::LightRed
-            };
-            let title = format!(
-                "{} {}",
-                if alive { "●" } else { "○" },
-                agent["name"].as_str().unwrap_or("agent")
-            );
-            f.render_widget(
-                Paragraph::new(title).style(Style::default().fg(color).bg(if selected {
-                    Color::Rgb(48, 64, 70)
-                } else {
-                    PANEL
-                })),
-                Rect::new(1, y, left - 2, 1),
-            );
-            f.render_widget(
-                Paragraph::new(format!(
-                    "  {} · {}{}",
-                    self.node_label(agent["node_id"].as_str().unwrap_or(""))
-                        .split('.')
-                        .next()
-                        .unwrap_or(""),
-                    agent["state"].as_str().unwrap_or(""),
-                    if stale {
-                        " · stale"
-                    } else if agent["phase"] == "initializing" {
-                        " · initializing"
-                    } else {
-                        ""
-                    }
-                ))
-                .style(Style::default().fg(Color::Gray)),
-                Rect::new(1, y + 1, left - 2, 1),
-            );
-            self.hits
-                .push((Rect::new(1, y, left - 2, 2), format!("agent:{key}")));
+        let compact = area.height < 24;
+        let filters = Rect::new(1, 3, left - 2, if compact { 4 } else { 8 });
+        f.render_widget(Block::default().borders(Borders::ALL).title("Filters /")
+            .border_style(Style::default().fg(if self.filter_focus { ACCENT } else { HINT })), filters);
+        let search = Rect::new(2, 4, left - 4, 1);
+        f.render_widget(Paragraph::new(if self.filter.is_empty() && !self.filter_focus {
+            "Search name, ID or #tag"
+        } else { self.filter.as_str() }).style(Style::default().fg(if self.filter.is_empty() { HINT } else { TEXT })), search);
+        self.hits.push((search, "filter".into()));
+        if compact {
+            self.button(f, Rect::new(2, 5, left - 4, 1), "Node / Tool / Status ▾", "filters", false);
+        } else {
+            for (row, kind, action) in [(6, FilterKind::Node, "filter.node"), (7, FilterKind::Tool, "filter.tool"), (8, FilterKind::Status, "filter.status")] {
+                let label = format!("{:<7} {} ▾", kind.label(), self.filter_label(kind));
+                self.button(f, Rect::new(2, row, left - 4, 1), &label, action, !self.filter_value(kind).is_empty());
+            }
+            self.button(f, Rect::new(2, 9, left - 4, 1), "Clear filters", "filter.clear", false);
         }
-        let visible = ((right.saturating_sub(8)) / 19).max(1) as usize;
+        let agents = self.agents();
+        let list_top = if compact { 7 } else { 12 };
+        self.agent_list = Rect::new(1, list_top, left - 2, area.height - list_top - 1);
+        let total = self.snapshot["agents"].as_array().map(Vec::len).unwrap_or(0);
+        let list_block = Block::default().borders(Borders::ALL)
+            .title(format!("Agents  {}/{}", agents.len(), total)).border_style(Style::default().fg(HINT));
+        let body = list_block.inner(self.agent_list);
+        f.render_widget(list_block, self.agent_list);
+        let visible = body.height as usize / 2;
+        self.list_offset = self.list_offset.min(agents.len().saturating_sub(visible.max(1)));
+        for (i, agent) in agents.iter().skip(self.list_offset).take(visible).enumerate() {
+            let y = body.y + i as u16 * 2;
+            let key = format!("{}:{}", agent["node_id"].as_str().unwrap_or(""), agent["id"].as_str().unwrap_or(""));
+            let selected = self.tabs.get(self.active).map(|t| t.key == key).unwrap_or(false);
+            let alive = agent["status"] == "alive";
+            let color = if agent["stale"] == true { HINT } else if !alive { ERROR }
+                else if agent["state"] == "idle" { ACCENT } else { WARNING };
+            let background = if selected { Color::Rgb(38, 53, 62) } else { PANEL };
+            let base = Style::default().bg(background);
+            f.render_widget(Block::default().style(base), Rect::new(body.x, y, body.width, 2));
+            f.render_widget(Paragraph::new(if alive { "●" } else { "○" }).style(base.fg(color)), Rect::new(body.x, y, 1, 1));
+            f.render_widget(Paragraph::new(elide(agent["name"].as_str().unwrap_or("agent"), body.width.saturating_sub(5)))
+                .style(base.fg(TEXT).add_modifier(Modifier::BOLD)), Rect::new(body.x + 2, y, body.width.saturating_sub(5), 1));
+            self.hits.push((Rect::new(body.x, y, body.width, 2), format!("agent:{key}")));
+            let menu = Rect::new(body.x + body.width - 3, y, 3, 1);
+            f.render_widget(Paragraph::new(" … ").style(base.fg(MUTED)), menu);
+            self.hits.push((menu, format!("menu:{key}")));
+            let node_width = (body.width / 3).min(12);
+            let detail_width = body.width.saturating_sub(node_width + 1);
+            let detail = format!("{:<6} · {}", elide(agent["tool"].as_str().unwrap_or("tool"), 6),
+                if agent["stale"] == true { "stale" } else { Self::agent_status(agent) });
+            f.render_widget(Paragraph::new(elide(&detail, detail_width)).style(base.fg(HINT)),
+                Rect::new(body.x, y + 1, detail_width, 1));
+            let node = self.short_node(agent["node_id"].as_str().unwrap_or(""));
+            f.render_widget(Paragraph::new(elide(&node, node_width)).alignment(Alignment::Right).style(base.fg(HINT)),
+                Rect::new(body.x + body.width - node_width, y + 1, node_width, 1));
+        }
+        if agents.is_empty() && body.height >= 2 {
+            f.render_widget(Paragraph::new("No matching agents\nClear filters or choose New").style(Style::default().fg(HINT)), body);
+        }
+        let show_help = right >= 42;
+        if show_help { self.button(f, Rect::new(area.width - 9, 1, 8, 1), " Help F4", "help", false); }
+        let visible = ((right.saturating_sub(if show_help { 18 } else { 8 })) / 19).max(1) as usize;
         let start = (self.active / visible) * visible;
         if start > 0 {
             self.button(f, Rect::new(left + 1, 1, 2, 1), "‹", "tabs.prev", false);
@@ -1173,7 +1369,7 @@ impl App {
         if start + visible < self.tabs.len() {
             self.button(
                 f,
-                Rect::new(area.width - 3, 1, 2, 1),
+                Rect::new(area.width - if show_help { 13 } else { 3 }, 1, 2, 1),
                 "›",
                 "tabs.next",
                 false,
@@ -1183,7 +1379,7 @@ impl App {
         for i in start..(start + visible).min(self.tabs.len()) {
             let title = self.tabs[i].agent["name"].as_str().unwrap_or("agent");
             let label = format!(" {} ", title.chars().take(12).collect::<String>());
-            let width = 14.min(area.width.saturating_sub(x + 3));
+            let width = 14.min(area.width.saturating_sub(x + if show_help { 12 } else { 3 }));
             self.button(
                 f,
                 Rect::new(x, 1, width, 1),
@@ -1213,13 +1409,13 @@ impl App {
             if tab.read_only {
                 f.render_widget(
                     Paragraph::new("Read-only: another view controls input/size")
-                        .style(Style::default().fg(Color::LightYellow)),
+                        .style(Style::default().fg(WARNING)),
                     Rect::new(self.main.x, self.main.y, self.main.width, 1),
                 );
             }
             if let Some(error) = &tab.error {
                 f.render_widget(
-                    Paragraph::new(error.as_str()).style(Style::default().fg(Color::LightRed)),
+                    Paragraph::new(error.as_str()).style(Style::default().fg(ERROR)),
                     Rect::new(
                         self.main.x,
                         self.main.y,
@@ -1243,7 +1439,8 @@ impl App {
                 );
             }
         } else {
-            f.render_widget(Paragraph::new("Select an agent on the left, or click New.\n\nConnect CAM Servers in Nodes.\n\nPageUp/Down · Wheel · Drag to select · Ctrl+C to copy\nTerminal Paste shortcut · Ctrl+Q to leave UI\nF1 New · F2 Nodes · F3 Settings · F8 mouse passthrough").style(Style::default().fg(Color::Gray)),self.main);
+            f.render_widget(Paragraph::new(Self::guide()).wrap(Wrap { trim: false })
+                .style(Style::default().fg(TEXT)), self.main);
         }
         let status = format!(
             "{}{}",
@@ -1255,7 +1452,7 @@ impl App {
             self.status
         );
         f.render_widget(
-            Paragraph::new(status).style(Style::default().fg(Color::Gray).bg(PANEL)),
+            Paragraph::new(status).style(Style::default().fg(MUTED).bg(PANEL)),
             Rect::new(0, area.height - 1, area.width, 1),
         );
         self.draw_dialog(f);
@@ -1273,19 +1470,20 @@ impl App {
     fn draw_dialog(&mut self, f: &mut Frame) {
         let Some(dialog)=self.dialog.take()else{return};
         let area = f.size();
-        let width = area.width.saturating_sub(6).min(100);
-        let height = area.height.saturating_sub(4).min(27);
-        let rect = Rect::new(
-            (area.width - width) / 2,
-            (area.height - height) / 2,
-            width,
-            height,
-        );
+        let attributes = matches!(&dialog, Dialog::Form { kind, .. } if kind == "agent.settings");
+        let width = area.width.saturating_sub(6).min(if attributes { 76 } else { 100 });
+        let height = area.height.saturating_sub(if attributes { 2 } else { 4 }).min(if attributes { 12 } else { 27 });
+        let rect = if matches!(dialog, Dialog::Menu(_)) {
+            let width = area.width.saturating_sub(4).min(36);
+            let height = area.height.saturating_sub(2).min(9);
+            Rect::new(self.menu_position.0.min(area.width - width - 1),
+                (self.menu_position.1 + 1).min(area.height - height - 1), width, height)
+        } else { Rect::new((area.width - width) / 2, (area.height - height) / 2, width, height) };
         f.render_widget(Clear, rect);
         f.render_widget(
             Block::default()
                 .borders(Borders::ALL)
-                .style(Style::default().bg(PANEL)),
+                .style(Style::default().bg(PANEL).fg(TEXT)),
             rect,
         );
         self.hits.clear();
@@ -1293,6 +1491,30 @@ impl App {
         let close = Rect::new(rect.x + rect.width - 4, rect.y, 3, 1);
         self.button(f, close, " × ", "dismiss", false);
         match &dialog {
+            Dialog::Help { scroll } => {
+                f.render_widget(Paragraph::new(Self::guide()).wrap(Wrap { trim: false })
+                    .style(Style::default().fg(TEXT)).scroll((*scroll, 0)), inner);
+            }
+            Dialog::Filters => {
+                f.render_widget(Paragraph::new("Filters · combine Node, Tool and Status")
+                    .style(Style::default().fg(ACCENT)), Rect::new(inner.x, inner.y, inner.width, 1));
+                for (row, kind, action) in [(1, FilterKind::Node, "filter.node"), (2, FilterKind::Tool, "filter.tool"), (3, FilterKind::Status, "filter.status")] {
+                    self.button(f, Rect::new(inner.x, inner.y + row, inner.width, 1),
+                        &format!("{:<7} {} ▾", kind.label(), self.filter_label(kind)), action, !self.filter_value(kind).is_empty());
+                }
+                self.button(f, Rect::new(inner.x, inner.y + 5, inner.width, 1), " Clear filters ", "filter.clear", false);
+            }
+            Dialog::ChooseFilter { kind, selected, options, .. } => {
+                f.render_widget(Paragraph::new(format!("{} filter · ↑/↓ Enter · Esc back", kind.label()))
+                    .style(Style::default().fg(ACCENT)), Rect::new(inner.x, inner.y, inner.width, 1));
+                let visible = inner.height.saturating_sub(3).max(1) as usize;
+                let start = selected.saturating_sub(visible - 1);
+                for (row, (index, (_, label))) in options.iter().enumerate().skip(start).take(visible).enumerate() {
+                    self.button(f, Rect::new(inner.x, inner.y + 2 + row as u16, inner.width, 1),
+                        &format!("{} {}", if index == *selected { "›" } else { " " }, label),
+                        &format!("pick-filter:{index}"), index == *selected);
+                }
+            }
             Dialog::Form {
                 title,
                 fields,
@@ -1317,7 +1539,7 @@ impl App {
                     };
                     f.render_widget(
                         Paragraph::new(format!("{label}\n{display}")).style(
-                            Style::default().fg(if i == *focus { ACCENT } else { Color::Gray }),
+                            Style::default().fg(if i == *focus { ACCENT } else { MUTED }),
                         ),
                         field,
                     );
@@ -1382,6 +1604,17 @@ impl App {
                 }
             }
             Dialog::Menu(agent) => {
+                f.render_widget(Paragraph::new(elide(agent["name"].as_str().unwrap_or("agent"), inner.width))
+                    .style(Style::default().fg(TEXT).add_modifier(Modifier::BOLD)), Rect::new(inner.x, inner.y, inner.width, 1));
+                for (row, label, op) in [(2, "Settings · name / tags", "settings"), (3, "Stop tool", "stop"),
+                    (4, "Remove agent", "remove"), (6, "More actions…", "more")] {
+                    let button = Rect::new(inner.x, inner.y + row, inner.width, 1);
+                    self.button(f, button, label, &format!("op:{op}"), false);
+                    f.render_widget(Paragraph::new(label).style(Style::default().fg(
+                        if op == "stop" || op == "remove" { ERROR } else { TEXT }).bg(PANEL)), button);
+                }
+            }
+            Dialog::More(agent) => {
                 f.render_widget(
                     Paragraph::new(format!(
                         "{} · {}",
@@ -1397,9 +1630,7 @@ impl App {
                     ("Capture output", "capture"),
                     ("Reconnect terminal (keep tool)", "reset"),
                     ("Reboot (fresh tool, same ID)", "reboot"),
-                    ("Stop tool", "stop"),
                     ("Kill session", "kill"),
-                    ("Remove agent", "remove"),
                 ]
                 .iter()
                 .enumerate()
@@ -1450,7 +1681,7 @@ impl App {
                                 .as_str()
                                 .unwrap_or("Forwarding: no active end-to-end probe"),
                         )
-                        .style(Style::default().fg(Color::Gray)),
+                        .style(Style::default().fg(MUTED)),
                         Rect::new(inner.x, y + 1, inner.width, 1),
                     );
                 }
@@ -1494,7 +1725,7 @@ impl App {
                         self.snapshot["health"]["status_poll_at"],
                         self.snapshot["health"]["scheduler_tick_at"]
                     ))
-                    .style(Style::default().fg(Color::Gray)),
+                    .style(Style::default().fg(MUTED)),
                     Rect::new(inner.x, inner.y + 1, inner.width, 1),
                 );
                 let jobs = self.snapshot["jobs"]
@@ -1589,6 +1820,17 @@ impl App {
                         self.action("dismiss");
                         return true;
                     }
+                    if matches!(self.dialog, Some(Dialog::ChooseFilter { .. })) {
+                        if let Some(Dialog::ChooseFilter { selected, options, .. }) = &mut self.dialog {
+                            match key.code {
+                                KeyCode::Up => *selected = selected.saturating_sub(1),
+                                KeyCode::Down => *selected = (*selected + 1).min(options.len().saturating_sub(1)),
+                                KeyCode::Enter => { let index = *selected; self.select_filter(index); }
+                                _ => {}
+                            }
+                        }
+                        return true;
+                    }
                     if matches!(self.dialog, Some(Dialog::ChooseNode { .. })) {
                         if let Some(Dialog::ChooseNode {
                             selected, nodes, ..
@@ -1649,7 +1891,7 @@ impl App {
                             }
                             _ => {}
                         }
-                    } else if let Some(Dialog::Info { scroll, .. }) = &mut self.dialog {
+                    } else if let Some(Dialog::Info { scroll, .. } | Dialog::Help { scroll }) = &mut self.dialog {
                         match key.code {
                             KeyCode::PageDown => *scroll = scroll.saturating_add(10),
                             KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
@@ -1664,7 +1906,7 @@ impl App {
                         KeyCode::Backspace => {
                             self.filter.pop();
                         }
-                        KeyCode::Char(c) => self.filter.push(c),
+                        KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => self.filter.push(c),
                         _ => {}
                     }
                     self.list_offset = 0;
@@ -1674,6 +1916,7 @@ impl App {
                     KeyCode::F(1) => self.new_agent(),
                     KeyCode::F(2) => self.dialog = Some(Dialog::Nodes),
                     KeyCode::F(3) => self.dialog = Some(Dialog::Settings),
+                    KeyCode::F(4) => self.dialog = Some(Dialog::Help { scroll: 0 }),
                     KeyCode::F(8) => self.mouse_passthrough = !self.mouse_passthrough,
                     KeyCode::PageUp => {
                         let rows = self.main.height as i32;
@@ -1731,11 +1974,19 @@ impl App {
                     // Dialog input must never leak into an attached tool.
                 } else if self.filter_focus {
                     self.filter.push_str(&text);
+                    self.list_offset = 0;
                 } else {
                     self.paste(&text);
                 }
             }
             Event::Mouse(mouse) => {
+                if let Some(Dialog::ChooseFilter { selected, options, .. }) = &mut self.dialog {
+                    match mouse.kind {
+                        MouseEventKind::ScrollUp => { *selected = selected.saturating_sub(1); return true; }
+                        MouseEventKind::ScrollDown => { *selected = (*selected + 1).min(options.len().saturating_sub(1)); return true; }
+                        _ => {}
+                    }
+                }
                 if let Some(Dialog::ChooseNode {
                     selected, nodes, ..
                 }) = &mut self.dialog
@@ -1858,17 +2109,18 @@ impl App {
                                             a["id"].as_str().unwrap_or("")
                                         ) == key
                                     }) {
-                                        self.dialog = Some(Dialog::Menu(agent));
+                                        let key = format!("{}:{}", agent["node_id"].as_str().unwrap_or(""), agent["id"].as_str().unwrap_or(""));
+                                        self.action(&format!("menu:{key}"));
                                     }
                                 } else {
                                     self.action(&action);
                                 }
                             }
                         }
-                        MouseEventKind::ScrollDown => {
+                        MouseEventKind::ScrollDown if contains(self.agent_list, mouse.column, mouse.row) => {
                             self.list_offset = self.list_offset.saturating_add(1)
                         }
-                        MouseEventKind::ScrollUp => {
+                        MouseEventKind::ScrollUp if contains(self.agent_list, mouse.column, mouse.row) => {
                             self.list_offset = self.list_offset.saturating_sub(1)
                         }
                         _ => {}
@@ -1879,6 +2131,20 @@ impl App {
         }
         true
     }
+}
+fn elide(text: &str, width: u16) -> String {
+    if text.width() <= width as usize { return text.into(); }
+    if width == 0 { return String::new(); }
+    let mut result = String::new();
+    let mut cells = 0;
+    for ch in text.chars() {
+        let next = ch.width().unwrap_or(0);
+        if cells + next > width as usize - 1 { break; }
+        result.push(ch);
+        cells += next;
+    }
+    result.push('…');
+    result
 }
 fn contains(rect: Rect, x: u16, y: u16) -> bool {
     x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
@@ -1947,6 +2213,112 @@ pub fn run(config: Config, handle: tokio::runtime::Handle) -> Result<()> {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+    #[test]
+    fn labels_fit_terminal_cells_without_splitting_wide_characters() {
+        assert_eq!(elide("中文name", 5), "中文…");
+        assert_eq!(elide("中文", 4), "中文");
+        assert_eq!(elide("abc", 0), "");
+        assert_eq!(elide("abc", 1), "…");
+    }
+    #[tokio::test]
+    async fn sidebar_has_separate_regions_aligned_muted_details_and_a_menu() {
+        let mut app = App::new(&Config::default(), tokio::runtime::Handle::current());
+        app.snapshot = json!({"connections":[{"node_id":"a","name":"PDX046","socket":"/tmp/a","token_file":"/tmp/token"}],
+            "agents":[{"id":"one","node_id":"a","name":"中文 agent with a long name","tool":"claude","status":"alive","state":"idle","tags":["review"]}]});
+        let mut terminal = Terminal::new(TestBackend::new(150, 38)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row = |y| (0..32).map(|x| buffer.get(x, y).symbol.as_str()).collect::<String>();
+        assert!(row(3).contains("Filters"));
+        assert!(row(app.agent_list.y).contains("Agents  1/1"));
+        let y = app.agent_list.y + 1;
+        assert_eq!(buffer.get(4, y).symbol, "中");
+        assert_eq!(buffer.get(6, y).symbol, "文");
+        assert_eq!(buffer.get(28, y).symbol, "…");
+        assert_eq!(buffer.get(2, y + 1).fg, HINT);
+        assert_eq!(buffer.get(29, y + 1).symbol, "6");
+        assert!(row(y + 1).contains("claude · idle"));
+        assert_eq!(app.main.x, 33);
+        app.filter = "#review".into();
+        assert_eq!(app.agents().len(), 1);
+        app.action("menu:a:one");
+        assert!(matches!(app.dialog, Some(Dialog::Menu(_))));
+        assert!(app.tabs.is_empty());
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let text: String = terminal.backend().buffer().content.iter().map(|c| c.symbol.as_str()).collect();
+        for label in ["Settings · name / tags", "Stop tool", "Remove agent", "More actions"] { assert!(text.contains(label)); }
+        app.action("op:settings");
+        assert!(matches!(app.dialog, Some(Dialog::Form { .. })));
+        assert_eq!(app.editing_agent.as_ref().unwrap()["id"], "one");
+        for (width, height) in [(150, 38), (60, 14), (48, 12)] {
+            terminal.resize(Rect::new(0, 0, width, height)).unwrap();
+            terminal.draw(|f| app.draw(f)).unwrap();
+            let text: String = terminal.backend().buffer().content.iter().map(|c| c.symbol.as_str()).collect();
+            assert!(text.contains("Tags (comma-separated)"));
+            assert!(text.contains("Save"));
+        }
+    }
+    #[tokio::test]
+    async fn sidebar_filters_combine_and_clear_without_changing_identity() {
+        let mut app = App::new(&Config::default(), tokio::runtime::Handle::current());
+        app.snapshot = json!({"connections":[
+            {"node_id":"a","name":"farm.alpha","socket":"/tmp/a","token_file":"/tmp/token"},
+            {"node_id":"b","command":["ssh","pdx-container-xterm-064.example.com"],"token_file":"/tmp/token"}],
+            "agents":[
+                {"id":"one","name":"review","node_id":"a","tool":"claude","status":"alive","state":"idle"},
+                {"id":"two","name":"build","node_id":"b","tool":"codex","status":"alive","state":"running","phase":"initializing"},
+                {"id":"three","name":"failed-test","node_id":"a","tool":"codex","status":"dead","state":"failed","stale":true}]});
+        assert_eq!(app.short_node("a"), "farm.alpha");
+        assert_eq!(app.short_node("b"), "pdx-064");
+        app.filter = "pdx-064".into();
+        assert_eq!(app.agents().len(), 1);
+        app.clear_filters();
+        app.filter_node = "a".into();
+        app.filter_tool = "codex".into();
+        app.filter_status = "failed".into();
+        assert_eq!(app.agents()[0]["id"], "three");
+        app.filter_status = "stale".into();
+        assert_eq!(app.agents().len(), 1);
+        app.filter_status = "alive".into();
+        assert!(app.agents().is_empty());
+        app.clear_filters();
+        app.filter_status = "running".into();
+        assert_eq!(app.agents()[0]["id"], "two");
+        app.filter_status = "starting".into();
+        assert_eq!(app.agents().len(), 1);
+        app.clear_filters();
+        assert_eq!(app.agents().len(), 3);
+        app.choose_filter(FilterKind::Node);
+        app.snapshot["connections"].as_array_mut().unwrap().reverse();
+        app.select_filter(2);
+        assert_eq!(app.filter_node, "b");
+    }
+    #[tokio::test]
+    async fn guide_filter_controls_and_agent_details_render_with_color() {
+        let mut app = App::new(&Config::default(), tokio::runtime::Handle::current());
+        app.snapshot = json!({"nodes":[],"connections":[
+            {"node_id":"a","name":"PDX046","socket":"/tmp/a","token_file":"/tmp/token"}],
+            "agents":[{"id":"one","name":"review","node_id":"a","tool":"claude","status":"alive","state":"idle"}]});
+        let mut terminal = Terminal::new(TestBackend::new(150, 38)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let text: String = buffer.content.iter().map(|c| c.symbol.as_str()).collect();
+        for label in ["HISTORY", "COPY & PASTE", "Ctrl+Q", "All nodes", "All tools", "All statuses", "claude · idle", "PDX046"] {
+            assert!(text.contains(label), "missing {label}");
+        }
+        assert!(buffer.content.iter().any(|c| c.symbol == "H" && c.fg == ACCENT));
+        app.event(Event::Key(event::KeyEvent::new(KeyCode::F(4), KeyModifiers::NONE)));
+        assert!(matches!(app.dialog, Some(Dialog::Help { .. })));
+        app.action("dismiss");
+        terminal.resize(Rect::new(0, 0, 60, 14)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        app.action("filters");
+        app.action("filter.node");
+        app.select_filter(1);
+        assert_eq!(app.filter_node, "a");
+        assert!(matches!(app.dialog, Some(Dialog::Filters)));
+        terminal.draw(|f| app.draw(f)).unwrap();
+    }
     #[tokio::test]
     async fn node_picker_shows_hostnames_and_preserves_routing_ids() {
         let mut app = App::new(&Config::default(), tokio::runtime::Handle::current());

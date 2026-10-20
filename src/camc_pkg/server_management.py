@@ -48,6 +48,60 @@ def _local_agent(agent):
     return not host or host.split(".")[0] == socket.gethostname().split(".")[0]
 
 
+def _agent_metadata(agent, node):
+    task = agent.get("task")
+    task = task if isinstance(task, dict) else agent
+    return dict(node_id=node, id=agent["id"],
+                name=task.get("name") or agent.get("name") or agent["id"],
+                tags=[tag for tag in task.get("tags", []) if isinstance(tag, str)]
+                if isinstance(task.get("tags"), list) else [],
+                tool=task.get("tool") or agent.get("tool", ""),
+                path=agent.get("context_path") or agent.get("path", ""),
+                status=agent.get("status"), state=agent.get("state"),
+                phase=agent.get("phase"), backend="legacy",
+                exit_reason=agent.get("exit_reason"))
+
+
+def _update_attributes(store, args, node):
+    # Metadata-only, authorized by the Server's management grant. Mutate the
+    # current record under the store lock; never save a stale runtime snapshot.
+    if set(args) - {"node_id", "agent_id", "name", "tags"} or not ({"name", "tags"} & set(args)):
+        raise ValueError("only name and tags may be updated")
+    if args.get("node_id", node) != node:
+        raise ValueError("Node mismatch")
+    agent_id = args.get("agent_id")
+    if not isinstance(agent_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", agent_id):
+        raise ValueError("specific agent ID required")
+    fields = {}
+    if "name" in args:
+        name = args["name"]
+        if not isinstance(name, str) or not name.strip() or len(name) > 128 or any(
+                ord(c) < 32 or 127 <= ord(c) <= 159 for c in name):
+            raise ValueError("name must contain 1-128 printable characters")
+        fields["name"] = name.strip()
+    if "tags" in args:
+        tags = args["tags"]
+        if not isinstance(tags, list) or len(tags) > 32 or any(
+                not isinstance(tag, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", tag)
+                for tag in tags):
+            raise ValueError("use up to 32 tags: letters, digits, underscore or dash (1-64 characters)")
+        fields["tags"] = list(dict.fromkeys(tags))
+    updated = []
+    def change(records):
+        for record in records:
+            if record.get("id") == agent_id and _local_agent(record):
+                target = record.get("task")
+                target = target if isinstance(target, dict) else record
+                target.update(fields)
+                updated.append(_agent_metadata(record, node))
+                return records
+        raise ValueError("AGENT_NOT_FOUND on this Node")
+    store._modify(change)
+    if not updated:
+        raise ValueError("agent metadata could not be saved")
+    return {"agent": updated[0]}
+
+
 def _legacy_paste_mode(argv, session, cols, rows):
     """Read tmux's repaint on a bounded, read-only client; never send input.
 
@@ -108,17 +162,10 @@ def management_request(action, args, node, state_path, receiver):
         for agent in store.list():
             if not _local_agent(agent):
                 continue
-            task = agent.get("task") or {}
-            agents.append(dict(
-                node_id=node, id=agent["id"],
-                name=task.get("name") or agent.get("name") or agent["id"],
-                tool=task.get("tool") or agent.get("tool", ""),
-                path=agent.get("context_path") or agent.get("path", ""),
-                status=agent.get("status"), state=agent.get("state"),
-                phase=agent.get("phase"), backend="legacy",
-                exit_reason=agent.get("exit_reason"),
-            ))
+            agents.append(_agent_metadata(agent, node))
         return {"agents": agents}
+    if action == "agent.update":
+        return _update_attributes(store, args, node)
     if action == "agent.operation":
         return management_operation(receiver, args["message"])
     agent_id = args.get("agent_id", "")

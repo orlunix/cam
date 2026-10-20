@@ -421,7 +421,7 @@ impl Daemon {
                 }
                 Ok(json!({"ok":true}))
             }
-            "agent.operation" | "loop.deliver" => {
+            "agent.operation" | "loop.deliver" | "agent.update" => {
                 let node = args["node_id"]
                     .as_str()
                     .ok_or_else(|| error("Node required"))?;
@@ -429,6 +429,18 @@ impl Daemon {
                     .relay
                     .request(node, action, args.clone(), request_id)
                     .await;
+                if action == "agent.update" {
+                    if let Ok(result) = &result {
+                        if result["agent"]["id"] != args["agent_id"] || result["agent"]["node_id"] != node {
+                            return Err(error("invalid agent update result"));
+                        }
+                        if let Some(agent) = self.agents.lock().unwrap().get_mut(node)
+                            .and_then(|agents| agents.iter_mut().find(|a| a["id"] == args["agent_id"])) {
+                            *agent = result["agent"].clone();
+                            agent["updated_at"] = json!(now());
+                        }
+                    }
+                }
                 let operation = args["operation"].as_str().unwrap_or("");
                 if ["agent.run", "agent.reboot"].contains(&operation)
                     && result

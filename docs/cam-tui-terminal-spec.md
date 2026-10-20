@@ -188,6 +188,16 @@ CAM TUI 不只是终端布局，还必须接入以下能力。状态与业务所
 - 结果未知时使用原操作 ID 查询或恢复，不因超时、重连或重复点击自动创建第二次副作用。
 - 已接入的 SDK/backend 可复用；不支持或未授权的能力明确显示，不能通过任意远端 shell/camc CLI 兜底执行。
 
+Agent 列表的 `…` 菜单提供 Settings、Stop、Remove，其余操作收进 More actions。
+名称为主行，`tool · status` 与右对齐的 node 简称为弱化的次行；筛选区与列表有独立边界。
+Settings 首先支持名称和 tags，tags 可参与文本筛选。
+
+属性编辑使用独立管理 action `agent.update`，要求 Server 授予 management 能力，
+并绑定明确的 `node_id` 和完整 `agent_id`。请求只允许设置 `name` 和 `tags`，
+不扩展通信消息的 operation 白名单。Server 在原存储锁内更新当前记录的属性；
+不保存旧运行快照，不改变 tool、PID、启动配置、状态或终端。字段整体校验通过后才保存，
+空 tags 列表表示清除。成功结果更新 Client 缓存和已有 tab 的显示名称。
+
 ### 8.3 Nodes operation
 
 `Nodes` 面板至少支持添加、编辑和移除连接配置，以及 connect、disconnect、reconnect；展示 Node 身份/别名、连接状态、Server 能力、可达目标和最近错误。

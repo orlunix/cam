@@ -13,7 +13,7 @@ use std::{
 };
 
 fn help() {
-    println!("cam-tui {}\n\n  cam-tui [--config FILE]                    Open mouse-first UI\n  cam-tui init [--config FILE] [--runtime DIR]\n  cam-tui daemon start|status|stop [--config FILE]\n  cam-tui rpc ACTION [JSON] [--config FILE]\n\nF1 New · F2 Nodes · F3 Settings · F8 tool mouse · Ctrl+Q quit UI\nRight-click agent for operations. Closing UI leaves local daemon running.", env!("CARGO_PKG_VERSION"));
+    println!("cam-tui {}\n\n  cam-tui [--config FILE]                    Open mouse-first UI\n  cam-tui init [--config FILE] [--runtime DIR]\n  cam-tui daemon start|status|stop [--config FILE]\n  cam-tui rpc ACTION [JSON] [--config FILE]\n\nF1 New · F2 Nodes · F3 Settings · F4 Guide · F8 tool mouse · Ctrl+Q quit UI\nRight-click agent for operations. Closing UI leaves local daemon running.", env!("CARGO_PKG_VERSION"));
 }
 async fn ensure(config: &Config, path: &std::path::Path) -> Result<()> {
     let socket = config.runtime_dir.join("client.sock");

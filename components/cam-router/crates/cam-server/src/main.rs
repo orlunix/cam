@@ -26,11 +26,11 @@ fn options(args: &[String]) -> Result<HashMap<String, String>> {
 async fn main_result() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args[0] == "--help" || args[0] == "-h" {
-        println!("cam-server 0.1.0\n  init [--config FILE] [--node-id ID]\n  serve [--config FILE]\n  connect --socket PATH        (stdio transport for an existing Server)\n  status --socket PATH\n  query --socket PATH --message-id ID");
+        println!("cam-server {}\n  init [--config FILE] [--node-id ID]\n  serve [--config FILE]\n  connect --socket PATH        (stdio transport for an existing Server)\n  status --socket PATH\n  query --socket PATH --message-id ID", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     if args[0] == "version" {
-        println!("cam-server 0.1.0");
+        println!("cam-server {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let opts = options(&args[1..])?;

@@ -574,7 +574,7 @@ impl Server {
         }
         let generation = id();
         write_frame(&mut write,&json!({"type":"hello","version":1,"node_id":self.config.node_id,"server_epoch":self.epoch,"session_id":generation,
-            "management":grant.management,"capabilities":if grant.management&&self.backend.is_some(){vec!["agents.snapshot","agent.operation","terminal.control","loop.deliver","health"]}else{vec!["health"]},
+            "management":grant.management,"capabilities":if grant.management&&self.backend.is_some(){vec!["agents.snapshot","agent.update","agent.operation","terminal.control","loop.deliver","health"]}else{vec!["health"]},
             "route_ttl_seconds":self.config.route_ttl_seconds,"allowed_targets":self.config.peers.iter().map(|p|p.node_id.clone()).collect::<Vec<_>>()})).await?;
         let channel = Channel::start(write, self.budget.clone());
         self.clients.lock().unwrap().insert(
@@ -749,6 +749,7 @@ impl Server {
         let mut args = frame.get("args").cloned().unwrap_or_else(|| json!({}));
         match action {
             "agents.snapshot" => backend.control(action, json!({})).await,
+            "agent.update" => backend.control(action, args).await,
             "terminal.attach" => {
                 self.terminals
                     .open(backend, generation, &args, channel)

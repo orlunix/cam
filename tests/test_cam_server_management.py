@@ -80,7 +80,7 @@ def test_snapshot_is_secret_free_and_filters_foreign_hosts(monkeypatch):
     import camc_pkg.storage
     import socket
     records = [{"id": "11111111", "hostname": socket.gethostname(), "status": "alive", "state": "idle",
-                "task": {"name": "test", "tool": "codex"}, "tool_env": {"TOKEN": "private-value"}},
+                "task": {"name": "test", "tool": "codex", "tags": ["review"]}, "tool_env": {"TOKEN": "private-value"}},
                {"id": "22222222", "hostname": "foreign-host", "status": "alive"}]
     class Store:
         def list(self):
@@ -89,6 +89,59 @@ def test_snapshot_is_secret_free_and_filters_foreign_hosts(monkeypatch):
     result = management_request("agents.snapshot", {}, "node-a", "unused", None)
     assert [agent["id"] for agent in result["agents"]] == ["11111111"]
     assert "private-value" not in json.dumps(result)
+    assert result["agents"][0]["tags"] == ["review"]
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_attributes_persist_without_changing_runtime_or_identity(monkeypatch, tmp_path, nested):
+    from camc_pkg.storage import AgentStore
+    import camc_pkg.storage
+    import socket
+    store = AgentStore(str(tmp_path / "agents.json"))
+    record = {"id": "beefcafe", "hostname": socket.gethostname(), "status": "alive",
+              "state": "running", "phase": "started", "pid": 123, "launch_id": "launch-one",
+              "tool_env": {"TOKEN": "private-value"}}
+    task = {"name": "before", "tool": "codex", "tags": ["old"], "prompt": "private prompt"}
+    record.update({"task": task} if nested else task)
+    store.save(record)
+    monkeypatch.setattr(camc_pkg.storage, "AgentStore", lambda: store)
+    result = management_request("agent.update", {"node_id": "node-a", "agent_id": "beefcafe",
+        "name": "after", "tags": ["review", "test", "review"]}, "node-a", "unused", None)
+    saved = store.get("beefcafe")
+    data = saved["task"] if nested else saved
+    assert (data["name"], data["tags"]) == ("after", ["review", "test"])
+    assert (saved["pid"], saved["launch_id"], saved["state"], saved["id"]) == (123, "launch-one", "running", "beefcafe")
+    assert data["tool"] == "codex" and data["prompt"] == "private prompt"
+    assert "private" not in json.dumps(result)
+    management_request("agent.update", {"agent_id": "beefcafe", "tags": []}, "node-a", "unused", None)
+    assert management_request("agents.snapshot", {}, "node-a", "unused", None)["agents"][0]["tags"] == []
+
+
+@pytest.mark.parametrize("fields", [
+    {"name": ""}, {"name": "escape\x1b"}, {"tags": "wrong"}, {"tags": ["bad tag"]},
+    {"tags": ["x" * 65]}, {"tags": [str(n) for n in range(33)]}, {"status": "dead"},
+    {"name": "after", "node_id": "other-node"}, {"name": "after", "agent_id": "beef"},
+])
+def test_attributes_reject_invalid_or_redirected_edits(monkeypatch, tmp_path, fields):
+    from camc_pkg.storage import AgentStore
+    import camc_pkg.storage
+    store = AgentStore(str(tmp_path / "agents.json"))
+    store.save({"id": "beefcafe", "name": "before", "status": "alive"})
+    before = (tmp_path / "agents.json").read_bytes()
+    monkeypatch.setattr(camc_pkg.storage, "AgentStore", lambda: store)
+    with pytest.raises(ValueError):
+        management_request("agent.update", dict({"agent_id": "beefcafe"}, **fields), "node-a", "unused", None)
+    assert (tmp_path / "agents.json").read_bytes() == before
+
+
+def test_attributes_reject_foreign_host(monkeypatch, tmp_path):
+    from camc_pkg.storage import AgentStore
+    import camc_pkg.storage
+    store = AgentStore(str(tmp_path / "agents.json"))
+    store.save({"id": "beefcafe", "hostname": "foreign-host", "name": "before"})
+    monkeypatch.setattr(camc_pkg.storage, "AgentStore", lambda: store)
+    with pytest.raises(ValueError, match="AGENT_NOT_FOUND"):
+        management_request("agent.update", {"agent_id": "beefcafe", "name": "after"}, "node-a", "unused", None)
 
 
 def test_loop_gate_checks_current_status_and_single_owner(monkeypatch, tmp_path):

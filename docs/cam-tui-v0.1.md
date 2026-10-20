@@ -72,10 +72,12 @@ Client 配置示例：
 
 ## 操作
 
-- 点击 agent 打开/切换 tab；右键 agent 打开操作菜单。New 选择 Node、工具与绝对工作目录，使用原有 launcher、autorun 和隔离 home 策略。
-- Node 默认显示本机或 SSH 目标的主机名，可在连接设置中填写可选简称。New、发送 prompt 和任务表单点击 Node 后选择机器，不需要复制内部 ID；Esc 返回原表单。Nodes → Details 可查看已有连接的完整 Server ID。旧连接 ID 与路由保持兼容；新增旧式连接的配对设置仍保留 Server ID 字段。
+- 点击 agent 打开/切换 tab；名称右侧 `…` 或右键打开菜单，提供 Settings、Stop、Remove，其余命令在 More actions。Settings 可改名、设置逗号分隔的 tags；保存到所属 Server，不重启工具，已有 tab 名称也会更新。tags 支持字母、数字、下划线和短横线，可清空。New 选择 Node、工具与绝对工作目录，使用原有 launcher、autorun 和隔离 home 策略。
+- Filters 与 Agents 是独立区域，滚轮在列表区域才滚动列表。agent 名称统一突出显示，长名称按终端宽度截断；下面一行弱化显示，左侧 `tool · status`，右侧 node 简称；状态点保留颜色。Node 有自定义简称时优先显示简称，否则将长主机名缩成 `pdx-046` 等短名。Nodes → Edit → Name (optional) 可保存简称，包括包含点号的名称；完整 Server ID 与路由不变。
+- New、发送 prompt 和任务表单点击 Node 后选择机器，不需要复制内部 ID；Esc 返回原表单。Nodes → Details 可查看已有连接的完整 Server ID。旧连接 ID 与路由保持兼容；新增旧式连接的配对设置仍保留 Server ID 字段。
 - New/run 请求交给 tmux 后即返回。qsub 在 pane 中自行等待 dispatch，排队期间保持 alive/running/initializing，不消耗 20 秒或 600 秒工具启动计时；auto 和自定义前缀都在目标端真正执行工具时才启动计时。stop/kill/rm 仍可取消等待。
-- `F1` New，`F2` Nodes，`F3` Settings；点击 Filter 输入筛选。表单用 Tab 切换，最后一项 Enter 或点击 Save 提交，Esc 关闭。
+- 启动欢迎页提供带颜色的操作引导；`F4` 或右上 Help 随时重开，PageUp/PageDown 浏览，Esc 关闭。包含历史、复制粘贴、退出、筛选与常用操作说明。
+- `F1` New，`F2` Nodes，`F3` 全局 Settings。左侧 Node／Tool／Status 下拉菜单可组合筛选，支持鼠标或上下键＋Enter；搜索框可叠加筛选名称、ID、Node 简称或 `#tag`，Clear filters 清除全部条件。较矮窗口通过同名 Filters 按钮打开筛选面板。表单用 Tab 切换，最后一项 Enter 或点击 Save 提交，Esc 关闭。
 - PageUp/PageDown、滚轮浏览历史；拖选后选区保留。End 或 History 提示返回实时画面。
 - 全屏 TUI 显式启用配色与反显选区，即使父进程设置了 `NO_COLOR`，选区仍可见。
 - Ctrl+C 有选区时复制，无选区时发送中断。松开鼠标保留 CAM 选区，不自动复制；在选区内右键也可复制。外层终端的右键菜单不认识 CAM 选区，其 Copy 可能仍为灰色。

@@ -79,23 +79,24 @@ class UI:
     def paste(self, text):
         self.send(b"\x1b[200~" + text.encode() + b"\x1b[201~")
 
-    def position(self, label, exact=False):
+    def position(self, label, exact=False, min_x=0):
         self.pump()
         for y, line in enumerate(self.screen.display):
-            if label in line and (not exact or re.search(r"(?<!\w)" + re.escape(label) + r"(?!\w)", line)):
-                return line.index(label), y
+            part = line[min_x:]
+            if label in part and (not exact or re.search(r"(?<!\w)" + re.escape(label) + r"(?!\w)", part)):
+                return part.index(label) + min_x, y
         raise AssertionError("UI label absent: %r\n%s" % (label, self.pump()))
 
     def mouse(self, x, y, button=0):
         self.send(("\x1b[<%d;%d;%dM\x1b[<%d;%d;%dm" %
                    (button, x + 1, y + 1, button, x + 1, y + 1)).encode())
 
-    def click(self, label, button=0, exact=False):
-        x, y = self.position(label, exact)
+    def click(self, label, button=0, exact=False, min_x=0):
+        x, y = self.position(label, exact, min_x=min_x)
         self.mouse(x + min(2, len(label) - 1), y, button)
 
     def field(self, label, value):
-        x, y = self.position(label, exact=True)
+        x, y = self.position(label, exact=True, min_x=max(0, (self.screen.columns - 100) // 2))
         self.mouse(x, y)
         old = self.screen.display[y + 1][x:].split("│", 1)[0].rstrip()
         # Command argv can extend past the form viewport.
@@ -118,7 +119,10 @@ class UI:
         self.pump()
         row = next(y for y, line in enumerate(self.screen.display) if y >= 7 and name in line[:32])
         self.mouse(5, row, button=2)
-        self.click(action)
+        if action not in ("Settings · name / tags", "Stop tool", "Remove agent"):
+            self.click("More actions")
+        x, y = self.position(action, min_x=max(0, (self.screen.columns - 100) // 2))
+        self.mouse(x + 1, y)
 
     def close(self):
         self.key(b"\x11")
@@ -146,6 +150,88 @@ class FeatureTests(unittest.TestCase):
 
     def cached(self, agent):
         return next((a for a in self.rpc("snapshot")["agents"] if a["id"] == agent), None)
+
+    def test_sidebar_node_tool_status_filters_and_colored_guide(self):
+        a, b = self.managed_node("a", "b"), self.managed_node("b", "a")
+        routing.private_json(a.home / ".cam/agents.json", [
+            {"id":"11111111", "name":"filter-claude", "tool":"claude", "status":"alive", "state":"idle"},
+            {"id":"22222222", "name":"filter-codex", "tool":"codex", "status":"alive", "state":"running"}])
+        routing.private_json(b.home / ".cam/agents.json", [
+            {"id":"33333333", "name":"filter-failed", "tool":"codex", "status":"dead", "state":"failed"}])
+        self.start_daemon([a, b])
+        for node, alias in ((a, "LOCAL"), (b, "FARM")):
+            self.rpc("node.upsert", {"node_id":node.node_id, "name":alias,
+                "socket":str(node.socket), "token_file":str(self.tokens["c1"])})
+        ui = UI(self)
+        ui.until(lambda: all(name in ui.pump() for name in ("filter-claude", "filter-codex", "filter-failed")))
+        self.assertIn("COPY & PASTE", ui.pump())
+        self.assertIn("Ctrl+Q", ui.pump())
+        def left():
+            return "\n".join(row[:32] for row in ui.pump().splitlines())
+        self.assertRegex(left(), r"claude · idle\s+LOCAL")
+        ui.click("All nodes")
+        ui.click("LOCAL", exact=True)
+        ui.until(lambda: "filter-claude" in left() and "filter-failed" not in left())
+        ui.click("All tools")
+        # The popup is modal; choose codex using its keyboard selection.
+        ui.key(b"\x1b[B\x1b[B\r")
+        ui.until(lambda: "filter-codex" in left() and "filter-claude" not in left())
+        ui.click("All statuses")
+        ui.key(b"\x1b[B\x1b[B\r")  # idle: no match for LOCAL + codex
+        ui.until(lambda: "No matching agents" in left())
+        ui.click("Clear filters")
+        ui.until(lambda: all(name in left() for name in ("filter-claude", "filter-codex", "filter-failed")))
+        ui.filter("filter-failed")
+        ui.until(lambda: "filter-failed" in left() and "filter-codex" not in left())
+        ui.click("Clear filters")
+        ui.key(b"\x1bOS")  # F4
+        ui.until(lambda: "×" in ui.pump() and "COPY & PASTE" in ui.pump())
+        ui.key(b"\x1b")
+        ui.until(lambda: "×" not in ui.pump())
+        ui.close()
+
+    def test_agent_ellipsis_settings_rename_and_tags_preserve_tool(self):
+        node = self.managed_node()
+        self.start_daemon([node])
+        agent = self.create_agent(node, "attributes")
+        before = self.agent_record(node, agent)
+        ui = UI(self)
+        ui.click("attributes")
+        ui.until(lambda: "TUI_READY_attributes" in ui.pump())
+        row = next(y for y, line in enumerate(ui.screen.display) if y >= 7 and "attributes" in line[:32])
+        ui.mouse(ui.screen.display[row].index("…"), row)
+        x, y = ui.position("Settings · name / tags", min_x=25)
+        ui.mouse(x + 1, y)
+        ui.field("Name", "renamed-agent")
+        ui.field("Tags (comma-separated)", "ui, regress, ui")
+        ui.save()
+        self.until(lambda: (self.cached(agent) or {}).get("name") == "renamed-agent")
+        self.assertEqual(self.cached(agent)["tags"], ["ui", "regress"])
+        self.assertFalse(self.cached(agent)["stale"])
+        ui.until(lambda: "renamed-agen" in ui.pump().splitlines()[1])
+        after = self.agent_record(node, agent)
+        self.assertEqual((after["pid"], after["launch_id"]), (before["pid"], before["launch_id"]))
+        self.assertEqual(after["task"]["tags"], ["ui", "regress"])
+        ui.filter("#regress")
+        ui.until(lambda: "renamed-agent" in "\n".join(line[:32] for line in ui.pump().splitlines()))
+        ui.filter("#missing-tag")
+        ui.until(lambda: "No matching agents" in ui.pump())
+        ui.click("Clear filters")
+        ui.menu("renamed-agent", "Settings · name / tags")
+        ui.field("Tags (comma-separated)", "bad tag")
+        ui.save()
+        ui.until(lambda: "Tags use letters" in ui.pump())
+        self.assertEqual(self.cached(agent)["tags"], ["ui", "regress"])
+        ui.field("Tags (comma-separated)", "")
+        ui.save()
+        self.until(lambda: (self.cached(agent) or {}).get("tags") == [])
+        self.assertIn("TUI_READY_attributes", self.operation(node, agent, "capture")["stdout"])
+        with routing.IPC(node, "injector", self.tokens["injector"].read_text()) as ipc:
+            ipc.send({"type":"sdk.request", "id":"deny-update", "action":"agent.update",
+                      "args":{"agent_id":agent, "name":"forbidden"}})
+            self.assertIn("not granted", ipc.read()["error"])
+        self.assertEqual(self.agent_record(node, agent)["task"]["name"], "renamed-agent")
+        ui.close()
 
     def test_nodes_gui_add_edit_auth_disconnect_remove_preserves_agent(self):
         a, b = self.managed_node("a", "b"), self.managed_node("b", "a")
@@ -193,7 +279,7 @@ class FeatureTests(unittest.TestCase):
         self.until(lambda: all(n["ready"] for n in self.rpc("snapshot")["nodes"]))
         ui = UI(self)
         ui.key(b"\x1bOP")
-        ui.click("Node", exact=True)
+        ui.click("Node", exact=True, min_x=(ui.screen.columns - 100) // 2)
         ui.until(lambda: "Choose machine" in ui.pump())
         ui.click("DC7")
         ui.until(lambda: "New agent" in ui.pump() and "DC7" in ui.pump())
@@ -255,6 +341,7 @@ class FeatureTests(unittest.TestCase):
         for label, terminal_state in (("Stop tool", "stopped"), ("Kill session", "killed")):
             ui.menu("operations", label)
             self.until(lambda: (self.cached(agent) or {}).get("state") == terminal_state)
+            ui.until(lambda: "Operation:" in ui.pump())
             ui.key(b"\x1b")
             old_launch = self.agent_record(node, agent)["launch_id"]
             ui.menu("operations", "Reboot (fresh tool, same ID)")
