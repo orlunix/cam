@@ -119,14 +119,10 @@ async function main() {
     constructor(type, init) { this.type = type; this.detail = init && init.detail; }
   };
 
-  let fallback = null;
   const entry = { term, sessionId: "s1", copyModeActive: false };
   const trap = attachTerminalTouchTrap(entry, {
     container: host,
     longPressMs: 10,
-    onScrollUnavailable: (direction, count, page) => {
-      fallback = { direction, count, page };
-    },
   });
 
   const touch = (x, y, id = 1) => ({ identifier: id, clientX: x, clientY: y });
@@ -184,19 +180,6 @@ async function main() {
     scrollLinesCalls.length === 0 && scrollPagesCalls.length === 0,
     `lines=${JSON.stringify(scrollLinesCalls)} pages=${JSON.stringify(scrollPagesCalls)}`);
   entry.copyModeActive = false;
-
-  // Alternate buffer has no local scrollback: hand the gesture to copy mode.
-  fallback = null;
-  term.buffer.active.type = "alternate";
-  term.buffer.active.baseY = 0;
-  fire("touchstart", touchEvent([touch(5, 5)]));
-  fire("touchmove", touchEvent([touch(5, 45)]));
-  fire("touchend", touchEvent([]));
-  ok("alternate buffer falls back to copy mode",
-    !!fallback && fallback.direction === "up" && fallback.page === false,
-    JSON.stringify(fallback));
-  term.buffer.active.type = "normal";
-  term.buffer.active.baseY = 10;
 
   trap.detach();
   ok("detach removes touch listeners", (host.listeners.touchstart || []).length === 0);

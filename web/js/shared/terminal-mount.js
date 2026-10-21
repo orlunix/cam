@@ -594,18 +594,7 @@ function createTerminalEntry(agent, hostEl) {
     || (typeof navigator !== 'undefined' && (navigator.maxTouchPoints || 0) > 0)
   ));
   if (wantsTouch) {
-    entry.touchTrap = attachTerminalTouchTrap(entry, {
-      container,
-      onScrollUnavailable: (direction, count, page) => {
-        try {
-          if (entry.hostEl && typeof CustomEvent === 'function') {
-            entry.hostEl.dispatchEvent(new CustomEvent('cam-terminal-scroll-unavailable', {
-              bubbles: true, detail: { direction, count, page },
-            }));
-          }
-        } catch { /* noop */ }
-      },
-    });
+    entry.touchTrap = attachTerminalTouchTrap(entry, { container });
   }
   const SerializeCtor = window.SerializeAddon;
   if (SerializeCtor) {
