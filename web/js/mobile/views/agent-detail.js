@@ -12,6 +12,7 @@ import {
   sendTerminalRaw,
   focusTerminalForAgent,
   scrollTerminalToBottom,
+  pasteTerminalClipboard,
   clearTerminalScrollback,
   detachTerminalSession,
   reattachTerminalForAgent,
@@ -24,6 +25,7 @@ import {
   setTerminalViewActive,
   terminalSessionReady,
   terminalCopyMode,
+  setTerminalCopyMode,
   seedTerminalPreview,
   setTerminalStatus,
 } from '../../shared/terminal-mount.js';
@@ -191,13 +193,14 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   let keybarExpanded = false;
   const keyComposer = createTerminalKeyComposer();
   let flushKeyComposer = null;
+  // tmux copy-mode browsing state (terminal mode only). Swipe gestures send
+  // Up/Down/PPage/NPage through the live PTY; the Jump-to-bottom button exits.
+  let copyModeActive = false;
+  let copyModeEntering = false;
   // init() routes before and after connect; a slower first render must not
   // paint over the newer mounted view after its cleanup has run.
   let _viewDisposed = false;
   let bottomStatusTimer = null;
-  // tmux copy-mode browsing state (terminal mode only). Set from the hub's
-  // verified pane_in_mode read-back — mirrors the desktop invariant.
-  let copyModeActive = false;
   const UPLOAD_RAW_MAX_BYTES = 18 * 1024 * 1024;
 
   // Output font size — pinch-to-zoom; mobile terminal default 12px (readable, more cols).
@@ -266,7 +269,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       </div>
       <div class="output-action-bar" id="output-action-bar">
         <button type="button" class="action-fab" id="term-attach-fab" title="Attach image" aria-label="Attach image">\u{1F4CE}</button>
-        <button type="button" class="action-fab history-btn hidden" id="term-history" title="Browse tmux history (copy mode)" aria-label="History"><span aria-hidden="true">\u2912</span></button>
+        <button type="button" class="action-fab history-btn hidden" id="term-history" title="Scroll to oldest loaded history" aria-label="History"><span aria-hidden="true">\u2912</span></button>
         <button type="button" class="action-fab hidden" id="jump-bottom" title="Jump to bottom and resume auto-follow" aria-label="Jump to bottom"><span aria-hidden="true">&#x2913;</span></button>
         <button type="button" class="action-fab" id="term-refresh-fab" title="Re-attach terminal" aria-label="Re-attach terminal">\u27F3</button>
         <input type="file" id="file-input" accept="image/*" class="terminal-file-input" style="display:none">
@@ -287,6 +290,27 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     if (attachFab) attachFab.classList.toggle('hidden', !visible);
     const refreshFab = container.querySelector('#term-refresh-fab');
     if (refreshFab) refreshFab.classList.toggle('hidden', !visible);
+  }
+
+  /** Enter tmux copy mode through the live PTY (C-b [). */
+  async function ensureCopyMode() {
+    if (copyModeActive) return true;
+    if (copyModeEntering) return false;
+    copyModeEntering = true;
+    try {
+      await sendTerminalRaw(agentId, '\x02['); // C-b [ → copy mode
+      await new Promise((r) => setTimeout(r, 80));
+      copyModeActive = true;
+      setTerminalCopyMode(agentId, true);
+      syncHistoryChrome();
+      setBottomStatus('Copy mode — swipe to browse · ⤓ exit', 'info', 3000);
+      return true;
+    } catch (e) {
+      setBottomStatus(e?.message || 'Could not enter copy mode', 'error', 3000);
+      return false;
+    } finally {
+      copyModeEntering = false;
+    }
   }
 
   function setBottomStatus(text = '', tone = '', clearAfter = 0) {
@@ -337,6 +361,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           <button type="button" class="term-key" data-term-key="End">End</button>
           <button type="button" class="term-key" data-term-key="PPage">PgUp</button>
           <button type="button" class="term-key" data-term-key="NPage">PgDn</button>
+          <button type="button" class="term-key" data-term-action="paste" title="Paste clipboard">Paste</button>
         </div>
       </div>`;
   }
@@ -366,8 +391,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       const jumpBottom = container.querySelector('#jump-bottom');
       if (jumpBottom) {
         if (useTermUi) {
-          // Terminal mode: always available — snaps to bottom, and exits
-          // tmux copy mode while browsing history.
+          // Terminal mode: always available — snaps to the bottom and
+          // re-arms auto-follow after history browsing.
           jumpBottom.classList.remove('hidden');
         } else {
           const pane = container.querySelector('#output-pane');
@@ -506,6 +531,8 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           btn.title = keybarExpanded ? 'Hide extra keys' : 'Show more keys';
           btn.setAttribute('aria-expanded', String(keybarExpanded));
           if (isTerminalMode()) requestAnimationFrame(() => scheduleTerminalFit(agentId));
+        } else if (action === 'paste') {
+          void pasteTerminalClipboard(agentId);
         }
       });
     });
@@ -513,14 +540,39 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     const host = container.querySelector('#terminal-host');
     if (host) {
       host.addEventListener('click', () => focusTerminalForAgent(agentId));
+      host.addEventListener('cam-terminal-status', (ev) => {
+        const detail = ev && ev.detail ? ev.detail : {};
+        if (detail.text) setBottomStatus(detail.text, detail.kind || 'info', 2500);
+      });
+      // The trap could not move a local scrollback (full-screen TUI/alternate
+      // buffer). Fall back to tmux copy mode for this and later swipes.
+      host.addEventListener('cam-terminal-scroll-unavailable', (ev) => {
+        const detail = ev && ev.detail ? ev.detail : {};
+        const direction = detail.direction === 'down' ? 'down' : 'up';
+        const page = !!detail.page;
+        const count = Math.max(1, Math.min(12, Number(detail.count) || 1));
+        void (async () => {
+          if (!copyModeActive) {
+            const ok = await ensureCopyMode();
+            if (!ok) return;
+            setBottomStatus('Copy mode (local history unavailable)', 'info', 2500);
+          }
+          const seq = page
+            ? (direction === 'down' ? '\x1b[6~' : '\x1b[5~')
+            : (direction === 'up' ? '\x1b[A' : '\x1b[B');
+          try {
+            await sendTerminalRaw(agentId, page ? seq : seq.repeat(count));
+          } catch (e) {
+            setBottomStatus(e.message || 'History failed', 'error', 3000);
+          }
+        })();
+      });
 
-      // Swipe gestures, active ONLY in tmux copy mode — outside it the
-      // handlers return immediately, so existing touch behavior (selection,
-      // taps, xterm scrolling) is untouched.
+      // Swipe gestures, active ONLY in tmux copy mode. Outside copy mode the
+      // touch trap owns swipes and scrolls the local buffer instead.
       //   vertical drag : distance → line scrolling (natural direction)
       //   horizontal ←  : page forward (newer) — key stream, no hub exec
       //   horizontal →  : page back (older)   — key stream, no hub exec
-      // Horizontal paging never exits copy mode.
       let swipe = null;
       const swipeGated = () => isTerminalMode() && copyModeActive && terminalSessionReady(agentId);
       const swipeCellH = () => {
@@ -531,14 +583,13 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       };
       host.addEventListener('touchstart', (e) => {
         if (!swipeGated() || e.touches.length !== 1) { swipe = null; return; }
-        swipe = { x: e.touches[0].clientX, y: e.touches[0].clientY,
-                  acc: 0, mode: null };
+        swipe = { x: e.touches[0].clientX, y: e.touches[0].clientY, acc: 0, mode: null };
       }, { passive: true });
       host.addEventListener('touchmove', (e) => {
         if (!swipe || !swipeGated() || e.touches.length !== 1) return;
         const x = e.touches[0].clientX;
         const y = e.touches[0].clientY;
-        if (swipe.mode === 'h') return;      // horizontal already fired once
+        if (swipe.mode === 'h') return;
         const dx = x - swipe.x;
         const dy = y - swipe.y;
         if (swipe.mode === null) {
@@ -547,18 +598,13 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           } else if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy) * 1.5) {
             swipe.mode = 'h';
             e.preventDefault();
-            // Page via key stream (PPage/NPage) — instant, no SSH roundtrip.
-            // Book/gallery direction: swipe left = forward (newer), right = back (older).
-            const seq = dx < 0 ? '\x1b[6~' : '\x1b[5~';
-            void sendTerminalRaw(agentId, seq).catch(() => {});
+            void sendTerminalRaw(agentId, dx < 0 ? '\x1b[6~' : '\x1b[5~').catch(() => {});
             return;
           } else {
-            return;                           // let taps / long-press selection through
+            return;
           }
         }
-        e.preventDefault();                   // vertical: we own this gesture now
-        // Natural (webpage) direction: finger drags content — swipe down
-        // reveals older lines (Up keys), swipe up reveals newer (Down keys).
+        e.preventDefault();
         swipe.acc += dy;
         swipe.y = y;
         const cellH = swipeCellH();
@@ -567,8 +613,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           swipe.acc -= lines * cellH;
           lines = Math.max(-50, Math.min(50, lines));
           const key = lines > 0 ? '\x1b[A' : '\x1b[B';
-          void sendTerminalRaw(agentId, key.repeat(Math.abs(lines)))
-            .catch(() => {});
+          void sendTerminalRaw(agentId, key.repeat(Math.abs(lines))).catch(() => {});
         }
       }, { passive: false });
       const swipeEnd = () => { swipe = null; };
@@ -894,6 +939,10 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
       try { localStorage.setItem(OUTPUT_MODE_KEY, outputMode); } catch {}
     }
     const showTerminal = outputMode === 'terminal' && canUseTerminalMode(api);
+    if (!showTerminal) copyModeActive = false;
+    // Keep the terminal entry's trap flag in sync. This also clears a stale
+    // flag inherited from a parked session (e.g. tmux exited copy mode via q).
+    setTerminalCopyMode(agentId, copyModeActive);
     if (terminalHost) {
       terminalHost.classList.toggle('is-active', showTerminal);
     }
@@ -934,7 +983,6 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
   function switchOutputMode(mode) {
     if (outputMode === mode) return;
     outputMode = mode;
-    if (mode !== 'terminal') copyModeActive = false;
     useFullOutput = mode === 'full';
     if (mode === 'full') outputOffset = 0;
     if (mode === 'live' || mode === 'rich') {
@@ -1538,20 +1586,13 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     if (historyBtn) {
       historyBtn.addEventListener('click', async () => {
         if (!isTerminalMode()) return;
-        // Key-stream copy mode: bytes ride the live PTY (typing speed),
-        // no per-click SSH exec. State is optimistic — camc sessions use
-        // the default C-b prefix (camc tmux.conf sets no prefix).
         try {
           if (!copyModeActive) {
-            await sendTerminalRaw(agentId, '\x02['); // C-b [ → copy mode
-            // Let tmux enter copy mode before paging, or PPage lands in the app.
-            await new Promise((r) => setTimeout(r, 80));
-            await sendTerminalRaw(agentId, '\x1b[5~'); // initial page up (desktop's copy-mode -u)
-            copyModeActive = true;
-            syncHistoryChrome();
-            setBottomStatus('Copy mode — ⤒ page up · ⤓ exit', 'info');
+            const ok = await ensureCopyMode();
+            if (!ok) return;
+            await sendTerminalRaw(agentId, '\x1b[5~');
           } else {
-            await sendTerminalRaw(agentId, '\x1b[5~'); // PPage — same as desktop
+            await sendTerminalRaw(agentId, '\x1b[5~'); // PPage
           }
         } catch (e) {
           setBottomStatus(e.message || 'History failed', 'error', 3000);
@@ -1566,10 +1607,10 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
           if (copyModeActive) {
             try {
               // Exit via command (send-keys -X cancel): key-table independent
-              // (vi/emacs both), verified pane state in the response.
-              // Rides the terminal's long-lived SSH session when available.
+              // and verified against the real pane state.
               const res = await terminalCopyMode(agentId, 'cancel');
               copyModeActive = res ? !!res.copyMode : false;
+              setTerminalCopyMode(agentId, copyModeActive);
               if (copyModeActive) {
                 setBottomStatus('Still in copy mode — tap ⤓ again', 'warning', 2500);
                 return;
@@ -1866,7 +1907,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     try {
       await _tracked('Fetching output', async (signal) => {
         if (useFullOutput) {
-          const data = await api.agentFullOutput(agentId, outputOffset, null, signal);
+          const data = await api.agentFullOutput(agentId, outputOffset, null, 0, signal);
           if (_viewDisposed) return;
           if (data.output) {
             updatePane(pane, data.output);
@@ -2010,6 +2051,7 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
     outputTimer = null;
     clearInterval(elapsedTimer);
     copyModeActive = false;
+    setTerminalCopyMode(agentId, false);
     setTerminalViewActive(agentId, false);
     void parkTerminalForAgent(agentId);
     _removeInflightToast();

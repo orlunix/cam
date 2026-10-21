@@ -2130,3 +2130,69 @@ body.camui-v2 .badge-dead {
   background: rgba(136, 136, 136, 0.15);
   color: var(--text-dim);
 }
+
+/* Terminal touch trap: local scrollback + long-press selection toolbar. */
+body.camui-v2 #content.agent-detail-active .agent-terminal-pane,
+body.camui-v2 #content.agent-detail-active .agent-terminal-pane .xterm,
+body.camui-v2 #content.agent-detail-active .agent-terminal-pane .xterm-screen,
+body.camui-v2 #content.agent-detail-active .agent-terminal-pane .xterm-viewport {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.cam-term-toolbar {
+  position: fixed;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  border-radius: 10px;
+  background: rgba(13, 17, 23, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  touch-action: manipulation;
+}
+
+.cam-term-toolbar.hidden { display: none; }
+
+.cam-term-toolbar button {
+  min-width: 48px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.10);
+  color: #e6edf3;
+  font: 600 13px/1 system-ui, -apple-system, sans-serif;
+}
+
+.cam-term-toolbar button:active { background: rgba(255, 255, 255, 0.22); }
+
+.cam-term-handle {
+  position: fixed;
+  z-index: 10000;
+  display: none;
+  width: 18px;
+  height: 18px;
+  margin-left: -9px;
+  margin-top: -9px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  background: #4a9eff;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.5);
+  touch-action: none;
+}
+
+body.camui-v2[data-theme="light"] .cam-term-toolbar {
+  background: rgba(255, 255, 255, 0.98);
+  border-color: rgba(0, 0, 0, 0.15);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+body.camui-v2[data-theme="light"] .cam-term-toolbar button {
+  background: rgba(0, 0, 0, 0.06);
+  color: #1f2328;
+}
