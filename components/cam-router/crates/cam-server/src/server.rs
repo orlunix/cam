@@ -454,7 +454,7 @@ impl Server {
     pub fn inspect(&self) -> Result<Value> {
         let clients:Vec<_>=self.clients.lock().unwrap().iter().map(|(name,c)|json!({"client_id":name,"session_id":c.generation,"ready":c.expires>Instant::now()&&!c.channel.closed(),"reachable":c.routes})).collect();
         Ok(
-            json!({"type":"status","version":1,"node_id":self.config.node_id,"server_epoch":self.epoch,"clients":clients,"storage":self.store.snapshot()?,"backend":self.backend.is_some()}),
+            json!({"type":"status","version":1,"server_version":crate::VERSION,"node_id":self.config.node_id,"server_epoch":self.epoch,"clients":clients,"storage":self.store.snapshot()?,"backend":self.backend.is_some()}),
         )
     }
     async fn connection(self: Arc<Self>, stream: UnixStream) -> Result<()> {
@@ -558,13 +558,8 @@ impl Server {
         }
         let name = text(&hello, "client_id")?.to_string();
         let token = text(&hello, "token")?;
-        let grant = self
-            .config
-            .clients
-            .iter()
-            .find(|c| c.client_id == name)
-            .ok_or_else(|| error("unauthorized Client"))?
-            .clone();
+        let grant = self.config.client_grant(&name)
+            .map_err(|_| error("unauthorized Client"))?;
         let expected = config::private_read(&grant.token_file)?;
         if !config::constant_time_eq(
             token.trim().as_bytes(),
@@ -574,7 +569,7 @@ impl Server {
         }
         let generation = id();
         write_frame(&mut write,&json!({"type":"hello","version":1,"node_id":self.config.node_id,"server_epoch":self.epoch,"session_id":generation,
-            "management":grant.management,"capabilities":if grant.management&&self.backend.is_some(){vec!["agents.snapshot","agent.update","agent.operation","terminal.control","loop.deliver","health"]}else{vec!["health"]},
+            "management":grant.management,"capabilities":if grant.management&&self.backend.is_some(){vec!["agents.snapshot","agent.update","agent.operation","terminal.control","terminal.panes","loop.deliver","health"]}else{vec!["health"]},
             "route_ttl_seconds":self.config.route_ttl_seconds,"allowed_targets":self.config.peers.iter().map(|p|p.node_id.clone()).collect::<Vec<_>>()})).await?;
         let channel = Channel::start(write, self.budget.clone());
         self.clients.lock().unwrap().insert(
@@ -750,6 +745,15 @@ impl Server {
         match action {
             "agents.snapshot" => backend.control(action, json!({})).await,
             "agent.update" => backend.control(action, args).await,
+            "terminal.list" | "terminal.create" => {
+                if action == "terminal.create" { args["request_id"] = frame["id"].clone(); }
+                backend.control(action, args).await
+            }
+            "terminal.close" => {
+                let answer = backend.control(action, args.clone()).await?;
+                self.terminals.close_pane(text(&args, "agent_id")?, text(&args, "pane_id")?);
+                Ok(answer)
+            }
             "terminal.attach" => {
                 self.terminals
                     .open(backend, generation, &args, channel)

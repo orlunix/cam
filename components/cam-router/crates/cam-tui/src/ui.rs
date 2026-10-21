@@ -23,6 +23,7 @@ use ratatui::{
 };
 use serde_json::{json, Value};
 use std::{
+    collections::{HashMap, HashSet},
     io,
     path::PathBuf,
     sync::mpsc,
@@ -50,6 +51,9 @@ impl FilterKind {
 struct Tab {
     key: String,
     agent: Value,
+    pane: Option<String>,
+    primary: bool,
+    title: String,
     tid: Option<String>,
     model: Model,
     cursor: u64,
@@ -58,6 +62,7 @@ struct Tab {
     error: Option<String>,
     geometry: (u16, u16),
     read_only: bool,
+    resize_read_only: bool,
     attach_generation: String,
     retry_after: Instant,
 }
@@ -99,6 +104,7 @@ pub struct App {
     tx: mpsc::Sender<Reply>,
     rx: mpsc::Receiver<Reply>,
     input_tx: tokio::sync::mpsc::Sender<Value>,
+    visit_tx: tokio::sync::mpsc::Sender<Value>,
     snapshot: Value,
     tabs: Vec<Tab>,
     active: usize,
@@ -126,6 +132,10 @@ pub struct App {
     editing_job: Option<Value>,
     editing_agent: Option<Value>,
     pending_open: Option<(String, String)>,
+    pending_ssh: Option<(crate::ssh::Connection, String)>,
+    ssh_target: String,
+    last_tabs: HashMap<String, (String, Instant)>,
+    creating_terminal: HashSet<String>,
 }
 impl App {
     pub fn new(config: &Config, handle: tokio::runtime::Handle) -> Self {
@@ -170,12 +180,24 @@ impl App {
                 let _ = input_replies.send(("input".into(), result));
             }
         });
+        // Preserve click order even if a previous visit write is slow.
+        let (visit_tx, mut visit_rx) = tokio::sync::mpsc::channel::<Value>(64);
+        let visit_socket = config.runtime_dir.join("client.sock");
+        let visit_replies = tx.clone();
+        handle.spawn(async move {
+            while let Some(args) = visit_rx.recv().await {
+                let result = ipc::request(&visit_socket, "agent.visit", args)
+                    .await.map_err(|e| e.to_string());
+                let _ = visit_replies.send(("visit".into(), result));
+            }
+        });
         Self {
             socket: config.runtime_dir.join("client.sock"),
             handle,
             tx,
             rx,
             input_tx,
+            visit_tx,
             snapshot: json!({"agents":[],"nodes":[],"jobs":[]}),
             tabs: vec![],
             active: 0,
@@ -203,6 +225,10 @@ impl App {
             editing_job: None,
             editing_agent: None,
             pending_open: None,
+            pending_ssh: None,
+            ssh_target: String::new(),
+            last_tabs: HashMap::new(),
+            creating_terminal: HashSet::new(),
         }
     }
     fn request(&self, kind: String, action: &str, mut args: Value) {
@@ -230,7 +256,7 @@ impl App {
     }
     fn agents(&self) -> Vec<Value> {
         let filter = self.filter.to_lowercase();
-        self.snapshot["agents"]
+        let mut agents: Vec<Value> = self.snapshot["agents"]
             .as_array()
             .into_iter()
             .flatten()
@@ -262,7 +288,13 @@ impl App {
                         tag.as_str().unwrap_or("").to_lowercase().contains(filter.trim_start_matches('#'))))
             })
             .cloned()
-            .collect()
+            .collect();
+        let visit = |a: &Value| self.snapshot["recent_visits"][format!("{}:{}", a["node_id"].as_str().unwrap_or(""), a["id"].as_str().unwrap_or(""))].as_i64().unwrap_or(0);
+        agents.sort_by(|a, b| visit(b).cmp(&visit(a))
+            .then_with(|| a["name"].as_str().unwrap_or("").to_lowercase().cmp(&b["name"].as_str().unwrap_or("").to_lowercase()))
+            .then_with(|| a["node_id"].as_str().cmp(&b["node_id"].as_str()))
+            .then_with(|| a["id"].as_str().cmp(&b["id"].as_str())));
+        agents
     }
     fn agent_status(agent: &Value) -> &str {
         if agent["phase"] == "initializing" && agent["status"] == "alive" {
@@ -355,12 +387,14 @@ impl App {
             Line::from(""),
             Line::from(Span::styled("  FIND & ORGANIZE", heading)),
             Line::from("  Filter by Node, Tool and Status; search names, IDs or #tags. Clear filters resets all."),
+            Line::from("  Agents are sorted by your last visit, saved on this Client; background output does not reorder them."),
             Line::from("  Agent details: tool · status · node. Nodes → Edit → Name sets a short alias."),
             Line::from(""),
             Line::from(Span::styled("  COMMON ACTIONS", heading)),
             Line::from(vec![Span::raw("  "), Span::styled("F1", key), Span::raw(" New    "), Span::styled("F2", key), Span::raw(" Nodes    "), Span::styled("F3", key), Span::raw(" Settings    "), Span::styled("F8", key), Span::raw(" Tool mouse passthrough")]),
             Line::from("  Agent … menu: Settings for name/tags, Stop or Remove; More actions for other commands."),
-            Line::from(Span::styled("  Connect CAM Servers in Nodes. Closing a tab leaves its agent running.", muted)),
+            Line::from("  Select an agent on the left. Terminal 0 is fixed; + opens a shell tab, × closes only that shell."),
+            Line::from(Span::styled("  Ctrl+Q leaves agents, shells and the Client daemon running. Nodes connects CAM Servers.", muted)),
         ])
     }
     fn node_options(&self) -> Vec<String> {
@@ -439,42 +473,108 @@ impl App {
     fn active_tab(&mut self) -> Option<&mut Tab> {
         self.tabs.get_mut(self.active)
     }
+    fn activate(&mut self, index: usize) {
+        let Some(tab) = self.tabs.get(index) else { return };
+        if let Err(err) = self.visit_tx.try_send(json!({"node_id":tab.agent["node_id"],"agent_id":tab.agent["id"]})) {
+            self.status = format!("Visit history queue unavailable: {err}");
+        }
+        self.active = index;
+        let key = tab.key.clone();
+        self.last_tabs.insert(agent_key(&tab.agent), (key.clone(), Instant::now()));
+        let attach = tab.tid.is_none() && !tab.pending;
+        self.filter_focus = false;
+        self.list_offset = 0;
+        if attach { self.reattach(&key); }
+    }
     fn open(&mut self, agent: Value) {
-        let key = format!(
-            "{}:{}",
-            agent["node_id"].as_str().unwrap_or(""),
-            agent["id"].as_str().unwrap_or("")
-        );
-        if let Some(index) = self.tabs.iter().position(|t| t.key == key) {
-            self.active = index;
+        let group = agent_key(&agent);
+        let key = self.last_tabs.get(&group).map(|(key, _)| key.as_str()).unwrap_or(&group);
+        if let Some(index) = self.tabs.iter().position(|t| t.key == key)
+            .or_else(|| self.tabs.iter().position(|t| t.key == group)) {
+            self.activate(index);
+            self.refresh_panes(&agent);
             return;
         }
+        if let Some(index) = self.add_tab(agent.clone(), None, "Terminal 0".into()) {
+            self.activate(index);
+            self.refresh_panes(&agent);
+        }
+    }
+    fn visible_tabs(&self) -> Vec<usize> {
+        let Some(active) = self.tabs.get(self.active) else { return vec![] };
+        let group = agent_key(&active.agent);
+        self.tabs.iter().enumerate().filter_map(|(i, t)| (agent_key(&t.agent) == group).then_some(i)).collect()
+    }
+    fn discard_tabs(&mut self, keys: &HashSet<String>) {
+        let old = self.tabs.get(self.active).map(|t| (t.key.clone(), agent_key(&t.agent)));
+        for tab in self.tabs.iter().filter(|t| keys.contains(&t.key)) {
+            if let Some(tid) = &tab.tid {
+                self.request("discard".into(), if tab.read_only {"terminal.release"} else {"terminal.detach"}, json!({"terminal_id":tid}));
+            }
+        }
+        self.tabs.retain(|t| !keys.contains(&t.key));
+        self.active = old.and_then(|(key, group)| self.tabs.iter().position(|t| t.key == key)
+            .or_else(|| self.tabs.iter().position(|t| t.primary && agent_key(&t.agent) == group))).unwrap_or(0);
+    }
+    fn add_tab(&mut self, agent: Value, pane: Option<String>, title: String) -> Option<usize> {
+        let group = agent_key(&agent);
+        let key = pane.as_ref().map(|p| format!("{group}/{p}")).unwrap_or_else(|| group.clone());
+        if let Some(index) = self.tabs.iter().position(|t| t.key == key) { return Some(index); }
         if self.tabs.len() >= 24 {
-            self.status = "Close a tab before opening another (24-tab limit)".into();
-            return;
+            let groups: HashSet<_> = self.tabs.iter().map(|t| agent_key(&t.agent)).filter(|g| g != &group).collect();
+            if let Some(old) = groups.iter().min_by_key(|g| self.last_tabs.get(*g).map(|(_, at)| *at)) {
+                let keys = self.tabs.iter().filter(|t| agent_key(&t.agent) == *old).map(|t| t.key.clone()).collect();
+                self.discard_tabs(&keys);
+            } else {
+                self.status = "Terminal view limit reached".into();
+                return None;
+            }
         }
         let generation = id();
-        self.request(
-            format!("attach:{generation}:{key}"),
-            "terminal.attach",
-            json!({"node_id":agent["node_id"],"agent_id":agent["id"]}),
-        );
         self.tabs.push(Tab {
             key,
             agent,
+            primary: pane.is_none(),
+            pane,
+            title,
             tid: None,
             model: Model::new(24, 80, self.history),
             cursor: 0,
             initial: true,
-            pending: true,
+            pending: false,
             error: None,
             geometry: (80, 24),
             read_only: false,
+            resize_read_only: false,
             attach_generation: generation,
             retry_after: Instant::now(),
         });
-        self.active = self.tabs.len() - 1;
-        self.filter_focus = false;
+        Some(self.tabs.len() - 1)
+    }
+    fn pane_capable(&self, agent: &Value) -> bool {
+        self.snapshot["nodes"].as_array().into_iter().flatten().any(|n| n["node_id"] == agent["node_id"]
+            && n["capabilities"].as_array().into_iter().flatten().any(|c| c == "terminal.panes"))
+    }
+    fn pane_kind(action: &str, agent: &Value) -> String {
+        format!("{action}:{}|{}", agent["launch_id"].as_str().unwrap_or(""), agent_key(agent))
+    }
+    fn refresh_panes(&self, agent: &Value) {
+        if self.pane_capable(agent) {
+            self.request(Self::pane_kind("panes", agent), "terminal.list",
+                json!({"node_id":agent["node_id"],"agent_id":agent["id"],"launch_id":agent["launch_id"]}));
+        }
+    }
+    fn sync_panes(&mut self, agent: Value, info: &Value) {
+        let group = agent_key(&agent);
+        let panes = info["panes"].as_array().cloned().unwrap_or_default();
+        let keys = self.tabs.iter().filter(|t| agent_key(&t.agent) == group && !t.primary
+            && !panes.iter().any(|p| p["pane_id"].as_str() == t.pane.as_deref())).map(|t| t.key.clone()).collect();
+        self.discard_tabs(&keys);
+        for pane in panes.iter().filter(|p| p["primary"] != true) {
+            if let Some(id) = pane["pane_id"].as_str() {
+                self.add_tab(agent.clone(), Some(id.into()), pane["title"].as_str().unwrap_or("Terminal").into());
+            }
+        }
     }
     fn reattach(&mut self, key: &str) {
         if let Some(tab) = self.tabs.iter_mut().find(|t| t.key == key) {
@@ -486,7 +586,7 @@ impl App {
             tab.error = None;
             tab.retry_after = Instant::now() + Duration::from_secs(5);
             let generation = tab.attach_generation.clone();
-            let args = json!({"node_id":tab.agent["node_id"],"agent_id":tab.agent["id"]});
+            let args = json!({"node_id":tab.agent["node_id"],"agent_id":tab.agent["id"],"pane_id":tab.pane,"launch_id":tab.agent["launch_id"]});
             self.request(
                 format!("attach:{generation}:{key}"),
                 "terminal.attach",
@@ -580,6 +680,25 @@ impl App {
         );
     }
     fn node_form(&mut self, edit: bool) {
+        let endpoint = self.snapshot["connections"].as_array().into_iter().flatten()
+            .find(|e| e["node_id"] == self.node).cloned()
+            .and_then(|e| serde_json::from_value::<cam_server::relay::Endpoint>(e).ok());
+        let connection = if edit {
+            match endpoint.as_ref().and_then(crate::ssh::profile) {
+                Some(connection) => connection,
+                None => { self.advanced_node_form(true); return; }
+            }
+        } else { crate::ssh::Connection { port:22, ..crate::ssh::Connection::default() } };
+        self.ssh_target = connection.expected_node;
+        self.form("node.ssh", "SSH connection", vec![
+            ("Name (optional)", connection.name),
+            ("Host", connection.host),
+            ("Port", connection.port.to_string()),
+            ("Username (optional)", connection.user),
+            ("SSH key (optional)", connection.key),
+        ]);
+    }
+    fn advanced_node_form(&mut self, edit: bool) {
         let existing = if edit {
             self.snapshot["connections"]
                 .as_array()
@@ -596,7 +715,7 @@ impl App {
         };
         self.form(
             "node",
-            "Node connection",
+            "Local / advanced connection",
             vec![
                 (
                     "Name (optional)",
@@ -721,6 +840,14 @@ impl App {
                     };
                     self.request("command".into(),"node.upsert",json!({"node_id":v[1],"name":v[0],"socket":if v[2].is_empty(){Value::Null}else{json!(v[2])},"command":command,"token_file":v[4]}));
                     self.node = v[1].clone();
+                }
+                "node.ssh" => {
+                    let mut connection = crate::ssh::Connection {
+                        name:v[0].clone(), host:v[1].clone(), port:if v[2].is_empty() {22} else {v[2].parse()?},
+                        user:v[3].clone(), key:v[4].clone(), expected_node:self.ssh_target.clone(),
+                    };
+                    connection.validate()?;
+                    self.pending_ssh = Some((connection, "node.ssh_add".into()));
                 }
                 "job" => {
                     let mut job = self.editing_job.clone().unwrap_or_else(|| json!({}));
@@ -869,6 +996,7 @@ impl App {
             }
             "form.submit" => self.submit_form(),
             "node.add" => self.node_form(false),
+            "node.advanced" => self.advanced_node_form(false),
             "node.edit" => self.node_form(true),
             "node.details" => {
                 self.dialog = Some(Dialog::Info {
@@ -884,6 +1012,16 @@ impl App {
             "job.add" => self.job_form(false),
             "job.edit" => self.job_form(true),
             "node.connect" | "node.disconnect" | "node.remove" => {
+                if action == "node.connect" {
+                    let connection = self.snapshot["connections"].as_array().into_iter().flatten()
+                        .find(|e| e["node_id"] == self.node).cloned()
+                        .and_then(|e| serde_json::from_value::<cam_server::relay::Endpoint>(e).ok())
+                        .as_ref().and_then(crate::ssh::profile);
+                    if let Some(connection) = connection {
+                        self.pending_ssh = Some((connection, "node.connect".into()));
+                        return;
+                    }
+                }
                 self.request("command".into(), action, json!({"node_id":self.node}));
             }
             "job.toggle" | "job.remove" => {
@@ -891,8 +1029,25 @@ impl App {
             }
             "job.history" => self.request("history".into(), action, json!({"id":self.job})),
             "health.details" => self.request("health".into(), "health", json!({})),
-            "tabs.prev" => self.active = self.active.saturating_sub(1),
-            "tabs.next" => self.active = (self.active + 1).min(self.tabs.len().saturating_sub(1)),
+            "tabs.prev" | "tabs.next" => {
+                let tabs = self.visible_tabs();
+                if let Some(index) = tabs.iter().position(|i| *i == self.active) {
+                    let next = if action == "tabs.prev" { index.saturating_sub(1) } else { (index+1).min(tabs.len()-1) };
+                    self.activate(tabs[next]);
+                }
+            }
+            "terminals.new" | "terminals.refresh" => {
+                if let Some(agent) = self.tabs.get(self.active).map(|t| t.agent.clone()) {
+                    if !self.pane_capable(&agent) {
+                        self.status = "Update this Node's CAM Server/SDK to use terminal tabs".into();
+                    } else if action == "terminals.refresh" { self.refresh_panes(&agent); }
+                    else if self.creating_terminal.insert(agent_key(&agent)) {
+                        self.request(Self::pane_kind("panes+", &agent), "terminal.create",
+                            json!({"node_id":agent["node_id"],"agent_id":agent["id"],"launch_id":agent["launch_id"]}));
+                        self.status = "Creating terminal…".into();
+                    }
+                }
+            }
             "bottom" => {
                 if let Some(t) = self.active_tab() {
                     t.model.bottom();
@@ -936,8 +1091,7 @@ impl App {
                     .and_then(|s| s.parse::<usize>().ok())
                 {
                     if index < self.tabs.len() {
-                        self.active = index;
-                        self.filter_focus = false;
+                        self.activate(index);
                     }
                 }
                 if let Some(index) = action
@@ -945,15 +1099,13 @@ impl App {
                     .and_then(|s| s.parse::<usize>().ok())
                 {
                     if index < self.tabs.len() {
-                        if let Some(tid) = &self.tabs[index].tid {
-                            self.request(
-                                "release".into(),
-                                "terminal.release",
-                                json!({"terminal_id":tid}),
-                            );
+                        let tab = &self.tabs[index];
+                        if tab.primary {
+                            self.status = "Agent terminal is fixed; use Stop or Kill in the agent menu".into();
+                        } else {
+                            self.request(Self::pane_kind("panes-", &tab.agent), "terminal.close",
+                                json!({"node_id":tab.agent["node_id"],"agent_id":tab.agent["id"],"pane_id":tab.pane,"launch_id":tab.agent["launch_id"]}));
                         }
-                        self.tabs.remove(index);
-                        self.active = self.active.min(self.tabs.len().saturating_sub(1));
                     }
                 }
                 if let Some(node) = action.strip_prefix("select-node:") {
@@ -987,6 +1139,38 @@ impl App {
     }
     fn replies(&mut self) {
         while let Ok((kind, result)) = self.rx.try_recv() {
+            if let Some((action, target)) = kind.split_once(':').filter(|(action, _)| ["panes", "panes+", "panes-"].contains(action)) {
+                if let Some((launch, group)) = target.split_once('|') {
+                    if action == "panes+" { self.creating_terminal.remove(group); }
+                    let agent = self.tabs.iter().find(|t| t.primary && agent_key(&t.agent) == group
+                        && t.agent["launch_id"].as_str().unwrap_or("") == launch).map(|t| t.agent.clone());
+                    if let Some(agent) = agent {
+                        match result {
+                            Ok(info) => {
+                                let selected = self.tabs.get(self.active).map(|t| agent_key(&t.agent) == group).unwrap_or(false);
+                                self.sync_panes(agent, &info);
+                                if action == "panes+" { self.status = "Terminal created".into(); }
+                                else if action == "panes-" { self.status = "Terminal closed".into(); }
+                                if action == "panes+" && selected {
+                                    if let Some(index) = self.tabs.iter().position(|t| agent_key(&t.agent) == group && t.pane.as_deref() == info["pane_id"].as_str()) {
+                                        self.activate(index);
+                                    }
+                                } else if selected && self.tabs.get(self.active).map(|t| t.tid.is_none() && !t.pending).unwrap_or(false) {
+                                    self.activate(self.active);
+                                }
+                            }
+                            Err(err) => self.status = err,
+                        }
+                    }
+                }
+                continue;
+            }
+            if kind == "discard" { continue; }
+            if kind == "visit" {
+                self.last_snapshot = Instant::now() - Duration::from_secs(2);
+                if let Err(err) = result { self.status = format!("Visit history: {err}"); }
+                continue;
+            }
             if kind == "snapshot" {
                 self.snapshot_pending = false;
                 if let Ok(snapshot) = result {
@@ -1003,11 +1187,29 @@ impl App {
                         }
                     }
                     self.snapshot = snapshot;
+                    let mut restarted = HashSet::new();
                     for tab in &mut self.tabs {
                         if let Some(agent) = self.snapshot["agents"].as_array().into_iter().flatten()
                             .find(|a| a["id"] == tab.agent["id"] && a["node_id"] == tab.agent["node_id"]) {
+                            if !tab.agent["launch_id"].is_null() && tab.agent["launch_id"] != agent["launch_id"] {
+                                restarted.insert(agent_key(agent));
+                            }
                             tab.agent = agent.clone();
                         }
+                    }
+                    if !restarted.is_empty() {
+                        let keys = self.tabs.iter().filter(|t| !t.primary && restarted.contains(&agent_key(&t.agent)))
+                            .map(|t| t.key.clone()).collect();
+                        self.discard_tabs(&keys);
+                        let mut old = vec![];
+                        for tab in self.tabs.iter_mut().filter(|t| restarted.contains(&agent_key(&t.agent))) {
+                            if let Some(tid) = tab.tid.take() { old.push(tid); }
+                            tab.attach_generation = id();
+                            tab.pending = false;
+                            tab.error = Some("Agent restarted; resynchronizing its terminal".into());
+                            tab.retry_after = Instant::now();
+                        }
+                        for tid in old { self.request("discard".into(), "terminal.detach", json!({"terminal_id":tid})); }
                     }
                     if self.node.is_empty() {
                         self.node = self.snapshot["nodes"]
@@ -1071,12 +1273,14 @@ impl App {
                 continue;
             }
             if let Some(tid) = kind.strip_prefix("output:") {
+                let mut refresh = None;
                 if let Some(t) = self.tabs.iter_mut().find(|t| t.tid.as_deref() == Some(tid)) {
                     t.pending = false;
                     match result {
                         Ok(output) => {
                             t.read_only = output["read_only"] == true;
-                            if t.read_only && !t.model.paused {
+                            t.resize_read_only = output["resize_read_only"] == true;
+                            if !t.model.paused {
                                 let rows = output["rows"].as_u64().unwrap_or(24) as u16;
                                 let cols = output["cols"].as_u64().unwrap_or(80) as u16;
                                 t.model.parser.set_size(rows, cols);
@@ -1104,6 +1308,7 @@ impl App {
                                 t.error=Some("History backlog exceeded; right-click agent → Reconnect terminal".into());
                             }
                             if output["closed"] == true {
+                                if !t.primary { refresh = Some(t.agent.clone()); }
                                 t.error = Some(
                                     output["error"]
                                         .as_str()
@@ -1115,9 +1320,10 @@ impl App {
                                 t.retry_after = Instant::now() + Duration::from_secs(5);
                             }
                         }
-                        Err(err) => t.error = Some(err),
+                        Err(err) => { if !t.primary { refresh = Some(t.agent.clone()); } t.error = Some(err); }
                     }
                 }
+                if let Some(agent) = refresh { self.refresh_panes(&agent); }
                 continue;
             }
             match result {
@@ -1175,6 +1381,11 @@ impl App {
                         text: format!("{}\n{stderr}", content.as_deref().unwrap_or(text)),
                         scroll: 0,
                     });
+                    self.last_snapshot = Instant::now() - Duration::from_secs(2);
+                }
+                Ok(result) if kind == "paired" => {
+                    if let Some(node) = result["node_id"].as_str() { self.node = node.into(); }
+                    self.status = "SSH connection saved; connecting to CAM Server".into();
                     self.last_snapshot = Instant::now() - Duration::from_secs(2);
                 }
                 Ok(_) if kind == "command" => {
@@ -1241,7 +1452,7 @@ impl App {
         let cols = self.main.width.max(2).min(500);
         let rows = self.main.height.max(2).min(200);
         if let Some(t) = self.tabs.get_mut(self.active) {
-            if !t.initial && !t.read_only && t.geometry != (cols, rows) {
+            if !t.initial && !t.read_only && !t.resize_read_only && t.geometry != (cols, rows) {
                 t.model.parser.set_size(rows, cols);
                 t.geometry = (cols, rows);
                 if let Some(tid) = t.tid.clone() {
@@ -1332,7 +1543,7 @@ impl App {
         for (i, agent) in agents.iter().skip(self.list_offset).take(visible).enumerate() {
             let y = body.y + i as u16 * 2;
             let key = format!("{}:{}", agent["node_id"].as_str().unwrap_or(""), agent["id"].as_str().unwrap_or(""));
-            let selected = self.tabs.get(self.active).map(|t| t.key == key).unwrap_or(false);
+            let selected = self.tabs.get(self.active).map(|t| agent_key(&t.agent) == key).unwrap_or(false);
             let alive = agent["status"] == "alive";
             let color = if agent["stale"] == true { HINT } else if !alive { ERROR }
                 else if agent["state"] == "idle" { ACCENT } else { WARNING };
@@ -1361,23 +1572,25 @@ impl App {
         }
         let show_help = right >= 42;
         if show_help { self.button(f, Rect::new(area.width - 9, 1, 8, 1), " Help F4", "help", false); }
-        let visible = ((right.saturating_sub(if show_help { 18 } else { 8 })) / 19).max(1) as usize;
-        let start = (self.active / visible) * visible;
+        let tabs = self.visible_tabs();
+        let selected = tabs.iter().position(|i| *i == self.active).unwrap_or(0);
+        let visible = ((right.saturating_sub(if show_help { 26 } else { 16 })) / 19).max(1) as usize;
+        let start = (selected / visible) * visible;
         if start > 0 {
             self.button(f, Rect::new(left + 1, 1, 2, 1), "‹", "tabs.prev", false);
         }
-        if start + visible < self.tabs.len() {
+        if start + visible < tabs.len() {
             self.button(
                 f,
-                Rect::new(area.width - if show_help { 13 } else { 3 }, 1, 2, 1),
+                Rect::new(area.width - if show_help { 22 } else { 12 }, 1, 2, 1),
                 "›",
                 "tabs.next",
                 false,
             );
         }
         let mut x = left + 4;
-        for i in start..(start + visible).min(self.tabs.len()) {
-            let title = self.tabs[i].agent["name"].as_str().unwrap_or("agent");
+        for &i in tabs.iter().skip(start).take(visible) {
+            let title = &self.tabs[i].title;
             let label = format!(" {} ", title.chars().take(12).collect::<String>());
             let width = 14.min(area.width.saturating_sub(x + if show_help { 12 } else { 3 }));
             self.button(
@@ -1387,20 +1600,22 @@ impl App {
                 &format!("tab:{i}"),
                 self.active == i,
             );
-            self.button(
-                f,
-                Rect::new(x + width, 1, 2, 1),
-                "× ",
-                &format!("close:{i}"),
-                false,
-            );
+            if !self.tabs[i].primary {
+                self.button(f, Rect::new(x + width, 1, 2, 1), "× ", &format!("close:{i}"), false);
+            }
             x += 19;
         }
+        if !tabs.is_empty() {
+            self.button(f, Rect::new(area.width - if show_help { 18 } else { 11 }, 1, 3, 1), " ↻ ", "terminals.refresh", false);
+            self.button(f, Rect::new(area.width - if show_help { 14 } else { 7 }, 1, 3, 1), " + ", "terminals.new", false);
+        }
         let term = Rect::new(left, 3, right, area.height - 4);
+        let title = self.tabs.get(self.active).map(|t| format!("{} · {} · {}", t.agent["name"].as_str().unwrap_or("agent"), t.title,
+            self.short_node(t.agent["node_id"].as_str().unwrap_or("")))).unwrap_or_else(|| "Agent terminal".into());
         f.render_widget(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Agent terminal"),
+                .title(title),
             term,
         );
         self.main = Rect::new(term.x + 1, term.y + 1, term.width - 2, term.height - 2);
@@ -1516,6 +1731,7 @@ impl App {
                 }
             }
             Dialog::Form {
+                kind,
                 title,
                 fields,
                 focus,
@@ -1526,6 +1742,10 @@ impl App {
                         .style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
                     Rect::new(inner.x, inner.y, inner.width, 1),
                 );
+                if kind == "node.ssh" {
+                    f.render_widget(Paragraph::new("Passwords / key passphrases are prompted by SSH; never saved.")
+                        .style(Style::default().fg(HINT)), Rect::new(inner.x, inner.y+1, inner.width, 1));
+                }
                 for (i, (label, value)) in fields.iter().enumerate() {
                     let y = inner.y + 2 + i as u16 * 2;
                     if y + 1 >= rect.y + rect.height - 2 {
@@ -1702,6 +1922,8 @@ impl App {
                         self.button(f, Rect::new(x, y, 12, 1), label, action, false);
                     }
                 }
+                self.button(f, Rect::new(inner.x, y + 1, 20.min(inner.width), 1),
+                    "Local / advanced", "node.advanced", false);
             }
             Dialog::Settings => {
                 f.render_widget(
@@ -2146,6 +2368,9 @@ fn elide(text: &str, width: u16) -> String {
     result.push('…');
     result
 }
+fn agent_key(agent: &Value) -> String {
+    format!("{}:{}", agent["node_id"].as_str().unwrap_or(""), agent["id"].as_str().unwrap_or(""))
+}
 fn contains(rect: Rect, x: u16, y: u16) -> bool {
     x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
 }
@@ -2182,6 +2407,22 @@ pub fn run(config: Config, handle: tokio::runtime::Handle) -> Result<()> {
         terminal.draw(|f| app.draw(f))?;
         if event::poll(Duration::from_millis(40))? && !app.event(event::read()?) {
             break;
+        }
+        if let Some((connection, action)) = app.pending_ssh.take() {
+            disable_raw_mode()?;
+            execute!(io::stdout(), DisableMouseCapture, DisableBracketedPaste, LeaveAlternateScreen)?;
+            let result = crate::ssh::authenticate(&connection, &config.runtime_dir);
+            enable_raw_mode()?;
+            execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture, EnableBracketedPaste)?;
+            terminal.clear()?;
+            match result {
+                Ok(()) if action == "node.connect" => app.request("command".into(), &action, json!({"node_id":connection.expected_node})),
+                Ok(()) => {
+                    app.status = "SSH authenticated; checking, setting up and connecting CAM Server…".into();
+                    app.request("paired".into(), &action, serde_json::to_value(connection)?);
+                }
+                Err(err) => app.status = err.to_string(),
+            }
         }
     }
     let socket = app.socket.clone();
@@ -2489,6 +2730,80 @@ mod tests {
                 terminal.draw(|f| app.draw(f)).unwrap();
             }
         }
+    }
+    #[tokio::test]
+    async fn terminal_tabs_belong_to_one_agent_and_keep_the_agent_pane_fixed() {
+        let mut app = App::new(&Config::default(), tokio::runtime::Handle::current());
+        let a = json!({"node_id":"a","id":"one","name":"alpha","launch_id":"first"});
+        let b = json!({"node_id":"a","id":"two","name":"beta","launch_id":"other"});
+        app.snapshot = json!({"agents":[a,b]});
+        app.open(a.clone());
+        app.creating_terminal.insert(agent_key(&a));
+        app.status = "Creating terminal…".into();
+        app.tx.send((App::pane_kind("panes+", &a), Ok(json!({"pane_id":"%1","panes":[
+            {"pane_id":"%0","primary":true},{"pane_id":"%1","title":"Terminal 1"}]})))).unwrap();
+        app.replies();
+        assert!(!app.creating_terminal.contains(&agent_key(&a)));
+        assert_eq!(app.status, "Terminal created");
+        assert_eq!(app.visible_tabs().len(), 2);
+        app.action("tab:1");
+        assert_eq!(app.tabs[app.active].pane.as_deref(), Some("%1"));
+        app.open(b.clone());
+        assert_eq!(app.visible_tabs().len(), 1);
+        app.open(a.clone());
+        assert_eq!(app.tabs[app.active].pane.as_deref(), Some("%1"));
+        let mut terminal = Terminal::new(TestBackend::new(150, 38)).unwrap();
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let row: String = (32..150).map(|x| terminal.backend().buffer().get(x,1).symbol.as_str()).collect();
+        assert!(row.contains("Terminal 0") && row.contains("Terminal 1"));
+        assert!(!row.contains("alpha") && !row.contains("beta"));
+        app.action("close:0");
+        assert!(app.status.contains("fixed"));
+        app.sync_panes(a.clone(), &json!({"panes":[{"pane_id":"%0","primary":true}]}));
+        assert!(app.tabs[app.active].primary);
+        assert_eq!(app.visible_tabs().len(), 1);
+        let mut new = a;
+        new["launch_id"] = json!("second");
+        app.tx.send(("snapshot".into(), Ok(json!({"agents":[new,b]})))).unwrap();
+        app.replies();
+        assert!(app.tabs[app.active].primary);
+        assert_eq!(app.tabs[app.active].agent["launch_id"], "second");
+    }
+    #[tokio::test]
+    async fn add_node_uses_ssh_fields_with_optional_username_and_advanced_fallback() {
+        let mut app = App::new(&Config::default(), tokio::runtime::Handle::current());
+        app.action("node.add");
+        let Some(Dialog::Form { kind, fields, .. }) = &mut app.dialog else { panic!("SSH form required") };
+        assert_eq!(kind, "node.ssh");
+        assert_eq!(fields[2].1, "22");
+        assert_eq!(fields[3].1, "");
+        assert_eq!(fields[4].1, "");
+        assert!(!fields.iter().any(|(label, _)| label.contains("Server ID") || label.contains("Token") || label.contains("JSON")));
+        fields[1].1 = "farm.example".into();
+        app.submit_form();
+        let (connection, _) = app.pending_ssh.take().unwrap();
+        assert!(connection.user.is_empty());
+        assert_eq!(connection.port, 22);
+        app.action("node.advanced");
+        assert!(matches!(app.dialog, Some(Dialog::Form { kind, .. }) if kind == "node"));
+    }
+    #[tokio::test]
+    async fn recent_visits_sort_across_nodes_without_following_runtime_activity() {
+        let mut app = App::new(&Config::default(), tokio::runtime::Handle::current());
+        app.snapshot = json!({"agents":[
+            {"node_id":"a","id":"same","name":"Zulu","tool":"codex","updated_at":99999},
+            {"node_id":"b","id":"same","name":"beta","tool":"claude","updated_at":1},
+            {"node_id":"a","id":"other","name":"Alpha","tool":"codex","updated_at":2}],
+            "recent_visits":{"b:same":10,"a:same":9}});
+        let order = |app: &App| app.agents().iter().map(|a| (a["node_id"].clone(), a["id"].clone())).collect::<Vec<_>>();
+        assert_eq!(order(&app), vec![(json!("b"),json!("same")),(json!("a"),json!("same")),(json!("a"),json!("other"))]);
+        app.snapshot["agents"][0]["updated_at"] = json!(999999);
+        app.snapshot["agents"][0]["state"] = json!("running");
+        assert_eq!(app.agents()[0]["node_id"], "b");
+        app.filter_tool = "codex".into();
+        assert_eq!(app.agents()[0]["name"], "Zulu");
+        app.snapshot["recent_visits"] = json!({});
+        assert_eq!(app.agents()[0]["name"], "Alpha");
     }
     #[tokio::test]
     async fn filtering_does_not_close_tabs() {

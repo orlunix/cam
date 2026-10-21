@@ -20,7 +20,7 @@
 
 ```text
 ┌──────────────────────┬──────────────────────────────────────┐
-│ New  Settings  Nodes │ Agent A │ Agent B │ Agent C           │
+│ New  Settings  Nodes │ Agent │ Terminal 1 × │ Terminal 2 × + │
 ├──────────────────────┼──────────────────────────────────────┤
 │ Filter agents…       │                                      │
 │                      │                                      │
@@ -35,17 +35,17 @@
 | --- | --- |
 | 左上 Command | 固定的 `New / Settings / Nodes` 入口；可点击，键盘可聚焦 |
 | 左下 Agent list | 显示已连接 Nodes 的 agent，支持按名称、ID、Node、状态筛选；显示所属 Node，避免跨机器同名混淆 |
-| 右上 Tab bar | 已打开的 agent/终端标签；显示当前选中项，点击切换；后台输出不抢焦点 |
+| 右上 Tab bar | 当前 agent 的终端：固定 Terminal 0 页、辅助 shell 和新增/刷新入口；后台输出不抢焦点 |
 | 右侧 Main | 当前 tab 的完整交互终端，接管 PageUp/PageDown、滚轮、选区与复制粘贴 |
 
 导航和操作约定：
 
 - `New` 选择目标 Node、工具和工作目录，再通过后端既有启动策略创建 agent；已有 agent 的打开入口是左侧列表。
 - `Settings` 管理客户端偏好；`Nodes` 管理本客户端连接的多个 CAM Server。打开这些面板不重建后台 agent 或已有终端。
-- 点击左侧 agent，激活其默认交互 tab；尚未打开时创建视图，已打开时复用，避免重复标签。一个 agent 的其它终端可有独立 tab，均遵守第 3 节的身份与状态边界。
-- 点击 tab 后，左侧同步标记对应 agent；列表筛选只影响列表可见项，不关闭 tab、不停止 agent，也不切换当前终端。
-- 关闭 tab 只关闭该客户端视图，不代表停止 agent；stop/kill/rm 使用独立、明确的操作。
-- 左栏宽度与右侧终端区域相互独立；布局变化只 resize 当前可见终端，保持其它 tab 的历史和选区。
+- 点击左侧 agent，恢复其上次使用的终端，首次默认打开 Agent 页。右侧 tab 始终属于这个 agent。
+- 列表筛选只影响列表可见项，不关闭 tab、不停止 agent，也不切换当前终端。
+- Terminal 0 固定对应 agent 主 pane `0.0`，不提供关闭按钮；辅助 shell 的 × 关闭该 shell。stop/kill/rm 使用独立操作。
+- 左栏与终端区域相互独立。tmux 2.7 同 session 的窗口共享尺寸，当前 agent writer 视图决定尺寸；后台终端保留独立内容与选区。
 
 ### 1.2 本地常驻后台
 
@@ -75,12 +75,13 @@ Desktop 使用 Electron/xterm.js；TUI 使用 Rust 终端控件和解析器。�
 
 每个 tab 独立保存终端模型、历史 viewport、选区、连接状态和输出游标：
 
-- 点击切换 tab 不断开连接、不重启工具、不清空历史，也不改变其它 tab 的尺寸。
+- 点击切换 tab 不重启工具、不清空历史；尚未连接的辅助 pane 按需 attach。
 - 新输出只更新所属 tab；后台 tab 的输出不能抢焦点。
 - 已有 tab 的选区和滚动位置在切换后保持；空间不足时采用明确的有界缓存与恢复策略。
-- 关闭 tab 默认只关闭客户端视图/订阅，不等于 stop/kill/rm agent。停止工具是独立操作。
-- `+` 通过后端能力建立新的终端；工具启动仍遵守已有 launcher/环境策略。
-- 多个 Client 同时查看时，各自浏览历史；写入/resize 的所有权由 Server 明确管理。
+- `×` 仅关闭指定辅助 shell；主 pane 受保护。退出 UI 或缓存淘汰只释放视图，不杀 shell。
+- `+` 通过 `terminal.create` 在已有 agent session 新建窗口和独立 pane，不分割主界面，最多 8 个 pane。新 shell 位于所属 Node 的 workspace，不继承 agent 远端 LSF allocation。
+- `terminal.list/resolve/close` 在所属 session 内校验稳定 pane ID；绑定 launch ID，reboot 后丢弃旧辅助页。创建请求记录去重，结果未知时先刷新，不自动重放。
+- 输入权按 pane 分配；同 daemon 多窗口共享流。session 尺寸以主 pane writer 视图为准，辅助视图不能缩小另一个 writer 的 agent。Server 限制同一 pane 同时只有一个管理 Client 的 control attachment。
 
 Desktop 当前是每个 agent 一个 xterm 实例，内部 window 标签切换该 attach 连接的 tmux 窗口。TUI 的每-tab 历史和选区隔离需要单独实现，不能假定显示多个 tab 按钮就已完成。
 
@@ -191,6 +192,9 @@ CAM TUI 不只是终端布局，还必须接入以下能力。状态与业务所
 Agent 列表的 `…` 菜单提供 Settings、Stop、Remove，其余操作收进 More actions。
 名称为主行，`tool · status` 与右对齐的 node 简称为弱化的次行；筛选区与列表有独立边界。
 Settings 首先支持名称和 tags，tags 可参与文本筛选。
+列表默认按本机 Client 记录的最近访问降序排列，名称作为无访问记录时的排序依据。
+点击 agent 或主动切换其 tab 才记录访问；后台输出、状态刷新、筛选不会改变访问顺序。
+记录以 Node＋完整 agent ID 区分，Client 数据库保留最近 1000 条，供多个 UI 和重启后共用；不回写 Server。
 
 属性编辑使用独立管理 action `agent.update`，要求 Server 授予 management 能力，
 并绑定明确的 `node_id` 和完整 `agent_id`。请求只允许设置 `name` 和 `tags`，
@@ -201,6 +205,9 @@ Settings 首先支持名称和 tags，tags 可参与文本筛选。
 ### 8.3 Nodes operation
 
 `Nodes` 面板至少支持添加、编辑和移除连接配置，以及 connect、disconnect、reconnect；展示 Node 身份/别名、连接状态、Server 能力、可达目标和最近错误。
+
+普通新增只填 Host、Port（默认 22）、可选 Username、SSH key、显示名称；Username 留空沿用 OpenSSH 默认用户。密码、加密 key 的口令和 host-key 确认由原生 OpenSSH 在临时恢复的终端中处理，不保存到 CAM 配置/IPC/argv。
+SSH 成功后自动发现已运行的 Server，并通过 Server 0.1.2+ 的 `pair --client-id` 建立同用户管理 grant；不扩大 forwarding source scopes。旧 Server 可复用已存在的管理 grant。Node ID 为握手验证的内部标识，无需用户填写。原有 Unix socket/raw transport 在 Local / advanced 中保留；未安装/运行 Server 时明确报错。
 
 - Node 以 Server 验证的稳定 ID 标识，SSH 地址和别名只是连接信息；同一 Node 的多条路径不能变成多个独立 agent 副本。
 - 一个 TUI 可连接多个 Server，一个 Server 可连接多个 Client。连接一个 Node 不影响其它 Node 的终端和管理操作。

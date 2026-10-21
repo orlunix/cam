@@ -22,6 +22,8 @@ enum Input {
 struct Attached {
     owner: String,
     agent: String,
+    pane: String,
+    primary: bool,
     input: mpsc::Sender<Input>,
 }
 #[derive(Default)]
@@ -44,14 +46,9 @@ impl Terminals {
             if sessions.len() >= 32 {
                 return Err(error("terminal capacity reached"));
             }
-            if sessions.values().any(|t| t.agent == agent) {
-                return Err(error(
-                    "agent terminal already has an active Client; detach it first",
-                ));
-            }
         }
         let info = backend
-            .control("terminal.resolve", json!({"agent_id":agent}))
+            .control("terminal.resolve", json!({"agent_id":agent,"pane_id":args["pane_id"],"launch_id":args["launch_id"]}))
             .await?;
         let argv: Vec<String> = serde_json::from_value(info["argv"].clone())?;
         let pane = info["pane"]
@@ -61,6 +58,9 @@ impl Terminals {
         let session = info["session"]
             .as_str()
             .ok_or_else(|| error("missing session"))?;
+        let window = info["window"].as_str().unwrap_or("").to_string();
+        let rows = info["rows"].as_u64().unwrap_or(24);
+        let cols = info["cols"].as_u64().unwrap_or(80);
         let mut child = Command::new(&argv[0])
             .args(&argv[1..])
             .args(["-C", "attach-session", "-t", session])
@@ -80,12 +80,14 @@ impl Terminals {
                 .take()
                 .ok_or_else(|| error("control stdout missing"))?,
         );
-        write.write_all(format!("capture-pane -p -e -t {pane} -S -2000\ndisplay-message -p -t {pane} '#{{cursor_y}};#{{cursor_x}};#{{bracketed_paste_flag}}'\n").as_bytes()).await?;
+        // A fresh control client otherwise defaults to 80x24 and constrains
+        // every window in this session, including the agent's existing pane.
+        write.write_all(format!("refresh-client -C {cols},{rows}\ncapture-pane -p -e -t {pane} -S -2000\ndisplay-message -p -t {pane} '#{{cursor_y}};#{{cursor_x}};#{{bracketed_paste_flag}}'\n").as_bytes()).await?;
         let tid = id();
         let (sender, mut input) = mpsc::channel(32);
         {
             let mut sessions = self.sessions.lock().unwrap();
-            if sessions.values().any(|t| t.agent == agent) {
+            if sessions.values().any(|t| t.agent == agent && t.pane == pane) {
                 return Err(error("terminal was concurrently attached"));
             }
             sessions.insert(
@@ -93,14 +95,14 @@ impl Terminals {
                 Attached {
                     owner: owner.into(),
                     agent: agent.into(),
+                    pane: pane.clone(),
+                    primary: info["primary"] == true,
                     input: sender,
                 },
             );
         }
         let broker = self.clone();
         let identity = tid.clone();
-        let rows = info["rows"].as_u64().unwrap_or(24);
-        let cols = info["cols"].as_u64().unwrap_or(80);
         let backend = backend.clone();
         let probe_agent = agent.to_string();
         tokio::spawn(async move {
@@ -119,24 +121,24 @@ impl Terminals {
                     result=read.read_until(b'\n',&mut line)=>{
                         if result?==0 {break;}
                         if line.len()>4*1024*1024 {return Err(error("terminal frame exceeded limit"));}
-                        if in_block&&!ready&&(block==2||block==3)&&line!=block_end&&line!=block_error {
+                        if in_block&&!ready&&(block==3||block==4)&&line!=block_end&&line!=block_error {
                             // Command-result blocks are opaque. A tool may print
                             // literal %begin/%output text inside capture-pane.
-                            if block==2{capture.extend(&line);if capture.len()>2*1024*1024{return Err(error("terminal history exceeded limit"));}}
+                            if block==3{capture.extend(&line);if capture.len()>2*1024*1024{return Err(error("terminal history exceeded limit"));}}
                             else{cursor.push_str(&String::from_utf8_lossy(&line));}
                         } else if line.starts_with(b"%output ") {
                             let mut parts=line.splitn(3,|b|*b==b' ');parts.next();
                             if parts.next()==Some(pane.as_bytes()) {
                                 let bytes=decode_output(parts.next().unwrap_or_default().strip_suffix(b"\n").unwrap_or_default())?;
                                 if ready {channel.frame(&json!({"type":"terminal.output","terminal_id":identity,"seq":seq,"data":STANDARD.encode(&bytes)}))?;seq+=bytes.len()as u64;}
-                                else if block>=2 {after.extend(bytes);if after.len()>1024*1024{return Err(error("terminal bootstrap overflow"));}}
+                                else if block>=3 {after.extend(bytes);if after.len()>1024*1024{return Err(error("terminal bootstrap overflow"));}}
                             }
                         } else if line.starts_with(b"%begin ") {block+=1;in_block=true;block_end=[b"%end ".as_slice(),&line[7..]].concat();block_error=[b"%error ".as_slice(),&line[7..]].concat();}
                         else if in_block&&line==block_error {return Err(error("tmux control command failed"));}
-                        else if line.starts_with(b"%exit") {break;}
+                        else if line.starts_with(b"%exit") || line.strip_prefix(b"%window-close ").map(|s|s.strip_suffix(b"\n").unwrap_or(s))==Some(window.as_bytes()) {break;}
                         else if in_block&&line==block_end {
                             in_block=false;
-                            if block==3&&!ready {
+                            if block==4&&!ready {
                             let pos:Vec<_>=cursor.trim().split(';').collect();
                             let row=pos.first().and_then(|v|v.parse::<u16>().ok()).unwrap_or(0);
                             let col=pos.get(1).and_then(|v|v.parse::<u16>().ok()).unwrap_or(0);
@@ -145,7 +147,7 @@ impl Terminals {
                                 // Older tmux cannot expose this mode as a format.
                                 // Probe after the control client is listening, so
                                 // subsequent mode changes remain in its output.
-                                if let Ok(modes)=backend.control("terminal.resolve",json!({"agent_id":probe_agent,"probe_modes":true})).await {
+                                if let Ok(modes)=backend.control("terminal.resolve",json!({"agent_id":probe_agent,"pane_id":pane,"probe_modes":true})).await {
                                     bracketed=modes["bracketed_paste"]==true;
                                 }
                             }
@@ -184,7 +186,12 @@ impl Terminals {
             let _ = child.kill().await;
             let _ = child.wait().await;
         });
-        Ok(json!({"terminal_id":tid,"rows":rows,"cols":cols}))
+        Ok(json!({"terminal_id":tid,"rows":rows,"cols":cols,"pane_id":info["pane"],"primary":info["primary"]}))
+    }
+    pub fn close_pane(&self, agent: &str, pane: &str) {
+        self.sessions.lock().unwrap().retain(|_, t| {
+            if t.agent == agent && t.pane == pane { let _ = t.input.try_send(Input::Stop); false } else { true }
+        });
     }
     pub fn command(&self, owner: &str, action: &str, args: &Value) -> Result<Value> {
         let mut sessions = self.sessions.lock().unwrap();
@@ -209,7 +216,16 @@ impl Terminals {
                 if !(2..=500).contains(&cols) || !(2..=200).contains(&rows) {
                     return Err(error("invalid terminal geometry"));
                 }
-                Input::Resize(cols as u16, rows as u16)
+                if sessions.values().any(|t| t.agent == terminal.agent && t.primary && t.owner != owner) {
+                    return Err(error("terminal geometry is controlled by the agent view's Client"));
+                }
+                // tmux 2.7 uses the smallest attached client. All of this
+                // Client's pane streams must agree on the session geometry.
+                for sibling in sessions.values().filter(|t| t.agent == terminal.agent && t.owner == owner) {
+                    sibling.input.try_send(Input::Resize(cols as u16, rows as u16))
+                        .map_err(|_| error("terminal resize backpressure"))?;
+                }
+                return Ok(json!({"ok":true}));
             }
             "terminal.detach" => Input::Stop,
             _ => return Err(error("unsupported terminal action")),

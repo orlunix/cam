@@ -28,6 +28,7 @@ CAM Server A / B / …
 - 支持前台运行，服务管理器自启动作为可选部署方式；Linux 首版不强制依赖 systemd 或系统 crond。客户端开机重启后的自动启动需部署自启动服务，不能只靠进程自行后台化。
 - 本机 IPC 仅允许同用户访问。身份、注册任务、调度记录持久化；锁、socket 和活跃状态按机器隔离，放节点本地，不由共享 Home 把不同机器混成一个实例。
 - 界面焦点、viewport、选区与系统剪贴板仍由 TUI 管理。终端流与调度/forwarding 隔离，关闭终端订阅不关闭后台连接。
+- 最近访问顺序由同用户本机 IPC `agent.visit` 更新，按 Node＋完整 agent ID 持久化到 Client 数据库，最多保留 1000 条，随快照供多个 UI 共用。它不转发给 Server，也不修改 agent 的权威状态；后台输出与轮询不记录访问。
 
 ## 2. 更新 agent list 与 status
 
@@ -95,6 +96,8 @@ Engineering loop 是 daemon 主动发起的业务，允许持久记录自己的�
 - Agent list/status 订阅本地 daemon；agent 行或详情页提供 loop 的查看与注册入口，显示当前 loop 标记。
 - Settings 提供定时任务和 engineering loop 的管理入口，以及 daemon 状态；不新增常驻主界面分区。
 - Nodes 的配置与连接操作交给 daemon 执行，多个 TUI 看到一致结果。
+- 普通 SSH 新增先在前台 TUI 通过原生 OpenSSH 完成认证，再向 daemon 提交 `node.ssh_add`。复用私有 ControlMaster，后台只用 BatchMode；密码/口令不进 IPC。daemon 自动发现 Server 并配对，验证真实 Node 身份后保存配置。旧 raw/socket 通过 `node.upsert` 保留。
+- `terminal.list/create/close/attach` 明确绑定 Node、agent、launch ID 和稳定 pane ID。流缓存按 Node＋agent＋pane 区分，主 pane 固定，辅助 shell 单独关闭。输入权按 pane 租约分配；tmux session 的共享尺寸由主 pane writer 视图控制，避免多个窗口互相 resize。退出 UI 只释放视图，不关闭辅助 shell。
 - Agent 操作经 daemon 选定 Node/agent 后交 Server；不能因 daemon 有本机命令调度功能就把远端 agent 操作转成 shell。
 
 本机 IPC 最少覆盖：daemon 状态、Node 配置/连接、agent 缓存快照/事件、具体 agent 操作、job/loop 管理与执行记录、健康快照/事件和按需检查。请求有稳定 ID，事件有 daemon 代次与序号；多个 UI 同时修改配置需要版本检查，避免后写覆盖未知的新配置。
@@ -140,3 +143,9 @@ daemon 持续检查后台功能是否可用，向 TUI 提供统一健康快照�
 7. 回收专用 daemon、Server、agent、任务、loop 和连接；不修改用户原有 camc cron、loop、agent 或系统 crontab。
 
 v0.1 使用独立状态目录，不自动迁移既有 camc cron/loop。开发测试仅创建并回收临时 daemon、任务与 agent，不修改用户原有调度器。
+
+## SSH Node 版本管理
+
+Add/Edit/显式 Connect 的版本检查、配套 binary＋SDK 同步与启动遵循
+[CAM Server 生命周期 spec](cam-server-lifecycle-spec.md)。够新且健康时直接连接，
+缺失或过旧时校验并更新；后台断线重连不反复部署。更新保留 Node 身份和 agent。

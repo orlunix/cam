@@ -20,7 +20,7 @@ import uuid
 import test_router_e2e as routing
 
 TUI = routing.BINDIR / "cam-tui"
-DAEMON = routing.BINDIR / "cam-clientd"
+DAEMON = Path(os.environ.get("CAM_CLIENT_TEST_DAEMON_BIN", str(routing.BINDIR / "cam-clientd")))
 
 
 class TuiTests(unittest.TestCase):

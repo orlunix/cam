@@ -41,7 +41,8 @@ sh components/cam-router/scripts/build-linux.sh x86_64
 ```
 
 The script rejects dynamic dependencies, smoke-tests native `version`, and
-produces cam-server, cam-forwarder, cam-clientd and cam-tui plus SHA256SUMS. It does not install, publish or overwrite
+produces cam-server, cam-forwarder, cam-clientd and cam-tui, a matching
+cam-server.bundle + manifest (binary and SDK), and SHA256SUMS. It does not install, publish or overwrite
 legacy camc. Cross builds also require a matching C compiler/linker; an ARM
 binary must be tested on ARM before claiming support.
 
@@ -227,3 +228,12 @@ does not claim physical cross-host SSH, packaged Electron, Mobile UI, ARM or
 every Linux distribution has been tested. No Desktop connection/crypto code is
 changed. Owner-Node callbacks from a tool moved to another LSF machine still
 need a cross-host callback transport; a Unix socket path cannot provide that.
+
+## Server installation and upgrades
+
+See the [Server lifecycle spec](../../docs/cam-server-lifecycle-spec.md).
+`cam-server version [--json]` and `--version` identify the software build;
+`status` includes the running `server_version`. `setup` and `update` accept
+`--bundle FILE` for verified versioned deployment. TUI Add/Connect performs
+the same flow over authenticated SSH when a Server is absent or too old.
+Ship cam-server.bundle and cam-server.bundle.json beside cam-clientd.

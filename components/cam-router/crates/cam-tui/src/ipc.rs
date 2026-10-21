@@ -7,7 +7,7 @@ pub async fn request(socket: &Path, action: &str, args: Value) -> Result<Value> 
     request_id(socket, action, args, &id()).await
 }
 pub async fn request_id(socket: &Path, action: &str, args: Value, identity: &str) -> Result<Value> {
-    tokio::time::timeout(Duration::from_secs(80), async {
+    tokio::time::timeout(Duration::from_secs(if action == "node.ssh_add" || action == "node.connect" { 200 } else { 80 }), async {
         let stream = UnixStream::connect(socket).await?;
         if stream.peer_cred()?.uid() != unsafe { libc::geteuid() } {
             return Err(error("foreign daemon UID"));

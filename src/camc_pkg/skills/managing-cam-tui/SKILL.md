@@ -29,6 +29,7 @@ different capabilities; camc does not provide remote fleet `list` or `attach`.
 ```sh
 cam-tui version
 cam-clientd version
+cam-server version --json
 cam-tui
 cam-tui daemon status
 ```
@@ -49,9 +50,13 @@ Username, SSH key file and an optional display name.
 - Authentication temporarily uses the native terminal for OpenSSH host-key,
   password or encrypted-key passphrase prompts, then returns to the TUI.
   User passwords/passphrases are not saved to CAM config, argv, IPC or logs.
-- CAM discovers the remote Server and pairs the Client automatically. A
-  Server must already be installed and running. First-time Client pairing
-  requires Server 0.1.2+; older Servers can reuse an existing management grant.
+- CAM discovers the remote Server and pairs the Client automatically.
+  Missing/older Servers are installed or updated from the Client release
+  bundle, including the matching SDK, then started and paired. A sufficiently
+  new healthy Server connects directly without a copy, restart or downgrade.
+  Add/Edit/Connect preserve Node identity, config, grants and agent tmux.
+  Keep cam-server.bundle and cam-server.bundle.json beside cam-clientd;
+  Linux Python 3.6+ and a matching CPU release are required on the Node.
 - The long Node ID is internal. Users select Host/display names; do not ask
   them to assemble a transport command, token file or Server ID.
 - **Connect** can authenticate again after an SSH session expires. **Edit**
@@ -60,6 +65,13 @@ Username, SSH key file and an optional display name.
 
 OpenSSH handles known_hosts and SSH authentication. Do not disable host-key
 checks or copy login secrets into connection commands to bypass a failure.
+
+Server management follows versioned releases with atomic executable links,
+like camc. `cam-server setup --bundle FILE` and `cam-server update --bundle FILE`
+use the same verified installation flow; `cam-server status` inspects its
+default configuration. Updates briefly reconnect Clients while leaving tools
+and tmux running. Query an unknown operation by its original request ID; do
+not replay it because of a Server restart. No automatic update cron is added.
 
 ## Agent list and terminals
 
@@ -71,7 +83,7 @@ polling do not reorder them; visit history survives UI/daemon restarts.
 Select an agent on the left. The right tab bar contains **that agent's
 terminals**, rather than tabs for different agents:
 
-- **Agent** is fixed to the primary tmux pane `0.0` and cannot be closed.
+- **Terminal 0** is fixed to the agent's primary tmux pane `0.0` and cannot be closed.
 - **+** creates an auxiliary shell in the same agent session. Its tmux
   window has an independent pane, preserving the agent's screen area.
 - **×** closes that auxiliary shell. It does not stop the agent pane.

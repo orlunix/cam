@@ -1,2 +1,4 @@
 # Development-only PTY screen assertions; neither CAM binaries nor SDK need it.
 pyte==0.8.2
+# Isolated SSH authentication fixtures; CAM runtime continues to use OpenSSH.
+paramiko>=3.5,<5

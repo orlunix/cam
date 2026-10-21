@@ -46,6 +46,65 @@ def test_legacy_paste_probe_rejects_unbounded_geometry():
     assert _legacy_paste_mode(["must-not-execute"], "unused", 501, 24) is None
 
 
+def test_terminal_shells_preserve_primary_scope_creation_and_launch_identity(monkeypatch, tmp_path):
+    import camc_pkg.storage
+    tmux = shutil.which("tmux")
+    if not tmux:
+        pytest.skip("tmux required")
+    argv = [tmux, "-u", "-S", str(tmp_path / "terminal.sock"), "-f", "/dev/null"]
+    agent = {"id":"beefcafe", "launch_id":"launch-one", "tmux_session":"agent-test",
+             "tmux_socket":str(tmp_path / "terminal.sock"), "tmux_bin":tmux, "path":str(tmp_path)}
+    class Store:
+        def get(self, ref):
+            return agent if ref == agent["id"] else None
+    monkeypatch.setattr(camc_pkg.storage, "AgentStore", Store)
+    def call(action, **args):
+        return management_request(action, dict(agent_id=agent["id"], **args), "node-a", str(tmp_path / "state.db"), None)
+    try:
+        subprocess.check_call(argv + ["new-session", "-d", "-s", "agent-test", "-x", "80", "-y", "24", "exec /bin/cat"])
+        subprocess.check_call(argv + ["set-option", "-g", "default-shell", "/bin/sh"])
+        first = call("terminal.list")["panes"]
+        assert len(first) == 1 and first[0]["primary"]
+        primary = first[0]["pane_id"]
+        created = call("terminal.create", request_id="create-one", launch_id="launch-one")
+        shell = created["pane_id"]
+        assert shell != primary and len(created["panes"]) == 2
+        assert call("terminal.create", request_id="create-one")["pane_id"] == shell
+        assert len(call("terminal.list")["panes"]) == 2
+        assert call("terminal.resolve", pane_id=shell)["primary"] is False
+        assert call("terminal.resolve")["pane"] == primary
+        subprocess.check_call(argv + ["send-keys", "-t", shell, "printf 'AUXILIARY_PROOF\\n'", "Enter"])
+        for _ in range(100):
+            if any(line.strip() == b"AUXILIARY_PROOF" for line in subprocess.check_output(argv + ["capture-pane", "-p", "-t", shell]).splitlines()):
+                break
+            time.sleep(.02)
+        assert any(line.strip() == b"AUXILIARY_PROOF" for line in subprocess.check_output(argv + ["capture-pane", "-p", "-t", shell]).splitlines())
+        assert b"AUXILIARY_PROOF" not in subprocess.check_output(argv + ["capture-pane", "-p", "-t", primary])
+        with pytest.raises(ValueError, match="cannot be closed"):
+            call("terminal.close", pane_id=primary)
+        with pytest.raises(ValueError, match="launch changed"):
+            call("terminal.create", request_id="old-launch", launch_id="old")
+        foreign = subprocess.check_output(argv + ["new-session", "-d", "-s", "foreign", "-P", "-F", "#{pane_id}", "exec /bin/cat"]).decode().strip()
+        with pytest.raises(ValueError, match="unavailable"):
+            call("terminal.resolve", pane_id=foreign)
+        call("terminal.close", pane_id=foreign)
+        assert subprocess.call(argv + ["has-session", "-t", "foreign"]) == 0
+        call("terminal.close", pane_id=shell)
+        assert call("terminal.list")["panes"][0]["pane_id"] == primary
+        assert len(call("terminal.list")["panes"]) == 1
+        # Replaying a completed create after its shell was closed cannot
+        # create another shell or revive the old one.
+        call("terminal.create", request_id="create-one")
+        assert len(call("terminal.list")["panes"]) == 1
+        for i in range(7):
+            call("terminal.create", request_id="shell-%d" % i)
+        with pytest.raises(ValueError, match="8-terminal"):
+            call("terminal.create", request_id="over-limit")
+        assert len(call("terminal.list")["panes"]) == 8
+    finally:
+        subprocess.run(argv + ["kill-server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def _effect(message):
     with open(message["payload"]["args"]["id"], "a") as stream:
         stream.write("once\n")

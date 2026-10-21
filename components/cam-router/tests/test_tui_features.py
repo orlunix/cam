@@ -30,13 +30,16 @@ from test_tui_e2e import DAEMON, TUI
 
 
 class UI:
-    def __init__(self, suite, rows=38, cols=150):
+    def __init__(self, suite, rows=38, cols=150, controlling_tty=False):
         self.suite = suite
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        command = [str(TUI), "--config", str(suite.client_config)]
+        if controlling_tty:
+            command = ["/usr/bin/setsid", "--ctty"] + command
         self.process = subprocess.Popen(
-            [str(TUI), "--config", str(suite.client_config)], env=suite.env,
-            stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+            command, env=suite.env, stdin=slave, stdout=slave, stderr=slave,
+            start_new_session=not controlling_tty)
         os.close(slave)
         suite.ui_fds.append((self.process, self.master))
         self.screen = pyte.Screen(cols, rows)
@@ -75,6 +78,12 @@ class UI:
 
     def key(self, data):
         self.send(data)
+
+    def resize(self, rows, cols):
+        fcntl.ioctl(self.master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        self.screen.resize(rows, cols)
+        os.kill(self.process.pid, signal.SIGWINCH)
+        self.pump()
 
     def paste(self, text):
         self.send(b"\x1b[200~" + text.encode() + b"\x1b[201~")
@@ -187,7 +196,7 @@ class FeatureTests(unittest.TestCase):
         ui.key(b"\x1bOS")  # F4
         ui.until(lambda: "×" in ui.pump() and "COPY & PASTE" in ui.pump())
         ui.key(b"\x1b")
-        ui.until(lambda: "×" not in ui.pump())
+        ui.until(lambda: "Agents  3/3" in ui.pump() and "COPY & PASTE" in ui.pump())
         ui.close()
 
     def test_agent_ellipsis_settings_rename_and_tags_preserve_tool(self):
@@ -208,7 +217,7 @@ class FeatureTests(unittest.TestCase):
         self.until(lambda: (self.cached(agent) or {}).get("name") == "renamed-agent")
         self.assertEqual(self.cached(agent)["tags"], ["ui", "regress"])
         self.assertFalse(self.cached(agent)["stale"])
-        ui.until(lambda: "renamed-agen" in ui.pump().splitlines()[1])
+        ui.until(lambda: "renamed-agent" in ui.pump().splitlines()[3][32:])
         after = self.agent_record(node, agent)
         self.assertEqual((after["pid"], after["launch_id"]), (before["pid"], before["launch_id"]))
         self.assertEqual(after["task"]["tags"], ["ui", "regress"])
@@ -233,12 +242,78 @@ class FeatureTests(unittest.TestCase):
         self.assertEqual(self.agent_record(node, agent)["task"]["name"], "renamed-agent")
         ui.close()
 
+    def test_recent_visits_reorder_real_ui_and_survive_client_restart(self):
+        node = self.managed_node()
+        self.start_daemon([node])
+        alpha, beta = self.create_agent(node, "visit-alpha"), self.create_agent(node, "visit-beta")
+        before = {agent: self.agent_record(node, agent) for agent in (alpha, beta)}
+        ui = UI(self)
+        def order():
+            ui.pump()
+            return [name for line in ui.screen.display[13:] for name in ("visit-alpha", "visit-beta") if name in line[:32]]
+        ui.until(lambda: order() == ["visit-alpha", "visit-beta"])
+        ui.click("visit-beta")
+        ui.until(lambda: "TUI_READY_visit-beta" in ui.pump())
+        ui.until(lambda: order() == ["visit-beta", "visit-alpha"])
+        ui.click("visit-alpha", min_x=0)
+        ui.until(lambda: "TUI_READY_visit-alpha" in ui.pump())
+        ui.until(lambda: order() == ["visit-alpha", "visit-beta"])
+        # Rows retain their identities while visiting an already open agent.
+        ui.click("visit-beta")
+        ui.until(lambda: order() == ["visit-beta", "visit-alpha"])
+        visits = self.rpc("snapshot")["recent_visits"]
+        self.assertGreater(visits[node.node_id + ":" + beta], visits[node.node_id + ":" + alpha])
+        self.operation(node, alpha, "send", text="BACKGROUND_ACTIVITY")
+        ui.until(lambda: "BACKGROUND_ACTIVITY" in self.operation(node, alpha, "capture")["stdout"])
+        self.assertEqual(self.rpc("snapshot")["recent_visits"], visits)
+        self.assertEqual(order(), ["visit-beta", "visit-alpha"])
+        ui.filter("visit-alpha")
+        ui.until(lambda: order() == ["visit-alpha"])
+        ui.click("Clear filters")
+        ui.until(lambda: order() == ["visit-beta", "visit-alpha"])
+        ui.close()
+        self.rpc("shutdown")
+        self.daemon.wait(timeout=8)
+        self.start_daemon([node])
+        self.assertEqual(self.rpc("snapshot")["recent_visits"], visits)
+        reopened = UI(self)
+        reopened.until(lambda: "visit-beta" in reopened.screen.display[13][:32])
+        for agent, record in before.items():
+            after = self.agent_record(node, agent)
+            self.assertEqual((after["task"], after["pid"], after["launch_id"]),
+                             (record["task"], record["pid"], record["launch_id"]))
+        reopened.close()
+
+    def test_recent_visits_are_local_bounded_and_keyed_by_node_and_agent(self):
+        a, b = self.managed_node("a", "b"), self.managed_node("b", "a")
+        records = [{"id":"shared","name":"same name","status":"alive"}] + [
+            {"id":"agent-%d" % i,"name":"entry-%d" % i,"status":"alive"} for i in range(1001)]
+        routing.private_json(a.home / ".cam/agents.json", records)
+        routing.private_json(b.home / ".cam/agents.json", records[:1])
+        self.start_daemon([a, b])
+        self.until(lambda: len(self.rpc("snapshot")["agents"]) == len(records) + 1)
+        for node in (a, b):
+            self.rpc("agent.visit", {"node_id":node.node_id, "agent_id":"shared"})
+        visits = self.rpc("snapshot")["recent_visits"]
+        self.assertGreater(visits[b.node_id + ":shared"], visits[a.node_id + ":shared"])
+        with self.assertRaisesRegex(ValueError, "not found"):
+            self.rpc("agent.visit", {"node_id":a.node_id, "agent_id":"agent-"})
+        for i in range(1001):
+            self.rpc("agent.visit", {"node_id":a.node_id, "agent_id":"agent-%d" % i})
+        visits = self.rpc("snapshot")["recent_visits"]
+        self.assertEqual(len(visits), 1000)
+        self.assertNotIn(a.node_id + ":shared", visits)
+        self.assertNotIn(a.node_id + ":agent-0", visits)
+        self.assertIn(a.node_id + ":agent-1000", visits)
+        self.assertEqual(json.loads((a.home / ".cam/agents.json").read_text()), records)
+        self.assertEqual(json.loads((b.home / ".cam/agents.json").read_text()), records[:1])
+
     def test_nodes_gui_add_edit_auth_disconnect_remove_preserves_agent(self):
         a, b = self.managed_node("a", "b"), self.managed_node("b", "a")
         self.start_daemon([a])
         ui = UI(self)
         ui.key(b"\x1bOQ")  # F2
-        ui.click("+ Add")
+        ui.click("Local / advanced")
         ui.field("Name (optional)", "Remote test")
         ui.field("Server ID (advanced)", b.node_id)
         ui.field("Unix socket (local)", str(b.socket))
@@ -268,7 +343,55 @@ class FeatureTests(unittest.TestCase):
         self.until(lambda: all(n["node_id"] != b.node_id for n in self.rpc("snapshot")["nodes"]))
         self.assertEqual(b.status()["node_id"], b.node_id)
         self.assertIn("TUI_READY_node-kept", b.cli("capture", agent).stdout)
-        self.assertEqual(json.loads(self.client_config.read_text())["endpoints"][0]["node_id"], a.node_id)
+
+    def test_per_agent_terminal_tabs_create_switch_close_and_protect_primary(self):
+        node = self.managed_node()
+        self.start_daemon([node])
+        alpha, beta = self.create_agent(node, "pane-alpha"), self.create_agent(node, "pane-beta")
+        ui = UI(self)
+        ui.click("pane-alpha")
+        ui.until(lambda: "TUI_READY_pane-alpha" in ui.pump())
+        def panes():
+            return self.rpc("terminal.list", {"node_id":node.node_id,"agent_id":alpha})["panes"]
+        primary = panes()[0]["pane_id"]
+        initial_size = (panes()[0]["cols"], panes()[0]["rows"])
+        ui.click("+", exact=True, min_x=33)
+        ui.until(lambda: "Terminal 1" in ui.pump().splitlines()[1])
+        ui.send(b"printf 'SHELL_ONE_PROOF\\n'\r")
+        ui.until(lambda: any(line[33:-1].strip() == "SHELL_ONE_PROOF" for line in ui.pump().splitlines()[4:-2]))
+        self.assertNotIn("Creating terminal", ui.pump().splitlines()[-1])
+        ui.click("+", exact=True, min_x=33)
+        ui.until(lambda: "Terminal 2" in ui.pump().splitlines()[1])
+        ui.send(b"printf 'SHELL_TWO_PROOF\\n'\r")
+        ui.until(lambda: any(line[33:-1].strip() == "SHELL_TWO_PROOF" for line in ui.pump().splitlines()[4:-2]))
+        self.assertEqual((panes()[0]["cols"], panes()[0]["rows"]), initial_size,
+                         "new control clients must not shrink the agent pane to 80x24")
+        ui.resize(42, 170)
+        ui.until(lambda: all((p["cols"], p["rows"]) == (136, 36) for p in panes()))
+        ui.click("Terminal 0", exact=True, min_x=33)
+        ui.until(lambda: "TUI_READY_pane-alpha" in ui.pump())
+        self.assertNotIn("SHELL_ONE_PROOF", self.operation(node, alpha, "capture")["stdout"])
+        with self.assertRaisesRegex(ValueError, "cannot be closed"):
+            self.rpc("terminal.close", {"node_id":node.node_id,"agent_id":alpha,"pane_id":primary})
+        with self.assertRaisesRegex(ValueError, "unavailable"):
+            self.rpc("terminal.attach", {"node_id":node.node_id,"agent_id":beta,"pane_id":panes()[1]["pane_id"]})
+        with self.assertRaisesRegex(ValueError, "invalid pane"):
+            self.rpc("terminal.attach", {"node_id":node.node_id,"agent_id":alpha,"pane_id":"primary"})
+        ui.click("Terminal 1", min_x=33)
+        ui.until(lambda: "SHELL_ONE_PROOF" in ui.pump())
+        ui.click("pane-beta")
+        ui.until(lambda: "TUI_READY_pane-beta" in ui.pump())
+        self.assertNotIn("Terminal 1", ui.pump().splitlines()[1])
+        self.assertNotIn("pane-alpha", ui.pump().splitlines()[1])
+        ui.click("pane-alpha")
+        ui.until(lambda: "SHELL_ONE_PROOF" in ui.pump())
+        ui.click("×", min_x=33)
+        ui.until(lambda: len(panes()) == 2 and "Terminal 1" not in ui.pump().splitlines()[1])
+        self.assertEqual(panes()[0]["pane_id"], primary)
+        ui.until(lambda: "TUI_READY_pane-alpha" in ui.pump())
+        ui.close()
+        self.assertEqual(len(panes()), 2, "closing the UI must leave the remaining shell alive")
+        self.assertEqual(json.loads(self.client_config.read_text())["endpoints"][0]["node_id"], node.node_id)
 
     def test_new_agent_chooses_machine_name_and_routes_to_its_original_id(self):
         a, b = self.managed_node("a", "b"), self.managed_node("b", "a")
@@ -454,7 +577,11 @@ class FeatureTests(unittest.TestCase):
         ui.until(lambda: "clipboard-peer" in ui.pump())
         ui.click("clipboard-peer")
         ui.until(lambda: "TUI_READY_clipboard-peer" in ui.pump())
-        ui.mouse(38, 1)  # Return to the first tab with its selection intact.
+        # Agent selection belongs to the sidebar; the bar only holds this
+        # agent's terminal panes. Restore its view with the selection intact.
+        row = next(y for y, line in enumerate(ui.screen.display) if y >= 7
+                   and re.search(r"(?<![\w-])clipboard(?![\w-])", line[:32]))
+        ui.mouse(5, row)
         ui.key(b"\x03")
         ui.until(lambda: "Copied to local clipboard" in ui.pump())
         self.assertEqual(subprocess.check_output(

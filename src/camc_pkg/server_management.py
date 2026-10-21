@@ -59,6 +59,7 @@ def _agent_metadata(agent, node):
                 path=agent.get("context_path") or agent.get("path", ""),
                 status=agent.get("status"), state=agent.get("state"),
                 phase=agent.get("phase"), backend="legacy",
+                launch_id=agent.get("launch_id"),
                 exit_reason=agent.get("exit_reason"))
 
 
@@ -172,36 +173,9 @@ def management_request(action, args, node, state_path, receiver):
     agent = store.get(agent_id)
     if not agent or agent.get("id") != agent_id or not _local_agent(agent):
         raise ValueError("AGENT_NOT_FOUND on this Node")
-    if action == "terminal.resolve":
-        from camc_pkg.transport import _find_tmux_socket, _tmux_bin_for_session
-        session = agent.get("tmux_session") or agent.get("session")
-        if not session:
-            raise ValueError("agent has no terminal")
-        binary = agent.get("tmux_bin") or _tmux_bin_for_session(session)
-        sock = agent.get("tmux_socket") or _find_tmux_socket(session)
-        argv = [binary, "-u"] + (["-S", sock] if sock else [])
-        output = subprocess.check_output(
-            argv + ["display-message", "-p", "-t", session + ":0.0",
-                    "#{pane_id} #{window_id} #{pane_width} #{pane_height} #{status}"],
-            stderr=subprocess.DEVNULL, timeout=5).decode().strip().split()
-        if len(output) != 5 or not re.fullmatch(r"%[0-9]+", output[0]) \
-                or not re.fullmatch(r"@[0-9]+", output[1]):
-            raise ValueError("invalid terminal identity")
-        result = dict(argv=argv, session=session, pane=output[0], window=output[1],
-                      cols=int(output[2]), rows=int(output[3]), status_lines=0 if output[4] == "off" else 1)
-        if args.get("probe_modes"):
-            modes = subprocess.check_output(
-                argv + ["display-message", "-p", "-t", session + ":0.0",
-                        "#{window_width};#{window_height};#{pane_active};#{window_active};#{bracketed_paste_flag}"],
-                stderr=subprocess.DEVNULL, timeout=5).decode().strip().split(";")
-            result["bracketed_paste"] = None
-            if len(modes) == 5:
-                if modes[4] in ("0", "1"):
-                    result["bracketed_paste"] = modes[4] == "1"
-                elif modes[2:4] == ["1", "1"]:
-                    result["bracketed_paste"] = _legacy_paste_mode(
-                        argv, session, int(modes[0]), int(modes[1]) + result["status_lines"])
-        return result
+    if action in ("terminal.resolve", "terminal.list", "terminal.create", "terminal.close"):
+        from camc_pkg.server_terminals import terminal_request
+        return terminal_request(action, agent, args, state_path, _legacy_paste_mode)
     if action == "loop.deliver":
         # Keep this gate at the execution Node, never in a stale Client cache.
         # Legacy inputs outside Server control still have their legacy races.

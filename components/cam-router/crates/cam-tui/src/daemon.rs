@@ -25,6 +25,7 @@ use tokio::{
 struct Output {
     node: String,
     agent: String,
+    pane: String,
     snapshot: Value,
     bytes: VecDeque<u8>,
     base: u64,
@@ -33,6 +34,13 @@ struct Output {
     error: Option<String>,
     writer: String,
     writer_seen: i64,
+}
+
+fn geometry_read_only(terminals: &HashMap<String, Output>, tid: &str, view: &str) -> bool {
+    terminals.get(tid).map(|target| terminals.values().any(|t|
+        t.node == target.node && t.agent == target.agent && t.pane == "primary"
+            && !t.closed && !t.writer.is_empty() && now() - t.writer_seen <= 15 && t.writer != view
+    )).unwrap_or(false)
 }
 pub struct Daemon {
     config: Mutex<Config>,
@@ -59,7 +67,7 @@ impl Daemon {
         let dbpath = config.runtime_dir.join("client.db");
         let database = Connection::open(&dbpath)?;
         fs::set_permissions(&dbpath, fs::Permissions::from_mode(0o600))?;
-        database.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS job_runs(id TEXT PRIMARY KEY,job TEXT NOT NULL,data TEXT NOT NULL);")?;
+        database.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS job_runs(id TEXT PRIMARY KEY,job TEXT NOT NULL,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS agent_visits(node TEXT NOT NULL,agent TEXT NOT NULL,visited INTEGER NOT NULL,PRIMARY KEY(node,agent));")?;
         let relay = Relay::start(config.relay());
         let daemon = Arc::new(Self {
             config: Mutex::new(config),
@@ -88,6 +96,33 @@ impl Daemon {
             }
         }
         Ok(daemon)
+    }
+    fn visits(&self) -> Result<Value> {
+        let db = self.database.lock().unwrap();
+        let mut statement = db.prepare("SELECT node,agent,visited FROM agent_visits")?;
+        let rows = statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?;
+        let mut visits = serde_json::Map::new();
+        for row in rows {
+            let (node, agent, visited) = row?;
+            visits.insert(format!("{node}:{agent}"), json!(visited));
+        }
+        Ok(Value::Object(visits))
+    }
+    fn visit(&self, args: &Value) -> Result<Value> {
+        let node = args["node_id"].as_str().ok_or_else(|| error("Node required"))?;
+        let agent = args["agent_id"].as_str().ok_or_else(|| error("agent required"))?;
+        if !self.agents.lock().unwrap().get(node).map(|list| list.iter().any(|a| a["id"] == agent)).unwrap_or(false) {
+            return Err(error("agent not found in Client cache"));
+        }
+        let mut db = self.database.lock().unwrap();
+        let tx = db.transaction()?;
+        // A sequence resolves visits within one millisecond and clock rollback.
+        // This is Client UI state; never send it to a Server or the agent store.
+        let millis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis() as i64;
+        tx.execute("INSERT OR REPLACE INTO agent_visits VALUES (?1,?2,MAX(?3,COALESCE((SELECT MAX(visited) FROM agent_visits),0)+1))", params![node, agent, millis])?;
+        tx.execute("DELETE FROM agent_visits WHERE (node,agent) IN (SELECT node,agent FROM agent_visits ORDER BY visited DESC LIMIT -1 OFFSET 1000)", [])?;
+        tx.commit()?;
+        Ok(json!({"ok":true}))
     }
     fn jobs(&self) -> Result<Vec<Value>> {
         let db = self.database.lock().unwrap();
@@ -283,6 +318,7 @@ impl Daemon {
                     let output = terminals.entry(tid.clone()).or_insert_with(|| Output {
                         node: node.clone(),
                         agent: String::new(),
+                        pane: String::new(),
                         snapshot: Value::Null,
                         bytes: VecDeque::new(),
                         base: 0,
@@ -375,15 +411,23 @@ impl Daemon {
     ) -> Result<Value> {
         match action {
             "snapshot" => Ok(
-                json!({"epoch":self.epoch,"agents":self.cache(),"nodes":self.relay.status(),"connections":self.config.lock().unwrap().endpoints,"health":self.health(),"jobs":self.jobs()?}),
+                json!({"epoch":self.epoch,"agents":self.cache(),"recent_visits":self.visits()?,"nodes":self.relay.status(),"connections":self.config.lock().unwrap().endpoints,"health":self.health(),"jobs":self.jobs()?}),
             ),
+            "agent.visit" => self.visit(&args),
+            "terminal.list" | "terminal.create" | "terminal.close" => {
+                let node = args["node_id"].as_str().ok_or_else(|| error("Node required"))?;
+                self.relay.request(node, action, args.clone(), request_id).await
+            }
             "health" => Ok(self.health()),
             "shutdown" => {
                 self.stop.notify_one();
                 Ok(json!({"ok":true}))
             }
-            "node.upsert" => {
-                let endpoint: Endpoint = serde_json::from_value(args)?;
+            "node.upsert" | "node.ssh_add" => {
+                let endpoint: Endpoint = if action == "node.ssh_add" {
+                    let config = self.config.lock().unwrap().clone();
+                    crate::ssh::onboard(&config, serde_json::from_value(args)?).await?
+                } else { serde_json::from_value(args)? };
                 Config::validate_endpoint(&endpoint)?;
                 {
                     let mut config = self.config.lock().unwrap();
@@ -395,18 +439,34 @@ impl Daemon {
                     {
                         return Err(error("Client Node capacity reached (128)"));
                     }
-                    config.endpoints.retain(|e| e.node_id != endpoint.node_id);
-                    config.endpoints.push(endpoint.clone());
-                    config.save(&self.path)?;
+                    let mut next = config.clone();
+                    next.endpoints.retain(|e| e.node_id != endpoint.node_id);
+                    next.endpoints.push(endpoint.clone());
+                    next.save(&self.path)?;
+                    *config = next;
                 }
+                let node_id = endpoint.node_id.clone();
                 self.relay.update_endpoint(endpoint);
-                Ok(json!({"ok":true}))
+                Ok(json!({"ok":true,"node_id":node_id}))
             }
             "node.connect" | "node.disconnect" | "node.remove" => {
                 let node = args["node_id"]
                     .as_str()
                     .ok_or_else(|| error("Node required"))?;
                 if action == "node.connect" {
+                    let config = self.config.lock().unwrap().clone();
+                    let connection = config.endpoints.iter().find(|e| e.node_id == node)
+                        .and_then(crate::ssh::profile);
+                    if let Some(connection) = connection {
+                        let endpoint = crate::ssh::onboard(&config, connection).await?;
+                        let mut config = self.config.lock().unwrap();
+                        let mut next = config.clone();
+                        next.endpoints.retain(|e| e.node_id != node);
+                        next.endpoints.push(endpoint.clone());
+                        next.save(&self.path)?;
+                        *config = next;
+                        self.relay.update_endpoint(endpoint);
+                    }
                     self.relay.connect_node(node)?;
                 } else if action == "node.disconnect" {
                     self.relay.disconnect_node(node);
@@ -482,11 +542,16 @@ impl Daemon {
                 let agent = args["agent_id"]
                     .as_str()
                     .ok_or_else(|| error("agent required"))?;
+                let pane = args["pane_id"].as_str().unwrap_or("primary");
+                if !args["pane_id"].is_null() && !args["pane_id"].as_str().and_then(|p| p.strip_prefix('%'))
+                    .map(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit())).unwrap_or(false) {
+                    return Err(error("invalid pane ID"));
+                }
                 let view = args["view_id"].as_str().unwrap_or("rpc");
                 {
                     let mut terminals = self.terminals.lock().unwrap();
                     if let Some((tid, output)) = terminals.iter_mut().find(|(_, t)| {
-                        t.node == node && t.agent == agent && !t.closed && t.base == 0
+                        t.node == node && t.agent == agent && t.pane == pane && !t.closed && t.base == 0
                     }) {
                         if output.writer.is_empty() || now() - output.writer_seen > 15 {
                             output.writer = view.into();
@@ -502,7 +567,7 @@ impl Daemon {
                     .lock()
                     .unwrap()
                     .iter()
-                    .filter(|(_, t)| t.node == node && t.agent == agent && (t.closed || t.base > 0))
+                    .filter(|(_, t)| t.node == node && t.agent == agent && t.pane == pane && (t.closed || t.base > 0))
                     .map(|(tid, _)| tid.clone())
                     .collect();
                 for tid in stale {
@@ -525,6 +590,7 @@ impl Daemon {
                     let output = terminals.entry(tid).or_insert_with(|| Output {
                         node: node.into(),
                         agent: agent.into(),
+                        pane: pane.into(),
                         snapshot: Value::Null,
                         bytes: VecDeque::new(),
                         base: 0,
@@ -535,6 +601,7 @@ impl Daemon {
                         writer_seen: now(),
                     });
                     output.agent = agent.into();
+                    output.pane = pane.into();
                     output.writer = view.into();
                     output.writer_seen = now();
                 }
@@ -542,6 +609,7 @@ impl Daemon {
             }
             "terminal.read" => {
                 let mut terminals = self.terminals.lock().unwrap();
+                let resize_read_only = geometry_read_only(&terminals, args["terminal_id"].as_str().unwrap_or(""), args["view_id"].as_str().unwrap_or("rpc"));
                 let terminal = terminals
                     .get_mut(args["terminal_id"].as_str().unwrap_or(""))
                     .ok_or_else(|| error("terminal not found"))?;
@@ -566,7 +634,7 @@ impl Daemon {
                     .copied()
                     .collect();
                 Ok(
-                    json!({"snapshot":if args["initial"]==true{terminal.snapshot.clone()}else{Value::Null},"cursor":cursor+data.len()as u64,"data":STANDARD.encode(data),"closed":terminal.closed,"error":terminal.error,"read_only":terminal.writer!=view,"rows":terminal.snapshot["rows"],"cols":terminal.snapshot["cols"]}),
+                    json!({"snapshot":if args["initial"]==true{terminal.snapshot.clone()}else{Value::Null},"cursor":cursor+data.len()as u64,"data":STANDARD.encode(data),"closed":terminal.closed,"error":terminal.error,"read_only":terminal.writer!=view,"resize_read_only":resize_read_only,"rows":terminal.snapshot["rows"],"cols":terminal.snapshot["cols"]}),
                 )
             }
             "terminal.release" => {
@@ -581,6 +649,9 @@ impl Daemon {
             "terminal.input" | "terminal.resize" | "terminal.detach" => {
                 let node = {
                     let terminals = self.terminals.lock().unwrap();
+                    if action == "terminal.resize" && geometry_read_only(&terminals, args["terminal_id"].as_str().unwrap_or(""), args["view_id"].as_str().unwrap_or("rpc")) {
+                        return Err(error("terminal geometry is controlled by the agent writer view"));
+                    }
                     let terminal = terminals
                         .get(args["terminal_id"].as_str().unwrap_or(""))
                         .filter(|t| !t.closed || action == "terminal.detach")
@@ -607,13 +678,11 @@ impl Daemon {
                     }
                 }
                 if action == "terminal.resize" {
-                    if let Some(t) = self
-                        .terminals
-                        .lock()
-                        .unwrap()
-                        .get_mut(args["terminal_id"].as_str().unwrap_or(""))
-                    {
-                        if !t.snapshot.is_null() {
+                    let mut terminals = self.terminals.lock().unwrap();
+                    let target = terminals.get(args["terminal_id"].as_str().unwrap_or(""))
+                        .map(|t| (t.node.clone(), t.agent.clone()));
+                    for t in terminals.values_mut().filter(|t| target.as_ref() == Some(&(t.node.clone(), t.agent.clone()))) {
+                        if !t.closed && !t.snapshot.is_null() {
                             t.snapshot["rows"] = args["rows"].clone();
                             t.snapshot["cols"] = args["cols"].clone();
                         }
@@ -871,8 +940,16 @@ pub fn validate_job(mut job: Value) -> Result<Value> {
     Ok(job)
 }
 pub async fn serve(config: Config, path: PathBuf) -> Result<()> {
+    serve_inner(config, path, false).await
+}
+#[cfg(feature = "test-harness")]
+pub async fn serve_test_client(config: Config, path: PathBuf) -> Result<()> {
+    serve_inner(config, path, true).await
+}
+async fn serve_inner(config: Config, path: PathBuf, isolated_test: bool) -> Result<()> {
     prepare_runtime(&config.runtime_dir)?;
-    let lockpath = PathBuf::from(format!("/tmp/cam-client-{}.lock", uid()));
+    let lockpath = if isolated_test { config.runtime_dir.join("client.lock") }
+        else { PathBuf::from(format!("/tmp/cam-client-{}.lock", uid())) };
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
