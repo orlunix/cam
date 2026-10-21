@@ -27,6 +27,7 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -36,6 +37,8 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -53,11 +56,22 @@ public final class MobileEmbeddedHub {
     private static final Pattern RUN_AGENT_ID_RE = Pattern.compile("(?m)^\\s*ID:\\s+([0-9a-fA-F]{6,})\\b");
     private static final String PRODUCT_VERSION = "cam-mobile-embedded-1";
 
+    // Client-state sync cadence, aligned with cam-clientd/cam-tui.
+    private static final long AGENT_POLL_SECONDS = 30L;
+    private static final long AGENT_STARTUP_POLL_SECONDS = 2L;
+    private static final long AGENT_STARTUP_WATCH_MS = 600_000L;
+    private static final long AGENT_FRESHNESS_MS = Math.max(AGENT_POLL_SECONDS * 3, 15L) * 1000L;
+
     private final Context appContext;
     private ExecutorService executor = Executors.newCachedThreadPool();
     private final AtomicBoolean acceptRunning = new AtomicBoolean(false);
     private final MobileTerminalManager terminalManager;
     private final Set<Socket> clientSockets = ConcurrentHashMap.newKeySet();
+    private ScheduledExecutorService agentPoller;
+    private final Set<String> agentPollInFlight = ConcurrentHashMap.newKeySet();
+    private final Map<String, Long> agentFastPollUntil = new ConcurrentHashMap<>();
+    private final Map<String, Long> agentLastPollAt = new ConcurrentHashMap<>();
+    private final Map<String, String> agentPollLastError = new ConcurrentHashMap<>();
 
     private ServerSocket serverSocket;
     private int port = -1;
@@ -165,6 +179,7 @@ public final class MobileEmbeddedHub {
             acceptRunning.set(true);
             if (executor.isShutdown()) executor = Executors.newCachedThreadPool();
             executor.execute(this::runAcceptLoop);
+            startAgentPoller();
             log("info", "embedded Hub listening on 127.0.0.1:" + port);
             return okStart(false);
         } catch (Exception e) {
@@ -210,6 +225,7 @@ public final class MobileEmbeddedHub {
             try { client.close(); } catch (IOException ignored) {}
         }
         clientSockets.clear();
+        stopAgentPoller();
         executor.shutdownNow();
         port = -1;
         token = null;
@@ -226,6 +242,252 @@ public final class MobileEmbeddedHub {
     public synchronized JSONObject restart() {
         stop();
         return start();
+    }
+
+    /* ── Client-state agent sync (cam-clientd cadence) ─────────────────
+     * 30s full snapshot per endpoint; 2s fast poll for starting agents;
+     * immediate targeted refresh after run/stop/remove. The WebView's own
+     * list loop only reads this cache. */
+    private synchronized void startAgentPoller() {
+        if (agentPoller != null && !agentPoller.isShutdown()) return;
+        agentPoller = Executors.newScheduledThreadPool(2, r -> {
+            Thread t = new Thread(r, "cam-agent-poll");
+            t.setDaemon(true);
+            return t;
+        });
+        agentPoller.scheduleWithFixedDelay(this::pollAllAgents,
+            AGENT_STARTUP_POLL_SECONDS, AGENT_POLL_SECONDS, TimeUnit.SECONDS);
+        agentPoller.scheduleWithFixedDelay(this::pollStartupAgents,
+            AGENT_STARTUP_POLL_SECONDS, AGENT_STARTUP_POLL_SECONDS, TimeUnit.SECONDS);
+        log("info", "agent sync started (" + AGENT_POLL_SECONDS + "s full, "
+            + AGENT_STARTUP_POLL_SECONDS + "s startup)");
+    }
+
+    private synchronized void stopAgentPoller() {
+        ScheduledExecutorService p = agentPoller;
+        agentPoller = null;
+        if (p != null) p.shutdownNow();
+        agentPollInFlight.clear();
+        agentFastPollUntil.clear();
+        agentLastPollAt.clear();
+        agentPollLastError.clear();
+    }
+
+    private void pollAllAgents() {
+        try {
+            for (JSONObject ctx : representativeAgentContexts()) {
+                pollContextAgents(ctx, true);
+            }
+        } catch (Throwable t) {
+            log("warn", "agent poll failed: " + t.getMessage());
+        }
+    }
+
+    private void pollStartupAgents() {
+        try {
+            long now = System.currentTimeMillis();
+            for (JSONObject ctx : representativeAgentContexts()) {
+                String key = agentEndpointKey(ctx);
+                if (key == null) continue;
+                Long until = agentFastPollUntil.get(key);
+                boolean watched = until != null && until > now;
+                if (!watched) {
+                    if (until != null) agentFastPollUntil.remove(key);
+                    if (!contextHasStartingAgents(ctx)) continue;
+                }
+                pollContextAgents(ctx, false);
+                if (!contextHasStartingAgents(ctx)) agentFastPollUntil.remove(key);
+            }
+        } catch (Throwable t) {
+            log("warn", "agent startup poll failed: " + t.getMessage());
+        }
+    }
+
+    private void pollContextAgents(JSONObject ctx, boolean allowDeploy) {
+        String key = agentEndpointKey(ctx);
+        if (key == null) return;
+        String ctxId = ctx.optString("id", "");
+        synchronized (syncProgress) {
+            if (!ctxId.isEmpty() && syncProgress.containsKey(ctxId)) return;
+        }
+        if (!agentPollInFlight.add(key)) return;
+        try {
+            JSONObject result = listContextAgents(ctx, allowDeploy);
+            if (result != null && result.optBoolean("ok", false)) {
+                agentLastPollAt.put(key, System.currentTimeMillis());
+                agentPollLastError.remove(key);
+                clearContextAgentsStale(ctx);
+            } else {
+                String reason = result != null ? result.optString("error", "poll_failed") : "poll_failed";
+                markContextAgentsStale(ctx, reason);
+                String prev = agentPollLastError.put(key, reason);
+                if (!reason.equals(prev)) {
+                    log("warn", "agent poll " + ctx.optString("name") + ": " + reason);
+                }
+            }
+        } catch (Throwable t) {
+            markContextAgentsStale(ctx, "poll_failed");
+            String reason = t.getMessage() != null ? t.getMessage() : "poll_failed";
+            String prev = agentPollLastError.put(key, reason);
+            if (!reason.equals(prev)) {
+                log("warn", "agent poll " + ctx.optString("name") + ": " + reason);
+            }
+        } finally {
+            agentPollInFlight.remove(key);
+        }
+    }
+
+    /** Light `camc --json list` import; allowDeploy falls back to the full
+     *  sync path when camc is missing or the probe fails. */
+    private JSONObject listContextAgents(JSONObject ctx, boolean allowDeploy) throws Exception {
+        JSONObject m = ctx != null ? ctx.optJSONObject("machine") : null;
+        if (m == null || !"ssh".equals(m.optString("type", ""))) {
+            return new JSONObject().put("ok", false).put("error", "not_ssh");
+        }
+        String host = m.optString("host", "").trim();
+        String user = m.optString("user", "").trim();
+        if (host.isEmpty() || user.isEmpty()) {
+            return new JSONObject().put("ok", false).put("error", "invalid_context");
+        }
+        String authMethod = m.optString("auth_method", "key");
+        MobileSshAuth.Options auth = MobileSshAuth.fromMachine(m, credentialStore);
+        auth = applyJumpChain(auth, m);
+        if ("password".equals(authMethod) && (auth.password == null || auth.password.isEmpty())) {
+            return new JSONObject().put("ok", false).put("error", "credential_missing");
+        }
+        if ("key".equals(authMethod) && (auth.keyFile == null || auth.keyFile.isEmpty())) {
+            return new JSONObject().put("ok", false).put("error", "key_file_missing");
+        }
+        MobileSshExec.SequenceResult run = runSyncList(auth);
+        MobileSshExec.Result list = run != null && run.steps != null && run.steps.length > 1
+            ? run.steps[1] : null;
+        if (list == null || !list.ok) {
+            if (allowDeploy) return syncContextAgents(ctx);
+            String error = list != null && list.error != null && !list.error.isEmpty()
+                ? list.error : "exec_failed";
+            String detail = list != null && list.detail != null
+                ? list.detail : "remote camc list failed";
+            return new JSONObject().put("ok", false).put("error", error).put("detail", detail);
+        }
+        JSONArray parsed;
+        try {
+            parsed = new JSONArray(list.stdout.trim());
+        } catch (Exception e) {
+            return new JSONObject().put("ok", false).put("error", "invalid_json");
+        }
+        JSONArray normalized = new JSONArray();
+        for (int i = 0; i < parsed.length(); i++) {
+            JSONObject rec = parsed.optJSONObject(i);
+            if (rec == null) continue;
+            JSONObject norm = normalizeAgent(rec, ctx);
+            if (norm != null && !norm.optString("id", "").isEmpty()) normalized.put(norm);
+        }
+        upsertAgentsForContext(ctx, normalized);
+        return new JSONObject().put("ok", true).put("imported", normalized.length());
+    }
+
+    private List<JSONObject> representativeAgentContexts() throws Exception {
+        ensureStoreLoaded();
+        List<JSONObject> out = new ArrayList<>();
+        JSONArray arr = store.optJSONArray("contexts");
+        if (arr == null) return out;
+        // One poll per context: agent records carry context_name, so sibling
+        // contexts on the same host must each be imported. The in-flight set
+        // still prevents concurrent polls of the same endpoint.
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject ctx = arr.optJSONObject(i);
+            if (ctx == null || agentEndpointKey(ctx) == null) continue;
+            out.add(ctx);
+        }
+        return out;
+    }
+
+    private String agentEndpointKey(JSONObject ctx) {
+        JSONObject m = ctx != null ? ctx.optJSONObject("machine") : null;
+        if (m == null || !"ssh".equals(m.optString("type", ""))) return null;
+        String host = m.optString("host", "").trim().toLowerCase(Locale.ROOT);
+        String user = m.optString("user", "").trim();
+        if (host.isEmpty() || user.isEmpty()) return null;
+        return user + "@" + host + ":" + m.optInt("port", 22);
+    }
+
+    private boolean contextHasStartingAgents(JSONObject ctx) {
+        JSONArray agents = store != null ? store.optJSONArray("agents") : null;
+        if (agents == null) return false;
+        for (int i = 0; i < agents.length(); i++) {
+            JSONObject a = agents.optJSONObject(i);
+            if (a == null || !shouldReplaceAgentOnSync(a, ctx)) continue;
+            if (agentStillStarting(a)) return true;
+        }
+        return false;
+    }
+
+    private static boolean agentStillStarting(JSONObject a) {
+        String status = a.optString("status", "");
+        String state = a.optString("state", "");
+        return "starting".equals(status) || "pending".equals(status)
+            || "initializing".equals(status) || "initializing".equals(state);
+    }
+
+    private void markStartupWatch(JSONObject ctx) {
+        String key = agentEndpointKey(ctx);
+        if (key != null) agentFastPollUntil.put(key, System.currentTimeMillis() + AGENT_STARTUP_WATCH_MS);
+    }
+
+    private void requestAgentRefresh(JSONObject ctx) {
+        if (ctx == null) return;
+        ScheduledExecutorService p = agentPoller;
+        if (p == null || p.isShutdown()) return;
+        try {
+            p.schedule(() -> pollContextAgents(ctx, true), 0, TimeUnit.MILLISECONDS);
+        } catch (Exception ignored) {}
+    }
+
+    private void markContextAgentsStale(JSONObject ctx, String reason) {
+        if (ctx == null || store == null) return;
+        try {
+            boolean changed = false;
+            synchronized (store) {
+                JSONArray agents = store.optJSONArray("agents");
+                if (agents == null) return;
+                String now = nowIso();
+                for (int i = 0; i < agents.length(); i++) {
+                    JSONObject a = agents.optJSONObject(i);
+                    if (a == null || !shouldReplaceAgentOnSync(a, ctx)) continue;
+                    a.put("stale", true);
+                    a.put("stale_at", now);
+                    a.put("stale_reason", reason != null ? reason : "poll_failed");
+                    changed = true;
+                }
+                if (changed) saveStore();
+            }
+        } catch (Exception e) {
+            log("warn", "mark stale failed: " + e.getMessage());
+        }
+    }
+
+    private void clearContextAgentsStale(JSONObject ctx) {
+        if (ctx == null || store == null) return;
+        try {
+            boolean changed = false;
+            synchronized (store) {
+                JSONArray agents = store.optJSONArray("agents");
+                if (agents == null) return;
+                for (int i = 0; i < agents.length(); i++) {
+                    JSONObject a = agents.optJSONObject(i);
+                    if (a == null || !shouldReplaceAgentOnSync(a, ctx)) continue;
+                    if (a.optBoolean("stale", false) || a.has("stale_reason")) {
+                        a.put("stale", false);
+                        a.remove("stale_at");
+                        a.remove("stale_reason");
+                        changed = true;
+                    }
+                }
+                if (changed) saveStore();
+            }
+        } catch (Exception e) {
+            log("warn", "clear stale failed: " + e.getMessage());
+        }
     }
 
     public JSONObject logs() {
@@ -880,6 +1142,7 @@ public final class MobileEmbeddedHub {
                 agent.put("completed_at", nowIso());
             }
             saveStore();
+            requestAgentRefresh(findContextForAgent(agent));
             return jsonResponse(200, new JSONObject()
                 .put("ok", true).put("agent", agent).put("no_op", false));
         }
@@ -906,6 +1169,7 @@ public final class MobileEmbeddedHub {
                     .put("detail", res.detail != null ? res.detail : ""));
             }
             removeAgentRecord(agentId);
+            requestAgentRefresh(findContextForAgent(agent));
             return jsonResponse(200, new JSONObject()
                 .put("ok", true).put("removed_id", agentId));
         }
@@ -2073,6 +2337,9 @@ public final class MobileEmbeddedHub {
         if (normalized != null && !normalized.optString("id", "").isEmpty()) {
             upsertStartedAgent(normalized);
             if (target.markContext != null) markContextUsed(target.markContext);
+            JSONObject watchCtx = target.ctx != null ? target.ctx : target.markContext;
+            markStartupWatch(watchCtx);
+            requestAgentRefresh(watchCtx);
             log("info", "start remote agent: " + normalized.optString("id") + " (" + normalized.optString("tool") + ")");
         }
         return new JSONObject()
@@ -2967,6 +3234,8 @@ public final class MobileEmbeddedHub {
         out.put("started_at", rec.has("started_at") && !rec.isNull("started_at")
             ? rec.optString("started_at") : JSONObject.NULL);
         out.put("completed_at", rec.has("completed_at") ? rec.opt("completed_at") : JSONObject.NULL);
+        out.put("stale", false);
+        out.put("updated_at", nowIso());
         return out;
     }
 
@@ -2981,19 +3250,21 @@ public final class MobileEmbeddedHub {
     }
 
     private void upsertAgentsForContext(JSONObject ctx, JSONArray incoming) throws Exception {
-        JSONArray agents = store.optJSONArray("agents");
-        if (agents == null) agents = new JSONArray();
-        JSONArray keep = new JSONArray();
-        for (int i = 0; i < agents.length(); i++) {
-            JSONObject a = agents.getJSONObject(i);
-            if (shouldReplaceAgentOnSync(a, ctx)) continue;
-            keep.put(a);
+        synchronized (store) {
+            JSONArray agents = store.optJSONArray("agents");
+            if (agents == null) agents = new JSONArray();
+            JSONArray keep = new JSONArray();
+            for (int i = 0; i < agents.length(); i++) {
+                JSONObject a = agents.getJSONObject(i);
+                if (shouldReplaceAgentOnSync(a, ctx)) continue;
+                keep.put(a);
+            }
+            for (int i = 0; i < incoming.length(); i++) {
+                keep.put(incoming.getJSONObject(i));
+            }
+            store.put("agents", keep);
+            saveStore();
         }
-        for (int i = 0; i < incoming.length(); i++) {
-            keep.put(incoming.getJSONObject(i));
-        }
-        store.put("agents", keep);
-        saveStore();
     }
 
     private void markContextUsed(JSONObject ctx) throws Exception {
@@ -3038,6 +3309,10 @@ public final class MobileEmbeddedHub {
         caps.put("event_stream", false);
         caps.put("skillm", false);
         caps.put("ssh_config_import", false);
+        JSONObject lastPoll = new JSONObject();
+        for (Map.Entry<String, Long> e : agentLastPollAt.entrySet()) {
+            lastPoll.put(e.getKey(), e.getValue());
+        }
         return new JSONObject()
             .put("status", "ok")
             .put("version", PRODUCT_VERSION)
@@ -3045,7 +3320,12 @@ public final class MobileEmbeddedHub {
             .put("adapters", new JSONArray().put("claude").put("codex").put("cursor"))
             .put("agents_running", 0)
             .put("agents_total", agents != null ? agents.length() : 0)
-            .put("contexts_count", ctx != null ? ctx.length() : 0);
+            .put("contexts_count", ctx != null ? ctx.length() : 0)
+            .put("agent_sync", new JSONObject()
+                .put("poll_seconds", AGENT_POLL_SECONDS)
+                .put("startup_poll_seconds", AGENT_STARTUP_POLL_SECONDS)
+                .put("freshness_seconds", AGENT_FRESHNESS_MS / 1000L)
+                .put("last_poll", lastPoll));
     }
 
     private JSONObject buildContext(JSONObject body) throws Exception {

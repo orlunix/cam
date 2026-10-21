@@ -1,5 +1,8 @@
 package com.cam.app;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
 import android.util.Log;
 import android.webkit.JavascriptInterface;
@@ -181,6 +184,34 @@ public class CamJsBridge {
                 .getPackageInfo(activity.getPackageName(), 0).versionCode;
         } catch (Exception e) {
             return 0;
+        }
+    }
+
+    /** Read the system clipboard as plain text ("" when unavailable). */
+    @JavascriptInterface
+    public String readClipboardText() {
+        try {
+            ClipboardManager manager = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (manager == null || !manager.hasPrimaryClip()) return "";
+            ClipData clip = manager.getPrimaryClip();
+            if (clip == null || clip.getItemCount() == 0) return "";
+            CharSequence text = clip.getItemAt(0).coerceToText(activity);
+            return text != null ? text.toString() : "";
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /** Write plain text to the system clipboard. */
+    @JavascriptInterface
+    public boolean writeClipboardText(String text) {
+        try {
+            ClipboardManager manager = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (manager == null) return false;
+            manager.setPrimaryClip(ClipData.newPlainText("CAM", text != null ? text : ""));
+            return true;
+        } catch (Exception e) {
+            return false;
         }
     }
 

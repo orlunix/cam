@@ -6,6 +6,7 @@
 import { getTermBridge } from './term-bridge.js';
 import { isAgentHostEnabled } from './node-host-meta.js';
 import { agentEndpointHints } from './agent-helpers.js';
+import { attachTerminalTouchTrap } from './terminal-trap.js';
 
 export const TERMINAL_CACHE_LIMIT = 6; // one SSH PTY per agent; LRU evicts the 7th
 const TERMINAL_MIN_NOTIFY_WIDTH = 120;
@@ -443,6 +444,7 @@ function showTerminalEntry(agentId, hostEl, opts = {}) {
     ent.container.style.visibility = '';
   }
   scheduleTerminalFitDeferred(ent, { keepBottom: opts.keepBottom !== false });
+  if (ent.touchTrap) ent.touchTrap.setActive(true);
   if (!isAndroidWebView()) {
     requestAnimationFrame(() => {
       try { ent.term?.focus(); } catch { /* noop */ }
@@ -539,7 +541,7 @@ function createTerminalEntry(agent, hostEl) {
   const termOpts = {
     cursorBlink: true,
     convertEol: false,
-    scrollback: 5000,
+    scrollback: 20000,
     fontFamily: terminalFontFamily(),
     fontSize: terminalFontSizeFromCss(),
     theme: terminalThemeFromCss(),
@@ -557,6 +559,7 @@ function createTerminalEntry(agent, hostEl) {
     sessionId: null,
     opening: false,
     attachState: 'idle',
+    copyModeActive: false,
     lastUsed: Date.now(),
     hasConnected: false,
     bytesReceived: 0,
@@ -578,6 +581,32 @@ function createTerminalEntry(agent, hostEl) {
     entry.term.loadAddon(entry.fit);
   }
   entry.term.open(container);
+  try {
+    entry._scrollSub = entry.term.onScroll(() => {
+      const buf = entry.term.buffer.active;
+      const atBottom = !buf || buf.viewportY >= buf.baseY;
+      entry.needsBottom = atBottom;
+      if (atBottom) entry.forceBottomUntil = 0;
+    });
+  } catch { /* noop */ }
+  const wantsTouch = isAndroidWebView() || (typeof window !== 'undefined' && (
+    ('ontouchstart' in window)
+    || (typeof navigator !== 'undefined' && (navigator.maxTouchPoints || 0) > 0)
+  ));
+  if (wantsTouch) {
+    entry.touchTrap = attachTerminalTouchTrap(entry, {
+      container,
+      onScrollUnavailable: (direction, count, page) => {
+        try {
+          if (entry.hostEl && typeof CustomEvent === 'function') {
+            entry.hostEl.dispatchEvent(new CustomEvent('cam-terminal-scroll-unavailable', {
+              bubbles: true, detail: { direction, count, page },
+            }));
+          }
+        } catch { /* noop */ }
+      },
+    });
+  }
   const SerializeCtor = window.SerializeAddon;
   if (SerializeCtor) {
     try {
@@ -630,7 +659,10 @@ function setupTerminalEvents() {
     ent.bytesReceived = (ent.bytesReceived || 0) + chunk.length;
     appendLiveText(ent, chunk);
     if (ent.suppressDisplay) return;
-    const shouldFollow = ent.agentId === termAgentId || terminalShouldForceBottom(ent);
+    // History browsing owns the viewport: only follow when the user is at
+    // the bottom (needsBottom) or a jump-to-bottom is pending. Writing while
+    // the user reads scrollback must not yank the view back to the bottom.
+    const shouldFollow = terminalShouldForceBottom(ent);
     ent.term.write(chunk, () => {
       if (shouldFollow || terminalShouldForceBottom(ent)) terminalScrollToBottom(ent);
     });
@@ -714,6 +746,7 @@ export async function parkTerminalForAgent(agentId) {
   if (!ent) return;
   ent.viewActive = false;
   ent.lastUsed = Date.now();
+  if (ent.touchTrap) ent.touchTrap.setActive(false);
   if (ent.container) {
     ent.container.hidden = true;
     ent.container.style.display = 'none';
@@ -757,7 +790,7 @@ export async function disposeTerminalForAgent(agentId, opts = {}) {
   if (opts.evict && ent.serialize && ent.term) {
     try {
       const snapshot = ent.serialize.serialize(
-        { excludeAltBuffer: true, excludeModes: true, scrollback: 5000 });
+        { excludeAltBuffer: true, excludeModes: true, scrollback: 20000 });
       if (snapshot) _parkedSnapshots.set(agentId, snapshot);
     } catch { /* snapshot failed — evict proceeds without restore */ }
   }
@@ -768,6 +801,8 @@ export async function disposeTerminalForAgent(agentId, opts = {}) {
   if (ent._hostResizeObs) {
     try { ent._hostResizeObs.disconnect(); } catch { /* noop */ }
   }
+  try { if (ent._scrollSub) ent._scrollSub.dispose(); } catch { /* noop */ }
+  try { if (ent.touchTrap) ent.touchTrap.detach(); } catch { /* noop */ }
   try { ent.term?.dispose(); } catch { /* noop */ }
   if (ent.container?.parentNode) {
     try { ent.container.parentNode.removeChild(ent.container); } catch { /* noop */ }
@@ -791,6 +826,32 @@ export function scrollTerminalToBottom(agentId) {
   ent.needsBottom = true;
   ent.forceBottomUntil = Date.now() + 800;
   terminalScrollToBottom(ent);
+  return true;
+}
+
+export function scrollTerminalToTop(agentId) {
+  const ent = terminalSessions.get(agentId);
+  if (!ent?.term) return false;
+  try { ent.term.scrollToTop(); } catch { return false; }
+  ent.needsBottom = false;
+  ent.forceBottomUntil = 0;
+  return true;
+}
+
+/** Paste the system clipboard into the agent's terminal (touch trap). */
+export function pasteTerminalClipboard(agentId) {
+  const ent = terminalSessions.get(agentId);
+  if (!ent || !ent.touchTrap || typeof ent.touchTrap.pasteClipboard !== 'function') {
+    return Promise.resolve(false);
+  }
+  return ent.touchTrap.pasteClipboard();
+}
+
+/** Tell the touch trap whether tmux copy mode owns swipe gestures. */
+export function setTerminalCopyMode(agentId, active) {
+  const ent = terminalSessions.get(agentId);
+  if (!ent) return false;
+  ent.copyModeActive = !!active;
   return true;
 }
 

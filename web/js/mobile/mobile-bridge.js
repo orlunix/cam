@@ -216,6 +216,25 @@ export function installMobileCamBridgeShim() {
     const api = buildDirectHubApi();
     window.__camDirectHub = api;
     try { bridge.directHub = api; } catch {}
+    if (typeof window.CamBridge.readClipboardText === 'function'
+        || typeof window.CamBridge.writeClipboardText === 'function') {
+      window.__camClipboard = {
+        readText: () => {
+          try {
+            return typeof window.CamBridge.readClipboardText === 'function'
+              ? String(window.CamBridge.readClipboardText() || '')
+              : '';
+          } catch { return ''; }
+        },
+        writeText: (text) => {
+          try {
+            return typeof window.CamBridge.writeClipboardText === 'function'
+              ? !!window.CamBridge.writeClipboardText(String(text == null ? '' : text))
+              : false;
+          } catch { return false; }
+        },
+      };
+    }
     if (!window.CamBridge.files) {
       try {
         window.CamBridge.files = {
