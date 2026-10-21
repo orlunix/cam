@@ -146,7 +146,6 @@ export function attachTerminalTouchTrap(entry, {
   pageThreshold = 36,
   onStatus = null,
   onViewportChange = null,
-  onScrollUnavailable = null,
 } = {}) {
   const term = entry && entry.term;
   const host = container || (entry && entry.container);
@@ -523,7 +522,6 @@ export function attachTerminalTouchTrap(entry, {
       moved: false,
       scrollAcc: 0,
       pageDone: false,
-      fallbackSent: false,
     };
     startLongPress();
   }
@@ -564,17 +562,7 @@ export function attachTerminalTouchTrap(entry, {
       const lines = Math.trunc(gesture.scrollAcc / m.ch);
       if (!lines) return;
       gesture.scrollAcc -= lines * m.ch;
-      const buf = term.buffer.active;
-      const before = buf ? buf.viewportY : 0;
       try { term.scrollLines(-lines); } catch (_) {}
-      const after = buf ? buf.viewportY : 0;
-      if (before === after && !gesture.fallbackSent && onScrollUnavailable
-          && buf && (buf.type === 'alternate' || buf.baseY === 0)) {
-        // Full-screen TUI/alternate buffer has no local scrollback. Hand the
-        // gesture to the view, which enters tmux copy mode and pages there.
-        gesture.fallbackSent = true;
-        try { onScrollUnavailable(lines > 0 ? 'up' : 'down', Math.abs(lines), false); } catch (_) {}
-      }
       entry.needsBottom = false;
       entry.forceBottomUntil = 0;
       if (onViewportChange) { try { onViewportChange(); } catch (_) {} }
@@ -582,15 +570,7 @@ export function attachTerminalTouchTrap(entry, {
       stopEvent(ev);
       if (gesture.pageDone) return;
       gesture.pageDone = true;
-      const buf = term.buffer.active;
-      const before = buf ? buf.viewportY : 0;
       try { term.scrollPages(dx < 0 ? 1 : -1); } catch (_) {}
-      const after = buf ? buf.viewportY : 0;
-      if (before === after && !gesture.fallbackSent && onScrollUnavailable
-          && buf && (buf.type === 'alternate' || buf.baseY === 0)) {
-        gesture.fallbackSent = true;
-        try { onScrollUnavailable(dx < 0 ? 'down' : 'up', 1, true); } catch (_) {}
-      }
       entry.needsBottom = false;
       entry.forceBottomUntil = 0;
       if (onViewportChange) { try { onViewportChange(); } catch (_) {} }

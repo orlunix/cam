@@ -544,30 +544,6 @@ export function renderAgentDetail(container, agentId, routeSearch = '') {
         const detail = ev && ev.detail ? ev.detail : {};
         if (detail.text) setBottomStatus(detail.text, detail.kind || 'info', 2500);
       });
-      // The trap could not move a local scrollback (full-screen TUI/alternate
-      // buffer). Fall back to tmux copy mode for this and later swipes.
-      host.addEventListener('cam-terminal-scroll-unavailable', (ev) => {
-        const detail = ev && ev.detail ? ev.detail : {};
-        const direction = detail.direction === 'down' ? 'down' : 'up';
-        const page = !!detail.page;
-        const count = Math.max(1, Math.min(12, Number(detail.count) || 1));
-        void (async () => {
-          if (!copyModeActive) {
-            const ok = await ensureCopyMode();
-            if (!ok) return;
-            setBottomStatus('Copy mode (local history unavailable)', 'info', 2500);
-          }
-          const seq = page
-            ? (direction === 'down' ? '\x1b[6~' : '\x1b[5~')
-            : (direction === 'up' ? '\x1b[A' : '\x1b[B');
-          try {
-            await sendTerminalRaw(agentId, page ? seq : seq.repeat(count));
-          } catch (e) {
-            setBottomStatus(e.message || 'History failed', 'error', 3000);
-          }
-        })();
-      });
-
       // Swipe gestures, active ONLY in tmux copy mode. Outside copy mode the
       // touch trap owns swipes and scrolls the local buffer instead.
       //   vertical drag : distance → line scrolling (natural direction)
