@@ -145,13 +145,26 @@ javac \
 echo "[4/6] Dexing..."
 D8_INPUT=$(find "$BUILD_DIR/classes" -name "*.class")
 # Both dependencies ship multi-release classes that d8 rejects — strip for dex.
-STRIP_DIR="$BUILD_DIR/android-deps-strip"
-STRIPPED="$BUILD_DIR/dependencies-android.jar"
-rm -rf "$STRIP_DIR" "$STRIPPED"
-mkdir -p "$STRIP_DIR/jsch" "$STRIP_DIR/bcprov"
-(cd "$STRIP_DIR/jsch" && jar xf "$JSCH_JAR" && rm -rf META-INF/versions)
-(cd "$STRIP_DIR/bcprov" && jar xf "$BCPROV_JAR" && rm -rf META-INF/versions)
-jar cf "$STRIPPED" -C "$STRIP_DIR/jsch" . -C "$STRIP_DIR/bcprov" .
+# Repacking 4,500+ BouncyCastle/JSch entries on the Windows-mounted tree is
+# the dominant build cost, so cache the stripped jar on a native filesystem.
+DEPS_CACHE="${CAM_DEPS_CACHE:-${TMPDIR:-/tmp}/cam-mobile-deps}"
+mkdir -p "$DEPS_CACHE"
+DEPS_KEY=$(sha256sum "$JSCH_JAR" "$BCPROV_JAR" | sha256sum | cut -d' ' -f1)
+STRIPPED="$DEPS_CACHE/dependencies-android-$DEPS_KEY.jar"
+if [ ! -f "$STRIPPED" ]; then
+    echo "  Stripping dependency jars..."
+    STRIP_DIR="$DEPS_CACHE/strip-$DEPS_KEY"
+    rm -rf "$STRIP_DIR"
+    mkdir -p "$STRIP_DIR/jsch" "$STRIP_DIR/bcprov"
+    (cd "$STRIP_DIR/jsch" && jar xf "$JSCH_JAR" && rm -rf META-INF/versions)
+    (cd "$STRIP_DIR/bcprov" && jar xf "$BCPROV_JAR" && rm -rf META-INF/versions)
+    TMP_JAR="$STRIPPED.tmp.$$"
+    jar cf0 "$TMP_JAR" -C "$STRIP_DIR/jsch" . -C "$STRIP_DIR/bcprov" .
+    mv "$TMP_JAR" "$STRIPPED"
+    rm -rf "$STRIP_DIR"
+else
+    echo "  Using cached stripped dependencies"
+fi
 "$BUILD_TOOLS/d8" \
     --lib "$PLATFORM" \
     --output "$BUILD_DIR/dex" \

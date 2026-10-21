@@ -13,6 +13,10 @@ modes, boundaries, and known issues are documented in
   M*10000 + m*100 + p). Bump the patch per iteration. `build.sh` stamps
   `?v=<version>` only into non-module web assets — never stamp local
   ES-module specifiers or the mobile module entry.
+- **Agent status sync** lives in `MobileEmbeddedHub`: 30 s full
+  `camc --json list` per endpoint, 2 s fast poll for starting agents, and
+  targeted refresh after run/stop/remove. The WebView list loop only reads the
+  Hub cache; do not add a second remote poller in JS.
 - **APK release upload (user instruction, 2026-10-18)**: upload every
   successful build by default. From the repository root, run:
   ```bash

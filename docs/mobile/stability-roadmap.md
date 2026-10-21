@@ -1,14 +1,34 @@
 # Mobile V2 — Stability Status & Roadmap
 
 **Living document.** Current line: branch `camui-desktop-v2`, version
-2.4.117 (2026-10-19). This file supersedes the older `docs/mobile/*`
-plans — see §5 for what to trust where.
+2.4.119 (2026-10-21). This file supersedes the older
+`docs/archive/mobile/*` plans — see §5 for what to trust where.
 
-## 1. Stability fixes in 2.4.117
+## 1. Stability fixes in 2.4.117–2.4.119
 
 The 2.4.111 stability fixes and the 2.4.110 native whole-view IME translation
 are retained. Android terminal focus stays user-initiated, and terminal output
 is preserved across first attach, cached re-entry, and app background recovery.
+
+### Agent status sync (2.4.119)
+
+- The embedded Hub polls remote `camc --json list` on the cam-clientd cadence:
+  30 s full snapshot per endpoint, 2 s fast poll for starting agents, and an
+  immediate targeted refresh after run/stop/remove.
+- Poll failures keep the last snapshot and mark agents `stale`; successful
+  polls clear it. The WebView list loop only reads the Hub cache, so status no
+  longer stays frozen until a manual Sync.
+
+### Terminal touch trap (2.4.118)
+
+- Copy mode OFF: vertical swipe scrolls the local xterm buffer and horizontal
+  swipe pages it. Copy mode ON: the same gestures are forwarded to tmux as
+  Up/Down/PPage/NPage. History enters copy mode and Jump to bottom exits it.
+  Long-press selects a word, dragging or the two handles adjusts the range,
+  and a floating toolbar copies or pastes through the native Android clipboard
+  bridge.
+- New output no longer forces the viewport to the bottom while the user is
+  reading history; Jump to bottom re-arms auto-follow.
 
 ### Terminal transport and lifecycle
 
@@ -34,8 +54,8 @@ is preserved across first attach, cached re-entry, and app background recovery.
   session. This prevents a partial first tmux repaint from leaving static
   bottom rows blank until refresh.
 - **Loopback binary WebSocket** — Android Direct PTY traffic now uses
-  `ws://127.0.0.1:<hub>/term?token=…`. `open/resize/copymode/close` are
-  ordered JSON control messages; input and output are binary frames. The old
+  `ws://127.0.0.1:<hub>/term?token=…`. `open/resize/close` are ordered JSON
+  control messages; input and output are binary frames. The old
   `term_open/term_input/...` JavascriptInterface calls and the per-chunk
   `evaluateJavascript` data path are gone.
 - **Backpressure and byte correctness** — each terminal has its own socket
@@ -128,7 +148,8 @@ host `zip` or `rsync` binary is not required.
 
 1. Fresh launch → dashboard loads (no black screen or duplicate init).
 2. Open agent detail → output streams; attach terminal → interactive input,
-   resize, copy mode, and sustained large output all work.
+   resize, vertical/horizontal history gestures, long-press selection with
+   adjustable handles, Copy/Paste, and sustained large output all work.
 3. Background an active terminal for more than 10 minutes → the persistent
    notification remains and the same session resumes without reattach.
 4. Direct dashboard auto-refreshes. Sync a blackhole host → other hosts stay
@@ -178,9 +199,9 @@ before calling the release complete.
 | **this file** | **authoritative** |
 | `ios-plan.md` | **authoritative plan** (iOS not implemented) |
 | `web/AGENTS.md`, `apps/cam-mobile/AGENTS.md` | authoritative onboarding |
-| `README.md` | stale: Relay-only and resume descriptions |
-| `native-plan.md`, `webview-resume.md` | historical; native Kotlin line archived |
+| `../archive/mobile/README.md` | stale: Relay-only and resume descriptions |
+| `../archive/mobile/native-plan.md`, `../archive/mobile/webview-resume.md` | historical; native Kotlin line archived |
 | `webview-probe.md` | debugging method only; old fixed-version claims are stale |
-| `direct-mode.md`, `android-direct-hub-port-plan.md` | historical gap lists |
-| `desktop-parity-review.md` | use the executable shared contract instead |
-| `relay-first-plan.md` | historical; Relay is retiring |
+| `../archive/mobile/direct-mode.md`, `../archive/mobile/android-direct-hub-port-plan.md` | historical gap lists |
+| `../archive/mobile/desktop-parity-review.md` | use the executable shared contract instead |
+| `../archive/mobile/relay-first-plan.md` | historical; Relay is retiring |

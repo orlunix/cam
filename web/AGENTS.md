@@ -48,11 +48,12 @@ phone client for monitoring and controlling those agents.
 
 - **`docs/mobile/stability-roadmap.md`** — the living document: current
   fixes, executable verification protocol, and doc trust map.
-- `docs/mobile/relay-first-plan.md` — historical Relay plan.
-- `docs/mobile/direct-mode.md` and `android-direct-hub-port-plan.md` —
-  historical Direct plans; their old gap lists are stale.
-- `docs/mobile/README.md` — V1 vs V2 and viewport background, partially
-  stale; trust current code and the roadmap.
+- `docs/archive/mobile/relay-first-plan.md` — historical Relay plan.
+- `docs/archive/mobile/direct-mode.md` and
+  `android-direct-hub-port-plan.md` — historical Direct plans; their old
+  gap lists are stale.
+- `docs/archive/mobile/README.md` — V1 vs V2 and viewport background,
+  partially stale; trust current code and the roadmap.
 - `docs/desktop/requirements.md` — canonical desktop requirement IDs.
 
 ### Hard boundaries
@@ -82,10 +83,12 @@ phone client for monitoring and controlling those agents.
   is shared with `apps/cam-desktop/test/mobile-hub-contract.test.cjs`;
   update both runners whenever a shared API contract changes.
 
-### Current stability invariants (2.4.117)
+### Current stability invariants (2.4.119)
 
 - One app init and one visibility-aware, in-flight-guarded refresh
-  scheduler. Direct and Relay both auto-refresh; no background polling.
+  scheduler. The WebView reads the Hub cache; remote agent sync is owned by
+  the embedded Hub: 30 s full `camc list` per endpoint, 2 s fast poll for
+  starting agents, targeted refresh after run/stop/remove.
 - Relay socket identity is checked in every handler. Reconnect uses
   visibility-aware exponential backoff and refetches data; one request
   timeout does not kill the socket.
@@ -101,6 +104,12 @@ phone client for monitoring and controlling those agents.
   locally. Android allows one attach-time ready resize, then keeps the grid
   fixed across background recovery and agent switches; only explicit Fit or a
   new attach may resize the local terminal or remote PTY.
+- Terminal touch trap: copy mode OFF scrolls/pages the local xterm buffer
+  with vertical/horizontal swipes; copy mode ON forwards those swipes as
+  Up/Down/PPage/NPage to tmux. History enters copy mode; Jump to bottom
+  exits it. Long-press selects a word with draggable handles and the floating
+  toolbar uses the native Android clipboard bridge for Copy/Paste. New output
+  does not force the viewport to the bottom while the user reads history.
 - Hub-provided status/tool/id/meta strings are escaped or constrained to
   known class tokens before entering HTML.
 - Release WebView debugging and unrestricted mixed content are off.
