@@ -27,7 +27,9 @@ Two kinds of scheduled work, both managed via `~/.cam/camc cron`:
 ## Host cron jobs
 
 Run any shell/argv command on a schedule. Job files at `~/.cam/cron/jobs.d/`;
-a single marked block in the user's crontab calls `~/.cam/camc cron tick` every minute.
+a node-local background scheduler runs due work. `cron add` ensures it is
+running; `heal` repairs it when local work exists. No system crontab editing
+is required.
 
 ```bash
 ~/.cam/camc cron add --name daily-rev --daily 09:00 \
@@ -53,10 +55,11 @@ Schedule presets (exactly one): `--every Nm|Nh`, `--daily HH:MM` (local),
 Deliver a recurring prompt to **one specific agent** via mailbox.
 Stored in `~/.cam/loops/<owner_id>/agent.loop.json` (separate from
 host cron jobs). Dispatched by `~/.cam/camc cron tick`, but **only when the
-owner agent is `status=running` AND `state=idle`** — if busy, the tick
+owner agent is `status=alive` AND `state=idle`** — if busy, the tick
 is silently deferred (no message sent, schedule not advanced).
-This means the agent is never interrupted mid-task, and prompts
-never pile up.
+This uses observed idle state, not a guarantee that a task is complete.
+Initializing or dead owners are deferred. If an owner is newly launched,
+supervise it through started using managing-camc before relying on the loop.
 
 ```bash
 # Register a loop on agent "cam-dev"
@@ -101,7 +104,7 @@ per agent, `loops:[]` array inside. Multiple loops per agent supported.
 
 | Symptom | Check |
 |---------|-------|
-| Loop not firing | `~/.cam/camc status <owner>` — must be `running` + `idle` |
+| Loop not firing | `~/.cam/camc status <owner>` — must be `alive` + `idle` + `phase=started` |
 | Loop disabled | `runs.jsonl` — check attempt count vs `max_attempts` |
-| Host cron not running | `~/.cam/camc cron list` — verify job exists; check crontab has the `~/.cam/camc cron tick` block |
+| Host cron not running | `~/.cam/camc cron list` — verify job exists, then `~/.cam/camc heal` for scheduler recovery |
 | `~/.cam/camc cron tick` errors | `~/.cam/logs/cron-tick.log` |

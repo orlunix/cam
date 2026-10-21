@@ -419,6 +419,37 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             self.assertEqual(a.publish(message)["type"], "error")
         self.assertEqual(b.status()["storage"]["echo_count"], 0)
 
+    def test_owner_pairing_is_live_idempotent_and_preserves_static_grants(self):
+        a = self.node("a", "b", native=True).start()
+        original = a.config_path.read_bytes()
+        epoch = a.status()["server_epoch"]
+        name = "new-tui-" + uuid.uuid4().hex
+        command = [str(SERVER), "pair", "--config", str(a.config_path), "--client-id", name]
+        result = subprocess.run(command, env=a.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        pairing = json.loads(result.stdout)
+        self.assertEqual(pairing["node_id"], a.node_id)
+        self.assertEqual(a.status()["server_epoch"], epoch)
+        with IPC(a, name, pairing["token"]) as client:
+            self.assertTrue(client.hello["management"])
+            client.send({"type":"sdk.request", "id":"paired-snapshot", "action":"agents.snapshot", "args":{}})
+            self.assertEqual(client.read()["data"]["agents"], [])
+        again = subprocess.run(command, env=a.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(json.loads(again.stdout)["token"], pairing["token"])
+        self.assertEqual(a.config_path.read_bytes(), original)
+        token = Path(a.config["runtime_dir"]) / "paired" / (name + ".token")
+        self.assertEqual(token.stat().st_mode & 0o777, 0o600)
+        with self.assertRaises((EOFError, OSError)):
+            IPC(a, name, "wrong-token")
+        invalid = subprocess.run(command[:-1] + ["../escape"], env=a.env,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.assertNotEqual(invalid.returncode, 0)
+        a.stop()
+        a.start()
+        with IPC(a, name, pairing["token"]) as client:
+            self.assertTrue(client.hello["management"])
+
     def test_metadata_cache_ambiguity_dead_agents_and_cli_error_output(self):
         a, b = self.node("a", "b").start(), self.node("b", "a", echo=False).start()
         agents = [{"node_id": b.node_id, "id": "beefcafe", "name": "dead-worker", "status": "dead"},

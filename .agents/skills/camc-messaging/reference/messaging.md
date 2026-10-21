@@ -1,6 +1,56 @@
 # `~/.cam/camc msg` — inter-agent messaging protocol
 
-Send a request to another running cam agent. The append-only ledger at
+Send a request to another alive camc agent, locally or through connected CAM
+Servers. The later pane-extraction details describe the local legacy path.
+
+## Cross-Server messages
+
+Use `Node:agent`, with a configured Server hostname, peer alias or internal
+Node ID and a specific agent name/ID. Bare references prefer local matches
+and ask the local Server only on a local miss. Ambiguous targets fail. Use
+CAM TUI for fleet discovery; `~/.cam/camc list` is not a remote inventory.
+
+The path is camc → local CAM Server → authorized Client forwarding → owner
+CAM Server. Both Servers must be connected by a Client permitted to relay
+the source and target Nodes. The target backend performs the operation;
+the forwarding Client does not run another camc CLI or scrape remote panes.
+
+Examples assume the registered peer alias `node-b`:
+
+```sh
+~/.cam/camc msg send node-b:reviewer -t "Review the authorized change"
+~/.cam/camc msg send node-b:reviewer -t "Report the result" --no-wait
+~/.cam/camc msg wait <msg_id> --timeout 600
+~/.cam/camc msg reply <msg_id> -t "Review result"
+```
+
+`send` blocks for an explicit business reply by default; `--no-wait` returns
+the target delivery result (`MSG_ID=...`, `STATUS=sent`). Delivery does not
+prove the agent read or completed the request. Native delivery records
+message context and requests an explicit reply; it does not need a remote
+pane-scrape waiter or an extra `--expect-reply` flag.
+
+Run `reply` on the receiving Node with the supplied ID; saved context supplies
+the destination. The logical thread ID stays stable, while each request or
+reply has its own transport message ID; `reply_to` correlates the reply.
+Cross-Server reply stdout includes `REPLIED_TO`, `MESSAGE_ID` and `THREAD_ID`.
+Do not truncate IDs to the local legacy eight-character marker format.
+
+Run `wait` on the source Node to recover an async result without resending.
+The source Server keeps durable results, and the reply may travel through a
+different authorized Client. Local ledger views remain useful for history,
+but Server results/context establish remote delivery and reply correlation;
+do not infer success from a local `sent` line alone.
+
+After Server submission, failure or timeout can mean an unknown outcome.
+Errors go to stderr with exit code 2 and correlation information when
+available; camc does not retry through the legacy path. Preserve the ID and
+inspect/wait on the existing request instead of sending another copy.
+Connection/health checks are not delivery receipts.
+
+## Standalone local messaging
+
+For the local legacy path, the append-only ledger at
 `~/.cam/messages.jsonl` is the source of truth; the tmux-pane injection
 is a best-effort wake-up notification.
 
@@ -385,14 +435,10 @@ plain text output, and conservative settle timing.
 ## Concurrency
 
 V0: each blocking `~/.cam/camc msg send` or `~/.cam/camc msg wait` is its own
-subprocess + own polling loop. `~/.cam/camc msg send --no-wait` only injects and
+subprocess + own polling loop. `~/.cam/camc msg send --no-wait` records a mailbox turn, attempts wake-up, and
 returns; no background waiter is started. N concurrent waits = N
 subprocesses. Acceptable up to ~10 parallel without infrastructure
 changes.
-
-V1: when fan-out becomes common, consolidate into a per-host
-`MessageRouter` daemon (started by `cam serve` or always-on) that
-multiplexes captures and dispatches replies via msg_id correlation.
 
 ## Anti-patterns
 

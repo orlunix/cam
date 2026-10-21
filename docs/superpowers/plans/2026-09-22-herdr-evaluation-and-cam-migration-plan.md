@@ -1,8 +1,15 @@
 # Herdr Evaluation and CAM Migration Plan
 
 **Date:** 2026-09-22
-**Status:** Decision plan; documentation only
+**Status:** Historical evaluation; implementation direction superseded on 2026-10-14
 **Scope:** Evaluate whether Herdr should replace CAMC's tmux-oriented runtime, and define a safe CAM-over-Herdr migration.
+
+**Current decision:** Build independent Rust `cam-server` and `cam-tui`,
+leaving existing camc intact. Use Herdr as an implementation reference;
+start with a tmux backend and a client-owned history/input/clipboard layer.
+The authoritative current plan is
+[CAM Server and TUI Plan](2026-10-14-cam-server-and-tui.md).
+The recommendations below retain the earlier evaluation for context.
 
 ## Executive recommendation
 

@@ -6,6 +6,10 @@
 
 ## 启用与命令
 
+Rust TUI v0.1 的本地 Client daemon 直接复用此 Server/SDK，使用额外的受授权管理通道；范围见 [TUI 版本说明](cam-tui-v0.1.md)。Client grant 的 `management` 默认 false，启用前必须明确配置。Server 只向获准 Client 通告 agent 快照、操作、tmux control 和 loop 能力，Client 未协商到的能力不会发送到旧 Router；既有 forwarding-only 连接继续可用。
+
+Agent 快照只返回必要元数据并过滤其它主机记录；状态仍归 legacy runtime/monitor。TUI 普通 prompt/loop 使用 `agent.send`，同一操作 ID 绑定首次业务信封并复用已保存结果，不因重新生成 expiry 而重复执行。终端控制经独立逻辑帧传输，由 Server 验证 agent/pane 与连接所有权，不解析用户提供的任意远端 shell 命令。
+
 只有设置 `CAM_SERVER_SOCKET`，或存在本用户所有、不可被其它用户写入的 `~/.cam/server/endpoint-<hostname>.json`（`{"socket":"/节点本地路径/server.sock"}`）时，camc 才启用新路径。实际 socket 必须属于当前用户。endpoint 文件用于发现；socket、锁和去重数据库必须由 Server 放到节点本地，并按 Node 隔离，不能让共享 Home 下的不同机器共用同一个运行实例。
 
 以下示例需要先启动新的 Rust Server 并配置 Client 通道；camc 不会自行启动它：

@@ -27,6 +27,7 @@ from camc_pkg.tool_launcher import (
     default_tool_launcher,
     detect_current_autorun_allocation,
     launcher_target_environment,
+    launcher_start_pending,
     launcher_target_binary,
     named_tool_launcher,
     parse_tool_launcher,
@@ -971,14 +972,20 @@ def _run_foreground_tool(agent_id, launch):
     store = AgentStore()
     initial = store.get(agent_id) or {}
     launch_id = initial.get("launch_id")
-    try:
-        proc = subprocess.Popen(launch["command"], cwd=launch["workdir"], env=launch["env"])
-        if not launch.get("known_tool", False):
-            store.update(agent_id, expected_launch_id=launch_id,
-                         state="running", phase="started")
+    waiting = bool(((initial.get("runtime") or {}).get("launcher") or {}).get(
+        "launch_status_file"))
+
+    def start_custom_tool():
+        store.update(agent_id, expected_launch_id=launch_id,
+                     state="running", phase="started")
         if launch.get("prompt"):
             time.sleep(launch["startup_wait"])
             tmux_send_input("cam-%s" % agent_id, launch["prompt"], send_enter=True)
+
+    try:
+        proc = subprocess.Popen(launch["command"], cwd=launch["workdir"], env=launch["env"])
+        if not launch.get("known_tool", False) and not waiting:
+            start_custom_tool()
         deadline = time.monotonic() + launch.get("startup_timeout", 600.0)
         while proc.poll() is None:
             record = store.get(agent_id) or {}
@@ -990,6 +997,17 @@ def _run_foreground_tool(agent_id, launch):
                     proc.kill()
                     proc.wait()
                 return 1
+            if waiting:
+                if launcher_start_pending(record):
+                    # The detached pane owns qsub for as long as it queues.
+                    # Queue time consumes neither startup deadline.
+                    time.sleep(2.0)
+                    continue
+                waiting = False
+                deadline = time.monotonic() + launch.get("startup_timeout", 600.0)
+                if not launch.get("known_tool", False):
+                    start_custom_tool()
+                    continue
             if record.get("phase") == "started":
                 return proc.wait()  # Startup is supervised; no registry polling while working.
             if record.get("phase") == "initializing" and time.monotonic() >= deadline:
@@ -1000,6 +1018,14 @@ def _run_foreground_tool(agent_id, launch):
             time.sleep(.2)
         code = proc.wait()
         record = store.get(agent_id) or {}
+        if (record.get("phase") == "initializing" and waiting
+                and not launch.get("known_tool", False)
+                and not launcher_start_pending(record)):
+            # A short custom program can exec and finish between queue polls.
+            # Its receipt proves launch; never paste into the shell after exit.
+            store.update(agent_id, expected_launch_id=launch_id,
+                         state="running", phase="started")
+            return code
         if record.get("phase") == "initializing":
             store.update(agent_id, expected_launch_id=launch_id,
                          status="dead", state="failed", completed_at=_now_iso(),
@@ -1504,7 +1530,7 @@ def _cmd_run_prepared(args, agent_id, launch):
             "bootstrap_dirs": (runtime_storage_info or {}).get(
                 "bootstrap_dirs") or [],
             "target_env": launcher_target_environment(
-                runtime.env, runtime_storage_info),
+                runtime.env, runtime_storage_info, explicit_keys=tool_env_keys),
             # battach can reintroduce color suppression from the existing
             # allocation even though the local tmux environment is clean.
             "target_unset": ["NO_COLOR", "NODE_DISABLE_COLORS"] + list(
@@ -1534,13 +1560,18 @@ def _cmd_run_prepared(args, agent_id, launch):
                         exit_status_path=exit_status_path or None,
                         **launcher_command_kwargs))
             else:
+                launch_status = exit_status_path + ".launcher" if exit_status_path else ""
                 resolved_tool_command = build_resolved_tool_command(
                     launch_cmd, target_tool_binary, workdir,
                     preferred_tool_path=target_tool_path_hint,
-                    version_args=target_tool_version_args)
+                    version_args=target_tool_version_args,
+                    started_status_path=launch_status,
+                    started_transport=launcher_metadata.get("transport") or "custom")
                 launch_cmd = build_launcher_command(
                     tool_launcher, resolved_tool_command,
                     **launcher_command_kwargs)
+                if launch_status:
+                    launcher_metadata["launch_status_file"] = launch_status
         except (IOError, OSError, ValueError) as exc:
             _stop_api_proxy(api_proxy_proc)
             overlay_info = (runtime_storage_info or {}).get("overlay")
@@ -3546,10 +3577,13 @@ def _run_codex_session_binder(agent_id, tmux_session, workdir, started_at):
 
 def _spawn_codex_session_binder(agent_id, tmux_session, workdir, started_at):
     """Start a one-shot binder without adding launch-path latency."""
+    command = ([sys.executable, _CAMC_SCRIPT]
+               if _CAMC_SCRIPT and os.path.basename(_CAMC_SCRIPT) != "__main__.py"
+               else [sys.executable, "-m", "camc_pkg"])
     try:
         subprocess.Popen(
-            [sys.argv[0], "_bind_codex_session", agent_id, tmux_session,
-             workdir, started_at],
+            command + ["_bind_codex_session", agent_id, tmux_session,
+                       workdir, started_at],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
         )

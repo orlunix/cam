@@ -1,7 +1,6 @@
 # MiniSpec Task File
 
-Render this file as `CLAUDE.md` for Claude or `AGENTS.md` for Codex and
-Cursor. It is the durable state read at startup and on every continuation.
+Render this file as `CLAUDE.md` for Claude or `AGENTS.md` for Codex, Cursor, and Pi. It is the durable state read at startup and on every continuation.
 
 ```markdown
 # Goal: {short goal}

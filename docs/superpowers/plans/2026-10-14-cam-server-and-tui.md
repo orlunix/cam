@@ -2,9 +2,15 @@
 
 **日期：** 2026-10-14
 
-**状态：** 已确定架构方向；尚未实现
+**状态：** Router、camc SDK、首版 Rust TUI/Client daemon 与 tmux control 终端通道已实现；增量状态订阅等完整目标继续验收，见 [v0.1 说明](../../cam-tui-v0.1.md)
 
 **范围：** 独立开发 Rust `cam-server`、`cam-tui` 和共享协议，参考 Herdr；现有 camc 继续使用。
+
+> 2026-10-19 交互细化：CAM TUI 开发使用 `cam-tui` 分支。
+> 四区布局、多 tab、PageUp/PageDown、滚轮、选区与复制粘贴，以及当前 Desktop 的源码参考，
+> 详见 [CAM TUI 功能与交互 Spec](../../cam-tui-terminal-spec.md)。
+> 功能范围同时包含 Agent loop（状态更新/监控）、Agent operation、Nodes operation 和后台 forwarding；职责与实施顺序以该细化 Spec 为准。
+> TUI 还需要独立的本地 Rust 常驻后台，多个窗口共用，持续同步 agent 状态、运行定时任务与 engineering loop，并承载 forwarding 与健康检查（含 tunnel alive）；见 [本地 Client daemon Spec](../../cam-client-daemon-spec.md)。退出界面不停止后台调度，agent runtime/权威监控仍归 owner Server。
 
 > 2026-10-18 架构更新：角色、camc 的 legacy Client 定位、Server runtime ownership
 > 和多 Client 中继拓扑以 [CAM Client / Server Spec](../../cam-client-server-spec.md)

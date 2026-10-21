@@ -139,6 +139,7 @@ def test_codex_binder_is_spawned_detached_without_waiting(monkeypatch):
         pass
 
     monkeypatch.setattr(cli.sys, "argv", ["/opt/camc"])
+    monkeypatch.setattr(cli, "_CAMC_SCRIPT", "/opt/camc")
     monkeypatch.setattr(
         cli.subprocess, "Popen",
         lambda argv, **kwargs: calls.append((argv, kwargs)) or FakeProcess(),
@@ -148,12 +149,21 @@ def test_codex_binder_is_spawned_detached_without_waiting(monkeypatch):
 
     argv, kwargs = calls[0]
     assert argv == [
-        "/opt/camc", "_bind_codex_session", "agent-a", "cam-agent-a",
+        cli.sys.executable, "/opt/camc", "_bind_codex_session", "agent-a", "cam-agent-a",
         "/work", STARTED,
     ]
     assert kwargs["start_new_session"] is True
     assert kwargs["stdout"] is cli.subprocess.DEVNULL
     assert kwargs["stderr"] is cli.subprocess.DEVNULL
+
+
+@pytest.mark.parametrize("script", [None, "/sdk/camc_pkg/__main__.py"])
+def test_codex_binder_uses_module_entry_for_sdk_and_module_launches(monkeypatch, script):
+    calls = []
+    monkeypatch.setattr(cli, "_CAMC_SCRIPT", script)
+    monkeypatch.setattr(cli.subprocess, "Popen", lambda argv, **kw: calls.append(argv))
+    cli._spawn_codex_session_binder("agent-a", "cam-agent-a", "/work", STARTED)
+    assert calls[0][:4] == [cli.sys.executable, "-m", "camc_pkg", "_bind_codex_session"]
 
 
 def test_codex_binder_keeps_polling_past_the_old_five_second_window(monkeypatch):

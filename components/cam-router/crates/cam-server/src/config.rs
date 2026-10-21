@@ -15,6 +15,9 @@ pub struct ClientGrant {
     pub token_file: PathBuf,
     #[serde(default)]
     pub source_nodes: Vec<String>,
+    /// Explicitly grant the Client local management/terminal API access.
+    #[serde(default)]
+    pub management: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -176,6 +179,48 @@ pub fn private_write(path: &Path, data: &[u8]) -> Result<()> {
     result
 }
 impl Config {
+    pub fn client_grant(&self, client: &str) -> Result<ClientGrant> {
+        if let Some(grant) = self.clients.iter().find(|g| g.client_id == client) {
+            return Ok(grant.clone());
+        }
+        if !cam_protocol::valid_id(client) {
+            return Err(error("invalid Client ID"));
+        }
+        let token_file = self.runtime_dir.join("paired").join(format!("{client}.token"));
+        if private_read(&token_file)?.len() < 32 {
+            return Err(error("invalid pairing credential"));
+        }
+        Ok(ClientGrant { client_id: client.into(), token_file, source_nodes: vec![], management: true })
+    }
+    /// Only a process authenticated as the Server's Unix owner can provision
+    /// this directory. Existing static grants keep their original scope.
+    pub fn pair(&self, client: &str) -> Result<ClientGrant> {
+        if !cam_protocol::valid_id(client) {
+            return Err(error("invalid Client ID"));
+        }
+        if let Some(grant) = self.clients.iter().find(|g| g.client_id == client) {
+            if !grant.management { return Err(error("existing Client grant does not permit management")); }
+            return Ok(grant.clone());
+        }
+        private_dir(&self.runtime_dir, true)?;
+        let paired = self.runtime_dir.join("paired");
+        private_dir(&paired, false)?;
+        let lock = OpenOptions::new().read(true).write(true).create(true).mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW).open(paired.join("pair.lock"))?;
+        if lock.metadata()?.uid() != uid() || lock.metadata()?.mode() & 0o077 != 0 {
+            return Err(error("invalid pairing lock owner or permissions"));
+        }
+        lock.lock_exclusive()?;
+        let token_file = paired.join(format!("{client}.token"));
+        if !token_file.exists() {
+            if fs::read_dir(&paired)?.filter_map(|p| p.ok())
+                .filter(|p| p.path().extension().and_then(|s| s.to_str()) == Some("token")).count() >= 128 {
+                return Err(error("paired Client capacity reached"));
+            }
+            private_write(&token_file, format!("{}{}", id(), id()).as_bytes())?;
+        }
+        self.client_grant(client)
+    }
     pub fn load(path: &Path) -> Result<Self> {
         let mut cfg: Self = serde_json::from_slice(&private_read(path)?)?;
         if !cam_protocol::valid_id(&cfg.node_id) {

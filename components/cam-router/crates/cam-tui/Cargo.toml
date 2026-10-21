@@ -1,0 +1,40 @@
+[package]
+name = "cam-tui"
+version = "0.1.6"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+test-harness = ["cam-server/test-harness"]
+
+[[example]]
+name = "router_test_client"
+required-features = ["test-harness"]
+
+[dependencies]
+cam-protocol = { path = "../cam-protocol" }
+cam-server = { path = "../cam-server" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+libc.workspace = true
+fs2.workspace = true
+rusqlite.workspace = true
+ratatui = "=0.24.0"
+crossterm = "=0.27.0"
+vt100 = "=0.15.2"
+base64 = "=0.21.7"
+unicode-width = "=0.1.11"
+# Keep the declared Rust 1.71 baseline; newer segmentation releases require 1.85.
+unicode-segmentation = "=1.10.1"
+
+[[bin]]
+name = "cam-tui"
+path = "src/main.rs"
+
+[[bin]]
+name = "cam-clientd"
+path = "src/daemon_main.rs"

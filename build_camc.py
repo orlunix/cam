@@ -148,8 +148,8 @@ def _inject_embedded_skills(src):
 
     _EMBEDDED_SKILLS = {
         "managing-camc": {
-            "SKILL.md": r'''...''',
-            "reference/sessions.md": r'''...''',
+            "SKILL.md": "...",
+            "reference/sessions.md": "...",
         },
         ...
     }
@@ -178,8 +178,9 @@ def _inject_embedded_skills(src):
         file_entries = []
         for fname in sorted(skills[skill_name]):
             content = skills[skill_name][fname]
-            file_entries.append(
-                '        "%s": r"""%s"""' % (fname, content))
+            # Keep embedded text on one physical Python line. The import
+            # consolidation below must not edit Markdown code examples.
+            file_entries.append("        %r: %r" % (fname, content))
         skill_entries.append(
             '    "%s": {\n%s\n    }' % (skill_name, ",\n".join(file_entries)))
 

@@ -39,7 +39,7 @@ import sys
 import time
 
 from camc_pkg import LOGS_DIR, log
-from camc_pkg.tool_launcher import record_uses_tool_launcher
+from camc_pkg.tool_launcher import record_uses_tool_launcher, launcher_start_pending
 from camc_pkg.utils import _now_iso
 from camc_pkg.adapters import _load_config, _load_boot_config
 from camc_pkg.storage import AgentStore, EventStore
@@ -232,23 +232,18 @@ def _refresh_boot_runtime(runtime, store, agent_id, boot_config):
     runtime.feature_state["waiting_for_launcher"] = False
     if runtime.in_initializing:
         task = rec.get("task") or {}
-        runtime.boot_prompt = ("" if task.get("prompt_in_command") else
+        runtime.boot_prompt = ("" if task.get("prompt_in_command") or
+                               task.get("requested_tool") else
                                _task_prompt(rec))
         launcher = ((rec.get("runtime") or {}).get("launcher") or {})
         launch_status = launcher.get("launch_status_file")
         if launch_status and not runtime.feature_state.get("launcher_started"):
-            # Queue time is not tool startup time. The auto runner records a
-            # transport only after target resolution, immediately before exec.
-            started = ""
-            try:
-                with open(launch_status) as status_file:
-                    started = status_file.read(32).strip()
-            except (IOError, OSError):
-                pass
+            # The target records a transport after resolution, immediately
+            # before exec. Queue time is not tool startup time.
             boot_wait = (boot_config.startup_wait if boot_config
                          else runtime.config.startup_wait)
             runtime.boot_deadline = time.time() + boot_wait
-            if started in ("battach", "ssh", "qsub", "local"):
+            if not launcher_start_pending(rec):
                 runtime.feature_state["launcher_started"] = True
             else:
                 runtime.feature_state["waiting_for_launcher"] = True

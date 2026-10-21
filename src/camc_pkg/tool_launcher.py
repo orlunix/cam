@@ -80,8 +80,22 @@ def record_uses_tool_launcher(record):
     return isinstance(runtime, dict) and "launcher" in runtime
 
 
-def launcher_target_environment(runtime_env, storage_info=None):
-    """Send terminal capabilities, tool home and paths, never loader variables."""
+def launcher_start_pending(record):
+    """Wait for a target-side receipt, independently of queue duration."""
+    launcher = ((record.get("runtime") or {}).get("launcher") or {})
+    path = launcher.get("launch_status_file")
+    if not path:
+        return False
+    try:
+        with open(path) as stream:
+            started = stream.read(32).strip()
+    except (IOError, OSError):
+        return True
+    return started not in ("battach", "ssh", "qsub", "local", "custom")
+
+
+def launcher_target_environment(runtime_env, storage_info=None, explicit_keys=None):
+    """Send supported context and only caller-explicit extra environment."""
     result = {}
     # An existing LSF allocation retains the environment of its original
     # submitter. Its TERM is not necessarily the terminal attached now.
@@ -101,6 +115,13 @@ def launcher_target_environment(runtime_env, storage_info=None):
     name = str(storage.get("environment") or "")
     if name and _TOOL_ENV_NAME_RE.match(name):
         result[name] = str((runtime_env or {}).get(name) or "")
+    # --tool-env is an intentional override, distinct from copying the
+    # submit host's ambient credentials/loader environment. PATH continues
+    # through the allocation-preserving merge above.
+    for name in explicit_keys or []:
+        if (name != "PATH" and _TOOL_ENV_NAME_RE.match(name) and
+                name in (runtime_env or {})):
+            result[name] = str(runtime_env[name])
     return result
 
 
@@ -232,6 +253,20 @@ def _parse_autorun_jobs(output, selected_tool, current_project=""):
     return result
 
 
+def _long_job_execution_host(output):
+    """LSF uses Dispatched to for some interactive RUN jobs.
+
+    Read actual event lines and prefer the latest dispatch after a requeue.
+    Inline occurrences in descriptions/commands are not execution evidence.
+    """
+    hosts = re.findall(
+        r"^[ \t]*(?:[^<>\r\n]*:[ \t]*)?"
+        r"(?:Started\s+on(?:\s+\d+\s+Hosts/Processors)?|Dispatched\s+to)"
+        r"\s*<([^>\r\n]+)>",
+        str(output or ""), re.IGNORECASE | re.MULTILINE)
+    return hosts[-1].strip() if hosts else ""
+
+
 def _verify_autorun_job_long(output, candidate, expected_user=""):
     """Recheck one candidate against unwrapped ``bjobs -l -UF`` metadata."""
     text = str(output or "")
@@ -240,9 +275,11 @@ def _verify_autorun_job_long(output, candidate, expected_user=""):
         "Service Class <autorun_sla>",
         "Status <RUN>",
         "Interactive",
-        "Started on <%s>" % candidate["host"],
     )
     if not all(token in text for token in required):
+        return False
+    if (_normalized_lsf_host(_long_job_execution_host(text)) !=
+            _normalized_lsf_host(candidate["host"])):
         return False
     user = str(expected_user or "")
     return not user or user.isdigit() or "User <%s>" % user in text
@@ -312,10 +349,7 @@ def detect_current_autorun_allocation(env=None, local_host=None,
     user = _long_job_field(output, "User")
     service_class = _long_job_field(output, "Service Class")
     status = _long_job_field(output, "Status")
-    started = re.search(
-        r"\bStarted\s+on\s*<([^>]+)>", str(output or ""),
-        re.IGNORECASE)
-    host = started.group(1).strip() if started else ""
+    host = _long_job_execution_host(output)
     text = str(output or "")
     description_start = re.search(
         r"\bJob\s+Description\s*<", text, re.IGNORECASE)
@@ -394,7 +428,7 @@ def _qsub_launcher(workdir, env, preset="auto"):
     project = _resolve_or_save_launcher_project(workdir, env, nvproject)
     return ([
         nvproject, "run", project, qsub,
-        "-q", "o_cpu_4G", "-m", "rel8x",
+        "-q", "o_pri_interactive_cpu_16G", "-m", "rel8x",
         "-app", "r89docker", "--qsla", "autorun_sla",
         "-app", "affinity", "-Is", "{command}",
     ], {
@@ -592,11 +626,11 @@ def build_resolved_tool_command(tool_argv, target_tool, workdir,
             shlex.quote(item) for item in env_assignments)
     exec_args = [exec_prefix, '"$_camc_tool"'] + [
         shlex.quote(str(item)) for item in tool_args]
+    if started_status_path:
+        lines.append("printf '%%s\\n' %s > %s || exit 125" % (
+            shlex.quote(started_transport),
+            shlex.quote(started_status_path)))
     if started_path:
-        if started_status_path:
-            lines.append("printf '%%s\\n' %s > %s || exit 125" % (
-                shlex.quote(started_transport),
-                shlex.quote(started_status_path)))
         lines.append(": > %s || exit 125" % shlex.quote(started_path))
     lines.append(" ".join(exec_args))
     return ["/bin/sh", "-c", "\n".join(lines) + "\n"]
@@ -686,6 +720,7 @@ def resolve_named_tool_launcher(preset_info, selected_tool, workdir, env,
         else:
             candidates = _parse_autorun_jobs(
                 stdout, selected_tool, current_project=current_project)
+            report("battach: bjobs found %d autorun candidate(s)" % len(candidates))
     else:
         report("battach: bjobs unavailable")
         notices.append("%s: bjobs not found" % preset)
@@ -700,6 +735,7 @@ def resolve_named_tool_launcher(preset_info, selected_tool, workdir, env,
             notices.append(
                 "%s: job %s metadata/EXEC_HOST changed; skipping" %
                 (preset, candidate["job_id"]))
+            report("battach: job %s failed LSF metadata/host verification; skipped" % candidate["job_id"])
             continue
         verified.append(candidate)
 
@@ -1020,7 +1056,7 @@ def build_auto_launcher_command(launcher_argv, metadata, remote_tool_argv,
                     ])
                 target_arg = shlex.quote("/bin/sh %s" % shlex.quote(target_path))
                 qsub_lines.append(
-                    '%s run "$_camc_project" %s -q o_cpu_4G -m rel8x '
+                    '%s run "$_camc_project" %s -q o_pri_interactive_cpu_16G -m rel8x '
                     '-app r89docker --qsla autorun_sla -app affinity -Is %s' %
                     (nvproject, qsub, target_arg))
                 lines.extend(["_camc_qsub() {"] + qsub_lines + ["}"])

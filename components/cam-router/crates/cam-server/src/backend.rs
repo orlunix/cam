@@ -21,6 +21,17 @@ pub struct Backend {
     process: Mutex<Child>,
 }
 impl Backend {
+    pub async fn control(&self, action: &str, args: Value) -> Result<Value> {
+        let answer = self
+            .execute(serde_json::json!({"type":"backend.control",
+            "message_id":cam_protocol::id(),"source":{"node_id":"@management"},
+            "action":action,"args":args}))
+            .await?;
+        if let Some(message) = answer["error"].as_str() {
+            return Err(error(message));
+        }
+        Ok(answer)
+    }
     pub async fn start(config: &BackendConfig, node: &Config) -> Result<Arc<Self>> {
         use std::os::unix::process::CommandExt;
         let mut command = std::process::Command::new(&config.python);
