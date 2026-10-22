@@ -1,6 +1,6 @@
 # CAM Desktop UI Spec
 
-Status: v2 — Electron + WebUI reuse, hub/controller architecture, active Settings modes **Direct + Relay** (Direct = self-contained embedded Electron Hub; Relay = external relay)
+Status: v2 — Electron + WebUI reuse, hub/controller architecture, active Settings mode **Direct** (self-contained embedded Electron Hub); **Relay** (external relay) is **legacy / not currently supported** — canonical target: `docs/cam-client-server-spec.md`
 Owner split: `camui-rev` writes and reviews this spec; `camui-dev` implements after approval.
 
 Canonical requirement IDs live in `docs/desktop/requirements.md`. This file is
@@ -9,28 +9,31 @@ the requirement IDs rather than treating this document as a checklist.
 
 ## Architecture
 
-CAM is a **hub / control plane** product. Coding agents always run on a
-remote controller/node — never inside the Desktop process. Desktop is a
-thin UI/client over the hub API.
+CAM's target architecture is **CAM Client + CAM Server**. Coding agents
+always run on a remote node — never inside the Desktop process. Desktop is
+a thin CAM Client; its current embedded Hub is a client-side connection and
+control-plane implementation, not a third product role.
 
 ```text
-Desktop UI  ──HTTP/WS──▶  CAM Hub/API  ──poll/route──▶  Remote Controller/Node  ──spawns──▶  tmux + agent runtime
+Desktop UI  ──HTTP/WS──▶  Desktop Client (embedded Hub/API)  ──poll/route──▶  Remote Node  ──▶  legacy camc + agent runtime
 ```
 
 Terminology used throughout this spec:
 
 - **Node / Controller** — the machine/runtime where agents actually run
-  (Python, tmux, controller adapter / `camc`, agent CLIs).
-- **Hub** — the CAM control plane. Aggregates node/agent/context tables
-  and routes user actions back to the right controller. In Direct mode
-  this Hub is embedded in Electron/Node; in Relay mode it is external.
-- **Desktop** — the Electron app in `apps/cam-desktop/`. In Direct mode
-  it starts an embedded Node/Electron CAM Hub and renders that Hub's
-  tables. In Relay mode it reaches a Hub through an external relay
-  endpoint.
+  (Python, tmux, controller adapter / `camc`, agent CLIs during migration).
+- **Hub** — Desktop's current embedded control plane. It aggregates
+  node/agent/context tables and routes user actions back to the right node;
+  target routing and ownership converge on CAM Client + CAM Server.
+- **Desktop** — the Electron app in `apps/cam-desktop/`. In supported
+  Direct mode it starts an embedded Node/Electron Hub and renders that
+  Hub's tables.
 - **Local Node** — a node that happens to be reachable on `localhost` /
   WSL / a local Mac. It is a special case of Node, not a separate
   Settings mode.
+- **Relay** (legacy / unsupported) — the old path where Desktop reached a
+  Hub through an external relay endpoint. Not part of the currently
+  supported product; see `docs/cam-client-server-spec.md`.
 
 See `docs/desktop/requirements.md` for the canonical
 ARCH/HUB/NODE/DIRECT/REMOTE requirement IDs.
@@ -56,12 +59,14 @@ the embedded CAM Hub lifecycle through a narrow fixed IPC surface; the
 renderer never becomes a command runner.
 
 The operating model is straightforward: Direct starts an embedded
-Electron/Node CAM Hub and connects the renderer to it; Relay connects to
-a CAM Hub through an external relay endpoint. In both cases, the Hub presents managed
+Electron/Node CAM Hub and connects the renderer to it. (Relay — reaching
+a CAM Hub through an external relay endpoint — is legacy / unsupported.)
+The Hub presents managed
 controllers/nodes and their agents. Desktop reuses the same `CamApi`
 client once connected.
 
-Active Settings exposes exactly two connection modes:
+Active Settings exposes exactly two connection modes — **Direct
+(supported)** and **Relay (legacy / not currently supported)**:
 
 ```text
 Direct / Relay  ·  (SSH attach, future)
@@ -71,7 +76,7 @@ Direct / Relay  ·  (SSH attach, future)
   readiness, starts the Node/Electron Hub on loopback, generates/persists
   the API token, and connects the renderer directly to that Hub. Direct
   has no local WSL, Python, shell, `cam`, or `cam serve` prerequisite.
-- **Relay** — relay URL + relay token, used when the hub is unreachable.
+- **Relay** (legacy / unsupported) — relay URL + relay token, used when the hub is unreachable.
   The source-side profile owns the CAM API token and the relay injects it
   for `/api/*` forwarding.
 - **SSH attach** (future) — server-mediated WebSocket attach
@@ -83,12 +88,13 @@ import SSH config, add/edit
 nodes, test connection, sync, and start agents through Hub APIs. Desktop
 does not expose raw private keys to the renderer.
 
-Settings exposes exactly the two active modes; tokens are never
-displayed in plaintext.
+Settings exposes the Direct profile and the legacy Relay entry; only
+Direct is an active/supported mode. Tokens are never displayed in
+plaintext.
 
 The left-nav workspace modes are: **Agents** (default — list/output/
-composer), **Start** (start a new agent), **Settings** (Direct + Relay
-profile), and **Nodes** (a read-mostly node/remote list built from
+composer), **Start** (start a new agent), **Settings** (Direct profile;
+Relay legacy), and **Nodes** (a read-mostly node/remote list built from
 hub-provided contexts + agents, peer of the mobile/PWA Machines view).
 Selecting a workspace mode swaps the main pane to that feature; the
 Agent list/composer is hidden outside Agents. Contexts remains a
@@ -194,12 +200,13 @@ The first release proves this loop end-to-end against a hub:
 select agent -> read current output -> send input/key -> refresh output
 ```
 
-Active connection modes (canonical IDs in DIRECT-010..019 and REMOTE-012..014):
+Connection modes (canonical IDs in DIRECT-010..019 and REMOTE-012..014;
+**Relay is legacy / unsupported**):
 
 1. **Direct** (DIRECT-010..019) — app-managed embedded Electron/Node CAM
    Hub. URL/token are internal generated profile state; users manage
    Nodes/Remotes rather than typing a Hub URL.
-2. **Relay** (REMOTE-012) — relay URL + relay token. The relay proxies
+2. **Relay** (REMOTE-012, legacy / unsupported) — relay URL + relay token. The relay proxies
    REST/WS for an unreachable hub; the source profile owns the CAM API
    token and the relay injects it for `/api/*` forwarding.
 

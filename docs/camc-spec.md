@@ -587,8 +587,8 @@ Decisions taken while writing this spec:
 
 | Older doc | Status | Action |
 |---|---|---|
-| `docs/architecture-full.md` (2026-03-27) | Still mostly accurate for cam-side | Keep; this spec supersedes for camc-side specifics |
-| `docs/migration-v3-unified.md` | The roadmap that produced today's state | Keep; this spec is the *current state* version of that roadmap |
+| `docs/archive/architecture-full.md` (2026-03-27) | Still mostly accurate for cam-side | Keep; this spec supersedes for camc-side specifics |
+| `docs/archive/migration-v3-unified.md` | The roadmap that produced today's state | Keep; this spec is the *current state* version of that roadmap |
 | `docs/heal-hooks-spec.md` | Implemented; details in §5 (self-heal) + `cmd_heal`; future move per **F-01** | Keep; pointer added |
 | `docs/camc-cron-spec.md` | Implemented; details in §7 | Keep; pointer added |
 | `docs/exit-stop-kill-migrate-spec.md` | Implemented; commands in §4 + `cli.py` subparsers | Keep |
@@ -653,9 +653,10 @@ command and the no-op `skills add/rm` commands have also been removed;
 This file is the **canonical current spec** for camc. It cites the existing
 detailed docs in place rather than copying their content:
 
-- Architecture diagram (full system, cam + camc + transport): `docs/architecture-full.md`
-- Mermaid version: `docs/architecture-mermaid.md`
-- Roadmap that produced today's state: `docs/migration-v3-unified.md`
+- Architecture diagram (full system, cam + camc + transport): `docs/archive/architecture-full.md`
+- Cross-interface CAM Server / Client behavior standard (Desktop / TUI / Mobile / routing / idempotency): `docs/hub-server-spec.md`
+- Mermaid version: `docs/archive/architecture-mermaid.md`
+- Roadmap that produced today's state: `docs/archive/migration-v3-unified.md`
 - Active camc refactor plan: `docs/camc-refactor-development-plan.md`
 - Heal details (Phase 1 / 2 / 2.5 / 3): `docs/heal-hooks-spec.md`
 - Cron details (parsing grammar, lock, hostname filter): `docs/camc-cron-spec.md`

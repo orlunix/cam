@@ -138,8 +138,8 @@ This is enough to display, reboot, and rm cleanly.
   of the tool's wire protocol keeps it portable.
 - Persona libraries / templates. Operator can just point
   `--system-file` at any file.
-- Server-side persona governance (RBAC over personas). cam serve
-  could add this later if needed.
+- Server-side persona governance (RBAC over personas). A future CAM
+  Server capability could add this if needed.
 
 ## Effort estimate
 

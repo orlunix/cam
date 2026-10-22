@@ -1,7 +1,7 @@
 # CAM Mobile Docs
 
 > **STATUS (2026-07-25): largely stale.** The authoritative living
-> document is **[`stability-roadmap.md`](./stability-roadmap.md)**
+> document is **[`stability-roadmap.md`](../../mobile/stability-roadmap.md)**
 > (current state, remaining issues, roadmap, doc trust map). The files
 > below are kept for history; check the trust map in §6 there before
 > believing any section.
@@ -36,11 +36,11 @@ The source owns the CAM API token (`~/.cam/camui/relay/<name>/profile.json`). Th
 
 ## Related
 
-- Desktop requirements (Hub API contract): [`../desktop/requirements.md`](../desktop/requirements.md)
-- Desktop UI / workspace gateway spec: [`../desktop-ui-spec.md`](../desktop-ui-spec.md)
-- Shared API client: [`../../web/js/api.js`](../../web/js/api.js)
-- Legacy mobile PWA entry: [`../../web/index.html`](../../web/index.html)
-- Legacy Android shell: [`../../apps/cam-mobile/`](../../apps/cam-mobile/)
+- Desktop requirements (Hub API contract): [`../../desktop/requirements.md`](../../desktop/requirements.md)
+- Desktop UI / workspace gateway spec: [`../../desktop-ui-spec.md`](../../desktop-ui-spec.md)
+- Shared API client: [`../../../web/js/api.js`](../../../web/js/api.js)
+- Legacy mobile PWA entry: [`../../../web/index.html`](../../../web/index.html)
+- Legacy Android shell: [`../../../apps/cam-mobile/`](../../../apps/cam-mobile/)
 
 ## Boundary
 

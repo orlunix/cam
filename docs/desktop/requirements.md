@@ -22,16 +22,18 @@ Term glossary, used consistently across the docs:
 | Term | Meaning |
 | --- | --- |
 | **Node** / **Controller** | The machine/runtime where agents actually run. Hosts the controller-side runtime (`camc`/controller adapter), tmux, Python, and the agent CLIs (Claude, Codex, Cursor, …). |
-| **Hub** | The CAM control plane. Aggregates and persists node + agent + context tables, and routes commands back to the right controller. Direct mode embeds this Hub inside Electron/Node; Relay mode reaches an external Hub through a relay. Both expose the same REST/WS surface at `/api/...`. |
+| **Hub** | Desktop's current client-side control-plane implementation. It aggregates and persists node + agent + context tables, and routes commands back to the right controller. Direct mode embeds this Hub inside Electron/Node; legacy Relay mode reached an external Hub through a relay. The target architecture folds these semantics into CAM Client + CAM Server rather than treating Hub as a third product role. |
 | **Desktop** | The Electron app in `apps/cam-desktop/`. Renders the hub's tables, sends user actions through `CamApi`, and (later) opens interactive attach streams to the selected agent's controller. |
 | **Local** | A node that happens to be reachable on `localhost` / WSL / a local Mac. It is a **special case of Node**, not a separate architecture. |
 
-The **active** user-visible connection modes are two:
+The user-visible connection modes (only **Direct** is currently supported;
+**Relay** is legacy / unsupported — canonical target:
+`docs/cam-client-server-spec.md`):
 
 | Mode | User intent | Implementation surface |
 | --- | --- | --- |
-| **Direct** (default) | "Run CAM from this Desktop and let it manage my nodes." | Electron main starts an embedded Node/Electron CAM Hub, generates/persists its API token, connects the renderer to that local Hub over loopback, and uses Hub APIs to manage remotes/nodes. No local Python, WSL, macOS/Linux shell, or `cam` CLI is required. |
-| **Relay** | "Use an existing CAM Hub through a relay endpoint." | Desktop/mobile users enter Relay URL + relay token. The source profile owns the CAM API token and the relay injects it for `/api/*` forwarding. |
+| **Direct** (default, supported) | "Run CAM from this Desktop and let it manage my nodes." | Electron main starts an embedded Node/Electron CAM Hub, generates/persists its API token, connects the renderer to that local Hub over loopback, and uses Hub APIs to manage remotes/nodes. No local Python, WSL, macOS/Linux shell, or `cam` CLI is required. |
+| **Relay** (legacy / unsupported) | "Use an existing CAM Hub through a relay endpoint." | Desktop/mobile users enter Relay URL + relay token. The source profile owns the CAM API token and the relay injects it for `/api/*` forwarding. |
 
 **Managed** is **not** a third UI mode. The term refers to deployment
 policy around Direct: enterprise defaults, bundled runtime bits, node
@@ -78,7 +80,7 @@ Areas:
 - `HUB`: behavior of the CAM hub / control plane the Desktop talks to.
 - `NODE`: behavior of a controller/node where agents actually run.
 - `DIRECT`: Desktop-managed embedded Electron/Node CAM Hub lifecycle and Direct profile.
-- `REMOTE`: Relay connection to an external CAM Hub and compatibility with older connection profiles.
+- `REMOTE`: Relay connection to an external CAM Hub and compatibility with older connection profiles (legacy / unsupported path; IDs preserved for stability).
 - `SSH`: future SSH-mediated terminal attach and controller transport.
 - `CONN`: endpoint/profile connection behavior (legacy — now a subset of REMOTE).
 - `AGT`: agent list and selection.
@@ -301,6 +303,12 @@ wires the embedded Hub to a `todocli`-style backend.
 
 REMOTE supersedes the legacy `CONN` area for new work; `CAM-DESK-CONN-001`
 in the Approved Baseline still applies (existing localStorage profile keys).
+
+> **Note (2026-10):** Relay is a legacy / unsupported connection path —
+> Direct is the supported mode (see `docs/cam-client-server-spec.md`). The
+> REMOTE requirements below keep their approved status for ID stability and
+> historical record; they are not a statement that Relay is currently
+> supported, and no new Relay work should be assigned against them.
 
 | ID | Status | Requirement |
 | --- | --- | --- |
@@ -549,10 +557,10 @@ that conflicts with ARCH-011 / SSH-013.
 Related historical references (also marked deferred):
 
 - Architecture / design notes for the Local tab experiment:
-  [`docs/desktop/local-integrated-mode-spec.md`](./local-integrated-mode-spec.md)
+  [`docs/archive/local-integrated-mode-spec.md`](../archive/local-integrated-mode-spec.md)
   (banner-marked superseded).
 - Setup notes for the deferred Local tab path (WSL/macOS prerequisites,
-  troubleshooting): [`docs/desktop/local-runtime-user-guide.md`](./local-runtime-user-guide.md)
+  troubleshooting): [`docs/archive/local-runtime-user-guide.md`](../archive/local-runtime-user-guide.md)
   (banner-marked superseded).
 
 History note: an earlier iteration of LOC required Local to route the

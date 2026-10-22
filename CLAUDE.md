@@ -78,7 +78,15 @@ cam serve           # Start API server (FastAPI + uvicorn)
 
 ## Architecture
 
-### cam ↔ camc Delegation Model
+> **Canonical target architecture**: `docs/cam-client-server-spec.md`
+> (2026-10-18) — CAM Client (TUI/Desktop/Mobile) + CAM Server (Router first;
+> tunnels / agent-info / runtime migrate in phases, **not yet implemented**).
+> **camc** is the legacy CAM Client: migration-period fallback, to be
+> retired. **Relay is legacy / unsupported.** The rest of this section
+> describes the **legacy implementation** (how the current code works), not
+> the target architecture.
+
+### cam ↔ camc Delegation Model (legacy implementation notes)
 
 cam is the server/orchestrator. camc is the standalone agent manager deployed to each machine. All agent operations are delegated from cam to camc:
 
@@ -109,7 +117,7 @@ Mobile APP / CLI / Web
 
 **Key principle**: cam delegates, camc executes. Transport layer provides the SSH tunnel; camc does all tmux operations locally on each machine.
 
-### cam Server Layers
+### cam Server Layers (legacy `cam serve` codebase)
 
 Six layers, top to bottom:
 
@@ -122,9 +130,9 @@ Six layers, top to bottom:
 
 ### Key subsystems
 
-- **Relay** (`relay/relay.py`) — Standalone zero-dep WebSocket relay (stdlib-only RFC 6455). Bridges REST-over-WS between mobile clients and CAM server.
+- **Relay** (`relay/relay.py`) — Standalone zero-dep WebSocket relay (stdlib-only RFC 6455). Bridges REST-over-WS between mobile clients and CAM server. **Legacy / unsupported.**
 - **cam-agent** (`src/cam-agent/`) — Go binary providing standardized remote protocol over SSH. Wraps tmux on Linux.
-- **camc** (`src/camc_pkg/`, built to `dist/camc`) — Standalone single-file CLI (stdlib-only, Python 3.6+). Self-contained agent manager for each machine.
+- **camc** (`src/camc_pkg/`, built to `dist/camc`) — Standalone single-file CLI (stdlib-only, Python 3.6+). Self-contained agent manager for each machine. Legacy CAM Client — migration fallback, to be retired per the canonical spec.
 - **Web/Mobile** (`web/`) — PWA frontend. Android WebView wrapper in `apps/cam-mobile/`.
 
 ## Critical Pydantic v2 Patterns
@@ -404,11 +412,14 @@ camc searches multiple socket directories via `_find_tmux_socket()`:
 
 This allows camc to operate on sessions created by any transport backend.
 
-## v3 Migration Plan
+## v3 Migration Plan (historical / superseded)
 
-Full plan: `docs/migration-v3-unified.md`
+Archived plan: `docs/archive/migration-v3-unified.md`. The current
+architecture and migration order are defined by
+`docs/cam-client-server-spec.md`; the phase list below is retained only as
+history of the legacy cam/camc consolidation.
 
-### Current Status: Phase 0 Complete
+### Historical Status: Phase 0 Complete
 
 Phase 0 (schema unification) is done. camc and cam use the same agent record
 field names. Next phases:

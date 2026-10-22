@@ -39,15 +39,16 @@ Desktop UI  ──HTTP/WS──▶  CAM Hub/API  ──poll/route──▶  Remo
 - **安装后的 app 不得要求用户有 WSL / 本地 Python / host shell / 本地 `cam`**。
   用户不应需要打开终端。
 
-两种连接模式（Settings 里只有这两个 tab）：
+两种连接模式（Settings 里只有这两个 tab），**当前仅 Direct 受支持**：
 
-- **Direct（默认）**：app 自己拉起一个嵌入式 Node hub（跑在 Electron 主进程里，
+- **Direct（默认，受支持）**：app 自己拉起一个嵌入式 Node hub（跑在 Electron 主进程里，
   见 §3.2），绑定 loopback，token 每次启动随机生成。冷启动无 profile 时自动
   start 并落在 Agents 页（DIRECT-013）；`contexts:[]` 是合法运行态。
-- **Relay**：连一个已有 hub，经过 relay 端点。两道 token 边界：client→relay 用
+- **Relay（legacy / 当前不支持）**：连一个已有 hub，经过 relay 端点。两道 token 边界：client→relay 用
   用户输入的 relay token；relay→源 hub 由 relay 注入源 hub 的 CAM API token，
   客户端无需知道。Relay source 用 `camui start --profile … --relay-url …
-  --relay-token …` 起（见 `docs/desktop/README.md` 的 Quick Start）。
+  --relay-token …` 起（见 `docs/desktop/README.md` 的 historical Quick Start）。
+  目标架构见 `docs/cam-client-server-spec.md`。
 - **Local tab 已退役**（2026-07-17）：本地会话不支持，hub 一律回
   `local_unsupported` + "run an SSH server on it and add it as an SSH node"。
   LOC-010..024 与 TERM-010..017 仅为需求 ID 稳定保留，**不得再对其派活**。
@@ -71,7 +72,7 @@ Todos（见 §4.3 的 `HIDDEN_MODES`）。
 | `dist/camc`、`dist/skillm` | 打进 MSI 的远程二进制（extraResources）。**git-tracked，别当构建产物"清理"** |
 | `src/camc` | `dist/camc` 的同步副本（同属 camc 所有权的例外：只同步、不修改逻辑） |
 | `scripts/release.sh` | **camc 的发布脚本，不是 desktop 的**（§6.5） |
-| `relay/relay.py` | Relay 服务器（stdlib-only Python） |
+| `relay/relay.py` | Relay 服务器（stdlib-only Python，**legacy / 不支持**） |
 
 ### 2.2 所有权（根 `AGENTS.md`，2026-07-23 用户指令）
 
@@ -596,7 +597,7 @@ network.client/server + keychain + user-selected file read）。
 
 脱离 Electron 复用同一套三模块（embedded-hub + credential-store +
 ssh-transport）：`camui [--json] status|start|logs`、`node list|add|sync`、
-`agent list`；Relay source 模式 `camui start --profile <name> --relay-url ws://…
+`agent list`；Relay source 模式（legacy / 不支持）`camui start --profile <name> --relay-url ws://…
 --relay-token <t>`（profile 存 `~/.cam/camui/relay/<profile>/profile.json`，
 0600；日志只显示 token 的 SHA-256 指纹）。无 Electron 就没有 safeStorage，
 `--remember` 不可用。
@@ -733,10 +734,10 @@ canonical 清单，信任其状态标记）→ `docs/desktop-ui-spec.md`（产�
 | `docs/desktop/terminal-tmux-interactions-{spec,plan}.md` | spec 是设计；plan 的 checkbox 未勾——**对代码核实完成度，别当真** |
 | `docs/desktop/agent-fast-switch-{spec,plan}.md`、`fast-switch-brief.md` | 已实现（TERM-004/007）；brief 是执行 runbook（MSI 机制参考价值高） |
 | `docs/desktop/camui-4improvements-brief.md` | 已执行 runbook；含"renderer 未打包发货，grep resources/web/ 而非 app.asar"等硬事实 |
-| `docs/desktop/local-integrated-mode-spec.md`、`local-runtime-user-guide.md` | **SUPERSEDED，不要实现、不要遵循** |
+| `docs/archive/local-integrated-mode-spec.md`、`docs/archive/local-runtime-user-guide.md` | **SUPERSEDED，不要实现、不要遵循** |
 | `docs/windows-installer.md` | **stale**（Tauri 时代）；真实流程是 electron-builder |
 | `extensions/README.md` | "built-ins disable-only, never removable" 一行 stale（SPEC §9：0.2.24 已恢复统一行操作） |
-| `docs/architecture-full.md` | 2026-03 自动生成，服务端视角，**无 Desktop 内容** |
+| `docs/archive/architecture-full.md` | 2026-03 自动生成，服务端视角，**无 Desktop 内容** |
 | `docs/todos-shared-development-guide.md` | 3-tab 模型与 TODOS-011 的 5 tab 冲突时，以 requirements.md 为准 |
 | `docs/archive/`、`docs/legacy/` | 历史资料，仅背景 |
 | `apps/cam-desktop/` 内：`README.md`（定向）、`RELEASE.md`（发布 playbook）、`DEBUGGING.md`（调试圣经）、`TERMINAL-ARCHITECTURE.md`（终端不变量）、`APP-STORE.md` + `MAS-*.md`（MAS 线）、`FIXES-*.md`（各次修复的硬规则）、`LOCAL-NODE-DATAPATH.md`（已退役）、`CLAUDE.md`（camc 任务简报，untracked，别提交） | 均可信，按主题查 |

@@ -685,6 +685,112 @@ async function execRemote(opts) {
   return _execDone(first);
 }
 
+/**
+ * Open a long-lived non-PTY exec channel and return its Duplex stream.
+ *
+ * This is the transport used by CAM Client forwarding:
+ *
+ *   <cam-server> connect --socket <socket>
+ *
+ * The channel shares the pooled ssh2 connection with exec/SFTP traffic,
+ * but owns its own channel and reservation. Closing the channel releases
+ * the reservation without touching the pool entry; a dead connection is
+ * dropped by the pool's own close/error handlers.
+ *
+ * Returns { ok:true, stream, close } or { ok:false, error, detail }.
+ */
+async function openExecChannel(opts, command) {
+  if (_override) return _override({ ...opts, operation: 'openExecChannel', command });
+  if (!opts || !opts.host || !opts.user) {
+    return { ok: false, error: 'invalid_args', detail: 'host and user are required' };
+  }
+  if (typeof command !== 'string' || !command) {
+    return { ok: false, error: 'invalid_args', detail: 'command is required' };
+  }
+  const ssh2 = _loadSsh2();
+  if (!ssh2 || !ssh2.Client) {
+    return { ok: false, error: 'exec_failed', detail: `ssh2 module not loadable: ${ssh2 && ssh2._loadError || 'unknown'}` };
+  }
+  const key = _poolKey(opts);
+  let entry = _getOrCreate(key, opts, ssh2);
+  try {
+    await entry.readyPromise;
+  } catch (e) {
+    return { ok: false, error: e.error || 'exec_failed', detail: e.detail || 'connect failed' };
+  }
+
+  entry.inflight++;
+  _clearIdleTimer(entry);
+  const openT0 = Date.now();
+  const openTimeoutMs = Math.max(5000, Math.min(60000, Number(opts.open_timeout_ms) || 15000));
+
+  return new Promise((resolve) => {
+    let opened = false;
+    let released = false;
+    let stream = null;
+    const timer = setTimeout(() => {
+      if (opened) return;
+      opened = true;
+      try { if (stream) { stream.close && stream.close(); stream.destroy && stream.destroy(); } } catch { /* noop */ }
+      _release();
+      _dropEntry(key, 'exec_channel_timeout');
+      resolve({ ok: false, error: 'exec_failed', detail: `exec channel open timeout after ${openTimeoutMs}ms` });
+    }, openTimeoutMs);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+
+    function _release() {
+      if (released) return;
+      released = true;
+      clearTimeout(timer);
+      entry.inflight = Math.max(0, entry.inflight - 1);
+      if (entry.inflight === 0 && _pool.get(key) === entry) _startIdleTimer(entry);
+    }
+
+    try {
+      entry.client.exec(command, { pty: false }, (err, channel) => {
+        if (err) {
+          if (opened) return;
+          opened = true;
+          _release();
+          resolve({ ok: false, error: 'exec_failed', detail: err.message || String(err) });
+          return;
+        }
+        stream = channel;
+        if (opened) { try { channel.close && channel.close(); } catch { /* noop */ } return; }
+        opened = true;
+        _log(`exec channel open ${opts.host}:${opts.port || 22} in ${Date.now() - openT0}ms: ${String(command).slice(0, 200)}`);
+        // stderr is diagnostic only; it must never enter the NDJSON parser.
+        if (channel.stderr) {
+          channel.stderr.on('data', (chunk) => {
+            const line = String(chunk || '').split('\n')[0].trim().slice(0, 200);
+            if (line) _log(`exec channel stderr ${opts.host}:${opts.port || 22}: ${line}`);
+          });
+          channel.stderr.on('error', () => {});
+        }
+        channel.on('close', () => {
+          _log(`exec channel closed ${opts.host}:${opts.port || 22}`);
+          _release();
+        });
+        channel.on('error', (channelErr) => {
+          _log(`exec channel error ${opts.host}:${opts.port || 22}: ${(channelErr && channelErr.message) || 'error'}`);
+          _release();
+        });
+        const close = () => {
+          try { channel.close && channel.close(); } catch { /* noop */ }
+          try { channel.destroy && channel.destroy(); } catch { /* noop */ }
+          _release();
+        };
+        resolve({ ok: true, stream: channel, close });
+      });
+    } catch (e) {
+      if (opened) return;
+      opened = true;
+      _release();
+      resolve({ ok: false, error: 'exec_failed', detail: e && e.message || String(e) });
+    }
+  });
+}
+
 async function writeRemoteFile(opts) {
   if (_override) return _override({ ...opts, operation: 'writeRemoteFile' });
   if (!opts || typeof opts.remotePath !== 'string' || !opts.remotePath) {
@@ -1188,6 +1294,7 @@ function warmConnection(opts, { pool = 'term' } = {}) {
 module.exports = {
   execRemote,
   writeRemoteFile,
+  openExecChannel,
   listRemoteFiles,
   readRemoteFile,
   openTerminalChannel,

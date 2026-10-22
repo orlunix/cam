@@ -238,5 +238,5 @@ Direct work only adds / replaces files under `settings-direct` (Desktop-shaped),
 ## Related docs
 
 - [`direct-mode.md`](./direct-mode.md) — product model (Direct superset, not phone-SSH)
-- [`../desktop/requirements.md`](../desktop/requirements.md) — CAM-DESK-DIRECT-010..019
+- [`../../desktop/requirements.md`](../../desktop/requirements.md) — CAM-DESK-DIRECT-010..019
 - [`relay-first-plan.md`](./relay-first-plan.md) — Relay client (unchanged)

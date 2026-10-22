@@ -18,7 +18,7 @@ For current requirements and design, read:
   REMOTE/SSH/RUN/EDIT/INP/OUT/SET/PKG/TERM/LOC/SEC/VFY`).
 - [`../../docs/desktop-ui-spec.md`](../../docs/desktop-ui-spec.md) —
   current milestone / product spec.
-- [`../../docs/desktop/local-integrated-mode-spec.md`](../../docs/desktop/local-integrated-mode-spec.md)
+- [`../../docs/archive/local-integrated-mode-spec.md`](../../docs/archive/local-integrated-mode-spec.md)
   — the Advanced Local Node Mode (single-machine fallback). Not the
   default product flow.
 

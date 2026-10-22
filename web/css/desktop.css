@@ -2880,6 +2880,11 @@ body.desktop[data-theme="light"] .composer-input:focus {
   cursor: pointer;
 }
 .terminal-tmux-tab.is-active { border-color: var(--accent, #58a6ff); color: var(--accent, #58a6ff); }
+.terminal-history-btn.is-active {
+  border-color: var(--accent, #58a6ff);
+  color: var(--accent, #58a6ff);
+  background: color-mix(in srgb, var(--accent, #58a6ff) 18%, transparent);
+}
 .terminal-tmux-new { min-width: 26px; font-size: 15px; line-height: 1; }
 .terminal-action-bar {
   position: absolute;

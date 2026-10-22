@@ -179,6 +179,10 @@ a { color: var(--accent); text-decoration: none; }
 .dot.pending { background: var(--text-dim); }
 .dot.starting { background: var(--yellow); }
 .dot.retrying { background: var(--yellow); }
+.dot.alive { background: var(--green); }
+.dot.idle { background: var(--yellow); }
+.dot.dead { background: var(--text-dim); }
+.dot.stopped { background: var(--text-dim); }
 
 /* === Badges === */
 .badge {
@@ -198,6 +202,10 @@ a { color: var(--accent); text-decoration: none; }
 .badge-pending { background: rgba(136, 136, 136, 0.15); color: var(--text-dim); }
 .badge-starting { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
 .badge-retrying { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
+.badge-alive { background: rgba(61, 214, 140, 0.15); color: var(--green); }
+.badge-idle { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
+.badge-dead { background: rgba(136, 136, 136, 0.15); color: var(--text-dim); }
+.badge-stopped { background: rgba(136, 136, 136, 0.15); color: var(--text-dim); }
 
 /* === Stats Bar === */
 .stats-bar {

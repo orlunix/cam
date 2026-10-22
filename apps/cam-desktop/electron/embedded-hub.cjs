@@ -126,6 +126,11 @@ const OUTPUT_CAPTURE_CACHE_MAX = 100;
 // belongs to a wedged flow — reap it instead of refusing syncs forever.
 const SYNC_STALE_MS = 180000;
 
+// Client-state agent sync cadence, aligned with cam-clientd/cam-tui.
+const AGENT_POLL_MS = 30000;
+const AGENT_STARTUP_POLL_MS = 2000;
+const AGENT_STARTUP_WATCH_MS = 600000;
+
 const state = {
   server:     null,
   port:       null,
@@ -163,6 +168,10 @@ const state = {
   agentSyncInFlight: false,  // false | lease {since, at}
   syncStaleMs: SYNC_STALE_MS,
   lastAgentSyncAt: 0,
+  agentPollTimer: null,
+  agentStartupPollTimer: null,
+  agentInitialSyncTimer: null,
+  agentStartupWatch: new Map(), // context name -> watch-until ms
 };
 
 function tokenFingerprint(tok) {
@@ -1300,6 +1309,73 @@ async function _syncAllAgentContexts(reason = 'manual') {
   }
 }
 
+function _agentStillStarting(a) {
+  if (!a) return false;
+  const status = String(a.status || '').toLowerCase();
+  const agentState = String(a.state || '').toLowerCase();
+  return ['starting', 'pending', 'initializing'].includes(status)
+    || agentState === 'initializing';
+}
+
+function _contextHasStartingAgents(ctx) {
+  if (!ctx || !state.store || !Array.isArray(state.store.agents)) return false;
+  return state.store.agents.some((a) =>
+    a && (a.context_name || '') === ctx.name && _agentStillStarting(a));
+}
+
+function _markAgentStartupWatch(ctx) {
+  if (!ctx || !ctx.name || !ctx.machine || ctx.machine.type !== 'ssh') return;
+  state.agentStartupWatch.set(ctx.name, Date.now() + AGENT_STARTUP_WATCH_MS);
+}
+
+function _startAgentPollers() {
+  _stopAgentPollers();
+  state.agentPollTimer = setInterval(() => {
+    if (!state.server || state.agentSyncInFlight) return;
+    void _syncAllAgentContexts('agent-poll')
+      .catch((e) => pushLog('warn', `agent poll: ${e && e.message}`));
+  }, AGENT_POLL_MS);
+  // First snapshot shortly after start so the renderer does not wait a
+  // full interval for fresh remote status.
+  state.agentInitialSyncTimer = setTimeout(() => {
+    if (!state.server || state.agentSyncInFlight) return;
+    void _syncAllAgentContexts('agent-poll-start')
+      .catch((e) => pushLog('warn', `agent poll start: ${e && e.message}`));
+  }, AGENT_STARTUP_POLL_MS);
+  state.agentStartupPollTimer = setInterval(() => {
+    if (!state.server) return;
+    const now = Date.now();
+    for (const [name, until] of state.agentStartupWatch) {
+      if (until <= now) state.agentStartupWatch.delete(name);
+    }
+    if (!state.agentStartupWatch.size || state.agentSyncInFlight) return;
+    const contexts = _syncableAgentContexts()
+      .filter((c) => state.agentStartupWatch.has(c.name));
+    for (const ctx of contexts) {
+      void _syncContextAgents(ctx).then((r) => {
+        if (r && r.ok && !_contextHasStartingAgents(ctx)) {
+          state.agentStartupWatch.delete(ctx.name);
+        }
+      }).catch((e) => pushLog('warn', `agent startup poll: ${e && e.message}`));
+    }
+  }, AGENT_STARTUP_POLL_MS);
+  pushLog('info', `agent status sync started (${AGENT_POLL_MS / 1000}s full, `
+    + `${AGENT_STARTUP_POLL_MS / 1000}s startup)`);
+}
+
+function _stopAgentPollers() {
+  if (state.agentPollTimer) { clearInterval(state.agentPollTimer); state.agentPollTimer = null; }
+  if (state.agentStartupPollTimer) {
+    clearInterval(state.agentStartupPollTimer);
+    state.agentStartupPollTimer = null;
+  }
+  if (state.agentInitialSyncTimer) {
+    clearTimeout(state.agentInitialSyncTimer);
+    state.agentInitialSyncTimer = null;
+  }
+  state.agentStartupWatch.clear();
+}
+
 
 // ── Start-agent (POST /api/agents) ────────────────────────────────
 // `camc run` always prints human text (the global --json flag is a
@@ -1422,6 +1498,10 @@ async function _startRemoteAgent(body, baseOpts, ctx) {
   _stampStartRequestFields(normalized, body);
   if (normalized && normalized.id) {
     _upsertAgentsForContext(ctx, [normalized], { replaceContext: false });
+    const watchCtx = ctx && ctx.name
+      ? _syncableAgentContexts().find((c) => c.name === ctx.name)
+      : null;
+    if (watchCtx) _markAgentStartupWatch(watchCtx);
     pushLog('info', `start remote agent: ${normalized.id} (${normalized.tool}) on ${baseOpts.user}@${baseOpts.host}`);
   }
   return { ok: true, agentId, record: normalized };
@@ -5970,6 +6050,7 @@ async function start({ dataDir, apiToken, appVersion, syncStaleMs } = {}) {
   for (const c of (state.store && Array.isArray(state.store.contexts)) ? state.store.contexts : []) {
     if (c && c.machine && c.machine.bridge === true) _bridgeStartContext(c);
   }
+  _startAgentPollers();
 
   return {
     ok:       true,
@@ -5980,6 +6061,7 @@ async function start({ dataDir, apiToken, appVersion, syncStaleMs } = {}) {
 }
 
 async function stop() {
+  _stopAgentPollers();
   if (!state.server) {
     return { ok: true, state: publicState() };
   }
@@ -6219,6 +6301,58 @@ async function getAttachConnectOpts(agentId) {
   };
 }
 
+/**
+ * SSH Nodes that Desktop's forwarding manager may ensure/connect.
+ *
+ * This is main-process only: it includes the decrypted password/passphrase
+ * needed by ssh2. The renderer never calls it, and the manager never logs
+ * these fields. Server-side provisioning itself is `server_setup.py`.
+ */
+function getForwardingNodes() {
+  const contexts = (state.store && Array.isArray(state.store.contexts))
+    ? state.store.contexts
+    : [];
+  const nodes = [];
+  for (const ctx of contexts) {
+    if (!ctx || !ctx.machine) continue;
+    const m = ctx.machine;
+    if ((m.type || 'local') !== 'ssh' || !m.host || !m.user) continue;
+    const base = {
+      context_id: String(ctx.id || ''),
+      context_name: String(ctx.name || ''),
+      context_key: _machineHostKey(m),
+      expected_node: String(m.forward_node_id || ''),
+    };
+    const opts = {
+      host: m.host,
+      user: m.user,
+      port: m.port || 22,
+      auth_method: m.auth_method || (m.key_file ? 'key' : 'agent'),
+      key_file: m.key_file || '',
+      timeout_ms: 20000,
+    };
+    if (opts.auth_method === 'password') {
+      const password = _credentialFor(ctx);
+      if (password == null || password === '') {
+        nodes.push({ ...base, error: 'credential_missing', detail: 'password auth has no remembered password' });
+        continue;
+      }
+      opts.password = password;
+    } else if (opts.auth_method === 'key' && m.credential_saved) {
+      const passphrase = _credentialFor(ctx);
+      if (passphrase != null) opts.passphrase = passphrase;
+    }
+    const jump = _resolveJumpChain(ctx);
+    if (jump && jump.error) {
+      nodes.push({ ...base, error: jump.error, detail: jump.detail || '' });
+      continue;
+    }
+    if (jump) opts.jump = jump;
+    nodes.push({ ...base, opts });
+  }
+  return nodes;
+}
+
 module.exports = {
   configure,
   start,
@@ -6228,4 +6362,5 @@ module.exports = {
   getLogs,
   getProfile,
   getAttachConnectOpts,
+  getForwardingNodes,
 };

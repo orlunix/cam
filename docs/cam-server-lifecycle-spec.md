@@ -75,6 +75,9 @@ UI executable。SDK 源自相同 checkout，包含 adapter configs 和内置 ski
 
 ## 边界
 
+- 当前 Server 只支持 Linux：运行依赖 Unix socket、UID/文件 mode 和 Unix
+  signal。不支持 Windows node；将来如需要，必须另做 named pipe/service/ACL
+  版本，不能把现有 Linux 流程伪装成跨平台支持。
 - 静态 binary 不依赖系统 glibc；管理 SDK 仍需远端 Python 3.6+、tmux 和工具。
   Client 只能同步其发布包所含架构；不做跨架构编译或在线下载。
 - 更新 Server 不重启 agent、monitor 或 tmux，也不改 agent registry。Server

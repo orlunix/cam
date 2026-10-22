@@ -30,7 +30,9 @@ shared_globs = ["*"]
 shared_exclude = ["sessions", "settings.json", "auth.json.lock", "session-index.lock", "session-index.sqlite"]
 
 [launch]
-command = ["pi"]
+# Pi defaults to a fullscreen TUI. "regular" renders into the terminal's
+# native scrollback, matching the other CAM-managed tools.
+command = ["pi", "--tui-mode", "regular"]
 launcher_autorun_args = ["--approve"]
 prompt_after_launch = true
 startup_wait = 30.0

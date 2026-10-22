@@ -1,6 +1,6 @@
 {
   "name": "cam-desktop",
-  "version": "0.2.38",
+  "version": "0.2.46",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -18,10 +18,11 @@
     "build:mas": "electron-builder --mac mas --universal --config.npmRebuild=false --publish=never",
     "dist": "electron-builder",
     "cli": "node cli/camui-cli.cjs",
-    "lint:electron": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/ssh-transport.cjs && node --check electron/embedded-hub.cjs && node --check electron/credential-store.cjs && node --check cli/camui-cli.cjs",
+    "lint:electron": "node --check electron/main.cjs && node --check electron/preload.cjs && node --check electron/ssh-transport.cjs && node --check electron/embedded-hub.cjs && node --check electron/credential-store.cjs && node --check electron/client-forwarder.cjs && node --check electron/server-onboarding.cjs && node --check cli/camui-cli.cjs",
     "test:hub": "node test/hub.test.cjs",
     "test:term": "node test/terminal-follow.test.cjs && node test/tmux-controls.test.cjs",
     "test:start": "node test/start-form.test.cjs",
+    "test:forwarder": "node test/client-forwarder.test.cjs && node test/server-onboarding.test.cjs",
     "legacy:tauri:dev": "tauri dev",
     "legacy:tauri:build": "tauri build",
     "legacy:tauri:build-web": "tsc --noEmit && vite build",
@@ -85,6 +86,18 @@
           "**/*",
           "!vendor/**/node_modules/**"
         ]
+      },
+      {
+        "from": "../../components/cam-router/scripts/server_setup.py",
+        "to": "cam-server/server_setup.py"
+      },
+      {
+        "from": "resources/cam-server/cam-server.bundle",
+        "to": "cam-server/cam-server.bundle"
+      },
+      {
+        "from": "resources/cam-server/cam-server.bundle.json",
+        "to": "cam-server/cam-server.bundle.json"
       }
     ],
     "win": {

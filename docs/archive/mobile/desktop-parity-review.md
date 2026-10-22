@@ -86,7 +86,7 @@ Hub capabilities are advertised in `GET /api/system/health` → `capabilities` a
 
 ## Gaps to close (future work)
 
-Priority order from `docs/mobile/android-direct-hub-port-plan.md`:
+Priority order from `docs/archive/mobile/android-direct-hub-port-plan.md`:
 
 1. **Phase 2 — SSH + Sync on Android Hub** (port `_syncContextAgents`: SSH check camc exists + `camc --json list`; **no** bundled camc deploy — same as Desktop Sync Host)
 2. **Agent ops on phone Hub** (output/input/key/stop — required before terminal or live view on Direct)

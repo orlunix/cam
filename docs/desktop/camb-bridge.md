@@ -104,9 +104,14 @@ in-flight promise 兜底双路径重复。隧道买来的只有延迟（2s → �
   桩 + 假隧道流）、`tests/test_camb.py`、`tests/test_camc_bridge.py`（双
   ferry parity + 真 TCP 假隧道）
 
-## Reverse tunnel + cam serve hub（v0.3.0 / cam serve tunnel_hub）
+## Reverse tunnel + legacy cam serve hub（v0.3.0 / cam serve tunnel_hub）
 
-camb 除 ferry 外新增两个 host 侧 daemon，让 cam serve 成为第二个
+> 2026-10-19：本节描述迁移期旧实现。`cam serve` 与 `TunnelHub` 是
+> legacy 组件；目标架构中的连接、路由和请求记录归 CAM Server，跨
+> Server 转发归 Client 连接层，以上位
+> [`../cam-client-server-spec.md`](../cam-client-server-spec.md) 为准。
+
+camb 除 ferry 外新增两个 host 侧 daemon，让 legacy cam serve 成为第二个
 bridge host（与 desktop hub 并存，§9.2 名片路由天然兼容）：
 
 ```

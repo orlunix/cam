@@ -4,28 +4,30 @@ PM2 for AI coding agents. Manage Claude Code, Codex, Cursor, and other AI CLI to
 
 ## Architecture
 
-```
-Mobile APP / CLI / Web
-        ↓
-   cam serve (API + Relay)
-        ↓
-   Core: AgentManager
-        ↓
-   CamcDelegate ──SSH (ControlMaster)──→ remote camc
-        │                                    ↓
-   local camc                          camc manages locally:
-        │                              - tmux sessions
-        │                              - monitor loops
-   CamcPoller ←──SSH polling (5s)────  - agents.json
-        ↓                              - auto-confirm/completion
-   Storage: import to SQLite
-```
+Canonical spec: [docs/cam-client-server-spec.md](docs/cam-client-server-spec.md)
+(target design, phased implementation — Router first; the migration is **not** complete yet).
 
-**cam** is the server/orchestrator. **camc** is the standalone agent manager deployed to each machine. All agent operations are delegated from cam to camc.
+CAM has two product roles:
 
-- **camc** is the source of truth — each machine's `~/.cam/agents.json` is authoritative
-- **cam serve** aggregates into SQLite for the API/mobile to query via CamcPoller
-- **CamcDelegate** wraps `camc` CLI calls over SSH, using ControlMaster to piggyback on persistent connections
+- **CAM Server** — one per managed machine. Current phase: **Router**
+  (connections, request routing/delivery, response correlation). Later phases
+  take over tunnels, agent info, and runtime management.
+- **CAM Client** — TUI, Desktop, Mobile. Each Client can connect to multiple
+  Servers, and a Client's built-in forwarding capability lets a request hop
+  from one Server through that Client to another Server. ("Hub" is this
+  internal Client capability, not a third product role, and is unrelated to
+  the unsupported Relay server.)
+
+**camc** is the legacy CAM Client and per-machine agent manager. It is the
+migration-period fallback and — for now — the source of truth for agent
+info/runtime on each machine; it is retired once the corresponding Server
+capabilities land (phasing table in the spec).
+
+> **Legacy implementation.** The sections below still describe the old
+> `cam serve` orchestration (FastAPI + SQLite aggregation, `CamcDelegate` /
+> `CamcPoller` over SSH) and the `relay/relay.py` WebSocket relay. **Relay is
+> not currently supported.** Historical design:
+> [docs/archive/architecture-full.md](docs/archive/architecture-full.md).
 
 ## Features
 
@@ -36,8 +38,8 @@ Mobile APP / CLI / Web
 - **Auto-exit** — automatically kill idle agents after task completion
 - **Remote execution** — run agents on remote machines via SSH with ControlMaster connection pooling
 - **NFS cluster support** — hostname-based agent isolation for shared-disk environments
-- **REST API** — FastAPI server with token auth, WebSocket events, hash-based conditional responses
-- **WebSocket relay** — zero-dependency relay server for NAT traversal (mobile → relay → home server), with HTTP proxy fallback
+- **REST API** — FastAPI server with token auth, WebSocket events, hash-based conditional responses (legacy `cam serve`; see Architecture)
+- **WebSocket relay** (legacy / unsupported) — zero-dependency relay server for NAT traversal (mobile → relay → home server), with HTTP proxy fallback
 - **Mobile app** — Android PWA/WebView app for managing agents from your phone
 - **DAG scheduler** — define multi-agent workflows with dependencies in YAML
 - **Self-healing** — monitors auto-restart on crash, `cam heal` / `camc heal` restart dead monitors
@@ -118,7 +120,7 @@ tasks:
 
 ## Standalone CLI (camc)
 
-Single-file, zero-dependency CLI for managing agents on any machine. Python 3.6+ stdlib only — no pip install needed. This is the core execution engine that runs on every machine.
+Single-file, zero-dependency CLI for managing agents on any machine. Python 3.6+ stdlib only — no pip install needed. This is the core execution engine that runs on every machine. camc is the **legacy CAM Client**: it stays the migration-period fallback and per-machine source of truth, and is retired once CAM Server takes over (see [docs/cam-client-server-spec.md](docs/cam-client-server-spec.md)).
 
 ```bash
 camc run claude "Fix the bug"       # Launch an agent
@@ -162,6 +164,11 @@ To add a new tool, create a `.toml` file — no Python code required.
 
 ## API Server
 
+> **Legacy.** `cam serve` is the legacy API path — the target architecture is
+> CAM Server + CAM Clients (see
+> [docs/cam-client-server-spec.md](docs/cam-client-server-spec.md)). The
+> endpoints below remain functional for existing clients.
+
 ```bash
 cam serve --host 0.0.0.0 --port 8420 --token <secret>
 ```
@@ -180,6 +187,11 @@ cam serve --host 0.0.0.0 --port 8420 --token <secret>
 | WS | `/api/ws` | Real-time event stream |
 
 ### Relay Server
+
+> **Unsupported / historical.** The WebSocket relay is not part of the
+> current architecture — kept below for reference only. Target architecture:
+> [docs/cam-client-server-spec.md](docs/cam-client-server-spec.md); Relay-era
+> mobile plans: `docs/archive/mobile/`.
 
 For accessing your home server from mobile over the internet:
 
@@ -203,7 +215,7 @@ The `web/` directory contains a PWA that works as both a browser app and an Andr
 - **Agent Detail** — live terminal output, send input/keys
 - **File Browser** — browse and read files in agent contexts
 - **Contexts / Machines** — manage project directories and remote machines
-- **Settings** — connection profiles, relay protocol (WS/HTTP), cache
+- **Settings** — connection profiles, relay protocol (WS/HTTP, legacy), cache
 
 ## Machines and Contexts
 
@@ -221,16 +233,16 @@ On NFS clusters where multiple machines share `~/.cam/agents.json`, camc uses ho
 
 ```
 cam/
-├── src/cam/               # cam server package
+├── src/cam/               # legacy cam server package
 │   ├── cli/               # Typer commands
-│   ├── api/               # FastAPI server, routes, relay connector
+│   ├── api/               # legacy FastAPI server, routes, relay connector
 │   ├── core/              # AgentManager, CamcDelegate, CamcPoller, Scheduler
 │   ├── transport/         # SSH, Local, Agent transports
 │   ├── storage/           # SQLite stores (agents, contexts, events)
 │   └── adapters/configs/  # TOML adapter configs (claude, codex, cursor)
-├── src/camc_pkg/          # camc source (built to dist/camc)
+├── src/camc_pkg/          # legacy camc source (built to dist/camc)
 ├── src/cam-agent/         # Go binary for standardized remote protocol
-├── relay/                 # Zero-dep WebSocket relay server
+├── relay/                 # legacy zero-dep WebSocket relay (unsupported)
 ├── web/                   # PWA frontend
 │   ├── js/                # API client, app shell, view modules
 │   └── css/               # Styles
@@ -240,13 +252,13 @@ cam/
 └── docs/                  # Architecture docs, case studies
 ```
 
-## Storage
+## Storage (legacy implementation)
 
-| | cam serve | camc (per machine) |
+| | legacy cam serve | camc (per machine) |
 |---|---|---|
 | **Storage** | SQLite (`~/.local/share/cam/cam.db`) | JSON (`~/.cam/agents.json`) |
 | **Agent ID** | 8-char hex (from camc) or full UUID (legacy) | 8-char hex via `uuid5(hostname+time+random)` |
-| **Role** | Aggregated cache for API/mobile | Source of truth per machine |
+| **Role** | Aggregated cache for legacy API clients | Current source of truth per machine; migrates to CAM Server |
 
 ## Testing
 

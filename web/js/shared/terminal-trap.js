@@ -43,6 +43,7 @@ export function attachTerminalTrap(entry, {
   onPaste = null,              // async () => void — clipboard detect + paste/upload
   onViewportChange = null,     // () => void — user scrolled the pane
   onStatus = null,             // (text, kind) => void — optional feedback
+  onSendKeys = null,           // (data) => void — tmux copy-mode key stream
 } = {}) {
   const term = entry && entry.term;
   if (!term || !container) return { detach() {} };
@@ -71,7 +72,14 @@ export function attachTerminalTrap(entry, {
         && (key === 'PageUp' || key === 'PageDown')) {
       ev.preventDefault();
       ev.stopPropagation();
-      try { term.scrollPages(key === 'PageUp' ? -1 : 1); } catch (_) {}
+      if (entry.copyModeActive) {
+        // tmux copy mode owns paging; send PPage/NPage through the PTY.
+        if (onSendKeys) onSendKeys(key === 'PageUp' ? '\x1b[5~' : '\x1b[6~');
+      } else {
+        try { term.scrollPages(key === 'PageUp' ? -1 : 1); } catch (_) {}
+        entry.needsBottom = false;
+        entry.forceBottomUntil = 0;
+      }
       if (onViewportChange) onViewportChange();
       return false;
     }
@@ -98,9 +106,17 @@ export function attachTerminalTrap(entry, {
   const wheelHandler = (ev) => {
     if (!ev.deltaY) return;
     const count = Math.max(1, Math.min(4, Math.ceil(Math.abs(ev.deltaY) / 80)));
-    const lines = ev.deltaY < 0 ? -count : count;
     ev.preventDefault();
     ev.stopPropagation();
+    if (entry.copyModeActive) {
+      // tmux copy mode owns the viewport; send Up/Down through the PTY.
+      if (onSendKeys) {
+        onSendKeys((ev.deltaY < 0 ? '\x1b[A' : '\x1b[B').repeat(count));
+      }
+      if (onViewportChange) onViewportChange();
+      return;
+    }
+    const lines = ev.deltaY < 0 ? -count : count;
     try { term.scrollLines(lines); } catch (_) {}
     entry.needsBottom = false;
     entry.forceBottomUntil = 0;

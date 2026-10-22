@@ -41,7 +41,7 @@ Related references:
 - `docs/desktop/requirements.md` — canonical requirement IDs. Active
   Direct is covered by `CAM-DESK-DIRECT-010..019`; the old Local tab is
   covered by `CAM-DESK-LOC-010..024` (deferred/superseded).
-- `docs/desktop/local-integrated-mode-spec.md` — architecture spec for
+- `docs/archive/local-integrated-mode-spec.md` — architecture spec for
   the superseded Local tab experiment.
 
 Architecture (for cross-doc consistency, same diagram as the active

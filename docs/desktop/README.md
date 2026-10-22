@@ -5,17 +5,23 @@ This directory holds the active Desktop planning and review documents.
 ## Architecture in one screen
 
 ```text
-Desktop UI  ──HTTP/WS──▶  CAM Hub/API  ──poll/route──▶  Remote Controller/Node  ──spawns──▶  tmux + agent runtime
+Desktop UI  ──HTTP/WS──▶  Desktop Client (embedded Hub/API)  ──poll/route──▶  Remote Node  ──▶  legacy camc + agent runtime
 ```
 
-- **CAM is a hub** (control plane). It aggregates the node/agent/context
-  tables and routes commands back to the right controller.
-- **Coding agents run on a controller/node**, never inside Desktop. The
-  controller hosts Python, tmux, `cam` / `camc`, and the agent CLIs
-  (Claude, Codex, Cursor, …).
-- **Desktop is a thin UI/client** over the hub. It renders the hub's tables,
-  sends user actions through `CamApi`, and (later) opens interactive
-  attach streams to the selected agent's controller.
+Canonical target architecture: [`../cam-client-server-spec.md`](../cam-client-server-spec.md)
+(CAM Client + CAM Server, Router-first, phased implementation — not yet
+complete). The embedded "Hub" below is the Desktop Client's connection
+capability, not a third product role; **Relay is legacy / unsupported**.
+
+- **The embedded Hub is Desktop's current control-plane implementation**.
+  It aggregates the node/agent/context tables and routes commands back to
+  the right node; target routing semantics converge on CAM Server.
+- **Coding agents run on a remote node**, never inside Desktop. The current
+  legacy controller path hosts Python, tmux, `cam` / `camc`, and the agent
+  CLIs (Claude, Codex, Cursor, …).
+- **Desktop is a thin CAM Client** over the Hub/Server API. It renders the
+  tables, sends user actions through `CamApi`, and (later) opens interactive
+  attach streams to the selected agent's node.
 - **The Desktop flow should not require the user to open a terminal.**
   Direct starts and connects to an embedded Electron/Node CAM Hub from the
   app. The installed app must not require WSL, local Python, a host shell,
@@ -28,11 +34,13 @@ Desktop UI  ──HTTP/WS──▶  CAM Hub/API  ──poll/route──▶  Remo
   library management). Contexts is a future placeholder. Workspace
   modes are separate from connection modes — switching workspace modes
   does not change how Desktop reaches the hub.
-- **Active Settings exposes two connection modes**: Direct and Relay.
-  Direct is the default app-managed embedded CAM Hub path: Desktop starts
-  the Node/Electron Hub, generates the token, connects to it over
-  loopback, and uses Hub APIs to manage Nodes/Remotes. Relay is for an
-  existing CAM Hub that must be reached through a relay endpoint.
+- **Settings exposes two connection modes; only Direct is currently
+  supported.** Direct is the default app-managed embedded CAM Hub path:
+  Desktop starts the Node/Electron Hub, generates the token, connects to it
+  over loopback, and uses Hub APIs to manage Nodes/Remotes. **Relay is
+  legacy / unsupported** — it reached an existing CAM Hub through a relay
+  endpoint (archived Relay-era plans:
+  [`../archive/mobile/`](../archive/mobile/)).
 - **Direct starts by default** (CAM-DESK-DIRECT-013). On a cold
   launch with no saved profile, Desktop auto-starts the embedded Hub
   (no host CAM CLI, Python, WSL, or shell required) and lands the
@@ -51,9 +59,8 @@ Desktop UI  ──HTTP/WS──▶  CAM Hub/API  ──poll/route──▶  Remo
   instead of paying a TCP+auth handshake every call.
 - **Browse is a workspace browser** (CAM-DESK-FILE-010..017). Agent Browse
   and Context Browse are two entry points into the same workspace-root file
-  contract. Relay and Direct must expose the same list/read API shape so
-  Desktop and mobile can share behavior without transport-specific renderer
-  branches.
+  contract. Direct is the supported path; any remaining legacy Relay code
+  must keep the same list/read API shape without becoming a supported mode.
 - **Skills wraps node-local `skillm`**. Desktop provides a thin UI over
   managed `~/.cam/skillm` for repo connect/pull, node sync, and
   global/workspace skill installs. The design is documented in
@@ -66,7 +73,12 @@ Desktop UI  ──HTTP/WS──▶  CAM Hub/API  ──poll/route──▶  Remo
 - **Stable Req IDs** (`docs/desktop/requirements.md`) anchor all of the
   above. Implementation tasks and review replies cite them.
 
-## Relay Source Quick Start
+## Relay Source Quick Start (historical — Relay unsupported)
+
+> **Relay is a legacy / unsupported connection path** — Direct is the
+> supported mode (canonical target:
+> [`../cam-client-server-spec.md`](../cam-client-server-spec.md)). The
+> commands below are preserved for historical reference only.
 
 Relay mode has two token boundaries:
 
@@ -107,24 +119,30 @@ fingerprint unless `--show-token` is explicitly used for debugging.
 - [`requirements.md`](./requirements.md) — canonical requirement registry
   with stable Req IDs. **Read this first.** Starts with the Architecture
   and Connection Model section that this README summarizes.
+- [`../cam-client-server-spec.md`](../cam-client-server-spec.md) — canonical
+  Client/Server target architecture (Router-first, phased implementation).
+  Relay-era assumptions in older docs yield to this spec.
 - [`skillm-integration.md`](./skillm-integration.md) — Desktop Skillm v0
   implementation contract and follow-up boundaries.
 - [`fleet-bridge-plan.md`](./fleet-bridge-plan.md) — 跨 node fleet bridge
   总纲 (2026-09-08): camc baseline 红线、组件职责、分期验收、camc 归并
   交接 spec（给 cam-dev）与 bridge 实现者指导.
+- [`../hub-server-spec.md`](../hub-server-spec.md) — Desktop / TUI / Mobile /
+  camc adapter 与 CAM Server 共同遵守的跨接口行为标准：connect/sync、
+  route、目标端投递记录、幂等与跨前端合规验收.
 - [`bridge-protocol-v1.md`](./bridge-protocol-v1.md) — bridge 协议规范
   (2026-09-08): 消息 schema、文件 transport、解析/consent/审计、投递语义、
-  多 bridge 认领、v2 隧道预留、兼容性规则. mobile/python-cli 实现的依据.
+  多 bridge 认领、v2 隧道、兼容性规则. mobile/python-cli 实现的依据.
 - [`camb-bridge.md`](./camb-bridge.md) — camb/desktop bridge worker v1
   实现笔记 (2026-09-07): 文件协议、轮询而非隧道的原因、运维注意.
 - [`../desktop-ui-spec.md`](../desktop-ui-spec.md) — current milestone /
   product spec. Explains design direction; cite `requirements.md` IDs in
   reviews.
-- [`local-integrated-mode-spec.md`](./local-integrated-mode-spec.md) —
+- [`local-integrated-mode-spec.md`](../archive/local-integrated-mode-spec.md) —
   **SUPERSEDED / historical.** Architecture and design notes for the old
   separate Local tab experiment (LOC-010..024). The app-managed Hub
   lifecycle has moved into Direct.
-- [`local-runtime-user-guide.md`](./local-runtime-user-guide.md) —
+- [`local-runtime-user-guide.md`](../archive/local-runtime-user-guide.md) —
   **SUPERSEDED / historical.** End-user setup notes for the old Local tab
   experiment. Not a guide for the active Direct flow.
 - [`../windows-installer.md`](../windows-installer.md) — Windows MSI

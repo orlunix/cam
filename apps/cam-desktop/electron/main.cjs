@@ -20,6 +20,7 @@
 
 const { app, BrowserWindow, ipcMain, shell, dialog, safeStorage, Menu, clipboard, powerMonitor } = require('electron');
 const fs   = require('node:fs');
+const os   = require('node:os');
 const path = require('node:path');
 const url  = require('node:url');
 const http = require('node:http');
@@ -29,6 +30,8 @@ const embeddedHub     = require('./embedded-hub.cjs');
 const credentialStore = require('./credential-store.cjs');
 const assistantHost   = require('./assistant-host.cjs');
 const sshTransport    = require('./ssh-transport.cjs');
+const { ClientForwarder } = require('./client-forwarder.cjs');
+const { ForwardingManager, desktopClientId, loadSetupScript } = require('./server-onboarding.cjs');
 const { tmuxMetadataForAgent, selectOnlyClient, selectNewClient, parseClientState, parseWindowRows, tmuxCommand } = require('./tmux-controls.cjs');
 
 // An SSH PTY can become a tmux client a little after the attach command
@@ -225,25 +228,113 @@ async function localCheck() {
   return embeddedHub.check({ dataDir: userDataDir() });
 }
 
+let _clientForwarder = null;
+
+function clientForwarderConfigPath() {
+  if (process.env.CAM_CLIENT_FORWARDER_CONFIG) return process.env.CAM_CLIENT_FORWARDER_CONFIG;
+  // Same layout as cam-tui (Config::path in cam-tui/src/config.rs):
+  // $XDG_CONFIG_HOME/cam-client/<hostname>.json, with ~/.config as fallback.
+  const root = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+  return path.join(root, 'cam-client', `${os.hostname()}.json`);
+}
+
+function startClientForwarder() {
+  if (_clientForwarder) {
+    if (!_clientForwarder.running) void _clientForwarder.start();
+    return _clientForwarder.status();
+  }
+  _clientForwarder = new ClientForwarder({
+    configPath: clientForwarderConfigPath(),
+    log: (m) => {
+      _diagLog(`[forwarder] ${m}`);
+      console.warn(`[cam-desktop] forwarder: ${m}`);
+    },
+  });
+  void _clientForwarder.start();
+  return _clientForwarder.status();
+}
+
+function stopClientForwarder() {
+  if (!_clientForwarder) return;
+  try { _clientForwarder.stop(); } catch (_) {}
+  _clientForwarder = null;
+}
+
+let _forwardingManager = null;
+
+function forwardingBundlePath() {
+  if (process.env.CAM_SERVER_BUNDLE) return process.env.CAM_SERVER_BUNDLE;
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'cam-server', 'cam-server.bundle');
+  }
+  return path.resolve(__dirname, '..', '..', '..', 'components', 'cam-router', 'dist', 'cam-server.bundle');
+}
+
+function startForwardingManager() {
+  if (_forwardingManager) return _forwardingManager.status();
+  startClientForwarder();
+  const script = loadSetupScript({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    electronDir: __dirname,
+  });
+  if (!script) {
+    _diagLog('[forwarding] server_setup.py not found; automatic forwarding disabled');
+    return null;
+  }
+  _forwardingManager = new ForwardingManager({
+    forwarder: _clientForwarder,
+    getNodes: () => embeddedHub.getForwardingNodes(),
+    credentialStore,
+    clientId: desktopClientId(os.hostname()),
+    script,
+    bundlePath: forwardingBundlePath(),
+    execRemote: (opts) => sshTransport.execRemote(opts),
+    openExecChannel: (opts, command) => sshTransport.openExecChannel(opts, command),
+    log: (m) => {
+      _diagLog(`[forwarding] ${m}`);
+      console.warn(`[cam-desktop] forwarding: ${m}`);
+    },
+  });
+  _forwardingManager.start();
+  return _forwardingManager.status();
+}
+
+function stopForwardingManager() {
+  if (!_forwardingManager) return;
+  try { _forwardingManager.stop(); } catch (_) {}
+  _forwardingManager = null;
+}
+
 async function localStart() {
   _ensureBackendsConfigured();
+  startClientForwarder();
   const r = await embeddedHub.start({ dataDir: userDataDir(), appVersion: app.getVersion() });
   // Feed the assistant the fresh hub pair (the token rotates on every
   // hub start). Main sees it here anyway — it never crosses to the
   // renderer through this path.
-  if (r && r.ok) assistantHost.setHub({ url: r.apiUrl, token: r.apiToken });
+  if (r && r.ok) {
+    assistantHost.setHub({ url: r.apiUrl, token: r.apiToken });
+    startForwardingManager();
+  }
   return r;
 }
 
 async function localStop() {
   assistantHost.setHub(null);
+  stopForwardingManager();
+  stopClientForwarder();
   return embeddedHub.stop();
 }
 
 async function localRestart() {
   _ensureBackendsConfigured();
   const r = await embeddedHub.restart({ dataDir: userDataDir(), appVersion: app.getVersion() });
-  if (r && r.ok) assistantHost.setHub({ url: r.apiUrl, token: r.apiToken });
+  if (r && r.ok) {
+    assistantHost.setHub({ url: r.apiUrl, token: r.apiToken });
+    stopForwardingManager();
+    startForwardingManager();
+  }
   return r;
 }
 
@@ -1262,13 +1353,16 @@ app.whenReady().then(() => {
     try {
       const nTerms = _terminals.size;
       for (const sid of [..._terminals.keys()]) _dropSession(sid);
+      stopForwardingManager();
+      stopClientForwarder();
       sshTransport.closeAll();
       const nGates = _resetTmuxDiscovery();
-      _diagLog(`[app:reset] terminals disposed (${nTerms}), SSH pools dropped, tmux discovery gates released (${nGates}); restarting hub`);
+      _diagLog(`[app:reset] terminals disposed (${nTerms}), forwarding stopped, SSH pools dropped, tmux discovery gates released (${nGates}); restarting hub`);
       _ensureBackendsConfigured();
       const r = await embeddedHub.restart({ dataDir: userDataDir(), appVersion: app.getVersion() });
       if (r && r.ok) {
         assistantHost.setHub({ url: r.apiUrl, token: r.apiToken });
+        startForwardingManager();
         _diagLog(`[app:reset] hub restarted on ${r.apiUrl} — reset complete`);
         return { ok: true };
       }
@@ -1331,6 +1425,7 @@ app.whenReady().then(() => {
   ipcMain.handle('assistant:thread-new', () => assistantHost.newChat());
   ipcMain.handle('assistant:thread-open', (_e, p) => assistantHost.openThread(p || {}));
   ipcMain.handle('assistant:thread-delete', (_e, p) => assistantHost.deleteThread(p || {}));
+  startClientForwarder();
   createMainWindow();
 
   app.on('activate', () => {
@@ -1363,6 +1458,8 @@ app.on('before-quit', () => {
   // cleanly.
   for (const sid of [..._terminals.keys()]) _dropSession(sid);
   try { assistantHost.stop(); } catch (_) {}
+  stopForwardingManager();
+  stopClientForwarder();
   try {
     // best-effort, synchronous-flavored — the close callback may fire
     // after Electron exits; that's fine because the OS reclaims the

@@ -12,9 +12,9 @@ Authoritative documentation lives under `docs/desktop/`. Start there:
   canonical requirement registry with stable IDs (read first).
 - [`docs/desktop-ui-spec.md`](../../docs/desktop-ui-spec.md) — current
   milestone / product spec.
-- [`docs/desktop/local-integrated-mode-spec.md`](../../docs/desktop/local-integrated-mode-spec.md)
+- [`docs/archive/local-integrated-mode-spec.md`](../../docs/archive/local-integrated-mode-spec.md)
   and
-  [`docs/desktop/local-runtime-user-guide.md`](../../docs/desktop/local-runtime-user-guide.md)
+  [`docs/archive/local-runtime-user-guide.md`](../../docs/archive/local-runtime-user-guide.md)
   — **SUPERSEDED / historical** notes for the old separate Local tab
   experiment. The app-managed Hub lifecycle now belongs to Direct;
   these files are preserved only for requirement-ID stability.
@@ -38,32 +38,34 @@ Change logs and fix records live in this directory (`FIXES-*.md`):
 ## Architecture in one paragraph
 
 ```text
-Desktop UI  ──HTTP/WS──▶  CAM Hub/API  ──poll/route──▶  Remote Controller/Node  ──spawns──▶  tmux + agent runtime
+Desktop UI  ──HTTP/WS──▶  Desktop Client (embedded Hub/API)  ──poll/route──▶  Remote Node  ──▶  legacy camc + agent runtime
 ```
 
-Coding agents run on the controller/node, never inside Desktop. The hub
-aggregates the node/agent/context tables and routes commands. Desktop is
-the Electron app under this folder; it loads the WebUI-derived renderer
-from `../../web/desktop.html` and reuses `web/js/api.js` as its API
-client. In Direct mode, Electron main starts an embedded Node/Electron CAM
-Hub and the renderer connects to it through the same `CamApi` path. The
-installed app must not require WSL, local Python, a host shell, local
-`cam`, or local `cam serve`. tmux and agent CLI dependencies live on the
-remote controller/node.
+Coding agents run on the remote node, never inside Desktop. The embedded
+Hub is Desktop's current client-side control-plane implementation, not a
+third product role; the canonical target is CAM Client + CAM Server (see
+`docs/cam-client-server-spec.md`). Desktop loads the WebUI-derived
+renderer from `../../web/desktop.html` and reuses `web/js/api.js` as its
+API client. In supported Direct mode, Electron main starts an embedded
+Node/Electron Hub and the renderer connects through the same `CamApi`
+path. The installed app must not require WSL, local Python, a host shell,
+local `cam`, or legacy `cam serve`. tmux and agent CLI dependencies live
+on the remote node.
 
 ## Settings tabs
 
-Active Settings exposes two connection modes (canonical IDs in
-`docs/desktop/requirements.md`):
+Settings exposes the supported Direct mode and the legacy Relay entry
+(canonical IDs in `docs/desktop/requirements.md`):
 
-- **Direct** (`DIRECT-010..019`) — default app-managed embedded CAM Hub.
-  Electron main checks readiness, starts the Node/Electron Hub on
-  loopback, generates the API token, and connects the renderer to that
-  Hub. The normal UI does not ask the user to type a Hub URL, run
-  terminal commands, install WSL/Python, or install `cam`.
-- **Relay** (`REMOTE-012`) — Desktop users enter Relay URL + Relay
-  token. The source-side `camui start --profile ...` owns the CAM API
-  token and the relay injects it for `/api/*` forwarding.
+- **Direct** (`DIRECT-010..019`) — default app-managed embedded CAM Hub,
+  currently supported. Electron main checks readiness, starts the
+  Node/Electron Hub on loopback, generates the API token, and connects
+  the renderer to that Hub. The normal UI does not ask the user to type a
+  Hub URL, run terminal commands, install WSL/Python, or install `cam`.
+- **Relay** (`REMOTE-012`, legacy / unsupported) — Desktop users entered
+  Relay URL + Relay token. The source-side `camui start --profile ...`
+  owned the CAM API token and the relay injected it for `/api/*`
+  forwarding. Relay is not part of the current architecture.
 
 Future and deferred modes (not active Settings tabs):
 
@@ -73,10 +75,14 @@ Future and deferred modes (not active Settings tabs):
   experiment; its useful lifecycle pieces moved into Direct. See the
   historical docs linked above.
 
-## Relay Source Quick Start
+## Relay Source Quick Start (historical — unsupported)
 
-Use this when a CAM Hub/source is behind NAT or only reachable through an
-SSH tunnel. Start the relay server first, then connect the source with one
+> Relay is legacy / unsupported and is not part of the current CAM
+> Client + CAM Server architecture. These commands are preserved only for
+> old deployments.
+
+Use this only when maintaining an old CAM Hub/source behind NAT or an SSH
+tunnel. Start the relay server first, then connect the source with one
 foreground command:
 
 ```bash

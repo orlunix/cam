@@ -155,10 +155,17 @@ def install(req, root):
         sdk = os.path.join(staging, 'sdk')
         subprocess.check_call([sys.executable, '-c', 'import sys;sys.path.insert(0,sys.argv[1]);import camc_pkg.server_worker', sdk],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        # The import proof above creates __pycache__/*.pyc inside staging.
+        # They are runtime byproducts, not release contents: never compare
+        # them with a previously installed release, and never publish them.
+        shutil.rmtree(os.path.join(sdk, 'camc_pkg', '__pycache__'), ignore_errors=True)
         if os.path.exists(release):
             # Never trust a half-written release left by another uploader.
             for base, dirs, files in os.walk(staging):
+                dirs[:] = [d for d in dirs if d != '__pycache__']
                 for name in files:
+                    if name.endswith('.pyc'):
+                        continue
                     relative = os.path.relpath(os.path.join(base, name), staging)
                     existing = os.path.join(release, relative)
                     if os.path.islink(existing) or not os.path.isfile(existing) or open(existing, 'rb').read() != open(os.path.join(base, name), 'rb').read():

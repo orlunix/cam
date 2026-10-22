@@ -84,7 +84,8 @@ ok("open waits for layout before measuring", layoutWait >= 0 && openCall > layou
 ok("layout wait helper exists", source.includes("async function waitForTerminalLayout("));
 ok("cache limit remains six", source.includes("const TERMINAL_CACHE_LIMIT = 6"));
 ok("history follow uses viewport state", source.includes("terminalShouldForceBottom(ent) || terminalIsAtBottom(ent)"));
-ok("history write does not recheck and yank viewport", source.includes("if (shouldFollow) terminalScrollToBottom(ent);"));
+ok("history write rechecks viewport before following",
+  source.includes("if (terminalShouldForceBottom(ent) || terminalIsAtBottom(ent)) {"));
 ok("tmux tab control refresh exists", source.includes("refreshTerminalTmuxControls"));
 ok("terminal has mouse-first history control", source.includes("terminal-history-btn"));
 ok("terminal has a safe history return control", source.includes("terminal-bottom-btn"));
@@ -104,7 +105,9 @@ ok("terminal action bar is centered and lifted off the input line",
     && terminalChromeCss.includes("gap: 5px;"));
 ok("terminal action buttons are scaled 1.2x",
   terminalChromeCss.includes("width: 34px;") && terminalChromeCss.includes("height: 34px;") && terminalChromeCss.includes("font-size: 13px;"));
-ok("terminal auto-follow uses viewport state only (no copy-mode gate)", source.includes("const shouldFollow = terminalShouldForceBottom(ent) || terminalIsAtBottom(ent);") && !source.includes("copyBrowsing"));
+ok("terminal auto-follow uses viewport state only (no copy-mode gate)",
+  source.includes("if (terminalShouldForceBottom(ent) || terminalIsAtBottom(ent)) {")
+    && !source.includes("copyBrowsing"));
 ok("tmux controls have a bounded passive refresh", source.includes("terminalTmuxRefreshPending"));
 ok("terminal status retains its full text as a tooltip", source.includes("terminalAttachStatus.title = text || ''"));
 ok("switching back immediately restores the cached agent tabs", sync.includes("renderTerminalTabs(ent)"));
@@ -141,11 +144,12 @@ ok("alt-screen filter survives sequences split across chunks",
 ok("alt-screen filter state resets on open and reconnect",
   source.includes("ent._altScreenTail = '';"));
 ok("History leaves Up and Down on xterm's native input path", !source.includes("ArrowUp: -1") && !source.includes("ArrowDown: 1"));
-ok("History button scrolls natively and never enters copy mode",
-  historyClick.includes("ent.term.scrollToTop()") && !historyClick.includes("\\x02[")
-    && !historyClick.includes("copyBrowsing") && !historyClick.includes("bridge.input"));
-ok("To Bottom is pure local follow (no copy-mode cancel)",
-  bottomClick.includes("terminalScrollToBottom(ent);") && !bottomClick.includes("cancelCopyMode") && !bottomClick.includes("copyBrowsing"));
+ok("History button enters tmux copy mode and pages when active",
+  historyClick.includes("enterTerminalCopyMode(ent)")
+    && historyClick.includes("sendTerminalKeys(ent, '\\x1b[5~')"));
+ok("To Bottom exits copy mode before returning to local follow",
+  bottomClick.includes("exitTerminalCopyMode(ent)")
+    && bottomClick.includes("terminalScrollToBottom(ent);"));
 ok("Refresh reuses the force-open lifecycle", refreshClick.includes("await openTerminalForSelected({ force: true })"));
 ok("force refresh recreates even an already detached xterm",
   open.includes("if (force) {") && !open.includes("if (force && ent.sessionId)"));
@@ -173,7 +177,9 @@ ok("terminal attachment pending state survives shared control refreshes",
 ok("tmux refresh no longer drives renderer copy state", !source.includes("copyBrowsing") && !source.includes("result.copyMode"));
 ok("copy actions invalidate stale tmux refresh state", source.includes("tmuxControlRevision: 0") && source.includes("const tmuxControlRevision = ent.tmuxControlRevision") && source.includes("if (ent.tmuxControlRevision !== tmuxControlRevision) return;"));
 ok("xterm scroll state updates the bottom control", source.includes("entry.term.onScroll(() =>"));
-ok("To Bottom is gated on viewport state only", source.includes("terminalBottomBtn.disabled = actionsBlocked || !terminalConnected || terminalIsAtBottom(ent);"));
+ok("To Bottom stays enabled in copy mode and otherwise follows viewport state",
+  source.includes("terminalBottomBtn.disabled = actionsBlocked || !terminalConnected")
+    && source.includes("(!ent?.copyModeActive && terminalIsAtBottom(ent))"));
 ok("xterm scrollback raised to 20000", source.includes("scrollback: 20000,"));
 
 // Native-terminal replacement for tmux copy mode (2026-10): fresh
@@ -211,14 +217,17 @@ ok("clipboard write channel exists end to end",
 ok("hub fulloutput accepts a bounded lines parameter",
   hub.includes("searchParams.get('lines')") && hub.includes("_captureAgentOutput(resolved, id, lines, format)"));
 
-// Mobile parity: copy mode removed there too — the history button
-// scrolls the native buffer, no copy-mode plumbing survives, and the
-// shared mount exports the top-scroll helper with the same buffer size.
+// Mobile parity: copy mode is explicit via the History button; swipes use
+// the trap locally when OFF and Up/Down/PPage/NPage when ON. No auto-fallback.
 const mobileDetail = fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "mobile", "views", "agent-detail.js"), "utf8");
 const sharedMount = fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "js", "shared", "terminal-mount.js"), "utf8");
-ok("mobile history button scrolls natively, copy mode fully removed",
-  mobileDetail.includes("scrollTerminalToTop(agentId);")
-    && !mobileDetail.includes("terminalCopyMode") && !mobileDetail.includes("copyModeActive"));
+ok("mobile history button enters copy mode explicitly",
+  mobileDetail.includes("ensureCopyMode()")
+    && mobileDetail.includes("terminalCopyMode")
+    && mobileDetail.includes("copyModeActive"));
+ok("mobile trap keeps local scroll without auto copy-mode fallback",
+  !sharedMount.includes("onScrollUnavailable")
+    && !mobileDetail.includes("cam-terminal-scroll-unavailable"));
 ok("shared terminal mount exports scrollTerminalToTop with 20000 scrollback",
   sharedMount.includes("export function scrollTerminalToTop(") && sharedMount.includes("scrollback: 20000,"));
 ok("preload exposes narrow tmux copy-mode channels", preload.includes("copyMode(payload)") && preload.includes("cancelCopyMode(payload)") && !preload.includes("copyScroll(payload)"));

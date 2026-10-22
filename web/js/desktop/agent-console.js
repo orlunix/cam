@@ -38,8 +38,16 @@ function timeSince(dateStr) {
   return `${Math.floor(s / 86400)}d`;
 }
 
+function agentDisplayStatus(agent) {
+  const status = String(agent?.status || 'unknown').toLowerCase();
+  const state = String(agent?.state || '').toLowerCase();
+  if (status === 'alive' && (state === 'running' || state === 'idle')) return state;
+  return status;
+}
+
 function isActiveStatus(s) {
-  return ['running', 'starting', 'pending'].includes(s);
+  return ['running', 'starting', 'pending', 'alive', 'idle']
+    .includes(String(s || '').toLowerCase());
 }
 
 /* ────────── ANSI SGR → HTML renderer (CAM-DESK-OUT-014) ──────────
@@ -1597,9 +1605,10 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
       return;
     }
     const name = agent.task_name || agent.id?.slice(0, 8) || '';
+    const displayStatus = agentDisplayStatus(agent);
     titleEl.innerHTML =
       `<span>${escapeHtml(name)}</span>` +
-      `<span class="badge badge-${escapeHtml(agent.status || '')}">${escapeHtml(agent.status || 'unknown')}</span>`;
+      `<span class="badge badge-${escapeHtml(displayStatus)}">${escapeHtml(displayStatus)}</span>`;
     const parts = [];
     if (agent.tool) parts.push(agent.tool);
     if (agent.context_name) parts.push(agent.context_name);
@@ -1659,6 +1668,39 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
 
   function termBridge() {
     return window.CamBridge && window.CamBridge.term ? window.CamBridge.term : null;
+  }
+
+  function sendTerminalKeys(ent, data) {
+    if (!ent || !ent.sessionId || !data) return false;
+    const bridge = termBridge();
+    if (!bridge || typeof bridge.input !== 'function') return false;
+    try {
+      bridge.input({ sessionId: ent.sessionId, data });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function enterTerminalCopyMode(ent) {
+    if (!ent || ent.copyModeActive || !ent.sessionId) return false;
+    if (!sendTerminalKeys(ent, '\x02[')) return false; // C-b [ → tmux copy mode
+    ent.copyModeActive = true;
+    ent.needsBottom = false;
+    ent.forceBottomUntil = 0;
+    updateTerminalTmuxControls();
+    await new Promise((r) => setTimeout(r, 80));
+    if (!ent.copyModeActive) return true;
+    sendTerminalKeys(ent, '\x1b[5~'); // initial page up
+    return true;
+  }
+
+  function exitTerminalCopyMode(ent) {
+    if (!ent || !ent.copyModeActive) return false;
+    sendTerminalKeys(ent, 'q'); // tmux copy-mode default exit
+    ent.copyModeActive = false;
+    updateTerminalTmuxControls();
+    return true;
   }
 
   /** One renderer evidence line into main's userData/cam-desktop.log. */
@@ -2040,6 +2082,7 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
       hasConnected: false,
       needsBottom: true,
       forceBottomUntil: 0,
+      copyModeActive: false,
       sawLiveData: false,
       tmuxReady: false,
       tmuxWindows: [],
@@ -2065,8 +2108,12 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
       onPaste: () => pasteTerminalClipboardText(entry),
       onViewportChange: () => { if (termAgentId === entry.agentId) updateTerminalTmuxControls(); },
       onStatus: (text, kind) => setTerminalAttachStatus(text, kind || 'info', 2500, entry.agentId),
+      onSendKeys: (data) => sendTerminalKeys(entry, data),
     });
     entry._scrollDisposable = entry.term.onScroll(() => {
+      const buf = entry.term.buffer && entry.term.buffer.active;
+      entry.needsBottom = buf ? buf.viewportY >= buf.baseY : true;
+      if (entry.needsBottom) entry.forceBottomUntil = 0;
       if (termAgentId === entry.agentId) updateTerminalTmuxControls();
     });
     entry.term.onData((data) => {
@@ -2152,9 +2199,12 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
       const ent = terminalEntryBySession(msg.sessionId);
       if (!ent || !ent.term) return;
       ent.sawLiveData = true;
-      const shouldFollow = terminalShouldForceBottom(ent) || terminalIsAtBottom(ent);
       ent.term.write(sanitizeTerminalStream(ent, String(msg.data || '')), () => {
-        if (shouldFollow) terminalScrollToBottom(ent);
+        // Recheck after the write: a user scrolling up while output arrives
+        // must not be yanked back to the bottom.
+        if (terminalShouldForceBottom(ent) || terminalIsAtBottom(ent)) {
+          terminalScrollToBottom(ent);
+        }
       });
     });
     termUnsubStatus = bridge.onStatus((msg) => {
@@ -2345,6 +2395,7 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
     if (!ent) return;
     const bridge = termBridge();
     const sid = ent.sessionId;
+    ent.copyModeActive = false;
     terminalSessions.delete(agentId);
     try { ent._scrollDisposable && ent._scrollDisposable.dispose(); } catch (_) {}
     if (ent._trap) {
@@ -3128,7 +3179,7 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
       + '<div class="terminal-tmux-tabs" role="tablist" aria-label="tmux windows"></div>'
       + '<div class="terminal-action-bar" hidden>'
       +   '<button type="button" class="terminal-attach-icon" title="Attach a file or image" aria-label="Attach a file or image">📎</button>'
-      +   '<button type="button" class="terminal-history-btn" title="Browse tmux history" aria-label="History"><span aria-hidden="true">↑</span><span class="sr-only">History</span></button>'
+      +   '<button type="button" class="terminal-history-btn" title="Browse tmux history (copy mode)" aria-label="History"><span aria-hidden="true">↑</span><span class="sr-only">History</span></button>'
       +   '<button type="button" class="terminal-bottom-btn" title="Return to live output" aria-label="To bottom"><span aria-hidden="true">↓</span><span class="sr-only">To bottom</span></button>'
       +   '<button type="button" class="terminal-refresh-btn" disabled title="Re-attach terminal" aria-label="Refresh terminal"><span aria-hidden="true">⟳</span><span class="sr-only">Refresh terminal</span></button>'
       + '</div>'
@@ -3157,17 +3208,19 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
       if (!terminalAttachBtn.disabled) void pickAndUploadTerminalAttachment();
     });
     terminalHistoryBtn.addEventListener('click', () => {
-      // Native-terminal history: scroll to the oldest line in the local
-      // buffer (fresh attaches are pre-filled from pane history at open).
-      // tmux copy mode is no longer entered from the app.
       const ent = terminalSessions.get(termAgentId);
       if (!ent || terminalHistoryBtn.disabled) return;
-      try { ent.term.scrollToTop(); } catch (_) {}
+      if (!ent.copyModeActive) {
+        void enterTerminalCopyMode(ent);
+      } else {
+        sendTerminalKeys(ent, '\x1b[5~'); // PPage
+      }
       try { ent.term.focus(); } catch (_) {}
     });
     terminalBottomBtn.addEventListener('click', () => {
       const ent = terminalSessions.get(termAgentId);
       if (!ent || terminalBottomBtn.disabled) return;
+      if (ent.copyModeActive) exitTerminalCopyMode(ent);
       terminalScrollToBottom(ent);
       updateTerminalTmuxControls();
       try { ent.term.focus(); } catch (_) {}
@@ -3294,13 +3347,17 @@ export function mountAgentConsole({ api, state, showToast, setMode }) {
     }
     if (terminalActionBar) terminalActionBar.hidden = !terminalVisible;
     if (terminalHistoryBtn) {
-      // Native scroll-to-top over the local buffer; needs a live
-      // terminal but no tmux metadata (works even when the window
-      // strip is unavailable).
       terminalHistoryBtn.disabled = actionsBlocked || !terminalConnected;
-      terminalHistoryBtn.title = 'Scroll to oldest loaded history';
+      const active = !!ent?.copyModeActive;
+      terminalHistoryBtn.classList.toggle('is-active', active);
+      terminalHistoryBtn.title = active
+        ? 'Page up — ↓ exits copy mode'
+        : 'Browse tmux history (copy mode)';
     }
-    if (terminalBottomBtn) terminalBottomBtn.disabled = actionsBlocked || !terminalConnected || terminalIsAtBottom(ent);
+    if (terminalBottomBtn) {
+      terminalBottomBtn.disabled = actionsBlocked || !terminalConnected
+        || (!ent?.copyModeActive && terminalIsAtBottom(ent));
+    }
     if (terminalRefreshBtn) {
       // Refresh is the escape hatch for a stuck attach — it must stay
       // clickable while opening; the force path abandons the in-flight

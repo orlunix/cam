@@ -111,7 +111,7 @@ Phone renderer
 
 ## Current gap (Mobile)
 
-See **`docs/mobile/desktop-parity-review.md`** for the full matrix (Sync, Terminal, Agents, Skills).
+See **`docs/archive/mobile/desktop-parity-review.md`** for the full matrix (Sync, Terminal, Agents, Skills).
 
 | Piece | Status |
 |-------|--------|

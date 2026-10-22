@@ -424,7 +424,7 @@ Keep `selectedAgentId` in route params (`#/agent/:id`) rather than global state 
 
 | Action | Path |
 |--------|------|
-| **Create** | `docs/mobile/relay-first-plan.md` (this file) |
+| **Create** | `docs/archive/mobile/relay-first-plan.md` (this file) |
 | **Create** | `web/mobile.html` |
 | **Create** | `web/css/mobile.css` |
 | **Create** | `web/js/mobile/app.js`, `settings.js`, `dashboard.js`, `agent-detail.js`, `agent-settings.js`, `start-agent.js`, `nodes.js`, `skills.js`, `api-extensions.js` |

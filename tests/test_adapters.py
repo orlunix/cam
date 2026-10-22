@@ -234,6 +234,7 @@ class TestCodexAdapter:
         adapter = CodexAdapter()
         cmd = adapter.get_launch_command(task, context)
         assert cmd[0] == "codex"
+        assert "--no-alt-screen" in cmd
         assert "--full-auto" not in cmd
         assert task.prompt not in cmd
 

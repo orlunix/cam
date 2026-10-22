@@ -22,9 +22,9 @@ The repository currently supports a macOS DMG proof-of-concept workflow:
 - `.github/workflows/cam-desktop-macos.yml` builds unsigned / not-notarized DMG
   artifacts for testing.
 - `apps/cam-desktop/package.json` has a `mac` target for `dmg`.
-- The active Desktop product is an Electron app with Direct and Relay modes.
-- Direct mode embeds a local Hub and uses SSH / xterm / bundled `camc`.
-- Relay mode talks to an externally hosted relay/source pair.
+- The active Desktop product is an Electron app with the supported Direct mode.
+- Direct mode embeds a client-side Hub and uses SSH / xterm / bundled `camc`.
+- Relay mode is legacy / unsupported and is not a submission target.
 
 This is not enough for Mac App Store submission. Mac App Store requires a
 different distribution track from a notarized DMG.

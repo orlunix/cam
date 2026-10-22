@@ -45,7 +45,10 @@ check_for_update_on_startup = false
 allow_login_shell = false
 
 [launch]
-command = ["codex"]
+# Keep Codex in the normal screen so tmux/terminal scrollback retains output.
+# --no-alt-screen is supported by current Codex builds; older builds that
+# reject it will fail readiness and need an upgrade.
+command = ["codex", "--no-alt-screen"]
 trust_workspace = true
 # Used by every managed launch, including explicit local execution.
 launcher_autorun_args = ["--yolo"]

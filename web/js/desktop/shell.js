@@ -42,6 +42,13 @@ function agentName(agent) {
   return String(agent?.task_name || agent?.task?.name || agent?.id?.slice(0, 8) || '');
 }
 
+function agentDisplayStatus(agent) {
+  const status = String(agent?.status || 'unknown').toLowerCase();
+  const state = String(agent?.state || '').toLowerCase();
+  if (status === 'alive' && (state === 'running' || state === 'idle')) return state;
+  return status;
+}
+
 function _dateMs(raw) {
   if (!raw) return 0;
   const ms = Date.parse(raw);
@@ -362,7 +369,7 @@ export function mountShell({ api, state, connect }) {
     const cur = state.get('filters') || {};
     const f = { sort: SORT_DEFAULT, ...cur };
     let out = agents.slice();
-    if (f.status) out = out.filter(a => a.status === f.status);
+    if (f.status) out = out.filter(a => agentDisplayStatus(a) === f.status);
     if (f.tool) out = out.filter(a => a.tool === f.tool);
     if (f.machine) {
       out = out.filter(a => {
@@ -466,7 +473,8 @@ export function mountShell({ api, state, connect }) {
       const name = escapeHtml(agentName(agent));
       const tool = escapeHtml(agent.tool || '');
       const ctx = agent.context_name ? ' · ' + escapeHtml(agent.context_name) : '';
-      const status = escapeHtml(agent.status || 'unknown');
+      const displayStatus = agentDisplayStatus(agent);
+      const status = escapeHtml(displayStatus);
       const host = agent.machine_host ? ' · ' + escapeHtml(agent.machine_host.split('.')[0]) : '';
       const t = timeSince(agentUpdatedAt(agent));
       const sel = agent.id === selectedId ? ' selected' : '';
@@ -479,7 +487,7 @@ export function mountShell({ api, state, connect }) {
         : '';
       return `
         <div class="desktop-agent-row${sel}" data-id="${escapeHtml(agent.id)}">
-          <span class="dot ${escapeHtml(agent.status || '')}"></span>
+          <span class="dot ${escapeHtml(displayStatus)}"></span>
           <div class="row-body">
             <div class="row-name">${name}</div>
             <div class="row-meta">${tool}${ctx}${host} · ${status}${tagText}</div>
@@ -1627,7 +1635,7 @@ export function mountShell({ api, state, connect }) {
       const parts = [
         agent.id ? `id ${agent.id}` : '',
         agent.tool || agent.task?.tool || '',
-        agent.status || '',
+        agentDisplayStatus(agent),
         agent.context_name ? `context ${agent.context_name}` : '',
         agent.machine_host || agent.hostname || '',
       ].filter(Boolean);

@@ -1,10 +1,12 @@
 # Bridge Protocol v1（规范）
 
-状态：v1.1（2026-10-12，router + tunnel 落地）。desktop 实现与本规范一致
-（实现侧笔记见 [`camb-bridge.md`](./camb-bridge.md)，总纲见
-[`fleet-bridge-plan.md`](./fleet-bridge-plan.md)）。
+状态：v1.1（2026-10-12，router + tunnel 落地）。desktop bridge 实现以
+本规范为线上协议依据（实现侧笔记见 [`camb-bridge.md`](./camb-bridge.md)，
+总纲见 [`fleet-bridge-plan.md`](./fleet-bridge-plan.md)）。
 
-本规范标准化的对象是 **schema 与语义**；transport 可插拔。
+跨 CAM Server / Client（Desktop / TUI / Mobile）的统一行为与合规门槛，
+以上位规范 [`../hub-server-spec.md`](../hub-server-spec.md) 为准；本文只定义
+迁移期 Bridge 的 **schema 与投递语义**，transport 可插拔。
 任何 bridge host（desktop / mobile / python-cli）与任何 ferry
 （camb / 归并后的 camc）只要满足本规范即可互通。
 
