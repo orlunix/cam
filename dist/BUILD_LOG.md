@@ -7183,3 +7183,15 @@ b17e2a9 feat(tui): add Rust terminal client and local daemon
 0c9114e feat(server): add portable router and native camc integration
 906b207 refactor(camc): simplify lifecycle and unify launch preparation
 ```
+## v1.2.195  63292c2-dirty 2026-10-22 15:35
+
+- Lines: 22378
+- Output: /mnt/c/Users/Thinkpad/gitlab/cam/dist/camc
+- Recent changes:
+```
+9f7be6ed feat(tui): add terminal panes and automatic Server provisioning
+4e94fac3 docs(skills): teach cross-server agent operations and sync bundled guides
+9a27b8b9 feat(tui): refine sidebar and add per-agent settings
+4b62ea23 fix: harden autorun reuse and TUI clipboard handling
+1b6cd46a feat(tui): add Rust terminal client and local daemon
+```
