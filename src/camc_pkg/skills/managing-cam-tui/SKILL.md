@@ -1,13 +1,14 @@
 ---
 name: managing-cam-tui
 description: >
-  Operate and troubleshoot CAM TUI: connect Nodes over SSH, manage agent
-  terminals, follow agent startup, use history and clipboard, and inspect
-  the local Client daemon. Use for cam-tui/cam-clientd workflows.
+  Operate CAM TUI, import existing Claude/Codex/Cursor/Pi sessions, and
+  reconnect owned VNC/LSF environments with staged NFS/SSH authorization.
+  Connect Nodes, verify terminals/status, and report partial progress without
+  undoing successful steps. Use for cam-tui/cam-clientd workflows.
 metadata:
   author: hren
   category: infra
-  tags: cam, cam-tui, terminal, agents
+  tags: cam, cam-tui, terminal, agents, sessions, import, ssh, vnc, lsf
   requires-tools: cam-tui
 ---
 
@@ -23,6 +24,36 @@ these connections: `Node:agent` for `status`, `capture`, `send`, `msg`, `key`,
 prefer local matches. See managing-camc and camc-messaging for addressing and
 replies. TUI fleet discovery/terminal attach and CLI per-agent routing are
 different capabilities; camc does not provide remote fleet `list` or `attach`.
+
+## Import and reconnect requests
+
+When asked to import current sessions or reconnect environments, execute the
+workflow; do not stop at command suggestions. Start with this user's running
+Claude/Codex/Cursor/Pi sessions and preserve their conversations/processes.
+Discover all requested owned environments, classify unsupported cases honestly,
+and connect verified owner Nodes to the **current** Client configuration.
+
+Read [reference/import-sessions.md](reference/import-sessions.md) for existing
+managed agents, in-place tmux adoption, custom sockets, name collisions and
+ordinary-terminal/history limitations. Do not present a new/resumed tool as an
+in-place import of a still-running process.
+
+Read [reference/vnc-ssh-reconnect.md](reference/vnc-ssh-reconnect.md) for the
+required progressive order:
+
+1. Authorize this user's own public key in this NFS Home's `authorized_keys`;
+   verify permissions and SSH separately. The helper
+   [scripts/authorize_own_key.py](scripts/authorize_own_key.py) is idempotent.
+2. On each distinct remote Home, do the same preparation, authorize the current
+   Client's public key when necessary, then connect/sync that Node back into
+   the current Client and verify its sessions.
+
+Stage 1 must be attempted and recorded independently. Failure of any Stage 2.x
+must retain successful Stage 1 work, other connected Nodes and adopted sessions.
+Use private resumable checkpoints, bounded probes and per-target verification;
+never use one global fail-fast chain. Finish with a per-stage success/blocked/
+failed/unknown report and a next step for each incomplete target. Do not claim
+SSH configuration, Node connectivity and attachable sessions are the same result.
 
 ## Start and inspect
 
