@@ -350,6 +350,19 @@ ok("tmux binary is probed per endpoint in the background, never hardcoded to /bi
     && !require("fs").readFileSync(require("path").join(__dirname, "..", "electron", "tmux-controls.cjs"), "utf8").includes('|| "/bin/tmux"'));
 ok("remote size repair resolves tmux binary from record with env fallback",
   main.includes('tmux_bin = (') && main.includes('shutil.which("tmux")') && !main.includes('["tmux", "-S", str(socket)]'));
+// The repair python must run on the oldest python3 out there (old PDX
+// images): f-strings (3.6), subprocess.run (3.5) and text= (3.7) all
+// raised on older interpreters — the whole repair failed with
+// remote_nonzero and the size was never re-asserted.
+const repairPy = (main.match(/const py = String\.raw`([\s\S]*?)`;/) || [])[1] || '';
+ok("remote size repair script is Python 3.4-safe",
+  repairPy.includes("universal_newlines=True") && !repairPy.includes("text=True")
+    && !repairPy.includes("subprocess.run(") && !repairPy.includes('f"'));
+ok("repair logs a full client inventory (who clamps the window is visible)",
+  main.includes("REPAIR_CLIENTS") && main.includes("line.startsWith('REPAIR_')"));
+ok("resizes re-assert the size tmux-side (debounced), not just at open",
+  main.includes("function _scheduleRemoteSizeRepair")
+    && main.includes("_scheduleRemoteSizeRepair(ent, size.cols, size.rows)"));
 // Desktop semantics 2026-07-18: the app never closes pooled SSH
 // connections on its own while running — an open desktop terminal
 // holds its sessions (unlike mobile).

@@ -406,6 +406,10 @@ function _shellQuote(value) {
 function _terminalRepairCommand(agentId, cols, rows) {
   const safeCols = Math.max(TERM_MIN_COLS, Math.min(500, Math.floor(Number(cols) || 80)));
   const safeRows = Math.max(TERM_MIN_ROWS, Math.min(500, Math.floor(Number(rows) || 24)));
+  /* Keep the remote Python 3.4-compatible: no f-strings, no
+   * subprocess.run(), universal_newlines instead of text=. The repair
+   * used to fail with remote_nonzero on every older-python host, which
+   * meant the tiny-client detach and the size re-assert never ran. */
   const py = String.raw`import json
 import os
 import subprocess
@@ -420,7 +424,7 @@ try:
     raw = subprocess.check_output(
         [camc, "--json", "status", agent_id],
         stderr=subprocess.DEVNULL,
-        text=True,
+        universal_newlines=True,
         timeout=5,
     )
     data = json.loads(raw or "{}")
@@ -456,45 +460,52 @@ try:
     out = subprocess.check_output(
         [tmux_bin, "-S", str(socket), "list-clients", "-F", "#{client_name}\t#{client_width}\t#{client_height}"],
         stderr=subprocess.DEVNULL,
-        text=True,
+        universal_newlines=True,
         timeout=3,
     )
 except Exception:
     out = ""
 
+# Record every attached client + size: a reattached phone / second desktop
+# (both auto-reconnect by design) is invisible otherwise, which made manual
+# detach-client -a look like it "did nothing".
+clients = []
 for line in out.splitlines():
     parts = line.split("\t")
     if len(parts) != 3:
         continue
     name, width, height = parts
+    clients.append("%s=%sx%s" % (name, width, height))
     try:
         if int(width) < 40 or int(height) < 4:
-            subprocess.run(
+            subprocess.call(
                 [tmux_bin, "-S", str(socket), "detach-client", "-t", name],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
-                timeout=2,
             )
             # Evidence for the recurring "window shrank to ~10 cols"
             # mystery: record exactly WHICH client was clamping the
             # window (its name/tty betrays the source device).
-            print(f"REPAIR_DETACHED tiny-client name={name} size={width}x{height}")
+            print("REPAIR_DETACHED tiny-client name=%s size=%sx%s" % (name, width, height))
     except Exception:
         pass
+print("REPAIR_CLIENTS %s" % (" ".join(clients) if clients else "none"))
 
 # tmux 2.7 (main PDX environment) has no resize-window command. Use a
 # short-lived control-mode client and set its size; tmux then propagates that
-# size to the session/window. This also works on newer tmux versions.
+# size to the session/window. On tmux >= 3.1 (window-size=latest default)
+# the fresh control client is also the "latest" client, so the window snaps
+# to this size even when another attached client resized last.
 try:
     proc = subprocess.Popen(
         [tmux_bin, "-S", str(socket), "-C", "attach-session", "-t", str(session)],
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        text=True,
+        universal_newlines=True,
     )
     try:
-        proc.communicate(f"refresh-client -C {cols},{rows}\n", timeout=1)
+        proc.communicate("refresh-client -C %s,%s\n" % (cols, rows), timeout=1)
     except subprocess.TimeoutExpired:
         try:
             proc.stdin.write("detach-client\n")
@@ -541,10 +552,11 @@ async function _repairRemoteTerminalSize(opts, agentId, cols, rows) {
     });
     // Evidence for the recurring "window shrank to ~10 cols" mystery:
     // the repair prints REPAIR_DETACHED lines naming the client it
-    // kicked — log them so the culprit is identifiable afterwards.
+    // kicked, plus one REPAIR_CLIENTS inventory of every attached client
+    // and its size — log them so the culprit is identifiable afterwards.
     const out = (res && res.ok && res.stdout) || '';
     for (const line of String(out).split('\n')) {
-      if (line.startsWith('REPAIR_DETACHED')) {
+      if (line.startsWith('REPAIR_')) {
         console.warn(`[terminal-repair] ${agentId}: ${line}`);
         _diagLog(`[terminal-repair] ${agentId}: ${line}`);
       }
@@ -552,6 +564,27 @@ async function _repairRemoteTerminalSize(opts, agentId, cols, rows) {
   } catch (_) {
     // Best-effort guard: attach must still proceed if old camc/tmux cannot report metadata.
   }
+}
+
+/* A resize must ALSO re-assert the size tmux-side. The SSH setWindow alone
+ * relies on SIGWINCH reaching the remote tmux client, and on tmux ≥ 3.1
+ * (window-size=latest default) the window belongs to whichever client was
+ * active LAST — a reconnected phone / second desktop (both auto-reconnect
+ * by design, which is why a manual detach-client -a never sticks) owns it
+ * until our client is refreshed. The repair's transient control client
+ * re-asserts our size and detaches tiny clients. Debounced: a drag-resize
+ * burst must not fire one remote exec per intermediate size. */
+function _scheduleRemoteSizeRepair(ent, cols, rows) {
+  if (!ent || !ent.opts || !ent.agentId) return;
+  if (ent._repairedCols === cols && ent._repairedRows === rows) return;
+  if (ent._repairTimer) clearTimeout(ent._repairTimer);
+  ent._repairTimer = setTimeout(() => {
+    ent._repairTimer = null;
+    ent._repairedCols = cols;
+    ent._repairedRows = rows;
+    void _repairRemoteTerminalSize(ent.opts, ent.agentId, cols, rows);
+  }, 800);
+  if (ent._repairTimer.unref) ent._repairTimer.unref();
 }
 
 function _sessionForAgent(contentsId, agentId) {
@@ -1123,6 +1156,9 @@ async function termResize(event, payload = {}) {
     ent.resize(size.cols, size.rows);
     ent._appliedCols = size.cols;
     ent._appliedRows = size.rows;
+    // setWindow alone can lose (lost SIGWINCH, tmux window-size=latest
+    // owned by a reattached peer): re-assert the size tmux-side.
+    _scheduleRemoteSizeRepair(ent, size.cols, size.rows);
   }
   return { ok: true };
 }
