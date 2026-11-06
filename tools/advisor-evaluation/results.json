@@ -1,0 +1,153 @@
+{
+  "date": "2026-11-06",
+  "repository": "orlunix/cam",
+  "commit": "898d21935f5696e58920556b5689d5c6a9ff4841",
+  "mechanism_tests_passed": 16,
+  "evaluator_integrity_tests_passed": 9,
+  "real_advisor_tests_executed": 0,
+  "live_cam_tests_executed": 0,
+  "original_pytest_suite_executed": false,
+  "effectiveness_established": false,
+  "command": "CAM_SOURCE=/workspace/scratch/530c5647729d/cam-source/src python -m unittest -v test_loop_mechanism test_eval_validator",
+  "observed_result": "Ran 25 tests in 0.064s; OK; exit code 0",
+  "checks": [
+    {
+      "file": "test_loop_mechanism.py",
+      "name": "test_01_due_idle_dispatches_and_persists",
+      "status": "passed"
+    },
+    {
+      "file": "test_loop_mechanism.py",
+      "name": "test_02_early_tick_does_not_dispatch",
+      "status": "passed"
+    },
+    {
+      "file": "test_loop_mechanism.py",
+      "name": "test_03_repeated_same_time_tick_does_not_duplicate",
+      "status": "passed"
+    },
+    {
+      "file": "test_loop_mechanism.py",
+      "name": "test_04_busy_defers_without_burning_attempts",
+      "status": "passed"
+    },
+    {
+      "file": "test_loop_mechanism.py",
+      "name": "test_05_busy_then_idle_eventually_dispatches",
+      "status": "passed"
+    },
+    {
+      "file": "test_loop_mechanism.py",
+      "name": "test_06_missing_owner_defers",
+      "status": "passed"
+    },
+    {
+      "file": "test_loop_mechanism.py",
+      "name": "test_07_dead_owner_does_not_automatically_restart",
+      "status": "passed"
+    },
+    {
+      "file": "test_loop_mechanism.py",
+      "name": "test_08_disabled_loop_does_not_dispatch",
+      "status": "passed"
+    },
+    {
+      "file": "test_loop_mechanism.py",
+      "name": "test_09_repeated_dispatch_failure_disables_loop",
+      "status": "passed"
+    },
+    {
+      "file": "test_loop_mechanism.py",
+      "name": "test_10_success_resets_failure_budget",
+      "status": "passed"
+    },
+    {
+      "file": "test_loop_mechanism.py",
+      "name": "test_11_missed_intervals_do_not_flood",
+      "status": "passed"
+    },
+    {
+      "file": "test_loop_mechanism.py",
+      "name": "test_12_dispatch_ack_is_not_review_ack",
+      "status": "passed"
+    },
+    {
+      "file": "test_loop_mechanism.py",
+      "name": "test_13_dispatch_uses_real_message_command_contract",
+      "status": "passed"
+    },
+    {
+      "file": "test_loop_mechanism.py",
+      "name": "test_14_transport_timeout_is_a_failure",
+      "status": "passed"
+    },
+    {
+      "file": "test_loop_mechanism.py",
+      "name": "test_15_host_scheduler_honors_existing_lock",
+      "status": "passed"
+    },
+    {
+      "file": "test_loop_mechanism.py",
+      "name": "test_16_paused_task_is_not_a_scheduler_input",
+      "status": "passed"
+    },
+    {
+      "file": "test_eval_validator.py",
+      "name": "test_valid_contract",
+      "status": "passed"
+    },
+    {
+      "file": "test_eval_validator.py",
+      "name": "test_wrong_decision_rejected",
+      "status": "passed"
+    },
+    {
+      "file": "test_eval_validator.py",
+      "name": "test_invented_evidence_rejected",
+      "status": "passed"
+    },
+    {
+      "file": "test_eval_validator.py",
+      "name": "test_empty_intervention_rejected",
+      "status": "passed"
+    },
+    {
+      "file": "test_eval_validator.py",
+      "name": "test_noisy_continue_rejected",
+      "status": "passed"
+    },
+    {
+      "file": "test_eval_validator.py",
+      "name": "test_missing_reply_is_not_success",
+      "status": "passed"
+    },
+    {
+      "file": "test_eval_validator.py",
+      "name": "test_wrong_thread_is_not_success",
+      "status": "passed"
+    },
+    {
+      "file": "test_eval_validator.py",
+      "name": "test_duplicate_replies_rejected",
+      "status": "passed"
+    },
+    {
+      "file": "test_eval_validator.py",
+      "name": "test_json_with_nested_content_parses",
+      "status": "passed"
+    }
+  ],
+  "production_source_git_blob_hashes": {
+    "cron.py": "041e2d5017c18a020b17b441ec0c1cc10ee42507",
+    "cron_loop.py": "2d35862d6aaf93aea62292509ac9f2910adf9f2d",
+    "utils.py": "272d1b7e65eeee0b80e99997e09fdf535e8317ac",
+    "__init__.py": "d560b75b89bfea2c611a03179b9d094588d3e6ca"
+  },
+  "limitations": [
+    "Owner records, message transport and clocks injected",
+    "No real model, tmux session or elapsed-time cron execution",
+    "Decision probes prepared but not executed against a real Advisor",
+    "No observed Worker recovery or A/B outcome evidence"
+  ],
+  "source_byte_identity_verified": true
+}

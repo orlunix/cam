@@ -1,0 +1,19 @@
+{
+  "scope": "real-agent decision probes; synthetic evidence; NOT end-to-end",
+  "manual_review_required": "inspect action correctness and evidence reasoning",
+  "results": [
+    {
+      "id": "idle_unfinished",
+      "repeat": 0,
+      "test_id": "1793946906342708914:idle_unfinished:0",
+      "status": "unavailable",
+      "error": "[Errno 2] No such file or directory: '/nonexistent/camc'",
+      "seconds": 0.0
+    }
+  ],
+  "counts": {
+    "pass": 0,
+    "fail": 0,
+    "unavailable": 1
+  }
+}
