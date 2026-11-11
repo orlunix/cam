@@ -23,12 +23,12 @@ REMOTE_PATH="~/.cam/camc"
 # camc is also copied there for users whose PATH picks up the shared bin
 # before ~/.cam. Non-fatal — a missing dir or permission error is logged
 # and doesn't fail the release.
-SHARED_BIN_DIR="/home/prgn_share/bin"
+SHARED_BIN_DIR="/home/site_share/bin"
 SHARED_BIN_PATH="$SHARED_BIN_DIR/camc"
 # Release archive on NFS-shared ACME tools tree. Every successfully
 # deployed build gets copied here under camc-<version>-<hash>. Serves
 # as the rollback artifact store (see tools/release/RELEASE-STRATEGY.md).
-SHARED_RELEASES_DIR="/home/prgn_share/tools/camc/releases"
+SHARED_RELEASES_DIR="/home/site_share/tools/camc/releases"
 SSH_TIMEOUT=10
 
 SKIP_TESTS=0
@@ -74,7 +74,7 @@ LOCAL_VERSION="$("$DIST_BIN" version 2>/dev/null | head -1)"
 [[ -n "$LOCAL_VERSION" ]] || { err "dist/camc didn't print a version"; exit 1; }
 ok "local: $LOCAL_VERSION"
 
-# Archive name for /home/prgn_share/tools/camc/releases/ — embeds the
+# Archive name for /home/site_share/tools/camc/releases/ — embeds the
 # camc version token (vX.Y.Z) and the commit short hash (if in a git
 # tree), so each rollback target is unambiguous.
 VER_TOKEN=$(printf '%s' "$LOCAL_VERSION" | awk '{print $2}')       # v1.2.0
@@ -227,7 +227,7 @@ while IFS=$'\t' read -r name host user port; do
     failed=$((failed + 1))
   fi
 
-  # 4d: Also install to /home/prgn_share/bin/camc when that dir exists
+  # 4d: Also install to /home/site_share/bin/camc when that dir exists
   # on the remote — shared NFS-ish location some ACME containers have
   # in $PATH. Non-fatal: missing dir / no write perm just logs and
   # moves on. Uses the already-scp'd ~/.cam/camc as the source so we
@@ -250,7 +250,7 @@ while IFS=$'\t' read -r name host user port; do
     fi
   fi
 
-  # 4e: Archive this build into /home/prgn_share/tools/camc/releases/.
+  # 4e: Archive this build into /home/site_share/tools/camc/releases/.
   # One versioned copy per NFS mount acts as our rollback store. Creates
   # the directory on demand; skip cleanly when the tree isn't writable.
   if [[ -n "$ARCHIVE_NAME" ]]; then

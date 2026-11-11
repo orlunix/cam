@@ -23,7 +23,7 @@ Claude/Codex/Cursor/Pi executables. All four sessions were adopted and captured
 from a fresh shell without inherited TMUX, retaining original pane PIDs. All
 four records and tmux servers were removed.
 
-## Cross-account integration: svcuser@riscv.example.com:22
+## Cross-account integration: svcuser@node.example.com:22
 
 Used the existing approved SSH route and existing remote Home/Server. No private
 key was copied and no host-key checks were disabled.

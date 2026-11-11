@@ -134,7 +134,7 @@ camc capture <id>                   # Capture terminal output
 camc send <id> --text "hello"       # Send text to agent
 ```
 
-Deploy via `cam sync` or manually only after the release gate passes. Before publishing to any shared path such as `/home/prgn_share/bin/camc`, follow [docs/camc-release-checklist.md](docs/camc-release-checklist.md): the exact artifact must locally start Claude, Codex, and Cursor, complete a simple smoke prompt, and exit/cleanup successfully.
+Deploy via `cam sync` or manually only after the release gate passes. Before publishing to any shared path such as `/home/site_share/bin/camc`, follow [docs/camc-release-checklist.md](docs/camc-release-checklist.md): the exact artifact must locally start Claude, Codex, and Cursor, complete a simple smoke prompt, and exit/cleanup successfully.
 
 Storage: `~/.cam/agents.json` (source of truth), `~/.cam/logs/monitor-<id>.log`, `~/.cam/events.jsonl`
 

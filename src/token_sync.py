@@ -35,7 +35,7 @@ LOG_FILE = os.path.join(SYNC_DIR, "sync.log")
 TOKEN_MANIFEST = [
     ("ai-pim-utils/confluence/token", ".ai-pim-utils/confluence/token"),
     ("ai-pim-utils/helios/token", ".ai-pim-utils/helios/token"),
-    ("ai-pim-utils/nvbugs/token", ".ai-pim-utils/nvbugs/token"),
+    ("ai-pim-utils/bugtracker/token", ".ai-pim-utils/bugtracker/token"),
     ("ai-pim-utils/auth-cache", ".ai-pim-utils/auth-cache"),
     ("ai-pim-utils/token-cache-ai-pim-utils", ".ai-pim-utils/token-cache-ai-pim-utils"),
     ("atlassian-cli/email", ".atlassian-cli/email"),

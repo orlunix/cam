@@ -205,7 +205,7 @@ digging into the app.
 
 There is **no version detection anywhere** by design. All control
 commands use the oldest portable form, verified against tmux 2.7
-source and live-tested on 2.7 (Rocky 8.9), 3.2a (hlren), 3.4 (prgn):
+source and live-tested on 2.7 (Rocky 8.9), 3.2a (hlren), 3.4 (site-e):
 
 - `display-message -p -t <session> fmt` — never `-c <tty>` with a
   format (usage error on tmux < 3.3; this was the "tab strip never

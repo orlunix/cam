@@ -176,7 +176,7 @@ trap 不能只拦截按键，还要有独立的显示状态和历史缓冲区。
 
 ### 阶段 D：远端 server 与多机器
 
-- 本机 cam-tui 通过 SSH 连接 PRGN、DC7 等 server。
+- 本机 cam-tui 通过 SSH 连接 SITE-E、SITE-C 等 server。
 - 各 server 提供各自状态，client 合并显示；断线重连不影响其他机器。
 - 当前机器/pane 的输入目标和 resize 所有权必须清晰。
 
@@ -190,7 +190,7 @@ trap 不能只拦截按键，还要有独立的显示状态和历史缓冲区。
 - 复用原 allocation 时不提交嵌套 qsub；回收仅作用于新系统拥有的 agent/job。
 - Claude/Codex 的登录与 API 配置必须在实际目标环境验证。
 
-**验收：** 本地、PRGN、DC7 命令行和 TUI 测试；逐项覆盖实际 fallback、无重复提交、reboot、断线和回收。未跑过的路径必须明确标注，不能据其他路径通过而宣称通过。
+**验收：** 本地、SITE-E、SITE-C 命令行和 TUI 测试；逐项覆盖实际 fallback、无重复提交、reboot、断线和回收。未跑过的路径必须明确标注，不能据其他路径通过而宣称通过。
 
 ### 后续阶段
 

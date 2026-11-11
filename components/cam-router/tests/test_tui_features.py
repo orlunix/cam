@@ -396,7 +396,7 @@ class FeatureTests(unittest.TestCase):
     def test_new_agent_chooses_machine_name_and_routes_to_its_original_id(self):
         a, b = self.managed_node("a", "b"), self.managed_node("b", "a")
         self.start_daemon([a, b])
-        for node, name in ((a, "PDX046"), (b, "DC7")):
+        for node, name in ((a, "SITE-A046"), (b, "SITE-C")):
             self.rpc("node.upsert", {"node_id": node.node_id, "name": name,
                 "socket": str(node.socket), "token_file": str(self.tokens["c1"])})
         self.until(lambda: all(n["ready"] for n in self.rpc("snapshot")["nodes"]))
@@ -404,8 +404,8 @@ class FeatureTests(unittest.TestCase):
         ui.key(b"\x1bOP")
         ui.click("Node", exact=True, min_x=(ui.screen.columns - 100) // 2)
         ui.until(lambda: "Choose machine" in ui.pump())
-        ui.click("DC7")
-        ui.until(lambda: "New agent" in ui.pump() and "DC7" in ui.pump())
+        ui.click("SITE-C")
+        ui.until(lambda: "New agent" in ui.pump() and "SITE-C" in ui.pump())
         tool = self.base / "node-picker-tool"
         tool.write_text("#!/bin/sh\necho NODE_PICKER_READY\nexec /bin/cat\n")
         tool.chmod(0o700)
@@ -421,16 +421,16 @@ class FeatureTests(unittest.TestCase):
         self.assertIsNone(self.agent_record(a, agent["id"]))
         self.assertIsNotNone(self.agent_record(b, agent["id"]))
         ui.until(lambda: "NODE_PICKER_READY" in ui.pump())
-        ui.filter("DC7")
+        ui.filter("SITE-C")
         ui.until(lambda: "picked-target" in ui.pump())
         ui.key(b"\x1bOQ")
-        ui.click("DC7 · tunnel")
+        ui.click("SITE-C · tunnel")
         ui.click("Edit", exact=True)
-        ui.field("Name (optional)", "DC7 renamed")
+        ui.field("Name (optional)", "SITE-C renamed")
         ui.save()
-        ui.until(lambda: any(e.get("name") == "DC7 renamed" for e in self.rpc("snapshot")["connections"]))
+        ui.until(lambda: any(e.get("name") == "SITE-C renamed" for e in self.rpc("snapshot")["connections"]))
         saved = next(e for e in json.loads(self.client_config.read_text())["endpoints"] if e["node_id"] == b.node_id)
-        self.assertEqual(saved["name"], "DC7 renamed")
+        self.assertEqual(saved["name"], "SITE-C renamed")
 
     def test_gui_agent_operations_and_invalid_new_agent(self):
         node = self.managed_node()

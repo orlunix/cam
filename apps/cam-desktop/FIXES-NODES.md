@@ -140,7 +140,7 @@ bundled `src/camc`):
 
 **Dev env (`npm run dev`):** Electron 31.7.7 installed via `npm install`
 (lockfile is stale, so `npm ci` is skipped per the gotcha). The
-windowed app does **not** launch on prgn — Electron's GUI shared libs
+windowed app does **not** launch on site-e — Electron's GUI shared libs
 are missing (`libatk-1.0.so.0` and friends) and there's no X
 display / `xvfb` not installed. Installing those needs `sudo apt-get`
 and is out of scope per the brief's gotcha ("don't block on the
@@ -155,9 +155,9 @@ running" curl-equivalent is satisfied.
    card labeled `local` (the renderer's `buildHosts` uses
    `m.host || 'local'`, and a local context must have
    `machine.host=''` or it would render as `isSSH`). The agent's
-   `hostname` field (e.g. `prgn`) is preserved on each record but the
+   `hostname` field (e.g. `site-e`) is preserved on each record but the
    Nodes card doesn't display it. If hren wants the card to read
-   `prgn` instead of `local`, that's a renderer-side change in
+   `site-e` instead of `local`, that's a renderer-side change in
    `buildHosts` (`web/js/shared/nodes-mode.js`) to fall back to
    `agent.hostname` for local cards — separate from these bug fixes.
 2. **Should the `local` context be deletable from the UI?** It
@@ -168,7 +168,7 @@ running" curl-equivalent is satisfied.
    here — left visible so the user can see and interact with the
    local node.
 3. **zsh-newuser-install wedge** (camui-dev `0cf1317d`) — out of scope
-   per brief. `touch ~/.zshrc` on prgn would prevent fresh zsh sessions
+   per brief. `touch ~/.zshrc` on site-e would prevent fresh zsh sessions
    from hitting the new-user prompt.
 4. **`package-lock.json` regen** — still stale (`npm ci` fails). A
    separate small task could commit a regenerated lockfile.

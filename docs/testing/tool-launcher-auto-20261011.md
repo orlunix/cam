@@ -28,10 +28,10 @@ All tasks requested only an exact reply and prohibited tools/file edits.
 
 | Tool / transport | Agent | Job / host | Actual reply |
 | --- | --- | --- | --- |
-| Codex / battach | `5023faf9` | `1895876238`, pdx3-sim-g46-033 | `CAMC_CODEX_PRIVATE_DAEMON_OK` |
-| Codex / qsub | `0b4c372d` | `1895891607`, pdx3-sim-e14-038 | `CAMC_CODEX_QSUB_PRIVATE_OK` |
-| Claude / battach | `c84e08d2` | `1761147411`, pdx3-sim-g46-005 | `CAMC_CLAUDE_BATTACH_INLINE_OK` |
-| Claude / qsub | `723a58c6` | `1895876238`, pdx3-sim-g46-033 | `CAMC_CLAUDE_QSUB_INLINE_OK` |
+| Codex / battach | `5023faf9` | `1895876238`, site-a3-sim-g46-033 | `CAMC_CODEX_PRIVATE_DAEMON_OK` |
+| Codex / qsub | `0b4c372d` | `1895891607`, site-a3-sim-e14-038 | `CAMC_CODEX_QSUB_PRIVATE_OK` |
+| Claude / battach | `c84e08d2` | `1761147411`, site-a3-sim-g46-005 | `CAMC_CLAUDE_BATTACH_INLINE_OK` |
+| Claude / qsub | `723a58c6` | `1895876238`, site-a3-sim-g46-033 | `CAMC_CLAUDE_QSUB_INLINE_OK` |
 
 Codex was 0.159.2 with `--yolo`; Claude was 2.1.296 with
 `--dangerously-skip-permissions`. Neither test needed manual Enter submission.
@@ -99,7 +99,7 @@ Verified those files and existing aliases `/home/hren/.local/bin/camc`,
 have the same SHA256:
 `0693986afc6032b19f28659f90de1fc106b1328ad85da8d54afa6135995e16cb`.
 Old copies: `/home/hren/.cam/backups/camc-local-158-20261011-163203/`.
-Shared `/home/prgn_share/bin/camc` remains v1.2.155; no shared publication.
+Shared `/home/site_share/bin/camc` remains v1.2.155; no shared publication.
 
 ## Reboot integration, v1.2.159
 
@@ -139,7 +139,7 @@ Artifact SHA256:
 Shared deployment, commit, and push were not performed.
 
 Then default `camc reboot dvnet-cc` resumed `ffcd0477` on job `1796124140`,
-host `pdx3-sim-g46-042`, using battach and Claude's autorun flag. Status is
+host `site-a3-sim-g46-042`, using battach and Claude's autorun flag. Status is
 running/idle; saved launcher mode is auto, session remains
 `3605c0a5-572a-4c27-b919-196c1db5174b`. Its missing nvproject mapping did not
 prevent reuse, and no qsub or project-save was needed.
@@ -170,12 +170,12 @@ and diff checks passed. Evidence: `/tmp/camc-path161-evidence/`. Both temporary
 agents and the probe script were cleaned up; the reused allocation was not
 terminated. Running agents need reboot to adopt the repair.
 
-Installed v1.2.161 to all five local entry paths and dc7's personal
-`.cam/camc`, `.local/bin/camc`, and `bin/camc`. dc7 Python 3.6.8 compiled the
+Installed v1.2.161 to all five local entry paths and site-c's personal
+`.cam/camc`, `.local/bin/camc`, and `bin/camc`. site-c Python 3.6.8 compiled the
 candidate, ran version/run-help/reboot-help checks, and verified the same hash
 before/after atomic promotion. SHA256:
 `5de5cfa43e14c74eaa6cf122f4c62d2eab499113665aa826e1e96c499c971ac2`.
-Backups: local `~/.cam/backups/camc-local-161-20261011-193106/`; dc7
+Backups: local `~/.cam/backups/camc-local-161-20261011-193106/`; site-c
 `~/.cam/backups/camc-before-v1.2.161-20261011-193111`.
 No shared release, commit, or push was performed.
 
@@ -183,7 +183,7 @@ No shared release, commit, or push was performed.
 
 Native Claude/Codex/Cursor initial prompts now travel once in positional
 argv, avoiding a lost pasted Enter. Cursor prefers the company latest
-installation before the older prgn_share copy.
+installation before the older site_share copy.
 
 Candidate SHA256: `e976b7fe14d7bc4418366e5d2e4440da637cb970f8bc93f0721589aeaa261873`.
 428 release-related tests and 3 built-artifact tests passed. The touched
@@ -198,6 +198,6 @@ user's explicit exception to the three-tool smoke gate or successful
 Cursor login. No production entry was changed in this release attempt.
 
 The versioned candidate is staged at
-`/home/prgn_share/tools/camc/v1.2.162-9f90391-dirty/camc`; dc7 and
-prgn.example.com have `/tmp/camc-v1.2.162-candidate`. Both remote hosts
+`/home/site_share/tools/camc/v1.2.162-9f90391-dirty/camc`; site-c and
+node.example.com have `/tmp/camc-v1.2.162-candidate`. Both remote hosts
 passed the candidate hash, Python compile and isolated tmux sanity checks.

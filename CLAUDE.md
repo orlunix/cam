@@ -394,7 +394,7 @@ Agent IDs are 8 hex characters generated via `uuid5(NAMESPACE_DNS, hostname + ti
 
 ### camc Cluster / Shared-Disk Support
 
-In environments where multiple machines share the same home directory (NFS clusters like ACME PDX containers), `~/.cam/agents.json` is shared across all machines but tmux sessions are per-machine (`/tmp/cam-sockets/` is local).
+In environments where multiple machines share the same home directory (NFS clusters like ACME SITE-A containers), `~/.cam/agents.json` is shared across all machines but tmux sessions are per-machine (`/tmp/cam-sockets/` is local).
 
 - **`hostname` field**: `camc run` records `socket.gethostname()` in each agent record.
 - **`camc list`**: filters to only show agents from the current hostname.

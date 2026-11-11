@@ -1,5 +1,5 @@
-/home/hren/.cam/release162-smoke-dc7-1791813395/codex/.camc-auto-launch-hn8mmcip/run
-(venv) dc7-container-xterm-26:~/.cam/release162-smoke-dc7-1791813395/codex> /home/hren/.cam/release162-smoke-dc7-1791813395/codex/.camc-auto-launch-hn8mmcip/run
+/home/hren/.cam/release162-smoke-site-c-1791813395/codex/.camc-auto-launch-hn8mmcip/run
+(venv) site-c-container-xterm-26:~/.cam/release162-smoke-site-c-1791813395/codex> /home/hren/.cam/release162-smoke-site-c-1791813395/codex/.camc-auto-launch-hn8mmcip/run
 Attaching job execution host: dc2-sim-c24-005 for job: <1042549372>
 Codex couldn't start because its local database appears to be damaged.
 Moving the damaged local database aside so Codex can rebuild it from saved data.
@@ -26,7 +26,7 @@ Press Enter to continue.
   Tip: Use /feedback to send logs to the maintainers when something looks off.
 
 
-› Reply exactly CAMC_DC7_MODEL_CHECK_OK. Do not use tools or modify files.
+› Reply exactly CAMC_SITE-C_MODEL_CHECK_OK. Do not use tools or modify files.
 
 
 ⚠ Ignoring unknown `features` requirement `ultrafast_mode` from requirements layers: enterprise-managed requirements Fast mode access (rbac-fast-mode), enterprise-managed requirements Ultra Fast mode access (rbac-
@@ -39,4 +39,4 @@ Press Enter to continue.
 
 › Summarize recent commits
 
-  gpt-5.4 max · /home/scratch.hren_gpu/.cam/release162-smoke-dc7-1791813395/codex
+  gpt-5.4 max · /home/scratch.hren_gpu/.cam/release162-smoke-site-c-1791813395/codex

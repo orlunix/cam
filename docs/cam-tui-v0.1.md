@@ -73,7 +73,7 @@ Client 配置示例：
 ## 操作
 
 - 点击 agent 恢复其上次使用的终端；右上只显示该 agent 的 Terminal tabs。Terminal 0 固定主 pane `0.0`，`+` 新建 Terminal 1、2… 辅助 shell，辅助页 `×` 关闭 shell，`↻` 刷新已有 pane。辅助 shell 在 Node 本机 workspace，不继承远端 LSF allocation。名称右侧 `…` 或右键提供 Settings、Stop、Remove，其余命令在 More actions。Settings 改名/tags 不重启工具。New 沿用 launcher、autorun 与隔离 home 策略；reboot 保留 ID、替换整个 session，旧辅助 shell 随之结束。
-- Filters 与 Agents 是独立区域，滚轮在列表区域才滚动列表。agent 名称统一突出显示，长名称按终端宽度截断；下面一行弱化显示，左侧 `tool · status`，右侧 node 简称；状态点保留颜色。Node 有自定义简称时优先显示简称，否则将长主机名缩成 `pdx-046` 等短名。Nodes → Edit → Name (optional) 可保存简称，包括包含点号的名称；完整 Server ID 与路由不变。
+- Filters 与 Agents 是独立区域，滚轮在列表区域才滚动列表。agent 名称统一突出显示，长名称按终端宽度截断；下面一行弱化显示，左侧 `tool · status`，右侧 node 简称；状态点保留颜色。Node 有自定义简称时优先显示简称，否则将长主机名缩成 `site-a-046` 等短名。Nodes → Edit → Name (optional) 可保存简称，包括包含点号的名称；完整 Server ID 与路由不变。
 - Agent 列表按最近访问降序排列：点击 agent 或切换到其 tab 会更新顺序，后台输出和状态刷新不会。访问记录按 Node＋完整 agent ID 保存在本机 Client 数据库，重开 TUI 或重启 daemon 后保留，最多保留 1000 条；未访问的 agent 按名称排列。筛选不改变访问记录，记录不回写 Server 的 agent 信息。
 - New、发送 prompt 和任务表单点击 Node 选择机器。Nodes → + Add 只需 Host，Port 默认 22，Username/SSH key 可选；原生 OpenSSH 处理 host-key、密码或 key 口令，认证后自动发现/配对 Server，密码不进入 CAM 配置。缺失/旧版 Server 自动校验、安装并启动；够新且健康时不复制或重启。内部 Node ID 不需要用户填写。Local / advanced 保留旧 socket/raw 连接方式。
 - New/run 请求交给 tmux 后即返回。qsub 在 pane 中自行等待 dispatch，排队期间保持 alive/running/initializing，不消耗 20 秒或 600 秒工具启动计时；auto 和自定义前缀都在目标端真正执行工具时才启动计时。stop/kill/rm 仍可取消等待。

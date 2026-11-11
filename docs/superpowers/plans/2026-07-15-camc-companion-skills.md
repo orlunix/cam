@@ -723,7 +723,7 @@ The implementation uses the existing SSH_OPTS and SCP_OPTS arrays on each corres
 
 - [ ] **Step 5: Pair shared-bin and archive layouts**
 
-The shared layout is /home/prgn_share/bin/camc plus /home/prgn_share/bin/camc_pkg/skills. The archive layout is /home/prgn_share/tools/camc/releases/<archive-name>/camc plus camc_pkg/skills. Copy through temporary directories and replace only after provider validation. A missing or unwritable optional shared/archive destination remains non-fatal, but it is never recorded as a complete archive when only camc was copied.
+The shared layout is /home/site_share/bin/camc plus /home/site_share/bin/camc_pkg/skills. The archive layout is /home/site_share/tools/camc/releases/<archive-name>/camc plus camc_pkg/skills. Copy through temporary directories and replace only after provider validation. A missing or unwritable optional shared/archive destination remains non-fatal, but it is never recorded as a complete archive when only camc was copied.
 
 ~~~bash
 shared_tmp="$SHARED_BIN_DIR/.camc-release.$"

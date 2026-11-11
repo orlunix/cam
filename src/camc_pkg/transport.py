@@ -11,11 +11,11 @@ from camc_pkg.utils import strip_ansi, _run
 
 
 # ---------------------------------------------------------------------------
-# camc-owned tmux config template (2026-06-23 PDX hardening)
+# camc-owned tmux config template (2026-06-23 SITE-A hardening)
 # ---------------------------------------------------------------------------
 #
 # camc launches every agent into its own tmux server (private socket via
-# -S). The new tmux server still reads ~/.tmux.conf by default; on PDX
+# -S). The new tmux server still reads ~/.tmux.conf by default; on SITE-A
 # a user .tmux.conf has been observed to crash the server during
 # startup-command injection. Pointing the new server at a small
 # camc-managed config with `-f <path>` makes camc tmux behavior
@@ -623,7 +623,7 @@ def tmux_rename_session(session_id, new_session_id):
 def _tmux_paste_startup_command(tmux, socket, target, text):
     """Paste a startup command into a freshly-created shell pane.
 
-    Some PDX tmux builds have been observed to drop the whole server on
+    Some SITE-A tmux builds have been observed to drop the whole server on
     ``send-keys -l -- <long command>`` before Enter is even sent. The
     buffer/paste path avoids that literal-key injection code path while
     preserving the conservative two-step launch model: create shell
@@ -717,9 +717,9 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
     # Source tmux binary: explicit arg wins; else module-level default.
     tmux = tmux_bin or TMUX_BIN
 
-    # 2026-06-23 PDX hardening: ensure the new tmux server starts with
+    # 2026-06-23 SITE-A hardening: ensure the new tmux server starts with
     # camc's own config (`-f <path>`) instead of inheriting the user's
-    # ~/.tmux.conf, which on PDX has crashed servers mid-startup.
+    # ~/.tmux.conf, which on SITE-A has crashed servers mid-startup.
     # ``tmux_config`` defaults to ``ensure_camc_tmux_config()``; pass
     # an empty string to opt out (e.g. test fixtures that don't want
     # to touch disk). For follow-up operations (capture/send/attach)
@@ -764,7 +764,7 @@ def create_tmux_session(session_id, command, workdir, env_setup=None,
             _run([tmux, "-u", "-S", socket, "set-option", "-t", session_id,
                   "history-limit", "50000"])
             # Paste the command through a tmux buffer instead of
-            # send-keys -l. On some PDX tmux builds, literal send-keys
+            # send-keys -l. On some SITE-A tmux builds, literal send-keys
             # can drop the whole server before Enter is sent.
             inner_cmd = (_startup_status_command(command, exit_status_path)
                          if exit_status_path else

@@ -35,7 +35,7 @@ const { ForwardingManager, desktopClientId, loadSetupScript } = require('./serve
 const { tmuxMetadataForAgent, selectOnlyClient, selectNewClient, parseClientState, parseWindowRows, tmuxCommand } = require('./tmux-controls.cjs');
 
 // An SSH PTY can become a tmux client a little after the attach command
-// starts (notably on PDX). Probe at the renderer's 2s control-refresh cadence
+// starts (notably on SITE-A). Probe at the renderer's 2s control-refresh cadence
 // only while the selected terminal is waiting, never as a global monitor.
 const TMUX_CLIENT_RECOVERY_MAX_ATTEMPTS = 10;
 const TMUX_CLIENT_RECOVERY_RETRY_DELAY_MS = 30000;
@@ -491,7 +491,7 @@ for line in out.splitlines():
         pass
 print("REPAIR_CLIENTS %s" % (" ".join(clients) if clients else "none"))
 
-# tmux 2.7 (main PDX environment) has no resize-window command. Use a
+# tmux 2.7 (main SITE-A environment) has no resize-window command. Use a
 # short-lived control-mode client and set its size; tmux then propagates that
 # size to the session/window. On tmux >= 3.1 (window-size=latest default)
 # the fresh control client is also the "latest" client, so the window snaps
@@ -520,7 +520,7 @@ except Exception:
     pass
 `;
   // No heredoc: the exec channel is interpreted by the remote LOGIN
-  // shell, which may be csh/tcsh (e.g. prgn.example.com) where `<<` is a
+  // shell, which may be csh/tcsh (e.g. site-e.example.com) where `<<` is a
   // syntax error and the whole repair silently no-ops. `python3 -`
   // reads the program from stdin instead — plain command + quoted args
   // parse under any shell.

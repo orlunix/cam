@@ -141,7 +141,7 @@ for line in out.splitlines():
         pass
 print("REPAIR_CLIENTS %s" % (" ".join(clients) if clients else "none"))
 
-# tmux 2.7 (main PDX environment) has no resize-window command. Use a
+# tmux 2.7 (main SITE-A environment) has no resize-window command. Use a
 # short-lived control-mode client and set its size; tmux then propagates that
 # size to the session/window. On tmux >= 3.1 (window-size=latest default)
 # the fresh control client is also the "latest" client, so the window snaps

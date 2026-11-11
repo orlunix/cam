@@ -256,15 +256,15 @@ class TestExtractFromProjectDir:
 
     def test_handles_canonical_dot_underscore_encoding(self, tmp_home):
         """Canonical Claude encoding replaces / . _ all with dashes."""
-        # /home/scratch.hren_gpu_1/test/fn211 → -home-scratch-hren-gpu-1-test-fn211
-        enc = "-home-scratch-hren-gpu-1-test-fn211"
+        # /home/scratch.hren_gpu_1/test/mod-b → -home-scratch-hren-gpu-1-test-mod-b
+        enc = "-home-scratch-hren-gpu-1-test-mod-b"
         proj = tmp_home / ".claude/projects" / enc
         proj.mkdir(parents=True)
         uuid = "11112222-3333-4444-5555-666677778888"
         (proj / uuid).mkdir()
 
         assert (
-            _extract_session_from_project_dir("/home/scratch.hren_gpu_1/test/fn211")
+            _extract_session_from_project_dir("/home/scratch.hren_gpu_1/test/mod-b")
             == uuid
         )
 
@@ -410,9 +410,9 @@ class TestProjectDirsForWorkdir:
 
     def test_complex_path_from_task_doc(self):
         """Exact example from the task doc."""
-        dirs = _project_dirs_for_workdir("/home/scratch.hren_gpu_1/test/fn211")
+        dirs = _project_dirs_for_workdir("/home/scratch.hren_gpu_1/test/mod-b")
         names = [os.path.basename(d) for d in dirs]
-        assert "-home-scratch-hren-gpu-1-test-fn211" in names
+        assert "-home-scratch-hren-gpu-1-test-mod-b" in names
 
 
 # ---------------------------------------------------------------------------

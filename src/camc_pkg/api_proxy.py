@@ -56,7 +56,7 @@ try:
     from http.server import ThreadingHTTPServer
 except ImportError:
     # Python 3.6 ships HTTPServer but not ThreadingHTTPServer. CAMC supports
-    # that runtime on older PDX hosts, so provide the identical stdlib mixin.
+    # that runtime on older SITE-A hosts, so provide the identical stdlib mixin.
     class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
         daemon_threads = True
 

@@ -52,7 +52,7 @@ Branch: `camui-desktop-v2`. Date: 2026-07-17.
 - `lint:electron` + all test suites green (hub 66, term 80+6, start 6,
   local-runtime).
 - Packaged MSI rebuilt; asar verified to contain both changes.
-- **Live numbers** (this machine → prgn.example.com, real ssh2 pool):
+- **Live numbers** (this machine → site-e.example.com, real ssh2 pool):
   - Link baseline: ~1s per SSH round trip (OpenSSH ControlMaster warm
     exec 0.8s; ssh2 pooled warm exec 1.03s). Cold handshake 3-4.5s.
   - Old path estimate on this link: probe + list-clients + repair +
@@ -159,7 +159,7 @@ attach. Now: one cheap existence probe (`test -x ~/.cam/camc`, one
 round trip); if a usable camc is present the attach proceeds
 immediately and the refresh runs in the background; only a host with
 no camc at all waits for the install. Measured after the change
-(prgn.example.com): handshake+probe 5.7s + open 1.9s ≈ 7.7s first
+(site-e.example.com): handshake+probe 5.7s + open 1.9s ≈ 7.7s first
 attach (network jitter varies; the multi-second upload is gone from
 the path). Subsequent attaches stay at ~1.5-1.9s.
 

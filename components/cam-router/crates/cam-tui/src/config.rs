@@ -215,13 +215,13 @@ mod tests {
             "-T",
             "-o",
             "BatchMode=yes",
-            "hren@pdx.example.com",
+            "hren@site-a.example.com",
             "/path/cam-server",
         ]
         .into_iter()
         .map(String::from)
         .collect();
-        assert_eq!(endpoint_name(&e, "local"), "pdx.example.com");
+        assert_eq!(endpoint_name(&e, "local"), "site-a.example.com");
         e.command = vec![
             "ssh".into(),
             "-p5865".into(),
@@ -231,8 +231,8 @@ mod tests {
         assert_eq!(endpoint_name(&e, "local"), "::1");
         e.command = vec!["custom-transport".into(), "unrelated-argument".into()];
         assert_eq!(endpoint_name(&e, "local"), "Node 01234567");
-        e.name = "DC7".into();
-        assert_eq!(endpoint_name(&e, "local"), "DC7");
+        e.name = "SITE-C".into();
+        assert_eq!(endpoint_name(&e, "local"), "SITE-C");
         assert_eq!(e.node_id, "0123456789abcdef0123456789abcdef");
         e.name = "bad\nname".into();
         assert!(Config::validate_endpoint(&e)

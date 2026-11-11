@@ -130,7 +130,7 @@ Same as reboot, plus:
 4-6. Run on TARGET machine instead of local.
 ```
 
-For NFS-shared machines (PDX ↔ PDX): skip scp, session file already shared.
+For NFS-shared machines (SITE-A ↔ SITE-A): skip scp, session file already shared.
 
 ### What `--resume` Does
 

@@ -218,7 +218,7 @@ node --check ../../web/js/desktop/agent-console.js
 
 Expected: every command exits `0` and reports no failed assertions.
 
-- [ ] **Step 2: Run read-only locale-free parser probes against PDX098**
+- [ ] **Step 2: Run read-only locale-free parser probes against SITE-A098**
 
 Use the exact `ssh2` transport to request colon-delimited client and window state. Expected client output matches `^[0-9]+:%[0-9]+:[01]$`; window rows preserve names containing printable punctuation. No tmux state is changed in this step.
 

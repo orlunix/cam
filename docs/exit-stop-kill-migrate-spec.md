@@ -69,7 +69,7 @@ session file. Check: find any running Claude with the same session-id
 and refuse to start if found.
 
 ```bash
-camc run --name l1tcm --path /home/hren --tag NR10 --resume d114c7c4-c500-4047-bd17-b42a57800b64
+camc run --name l1tcm --path /home/hren --tag TAG10 --resume d114c7c4-c500-4047-bd17-b42a57800b64
 ```
 
 ## `camc reboot <id>` (UPDATED)
@@ -91,7 +91,7 @@ Cross-machine migration. Only cam can do this (knows SSH info for all machines).
 
 ```
 1. SSH to source machine: camc exit <id>
-2. Session file is on NFS (shared) — no scp needed for PDX↔PDX
+2. Session file is on NFS (shared) — no scp needed for SITE-A↔SITE-A
    For non-NFS: scp session .jsonl file to target machine
 3. SSH to target machine: camc run --name <same> --tag <same> --path <same> --resume <session-id>
 4. Update cam DB: agent now on target machine
@@ -171,7 +171,7 @@ camc send test -t "what did we discuss?"   # Should remember
 camc reboot <id>            # Same ID, same tmux, memory preserved
 
 # cam migrate
-cam migrate l1tcm --to pdx-098:3422   # Cross-machine, memory preserved
+cam migrate l1tcm --to site-a-098:3422   # Cross-machine, memory preserved
 ```
 
 ## Backward Compatibility

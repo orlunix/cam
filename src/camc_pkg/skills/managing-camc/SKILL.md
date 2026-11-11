@@ -99,14 +99,14 @@ provider/catalog settings to that snapshot.
 
 Always pass `--name`. The name is how you and other tools find this
 agent later. Use the user's name if given, otherwise generate a short
-clear one (`fix-ecc`, `bug5893270`, `regr-fn100`).
+clear one (`fix-ecc`, `bug5893270`, `regr-mod-a`).
 
 ```bash
 ~/.cam/camc run "fix the ECC error" -n fix-ecc                # codex (default)
 ~/.cam/camc run "add tests" -t claude -n add-tests
 ~/.cam/camc run "review this tree" -t pi -n pi-review
 ~/.cam/camc run -n debug-mem                                   # interactive (no prompt)
-~/.cam/camc run "x" -n x --tag NR10 --tag WORK
+~/.cam/camc run "x" -n x --tag TAG10 --tag WORK
 ~/.cam/camc run "..." -t claude -n redo --resume <session-id>            # resume Claude session
 ~/.cam/camc run "x" -p /path/to/proj -n proj-dev               # explicit path (default: CWD)
 ~/.cam/camc run "x" -n y --system-prompt "You are a reviewer." # inject system prompt inline
@@ -201,7 +201,7 @@ The order is current allocation direct -> battach -> SSH -> qsub. If none
 can start the tool, the launch fails; it never silently starts locally.
 The automatic qsub fallback requests `o_pri_interactive_cpu_16G` (16 GB),
 with service class `autorun_sla`; the virtual queue maps to
-`o_pri_interactive` on PDX. Custom launcher prefixes keep the caller's queue.
+`o_pri_interactive` on SITE-A. Custom launcher prefixes keep the caller's queue.
 
 Auto startup prints brief `[launcher]` progress to stdout: self allocation
 check, battach/SSH probes, qsub preparation, and final launch failure.

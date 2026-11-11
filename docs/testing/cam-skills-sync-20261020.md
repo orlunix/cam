@@ -19,18 +19,18 @@ source and required no replacement or Server restart.
 
 | Node | Verified skill roots |
 | --- | ---: |
-| PDX046 | 26 |
-| DC7-26 | 13 |
-| KIX001 | 5 |
-| KIX009 | 5 |
-| PDX064 | 9 |
-| PDX086 | 8 |
-| PDX106 | 38 |
+| SITE-A046 | 26 |
+| SITE-C-26 | 13 |
+| SITE-B001 | 5 |
+| SITE-B009 | 5 |
+| SITE-A064 | 9 |
+| SITE-A086 | 8 |
+| SITE-A106 | 38 |
 | Total | 104 |
 
 Roots are logical installation paths; some share physical directories through
-Home mounts or symlinks. Two historical PDX106 workspaces (`gsp-riscv-pilot-001`
-and `gsp-riscv-pilot-002` controller archives) have mode-0555 directories and no
+Home mounts or symlinks. Two historical SITE-A106 workspaces (`workspace-001`
+and `workspace-002` controller archives) have mode-0555 directories and no
 skills installed. No new skill directory was created inside those archives.
 
 Changed copies were backed up under
@@ -45,7 +45,7 @@ The camc builder previously stripped Python `import` statements from Markdown
 examples during import consolidation. Embedded documents now use escaped,
 single-line Python literals, preserving their exact source content.
 
-Personal `~/.cam/camc` and the shared `/home/prgn_share/bin/camc` entry point
+Personal `~/.cam/camc` and the shared `/home/site_share/bin/camc` entry point
 were updated to 1.2.193, with SHA-256
 `cf173e8a4d0958f4ec996b0c7b13e4c59f2b9f80df8ed9bc0efddd96eb414667`.
 Old pinned release directories were retained.

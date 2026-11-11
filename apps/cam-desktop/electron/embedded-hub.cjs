@@ -6237,8 +6237,8 @@ async function getAttachConnectOpts(agentId) {
   // were synced through it, and agents physically run on the context's
   // host). The agent's own machine_* fields are auto-detected by camc
   // (the box's hostname) and may resolve to a dead/unreachable address
-  // from where the app runs (e.g. prgn agents report hren.example.com
-  // whose IP is dead while prgn.example.com works). machine_* is kept
+  // from where the app runs (e.g. site-e agents report hren.example.com
+  // whose IP is dead while site-e.example.com works). machine_* is kept
   // as a fallback for the stale-context case (context host edited
   // after agents were created): main retries with fallbackOpts on
   // connect-class failure.

@@ -44,7 +44,7 @@ Example SSH record:
 {
   "machine": {
     "type": "ssh",
-    "host": "pdx-container-xterm-098.prd.it.example.com",
+    "host": "site-a-container-xterm-098.prd.it.example.com",
     "user": "hren",
     "port": 3422
   }

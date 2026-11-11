@@ -188,7 +188,7 @@ disabled/hidden; they must never reattach it.
   they must not use the full-width Terminal canvas edges at wide viewport
   sizes.
 - tmux 2.7 is the compatibility floor for commands and formatting used by the
-  Desktop control API. PDX tmux 2.7 has been isolated-tested for client
+  Desktop control API. SITE-A tmux 2.7 has been isolated-tested for client
   discovery, client-scoped switch, `copy-mode`, `send-keys -X cancel`, and
   `new-window -P -F`.
 

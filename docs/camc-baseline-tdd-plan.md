@@ -126,7 +126,7 @@ Initial review candidates, not pre-approved deletions:
 
 - `tests/test_cmd_run_wrapper_default.py`: explicitly mirrors a block from
   `cmd_run` instead of exercising the command.
-- source-reading assertions in `tests/test_camc_hardening_pdx.py` and
+- source-reading assertions in `tests/test_camc_hardening_site-a.py` and
   `tests/test_camc_activity_timestamps.py`.
 - repeated auto-confirm examples spread across `test_camc.py`,
   `test_adapters.py`, `test_configurable_adapter.py`, and

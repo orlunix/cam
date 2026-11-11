@@ -597,7 +597,7 @@ def _load_config(tool):
         except Exception as e:
             log.warning("Failed to load external config %s: %s", toml_path, e)
 
-    # 2026-06-23 PDX hotfix: defensively normalize a stale external
+    # 2026-06-23 SITE-A hotfix: defensively normalize a stale external
     # codex.toml ready_pattern that doesn't include U+203A '›' (the
     # current Codex prompt). Older deployments still have
     # ~/.cam/configs/codex.toml carrying patterns like '^\\s*[❯>]'
@@ -616,7 +616,7 @@ def _load_config(tool):
             launch["ready_pattern"] = "^\\s*[❯›>]"
             log.info(
                 "Codex external ready_pattern normalized (was %r) "
-                "to cover '❯'/'›'/'>'; see CAM-PDX hotfix 2026-06-23",
+                "to cover '❯'/'›'/'>'; see CAM-SITE-A hotfix 2026-06-23",
                 rp,
             )
             # Make sure flags include MULTILINE so ^ matches each line.

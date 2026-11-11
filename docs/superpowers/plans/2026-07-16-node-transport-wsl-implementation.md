@@ -91,7 +91,7 @@ assert.equal(resolveAdapterKind({ type: 'local' }, 'linux').kind, 'local-process
 assert.equal(resolveAdapterKind({ type: 'local' }, 'darwin').kind, 'local-process');
 assert.equal(resolveAdapterKind({ type: 'ssh', host: '127.0.0.1' }, 'win32').kind, 'ssh2');
 assert.equal(resolveAdapterKind({ type: 'ssh', host: 'localhost' }, 'linux').kind, 'ssh2');
-assert.equal(normalizeMachineType({ host: 'pdx098', user: 'hren' }).type, 'ssh');
+assert.equal(normalizeMachineType({ host: 'site-a098', user: 'hren' }).type, 'ssh');
 assert.equal(normalizeMachineType({ host: '', user: '' }).type, 'local');
 assert.equal(resolveAdapterKind({ type: 'serial' }, 'win32').error, 'transport_unsupported');
 
@@ -708,7 +708,7 @@ Expected: all commands exit 0. Status contains only intentional files plus pre-e
 
 Using fakes or available development nodes, verify:
 
-1. `{type:'ssh',host:'pdx098',port:3422}` reuses the pooled SSH connection for sync/send/capture/terminal.
+1. `{type:'ssh',host:'site-a098',port:3422}` reuses the pooled SSH connection for sync/send/capture/terminal.
 2. `{type:'ssh',host:'127.0.0.1'}` still requests SSH credentials and uses SSH.
 3. `{type:'local'}` on Windows invokes default WSL with no `-d`, starts with `--allow-interactive-setup`, and supports Terminal login interaction.
 

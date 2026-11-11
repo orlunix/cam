@@ -47,7 +47,7 @@ daemon was restored after private tests.
 ## Deployment
 
 Installed **cam-tui/clientd 0.1.3** and **cam-server 0.1.1**, plus the updated
-Server SDK metadata module, on PDX046/064/086/106, KIX001/009 and DC7.
+Server SDK metadata module, on SITE-A046/064/086/106, SITE-B001/009 and SITE-C.
 Release: `cam-tui-v0.1.3-1d60e16d5665`.
 Package content SHA-256:
 `1d60e16d56658578874e2fc161efb531d1122cb55b634e5ea95412d6bebc1345`.

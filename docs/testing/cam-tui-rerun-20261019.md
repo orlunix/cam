@@ -23,7 +23,7 @@
 自定义 launcher 前缀如下，`JOB_NAME` 为每个测试独有名称：
 
 ```sh
-/home/nv/utils/nvprojectname/bin/nvprojectname run gpu_rn102_hw_mmplex_riscv \
+/home/nv/utils/nvprojectname/bin/nvprojectname run gpu_proj-a_hw_mmplex_riscv \
   /home/nv/bin/qsub -q o_cpu_4G --qsla autorun_sla \
   -app r89docker -app affinity -J JOB_NAME -Is
 ```

@@ -1,6 +1,6 @@
 # camc Release Checklist
 
-This checklist is mandatory before publishing any new `camc` build to a shared path such as `/home/prgn_share/bin/camc`.
+This checklist is mandatory before publishing any new `camc` build to a shared path such as `/home/site_share/bin/camc`.
 
 The rule is simple: **do not publish to shared if local smoke has not passed on the exact artifact being published.**
 
@@ -25,7 +25,7 @@ Run focused tests for the touched area plus the baseline camc safety checks:
 
 ```bash
 python3 -m py_compile src/camc_pkg/*.py
-python3 -m pytest tests/test_runtime_env.py tests/test_cmd_run_wrapper_default.py tests/test_camc_hardening_pdx.py -q
+python3 -m pytest tests/test_runtime_env.py tests/test_cmd_run_wrapper_default.py tests/test_camc_hardening_site-a.py -q
 python3 -m pytest tests/test_camc_phase1_storage.py -q
 ```
 
@@ -92,7 +92,7 @@ If any of Claude, Codex, or Cursor cannot be started locally, **do not publish t
 
 ## 4. Shared Publish Guard
 
-Never copy directly over `/home/prgn_share/bin/camc` as the first deployment step.
+Never copy directly over `/home/site_share/bin/camc` as the first deployment step.
 
 Preferred flow:
 
@@ -106,8 +106,8 @@ Preferred flow:
 Example shape:
 
 ```text
-/home/prgn_share/tools/camc/releases/camc-<commit>-<date>
-/home/prgn_share/bin/camc -> ../tools/camc/releases/camc-<known-good>
+/home/site_share/tools/camc/releases/camc-<commit>-<date>
+/home/site_share/bin/camc -> ../tools/camc/releases/camc-<known-good>
 ```
 
 Shared publish is allowed only after:
@@ -119,7 +119,7 @@ Shared publish is allowed only after:
 
 ## 5. Target Node Sanity
 
-On PDX/DC style hosts, verify tmux isolation before publishing:
+On SITE-A/DC style hosts, verify tmux isolation before publishing:
 
 ```bash
 /bin/tmux -f /dev/null -S /tmp/camc-release-smoke.sock new-session -d -s camc-release-smoke

@@ -5,7 +5,7 @@ Manager → fix agent. Read this whole file before doing anything.
 ## Your job (one sentence)
 Implement the agent fast-switch feature for CAM-Desktop, build the
 MSI on WSL, grep-verify the fix is bundled, release it as a **test
-build** to Nutstore, commit on prgn, then **STOP and report**.
+build** to Nutstore, commit on site-e, then **STOP and report**.
 
 **Do NOT push to GitLab** — that's hren's gate, after install smoke.
 **Do NOT run install smoke** — needs a Windows display only hren has.
@@ -183,7 +183,7 @@ syncs to cloud — canonical release channel). Naming:
 with NO `-n` is the **workable** release — hren drops the `-n` AFTER
 install smoke passes. You are releasing a TEST build only.
 
-### F. Commit on prgn (AFTER grep-verify — satisfies msi-verify-before-commit)
+### F. Commit on site-e (AFTER grep-verify — satisfies msi-verify-before-commit)
 ```bash
 cd ~/gitlab/cam
 git add apps/cam-desktop/package.json \

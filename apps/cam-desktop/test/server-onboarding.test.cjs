@@ -56,7 +56,7 @@ async function main() {
   ok("command: base64 script", quoted.includes(Buffer.from("print(1)").toString("base64")));
 
   const probe = await ensureNode({
-    node: { context_name: "pdx046", opts: { host: "h", user: "u" } },
+    node: { context_name: "site-a046", opts: { host: "h", user: "u" } },
     clientId: "desktop-test",
     script: "print(1)",
     execRemote: async (opts) => {
@@ -132,7 +132,7 @@ async function main() {
     },
     getNodes: () => [{
       context_id: "ctx-1",
-      context_name: "pdx046",
+      context_name: "site-a046",
       context_key: "u@h:22",
       opts: { host: "h", user: "u" },
     }],

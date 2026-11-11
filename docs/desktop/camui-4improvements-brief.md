@@ -3,7 +3,7 @@
 Manager → fix agent. Read this whole file before doing anything.
 
 ## Your job (one sentence)
-Implement 4 CAM-Desktop UI improvements per the approved plan, build the MSI on WSL, grep-verify the fix is bundled, release as a **test build** to Nutstore, commit on prgn, then **STOP and report**.
+Implement 4 CAM-Desktop UI improvements per the approved plan, build the MSI on WSL, grep-verify the fix is bundled, release as a **test build** to Nutstore, commit on site-e, then **STOP and report**.
 
 **Do NOT push to GitLab** — that's hren's gate, after install smoke.
 **Do NOT run install smoke** — needs a Windows display only hren has.
@@ -185,7 +185,7 @@ ssh -p 2222 hren@127.0.0.1 "cp \
 Naming: `CAM-Desktop-<baseVer>-<n>-<desc>-<YYYYMMDD>.msi`. `-3` = test
 build. `<desc>` = `4improvements` (or a short list like `dup-ctx-optctx-api-terminal`).
 
-### F. Commit on prgn (AFTER grep-verify)
+### F. Commit on site-e (AFTER grep-verify)
 ```bash
 cd ~/gitlab/cam
 git add apps/cam-desktop/electron/embedded-hub.cjs \

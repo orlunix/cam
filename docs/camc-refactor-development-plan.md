@@ -29,7 +29,7 @@ Approximate current source/build size from the working tree:
 | `src/camc_pkg/cron.py` + `cron_loop.py` | 2,005 | Host cron + per-agent loop support |
 | API modules | ~1,500 | Direct API profiles and native endpoint support for Claude/Codex |
 | `src/camc_pkg/monitor.py` + `monitor_features.py` | ~1,030 | Long-running observer loop |
-| `transport.py` + `runtime_env.py` | ~1,300 | tmux/tool/env hardening; important for PDX/DC stability |
+| `transport.py` + `runtime_env.py` | ~1,300 | tmux/tool/env hardening; important for SITE-A/DC stability |
 | `fast_capture.py` + prelude hooks | ~600 | Data-plane fast path; reads `agents.json` directly; new and release-sensitive |
 
 Important distinction: feature/core modules have already been partially split (`cron.py`, `cron_loop.py`, `monitor*`, `transport.py`, `runtime_env.py`). The CLI adapter layer is not split yet: `cli.py` still contains many feature command implementations (`cmd_msg_*`, `cmd_cron_*`, `cmd_api_*`, `cmd_archive_*`, etc.) plus all parser registration.
@@ -69,13 +69,13 @@ Validation already run for the extractor before implementation:
 | Data source | Checked | Failures |
 |---|---:|---:|
 | Local real `~/.cam/agents.json` | 23 | 0 |
-| PDX real `~/.cam/agents.json` | 68 | 0 |
+| SITE-A real `~/.cam/agents.json` | 68 | 0 |
 | Synthetic standard / legacy / nested / missing-session cases | all | 0 |
 
 Unsupported minified JSON intentionally misses and falls back to Python. Simple `send --text` uses the same metadata lookup, writes through `tmux send-keys -l`, and preserves the existing `Sent.` stdout contract. When `--no-enter` is absent, the prelude sends a trailing Enter after the text, matching the normal CLI behavior for short single-line inputs.
 
-End-to-end timing validation on PDX agent `9e118b64`
-(`pdx-container-xterm-098`, 20 iterations, `--lines 80`) after the
+End-to-end timing validation on SITE-A agent `9e118b64`
+(`site-a-container-xterm-098`, 20 iterations, `--lines 80`) after the
 `agents.json` prelude implementation:
 
 | Path | Min | Median | Mean | Max |
@@ -102,7 +102,7 @@ Required release checks:
    proving Python was not started.
 5. Missing/unsupported records and unsupported send forms must fall back with
    original argv preserved before any tmux side effect.
-6. PDX timing should remain in the tens-of-milliseconds range for a valid
+6. SITE-A timing should remain in the tens-of-milliseconds range for a valid
    exact-id capture.
 
 ## 4. Architecture Direction
@@ -198,7 +198,7 @@ Deletion must be evidence-based. Candidate list for review, not immediate remova
 
 Do not delete:
 
-- `runtime_env.py`, `transport.py`, tmux config hardening, or tool resolution. These protect PDX/DC stability.
+- `runtime_env.py`, `transport.py`, tmux config hardening, or tool resolution. These protect SITE-A/DC stability.
 - `monitor.py` / `monitor_features.py`; monitor is a core long-running subsystem.
 - API modules while Claude/Codex custom API support is active.
 - Fast data-plane prelude without replacing the latency solution.
@@ -211,7 +211,7 @@ Do not delete:
 - Use a narrow shell extractor over camc-owned `agents.json` for exact-id capture and simple send text.
 - Remove the public `--fast --tmux-*` capture surface; keep only automatic exact-id fast path plus `--no-fast-path` rollback.
 - Add generated-artifact tests/smokes.
-- Re-run PDX timing: agents-json fast capture should remain tens of milliseconds.
+- Re-run SITE-A timing: agents-json fast capture should remain tens of milliseconds.
 
 Exit criteria:
 
@@ -225,7 +225,7 @@ Exit criteria:
 
 - Keep `docs/camc-refactor-development-plan.md` current.
 - Update `docs/camc-spec.md` module map and doc map when slices land.
-- Add release checklist item: no publish unless local and PDX capture fast path are verified.
+- Add release checklist item: no publish unless local and SITE-A capture fast path are verified.
 
 Exit criteria:
 
@@ -303,9 +303,9 @@ Additional required smoke for data-plane/prelude changes:
 - local indexed `send --text` succeeds with invalid `PYTHONHOME` for Enter and `--no-enter`
 - `--no-fast-path` capture/send forces Python fallback
 - no-index capture and unsupported send forms fall back without argv corruption before side effects
-- PDX candidate indexed capture median remains in tens of milliseconds
+- SITE-A candidate indexed capture median remains in tens of milliseconds
 
-Do not publish to shared paths until these pass locally and on the target PDX/DC environment when the change affects tmux/tool/runtime behavior.
+Do not publish to shared paths until these pass locally and on the target SITE-A/DC environment when the change affects tmux/tool/runtime behavior.
 
 ## 9. Non-Goals
 

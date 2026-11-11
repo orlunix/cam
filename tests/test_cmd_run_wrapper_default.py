@@ -1,4 +1,4 @@
-"""Focused tests for the 2026-06-23 PDX codex-regression hotfix.
+"""Focused tests for the 2026-06-23 SITE-A codex-regression hotfix.
 
 Two narrow configuration contracts pinned:
 

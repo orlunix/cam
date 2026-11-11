@@ -93,7 +93,7 @@ assert.deepEqual(
   decodeNodeTransport({ transport_driver: 'ssh2', host: '127.0.0.1', user: 'hren', port: 22 }),
   { driver: 'ssh2', endpoint: 'hren@127.0.0.1:22' },
 );
-assert.equal(decodeNodeTransport({ type: 'ssh', host: 'pdx098', user: 'hren', port: 3422 }).driver, 'ssh2');
+assert.equal(decodeNodeTransport({ type: 'ssh', host: 'site-a098', user: 'hren', port: 3422 }).driver, 'ssh2');
 assert.equal(decodeNodeTransport({ type: 'local' }).driver, 'local-process');
 
 const migrated = normalizeNodeMachine({ type: 'local', host: '', user: '', port: null }, { localUser: 'hren' });
@@ -108,7 +108,7 @@ assert.deepEqual(migrated, {
 const calls = [];
 const fake = Object.fromEntries(methods.map(name => [name, async () => ({ ok: true, name })]));
 const built = createNodeTransport(
-  { id: 'ctx-1', machine: { transport_driver: 'ssh2', host: 'pdx098', user: 'hren', port: 3422 } },
+  { id: 'ctx-1', machine: { transport_driver: 'ssh2', host: 'site-a098', user: 'hren', port: 3422 } },
   { factories: { ssh2: (context) => { calls.push(context.id); return fake; } } },
 );
 assert.equal(built.ok, true);
@@ -276,8 +276,8 @@ const { createLocalProcessNodeTransport } = require('../electron/local-process-n
 
 const sshCalls = [];
 const sshAdapter = createSshNodeTransport({
-  context: { name: 'pdx', machine: { host: 'pdx098', user: 'hren', port: 3422 } },
-  connectOptions: { host: 'pdx098', user: 'hren', port: 3422 },
+  context: { name: 'site-a', machine: { host: 'site-a098', user: 'hren', port: 3422 } },
+  connectOptions: { host: 'site-a098', user: 'hren', port: 3422 },
   sshTransport: {
     execRemote: async opts => { sshCalls.push(opts); return { ok: true, stdout: 'ok', stderr: '' }; },
     listRemoteFiles: async () => ({ ok: true, entries: [] }),
@@ -841,7 +841,7 @@ Extract a pure `normalizeStoreNodeTransports(store, { localUser })` export from 
 const store = {
   contexts: [
     { id: 'a', name: 'old-local', machine: { type: 'local', host: '', user: '', port: null } },
-    { id: 'b', name: 'pdx', machine: { type: 'ssh', host: 'pdx098', user: 'hren', port: 3422 } },
+    { id: 'b', name: 'site-a', machine: { type: 'ssh', host: 'site-a098', user: 'hren', port: 3422 } },
   ],
   agents: [
     { id: '11111111', context_name: 'old-local', machine_type: 'local', machine_host: '' },
@@ -1038,7 +1038,7 @@ Expected: `git diff --check` exits 0; `grep` prints nothing; `git status` shows 
 
 Use deterministic test nodes or a development launch:
 
-1. Remote SSH node such as `hren@pdx098:3422`: sync, Start, send input, capture output, Stop, Remove, Browse, upload, Skillm list, and terminal attach all succeed.
+1. Remote SSH node such as `hren@site-a098:3422`: sync, Start, send input, capture output, Stop, Remove, Browse, upload, Skillm list, and terminal attach all succeed.
 2. Loopback SSH node such as `hren@127.0.0.1:22`: the same actions follow the SSH adapter and display no special local badge.
 3. Migrated legacy local record: it appears as `user@127.0.0.1:22`; sync/start/files use the compatibility adapter; terminal returns the normalized `terminal_unavailable` message without detaching another session or crashing the renderer.
 

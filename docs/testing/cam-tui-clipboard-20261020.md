@@ -33,7 +33,7 @@ interrupt, and repeated Ctrl+C without a clipboard were checked.
 
 Published **cam-tui 0.1.1**, static Linux x86_64 musl, SHA-256:
 `bb7448b1c54a4ac205d5639eb908e627c95da3fa5bfff9e2ddc6b6abee77e698`.
-Installed to `~/.local/bin/cam-tui` on PDX046/064/086/106, KIX001/009 and DC7.
+Installed to `~/.local/bin/cam-tui` on SITE-A046/064/086/106, SITE-B001/009 and SITE-C.
 Each node verified the version and matching hash. An xclip entry beside the
 binary points to the existing site installation `/home/utils/xclip-0.13/bin/xclip`;
 all seven checked its executable dependencies successfully.

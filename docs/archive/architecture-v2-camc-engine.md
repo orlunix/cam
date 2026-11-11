@@ -289,7 +289,7 @@ camc's `--json` output matches cam's API format for seamless integration:
     "auto_confirm": true,
     "auto_exit": false
   },
-  "context_name": "pdx",
+  "context_name": "site-a",
   "context_path": "/home/user/project",
   "transport_type": "local",
   "status": "running",

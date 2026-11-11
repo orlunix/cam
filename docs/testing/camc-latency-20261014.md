@@ -65,5 +65,5 @@ Installed exact v1.2.163 artifact to the local personal canonical entry,
 venv entry and their aliases; SHA256:
 `6fedd6cd8dad18b3c5b186322884dc37fb60ad1936d9f668ce94ec16dc74b864`.
 Rollback backups: `/home/hren/.cam/backups/camc-local-163-20261014-022052/`.
-Shared prgn_share, DC7 and PRGN entries were not updated by this change.
+Shared site_share, SITE-C and SITE-E entries were not updated by this change.
 No commit or push was performed.

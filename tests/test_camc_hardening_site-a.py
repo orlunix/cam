@@ -1,4 +1,4 @@
-"""Focused tests for the 2026-06-23 PDX/DC hardening:
+"""Focused tests for the 2026-06-23 SITE-A/DC hardening:
   * Golden tmux path resolution + warning on PATH fallback.
   * camc-owned ~/.cam/configs/tmux.conf template creation + forced refresh.
   * create_tmux_session injects ``-f <config>`` into new-session.

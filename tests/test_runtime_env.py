@@ -510,7 +510,7 @@ def test_create_tmux_session_uses_explicit_env_and_tmux_bin(monkeypatch):
 
 def test_create_tmux_session_pastes_startup_command(monkeypatch):
     """The default two-step launch must paste the startup command through
-    a tmux buffer. PDX tmux has been observed to drop the server on
+    a tmux buffer. SITE-A tmux has been observed to drop the server on
     send-keys -l before Enter, so startup injection should not use that
     path when buffer paste succeeds.
     """
@@ -800,7 +800,7 @@ def test_cmd_run_ignores_context_env_setup(tmp_path, monkeypatch):
 
 
 def test_cmd_run_loads_context_for_metadata_only_after_launch(tmp_path, monkeypatch, capsys):
-    """Regression for PDX launch: cmd_run still needs context metadata
+    """Regression for SITE-A launch: cmd_run still needs context metadata
     after tmux creation, but context.env_setup must not feed runtime env."""
     captured = {}
     logs = tmp_path / "logs"
@@ -808,8 +808,8 @@ def test_cmd_run_loads_context_for_metadata_only_after_launch(tmp_path, monkeypa
     monkeypatch.setattr(camc_cli, "LOGS_DIR", str(logs))
     monkeypatch.setattr(camc_cli, "PIDS_DIR", str(pids))
     monkeypatch.setattr(camc_cli, "_load_default_context",
-                        lambda: {"name": "ctx-pdx",
-                                 "host": "pdx.example",
+                        lambda: {"name": "ctx-site-a",
+                                 "host": "site-a.example",
                                  "env_setup": "source /home/hren/.bashrc"})
 
     def _fake_build_runtime_env(**kwargs):
@@ -845,7 +845,7 @@ def test_cmd_run_loads_context_for_metadata_only_after_launch(tmp_path, monkeypa
         no_inherit_env = False
         tool_launcher = "none"
         use_env_tool = False
-        name = "pdx-test"
+        name = "site-a-test"
         auto_exit = False
         auto_exit_enable = False
         tag = []
@@ -877,7 +877,7 @@ def test_cmd_run_loads_context_for_metadata_only_after_launch(tmp_path, monkeypa
     assert captured["build_env_setup"] is None
     assert captured["preflight_env_setup"] is None
     rec = store.get("abc12345")
-    assert rec["context_name"] == "ctx-pdx"
+    assert rec["context_name"] == "ctx-site-a"
     assert rec["transport_type"] == "ssh"
     assert rec["id"] == "abc12345"
     # Binary rewriting and generated session flags are covered by the public

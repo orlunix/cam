@@ -1402,7 +1402,7 @@ def _cmd_run_prepared(args, agent_id, launch):
             launch_cmd, battach_target_binary)
 
 
-    # 2026-06-23 PDX hotfix (NARROW): rewrite launch_cmd to use the
+    # 2026-06-23 SITE-A hotfix (NARROW): rewrite launch_cmd to use the
     # ABSOLUTE executable path that readiness just resolved. This
     # eliminates the "works in preflight, fails in launch" PATH
     # discrepancy without changing the default startup mode.
@@ -1439,7 +1439,7 @@ def _cmd_run_prepared(args, agent_id, launch):
                 _i += 1
         if _i < len(launch_cmd):
             _tok = launch_cmd[_i]
-            # 2026-06-23 PDX hardening: also accept tool-alias names
+            # 2026-06-23 SITE-A hardening: also accept tool-alias names
             # (cursor's CLI binary is named ``cursor-agent`` in newer
             # packages and ``agent`` in older ones). Without the alias
             # list, a cursor adapter using ``["agent", ...]`` would
@@ -1474,7 +1474,7 @@ def _cmd_run_prepared(args, agent_id, launch):
     resolved_tmux = resolved.get("tmux") or TMUX_BIN
     existing = AgentStore().get(agent_id) or {}
     resolved_tmux = existing.get("tmux_bin") or resolved_tmux
-    # 2026-06-23 PDX hardening: ensure ~/.cam/configs/tmux.conf
+    # 2026-06-23 SITE-A hardening: ensure ~/.cam/configs/tmux.conf
     # exists so the new tmux server starts with camc's config rather
     # than the user's ~/.tmux.conf. Pass the resolved path through
     # so the agent record's runtime manifest can capture it.
@@ -1662,7 +1662,7 @@ def _cmd_run_prepared(args, agent_id, launch):
             "proxy_pid": api_plan.get("proxy_pid"),
         }
 
-    # 2026-06-23 PDX hardening: stash a structured runtime manifest
+    # 2026-06-23 SITE-A hardening: stash a structured runtime manifest
     # alongside the legacy top-level fields so later send/capture/
     # attach (and remote diagnostic tools) can read the resolved tmux
     # + tool + python facts the launch actually used. Legacy

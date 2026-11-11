@@ -613,7 +613,7 @@ Refs: docs/desktop/agent-fast-switch-spec.md Change 2"
 **Interfaces:**
 - Consumes: Tasks 1–4 (the shipped addon, the loaded serialize instance, the fast-path show, the evict/restore paths).
 
-This task requires a running CAM-Desktop instance against a `camc`-reachable machine with at least 7 agents' worth of terminal sessions available (or the same agent re-opened 7 times into distinct slots). It is the "workable" gate per `msi-verify-before-commit`. Run this on a Windows box with display (or a dev instance with the renderer visible). If running a dev instance from prgn, the WSL build is NOT needed for this smoke — `web/desktop.html` + the vendor file are served directly. Build the MSI in Task 6 only after this smoke passes.
+This task requires a running CAM-Desktop instance against a `camc`-reachable machine with at least 7 agents' worth of terminal sessions available (or the same agent re-opened 7 times into distinct slots). It is the "workable" gate per `msi-verify-before-commit`. Run this on a Windows box with display (or a dev instance with the renderer visible). If running a dev instance from site-e, the WSL build is NOT needed for this smoke — `web/desktop.html` + the vendor file are served directly. Build the MSI in Task 6 only after this smoke passes.
 
 - [ ] **Step 1: Start the desktop dev instance (or install a fresh MSI built from this branch)**
 
@@ -697,7 +697,7 @@ This is the `msi-verify-before-commit` + `msi-develop-flow` gate. Per `cam-msi-b
 
 - [ ] **Step 1: Build the MSI on WSL**
 
-From prgn, trigger the WSL build:
+From site-e, trigger the WSL build:
 
 ```bash
 bash ~/cam-build-from-wsl.sh

@@ -83,7 +83,7 @@ implemented as transparent reopen (verified `list-clients` 100x30 →
   (silent NAT drops → random detaches). Fixed: parallel baseline probe,
   deferred size repair, `keepaliveInterval: 15000`, `_ensureRemoteCamc`
   probe skipped on ready-cache hit.
-- Live numbers (this machine → prgn.example.com): link floor ~1s/round
+- Live numbers (this machine → site-e.example.com): link floor ~1s/round
   trip; attach now `open_ms≈1.5s, first_byte≈1.8s` (was ~4.5s warm,
   10s+ on stalls).
 - Tab semantics (each agent = a terminal tab): redundant resize
@@ -112,7 +112,7 @@ revisit.
   `wsl.exe --exec`, cursor-agent e2e (prompt delivery + capture OK; the
   tool itself errored on an account/team setting, unrelated to the
   datapath), terminal attach with TUI byte flow, resize reopen.
-- Live SSH probe to prgn.example.com through the app's own
+- Live SSH probe to site-e.example.com through the app's own
   `ssh-transport.cjs` (timings quoted above).
 - MSI (23:11 build) asar verified to contain every change.
 

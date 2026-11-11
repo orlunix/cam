@@ -37,8 +37,8 @@ with the existing Claude-specific frontmatter extensions.
 
 ## Global rollout
 
-Release: **camc 1.2.194**. Targets are PDX046, PDX064, PDX086, PDX106,
-DC7-26, KIX001 and KIX009. Scope includes Home/tool profiles, active skillm
+Release: **camc 1.2.194**. Targets are SITE-A046, SITE-A064, SITE-A086, SITE-A106,
+SITE-C-26, SITE-B001 and SITE-B009. Scope includes Home/tool profiles, active skillm
 libraries, installed workspace copies, personal/shared camc, and Server SDK
 skills used when remotely starting agents.
 
@@ -49,7 +49,7 @@ as part of this skills rollout.
 
 Verify installed documents, both CLI artifact hashes, the active SDK and
 Server readiness on every Node after deployment. Leave the two historical
-mode-0555 PDX106 controller archives without new skill installations, as in
+mode-0555 SITE-A106 controller archives without new skill installations, as in
 the preceding [fleet sync](cam-skills-sync-20261020.md). Back up changed copies
 under each Home's private `~/.cam/backups/skills-sync-20261020-*` directory.
 
@@ -67,7 +67,7 @@ Artifact SHA-256:
 Changed files/configuration were backed up under
 `~/.cam/backups/skills-sync-20261020-094119/<hostname>/`.
 
-A live PDX046 → DC7-26 test created disposable agent `af925afb` through camc's
+A live SITE-A046 → SITE-C-26 test created disposable agent `af925afb` through camc's
 Server route, then verified capture, send/key, JSON status, async message
 delivery, independent reply and wait stdout. The remote run installed all
 thirteen current skill files into its workspace. The agent and temporary

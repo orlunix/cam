@@ -3,7 +3,7 @@
 ## Problem
 
 CAM Desktop identifies the attached tmux client correctly, but its control
-probe fails on PDX098 with `client_state/tmux_parse_failed`. The probe formats
+probe fails on SITE-A098 with `client_state/tmux_parse_failed`. The probe formats
 client state and window rows with literal tab characters.
 
 The failure is reproducible at the transport boundary:
@@ -89,7 +89,7 @@ compatibility failures.
    pass.
 3. Run the Desktop terminal, tmux-control, hub, start-form, syntax, and lint
    checks.
-4. Run a read-only ssh2 probe against PDX098 and confirm client state is
+4. Run a read-only ssh2 probe against SITE-A098 and confirm client state is
    returned as `0:%0:0` without relying on locale variables.
 5. Build the next MSI and manually verify that dvnet shows window tabs and the
    History button after attach.

@@ -1,7 +1,7 @@
 local claude START 0 2026-10-12 06:56:31,866 [camc] INFO Merged external config: /home/hren/.cam/configs/claude.toml
 2026-10-12 06:56:34,529 [camc] INFO camc tmux config refreshed: /home/hren/.cam/configs/tmux.conf (v3)
 ℹ auto: job 1729124669 metadata/EXEC_HOST changed; skipping
-ℹ auto: using job 1796124140 on pdx3-sim-g46-042 (interactive_asic_256G_33D)
+ℹ auto: using job 1796124140 on site-a3-sim-g46-042 (interactive_asic_256G_33D)
 ⚠ tmux resolved from effective PATH (/usr/bin/tmux)
 Starting claude agent 514b8c22...
   ID: 514b8c22  Tool: claude  Session: cam-514b8c22
@@ -15,7 +15,7 @@ Starting claude agent 514b8c22...
 local codex START 0 2026-10-12 06:56:35,420 [camc] INFO Merged external config: /home/hren/.cam/configs/codex.toml
 2026-10-12 06:56:36,773 [camc] INFO camc tmux config refreshed: /home/hren/.cam/configs/tmux.conf (v3)
 ℹ auto: job 1729124669 metadata/EXEC_HOST changed; skipping
-ℹ auto: using job 1796124140 on pdx3-sim-g46-042 (interactive_asic_256G_33D)
+ℹ auto: using job 1796124140 on site-a3-sim-g46-042 (interactive_asic_256G_33D)
 ⚠ tmux resolved from effective PATH (/usr/bin/tmux)
 Starting codex agent 290b533f...
 ℹ Runtime home: /home/hren/.codex/290b533f
@@ -31,7 +31,7 @@ local claude REPLY_OK
 local codex REPLY_OK
 {
   "host": "local",
-  "candidate": "/home/prgn_share/tools/camc/v1.2.162-9f90391-dirty/camc",
+  "candidate": "/home/site_share/tools/camc/v1.2.162-9f90391-dirty/camc",
   "work": "/home/hren/.cam/release162-smoke-local-1791813391",
   "results": {
     "claude": {

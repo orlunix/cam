@@ -363,7 +363,7 @@ def test_long_metadata_verifies_owner_and_exec_host(dispatch):
 
 
 def test_dispatched_allocation_is_reused_before_qsub(monkeypatch, tmp_path):
-    candidate = {"job_id": "1729124669", "host": "pdx3-sim-e14-027"}
+    candidate = {"job_id": "1729124669", "host": "site-a3-sim-e14-027"}
     tool_dir, tool = _install_fake_target_tool(tmp_path, "claude")
     calls = [];progress = []
     def process(argv, **kwargs):
@@ -371,7 +371,7 @@ def test_dispatched_allocation_is_reused_before_qsub(monkeypatch, tmp_path):
         if argv[:2] == ["/fake/nvprojectname", "resolve_validate"]:
             return 0, "mobile\n", ""
         if "-noheader" in argv:
-            return 0, "1729124669|RUN|autorun_sla|Y|pdx3-sim-e14-027|mobile|tcsh|tcsh|\n", ""
+            return 0, "1729124669|RUN|autorun_sla|Y|site-a3-sim-e14-027|mobile|tcsh|tcsh|\n", ""
         if argv[:3] == ["/fake/bjobs", "-l", "-UF"]:
             return 0, _long_job(candidate).replace("Started on", "Wed Sep  2 04:09:14: Dispatched to"), ""
         if argv[0] == "/fake/battach":
@@ -1663,7 +1663,7 @@ def test_named_launcher_metadata_is_safe_and_observable(tmp_path, monkeypatch):
 
 def test_cmd_run_uses_resolved_battach_tool_and_drops_private_metadata(
         tmp_path, monkeypatch):
-    remote_tool = "/home/prgn_share/tools/codex/bin/codex"
+    remote_tool = "/home/site_share/tools/codex/bin/codex"
     monkeypatch.setattr(
         cli, "resolve_named_tool_launcher",
         lambda *_args, **_kwargs: (

@@ -21,7 +21,7 @@ TeaSpirit 需要解析 `[Name]` 识别发言人，按人维护状态。
 
 | 服务 | CLI 工具 | Auth 类型 | 说明 |
 |------|---------|-----------|------|
-| internal-bug-tracker | nvbugs-cli | API token | 公开查询，不限用户 |
+| internal-bug-tracker | bugtracker-cli | API token | 公开查询，不限用户 |
 | internal-platform 员工目录 | helios-cli | API token | 组织架构、manager chain、group membership |
 | internal-wiki | confluence-cli | PAT | 组织级 wiki 内容 |
 | internal-search | glean-cli | MaaS OAuth | 跨数据源企业搜索（P4、GitLab、SharePoint、internal-wiki、Google Drive） |

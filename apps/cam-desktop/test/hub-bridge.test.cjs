@@ -96,7 +96,7 @@ const AGENTS_BY_HOST = {
     { id: 'c0ffee00-aaaa-4000-8000-aaaaaaaaaaaa', status: 'idle', state: 'idle', task: { name: 'localdup', tool: 'claude' }, context_path: '/home/a', transport_type: 'ssh' },
   ],
   [HOSTS.nodeB]: [
-    { id: 'af12bc34-5678-4000-8000-bbbbbbbbbbbb', status: 'running', state: 'idle', task: { name: 'pdx-034', tool: 'claude' }, context_path: '/home/b', transport_type: 'ssh' },
+    { id: 'af12bc34-5678-4000-8000-bbbbbbbbbbbb', status: 'running', state: 'idle', task: { name: 'site-a-034', tool: 'claude' }, context_path: '/home/b', transport_type: 'ssh' },
     { id: 'bb22bbbb-2222-4000-8000-bbbbbbbbbbbb', status: 'exited', state: 'done', task: { name: 'dup', tool: 'codex' }, context_path: '/home/b', transport_type: 'ssh' },
   ],
   [HOSTS.nodeC]: [
@@ -375,7 +375,7 @@ async function main() {
   ok('list table header has CONTEXT', /^ID\s+NAME\s+TOOL\s+STATUS\s+CONTEXT/m.test(o.text || ''), o.text);
   ok('list table spans nodes',
     (o.text || '').includes('af12bc34') && (o.text || '').includes('aa11aaaa')
-      && (o.text || '').includes('pdx-034') && (o.text || '').includes('nodeB')
+      && (o.text || '').includes('site-a-034') && (o.text || '').includes('nodeB')
       && (o.text || '').includes('nodeC'),
     o.text);
 

@@ -329,7 +329,7 @@ Before any release, the full interface compatibility matrix (§6.4) must pass. N
 
 ### Remote testing
 - Use `ssh-test` context (localhost SSH) for SSH transport tests
-- Use PDX context for real remote integration tests (manual)
+- Use SITE-A context for real remote integration tests (manual)
 
 ### Test fixtures (from existing tests/conftest.py)
 - `tmp_db` — temporary SQLite for cam tests

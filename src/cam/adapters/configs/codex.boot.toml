@@ -5,7 +5,7 @@ name = "codex"
 
 [launch]
 startup_wait = 20.0
-# 2026-06-23 PDX hotfix: include U+276F ❯ alongside U+203A › and '>'
+# 2026-06-23 SITE-A hotfix: include U+276F ❯ alongside U+203A › and '>'
 # so the boot ready check works across Codex build variants.
 ready_pattern = "^[❯›>]"
 ready_flags = ["MULTILINE"]

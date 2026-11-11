@@ -350,7 +350,7 @@ ok("tmux binary is probed per endpoint in the background, never hardcoded to /bi
     && !require("fs").readFileSync(require("path").join(__dirname, "..", "electron", "tmux-controls.cjs"), "utf8").includes('|| "/bin/tmux"'));
 ok("remote size repair resolves tmux binary from record with env fallback",
   main.includes('tmux_bin = (') && main.includes('shutil.which("tmux")') && !main.includes('["tmux", "-S", str(socket)]'));
-// The repair python must run on the oldest python3 out there (old PDX
+// The repair python must run on the oldest python3 out there (old SITE-A
 // images): f-strings (3.6), subprocess.run (3.5) and text= (3.7) all
 // raised on older interpreters — the whole repair failed with
 // remote_nonzero and the size was never re-asserted.

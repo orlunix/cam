@@ -25,7 +25,7 @@
 
 **Files:**
 - Modify: src/camc_pkg/runtime_env.py
-- Modify: tests/test_camc_hardening_pdx.py
+- Modify: tests/test_camc_hardening_site-a.py
 
 **Interfaces:**
 - Consumes: selected_tool, tool_dir, configured binary name, and _PATH_TOOL_ALIASES.
@@ -67,7 +67,7 @@ def test_tool_dir_beats_configured_golden_and_path(
 
 - [ ] **Step 2: Run the precedence tests and verify RED**
 
-Run: python3 -m pytest tests/test_camc_hardening_pdx.py -k tool_dir_beats -q
+Run: python3 -m pytest tests/test_camc_hardening_site-a.py -k tool_dir_beats -q
 
 Expected: FAIL because check_tool_readiness has no tool_dir parameter.
 
@@ -227,7 +227,7 @@ def test_tool_dir_non_executable_match_warns_and_falls_back(tmp_path):
 
 - [ ] **Step 6: Run resolver tests and verify GREEN**
 
-Run: python3 -m pytest tests/test_camc_hardening_pdx.py -k "tool_dir or ToolPathPrecedence" -q
+Run: python3 -m pytest tests/test_camc_hardening_site-a.py -k "tool_dir or ToolPathPrecedence" -q
 
 Expected: PASS.
 
@@ -244,7 +244,7 @@ Expected: successful compilation and no whitespace errors.
 **Files:**
 - Modify: src/camc_pkg/cli.py
 - Modify: tests/test_runtime_env.py
-- Test: tests/test_camc_hardening_pdx.py
+- Test: tests/test_camc_hardening_site-a.py
 
 **Interfaces:**
 - Consumes: argparse values from camc run and camc env check.
@@ -414,7 +414,7 @@ cmd_env passes tool_dir to check_tool_readiness. cmd_run passes tool_dir to _pre
 
 - [ ] **Step 6: Run CLI and runtime tests and verify GREEN**
 
-Run: python3 -m pytest tests/test_runtime_env.py tests/test_camc_hardening_pdx.py -q
+Run: python3 -m pytest tests/test_runtime_env.py tests/test_camc_hardening_site-a.py -q
 
 Expected: PASS.
 
@@ -431,7 +431,7 @@ Expected: both help pages show --tool-dir ABSOLUTE_DIR.
 **Files:**
 - Modify: src/camc_pkg/cli.py
 - Modify: tests/test_runtime_env.py
-- Modify: tests/test_camc_hardening_pdx.py
+- Modify: tests/test_camc_hardening_site-a.py
 
 **Interfaces:**
 - Consumes: resolved["tool"] and resolved["tool_resolution"].
@@ -510,7 +510,7 @@ def test_runtime_manifest_omits_requested_dir_without_tool_dir():
 
 - [ ] **Step 5: Run launch and manifest tests and verify GREEN**
 
-Run: python3 -m pytest tests/test_runtime_env.py tests/test_camc_hardening_pdx.py tests/test_cmd_run_wrapper_default.py -q
+Run: python3 -m pytest tests/test_runtime_env.py tests/test_camc_hardening_site-a.py tests/test_cmd_run_wrapper_default.py -q
 
 Expected: PASS.
 
@@ -536,7 +536,7 @@ Expected: no whitespace errors.
 
 - [ ] **Step 1: Run focused tool tests**
 
-Run: python3 -m pytest tests/test_runtime_env.py tests/test_camc_hardening_pdx.py tests/test_cmd_run_wrapper_default.py -q
+Run: python3 -m pytest tests/test_runtime_env.py tests/test_camc_hardening_site-a.py tests/test_cmd_run_wrapper_default.py -q
 
 Expected: PASS.
 

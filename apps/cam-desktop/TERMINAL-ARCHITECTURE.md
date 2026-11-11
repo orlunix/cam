@@ -129,7 +129,7 @@ cam sync. Explicit Sync Host still force-installs.
 **Attach**: `term:open` → `getAttachConnectOpts` (existence probe; camc
 refresh in background) → `openTerminalChannel` on `_termPool`
 (handshake retry ×1, keepalive 15s) → gate buffers → `term:ready` →
-flush → live stream. Measured on the prgn link: ~1.5–1.9s warm,
+flush → live stream. Measured on the site-e link: ~1.5–1.9s warm,
 ~5.5–7.7s cold (handshake-bound; ~1s/RTT is the link's floor).
 
 **Resize**: window drag → ResizeObserver → fit() → onResize → debounce
@@ -149,7 +149,7 @@ xterm, scrollback intact.
   turned out to be independent reinventions of the same patterns —
   adopting Tabby's framing unified them.
 - **Measure, don't guess**: every latency claim comes from the app's
-  own transport run against prgn (handshake 3s, warm RTT ~1s, attach
+  own transport run against site-e (handshake 3s, warm RTT ~1s, attach
   1.5s); every size claim from `tmux list-clients`/`display` inspection
   during reproduction.
 - **One owner per state**: each fix assigned a single owner (grid owns

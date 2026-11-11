@@ -99,9 +99,9 @@ tmux sockets must also be local per-machine (not shared via NFS).
     "type": "local"
   },
   {
-    "name": "pdx-110",
+    "name": "site-a-110",
     "type": "ssh",
-    "host": "pdx-110.example.com",
+    "host": "site-a-110.example.com",
     "user": "hren",
     "port": 3859,
     "env_setup": "source /opt/tools/env.sh",
@@ -126,7 +126,7 @@ No deduplication needed.
 [
   {
     "name": "falcon-rtl",
-    "machine": "pdx-110",
+    "machine": "site-a-110",
     "path": "/home/scratch.hren_gpu/p5d1_sc0/hw/nvip/ip/internal-org"
   },
   {
@@ -214,12 +214,12 @@ Same pattern as existing `AgentStore` (JSON + fcntl + atomic write).
 
 ```bash
 camc machine list                              # List all machines
-camc machine add pdx-110 --host pdx-110.example.com --user hren --port 3859
-camc machine rm pdx-110
-camc machine edit pdx-110 --port 3860          # Update in-place
+camc machine add site-a-110 --host site-a-110.example.com --user hren --port 3859
+camc machine rm site-a-110
+camc machine edit site-a-110 --port 3860          # Update in-place
 
 camc context list                              # List all contexts
-camc context add falcon-rtl --machine pdx-110 --path /home/...
+camc context add falcon-rtl --machine site-a-110 --path /home/...
 camc context rm falcon-rtl
 ```
 
@@ -227,7 +227,7 @@ camc context rm falcon-rtl
 
 ```bash
 camc sync                     # Sync camc + configs to all SSH machines
-camc sync pdx-110             # Sync to specific machine
+camc sync site-a-110             # Sync to specific machine
 ```
 
 Iterates `machines.json` directly. No deduplication needed.

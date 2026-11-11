@@ -9,7 +9,7 @@ This UI work follows the launcher/clipboard checkpoint `fdeb302` on
   selection, clipboard, quitting, filters, aliases and common actions.
 - Agent detail rows show `tool · status · node`. Explicit connection names
   remain aliases, including dots; otherwise hostnames become short labels
-  such as `pdx-046`. Nodes → Edit → Name saves an alias. Routing still uses
+  such as `site-a-046`. Nodes → Edit → Name saves an alias. Routing still uses
   the original Server identity.
 - Node, Tool and Status dropdowns combine with text search. Clear filters
   resets all four conditions. Short windows use a compact Filters panel.
@@ -46,7 +46,7 @@ displays were reclaimed, and the production client daemon was restored.
 **cam-tui 0.1.2**, static Linux x86_64 musl, SHA-256:
 `9bb9ab93a04e3e6494312ba4b0490d3821455929a9b71011dc04b27748b6efb6`.
 
-Installed to `~/.local/bin/cam-tui` on PDX046/064/086/106, KIX001/009 and DC7.
+Installed to `~/.local/bin/cam-tui` on SITE-A046/064/086/106, SITE-B001/009 and SITE-C.
 All seven verified the same version/hash and the existing native clipboard
 helper. TUI-only deployment preserved all 65 production agent identities;
 seven Nodes are ready and the client daemon is healthy. Server and camc/SDK

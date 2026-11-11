@@ -2464,7 +2464,7 @@ mod tests {
     #[tokio::test]
     async fn sidebar_has_separate_regions_aligned_muted_details_and_a_menu() {
         let mut app = App::new(&Config::default(), tokio::runtime::Handle::current());
-        app.snapshot = json!({"connections":[{"node_id":"a","name":"PDX046","socket":"/tmp/a","token_file":"/tmp/token"}],
+        app.snapshot = json!({"connections":[{"node_id":"a","name":"SITE-A046","socket":"/tmp/a","token_file":"/tmp/token"}],
             "agents":[{"id":"one","node_id":"a","name":"中文 agent with a long name","tool":"claude","status":"alive","state":"idle","tags":["review"]}]});
         let mut terminal = Terminal::new(TestBackend::new(150, 38)).unwrap();
         terminal.draw(|f| app.draw(f)).unwrap();
@@ -2504,14 +2504,14 @@ mod tests {
         let mut app = App::new(&Config::default(), tokio::runtime::Handle::current());
         app.snapshot = json!({"connections":[
             {"node_id":"a","name":"farm.alpha","socket":"/tmp/a","token_file":"/tmp/token"},
-            {"node_id":"b","command":["ssh","pdx-container-xterm-064.example.com"],"token_file":"/tmp/token"}],
+            {"node_id":"b","command":["ssh","site-a-container-xterm-064.example.com"],"token_file":"/tmp/token"}],
             "agents":[
                 {"id":"one","name":"review","node_id":"a","tool":"claude","status":"alive","state":"idle"},
                 {"id":"two","name":"build","node_id":"b","tool":"codex","status":"alive","state":"running","phase":"initializing"},
                 {"id":"three","name":"failed-test","node_id":"a","tool":"codex","status":"dead","state":"failed","stale":true}]});
         assert_eq!(app.short_node("a"), "farm.alpha");
-        assert_eq!(app.short_node("b"), "pdx-064");
-        app.filter = "pdx-064".into();
+        assert_eq!(app.short_node("b"), "site-a-064");
+        app.filter = "site-a-064".into();
         assert_eq!(app.agents().len(), 1);
         app.clear_filters();
         app.filter_node = "a".into();
@@ -2538,13 +2538,13 @@ mod tests {
     async fn guide_filter_controls_and_agent_details_render_with_color() {
         let mut app = App::new(&Config::default(), tokio::runtime::Handle::current());
         app.snapshot = json!({"nodes":[],"connections":[
-            {"node_id":"a","name":"PDX046","socket":"/tmp/a","token_file":"/tmp/token"}],
+            {"node_id":"a","name":"SITE-A046","socket":"/tmp/a","token_file":"/tmp/token"}],
             "agents":[{"id":"one","name":"review","node_id":"a","tool":"claude","status":"alive","state":"idle"}]});
         let mut terminal = Terminal::new(TestBackend::new(150, 38)).unwrap();
         terminal.draw(|f| app.draw(f)).unwrap();
         let buffer = terminal.backend().buffer();
         let text: String = buffer.content.iter().map(|c| c.symbol.as_str()).collect();
-        for label in ["HISTORY", "COPY & PASTE", "Ctrl+Q", "All nodes", "All tools", "All statuses", "claude · idle", "PDX046"] {
+        for label in ["HISTORY", "COPY & PASTE", "Ctrl+Q", "All nodes", "All tools", "All statuses", "claude · idle", "SITE-A046"] {
             assert!(text.contains(label), "missing {label}");
         }
         assert!(buffer.content.iter().any(|c| c.symbol == "H" && c.fg == ACCENT));
@@ -2566,8 +2566,8 @@ mod tests {
         let a = "0123456789abcdef0123456789abcdef";
         let b = "fedcba9876543210fedcba9876543210";
         app.snapshot = json!({"nodes":[{"node_id":a,"ready":true},{"node_id":b,"ready":false}],
-            "connections":[{"node_id":a,"name":"PDX046","socket":"/tmp/a","token_file":"/tmp/token"},
-                           {"node_id":b,"name":"DC7","socket":"/tmp/b","token_file":"/tmp/token"}],
+            "connections":[{"node_id":a,"name":"SITE-A046","socket":"/tmp/a","token_file":"/tmp/token"},
+                           {"node_id":b,"name":"SITE-C","socket":"/tmp/b","token_file":"/tmp/token"}],
             "agents":[{"node_id":b,"id":"11111111","name":"agent-one"}]});
         app.new_agent();
         let mut terminal = Terminal::new(TestBackend::new(120, 32)).unwrap();
@@ -2579,7 +2579,7 @@ mod tests {
             .iter()
             .map(|c| c.symbol.as_str())
             .collect();
-        assert!(text.contains("PDX046"));
+        assert!(text.contains("SITE-A046"));
         assert!(!text.contains(a));
         app.event(Event::Paste(b.into()));
         app.action("field:0");
@@ -2605,7 +2605,7 @@ mod tests {
             KeyModifiers::NONE,
         )));
         assert!(matches!(&app.dialog, Some(Dialog::Form { fields, .. }) if fields[0].1 == b));
-        app.filter = "dc7".into();
+        app.filter = "site-c".into();
         assert_eq!(app.agents().len(), 1);
     }
     #[tokio::test]

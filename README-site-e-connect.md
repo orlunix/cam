@@ -1,14 +1,14 @@
-# Connecting to hren's WSL machine from prgn.example.com
+# Connecting to hren's WSL machine from site-e.example.com
 
-This document is for anyone on **prgn.example.com** who needs shell access to **hren's local WSL1 Ubuntu environment** on the Windows laptop **omni-wfa-q8o5s**.
+This document is for anyone on **site-e.example.com** who needs shell access to **hren's local WSL1 Ubuntu environment** on the Windows laptop **omni-wfa-q8o5s**.
 
-Access is provided through a **reverse SSH tunnel**. You do not connect to the laptop's IP address directly. You connect to **localhost on prgn**, and traffic is forwarded through the tunnel into WSL.
+Access is provided through a **reverse SSH tunnel**. You do not connect to the laptop's IP address directly. You connect to **localhost on site-e**, and traffic is forwarded through the tunnel into WSL.
 
 ---
 
 ## Quick start
 
-From a shell on **prgn.example.com**:
+From a shell on **site-e.example.com**:
 
 ```bash
 ssh -p 2222 hren@127.0.0.1
@@ -20,7 +20,7 @@ If key-based auth is set up (default):
 ssh -p 2222 -i ~/.ssh/id_rsa hren@127.0.0.1
 ```
 
-You should get a shell in **WSL1 Ubuntu** (Linux), not on prgn itself.
+You should get a shell in **WSL1 Ubuntu** (Linux), not on site-e itself.
 
 Verify you landed in WSL:
 
@@ -35,33 +35,33 @@ pwd               # expect: /home/hren
 ## How it works
 
 ```text
-  hren's laptop (Windows + WSL1)              prgn.example.com
+  hren's laptop (Windows + WSL1)              site-e.example.com
   ───────────────────────────────             ─────────────────
 
-  WSL runs autossh outbound to prgn ────────► sshd :22
+  WSL runs autossh outbound to site-e ────────► sshd :22
        with reverse forward                     │
                                                 │ listens on
                                                 ▼
                                          127.0.0.1:2222
                                                 │
-  You on prgn:  ssh -p 2222 hren@127.0.0.1 ────┘
+  You on site-e:  ssh -p 2222 hren@127.0.0.1 ────┘
                                                 │
                                                 └──► forwarded to WSL sshd :2223
 ```
 
 | Endpoint | Role |
 |----------|------|
-| **prgn `127.0.0.1:2222`** | Entry point for you on prgn |
+| **site-e `127.0.0.1:2222`** | Entry point for you on site-e |
 | **WSL `127.0.0.1:2223`** | SSH server inside WSL (not port 22; see below) |
-| **Outbound SSH** | WSL → prgn:22 keeps the tunnel alive |
+| **Outbound SSH** | WSL → site-e:22 keeps the tunnel alive |
 
-The laptop does **not** need inbound firewall rules on the corporate network. WSL initiates the connection to prgn.
+The laptop does **not** need inbound firewall rules on the corporate network. WSL initiates the connection to site-e.
 
 ---
 
 ## Prerequisites (on the laptop side)
 
-The tunnel must be **up on hren's machine** before you can connect from prgn. That is maintained automatically when the laptop is logged in and WSL is running.
+The tunnel must be **up on hren's machine** before you can connect from site-e. That is maintained automatically when the laptop is logged in and WSL is running.
 
 If connection fails, ask hren to run on the laptop (PowerShell):
 
@@ -74,12 +74,12 @@ Expected output:
 ```text
 sshd (2223): up
 autossh: up
-prgn port 2222 up
+site-e port 2222 up
 ```
 
 ---
 
-## Check from prgn before connecting
+## Check from site-e before connecting
 
 ### 1. Tunnel port is listening
 
@@ -112,10 +112,10 @@ Expected output: `omni-wfa-q8o5s`
 
 | Direction | Auth method |
 |-----------|-------------|
-| WSL → prgn (tunnel) | WSL key: `~/.ssh/id_ed25519` on WSL |
-| prgn → WSL (your login) | prgn key: `~/.ssh/id_rsa` must be in WSL `~/.ssh/authorized_keys` |
+| WSL → site-e (tunnel) | WSL key: `~/.ssh/id_ed25519` on WSL |
+| site-e → WSL (your login) | site-e key: `~/.ssh/id_rsa` must be in WSL `~/.ssh/authorized_keys` |
 
-Password login to WSL through the tunnel is disabled. Use your **prgn SSH key**.
+Password login to WSL through the tunnel is disabled. Use your **site-e SSH key**.
 
 If you see `Permission denied (publickey)`:
 
@@ -131,7 +131,7 @@ If you see `Permission denied (publickey)`:
 |----------------|-------------------|
 | WSL1 Ubuntu (`/home/hren`, Linux tools, apt) | Windows PowerShell/CMD directly |
 | Files under WSL filesystem | Laptop's LAN IP as a direct SSH target |
-| `/mnt/c/...` Windows drives via WSL | prgn's shell (unless you `exit`) |
+| `/mnt/c/...` Windows drives via WSL | site-e's shell (unless you `exit`) |
 
 **Distro:** WSL1 `Ubuntu` (not `Ubuntu-24.04` WSL2).  
 **User:** `hren`  
@@ -139,7 +139,7 @@ If you see `Permission denied (publickey)`:
 
 ---
 
-## Common commands on prgn
+## Common commands on site-e
 
 **Interactive session:**
 
@@ -153,13 +153,13 @@ ssh -p 2222 hren@127.0.0.1
 ssh -p 2222 hren@127.0.0.1 'ls -la ~ && df -h /'
 ```
 
-**Copy file from WSL to prgn:**
+**Copy file from WSL to site-e:**
 
 ```bash
 scp -P 2222 -i ~/.ssh/id_rsa hren@127.0.0.1:/home/hren/somefile.txt .
 ```
 
-**Copy file from prgn to WSL:**
+**Copy file from site-e to WSL:**
 
 ```bash
 scp -P 2222 -i ~/.ssh/id_rsa ./somefile.txt hren@127.0.0.1:/home/hren/
@@ -176,7 +176,7 @@ Note: SCP/rsync use **`-P` (uppercase)** for port, SSH uses **`-p` (lowercase)**
 
 ---
 
-## Troubleshooting (on prgn)
+## Troubleshooting (on site-e)
 
 ### Connection refused on port 2222
 
@@ -231,14 +231,14 @@ The tunnel requires:
 
 - hren's laptop is **on** and **logged into Windows**
 - WSL1 distro **Ubuntu** is running
-- Network path from laptop to **prgn.example.com:22** is up
+- Network path from laptop to **site-e.example.com:22** is up
 - `autossh` process is running inside WSL
 
 It will **not** be available when:
 
 - Laptop is shut down or sleeping
 - WSL was stopped (`wsl --shutdown`)
-- VPN/network outage between laptop and prgn
+- VPN/network outage between laptop and site-e
 - hren manually stopped the tunnel
 
 After laptop reboot, the tunnel should come back automatically at Windows logon (Task Scheduler). Allow a few minutes after logon.
@@ -247,8 +247,8 @@ After laptop reboot, the tunnel should come back automatically at Windows logon 
 
 ## Security notes
 
-- The tunnel binds to **127.0.0.1:2222 on prgn only** — not exposed to other hosts on the network.
-- Only users with shell access on prgn can use this port.
+- The tunnel binds to **127.0.0.1:2222 on site-e only** — not exposed to other hosts on the network.
+- Only users with shell access on site-e can use this port.
 - Access to WSL is key-based; do not share private keys.
 - This path is intended for **hren's WSL environment**, not as a general-purpose jump host.
 
@@ -258,11 +258,11 @@ After laptop reboot, the tunnel should come back automatically at Windows logon 
 
 | Item | Value |
 |------|-------|
-| Connect from | prgn.example.com |
+| Connect from | site-e.example.com |
 | Command | `ssh -p 2222 hren@127.0.0.1` |
-| Key | `~/.ssh/id_rsa` on prgn |
+| Key | `~/.ssh/id_rsa` on site-e |
 | Target environment | WSL1 Ubuntu, user `hren`, host `omni-wfa-q8o5s` |
-| Check tunnel | `ss -tln \| grep 2222` on prgn |
+| Check tunnel | `ss -tln \| grep 2222` on site-e |
 | Laptop-side status | ask hren to run `wsl-reverse-tunnel.sh status` |
 
 ---
@@ -271,6 +271,6 @@ After laptop reboot, the tunnel should come back automatically at Windows logon 
 
 If the tunnel is down or auth fails after checking the steps above, contact **hren** and include:
 
-1. Output of `ss -tln | grep 2222` on prgn
+1. Output of `ss -tln | grep 2222` on site-e
 2. Output of `ssh -vv -p 2222 hren@127.0.0.1` (last ~20 lines)
 3. Whether the laptop is on and connected to VPN/network

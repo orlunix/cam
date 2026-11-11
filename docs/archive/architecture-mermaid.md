@@ -54,7 +54,7 @@ graph TB
         sqlite["cam.db (SQLite)<br/>⚠️ Phase 5: remove"]
     end
 
-    subgraph Remote_1["🖥️ Remote Machine (hren@pdx-110)"]
+    subgraph Remote_1["🖥️ Remote Machine (hren@site-a-110)"]
         subgraph camc_r1["camc (remote instance)"]
             camc_r1_run["camc run"]
             camc_r1_list["camc list"]
@@ -505,7 +505,7 @@ graph TB
 
     subgraph Machines["Machines (each runs camc)"]
         m_local["Local Machine<br/>camc + monitors + tmux<br/>agents.json"]
-        m_pdx["pdx-110 (SSH :3859)<br/>camc + monitors + tmux<br/>agents.json"]
+        m_site-a["site-a-110 (SSH :3859)<br/>camc + monitors + tmux<br/>agents.json"]
         m_bpmp["bpmpfw (SSH :22)<br/>camc + monitors + tmux<br/>agents.json"]
     end
 
@@ -527,18 +527,18 @@ graph TB
 
     %% Server → Machines
     camserve -->|"subprocess"| m_local
-    camserve -->|"SSH ControlMaster"| m_pdx
+    camserve -->|"SSH ControlMaster"| m_site-a
     camserve -->|"SSH ControlMaster"| m_bpmp
 
     %% camc CLI direct access
     camc_cli -->|"direct"| m_local
-    camc_cli -->|"direct"| m_pdx
+    camc_cli -->|"direct"| m_site-a
     camc_cli -->|"direct"| m_bpmp
 
     %% Machines → Agents
     m_local --> a_claude
-    m_pdx --> a_claude
-    m_pdx --> a_codex
+    m_site-a --> a_claude
+    m_site-a --> a_codex
     m_bpmp --> a_claude
     m_bpmp --> a_cursor
 
@@ -549,6 +549,6 @@ graph TB
 
     class cam,camc_cli,webapp,android,teams iface
     class camserve,relay server
-    class m_local,m_pdx,m_bpmp machine
+    class m_local,m_site-a,m_bpmp machine
     class a_claude,a_codex,a_cursor agent
 ```

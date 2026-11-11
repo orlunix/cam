@@ -582,8 +582,8 @@ Example:
 version: 1
 
 primary:
-  context: pdx119
-  endpoint: hren@pdx119:22
+  context: site-a119
+  endpoint: hren@site-a119:22
   workspace: /home/hren/project
 ```
 
@@ -599,8 +599,8 @@ Suggested workspace config:
 version: 1
 
 primary:
-  context: pdx119
-  endpoint: hren@pdx119:22
+  context: site-a119
+  endpoint: hren@site-a119:22
   workspace: /home/hren/project
 
 gateway:
@@ -794,8 +794,8 @@ Example:
 version: 1
 
 primary:
-  context: pdx119
-  endpoint: hren@pdx119:22
+  context: site-a119
+  endpoint: hren@site-a119:22
   workspace: /home/hren/project
 ```
 
@@ -811,8 +811,8 @@ Suggested workspace config:
 version: 1
 
 primary:
-  context: pdx119
-  endpoint: hren@pdx119:22
+  context: site-a119
+  endpoint: hren@site-a119:22
   workspace: /home/hren/project
 
 gateway:

@@ -107,9 +107,9 @@ if idle_for > threshold:
 | Local | 3.4 | ✓ |
 | bpmpfw | 3.4 | ✓ |
 | YUBIO | 3.2a | ✓ |
-| PDX-098 | 2.7 | ✓ |
-| PDX-110 | 2.7 | ✓ |
-| DC7 | 2.7 | ✓ |
+| SITE-A-098 | 2.7 | ✓ |
+| SITE-A-110 | 2.7 | ✓ |
+| SITE-C | 2.7 | ✓ |
 | DC2 | 2.7 | ✓ |
 
 Key behaviors verified:

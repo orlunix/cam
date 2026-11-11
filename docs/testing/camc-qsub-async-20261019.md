@@ -17,7 +17,7 @@ run/New/reboot 把启动请求交给 tmux 后即可返回；qsub 的资源等待
 
 Python 全套回归：1722 passed、1 skipped，193.99 秒；额外的短命令退出用例包含在上述最终聚焦回归中。34 个模块通过 Python 3.6 语法检查，独立 bundle 在 Python 3.6 上执行 receipt 检查通过。构建脚本的原始 `--verify` 仅因 source `(dev)` 与发布构建时间戳不同而返回 mismatch；规范化预期时间戳后，四个 help/version 对照均一致。
 
-真实 NVIDIA qsub 测试使用共享目录、独立 Home、实际 tmux、已注册项目 `gpu_rn102_hw_mmplex_riscv`，通过自定义前缀提交 `autorun_sla` 作业。目标为专用测试脚本，没有启动真实模型、重装共享工具或修改原有 agent。
+真实 NVIDIA qsub 测试使用共享目录、独立 Home、实际 tmux、已注册项目 `gpu_proj-a_hw_mmplex_riscv`，通过自定义前缀提交 `autorun_sla` 作业。目标为专用测试脚本，没有启动真实模型、重装共享工具或修改原有 agent。
 
 - agent：`fdb27bfa`；job：`1936277048`。
 - run 在 **0.502 秒**返回。

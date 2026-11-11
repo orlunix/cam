@@ -16,6 +16,14 @@
   explicitly authorizes it. Commit only when the user asks for a commit or
   clearly approves the completed change.
 
+## GitHub Mirror (public repo)
+
+`github` (github.com/orlunix/cam) is a scrubbed mirror with an unrelated
+history. After pulling/merging from GitLab, sync it by following
+`.agents/skills/syncing-github-mirror/SKILL.md` (scrub → align → push).
+Never push GitLab refs to `github`, never merge `github/*` back into local
+branches, and never force-push without an explicit decision.
+
 ## Extension-first Rule (user instruction, 2026-08-11)
 
 After the 0.2.4 ext stabilization round, **avoid rebuilding the MSI for

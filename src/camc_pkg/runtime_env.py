@@ -863,7 +863,7 @@ _TOOL_SPECS = {
 
 
 # ---------------------------------------------------------------------------
-# Golden paths (2026-06-23 PDX hardening). Independent of user PATH /
+# Golden paths (2026-06-23 SITE-A hardening). Independent of user PATH /
 # shell / tmux config drift so camc agents resolve stable executables
 # even when the caller's env is messy.
 # ---------------------------------------------------------------------------
@@ -882,17 +882,17 @@ _GOLDEN_TOOL_PATHS = {
     "claude": (
         "/home/tools_ai/anthropic-ai/claude/latest/claude",
         "/home/tools_ai/anthropic-ai/claude/stable/claude",
-        "/home/prgn_share/tools/claude-code/bin/claude",
+        "/home/site_share/tools/claude-code/bin/claude",
     ),
     "codex": (
         "/home/tools_ai/openai/codex/latest/bin/codex",
         "/home/tools_ai/openai/codex/stable/bin/codex",
-        "/home/prgn_share/tools/codex/bin/codex",
+        "/home/site_share/tools/codex/bin/codex",
         "~/.local/bin/codex",
     ),
     "cursor": (
         "/home/tools_ai/cursor/cursor-cli/latest/bin/cursor-agent",
-        "/home/prgn_share/tools/cursor/cursor-cli/latest/bin/cursor-agent",
+        "/home/site_share/tools/cursor/cursor-cli/latest/bin/cursor-agent",
     ),
     "pi": (
         "/home/tools_ai/earendil-works/pi-coding-agent/latest/bin/pi",
@@ -1137,7 +1137,7 @@ def check_tool_readiness(runtime, selected_tool, tool_binary=None,
     if bin_name in (None, "", "env", "/usr/bin/env"):
         bin_name = spec.get("binary") or selected_tool
 
-    # 2026-06-23 PDX hardening: prefer configured explicit absolute
+    # 2026-06-23 SITE-A hardening: prefer configured explicit absolute
     # executables, then golden paths, then PATH. ``use_env_tool=True``
     # is the explicit advanced opt-out: skip configured/golden paths
     # and resolve from PATH aliases only.

@@ -7,7 +7,7 @@ tools and verified model replies, not substitute executables.
 ## Successful lifecycle tests
 
 Both tools used `--tool-launcher auto --no-default-api`, selecting battach to the
-existing user-owned autorun allocation `1796124140` on `pdx3-sim-g46-042`.
+existing user-owned autorun allocation `1796124140` on `site-a3-sim-g46-042`.
 The remote tools resolved to Claude Code **2.1.296** and Codex **0.159.2**.
 These differ from this login host's latest paths; the versions below are those
 shown by the running remote tools.

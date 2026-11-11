@@ -225,7 +225,7 @@ def sync_camc_to_machine(machine, camc_path=None, configs_dir=None):
                 results[fname] = "unchanged"
 
     # Sync machine's env_setup as context.json. Use scp instead of a
-    # remote heredoc because many PDX/DC accounts default to csh/tcsh,
+    # remote heredoc because many SITE-A/DC accounts default to csh/tcsh,
     # where heredoc handling can leave the terminator in the file.
     env_setup = machine.get("env_setup")
     if env_setup:
